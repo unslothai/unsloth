@@ -20,6 +20,8 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in React.
+import { isNpuModelId } from "@/features/npu/api";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
 import { persistReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
@@ -1909,7 +1911,21 @@ export function loadOptionalBool(key: string): boolean | null {
   return raw === "true";
 }
 
-export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
+// A tools list makes FastFlowLM build a grammar, which turns NPU speculative decoding off
+// (ROCm/FastFlowLM#1016), so NPU models start with Search and Code off unless the chat or a
+// saved click says otherwise. The captured global defaults are skipped: they echo the GPU default.
+function npuPillPreference(key: "toolsEnabled" | "codeToolsEnabled"): boolean {
+  return (
+    pillOverride(key) ??
+    loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ??
+    false
+  );
+}
+
+export function resolveToolsEnabledOnLoad(
+  supportsTools: boolean,
+  checkpoint?: string | null,
+): {
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   deepResearchEnabled: boolean;
@@ -1921,12 +1937,15 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
       deepResearchEnabled: false,
     };
   }
+  const preference = isNpuModelId(checkpoint)
+    ? npuPillPreference
+    : pillPreference;
   return {
     deepResearchEnabled:
       !useChatRuntimeStore.getState().incognito &&
       pillPreference("deepResearchEnabled"),
-    toolsEnabled: pillPreference("toolsEnabled"),
-    codeToolsEnabled: pillPreference("codeToolsEnabled"),
+    toolsEnabled: preference("toolsEnabled"),
+    codeToolsEnabled: preference("codeToolsEnabled"),
   };
 }
 

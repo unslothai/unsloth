@@ -449,7 +449,7 @@ export function applyActiveModelStatusToStore(
       preserveThinking: preserveThinkingOnLoad,
     }),
     supportsTools,
-    ...resolveToolsEnabledOnLoad(supportsTools),
+    ...resolveToolsEnabledOnLoad(supportsTools, checkpointId),
     reasoningEnabled: supportsReasoning
       ? reasoningStyle === "reasoning_effort"
         ? true
