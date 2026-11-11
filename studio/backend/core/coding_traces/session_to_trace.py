@@ -215,7 +215,7 @@ def _convert_row(
             if skipped:
                 warnings.append(skipped)
                 if _server_builtin(part)[1]:
-                    groups.native(out[-1] if out else None)
+                    groups.native(out[-1] if out else None, texted)
                 continue
             flush_pair, pending_round = _close_call_group(part, kind, pending, pending_round, out)
             pieces = _open_assistant(message, out, pieces)
@@ -342,17 +342,17 @@ class _UiGroups:
 
     def enter(self, m: TraceMessage) -> TraceMessage:
         if id(m) not in self.marks:
-            self._mark(m, not (self.marks or self.closed))
+            self._mark(m, not (self.marks or self.closed), False)
         return m
 
-    def _mark(self, m: TraceMessage, first: bool) -> None:
-        start = len(m.text) + bool(m.text)  # skip the "\n" that _append_text joins with
+    def _mark(self, m: TraceMessage, first: bool, joined: bool) -> None:
+        start = len(m.text) + (bool(m.text) or joined)  # skip the "\n" _append_text joins with
         self.marks[id(m)] = [m, len(m.reasoning), start, len(m.tool_calls), first]
 
-    def native(self, m: Optional[TraceMessage]) -> None:
+    def native(self, m: Optional[TraceMessage], texted: Optional[TraceMessage]) -> None:
         # A native call ends its group, and the call keeps that group's reasoning.
         if m is not None and id(m) in self.marks:
-            self._mark(m, False)
+            self._mark(m, False, m is texted)
         else:
             self.closed = True
 
@@ -380,8 +380,16 @@ def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
     return [
         m
         for m in out
-        # _build_external_messages drops assistant content that Python's strip() empties.
-        if m.role in ("user", "tool") or m.text.strip() or m.reasoning or m.tool_calls
+        if m.role in ("user", "tool") or m.text.strip(_JS_SPACE) or m.reasoning or m.tool_calls
+    ]
+
+
+def _sent(messages: list[TraceMessage]) -> list[TraceMessage]:
+    # _build_external_messages then drops assistant content that Python's strip() empties.
+    return [
+        m
+        for m in messages
+        if m.role != "assistant" or m.text.strip() or m.reasoning or m.tool_calls
     ]
 
 
@@ -616,7 +624,7 @@ def session_to_trace(
         if content and not isinstance(content, list):
             note = "Dropped content that is not a list; the UI loads it as an empty text part"
             warnings.append(TraceWarning("non_list_content_dropped", note, message["id"]))
-    trace_messages = _convert(_prune(chain), warnings)
+    trace_messages = _sent(_convert(_prune(chain), warnings))
     if not any(m.role != "user" or m.text for m in trace_messages):
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no usable content on this branch")
     if not any(m.role == "user" for m in trace_messages):

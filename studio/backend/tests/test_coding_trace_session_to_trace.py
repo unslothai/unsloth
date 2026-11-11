@@ -418,13 +418,20 @@ def test_stopped_row_merged_into_earlier_text_keeps_its_first_group():
     assert (merged.text, merged.reasoning) == ("hello", "r1")
 
 
-def test_assistant_text_that_python_strips_is_dropped():
-    # _build_external_messages drops it, although JS trim() keeps "\x1c".
-    assert _shape(_turn({}, _text("\x1c"))) == [
+@pytest.mark.parametrize("custom", [{}, _STOPPED])
+def test_assistant_text_that_python_strips_is_dropped(custom):
+    # _build_external_messages drops it. JS trim() keeps "\x1c", so a stopped
+    # turn gets no stop label.
+    assert _shape(_turn(custom, _text("\x1c"))) == [
         ("user", "go"),
         ("user", "again"),
         ("assistant", "fine"),
     ]
+
+
+def test_stopped_group_with_only_empty_text_drops_its_reasoning():
+    parts = [*_text(""), _NATIVE, _R2, *_text("")]
+    assert all(m.reasoning != "r2" for m in _turn(_STOPPED, parts).messages)
 
 
 @pytest.mark.parametrize(
