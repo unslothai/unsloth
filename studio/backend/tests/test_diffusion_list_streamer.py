@@ -92,6 +92,8 @@ def test_a_stream_larger_than_the_pin_budget_is_refused(monkeypatch):
     stack = _Stack()
     went_on = []
     monkeypatch.setattr(op, "_list_stream_refusal", lambda device: None)
+    # no diffusers needed: the budget check runs before ModuleGroup is looked up
+    monkeypatch.setattr(op, "_go", lambda: type("_Go", (), {"ModuleGroup": object}))
     # the refusal must come from the budget, before any pinning
     monkeypatch.setattr(
         dm, "install_group_offload_buffer_restore", lambda: went_on.append(1) or 1 / 0
