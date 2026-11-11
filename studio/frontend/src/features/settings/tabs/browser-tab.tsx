@@ -84,7 +84,7 @@ function DownloadLocationRow() {
     >
       <div className="flex gap-2">
         {folder?.custom ? (
-          <Button variant="ghost" size="sm" onClick={reset}>
+          <Button variant="outline" size="sm" onClick={reset}>
             {t("browser.downloadLocationReset")}
           </Button>
         ) : null}

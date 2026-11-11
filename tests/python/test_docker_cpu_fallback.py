@@ -182,11 +182,9 @@ def _studio_mounts(argv):
 
 @_posix_shell
 class TestRunShMountsTheStudioVolume:
-    """Studio's accounts, chats and trained models live under /opt/unsloth-studio.
-    The image links its own code in there at every start, so a named volume keeps
-    the data across `docker rm` without pinning the first image's code. The helper
-    has to mount it, or the quick start in DOCKERHUB.md keeps data and the helper
-    does not."""
+    """Studio data lives under /opt/unsloth-studio and the image relinks its code there on each
+    start, so a named volume keeps data across docker rm; run.sh must mount it, or it would
+    diverge from the DOCKERHUB.md quick start, which keeps data."""
 
     def test_the_default_is_a_named_volume(self, tmp_path):
         argv, _ = _invoke_run_sh(tmp_path, nvidia = True, amd = False)

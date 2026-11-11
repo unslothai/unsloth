@@ -23,6 +23,7 @@ import {
   FlimSlateIcon,
   ImageCropIcon,
   InformationCircleIcon,
+  PaintBrush02Icon,
   Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
@@ -57,6 +58,7 @@ import {
 } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
+import { VideoRestylePanel } from "./restyle-panel";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyPin,
@@ -143,6 +145,18 @@ import {
   videoDimOptions,
   videoSizeLimits,
 } from "./video-size";
+import {
+  type FpsPick,
+  keptNumFrames,
+  pickedFpsFor,
+  presetFamilyKnown,
+  resolvePresetFps,
+  presetVideoFps,
+  resolveVideoFps,
+  restoredClipDuration,
+  videoDurationOptions,
+  videoFpsOptions,
+} from "./video-fps";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -225,6 +239,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
+import { videoFailureToast } from "./generation-failure";
 import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
@@ -236,6 +251,13 @@ import {
 import { ReferenceImageEditor } from "@/components/image-crop-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
+  CONTINUATION_KEEP_OPTIONS,
+  continuationDurationWarning,
+  continuationLengthError,
+  continuationRequest,
+  supportsVideoContinuation,
+} from "./video-continuation";
+import {
   defaultReferenceVideoTrim,
   H3_REFERENCE_MAX_SECONDS,
   referenceVideoTrimError,
@@ -244,6 +266,7 @@ import {
 import {
   type GalleryVideo,
   type VideoGenerateProgress,
+  type VideoContinuationKeep,
   type VideoReferenceVideo,
   type VideoLoadProgress,
   type VideoLoadRequest,
@@ -285,6 +308,28 @@ function useVideoModels(
   );
 }
 
+const FAILURE_WITH_REASON_TOAST_MS = 10_000;
+
+/** False for the user's own Cancel, which is not an error. */
+function showVideoFailureToast(error: string | null | undefined): boolean {
+  const failure = videoFailureToast(error);
+  if (!failure) return false;
+  const { title, errorType, detail } = failure;
+  const hasReason = Boolean(errorType || detail);
+  toast.error(title, {
+    description: hasReason ? (
+      <span className="[overflow-wrap:anywhere]">
+        {errorType && <code className="font-mono">{errorType}</code>}
+        {errorType && detail ? ": " : null}
+        {detail}
+      </span>
+    ) : undefined,
+    duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
+    action: generationFailureLogsAction(title),
+  });
+  return true;
+}
+
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The id is
 // normalized like the backend's family matcher (separator runs become "-", plus a trailing "-"), so "Wan2_1-T2V-14B"
 // and "wan2.1_t2v_14b" hit the same row.
@@ -318,12 +363,9 @@ function defaultsFor(repoId: string, family?: string): { steps: number; guidance
   const id = fold(repoId);
   // The Wan and FusionX rows count only in the model / file name, as on the backend.
   const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
-  // LTX-2.5 (diffusers' pre-release "2.4" too) is decided on the two names the backend gets: the selected file and
-  // the repo, read by their last segment. A local file's repo is the folder it sits in (the picker loads it from that
-  // directory), a Hub file's is the repo segment after the owner. The version is ltx_name_version's ("ltx-2.5",
-  // "LTX25", "ltx2.5", "LTX-Video-2.5"), or the explicit ltx-2.5 family. The variant is ltx25_is_dev's: the first
-  // name naming one decides, "distill" before a dev / full / sft token (or transformer_full); a dev pick runs 30
-  // steps at guidance 3, anything else the distilled 8 at guidance 1.
+  // LTX-2.5 (and pre-release 2.4) is read from the file and repo last path segments as the backend
+  // does; the first name naming a variant decides, distill before a dev, full or sft token (or
+  // transformer_full); dev runs 30 steps at guidance 3, else distilled 8 at guidance 1.
   const segments = repoId.replace(/[\\/]+$/, "").split(/[\\/]/);
   const local = /^([\\/~.]|[a-z]:)/i.test(repoId);
   const fileLeaf = segments[segments.length - 1] ?? "";
@@ -465,6 +507,7 @@ const CONDITIONING_LABELS: Record<string, string> = {
   l2va: "To end frame",
   fl2va: "Start to end frame",
   ref2va: "From references",
+  v2v: "Continued a clip",
 };
 
 function clipMeta(video: GalleryVideo): string {
@@ -1233,6 +1276,8 @@ function VideoGenerator({
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
+  const [continuationClip, setContinuationClip] = useState<ReferenceMedia | null>(null);
+  const [continuationKeep, setContinuationKeep] = useState<VideoContinuationKeep>("last");
   const [keyframeAspect, setKeyframeAspect] = useState<[number, number] | null>(null);
   // Separate lists preserve Ref2VA's image, video, then audio request order.
   const [referenceImages, setReferenceImages] = useState<StagedReferenceImage[]>([]);
@@ -1255,6 +1300,10 @@ function VideoGenerator({
   const [durationIntentSeconds, setDurationIntentSeconds] = useState(
     numFrames / FALLBACK_FPS,
   );
+  const [fpsPick, setFpsPick] = useState<FpsPick | null>(null);
+  // Rate of a preset or clip applied before the family is known; boxed so a null rate (family default) still waits.
+  const [pendingPresetFps, setPendingPresetFps] = useState<{ fps: number | null } | null>(null);
+  const [loadProbed, setLoadProbed] = useState(false);
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_video_advanced_open",
   );
@@ -1294,15 +1343,18 @@ function VideoGenerator({
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // Controlled so the body-portaled selector force-closes when off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
-  const [pageMode, setPageMode] = useState<"create" | "train">("create");
+  const [pageMode, setPageMode] = useState<"create" | "restyle" | "train">("create");
   // Mounted on first visit, then hidden rather than unmounted, so switching to Create keeps the training form.
   const [trainMounted, setTrainMounted] = useState(false);
   if (pageMode === "train" && !trainMounted) setTrainMounted(true);
+  // Kept mounted once opened: its poll is what saves a finished restyle into the gallery.
+  const [restyleMounted, setRestyleMounted] = useState(false);
+  if (pageMode === "restyle" && !restyleMounted) setRestyleMounted(true);
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
   const navigateToImages = useNavigate();
-  const tourSteps = useMemo(() => buildVideoTourSteps({ pageMode }), [pageMode]);
+  const tourSteps = useMemo(() => buildVideoTourSteps({ pageMode: pageMode === "train" ? "train" : "create" }), [pageMode]);
   const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
   const tour = useGuidedTourController({
     id: "video",
@@ -1486,24 +1538,27 @@ function VideoGenerator({
 
   const frameStep = status?.defaults?.frame_step ?? FALLBACK_FRAME_STEP;
   const frameOffset = status?.defaults?.frame_offset ?? FALLBACK_FRAME_OFFSET;
-  const fps = status?.defaults?.fps ?? FALLBACK_FPS;
+  const fpsOptions = useMemo(() => videoFpsOptions(status?.defaults), [status?.defaults]);
+  const loadedFamily = status?.loaded ? status.family : null;
+  // Scoped to its family in render: a reset effect would land after the next family's defaults are seeded.
+  const fps = resolveVideoFps(status?.defaults, pickedFpsFor(fpsPick, loadedFamily));
+  const setPickedFps = useCallback(
+    (picked: number) => {
+      setPendingPresetFps(null);
+      setFpsPick({ family: loadedFamily, fps: picked });
+    },
+    [loadedFamily],
+  );
   const durationTargets =
     status?.defaults?.duration_presets ?? FALLBACK_DURATION_TARGETS;
+  const minFrames = status?.defaults?.min_num_frames;
+  const maxFrames = status?.defaults?.max_num_frames;
 
-  // Frame counts closest to ~1s/2s/3s/5s at the current fps, deduped.
-  const durationOptions = useMemo<Array<{ frames: number; seconds: number }>>(() => {
-    const seen = new Set<number>();
-    const out: Array<{ frames: number; seconds: number }> = [];
-    for (const t of durationTargets) {
-      const desired = t * fps;
-      const k = Math.max(1, Math.round((desired - frameOffset) / frameStep));
-      const frames = k * frameStep + frameOffset;
-      if (seen.has(frames)) continue;
-      seen.add(frames);
-      out.push({ frames, seconds: frames / fps });
-    }
-    return out;
-  }, [frameStep, frameOffset, fps, durationTargets]);
+  const durationOptions = useMemo<Array<{ frames: number; seconds: number }>>(
+    () =>
+      videoDurationOptions(durationTargets, fps, frameStep, frameOffset, minFrames, maxFrames),
+    [frameStep, frameOffset, fps, durationTargets, minFrames, maxFrames],
+  );
 
   const { first: supportsFirstFrame, last: supportsLastFrame } = keyframeSupport(status);
   const supportsKeyframes = supportsFirstFrame || supportsLastFrame;
@@ -1526,6 +1581,17 @@ function VideoGenerator({
     if (status?.loaded && !supportsFirstFrame) setFirstFrame(null);
     if (status?.loaded && !supportsLastFrame) setLastFrame(null);
   }, [status?.loaded, supportsFirstFrame, supportsLastFrame]);
+  const supportsContinuation = supportsVideoContinuation(status);
+  const liveInputs = useRef({ firstFrame, lastFrame, continuationClip });
+  liveInputs.current = { firstFrame, lastFrame, continuationClip };
+  const dropContinuationClip = useCallback((why: string) => {
+    if (!liveInputs.current.continuationClip) return;
+    setContinuationClip(null);
+    toast.info(`Removed the clip to continue: ${why}`);
+  }, []);
+  useEffect(() => {
+    if (status?.loaded && !supportsContinuation) setContinuationClip(null);
+  }, [status?.loaded, supportsContinuation]);
   useEffect(() => {
     if (status?.loaded && !supportsReferences) {
       setReferenceImages([]);
@@ -1538,24 +1604,34 @@ function VideoGenerator({
     if (!canPickReferenceSize) setReferenceImageSize("match");
   }, [canPickReferenceSize]);
 
+  // A clip to continue sizes the canvas like a start frame (the two exclude each other).
+  const canvasClip = canvasKeyframe ? null : supportsContinuation ? (continuationClip?.dataUrl ?? null) : null;
+  const canvasSource = canvasKeyframe ?? canvasClip;
   useEffect(() => {
-    if (!canvasKeyframe) {
+    if (!canvasSource) {
       setKeyframeAspect(null);
       return;
     }
     let cancelled = false;
-    const img = new Image();
-    img.onload = () => {
-      if (!cancelled) setKeyframeAspect([img.naturalWidth, img.naturalHeight]);
+    const done = (size: [number, number] | null) => {
+      if (!cancelled) setKeyframeAspect(size && size[0] > 0 && size[1] > 0 ? size : null);
     };
-    img.onerror = () => {
-      if (!cancelled) setKeyframeAspect(null);
-    };
-    img.src = canvasKeyframe;
+    if (canvasKeyframe) {
+      const img = new Image();
+      img.onload = () => done([img.naturalWidth, img.naturalHeight]);
+      img.onerror = () => done(null);
+      img.src = canvasKeyframe;
+    } else {
+      const media = document.createElement("video");
+      media.preload = "metadata";
+      media.onloadedmetadata = () => done([media.videoWidth, media.videoHeight]);
+      media.onerror = () => done(null);
+      media.src = canvasSource;
+    }
     return () => {
       cancelled = true;
     };
-  }, [canvasKeyframe]);
+  }, [canvasSource, canvasKeyframe]);
 
   const matchedResolution = useMemo(
     () =>
@@ -1565,7 +1641,7 @@ function VideoGenerator({
     [keyframeAspect, status?.defaults],
   );
 
-  const sourceSized = matchSource && canvasKeyframe != null && matchedResolution != null;
+  const sourceSized = matchSource && canvasSource != null && matchedResolution != null;
   const shownSize = sourceSized ? matchedResolution : videoSize;
   const livePreviewBox = { maxWidth: shownSize[0], maxHeight: shownSize[1] };
 
@@ -1580,14 +1656,40 @@ function VideoGenerator({
       guidance,
       flowShift,
       audioFlowShift,
+      fps: pendingPresetFps ? pendingPresetFps.fps : status?.defaults != null && fpsOptions ? fps : null,
     };
-  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
+  }, [audioFlowShift, durationIntentSeconds, flowShift, fps, fpsOptions, guidance, pendingPresetFps, status?.defaults, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
   const familyDefaultFrames = status?.defaults?.num_frames;
   const defaultFlowShift = status?.defaults?.flow_shift ?? null;
   const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
   const presetRepoId = status?.repo_id ?? "";
+  const familyFps = status?.defaults?.fps ?? FALLBACK_FPS;
+  const statusKnown = presetFamilyKnown(status?.defaults, busy === "loading" || !loadProbed);
+  // Null where the rate is fixed; kept as stored until the family is known.
+  const presetFps = useCallback(
+    (stored: number | null | undefined) =>
+      !statusKnown
+        ? (stored ?? null)
+        : fpsOptions
+          ? (presetVideoFps(fpsOptions, stored) ?? familyFps)
+          : null,
+    [familyFps, fpsOptions, statusKnown],
+  );
+  useEffect(() => {
+    if (!statusKnown || pendingPresetFps == null) return;
+    const rate = resolvePresetFps(fpsOptions, pendingPresetFps.fps, familyFps);
+    setPendingPresetFps(null);
+    if (rate != null) setPickedFps(rate);
+  }, [familyFps, fpsOptions, pendingPresetFps, setPickedFps, statusKnown]);
+  const presetDurationOptions = useCallback(
+    (rate: number | null) =>
+      rate == null || rate === fps
+        ? durationOptions
+        : videoDurationOptions(durationTargets, rate, frameStep, frameOffset, minFrames, maxFrames),
+    [durationOptions, durationTargets, fps, frameOffset, frameStep, maxFrames, minFrames],
+  );
   const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
     const resolution = resolutionPresets[0] ?? [768, 512];
     const recommended =
@@ -1595,9 +1697,10 @@ function VideoGenerator({
       (defaultSteps != null && defaultGuidance != null
         ? { steps: defaultSteps, guidance: defaultGuidance }
         : defaultsFor(presetRepoId));
+    const defaultOptions = presetDurationOptions(fpsOptions ? familyFps : null);
     const defaultDuration = familyDefaultFrames
-      ? durationOptions[
-          closestDurationIndex(durationOptions, familyDefaultFrames / fps)
+      ? defaultOptions[
+          closestDurationIndex(defaultOptions, familyDefaultFrames / (fpsOptions ? familyFps : fps))
         ]?.seconds
       : status?.loaded
         ? durationOptions[2]?.seconds ?? durationOptions[0]?.seconds ?? 3
@@ -1611,14 +1714,18 @@ function VideoGenerator({
       guidance: recommended.guidance,
       flowShift: defaultFlowShift,
       audioFlowShift: defaultAudioFlowShift,
+      fps: presetFps(null),
     };
-  }, [defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
+  }, [presetFps, presetDurationOptions, familyFps, fpsOptions, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const size = fitVideoSize(params.width, params.height, sizeLimits);
-      const durationIndex = closestDurationIndex(durationOptions, params.durationSeconds);
-      const durationFrames =
-        durationOptions[durationIndex]?.frames ?? durationOptions[0]?.frames ?? numFrames;
+      const rate = presetFps(params.fps);
+      const options = presetDurationOptions(rate);
+      const durationIndex = closestDurationIndex(options, params.durationSeconds);
+      const durationFrames = options[durationIndex]?.frames ?? options[0]?.frames ?? numFrames;
+      if (!statusKnown) setPendingPresetFps({ fps: rate });
+      else if (rate != null) setPickedFps(rate);
       setResolutionIntent(size);
       const matched = matchAspect(size[0], size[1]);
       setAspect(matched.key);
@@ -1633,25 +1740,26 @@ function VideoGenerator({
       setGuidance(params.guidance);
       setFlowShift(params.flowShift);
       setAudioFlowShift(params.audioFlowShift);
-      return params;
+      return { ...params, fps: rate };
     },
-    [durationOptions, numFrames, sizeLimits],
+    [numFrames, presetDurationOptions, presetFps, setPickedFps, sizeLimits, statusKnown],
   );
   const normalizeVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const resolution = fitVideoSize(params.width, params.height, sizeLimits);
+      const rate = presetFps(params.fps);
+      const options = presetDurationOptions(rate);
       const duration =
-        durationOptions[
-          closestDurationIndex(durationOptions, params.durationSeconds)
-        ]?.seconds ?? params.durationSeconds;
+        options[closestDurationIndex(options, params.durationSeconds)]?.seconds ?? params.durationSeconds;
       return {
         ...params,
         width: resolution[0],
         height: resolution[1],
         durationSeconds: duration,
+        fps: rate,
       };
     },
-    [durationOptions, sizeLimits],
+    [presetDurationOptions, presetFps, sizeLimits],
   );
   const videoPresets = useMediaGenerationPresets({
     kind: "video",
@@ -1696,18 +1804,20 @@ function VideoGenerator({
   // Select "match source" only after the staged keyframe passes the aspect-ratio check.
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
-    const has = canvasKeyframe != null;
+    const has = canvasSource != null;
     if (has === hadKeyframeRef.current) return;
     if (has && !matchedResolution) return;
     hadKeyframeRef.current = has;
     setMatchSource(has);
-  }, [canvasKeyframe, matchedResolution]);
+  }, [canvasSource, matchedResolution]);
 
-  const loadedFamily = status?.loaded ? status.family : null;
   const prevFamilyRef = useRef<string | null>(null);
+  const prevFpsRef = useRef(fps);
   useEffect(() => {
     const familyChanged = loadedFamily !== prevFamilyRef.current;
     prevFamilyRef.current = loadedFamily;
+    const fpsChanged = fps !== prevFpsRef.current;
+    prevFpsRef.current = fps;
     // Apply the family's default clip length, or every default run stays a ~1s clip.
     const applyFamilyDefault = shouldApplyModelDefaults(
       familySeeded.current,
@@ -1726,14 +1836,9 @@ function VideoGenerator({
         return;
       }
     }
-    setNumFrames((cur) => {
-      if (!familyChanged && durationOptions.some((o) => o.frames === cur)) return cur;
-      return (
-        durationOptions[
-          closestDurationIndex(durationOptions, durationIntentSeconds)
-        ]?.frames ?? cur
-      );
-    });
+    setNumFrames((cur) =>
+      keptNumFrames(durationOptions, cur, durationIntentSeconds, familyChanged || fpsChanged),
+    );
   }, [
     durationIntentSeconds,
     durationOptions,
@@ -2372,14 +2477,30 @@ function VideoGenerator({
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
-      // Restore the frame count when it lies on the current lattice.
-      if (durationOptions.some((o) => o.frames === video.num_frames)) {
+      // The clip's count only when this family's window takes it.
+      if (!statusKnown) {
+        setPendingPresetFps({ fps: video.fps });
+        setDurationIntentSeconds(video.num_frames / video.fps);
+        setNumFrames(video.num_frames);
+      } else if (fpsOptions?.includes(video.fps)) {
+        const option = restoredClipDuration(
+          videoDurationOptions(durationTargets, video.fps, frameStep, frameOffset, minFrames, maxFrames),
+          video.num_frames,
+          video.fps,
+        );
+        setPickedFps(video.fps);
+        if (option) {
+          setDurationIntentSeconds(option.seconds);
+          setNumFrames(option.frames);
+        }
+      } else if (durationOptions.some((o) => o.frames === video.num_frames)) {
+        // Restore the frame count when it lies on the current lattice.
         setDurationIntentSeconds(video.num_frames / fps);
         setNumFrames(video.num_frames);
       }
       toast.success("Settings restored to inputs");
     },
-    [sizeLimits, durationOptions, fps],
+    [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps, statusKnown],
   );
 
   // No periodic poll corrects a stale read, so only the newest ticket may write.
@@ -2415,16 +2536,16 @@ function VideoGenerator({
     setQuant(null);
   }, [refreshStatus, dropResidentState]);
 
-  // Starting a training run unloads the video model, so re-read it on the way back to Create. Status only:
-  // dropResidentState would cancel the poll of a load still running from before the switch.
-  const leftForTrain = useRef(false);
+  // Starting a training run or a restyle unloads the video model, so re-read it on the way back to Create.
+  // Status only: dropResidentState would cancel the poll of a load still running from before the switch.
+  const leftCreate = useRef(false);
   useEffect(() => {
-    if (pageMode === "train") {
-      leftForTrain.current = true;
+    if (pageMode !== "create") {
+      leftCreate.current = true;
       return;
     }
-    if (!active || !leftForTrain.current) return;
-    leftForTrain.current = false;
+    if (!active || !leftCreate.current) return;
+    leftCreate.current = false;
     void refreshStatus();
   }, [active, pageMode, refreshStatus]);
 
@@ -2636,10 +2757,8 @@ function VideoGenerator({
               void ensureSrc(clip);
             }
           } else if (p.phase === "failed") {
-            const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+            showVideoFailureToast(p.error);
           }
           return;
         }
@@ -2677,6 +2796,7 @@ function VideoGenerator({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      setLoadProbed(true);
       // Generation also runs on a daemon thread, so a reload re-enters the poll loop.
       try {
         const g = await getVideoGenerateProgress();
@@ -2698,9 +2818,7 @@ function VideoGenerator({
           }
         } else if (g.phase === "failed") {
           // Kept until the next job, so a reload still shows the failure.
-          const msg = g.error || "Video generation failed";
-          if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+          showVideoFailureToast(g.error);
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3605,6 +3723,12 @@ function VideoGenerator({
         return;
       }
     }
+    const stagedClip = supportsContinuation ? continuationClip : null;
+    const lengthError = stagedClip ? continuationLengthError(numFrames) : null;
+    if (lengthError) {
+      toast.error(lengthError);
+      return;
+    }
     // Pinned now, even if random, so the recipe records it.
     let resolvedSeed: number | undefined;
     if (seed.trim()) {
@@ -3671,12 +3795,14 @@ function VideoGenerator({
           canPickAudioFlowShift && audioFlowShift != null && audioFlowShift !== defaultAudioFlowShift
             ? audioFlowShift
             : undefined,
+        ...continuationRequest(supportsContinuation, stagedClip?.dataUrl, continuationKeep),
         live_preview: livePreview,
       });
     } catch (err) {
       if (!isMounted.current) return;
-      const refusal = err instanceof Error ? err.message : "Video generation failed";
-      toast.error(refusal, { action: generationFailureLogsAction(refusal) });
+      const refusal = err instanceof Error ? err.message : null;
+      // A refusal is never the user's own Cancel, so one that mentions "cancelled" still shows.
+      if (!showVideoFailureToast(refusal) && refusal) toast.error(refusal);
       setBusy(null);
       setGenStep(null);
       // The refusal can be "No video model is loaded"; re-read status.
@@ -3711,6 +3837,9 @@ function VideoGenerator({
     audioFlowShift,
     defaultAudioFlowShift,
     canPickAudioFlowShift,
+    supportsContinuation,
+    continuationClip,
+    continuationKeep,
     startGenPoll,
     resyncAfterGenerateRefusal,
   ]);
@@ -3948,6 +4077,10 @@ function VideoGenerator({
                   setTrainBaseChoice(repo);
                 }}
               />
+            ) : pageMode === "restyle" ? (
+              <span className="ml-1.5 flex h-[var(--studio-chat-control-height,34px)] items-center truncate px-2.5 text-sm font-medium text-foreground">
+                Cosmos3-Nano-Sim-Transfer
+              </span>
             ) : (
             <ModelSelector
               triggerDataTour="video-model"
@@ -4008,11 +4141,12 @@ function VideoGenerator({
               dataTour="video-mode"
               ariaLabel="Page mode"
               value={pageMode}
-              onValueChange={(v) => setPageMode(v as "create" | "train")}
+              onValueChange={(v) => setPageMode(v as "create" | "restyle" | "train")}
               fit={true}
               className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
+                { value: "restyle", label: "Restyle", icon: <HugeiconsIcon icon={PaintBrush02Icon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
               ]}
             />
@@ -4048,7 +4182,12 @@ function VideoGenerator({
           />
         </div>
       )}
-      {pageMode !== "train" && (
+      {restyleMounted && (
+        <div className={pageMode === "restyle" ? "contents" : "hidden"} inert={pageMode !== "restyle" || undefined}>
+          <VideoRestylePanel active={active} />
+        </div>
+      )}
+      {pageMode === "create" && (
       /* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
           wide row pan the page sideways on a phone. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
@@ -4073,6 +4212,8 @@ function VideoGenerator({
               <p className="text-xs leading-snug text-muted-foreground">
                 {supportsReferences
                   ? "Generate a video from a prompt and reference pictures, videos or audio"
+                  : supportsContinuation
+                    ? "Generate a video from a prompt, animate a start frame, or continue a clip"
                   : supportsLastFrame
                     ? "Generate a video from a prompt, or from a start and end frame"
                     : supportsFirstFrame
@@ -4137,7 +4278,10 @@ function VideoGenerator({
                     <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
                     <ImageDropzone
                       value={firstFrame}
-                      onChange={setFirstFrame}
+                      onChange={(next) => {
+                        setFirstFrame(next);
+                        if (next) dropContinuationClip("a start frame replaces it");
+                      }}
                       label="Click or drop"
                       removeLabel="Remove start frame"
                     />
@@ -4148,7 +4292,10 @@ function VideoGenerator({
                     <span className="text-ui-11 text-muted-foreground/70">End frame</span>
                     <ImageDropzone
                       value={lastFrame}
-                      onChange={setLastFrame}
+                      onChange={(next) => {
+                        setLastFrame(next);
+                        if (next) dropContinuationClip("an end frame replaces it");
+                      }}
                       label="Click or drop"
                       removeLabel="Remove end frame"
                     />
@@ -4443,6 +4590,70 @@ function VideoGenerator({
             </div>
           )}
 
+          {supportsContinuation && (
+            <div className="grid gap-2" data-testid="video-continuation">
+              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                Continue a clip
+                <InfoHint>
+                  Optional, and instead of a start frame. The new clip starts on 5 frames of this
+                  one and generates what happens next; describe that in the prompt. Up to 15
+                  seconds. Its frames are matched to the frame rate; Match source sizes the video to
+                  the clip's shape, and any other resolution centre-crops it.
+                </InfoHint>
+              </span>
+              <ReferenceMediaPicker
+                kind="video"
+                value={continuationClip}
+                label="Clip to continue"
+                onChange={(next) => {
+                  setContinuationClip(next);
+                  // Live values, not the closure: an upload that finishes late holds stale ones.
+                  if (next && (liveInputs.current.firstFrame || liveInputs.current.lastFrame)) {
+                    setFirstFrame(null);
+                    setLastFrame(null);
+                    toast.info("Removed the start frame: the clip to continue replaces it");
+                  }
+                }}
+              />
+              {continuationClip && (
+                <>
+                  <video
+                    controls={true}
+                    muted={true}
+                    preload="metadata"
+                    src={continuationClip.dataUrl}
+                    className="max-h-36 w-full rounded-lg bg-black object-contain"
+                  />
+                  {continuationDurationWarning(continuationClip.durationSeconds) && (
+                    <p className="text-ui-11 leading-snug text-destructive">
+                      {continuationDurationWarning(continuationClip.durationSeconds)}
+                    </p>
+                  )}
+                  <Field
+                    label="Continue"
+                    hint="From its last frames picks up where the clip ends. From its first frames keeps its opening 5 frames and generates a new version of what follows."
+                  >
+                    <Select
+                      value={continuationKeep}
+                      onValueChange={(v) => setContinuationKeep(v as VideoContinuationKeep)}
+                    >
+                      <SelectTrigger aria-label="Which end of the clip to continue from">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CONTINUATION_KEEP_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </>
+              )}
+            </div>
+          )}
+
           {cropPictureIndex !== null && referenceImages[cropPictureIndex] && (
             <ReferenceImageEditor
               key={cropPictureIndex}
@@ -4462,7 +4673,7 @@ function VideoGenerator({
 
           <Field
             label="Aspect ratio"
-            hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height. With a keyframe staged, Match source keeps the picture's own shape."
+            hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height. With a keyframe or a clip to continue staged, Match source keeps its own shape."
           >
             <AspectRatioSelect
               value={sourceSized ? MATCH_SOURCE : aspect}
@@ -4470,7 +4681,7 @@ function VideoGenerator({
               portrait={sourceSized ? shownSize[1] > shownSize[0] : portrait}
               onFlip={flipDimensions}
               extraItems={
-                canvasKeyframe && matchedResolution ? (
+                canvasSource && matchedResolution ? (
                   <SelectItem value={MATCH_SOURCE}>Match source</SelectItem>
                 ) : null
               }
@@ -4556,13 +4767,43 @@ function VideoGenerator({
             </Select>
           </Field>
 
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-              Frame rate
-              <InfoHint>Playback frame rate, fixed per model.</InfoHint>
-            </span>
-            <span className="font-mono text-xs font-medium text-foreground">{fps} fps</span>
-          </div>
+          {fpsOptions == null ? (
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                Frame rate
+                <InfoHint>Playback frame rate, fixed per model.</InfoHint>
+              </span>
+              <span className="font-mono text-xs font-medium text-foreground">{fps} fps</span>
+            </div>
+          ) : status?.defaults?.fps_choices?.length ? (
+            <Field
+              label="Frame rate"
+              hint="Frames per second the model generates and the clip plays at. Durations above follow it."
+            >
+              <Select value={String(fps)} onValueChange={(v) => setPickedFps(Number(v))}>
+                <SelectTrigger aria-label="Frame rate">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {fpsOptions.map((f) => (
+                    <SelectItem key={f} value={String(f)}>
+                      {f} fps
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          ) : (
+            <SliderField
+              label="Frame rate"
+              hint={`Frames per second the model generates and the clip plays at (${fpsOptions[0]} to ${fpsOptions[fpsOptions.length - 1]}). Durations above follow it.`}
+              value={fps}
+              min={fpsOptions[0]}
+              max={fpsOptions[fpsOptions.length - 1]}
+              step={1}
+              onChange={(v) => setPickedFps(Math.round(v))}
+            />
+          )}
 
           <SliderField
             label="Steps"
@@ -4641,7 +4882,7 @@ function VideoGenerator({
                   variant="primary"
                   className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerate}
-                  disabled={busy !== null || !status?.loaded}
+                  disabled={busy !== null || !status?.loaded || !statusKnown || pendingPresetFps != null}
                 >
                   Generate
                 </Button>

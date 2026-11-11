@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Render counts while a reply streams into a chat with tool cards and web sources.
+"""Check rendering during streaming and scrolling in a long chat with tools and web sources.
 
 A streamed token must not re-render the reply's source badges, and a run starting or ending
 must not re-render the python / terminal cards of earlier replies. Counts come from a React
@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
@@ -106,6 +106,31 @@ def run(page) -> dict[str, int]:
     return counts
 
 
+def check_reply_paint(page) -> None:
+    viewport = page.locator(".aui-thread-viewport")
+    replies = page.locator('[data-role="assistant"]')
+    # The first two replies are neighbors. One will contain a wide unwrapped block.
+    first, second = replies.nth(0), replies.nth(1)
+    scroll = "(v, end) => v.scrollTo({top: end ? v.scrollHeight : 0, behavior: 'instant'})"
+    viewport.evaluate(scroll, True)
+    expect(second).to_have_css("contain", "paint")
+    page.emulate_media(media = "print")
+    expect(second).to_have_css("contain", "none")
+    page.emulate_media(media = "screen")
+
+    viewport.evaluate(scroll, False)
+    expect(first).to_have_css("contain", "none")
+    expect(second).to_have_css("contain", "none")
+    first.locator(".aui-assistant-message-content").evaluate("e => e.style.minWidth = '200vw'")
+    viewport.evaluate(scroll, True)
+    expect(second).to_have_css("contain", "paint")
+    assert first.evaluate("e => e.scrollWidth > e.clientWidth"), "fixture has no wide reply"
+    expect(first).to_have_css("contain", "none")
+    assert viewport.evaluate(
+        "v => v.scrollWidth > v.clientWidth"
+    ), "wide reply lost its horizontal scroll range"
+
+
 def main() -> int:
     proc = None
     try:
@@ -126,6 +151,7 @@ def main() -> int:
                 errors: list[str] = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 counts = run(page)
+                check_reply_paint(page)
             finally:
                 browser.close()
         badges = counts.get("SourceBadge", 0)
