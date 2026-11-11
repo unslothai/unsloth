@@ -11,9 +11,14 @@ import {
   Q4NX_INFO_FIELDS,
   q4nxArchFit,
   q4nxBaseModel,
-  q4nxPickCommitted,
+  q4nxIsExpanded,
+  q4nxMemoryWarning,
+  q4nxNpuMemory,
+  q4nxParamsFromName,
   q4nxQuantLabel,
+  q4nxToggleExpanded,
   q4nxVariantLookup,
+  q4nxWeights,
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
 
@@ -199,12 +204,80 @@ test("a typed repo's lookup asks the Hub for its GGUF architecture", async () =>
   assert.ok(info.tags?.length);
 });
 
-test("Convert needs the field to show the picked model, not a new query", () => {
-  const repo = "unsloth/Qwen3-0.6B-GGUF";
-  assert.equal(q4nxPickCommitted(repo, repo), true);
-  assert.equal(q4nxPickCommitted(repo, ` ${repo} `), true);
-  // Typing a different query keeps the old pick in state but must not convert it.
-  assert.equal(q4nxPickCommitted(repo, "gemma"), false);
-  assert.equal(q4nxPickCommitted(repo, ""), false);
-  assert.equal(q4nxPickCommitted("", ""), false);
+test("without Expand quantizations the list is by model: one model's files open at a time", () => {
+  let state = { expandAll: false, toggled: [] as readonly string[] };
+  assert.equal(q4nxIsExpanded(state, "a/x-GGUF"), false);
+  state = q4nxToggleExpanded(state, "a/x-GGUF");
+  assert.equal(q4nxIsExpanded(state, "a/x-GGUF"), true);
+  // Opening another model closes the first, like the chat picker.
+  state = q4nxToggleExpanded(state, "b/y-GGUF");
+  assert.equal(q4nxIsExpanded(state, "a/x-GGUF"), false);
+  assert.equal(q4nxIsExpanded(state, "b/y-GGUF"), true);
+  state = q4nxToggleExpanded(state, "b/y-GGUF");
+  assert.equal(q4nxIsExpanded(state, "b/y-GGUF"), false);
+});
+
+test("Expand quantizations opens every model, and each closes on its own", () => {
+  let state = { expandAll: true, toggled: [] as readonly string[] };
+  assert.equal(q4nxIsExpanded(state, "a"), true);
+  assert.equal(q4nxIsExpanded(state, "b"), true);
+  state = q4nxToggleExpanded(state, "a");
+  assert.equal(q4nxIsExpanded(state, "a"), false);
+  assert.equal(q4nxIsExpanded(state, "b"), true);
+  state = q4nxToggleExpanded(state, "a");
+  assert.equal(q4nxIsExpanded(state, "a"), true);
+});
+
+const GIB = 1024 ** 3;
+
+test("a file that packs directly needs its own size; any other needs a sibling's or the parameter count's", () => {
+  const q4 = { filename: "m-Q4_K_M.gguf", quant: "Q4_K_M", size_bytes: 5 * GIB };
+  const q8 = { filename: "m-Q8_0.gguf", quant: "Q8_0", size_bytes: 9 * GIB };
+  assert.deepEqual(q4nxWeights(q4, [q8, q4]), { bytes: 5 * GIB, estimated: false });
+  // Q8_0 is rounded again to 4-bit, so its own size overstates the result.
+  assert.deepEqual(q4nxWeights(q8, [q8, q4]), { bytes: 5 * GIB, estimated: true });
+  assert.deepEqual(q4nxWeights(q8, [q8], 10e9), { bytes: 6e9, estimated: true });
+  // A repo not listed yet has only the Hub's parameter count.
+  assert.deepEqual(q4nxWeights(null, [], 10e9), { bytes: 6e9, estimated: true });
+  assert.equal(q4nxWeights(q8, [q8]), null);
+  assert.equal(q4nxWeights(null), null);
+});
+
+test("a local model with no file that packs directly is sized from the parameter count in its name", () => {
+  assert.equal(q4nxParamsFromName("Qwen3.5-9B-GGUF"), 9e9);
+  assert.equal(q4nxParamsFromName("unsloth/Qwen3-0.6B-GGUF"), 0.6e9);
+  assert.equal(q4nxParamsFromName("Qwen3.6-35B-A3B-GGUF"), 35e9);
+  assert.equal(q4nxParamsFromName("orpheus-3b-0.1-ft-GGUF"), 3e9);
+  // A quant tag or a version is not a parameter count.
+  assert.equal(q4nxParamsFromName("encoder-Q2_K-GGUF"), null);
+  assert.equal(q4nxParamsFromName("Z-Image-Turbo-GGUF"), null);
+  assert.equal(q4nxParamsFromName("whisper-large-v3-turbo"), null);
+});
+
+test("the memory line sets the need, weights plus the 1 GB load margin, against the NPU window", () => {
+  const fits = q4nxNpuMemory({ bytes: 5 * GIB, estimated: false }, 16);
+  assert.equal(fits?.label, "6.0 of 16.0 GB NPU");
+  assert.equal(fits?.fits, true);
+  assert.equal(fits?.weightsPct, 31.25);
+  assert.equal(fits?.marginPct, 6.25);
+  assert.equal(q4nxMemoryWarning(fits, 16), null);
+
+  const over = q4nxNpuMemory({ bytes: 15.5 * GIB, estimated: true }, 16);
+  assert.equal(over?.label, "~16.5 of 16.0 GB NPU");
+  assert.equal(over?.fits, false);
+  assert.ok((over?.weightsPct ?? 0) + (over?.marginPct ?? 0) <= 100);
+  assert.equal(
+    q4nxMemoryWarning(over, 16),
+    "Needs about 16.5 GB of NPU memory; this PC can give the NPU about 16.0 GB.",
+  );
+});
+
+test("without a window from the server the line shows the need alone and never warns", () => {
+  for (const windowGb of [null, undefined, 0]) {
+    const memory = q4nxNpuMemory({ bytes: 5 * GIB, estimated: false }, windowGb);
+    assert.equal(memory?.label, "6.0 GB NPU");
+    assert.equal(memory?.fits, null);
+    assert.equal(q4nxMemoryWarning(memory, windowGb), null);
+  }
+  assert.equal(q4nxNpuMemory(null, 16), null);
 });

@@ -44,6 +44,8 @@ export interface NpuStatus {
   loading_model: string | null;
   /** Installed runtime versions; absent from servers that predate them. */
   versions?: { lemonade: string | null; fastflowlm: string | null };
+  /** About how much memory this PC can give the NPU, in GB; null when unknown. */
+  memory_window_gb?: number | null;
 }
 
 export interface NpuModel {

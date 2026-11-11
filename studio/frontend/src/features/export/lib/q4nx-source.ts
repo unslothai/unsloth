@@ -117,9 +117,110 @@ export function q4nxVariantLookup(
   };
 }
 
-/** Whether the field still shows the picked model; typing a new query leaves it picked but uncommitted. */
-export function q4nxPickCommitted(selected: string, inputText: string): boolean {
-  return !!selected && inputText.trim() === selected;
+/** Which models show their quantizations. "Expand quantizations" opens every model; without it the list is by model, one open at a time. */
+export interface Q4nxExpansion {
+  expandAll: boolean;
+  /** Models toggled against the default: closed under expandAll, else the one that is open. */
+  toggled: readonly string[];
+}
+
+export function q4nxIsExpanded(state: Q4nxExpansion, id: string): boolean {
+  return state.toggled.includes(id) !== state.expandAll;
+}
+
+export function q4nxToggleExpanded(state: Q4nxExpansion, id: string): Q4nxExpansion {
+  const open = q4nxIsExpanded(state, id);
+  if (!state.expandAll) return { ...state, toggled: open ? [] : [id] };
+  return {
+    ...state,
+    toggled: open ? [...state.toggled, id] : state.toggled.filter((t) => t !== id),
+  };
+}
+
+// Context buffers and the runtime on top of the weights; the backend's NPU memory fit (_NPU_LOAD_MARGIN_GB) uses the same margin.
+const NPU_LOAD_MARGIN_GB = 1;
+// About Q4_K_M's bits per weight, for a repo whose files are not listed yet.
+const Q4_BYTES_PER_PARAM = 0.6;
+const GIB = 1024 ** 3;
+
+export interface Q4nxWeights {
+  bytes: number;
+  /** Not the size of a file that packs directly. */
+  estimated: boolean;
+}
+
+// "Qwen3.5-9B", "Qwen3-0.6B-GGUF"; in "35B-A3B" the first, total count wins.
+const NAME_PARAMS_RE = /(?:^|[^A-Za-z0-9.])(\d+(?:\.\d+)?)B(?![A-Za-z0-9])/i;
+
+/** Parameter count read off a model name, for a row with no count from the Hub. */
+export function q4nxParamsFromName(name: string): number | null {
+  const billions = Number(NAME_PARAMS_RE.exec(name)?.[1]);
+  return billions > 0 ? billions * 1e9 : null;
+}
+
+type SizedVariant = Q4nxVariant & { size_bytes?: number | null };
+
+/** Size of the 4-bit weights a source converts to: its own when it packs directly, else a sibling that does, else from the parameter count. */
+export function q4nxWeights(
+  variant: SizedVariant | null,
+  siblings: readonly SizedVariant[] = [],
+  totalParams?: number | null,
+): Q4nxWeights | null {
+  if (variant?.size_bytes && packsDirectly(variant.quant)) {
+    return { bytes: variant.size_bytes, estimated: false };
+  }
+  const direct = sortQ4nxVariants(
+    siblings.filter((v) => v.size_bytes && packsDirectly(v.quant)),
+  )[0];
+  if (direct?.size_bytes) return { bytes: direct.size_bytes, estimated: true };
+  if (totalParams && totalParams > 0) {
+    return { bytes: totalParams * Q4_BYTES_PER_PARAM, estimated: true };
+  }
+  return null;
+}
+
+export interface Q4nxMemory {
+  weightsGb: number;
+  neededGb: number;
+  /** null when the window is unknown. */
+  fits: boolean | null;
+  /** Share of the window the weights and the load margin take, each 0 to 100. */
+  weightsPct: number;
+  marginPct: number;
+  label: string;
+}
+
+/** A source's NPU memory need against the window this PC can give the NPU (status.memory_window_gb). */
+export function q4nxNpuMemory(
+  weights: Q4nxWeights | null,
+  windowGb: number | null | undefined,
+): Q4nxMemory | null {
+  if (!weights) return null;
+  const weightsGb = weights.bytes / GIB;
+  const neededGb = weightsGb + NPU_LOAD_MARGIN_GB;
+  const need = `${weights.estimated ? "~" : ""}${neededGb.toFixed(1)}`;
+  if (!windowGb || windowGb <= 0) {
+    return { weightsGb, neededGb, fits: null, weightsPct: 0, marginPct: 0, label: `${need} GB NPU` };
+  }
+  const weightsPct = Math.min((weightsGb / windowGb) * 100, 100);
+  return {
+    weightsGb,
+    neededGb,
+    // Compared at one decimal, like the backend and the label.
+    fits: Number(neededGb.toFixed(1)) <= windowGb,
+    weightsPct,
+    marginPct: Math.min((NPU_LOAD_MARGIN_GB / windowGb) * 100, 100 - weightsPct),
+    label: `${need} of ${windowGb.toFixed(1)} GB NPU`,
+  };
+}
+
+/** The warning for a source larger than the window, or null. It only warns: the window is an estimate. */
+export function q4nxMemoryWarning(
+  memory: Q4nxMemory | null,
+  windowGb: number | null | undefined,
+): string | null {
+  if (memory?.fits !== false || windowGb == null) return null;
+  return `Needs about ${memory.neededGb.toFixed(1)} GB of NPU memory; this PC can give the NPU about ${windowGb.toFixed(1)} GB.`;
 }
 
 /** A local row's file: the row itself when it is a .gguf, else the variant inside its folder. */
