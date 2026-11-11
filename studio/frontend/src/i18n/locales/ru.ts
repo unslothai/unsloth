@@ -3707,6 +3707,8 @@ export const ru = {
       llamaCppVersion: "Версия llama.cpp",
       audioCppVersion: "Версия audio.cpp",
       mlxVersion: "Версия MLX",
+      fastflowlmVersion: "Версия FastFlowLM",
+      lemonadeVersion: "Версия Lemonade",
       whisperCppVersion: "Версия whisper.cpp",
       engines: {
         title: "Движки",

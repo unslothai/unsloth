@@ -3635,6 +3635,8 @@ export const it = {
       llamaCppVersion: "Versione di llama.cpp",
       audioCppVersion: "Versione di audio.cpp",
       mlxVersion: "Versione di MLX",
+      fastflowlmVersion: "Versione di FastFlowLM",
+      lemonadeVersion: "Versione di Lemonade",
       whisperCppVersion: "Versione di whisper.cpp",
       engines: {
         title: "Motori",

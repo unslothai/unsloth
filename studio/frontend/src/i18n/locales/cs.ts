@@ -4009,6 +4009,8 @@ export const cs = {
       llamaCppVersion: "Verze llama.cpp",
       audioCppVersion: "Verze audio.cpp",
       mlxVersion: "Verze MLX",
+      fastflowlmVersion: "Verze FastFlowLM",
+      lemonadeVersion: "Verze Lemonade",
       whisperCppVersion: "Verze whisper.cpp",
       engines: {
         title: "Moduly",

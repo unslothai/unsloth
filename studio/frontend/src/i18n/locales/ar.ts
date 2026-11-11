@@ -3694,6 +3694,8 @@ export const ar = {
       llamaCppVersion: "إصدار llama.cpp",
       audioCppVersion: "إصدار audio.cpp",
       mlxVersion: "إصدار MLX",
+      fastflowlmVersion: "إصدار FastFlowLM",
+      lemonadeVersion: "إصدار Lemonade",
       whisperCppVersion: "إصدار whisper.cpp",
       engines: {
         title: "المحركات",

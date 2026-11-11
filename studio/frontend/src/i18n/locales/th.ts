@@ -3826,6 +3826,8 @@ export const th = {
       llamaCppVersion: "เวอร์ชัน llama.cpp",
       audioCppVersion: "เวอร์ชัน audio.cpp",
       mlxVersion: "เวอร์ชัน MLX",
+      fastflowlmVersion: "เวอร์ชัน FastFlowLM",
+      lemonadeVersion: "เวอร์ชัน Lemonade",
       whisperCppVersion: "เวอร์ชัน whisper.cpp",
       engines: {
         title: "เอนจิน",

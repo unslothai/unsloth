@@ -3989,6 +3989,8 @@ export const tr = {
       llamaCppVersion: "llama.cpp Sürümü",
       audioCppVersion: "audio.cpp Sürümü",
       mlxVersion: "MLX Sürümü",
+      fastflowlmVersion: "FastFlowLM Sürümü",
+      lemonadeVersion: "Lemonade Sürümü",
       whisperCppVersion: "whisper.cpp Sürümü",
       engines: {
         title: "Motorlar",

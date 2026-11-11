@@ -3709,6 +3709,8 @@ export const ptBR = {
       llamaCppVersion: "Versão do llama.cpp",
       audioCppVersion: "Versão do audio.cpp",
       mlxVersion: "Versão do MLX",
+      fastflowlmVersion: "Versão do FastFlowLM",
+      lemonadeVersion: "Versão do Lemonade",
       whisperCppVersion: "Versão do whisper.cpp",
       engines: {
         title: "Motores",
