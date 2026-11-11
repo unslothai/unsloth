@@ -236,7 +236,6 @@ class _Server:
 
     def backend_output(self, window):
         import contextlib
-
         return contextlib.nullcontext()
 
     def output_mark(self):
