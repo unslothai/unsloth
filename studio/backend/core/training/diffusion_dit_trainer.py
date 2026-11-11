@@ -3061,8 +3061,10 @@ def _train_dit(
                 ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
                 _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")
-        if not stopped:
+        if not stopped and cfg.save_total_limit != 0:
             # A completed run must not leave its own checkpoint for a later resume to roll back to.
+            # A limit of zero explicitly means "keep every checkpoint", including after
+            # completion, so the user can inspect or resume from any saved step.
             retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
         elif not resumed_here:
             # A partial save on a fresh retrain is a LOWER step than leftovers, which would outrank it.

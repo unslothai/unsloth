@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <rect width="1200" height="700" fill="#0b1220"/>
+  <rect x="48" y="42" width="1104" height="616" rx="18" fill="#111b2e" stroke="#334155" stroke-width="2"/>
+  <text x="88" y="102" fill="#f8fafc" font-family="Arial, sans-serif" font-size="30" font-weight="700">Image LoRA training</text>
+  <text x="88" y="144" fill="#94a3b8" font-family="Arial, sans-serif" font-size="20">Completed • final adapter exported</text>
+  <rect x="88" y="190" width="1024" height="126" rx="12" fill="#172236"/>
+  <text x="120" y="235" fill="#e2e8f0" font-family="Arial, sans-serif" font-size="22">Keep checkpoints</text>
+  <rect x="430" y="207" width="108" height="52" rx="8" fill="#164e63" stroke="#34d399" stroke-width="2"/>
+  <text x="472" y="241" fill="#ecfdf5" font-family="Arial, sans-serif" font-size="24" font-weight="700">0</text>
+  <text x="570" y="238" fill="#6ee7b7" font-family="Arial, sans-serif" font-size="19">Keep every one</text>
+  <text x="120" y="286" fill="#94a3b8" font-family="Arial, sans-serif" font-size="17">A zero limit now applies through successful completion.</text>
+  <rect x="88" y="352" width="1024" height="224" rx="12" fill="#1b263b"/>
+  <text x="120" y="397" fill="#86efac" font-family="Arial, sans-serif" font-size="21" font-weight="700">After completion</text>
+  <text x="120" y="444" fill="#cbd5e1" font-family="monospace" font-size="20">output/run-42/</text>
+  <text x="150" y="482" fill="#86efac" font-family="monospace" font-size="19">✓ checkpoint-100</text>
+  <text x="150" y="516" fill="#86efac" font-family="monospace" font-size="19">✓ checkpoint-200</text>
+  <text x="150" y="550" fill="#86efac" font-family="monospace" font-size="19">✓ adapter_model.safetensors</text>
+  <text x="810" y="482" fill="#6ee7b7" font-family="Arial, sans-serif" font-size="18">checkpoint history</text>
+  <text x="810" y="514" fill="#6ee7b7" font-family="Arial, sans-serif" font-size="18">is retained for review/resume</text>
+</svg>

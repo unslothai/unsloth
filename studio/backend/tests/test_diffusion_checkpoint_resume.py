@@ -1868,6 +1868,29 @@ def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):
         ), f"{name} must retire its bundles only on a completed run"
 
 
+def test_keep_all_preserves_completed_run_bundles(run_dir):
+    """save_total_limit=0 means every checkpoint survives a successful completion too."""
+    earlier = _Run(run_dir, save_total_limit = 0)
+    kept, error = earlier.save(3)
+    assert error is None and kept is not None
+    preexisting = dc.snapshot_checkpoints(run_dir)
+
+    run = _Run(run_dir, save_total_limit = 0)
+    mine, error = run.save(7)
+    assert error is None and mine is not None
+
+    # This is the completed-trainer branch for both image trainers. A zero limit opts out of
+    # retirement, so both the resumed source and the newly written checkpoint remain available.
+    assert Path(kept).exists()
+    assert Path(mine).exists()
+    for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
+        source = (Path(dc.__file__).parent / name).read_text(encoding = "utf-8")
+        marker = source.find("retire_own_checkpoints(")
+        assert marker > 0, name
+        guard = source.rfind("if not stopped and cfg.save_total_limit != 0:", 0, marker)
+        assert guard > 0, f"{name} must preserve bundles when save_total_limit is zero"
+
+
 def test_a_swap_aside_orphan_is_found_by_the_resume_scan(run_dir):
     """_prune_staging can hand the orphan back, but it runs only after a later successful
     save -- which a user told "there is nothing to resume" will never reach. The read path

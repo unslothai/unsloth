@@ -902,8 +902,10 @@ def run_diffusion_lora_training(
             lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
             # Mirror into loras/diffusion for the Images picker (scan skips subdirs); use done, not cfg.train_steps, so a stop at 11/500 does not advertise 500.
             catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
-            if not stopped:
+            if not stopped and cfg.save_total_limit != 0:
                 # Retire this run's own bundles so a later resume does not roll back to them.
+                # A limit of zero explicitly means "keep every checkpoint", including after
+                # completion, so the user can inspect or resume from any saved step.
                 retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
             elif not resumed_here:
                 # A lower-step partial would be outranked by the earlier run's leftovers.
