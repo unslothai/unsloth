@@ -260,15 +260,17 @@ const metaCache = new WeakMap<object, RowMeta>();
 function metaOf(message: ThreadMessage, index: number): RowMeta {
   const cached = metaCache.get(message);
   if (cached) return cached;
+  const role = message.role ?? "assistant";
+  // Unknown shapes count as rendering: room for a row that turns out empty costs nothing.
+  const renders =
+    message.role == null || rendersAsRow(message.role, message.composer?.isEditing === true);
   const meta: RowMeta = {
     id: message.id ?? `#${index}`,
-    role: message.role ?? "assistant",
+    role,
     weight: messageWeight(message.content),
-    equations: numberedEquations(message.content),
-    // Unknown shapes count as rendering: room for a row that turns out empty costs nothing.
-    renders:
-      message.role == null ||
-      rendersAsRow(message.role, message.composer?.isEditing === true),
+    // Only replies render markdown math: a prompt shows its source as text.
+    equations: renders && role === "assistant" ? numberedEquations(message.content) : 0,
+    renders,
   };
   metaCache.set(message, meta);
   return meta;

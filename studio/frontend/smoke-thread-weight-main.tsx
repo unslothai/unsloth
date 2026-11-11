@@ -179,7 +179,15 @@ function buildMessages(
     if (index % 2 === 0) {
       return {
         role: "user" as const,
-        content: [{ type: "text" as const, text: userMarkdown(index) }],
+        content: [
+          {
+            type: "text" as const,
+            // A prompt shows math source as text, so these take no number.
+            text:
+              userMarkdown(index) +
+              (options?.numbered ? "\n\n$$\\begin{equation}p=1\\end{equation}$$" : ""),
+          },
+        ],
       };
     }
     if (agent) {

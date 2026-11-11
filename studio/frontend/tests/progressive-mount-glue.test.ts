@@ -605,3 +605,10 @@ test("a reader that stops waiting for a full mount lets the window slide again",
   assert.match(complete, /if \(waitersRef\.current\.length === 0\) releaseAtRef\.current = performance\.now\(\);/);
   assert.match(GLUE, /await Promise\.all\(pending\.map\(\(entry\) => entry\.complete\(signal\)\)\);/);
 });
+
+test("only a rendered reply's equations count toward the spacers", () => {
+  assert.match(
+    GLUE,
+    /equations: renders && role === "assistant" \? numberedEquations\(message\.content\) : 0,/,
+  );
+});
