@@ -383,10 +383,14 @@ export async function runBenchmark(
       setOutcome({ label: variant.label, state: "loading" });
       events.onProgress(`Loading ${variant.label}`);
       const loadStarted = performance.now();
+      const payload = {
+        ...variantLoad(base, variant),
+        load_request_id: crypto.randomUUID(),
+      };
       let modelId: string;
       try {
         const loaded = await withLimit(LOAD_LIMIT_MS, signal, "Loading", (s) =>
-          loadModel(variantLoad(base, variant), {
+          loadModel(payload, {
             signal: s,
             runtime: "chat",
             headers: leaseHeaders(events.leaseHolder),
@@ -394,6 +398,10 @@ export async function runBenchmark(
         );
         modelId = loaded.model;
       } catch (err) {
+        // The backend keeps loading after the fetch is aborted and holds the load gate,
+        // which would stall every later load and the restore.
+        if (signal.aborted || err instanceof RowLimitError)
+          await cancelLoad(payload, events.leaseHolder);
         if (signal.aborted) throw abortError();
         const message = err instanceof Error ? err.message : String(err);
         const oom = err instanceof RowLimitError || looksOutOfMemory(message);
@@ -561,6 +569,26 @@ export async function runBenchmark(
   }
   if (!run) throw abortError();
   return run;
+}
+
+async function cancelLoad(
+  payload: { model_path?: string | null; load_request_id: string },
+  leaseHolder?: string,
+): Promise<void> {
+  if (!payload.model_path) return;
+  await authFetch("/api/inference/unload", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...leaseHeaders(leaseHolder),
+    },
+    body: JSON.stringify({
+      // biome-ignore lint/style/useNamingConvention: API schema
+      model_path: payload.model_path,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      cancel_load_request_id: payload.load_request_id,
+    }),
+  }).catch(() => undefined);
 }
 
 async function restore(
