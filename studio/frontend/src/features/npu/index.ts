@@ -8,6 +8,8 @@ export {
   type NpuModel,
   type NpuStatus,
   npuDownloadLabel,
+  npuMemoryTag,
+  npuMemoryWarning,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,

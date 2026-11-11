@@ -44,6 +44,8 @@ export interface NpuStatus {
   loading_model: string | null;
   /** Installed runtime versions; absent from servers that predate them. */
   versions?: { lemonade: string | null; fastflowlm: string | null };
+  /** About how much memory this PC can give the NPU, in GB; null when unknown. */
+  memory_window_gb?: number | null;
 }
 
 export interface NpuModel {
@@ -58,6 +60,10 @@ export interface NpuModel {
   supports_tools: boolean;
   max_context_length: number | null;
   resume_percent: number | null;
+  /** Size plus load overhead, in GB. */
+  memory_needed_gb?: number | null;
+  /** false when the model is larger than the NPU memory window; null when unknown. */
+  fits_memory?: boolean | null;
 }
 
 export function npuRowsFor(
@@ -98,6 +104,25 @@ export function npuSizeLabel(sizeGb: number | null): string | null {
   return sizeGb < 1
     ? `${Math.round(sizeGb * 1000)} MB`
     : `${sizeGb.toFixed(1)} GB`;
+}
+
+/** Row tag for a model the backend says is larger than the NPU memory window. */
+export function npuMemoryTag(model: NpuModel): string | null {
+  return model.fits_memory === false ? "May not fit NPU memory" : null;
+}
+
+/** The full warning for such a model, or null. It only warns: the window is an estimate. */
+export function npuMemoryWarning(
+  model: NpuModel,
+  status: Pick<NpuStatus, "memory_window_gb">,
+): string | null {
+  if (model.fits_memory !== false) return null;
+  const needed = model.memory_needed_gb;
+  const window = status.memory_window_gb;
+  if (needed == null || window == null) {
+    return "This model may need more NPU memory than this PC can give the NPU.";
+  }
+  return `Needs about ${Math.round(needed)} GB of NPU memory; this PC can give the NPU about ${Math.round(window)} GB.`;
 }
 
 export function npuResumeLabel(model: NpuModel): string | null {

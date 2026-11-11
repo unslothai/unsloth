@@ -9,6 +9,7 @@ import {
   NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
+  npuMemoryWarning,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -55,11 +56,15 @@ export function NpuCatalogList({
       <NpuCatalogRow
         key={model.id}
         model={model}
+        memoryWarning={npuMemoryWarning(model, catalog.status)}
         progress={catalog.downloads[model.id]}
         downloading={model.id in catalog.downloads}
         reconnecting={model.id in catalog.reconnecting}
         onDownload={() => void catalog.download(model)}
-        onRun={() => onRun(model)}
+        onRun={() => {
+          catalog.warnMemory(model);
+          onRun(model);
+        }}
         onRemove={() => catalog.remove(model)}
       />
     ));
@@ -78,6 +83,7 @@ export function NpuCatalogList({
 
 function NpuCatalogRow({
   model,
+  memoryWarning,
   progress,
   downloading,
   reconnecting,
@@ -86,6 +92,7 @@ function NpuCatalogRow({
   onRemove,
 }: {
   model: NpuModel;
+  memoryWarning: string | null;
   progress: number | null | undefined;
   downloading: boolean;
   reconnecting: boolean;
@@ -136,6 +143,14 @@ function NpuCatalogRow({
         <div className="truncate text-ui-12 text-muted-foreground">
           {details.join(" · ")}
         </div>
+        {memoryWarning ? (
+          <div
+            data-testid="hub-npu-memory-warning"
+            className="text-ui-12 text-amber-600 dark:text-amber-500"
+          >
+            {memoryWarning}
+          </div>
+        ) : null}
       </div>
       {downloading ? (
         <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">

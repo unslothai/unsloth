@@ -185,3 +185,32 @@ test("the picker's NPU format holds no Hub repo", () => {
     assert.equal(matchesFormatFilter(id, gguf, "all"), true);
   }
 });
+
+test("a model larger than the NPU memory window gets a warning naming both figures", () => {
+  const { api } = client(() => Response.json({}));
+  const model = (
+    fits_memory: boolean | null | undefined,
+    memory_needed_gb: number | null = 19,
+  ) =>
+    ({ fits_memory, memory_needed_gb }) as Parameters<
+      typeof api.npuMemoryWarning
+    >[0];
+  assert.equal(
+    api.npuMemoryWarning(model(false), { memory_window_gb: 15.6 }),
+    "Needs about 19 GB of NPU memory; this PC can give the NPU about 16 GB.",
+  );
+  assert.equal(api.npuMemoryTag(model(false)), "May not fit NPU memory");
+  // Flagged with a figure missing still warns, without inventing a number.
+  assert.match(
+    api.npuMemoryWarning(model(false, null), { memory_window_gb: 16 }) ?? "",
+    /may need more NPU memory/,
+  );
+  // Fits, unknown, or a backend that predates the field: no warning.
+  for (const fits of [true, null, undefined]) {
+    assert.equal(
+      api.npuMemoryWarning(model(fits), { memory_window_gb: 16 }),
+      null,
+    );
+    assert.equal(api.npuMemoryTag(model(fits)), null);
+  }
+});
