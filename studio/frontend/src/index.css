@@ -3716,6 +3716,14 @@ html[data-chat-font] .aui-root {
 		);
 	}
 
+	/* Eject in the row menus' softer red (menu-flat-destructive), not the full destructive red. */
+	.composer-eject-tone {
+		color: #dc4848;
+	}
+	.dark .composer-eject-tone {
+		color: #ed7878;
+	}
+
 	.composer-tab-line {
 		background: var(--control-accent);
 	}

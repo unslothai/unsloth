@@ -588,7 +588,7 @@ function LoadedDot({ label, onEject }: { label: string; onEject: () => void }) {
         <HugeiconsIcon
           icon={RemoveCircleIcon}
           strokeWidth={1.75}
-          className="composer-eject-icon col-start-1 row-start-1 text-red-500 opacity-0 transition-opacity group-hover/eject:opacity-100 group-focus-visible/eject:opacity-100"
+          className="composer-eject-icon col-start-1 row-start-1 composer-eject-tone opacity-0 transition-opacity group-hover/eject:opacity-100 group-focus-visible/eject:opacity-100"
         />
       </button>
     </Hint>
@@ -2005,7 +2005,7 @@ export function ComposerModelPicker({
                 <HugeiconsIcon
                   icon={RemoveCircleIcon}
                   strokeWidth={1.75}
-                  className="invisible col-start-1 row-start-1 size-[calc(14px*var(--ui-space-scale,1))] text-red-500 group-hover/chip:visible"
+                  className="invisible col-start-1 row-start-1 size-[calc(14px*var(--ui-space-scale,1))] composer-eject-tone group-hover/chip:visible"
                 />
               </span>
             </Hint>
@@ -2083,7 +2083,7 @@ export function ComposerModelPicker({
                       ? eject(chosen)
                       : source?.eject(checkpoint ?? undefined)
                   }
-                  className="ml-auto flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-12 font-medium text-red-500 transition-colors hover:bg-sidebar-accent"
+                  className="ml-auto flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors hover:bg-sidebar-accent"
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
