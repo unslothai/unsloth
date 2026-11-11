@@ -15,6 +15,9 @@ LOCALIZED_EDIT_MODES = ("annotate", "paint", "mask")
 MAX_CONDITION_SOURCE_PIXELS = 64_000_000
 
 MIN_OUTPUT_SIDE = 256
+# Request ceiling for an image side: the largest max_output_side in the family table (MiniMax-H3-Image's 6272). The
+# loaded family enforces its own bound in check_output_size; this only has to admit every family's.
+MAX_REQUEST_SIDE = 6272
 
 # Upstream QwenImage21Pipeline's own ``output_resolution`` default.
 DEFAULT_REFERENCE_RESOLUTION = 1024

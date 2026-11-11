@@ -8601,6 +8601,97 @@ def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):
     assert "text_encoder/model.fp16.safetensors" not in files
 
 
+_H3_IMAGE_SIBLINGS = [
+    _FakeSibling("model_index.json", 900),
+    _FakeSibling("pdd_config.json", 200),
+    _FakeSibling("pdd_fused_heads.safetensors", 12 * 10**6),
+    _FakeSibling("transformer/config.json", 900),
+    _FakeSibling("transformer/model-00001-of-00002.safetensors", 33 * GB),
+    _FakeSibling("transformer/model-00002-of-00002.safetensors", 33 * GB),
+    _FakeSibling("transformer_diffusers/config.json", 900),
+    _FakeSibling(
+        "transformer_diffusers/diffusion_pytorch_model-00001-of-00002.safetensors", 33 * GB
+    ),
+    _FakeSibling("text_encoder/config.json", 900),
+    _FakeSibling("text_encoder/model-00001-of-00002.safetensors", 33 * GB),
+    _FakeSibling("vae/config.json", 900),
+    _FakeSibling("vae/diffusion_pytorch_model.safetensors", 2 * GB),
+    _FakeSibling("vae_diffusers/diffusion_pytorch_model.safetensors", 2 * GB),
+    _FakeSibling("tokenizer/tokenizer.json", 11 * 10**6),
+    _FakeSibling("processor/preprocessor_config.json", 900),
+]
+_H3_TE_INT8 = "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+
+
+@pytest.mark.parametrize("te_request", [None, "none"])
+def test_download_plan_for_minimax_h3_image_stages_the_encoder_its_loader_opens(
+    monkeypatch, tmp_path, te_request
+):
+    """The image repo bundles a bf16 text_encoder/ (66.7 GB) and a converted *_diffusers/ copy that its in-tree loader
+    never opens. The plan stages the hosted int8 encoder (or, asked for bf16, the H3 repo's) and never the bundle."""
+    index = tmp_path / "model_index.json"
+    # The release's own index: it names the bundled encoder (pointing at the H3 repo) beside the four folders.
+    index.write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxH3ImagePipeline",
+                "processor": ["transformers", "Qwen3VLProcessor"],
+                "scheduler": None,
+                "text_encoder": [
+                    "transformers",
+                    "Qwen3VLForConditionalGeneration",
+                    {
+                        "pretrained_model_name_or_path": "MiniMaxAI/MiniMax-H3",
+                        "subfolder": "text_encoder",
+                    },
+                ],
+                "tokenizer": ["transformers", "Qwen2TokenizerFast"],
+                "transformer": ["diffusers", "MiniMaxH3DiTModel"],
+                "vae": ["diffusers", "AutoencoderKLMiniMaxH3"],
+            }
+        )
+    )
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *a, **k: str(index))
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "MiniMaxAI/MiniMax-H3-Image": _H3_IMAGE_SIBLINGS,
+            "unsloth/MiniMax-H3-FP8": [
+                _FakeSibling(_H3_TE_INT8, 27 * GB),
+                _FakeSibling("other.gguf", GB),
+            ],
+            "MiniMaxAI/MiniMax-H3": [
+                _FakeSibling("text_encoder/config.json", 900),
+                _FakeSibling("text_encoder/model-00001-of-00002.safetensors", 33 * GB),
+                _FakeSibling("transformer/model.safetensors", 70 * GB),
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_h3_image_planned_dit_scheme",
+        lambda self, *a, **k: None,
+        raising = False,
+    )
+    plan = DiffusionBackend().download_plan(
+        "MiniMaxAI/MiniMax-H3-Image", model_kind = "pipeline", text_encoder_quant = te_request
+    )
+    by_repo = {e["repo_id"]: e["files"] for e in plan["entries"]}
+    image = by_repo["MiniMaxAI/MiniMax-H3-Image"]
+    assert not [f for f in image if f.startswith("text_encoder/") and f.endswith(".safetensors")]
+    assert not [f for f in image if "_diffusers/" in f]
+    assert "transformer/model-00001-of-00002.safetensors" in image
+    if te_request is None:
+        assert by_repo["unsloth/MiniMax-H3-FP8"] == [_H3_TE_INT8]
+        assert "MiniMaxAI/MiniMax-H3" not in by_repo
+    else:
+        assert "unsloth/MiniMax-H3-FP8" not in by_repo
+        assert by_repo["MiniMaxAI/MiniMax-H3"] == [
+            "text_encoder/config.json",
+            "text_encoder/model-00001-of-00002.safetensors",
+        ]
+
+
 def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):
     # Gated pipelines stage from the mirror, so only the planner can flag the selected model.
     gated = "black-forest-labs/FLUX.1-dev"

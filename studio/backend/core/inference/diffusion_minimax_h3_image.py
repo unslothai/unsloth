@@ -106,6 +106,17 @@ PDD_HEADS_FILE = "pdd_fused_heads.safetensors"
 PDD_CONFIG_FILE = "pdd_config.json"
 DIFFUSERS_TRANSFORMER_SUBFOLDER = "transformer_diffusers"
 DIFFUSERS_VAE_SUBFOLDER = "vae_diffusers"
+# What a Hub load reads from the image repo besides the DiT shards: the native layout model_index.json names. The repo
+# also carries a converted *_diffusers/ copy of the DiT and VAE and the H3 text encoder, none of which a Hub load opens.
+H3_IMAGE_BASE_PATTERNS = (
+    "model_index.json",
+    PDD_CONFIG_FILE,
+    "transformer/config.json",
+    "vae/*",
+    "tokenizer/*",
+    "processor/*",
+)
+H3_IMAGE_DENSE_DIT_PATTERNS = (PDD_HEADS_FILE, "transformer/*")
 
 # "0" keeps the dense AdaLN projections (diagnostic: the table is the default and exact to the dense math).
 ADALN_TABLE_ENV = "UNSLOTH_H3_IMAGE_ADALN_TABLE"
@@ -1679,6 +1690,13 @@ def _hub_files(
     return Path(root)
 
 
+def _native_layout(root: Path, native: str, converted: str) -> bool:
+    """True to read ``root/native``: whenever it is there, else only when no converted copy is."""
+    return (root / native / "config.json").is_file() or not (
+        root / converted / "config.json"
+    ).is_file()
+
+
 def _read_json(path: Path) -> dict:
     with open(path, "r", encoding = "utf-8") as f:
         return json.load(f)
@@ -1902,6 +1920,44 @@ def device_budgets(device: Any) -> tuple[Optional[float], Optional[float]]:
         except Exception:  # noqa: BLE001 - psutil missing
             host = None
     return vram, host
+
+
+def explicit_scheme_refusal(scheme: str, device: Any) -> Optional[str]:
+    """Why an explicit DiT ``scheme`` cannot run as asked on ``device``, or None. ``resolve_dit_scheme`` would read an
+    unknown scheme as auto and an fp8 ask below SM 8.9 as int8; an explicit request is refused instead."""
+    import torch
+
+    if scheme not in QUANT_SCHEMES:
+        return (
+            f"MiniMax-H3-Image runs {' or '.join(QUANT_SCHEMES)} transformer weights, not {scheme}"
+        )
+    dev = torch.device(device)
+    if scheme == "fp8" and dev.type == "cuda" and torch.cuda.is_available():
+        cap = tuple(torch.cuda.get_device_capability(dev))
+        if cap < (8, 9):
+            return f"fp8 needs compute capability 8.9 or newer, and this card is {cap[0]}.{cap[1]}; int8 runs here"
+    return None
+
+
+# Text encoder requests that keep the released bf16 encoder; anything else (unset included) takes the hosted int8 one.
+DENSE_TE_REQUESTS = frozenset({"none", "off", "bf16", "dense", "bfloat16"})
+
+
+def h3_image_te_scheme(requested: Optional[str]) -> Optional[str]:
+    """The encoder a load takes for the raw ``text_encoder_quant`` request: "int8" (hosted) or None (bf16)."""
+    return None if str(requested or "").strip().lower() in DENSE_TE_REQUESTS else "int8"
+
+
+def planned_dit_scheme(transformer_quant: Optional[str], device: Any) -> Optional[str]:
+    """The DiT scheme a load on ``device`` would resolve, for the download plan: ``resolve_dit_scheme`` on the VRAM that
+    load would see, which includes what this process holds now (the load evicts the resident model first)."""
+    import torch
+
+    dev = torch.device(device)
+    vram, _host = device_budgets(dev)
+    if vram is not None and not os.environ.get(VRAM_BUDGET_ENV) and dev.type == "cuda":
+        vram += torch.cuda.memory_reserved(dev) / 1e9
+    return resolve_dit_scheme(transformer_quant, device = dev, vram_gb = vram)[0]
 
 
 def build_transformer_skeleton(config: dict, *, table_grid: Optional[Sequence[float]]) -> Any:
@@ -2171,8 +2227,8 @@ def load_h3_image_transformer(
     from safetensors import safe_open
 
     check = check_cancelled or (lambda: None)
-    converted_dir = root / DIFFUSERS_TRANSFORMER_SUBFOLDER
-    native = not (converted_dir / "config.json").is_file()
+    # Native first: it is what a Hub load fetches; a folder holding only the converted copy still loads.
+    native = _native_layout(root, "transformer", DIFFUSERS_TRANSFORMER_SUBFOLDER)
     tdir = root / ("transformer" if native else DIFFUSERS_TRANSFORMER_SUBFOLDER)
     raw_config = _read_json(tdir / "config.json")
     if native:
@@ -2278,8 +2334,7 @@ def load_h3_image_vae(root: Path, *, dtype: Any = None) -> Any:
     from accelerate import init_empty_weights
     from safetensors import safe_open
 
-    converted_dir = root / DIFFUSERS_VAE_SUBFOLDER
-    native = not (converted_dir / "config.json").is_file()
+    native = _native_layout(root, "vae", DIFFUSERS_VAE_SUBFOLDER)
     vdir = root / ("vae" if native else DIFFUSERS_VAE_SUBFOLDER)
     raw = _read_json(vdir / "config.json")
     config = (
@@ -2631,16 +2686,7 @@ def load_minimax_h3_image_pipeline(
     dtype = dtype or torch.bfloat16
     device = torch.device(device)
     vram, host = device_budgets(device)
-    patterns = [
-        "model_index.json",
-        PDD_CONFIG_FILE,
-        "transformer/config.json",
-        "vae/*",
-        "tokenizer/*",
-        "processor/*",
-        f"{DIFFUSERS_TRANSFORMER_SUBFOLDER}/config.json",
-        f"{DIFFUSERS_VAE_SUBFOLDER}/*",
-    ]
+    patterns = list(H3_IMAGE_BASE_PATTERNS)
     hub = {"hf_token": hf_token, "cache_dir": cache_dir, "local_files_only": local_files_only}
     root = _hub_files(repo_id, patterns, **hub)
     check()
@@ -2708,11 +2754,7 @@ def load_minimax_h3_image_pipeline(
                 "dense_conditioning_linears": densified,
             }
     if transformer is None:
-        root = _hub_files(
-            repo_id,
-            [PDD_HEADS_FILE, "transformer/*", f"{DIFFUSERS_TRANSFORMER_SUBFOLDER}/*"],
-            **hub,
-        )
+        root = _hub_files(repo_id, H3_IMAGE_DENSE_DIT_PATTERNS, **hub)
         transformer, stats = load_h3_image_transformer(
             root,
             dtype = dtype,
@@ -2765,7 +2807,13 @@ def load_minimax_h3_image_pipeline(
             )
 
     local_te = root / "text_encoder"
-    if text_encoder is None and (local_te / "config.json").is_file():
+    # A local folder's own encoder only. A Hub snapshot can hold the repo's bundled bf16 copy (66.7 GB, fetched by an
+    # older plan or a full download); taking it there would replace the int8 encoder the plan sized.
+    if (
+        text_encoder is None
+        and os.path.isdir(str(repo_id))
+        and (local_te / "config.json").is_file()
+    ):
         local_gb = sum(f.stat().st_size for f in local_te.glob("*.safetensors")) / 1e9
         if local_gb > plan.te_gb + 1.0:
             _encoder_fits(local_gb, "the text encoder in this model folder")

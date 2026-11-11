@@ -1309,3 +1309,158 @@ def test_hosted_metadata_attention_is_recorded(h3i):
     t = types.SimpleNamespace()
     h3i.h3_image_prepare_prequant_model()(t, {"attention": "INT8"})
     assert getattr(t, h3i.CHECKPOINT_ATTENTION_ATTR) == "int8"
+
+
+def test_a_hub_snapshot_never_loads_the_bundled_encoder_or_the_converted_copy(
+    h3i, release, tmp_path, monkeypatch
+):
+    """The image repo bundles a bf16 text_encoder/ and a converted *_diffusers/ copy. A Hub load fetches neither, and
+    a snapshot that already holds the bundled encoder (an older plan staged it) still loads the int8 one it planned."""
+    import copy
+
+    import transformers
+
+    root, _ref, te = release
+    snap = _release_copy(root, tmp_path / "snap", with_encoder = False)
+    te.save_pretrained(str(snap / "text_encoder"))
+    fetched = []
+    monkeypatch.setattr(
+        h3i, "_hub_files", lambda repo, patterns, **kw: fetched.extend(patterns) or snap
+    )
+    loaded = []
+    monkeypatch.setattr(
+        h3i,
+        "load_h3_image_text_encoder",
+        lambda scheme, **kw: loaded.append(scheme) or (copy.deepcopy(te), scheme),
+    )
+
+    def _no_local_encoder(*a, **k):
+        raise AssertionError(f"the bundled encoder was loaded: {a}")
+
+    monkeypatch.setattr(
+        transformers.Qwen3VLForConditionalGeneration, "from_pretrained", _no_local_encoder
+    )
+    pipe = h3i.load_minimax_h3_image_pipeline(
+        h3i.H3_IMAGE_BASE_REPO, device = "cpu", text_encoder_quant = "int8"
+    )
+    assert pipe._unsloth_h3_report.te_scheme == "int8"
+    assert loaded in ([], ["int8"])
+    assert not [p for p in fetched if "text_encoder" in p or "_diffusers" in p]
+    assert "transformer/*" in fetched
+    pipe.release()
+
+
+def test_a_local_folder_still_brings_its_own_encoder(h3i, release, tmp_path, monkeypatch):
+    import transformers
+
+    root, _ref, te = release
+    rel = _release_copy(root, tmp_path / "rel", with_encoder = False)
+    te.save_pretrained(str(rel / "text_encoder"))
+    monkeypatch.setattr(
+        h3i,
+        "load_h3_image_text_encoder",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("the hosted encoder was fetched")),
+    )
+    sized = _bf16_sized(h3i, monkeypatch, transformers.Qwen3VLForConditionalGeneration)
+    pipe = h3i.load_minimax_h3_image_pipeline(str(rel), device = "cpu", text_encoder_quant = "int8")
+    assert pipe._unsloth_h3_report.te_scheme is None
+    assert sized[-1] == h3i.H3_IMAGE_TE_BF16_GB
+    pipe.release()
+
+
+@pytest.mark.parametrize(
+    "native, converted, reads_native",
+    [(True, True, True), (True, False, True), (False, True, False), (False, False, True)],
+)
+def test_the_native_layout_wins_when_both_are_present(
+    h3i, tmp_path, native, converted, reads_native
+):
+    for name, present in (("transformer", native), ("transformer_diffusers", converted)):
+        if present:
+            (tmp_path / name).mkdir()
+            (tmp_path / name / "config.json").write_text("{}")
+    assert h3i._native_layout(tmp_path, "transformer", "transformer_diffusers") is reads_native
+
+
+@pytest.mark.parametrize(
+    "request_value, scheme",
+    [
+        (None, "int8"),
+        ("", "int8"),
+        ("auto", "int8"),
+        ("int8", "int8"),
+        ("none", None),
+        ("Off", None),
+        ("bf16", None),
+    ],
+)
+def test_the_encoder_scheme_follows_the_raw_request(h3i, request_value, scheme):
+    assert h3i.h3_image_te_scheme(request_value) == scheme
+
+
+def test_explicit_dit_schemes_are_honored_or_refused(h3i, monkeypatch):
+    import torch
+
+    assert h3i.explicit_scheme_refusal("int8", "cpu") is None
+    assert h3i.explicit_scheme_refusal("fp8", "cpu") is None
+    assert "not nvfp4" in h3i.explicit_scheme_refusal("nvfp4", "cpu")
+    assert "not mxfp8" in h3i.explicit_scheme_refusal("mxfp8", "cpu")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: (8, 0))
+    assert "8.9 or newer" in h3i.explicit_scheme_refusal("fp8", "cuda")
+    assert h3i.explicit_scheme_refusal("int8", "cuda") is None
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: (8, 9))
+    assert h3i.explicit_scheme_refusal("fp8", "cuda") is None
+
+
+def test_the_plan_scheme_counts_what_this_process_holds(h3i, monkeypatch):
+    import torch
+
+    monkeypatch.delenv(h3i.VRAM_BUDGET_ENV, raising = False)
+    seen = []
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (30.0, 500.0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda dev = None: 20e9)
+    monkeypatch.setattr(
+        h3i,
+        "resolve_dit_scheme",
+        lambda req, *, device, vram_gb, **kw: seen.append(vram_gb) or ("int8", "x"),
+    )
+    assert h3i.planned_dit_scheme(None, "cuda") == "int8"
+    assert seen == [pytest.approx(50.0)]
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_the_preflight_passes_explicit_h3_schemes_without_a_compile(h3i, monkeypatch, scheme):
+    """The torchao compile gate refused every explicit scheme for this family, which never compiles and quantizes in
+    its own loader. int8 and fp8 reach that loader; anything else is still refused before the eviction."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda target, **kw: False)
+    backend = dmod.DiffusionBackend()
+    import dataclasses
+
+    # The card's capability is the helper's concern (tested above); this pins the route's gate order.
+    target = dataclasses.replace(resolve_diffusion_device_target(), device = "cpu")
+    kwargs = {"model_kind": "pipeline", "te_mode": None, "memory_mode": None, "cpu_offload": False}
+    backend._assert_precision_for_target(fam, target, pinned = scheme, **kwargs)
+    with pytest.raises(RuntimeError, match = "MiniMax-H3-Image runs int8 or fp8"):
+        backend._assert_precision_for_target(fam, target, pinned = "mxfp8", **kwargs)
+
+
+def test_the_request_ceiling_admits_every_family_side(h3i):
+    """The generate request capped sides at 2752, so every 16 MP size this family advertises was a 422 before the
+    family bound in check_output_size was ever asked."""
+    from pydantic import ValidationError
+
+    from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
+    from core.inference.diffusion_families import _FAMILIES
+    from models.inference import DiffusionGenerateRequest
+
+    assert MAX_REQUEST_SIDE == max(int(f.max_output_side) for f in _FAMILIES)
+    for width, height in h3i.H3_IMAGE_16MP_SIZES:
+        DiffusionGenerateRequest(prompt = "x", width = width, height = height)
+    with pytest.raises(ValidationError):
+        DiffusionGenerateRequest(prompt = "x", width = MAX_REQUEST_SIDE + 16, height = 1024)
