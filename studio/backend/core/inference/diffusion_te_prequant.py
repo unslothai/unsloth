@@ -173,6 +173,66 @@ TE_INT8_CONVROT_VARIANT_FILES: dict[str, dict[str, dict[str, tuple[str, str]]]] 
     },
 }
 
+# (lowercased repo_id, filename) of every file in the two tables above that the Hub listed on 2026-11-11 (HfApi
+# model_info with files_metadata). A table entry missing here is PENDING: it is built but not uploaded, and is used only
+# once this machine holds it (mirror or Hub cache) or the Hub lists it (te_prequant_sources_confirmed, cached). Until
+# then an int8 request takes the fp8 file beside it, so no load downloads a file the Hub does not have. Kept as a list
+# rather than deleting the pending rows, so an upload needs no Studio release and the rows stay reviewed with the rest.
+TE_INT8_CONVROT_PUBLISHED: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("unsloth/flux.2-dev-fp8", "FLUX.2-dev-text_encoder-INT8-ConvRot.safetensors"),
+        ("unsloth/krea-2-turbo-fp8", "Krea-2-Turbo-text_encoder-INT8-ConvRot.safetensors"),
+        ("unsloth/moss-image-sft-fp8", "MOSS-Image-SFT-text_encoder-INT8-ConvRot.safetensors"),
+        ("unsloth/qwen-image-2.1-fp8", "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors"),
+        ("unsloth/qwen-image-fp8", "Qwen-Image-text_encoder-INT8-ConvRot.safetensors"),
+        (
+            "unsloth/flux-3-image-klein-fp8",
+            "flux-3-image-klein-text_encoder-INT8-ConvRot.safetensors",
+        ),
+        (
+            "unsloth/flux-3-image-klein-base-fp8",
+            "flux-3-image-klein-base-text_encoder-INT8-ConvRot.safetensors",
+        ),
+    }
+)
+
+# True while a caller asks for the table row itself, published or not: the reason an explicit int8 request cannot be
+# served names the pending file instead of saying nothing.
+_TE_INT8_INCLUDE_PENDING: ContextVar[bool] = ContextVar(
+    "unsloth_te_int8_include_pending", default = False
+)
+
+_pending_logged: set[tuple[str, str]] = set()
+
+
+def te_int8_convrot_published(repo_id: Optional[str], filename: Optional[str]) -> bool:
+    """Whether the hosted int8 ConvRot file ``repo_id/filename`` exists: in ``TE_INT8_CONVROT_PUBLISHED``, else
+    confirmed by ``te_prequant_sources_confirmed`` (on this machine, or listed by the Hub; cached for
+    ``_CONFIRMED_TTL_S``, never asked offline or under a cache-only load). A pending file is logged once. Never
+    raises."""
+    if not repo_id or not filename:
+        return False
+    key = (str(repo_id).strip().lower(), str(filename))
+    if key in TE_INT8_CONVROT_PUBLISHED:
+        return True
+    try:
+        source = TePrequantSource(kind = "repo", location = str(repo_id), filename = str(filename))
+        listed = bool(te_prequant_sources_confirmed({"text_encoder": source}))
+    except Exception:  # noqa: BLE001 - unanswerable: not published
+        listed = False
+    if not listed and key not in _pending_logged:
+        _pending_logged.add(key)
+        logger = _module_logger()
+        if logger is not None:
+            logger.info(
+                "diffusion.te_prequant: int8 ConvRot text encoder %s/%s is not published yet; an int8 request "
+                "uses the fp8 text encoder file in that repo instead",
+                repo_id,
+                filename,
+            )
+    return listed
+
+
 # Module names of the Linears an int8 ConvRot file stores int8: decoder q/k/v/o + gate/up/down of a Qwen / Llama /
 # Mistral / Gemma stack (``...layers.N.``; vision towers name their blocks ``blocks`` / ``attention`` and stay bf16)
 # and T5's SelfAttention q/k/v/o + DenseReluDense wi_0/wi_1/wo. The builder quantizes exactly these and the loader
@@ -240,15 +300,31 @@ def quantize_int8_convrot_weight(weight: Any, group_size: int = 256) -> tuple[An
     return torch.round(rotated / scale).clamp(-127, 127).to(torch.int8), scale
 
 
-def family_te_int8_convrot(fam: Any, component: str) -> Optional[tuple[str, ...]]:
+def family_te_int8_convrot(
+    fam: Any,
+    component: str,
+    *,
+    include_pending: Optional[bool] = None,
+) -> Optional[tuple[str, ...]]:
     """``(repo_id, filename)`` of the family's hosted int8 ConvRot encoder for ``component``, or None. A family view
-    carrying a variant base with its own encoder (``TE_INT8_CONVROT_VARIANT_FILES``) gets that variant's file only."""
+    carrying a variant base with its own encoder (``TE_INT8_CONVROT_VARIANT_FILES``) gets that variant's file only.
+    A row whose file is not published (``te_int8_convrot_published``) is None unless ``include_pending`` (default:
+    the ``_TE_INT8_INCLUDE_PENDING`` context) asks for the row itself."""
     name = str(getattr(fam, "name", fam) or "").strip().lower()
     base = str(getattr(fam, "base_repo", "") or "").strip().lower()
     variant = TE_INT8_CONVROT_VARIANT_FILES.get(name, {}).get(base)
-    if variant is not None:
-        return variant.get(component)
-    return TE_INT8_CONVROT_FILES.get(name, {}).get(component)
+    entry = (
+        variant.get(component)
+        if variant is not None
+        else TE_INT8_CONVROT_FILES.get(name, {}).get(component)
+    )
+    if entry is None:
+        return None
+    if include_pending is None:
+        include_pending = _TE_INT8_INCLUDE_PENDING.get()
+    if include_pending or te_int8_convrot_published(entry[0], entry[1]):
+        return entry
+    return None
 
 
 def te_prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Optional[str]:
@@ -471,6 +547,8 @@ def explicit_int8_unavailable_reason(
     """Why an explicit int8 request cannot take the int8 ConvRot file(s) ``fam`` names, or None when it can (or the
     family names none). Names each unconfirmed file so an int8-only host (Apple Silicon) reports the missing file.
     Never raises."""
+    # The table row itself, published or not, so a pending file is named rather than skipped as an fp8 fallback.
+    token = _TE_INT8_INCLUDE_PENDING.set(True)
     try:
         name = str(getattr(fam, "name", "") or "").strip().lower()
         named = []
@@ -507,6 +585,8 @@ def explicit_int8_unavailable_reason(
         return f"the hosted int8 ConvRot text encoder {', '.join(named)} for {getattr(fam, 'name', fam)} {where}"
     except Exception:  # noqa: BLE001 - unanswerable: no reason to add
         return None
+    finally:
+        _TE_INT8_INCLUDE_PENDING.reset(token)
 
 
 def _auto_pick(te_quant_mode: Any) -> bool:
@@ -765,7 +845,7 @@ def int8_convrot_te_runs_fp16(fam: Any, target: Any) -> bool:
 def hosted_int8_convrot_te_runs_on(fam: Any, target: Any) -> bool:
     """Whether an explicit int8 encoder request on ``fam`` loads the hosted int8 ConvRot file on ``target`` without the
     fp8 fallback: the family hosts the file (and the lm_head trim it needs is on) and the device runs it as plain
-    tensors. Pure: no IO."""
+    tensors. No IO for a published file; a pending one is asked of the Hub once (``te_int8_convrot_published``)."""
     try:
         if not int8_convrot_te_runs_on(target):
             return False
@@ -903,6 +983,12 @@ def resolve_te_prequant_source(
         # int8 file first, then the fp8 names in the same repo, so a miss takes fp8 rather than the dense shards.
         hosted = family_te_int8_convrot(fam, component)
         if hosted is None:
+            if family_te_int8_convrot(
+                fam, component, include_pending = True
+            ) is not None and not _family_has_torchao_int8(fam):
+                # The row's file is not published yet: the fp8 file beside it serves, as for a 404 at load. A family
+                # with a keep-bf16 int8 schedule keeps the on-the-fly torchao int8 instead, as below.
+                return resolve_te_prequant_source(fam, component, "fp8")
             return None
         repo_id, filename, *hosted_component = hosted
         fp8 = resolve_te_prequant_source(fam, component, "fp8")

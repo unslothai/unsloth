@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Explicit int8 TE quant with an unpublished int8 file: CUDA falls back to fp8 and says so; Apple Silicon refuses
-up front, naming the file. Network-free."""
+"""Explicit int8 TE quant with an unpublished int8 file: CUDA takes the fp8 file beside it (never asking for the
+missing one) and says so; Apple Silicon refuses up front, naming the file. Every table row is either in the committed
+published list or pending here. Network-free."""
 
 from __future__ import annotations
 
@@ -20,7 +21,8 @@ from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES  # noqa: 
 CUDA_BF16 = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, backend = "cuda", index = 0)
 MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16, backend = "mps", index = 0)
 
-# The named files the Hub did not list on 2026-10-25 (HfApi().list_repo_files on each repo).
+# The named files the Hub did not list on 2026-11-11 (HfApi().model_info(files_metadata = True) on each repo; the
+# FLUX.2-klein-9B-FP8 repo is private). Pending: built, not uploaded.
 UNPUBLISHED = {
     "FLUX.1-schnell-text_encoder_2-INT8-ConvRot.safetensors",
     "FLUX.2-klein-4B-text_encoder-INT8-ConvRot.safetensors",
@@ -46,6 +48,7 @@ def hub(monkeypatch):
 
     monkeypatch.delenv(KEEP_LM_HEAD_ENV, raising = False)
     monkeypatch.setattr(tpq, "_confirmed_cache", {})
+    monkeypatch.setattr(tpq, "_pending_logged", set())
     monkeypatch.setattr(tpq, "_held_locally", lambda *a, **k: False)
     monkeypatch.setattr(tpq, "_hub_offline", lambda: False)
 
@@ -92,8 +95,9 @@ def test_cuda_explicit_int8_has_the_hosted_fp8_file_behind_the_missing_one(name,
     assert sources
     for source in sources.values():
         chain = tpq.te_candidate_filenames(source)
-        assert chain[0] in UNPUBLISHED
-        assert any("fp8" in n.lower() for n in chain[1:]), chain
+        # The pending file is never asked for: the chain is the fp8 file beside it.
+        assert not set(chain) & UNPUBLISHED, chain
+        assert chain and all("fp8" in n.lower() for n in chain), chain
     assert prec.preflight_te_quant("int8", fam, fam.base_repo, CUDA_BF16) == "fp8"
 
 
@@ -182,3 +186,115 @@ def test_cuda_load_reports_the_fp8_fallback_for_an_explicit_int8(monkeypatch):
     assert outcome.status == prec.RESOLVED_FELL_BACK
     assert "int8 ConvRot text encoder is not available" in outcome.reason
     assert "fp8 was used instead" in outcome.reason
+
+
+def _table_entries():
+    rows = [e for comps in tpq.TE_INT8_CONVROT_FILES.values() for e in comps.values()]
+    rows += [
+        e
+        for bases in tpq.TE_INT8_CONVROT_VARIANT_FILES.values()
+        for comps in bases.values()
+        for e in comps.values()
+    ]
+    return {(str(e[0]).lower(), e[1]) for e in rows}
+
+
+def test_every_table_row_is_published_or_pending():
+    entries = _table_entries()
+    published = set(tpq.TE_INT8_CONVROT_PUBLISHED)
+    pending = {e for e in entries if e[1] in UNPUBLISHED}
+    # A new row must be added to the published list (after its upload) or to UNPUBLISHED here.
+    assert entries == published | pending
+    assert not published & pending
+    # The published list names only table rows, so it cannot drift from the table.
+    assert published <= entries
+    assert {e[1] for e in pending} == UNPUBLISHED
+
+
+@pytest.mark.parametrize("entry", sorted(tpq.TE_INT8_CONVROT_PUBLISHED))
+def test_a_published_row_needs_no_hub_call(entry, monkeypatch):
+    monkeypatch.setattr(
+        tpq, "_held_locally", lambda *a, **k: pytest.fail("published rows are not probed")
+    )
+    monkeypatch.setattr(
+        tpq, "te_prequant_hub_files", lambda *a, **k: pytest.fail("published rows are not probed")
+    )
+    assert tpq.te_int8_convrot_published(*entry)
+
+
+def test_a_pending_row_is_hidden_and_logged_once(hub, monkeypatch, caplog):
+    calls = []
+
+    def hub_files(pending, _api):
+        calls.append(sorted(s.filename for s in pending.values()))
+        return {}
+
+    monkeypatch.setattr(tpq, "te_prequant_hub_files", hub_files)
+    messages = []
+    monkeypatch.setattr(
+        tpq,
+        "_module_logger",
+        lambda: types.SimpleNamespace(info = lambda *a: messages.append(a[0] % a[1:])),
+    )
+    fam = _ALL["z-image"]
+    for _ in range(3):
+        assert tpq.family_te_int8_convrot(fam, "text_encoder") is None
+    assert tpq.family_te_int8_convrot(fam, "text_encoder", include_pending = True) is not None
+    # One Hub ask for the miss inside the TTL, one log line naming the file and the fp8 fallback.
+    assert calls == [["Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors"]]
+    assert len(messages) == 1 and "not published yet" in messages[0] and "fp8" in messages[0]
+
+
+def test_a_pending_row_is_never_asked_of_the_hub_offline(hub, monkeypatch):
+    monkeypatch.setattr(tpq, "_hub_offline", lambda: True)
+    monkeypatch.setattr(
+        tpq, "te_prequant_hub_files", lambda *a, **k: pytest.fail("offline: no Hub call")
+    )
+    assert tpq.family_te_int8_convrot(_ALL["lumina-2"], "text_encoder") is None
+
+
+def test_a_pending_row_engages_once_the_hub_lists_it(hub, monkeypatch):
+    _cuda(monkeypatch)
+    monkeypatch.setattr(
+        tpq,
+        "te_prequant_hub_files",
+        lambda pending, _api: {c: s.filename for c, s in pending.items()},
+    )
+    fam = _ALL["z-image"]
+    source = tpq.resolve_te_prequant_source(fam, "text_encoder", "int8")
+    assert source.filename == "Z-Image-Turbo-text_encoder-INT8-ConvRot.safetensors"
+    assert any("fp8" in n.lower() for n in source.fallback_filenames)
+
+
+def test_a_pending_row_engages_once_it_is_cached_locally(hub, monkeypatch):
+    _cuda(monkeypatch)
+    monkeypatch.setattr(tpq, "_held_locally", lambda repo, name, token: "INT8-ConvRot" in str(name))
+    monkeypatch.setattr(
+        tpq, "te_prequant_hub_files", lambda *a, **k: pytest.fail("cached: no Hub call")
+    )
+    fam = _ALL["wan2.2-ti2v-5b"]
+    source = tpq.resolve_te_prequant_source(fam, "text_encoder", "int8")
+    assert source.filename == "Wan2.2-TI2V-5B-text_encoder-INT8-ConvRot.safetensors"
+
+
+@pytest.mark.parametrize("name", ["z-image", "wan2.2-ti2v-5b", "flux.1"])
+def test_cuda_load_of_a_pending_row_downloads_only_the_fp8_file(name, hub, monkeypatch):
+    """The loader is handed the fp8 file alone, so no load spends a request on the missing int8 one."""
+    import core.inference.diffusion_prequant as dpq
+
+    _cuda(monkeypatch)
+    fam = _ALL[name]
+    component = next(iter(tpq.TE_INT8_CONVROT_FILES[name]))
+    source = tpq.te_prequant_sources_for_base(
+        fam, fam.base_repo, te_quant_mode = "int8", target = CUDA_BF16, components = (component,)
+    )[component]
+    asked = []
+
+    def download(src, filename, *a, **k):
+        asked.append(filename)
+        return f"/fake/{filename}"
+
+    monkeypatch.setattr(dpq, "_download_checkpoint_name", download)
+    path = tpq._resolve_checkpoint_path(source, None, cache_dir = "/nonexistent")
+    assert asked and not set(asked) & UNPUBLISHED
+    assert path.endswith(asked[-1]) and "fp8" in asked[-1].lower()
