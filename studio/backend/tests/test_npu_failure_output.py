@@ -531,3 +531,30 @@ def test_flm_output_drained_after_lemond_died_mid_load_is_kept(tmp_path, monkeyp
     _prints(server, reason)
 
     assert server.output_since(0, settle = 0) == [reason]
+
+
+def test_a_slow_or_failed_switch_back_to_info_never_lets_the_filter_lapse(tmp_path, monkeypatch):
+    from core.inference import lemonade_server as ls
+
+    server = _server(tmp_path)
+    clock = [100.0]
+    monkeypatch.setattr(ls.time, "monotonic", lambda: clock[0])
+    content = _line("Debug", "Server", "Message content: my secret plan for today")
+
+    def post(url, *, json, **kwargs):
+        if json["log_level"] == "info":
+            # Longer than the deadline a finished switch gets, and lemond is still at debug.
+            clock[0] += 9.0
+            _prints(server, content, "and its second line")
+            return httpx.Response(500)
+        return httpx.Response(200, json = {"status": "success"})
+
+    server.port = 4242
+    monkeypatch.setattr(server, "is_alive", lambda: True)
+    monkeypatch.setattr(server, "_client", SimpleNamespace(post = post))
+    with server.backend_output(server.open_window()):
+        pass
+    clock[0] += 60.0
+    _prints(server, content, "and its second line")
+
+    assert server.output_since(0, settle = 0) == []

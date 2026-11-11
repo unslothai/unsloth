@@ -207,11 +207,11 @@ class LemonadeServer:
             # A lemond that died prints no chat and its pipe may still hold flm's reason, so the
             # capture stays up until the next start.
             if self.is_alive():
-                self._filter_until = time.monotonic() + 5.0
+                # No deadline until the request is back: it can outlast one, with lemond at debug.
+                self._filter_until = float("inf")
                 self._load_window = None
-                if not self._set_log_level("info") and self.is_alive():
-                    # Maybe still at debug.
-                    self._filter_until = float("inf")
+                if self._set_log_level("info") or not self.is_alive():
+                    self._filter_until = time.monotonic() + 5.0
 
     def _keeps(self, line: str) -> bool:
         window = self._load_window
