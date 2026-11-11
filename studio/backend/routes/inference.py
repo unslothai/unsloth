@@ -22165,6 +22165,21 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     }
 
 
+class ApiMonitorSettingsPayload(BaseModel):
+    enabled: bool
+
+
+@studio_router.post("/monitor/settings")
+async def update_api_monitor_settings(
+    payload: ApiMonitorSettingsPayload,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Enable or disable API monitor recording without restarting the server."""
+    del current_subject
+    api_monitor.set_enabled(payload.enabled)
+    return {"logging_enabled": api_monitor.enabled}
+
+
 @studio_router.get("/sampling-defaults")
 async def get_sampling_defaults(model: str, current_subject: str = Depends(get_current_subject)):
     """The sampling a /v1 request naming ``model`` gets for every field it leaves out.

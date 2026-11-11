@@ -346,6 +346,16 @@ export async function getApiMonitor(): Promise<ApiMonitorResponse> {
   return parseJsonOrThrow<ApiMonitorResponse>(response);
 }
 
+export async function setApiMonitorLogging(enabled: boolean): Promise<boolean> {
+  const response = await authFetch("/api/inference/monitor/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  const data = await parseJsonOrThrow<{ logging_enabled?: unknown }>(response);
+  return data.logging_enabled === true;
+}
+
 export async function getApiMonitorEntry(
   id: string,
   includePrompt = true,

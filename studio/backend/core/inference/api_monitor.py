@@ -351,8 +351,16 @@ class ApiMonitor:
 
     @property
     def enabled(self) -> bool:
-        """Read-only; the kill switch is a startup env var, so live monitors cannot flip it."""
+        """Whether new requests and lifecycle events are recorded."""
         return self._enabled
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Toggle recording at runtime and drop retained rows when it is disabled."""
+        with self._lock:
+            self._enabled = bool(enabled)
+            if not self._enabled:
+                self._entries.clear()
+                self._hidden_shared.clear()
 
     def set_terminal_callback(self, callback: Optional[TerminalCallback]) -> None:
         """Replace the unleased terminal sink used by tests and embedders."""

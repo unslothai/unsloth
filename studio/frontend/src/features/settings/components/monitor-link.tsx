@@ -4,10 +4,14 @@
 import { Switch } from "@/components/ui/switch";
 // Direct path, not the barrel: the barrel re-exports the page, defeating its lazy route.
 import { useApiMonitorOverlayStore } from "@/features/api-monitor/overlay-store";
-import { getApiMonitor } from "@/features/chat/api/chat-api";
+import {
+  getApiMonitor,
+  setApiMonitorLogging,
+} from "@/features/chat/api/chat-api";
 import type { ApiMonitorResponse } from "@/features/chat/types/api";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { toast } from "@/lib/toast";
 import { ActivityIcon } from "@hugeicons/core-free-icons";
 import { ArrowRightIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -26,8 +30,27 @@ export function MonitorLink({
   const locale = useLocale();
   const t = useT();
   const [data, setData] = useState<ApiMonitorResponse | null>(null);
+  const [loggingSaving, setLoggingSaving] = useState(false);
   const autoOpen = useApiMonitorOverlayStore((s) => s.autoOpen);
   const setAutoOpen = useApiMonitorOverlayStore((s) => s.setAutoOpen);
+
+  const loggingEnabled = data?.logging_enabled !== false;
+  const setLoggingEnabled = async (enabled: boolean) => {
+    if (loggingSaving) return;
+    setLoggingSaving(true);
+    try {
+      const active = await setApiMonitorLogging(enabled);
+      setData((current) =>
+        current ? { ...current, logging_enabled: active, entries: active ? current.entries : [] } : current,
+      );
+    } catch (error) {
+      toast.error("Could not update API monitor logging", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setLoggingSaving(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +130,17 @@ export function MonitorLink({
             checked={autoOpen}
             onCheckedChange={setAutoOpen}
             aria-label={t("settings.resources.liveMonitor.autoOpen")}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.recordLogs")}
+          description={t("settings.resources.liveMonitor.recordLogsDescription")}
+        >
+          <Switch
+            checked={loggingEnabled}
+            disabled={loggingSaving}
+            onCheckedChange={(checked) => void setLoggingEnabled(checked)}
+            aria-label={t("settings.resources.liveMonitor.recordLogs")}
           />
         </SettingsRow>
       </div>

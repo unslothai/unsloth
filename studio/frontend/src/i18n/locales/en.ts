@@ -2602,6 +2602,8 @@ export const en = {
         noModelLoaded: "No model loaded",
         autoOpen: "Floating monitor opens automatically",
         autoOpenDescription: "Opens a small panel when API traffic arrives.",
+        recordLogs: "Record API monitor logs",
+        recordLogsDescription: "Store API requests and model events in the monitor.",
         cpu: "CPU",
         ram: "RAM",
         disk: "Disk",

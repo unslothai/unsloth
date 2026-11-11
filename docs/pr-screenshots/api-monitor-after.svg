@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="700" viewBox="0 0 1100 700">
+  <rect width="1100" height="700" fill="#f7f7f5"/>
+  <text x="42" y="60" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#202124">Settings · System and Engine</text>
+  <rect x="42" y="88" width="820" height="390" rx="16" fill="#fff" stroke="#deded8"/>
+  <text x="66" y="132" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#202124">API monitor</text>
+  <text x="66" y="160" font-family="Arial, sans-serif" font-size="14" fill="#77776f">See what other apps send to this server's API as it arrives.</text>
+  <rect x="66" y="196" width="772" height="76" rx="10" fill="#fff" stroke="#deded8"/>
+  <text x="84" y="225" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#202124">Floating monitor opens automatically</text>
+  <text x="84" y="248" font-family="Arial, sans-serif" font-size="12" fill="#77776f">Opens a small panel when API traffic arrives.</text>
+  <rect x="778" y="222" width="42" height="24" rx="12" fill="#7c6cf2"/>
+  <circle cx="808" cy="234" r="10" fill="#fff"/>
+  <rect x="66" y="286" width="772" height="76" rx="10" fill="#fff" stroke="#deded8"/>
+  <text x="84" y="315" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#202124">Record API monitor logs</text>
+  <text x="84" y="338" font-family="Arial, sans-serif" font-size="12" fill="#77776f">Store API requests and model events in the monitor.</text>
+  <rect x="778" y="312" width="42" height="24" rx="12" fill="#ddd"/>
+  <circle cx="790" cy="324" r="10" fill="#fff"/>
+  <text x="66" y="410" font-family="Arial, sans-serif" font-size="14" fill="#39734b">Recording is off; requests continue normally.</text>
+</svg>
