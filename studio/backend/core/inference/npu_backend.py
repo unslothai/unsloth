@@ -148,6 +148,7 @@ class _Loaded:
     context_length: Optional[int]
     requested_context_length: Optional[int]
     fitted_context_length: Optional[int] = None
+    flm_args: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -763,6 +764,7 @@ class LemonadeNpuBackend:
         self,
         model_id: str,
         context_length: Optional[int] = None,
+        flm_args: Optional[str] = None,
     ) -> NpuModel:
         """Load a downloaded model onto the NPU and return it once lemond reports it resident."""
         with self._lock:
@@ -786,10 +788,13 @@ class LemonadeNpuBackend:
                 self._raise_if_load_cancelled(model_id)
                 server.note(f"Loading {model.id} with a {ctx}-token context")
                 mark = server.output_mark()
+                json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False}
+                if flm_args:
+                    json_body["flm_args"] = flm_args
                 response = server.request(
                     "POST",
                     "/v1/load",
-                    json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False},
+                    json_body = json_body,
                     timeout = 900.0,
                 )
                 self._raise_if_load_cancelled(model_id)
@@ -808,6 +813,7 @@ class LemonadeNpuBackend:
                             context_length if context_length and context_length > 0 else None
                         ),
                         fitted_context_length = plan.fits,
+                        flm_args = flm_args or None,
                     )
                     self._loading = None
                     loaded = True

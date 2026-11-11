@@ -189,6 +189,7 @@ import {
   normalizeMaxSeqLength,
   residentIsServedByMlx,
   resolveInitialConfig,
+  npuLoadFields,
   savedContextPin,
   type PerModelConfig,
   loadedContextFields,
@@ -3548,9 +3549,8 @@ export function useChatModelRuntime() {
       ) {
         return;
       }
-      const contextLength = savedContextPin(
-        reload?.config ?? resolveInitialConfig(modelPath).config,
-      );
+      const config = reload?.config ?? resolveInitialConfig(modelPath).config;
+      const contextLength = savedContextPin(config);
       if (loadingModelRef.current ?? store.loadingModelPick) {
         toast.info("Another model is already loading", {
           description: "Wait for it to finish or cancel it first.",
@@ -3630,6 +3630,7 @@ export function useChatModelRuntime() {
           model_path: modelPath,
           hf_token: null,
           max_seq_length: contextLength ?? 0,
+          ...npuLoadFields(config),
           load_in_4bit: false,
           is_lora: false,
           force_reload: reload?.forceReload === true,

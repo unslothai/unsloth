@@ -17,6 +17,7 @@ import {
   normalizeMlxKvQuant,
   type PerModelConfig,
   normalizePerModelConfig,
+  npuLoadFields,
   perModelConfigSnapshot,
 } from "../model-config/per-model-config";
 import { forgetPerModelConfigsForOverrideKeys } from "../model-config/saved-run-settings";
@@ -49,6 +50,12 @@ export interface ApiModelOverride {
   mlx_ple_offload?: "off" | number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_expert_offload?: "off" | number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  npu_power_mode?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  npu_prefill_chunk_len?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  npu_img_pre_resize?: number;
   // Stored only when false: absent is the 4-bit default.
   // biome-ignore lint/style/useNamingConvention: API schema
   load_in_4bit?: boolean;
@@ -364,6 +371,9 @@ export function fromApiOverride(
     mlxFastVerify: override.mlx_fast_verify ?? local.mlxFastVerify,
     mlxPleOffload: override.mlx_ple_offload ?? local.mlxPleOffload,
     mlxExpertOffload: override.mlx_expert_offload ?? local.mlxExpertOffload,
+    npuPowerMode: override.npu_power_mode ?? local.npuPowerMode,
+    npuPrefillChunkLen: override.npu_prefill_chunk_len ?? local.npuPrefillChunkLen,
+    npuImgPreResize: override.npu_img_pre_resize ?? local.npuImgPreResize,
     loadIn4bit: override.load_in_4bit ?? local.loadIn4bit,
     chatTemplateOverride:
       override.chat_template_override ?? local.chatTemplateOverride,
@@ -468,6 +478,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.mlxFastVerify) {
     payload.mlx_fast_verify = true;
   }
+  // The row uses the load request's keys.
+  Object.assign(payload, npuLoadFields(config));
   if (config.loadIn4bit === false) {
     payload.load_in_4bit = false;
   }
