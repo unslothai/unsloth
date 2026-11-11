@@ -32,6 +32,7 @@ import {
   useHubModelSearch,
 } from "@/features/hub";
 import { useDebouncedValue } from "@/hooks";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { hubFetch } from "@/lib/hub-fetch";
 import { FolderSearchIcon } from "@/lib/folder-icons";
 import { CpuIcon, Search01Icon } from "@hugeicons/core-free-icons";
@@ -323,6 +324,7 @@ export function Q4nxConvertCard() {
     void modelInfo({
       name: repoId,
       accessToken,
+      hubUrl: getHfEndpoint(),
       fetch: hubFetch,
       additionalFields: Q4NX_INFO_FIELDS,
     })
