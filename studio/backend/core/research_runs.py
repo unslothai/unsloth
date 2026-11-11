@@ -2860,7 +2860,7 @@ class ResearchSupervisor:
             web_entries,
             document_entries,
             catalog_chars
-            if total_budget is None
+            if total_budget is None or not document_entries
             else max(
                 0,
                 total_budget

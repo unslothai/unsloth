@@ -191,3 +191,14 @@ def test_small_context_keeps_web_results_when_the_documents_match_nothing(
     )
 
     assert all(f"web-{step}-0" in prompt for step in range(STEPS))
+
+
+def test_web_only_catalog_is_not_trimmed(research_home, monkeypatch):
+    prompt = _synthesis_prompt(
+        monkeypatch,
+        lambda _step: "No matching chunks were found in the knowledge base.",
+        context_length = 4_096,
+    )
+
+    catalog = prompt.split("<source_catalog>\n", 1)[1].split("</source_catalog>", 1)[0]
+    assert catalog.count("URL: ") == len(research_db.get_run("run-1")["sources"])
