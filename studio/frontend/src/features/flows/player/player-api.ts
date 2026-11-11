@@ -9,13 +9,20 @@ import type {
   FlowDocument,
   FlowKind,
   MediaValue,
+  ModelAsset,
   RunStatus,
   StoryManifest,
+  WorldProp3d,
+  WorldSpec,
 } from "../types";
 
 export const PLAYER_ENTRYPOINTS = new Set([
   "story.next_scene",
   "story.scene_art",
+  "world.npc_reply",
+  "world.npc_plan",
+  "world.npc_chat",
+  "world.describe_place",
   "chat.output",
 ]);
 
@@ -23,11 +30,31 @@ export function rerollTargets(doc: FlowDocument): string[] {
   return doc.nodes
     .filter(
       (n) =>
-        n.type.startsWith("story.") &&
+        /^(story|world)\./.test(n.type) &&
         !PLAYER_ENTRYPOINTS.has(n.type) &&
         !n.disabled,
     )
     .map((n) => n.id);
+}
+
+export function withWorldProps(
+  doc: FlowDocument,
+  props: WorldProp3d[],
+  player?: string,
+): FlowDocument | null {
+  const target = doc.nodes.some(
+    (n) => n.id === player && n.type === "world.play" && !n.disabled,
+  )
+    ? player
+    : undefined;
+  let found = false;
+  const nodes = doc.nodes.map((n) => {
+    if (n.type !== "world.play" || n.disabled) return n;
+    if (target && n.id !== target) return n;
+    found = true;
+    return { ...n, params: { ...(n.params ?? {}), props3d: props } };
+  });
+  return found ? { ...doc, nodes } : null;
 }
 
 export interface SessionRecord {
@@ -76,6 +103,7 @@ export interface PlayerApi {
     flowId: string,
   ): Promise<{ id: string; name: string; kind: FlowKind; doc?: FlowDocument }>;
   story(flowId: string): Promise<StoryManifest>;
+  world(flowId: string): Promise<WorldSpec>;
   invoke(
     flowId: string,
     entry: string,
@@ -104,6 +132,12 @@ export interface PlayerApi {
     signal?: AbortSignal,
   ): Promise<void>;
   mediaBlob(media: MediaValue): Promise<Blob>;
+  saveWorldProps?(
+    flowId: string,
+    props: WorldProp3d[],
+    player?: string,
+  ): Promise<void>;
+  uploadModel?(file: Blob, name: string): Promise<ModelAsset>;
 }
 
 export class PlayerApiError extends Error {
@@ -161,6 +195,9 @@ export const playerApi: PlayerApi = {
     return json<StoryManifest>(
       await authFetch(`/api/flows/${enc(flowId)}/story`),
     );
+  },
+  async world(flowId) {
+    return json<WorldSpec>(await authFetch(`/api/flows/${enc(flowId)}/world`));
   },
   async invoke(flowId, entry, inputs, opts) {
     const res = await authFetch(
@@ -262,6 +299,35 @@ export const playerApi: PlayerApi = {
         res.status,
       );
     return res.blob();
+  },
+  async saveWorldProps(flowId, props, player) {
+    const rec = await json<{ doc: FlowDocument; updatedAt: number }>(
+      await authFetch(`/api/flows/${enc(flowId)}`),
+    );
+    const doc = withWorldProps(rec.doc, props, player);
+    if (!doc)
+      throw new PlayerApiError(
+        "Add a World Player block to the flow to keep scenery",
+        400,
+      );
+    await json<unknown>(
+      await authFetch(`/api/flows/${enc(flowId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc, baseUpdatedAt: rec.updatedAt }),
+      }),
+    );
+  },
+  async uploadModel(file, name) {
+    const q = new URLSearchParams({ name, mime: "model/gltf-binary" });
+    const body = await json<{ media: ModelAsset }>(
+      await authFetch(`/api/flows/assets?${q.toString()}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      }),
+    );
+    return body.media;
   },
 };
 

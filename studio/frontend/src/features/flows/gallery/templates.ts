@@ -133,6 +133,39 @@ export function templateDocument(kind: FlowKind): FlowDocument {
     ];
     return doc;
   }
+  if (kind === "world") {
+    const doc = base(
+      "world",
+      "My world",
+      "A small top-down world: an LLM designs it, the image model paints it, you explore it.",
+    );
+    doc.nodes = [
+      node(
+        "premise",
+        "input.text",
+        [0, 80],
+        {
+          value:
+            "A cozy seaside village where the lighthouse keeper lost her cat.",
+        },
+        "Premise",
+      ),
+      node("gen", "world.generator", [320, 40], {
+        npcs: 4,
+        items: 4,
+        biome: "beach",
+      }),
+      node("art", "world.art", [680, 40], {}),
+      node("play", "world.play", [1040, 40], {}),
+      node("reply", "world.npc_reply", [680, 320], {}),
+    ];
+    doc.edges = [
+      edge("premise", "text", "gen", "premise"),
+      edge("gen", "world", "art", "world"),
+      edge("art", "world", "play", "world"),
+    ];
+    return doc;
+  }
   const doc = base("pipeline", "My flow", "");
   doc.nodes = [
     node(

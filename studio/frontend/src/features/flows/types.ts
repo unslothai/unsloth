@@ -6,7 +6,7 @@
 export const FLOW_FORMAT = "unsloth-flow";
 export const FLOW_FORMAT_VERSION = 1;
 
-export type FlowKind = "pipeline" | "story";
+export type FlowKind = "pipeline" | "story" | "world";
 
 export type PortType =
   | "text"
@@ -22,6 +22,7 @@ export type PortType =
   | "model"
   | "checkpoint"
   | "story"
+  | "world"
   | "table"
   | "chart"
   | "heatmap"
@@ -140,6 +141,7 @@ export type ParamKind =
   | "expr"
   | "asset"
   | "story"
+  | "world"
   | "schema"
   | "lora_list";
 
@@ -367,6 +369,181 @@ export interface StoryManifest {
   style?: string | null;
   sounds?: Record<string, MediaValue> | null;
   entry_points?: Record<string, string>;
+}
+
+export type WorldBiome =
+  | "meadow"
+  | "forest"
+  | "desert"
+  | "snow"
+  | "town"
+  | "dungeon"
+  | "beach";
+
+export interface WorldNpc {
+  id: string;
+  name: string;
+  persona: string;
+  greeting: string;
+  sprite?: MediaValue | null;
+  sprite_prompt?: string | null;
+  x?: number | null;
+  y?: number | null;
+  wander?: boolean;
+  routine?: string;
+  relationships?: Record<string, string>;
+  seed_memories?: { text: string; importance: number }[];
+  role?: "rival" | "hostile" | null;
+}
+
+export interface WorldItem {
+  id: string;
+  name: string;
+  description: string;
+  sprite?: MediaValue | null;
+  sprite_prompt?: string | null;
+  x?: number | null;
+  y?: number | null;
+}
+
+export interface WorldQuest {
+  id: string;
+  title: string;
+  description: string;
+  giver: string;
+  requires_item?: string | null;
+  reward_text: string;
+  set?: Record<string, Expr>;
+}
+
+export interface WorldRegion {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  on_enter_text: string;
+}
+
+export interface WorldPlace {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface WorldSimulation {
+  enabled: boolean;
+  minutes_per_second: number;
+  start_minute: number;
+  places: WorldPlace[];
+  chat_cooldown_min: number;
+  calls_per_minute: number;
+  needs?: boolean;
+  options?: boolean;
+  plan_cache?: number;
+  reflect_at?: number;
+  rate_batch?: number;
+  relationships?: boolean;
+}
+
+export interface WorldSpec {
+  title: string;
+  seed: number;
+  width: number;
+  height: number;
+  tile_size: number;
+  biome: WorldBiome;
+  tileset: Record<string, MediaValue>;
+  player: {
+    name: string;
+    sprite?: MediaValue | null;
+    sprite_prompt?: string | null;
+  };
+  npcs: WorldNpc[];
+  items: WorldItem[];
+  quests: WorldQuest[];
+  regions: WorldRegion[];
+  vars: Record<string, unknown>;
+  intro_text: string;
+  style?: string | null;
+  entry_points?: Record<string, string>;
+  simulation?: WorldSimulation;
+  summarise?: boolean;
+  new_quests?: boolean;
+  autonomy?: WorldAutonomy | null;
+  action?: WorldAction | null;
+  render?: "2d" | "3d";
+  view3d?: World3dView;
+  props3d?: WorldProp3d[];
+  player_node?: string;
+}
+
+export type WorldPropKind =
+  | "house"
+  | "tree"
+  | "lamp"
+  | "fence"
+  | "well"
+  | "crate"
+  | "rock"
+  | "bench"
+  | "stall"
+  | "door"
+  | "chest"
+  | "lever"
+  | "model";
+
+export interface ModelAsset {
+  kind: "model";
+  ref: string;
+  url?: string | null;
+  mime?: string | null;
+}
+
+export interface WorldProp3d {
+  id: string;
+  kind: WorldPropKind;
+  asset?: ModelAsset;
+  name?: string;
+  x: number;
+  y: number;
+  rot?: number;
+  scale?: number;
+  solid?: boolean;
+  open?: boolean;
+  locked_by?: string;
+  contents?: string[];
+  targets?: string[];
+}
+
+export interface World3dView {
+  time_of_day?: "dawn" | "day" | "dusk" | "night";
+  sky?: string;
+  fog?: number;
+  camera_height?: number;
+  walk_speed?: number;
+  terrain?: number;
+  ambient?: MediaValue;
+}
+
+export interface WorldAction {
+  movement?: boolean;
+  shooter?: boolean;
+  verbs?: boolean;
+  ai?: "v2";
+  barks?: Partial<Record<string, string[]>>;
+}
+
+export interface WorldAutonomy {
+  trade?: boolean;
+  homes?: boolean;
+  quests?: boolean;
+  rivals?: boolean;
+  enemies?: boolean;
 }
 
 export type RunStatus =

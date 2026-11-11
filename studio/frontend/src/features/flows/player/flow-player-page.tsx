@@ -9,6 +9,8 @@ import {
   SparklesIcon,
 } from "lucide-react";
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useRef,
@@ -20,31 +22,42 @@ import type {
   FlowKind,
   RunStatus,
   StoryManifest,
+  WorldSpec,
 } from "../types";
 import { ChatPlayer } from "./chat/chat-player";
 import { type ChatEntry, chatEntry } from "./chat/chat-state";
 import { type PlayerApi, clearMediaUrls, playerApi } from "./player-api";
 import { StoryPlayer, storySeed } from "./story/story-player";
+import type { WorldGameHandle } from "./world/phaser-game";
+
+// The world player pulls in Phaser through its own import(); keep it out of the story path entirely.
+const WorldPlayer = lazy(() =>
+  import("./world/world-player").then((m) => ({ default: m.WorldPlayer })),
+);
 
 type Loaded =
   | { kind: "story"; manifest: StoryManifest }
+  | { kind: "world"; spec: WorldSpec }
   | { kind: "chat"; entry: ChatEntry }
   | { kind: "pipeline" };
 
 const GENERATORS: Record<string, string> = {
   story: "story.generator",
+  world: "world.generator",
 };
 
 export interface FlowPlayerPageProps {
   flowId: string;
   api?: PlayerApi;
   onExit?: () => void;
+  onWorldReady?: (game: WorldGameHandle) => void;
 }
 
 export function FlowPlayerPage({
   flowId,
   api = playerApi,
   onExit,
+  onWorldReady,
 }: FlowPlayerPageProps) {
   const router = useRouter({ warn: false }) as
     ReturnType<typeof useRouter> | undefined;
@@ -78,6 +91,9 @@ export function FlowPlayerPage({
         if (kind === "story") {
           const manifest = await api.story(flowId);
           if (live) setLoaded({ kind: "story", manifest });
+        } else if (kind === "world") {
+          const spec = await api.world(flowId);
+          if (live) setLoaded({ kind: "world", spec });
         } else if (live) {
           const entry = chatEntry(info.doc);
           setLoaded(entry ? { kind: "chat", entry } : { kind: "pipeline" });
@@ -137,8 +153,8 @@ export function FlowPlayerPage({
             </p>
             <p className="max-w-lg text-white/65">{error}</p>
             <p className="max-w-lg text-sm text-white/45">
-              Run the flow in the editor first (it writes the story), then
-              press Play again.
+              Run the flow in the editor first (it writes the story or builds
+              the world), then press Play again.
             </p>
             <button
               type="button"
@@ -160,6 +176,25 @@ export function FlowPlayerPage({
               onReroll={reroll}
               onExit={exit}
             />
+          ) : loaded.kind === "world" ? (
+            <Suspense
+              fallback={
+                <div className="flex h-full items-center justify-center text-white/60">
+                  Starting the world...
+                </div>
+              }
+            >
+              <WorldPlayer
+                key={version}
+                onReady={onWorldReady}
+                flowId={flowId}
+                api={api}
+                spec={loaded.spec}
+                canReroll={Boolean(generator)}
+                onReroll={reroll}
+                onExit={exit}
+              />
+            </Suspense>
           ) : loaded.kind === "chat" ? (
             <ChatPlayer
               key={version}
@@ -191,7 +226,7 @@ export function FlowPlayerPage({
           <div className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/75 text-white backdrop-blur-sm">
             <SparklesIcon className="size-7 animate-pulse text-fuchsia-300" />
             <p className="text-lg">
-              Dreaming up a new story...
+              Dreaming up a new {doc?.kind === "world" ? "world" : "story"}...
             </p>
             <p className="text-sm text-white/50">
               {rerolling === "starting" ? "Starting" : rerolling}

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Flow document, the values that travel along edges, and the story manifest.
+"""The Flow document, the values that travel along edges, the story manifest and the world spec.
 
 This module is the contract shared with the frontend (`studio/frontend/src/features/flows/types.ts`).
 A Flow document is pure data: it names node types from the built-in registry and never carries code,
@@ -28,7 +28,7 @@ MAX_GPU_OPS_PER_RUN = 2000
 MAX_RUN_SECONDS = 24 * 3600
 MAX_STRING_PARAM = 200_000
 
-FlowKind = Literal["pipeline", "story"]
+FlowKind = Literal["pipeline", "story", "world"]
 
 PortType = Literal[
     "text",
@@ -43,6 +43,7 @@ PortType = Literal[
     "model",
     "checkpoint",
     "story",
+    "world",
     "any",
     "flow",
 ]
@@ -291,6 +292,175 @@ class StoryManifest(_Strict):
     style: Optional[str] = None
     sounds: Optional[dict[str, dict[str, Any]]] = None
     entry_points: dict[str, str] = Field(default_factory = dict)
+
+
+class WorldNpc(_Strict):
+    id: str
+    name: str
+    persona: str = ""
+    greeting: str = ""
+    sprite: Optional[dict[str, Any]] = None
+    sprite_prompt: Optional[str] = None
+    x: Optional[int] = None
+    y: Optional[int] = None
+    wander: bool = True
+    routine: Optional[str] = None
+    relationships: Optional[dict[str, str]] = None
+    seed_memories: Optional[list[dict[str, Any]]] = None  # [{text, importance}]
+    role: Optional[Literal["rival", "hostile"]] = None
+
+
+class WorldItem(_Strict):
+    id: str
+    name: str
+    description: str = ""
+    sprite: Optional[dict[str, Any]] = None
+    sprite_prompt: Optional[str] = None
+    x: Optional[int] = None
+    y: Optional[int] = None
+
+
+class WorldQuest(_Strict):
+    id: str
+    title: str
+    description: str = ""
+    giver: str
+    requires_item: Optional[str] = None
+    reward_text: str = ""
+    set: dict[str, Expr] = Field(default_factory = dict)
+
+
+class WorldRegion(_Strict):
+    id: str
+    name: str
+    x: int
+    y: int
+    w: int
+    h: int
+    on_enter_text: str = ""
+
+
+class WorldPlace(_Strict):
+    id: str
+    name: str
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class WorldSimulation(_Strict):
+    """Generative Agents style village life: a game clock, NPC memories, daily plans and NPC to NPC chats."""
+
+    enabled: bool = True
+    minutes_per_second: float = 2.0
+    start_minute: int = 480
+    places: list[WorldPlace] = Field(default_factory = list)
+    chat_cooldown_min: int = 120  # game minutes per NPC pair
+    calls_per_minute: int = 4  # background LLM calls per real minute, across every NPC
+    needs: bool = True  # Sims-style needs pick what villagers do between plan blocks
+    options: Optional[bool] = None  # option-action plans that run until a termination condition
+    plan_cache: Optional[int] = (
+        None  # LRU size of reusable plans keyed by role, needs, time and place
+    )
+    reflect_at: Optional[int] = (
+        None  # reflect when summed importance since the last reflection crosses this
+    )
+    rate_batch: Optional[int] = None  # observations scored per importance call
+    relationships: Optional[bool] = None  # pair affinity and facts, rumour source chains
+
+
+class WorldAutonomy(_Strict):
+    trade: bool = False  # make, buy and sell goods
+    homes: bool = False  # claim a free house or build one
+    quests: bool = False  # a rival races the player for quest items
+    rivals: bool = False  # the quest director may add rivals
+    enemies: bool = False  # hostile villagers chase and rob (non-lethal)
+
+
+class WorldAction(_Strict):
+    """Action play in the 3D view; every flag off keeps walking as it was."""
+
+    movement: bool = False  # gravity, jumping, sprint, crouch and collisions with scenery
+    shooter: bool = False  # a hitscan weapon, health and ammo; hostile villagers fight back
+    verbs: Optional[bool] = None  # dash; with the shooter also melee and thrown rocks (3D only)
+    ai: Optional[Literal["v2"]] = (
+        None  # hostiles see, hear, path, flank and take cover (3D shooter)
+    )
+    barks: Optional[dict[str, list[str]]] = (
+        None  # lines hostiles shout, by event: see, hear, lose, pain, flee, attack
+    )
+
+
+class World3dView(_Strict):
+    time_of_day: Optional[Literal["dawn", "day", "dusk", "night"]] = None
+    sky: Optional[str] = None  # "#rrggbb"; the time of day picks one when unset
+    fog: Optional[float] = Field(default = None, ge = 0, le = 1)  # 0 = clear, 1 = thick
+    camera_height: Optional[float] = Field(default = None, ge = 0.3, le = 4)  # eye height in tiles
+    walk_speed: Optional[float] = Field(default = None, ge = 0.5, le = 20)  # tiles per second
+    terrain: Optional[float] = Field(default = None, ge = 0, le = 3)  # hill height scale
+    ambient: Optional[dict[str, Any]] = None  # an audio MediaValue looped while you play
+
+
+class WorldProp3d(_Strict):
+    """A piece of scenery placed in the 3D editor: a built-in low-poly prop or an imported GLB model."""
+
+    id: str
+    kind: Literal[
+        "house",
+        "tree",
+        "lamp",
+        "fence",
+        "well",
+        "crate",
+        "rock",
+        "bench",
+        "stall",
+        "door",
+        "chest",
+        "lever",
+        "model",
+    ]
+    asset: Optional[dict[str, Any]] = None  # the GLB flow asset of a "model" prop
+    name: Optional[str] = None
+    x: float  # tile units; a prop snapped to a tile stands at its centre (x + 0.5)
+    y: float
+    rot: float = 0  # degrees about the vertical axis
+    scale: float = 1
+    solid: bool = True  # blocks walking on its tile, in 2D and 3D
+    open: Optional[bool] = None  # a door, chest or lever that starts open (or pulled)
+    locked_by: Optional[str] = None  # a door's key: the item id the player must carry
+    contents: Optional[list[str]] = None  # item ids a chest gives, once
+    targets: Optional[list[str]] = None  # door ids a lever opens and closes
+
+
+class WorldSpec(_Strict):
+    title: str
+    seed: int = 0
+    width: int = Field(default = 48, ge = 8, le = 256)
+    height: int = Field(default = 36, ge = 8, le = 256)
+    tile_size: int = Field(default = 32, ge = 8, le = 128)
+    biome: Literal["meadow", "forest", "desert", "snow", "town", "dungeon", "beach"] = "meadow"
+    tileset: dict[str, dict[str, Any]] = Field(default_factory = dict)
+    player: dict[str, Any] = Field(default_factory = lambda: {"name": "You"})
+    npcs: list[WorldNpc] = Field(default_factory = list)
+    items: list[WorldItem] = Field(default_factory = list)
+    quests: list[WorldQuest] = Field(default_factory = list)
+    regions: list[WorldRegion] = Field(default_factory = list)
+    vars: dict[str, Any] = Field(default_factory = dict)
+    intro_text: str = ""
+    style: Optional[str] = None
+    entry_points: dict[str, str] = Field(default_factory = dict)
+    simulation: Optional[WorldSimulation] = None
+    autonomy: Optional[WorldAutonomy] = None
+    action: Optional[WorldAction] = None
+    render: Optional[Literal["2d", "3d"]] = None
+    view3d: Optional[World3dView] = None
+    props3d: Optional[list[WorldProp3d]] = None
+    # Village Rivals and Mayor mode settings live in a separate PR: kept opaque so saved worlds still load.
+    rivals: Optional[dict[str, Any]] = None
+    player_node: Optional[str] = None
+    city: Optional[dict[str, Any]] = None
 
 
 RunStatus = Literal[

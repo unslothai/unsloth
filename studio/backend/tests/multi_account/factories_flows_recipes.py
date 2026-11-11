@@ -166,6 +166,13 @@ FACTORIES = {
         absent = MARKER,
         reason = "a flow without story blocks may be refused with 422 after it is found",
     ),
+    "routes.flows:GET:/{flow_id}/world": Factory(
+        "flow",
+        right = (200, 404, 422),
+        self_expected = (200, 404, 422),
+        absent = MARKER,
+        reason = "a found flow that has not made a world yet answers 404 (or 422 for a bad world)",
+    ),
     "routes.flows:GET:/{flow_id}/latest-outputs": Factory("flow", fragment = MARKER, absent = MARKER),
     "routes.flows:GET:/{flow_id}/nodes/{node_id}/history": Factory(
         "flow", fragment = MARKER, absent = MARKER
