@@ -37,6 +37,7 @@ def host(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_npu_load_cache", None, raising = False)
     monkeypatch.setattr(hw, "_npu_luid", None, raising = False)
+    monkeypatch.setattr(hw, "_npu_luid_at", 0.0, raising = False)
     monkeypatch.setattr(hw, "_npu_hardware", {"present": True, "supported": True}, raising = False)
     clock = _Clock()
     monkeypatch.setattr(hw, "time", clock)
@@ -119,6 +120,12 @@ def test_an_idle_npu_missing_from_the_counters_keeps_its_luid(host):
     host["clock"].now += 30.0
     assert hw.npu_load_percent() is None
     assert sum("Get-PnpDeviceProperty" in ps for ps in host["calls"]) == 1
+    # A driver restart can hand the NPU a new LUID, so a long silence rechecks it.
+    host["clock"].now += 60.0
+    hw.npu_load_percent()
+    host["clock"].now += 30.0
+    hw.npu_load_percent()
+    assert sum("Get-PnpDeviceProperty" in ps for ps in host["calls"]) == 2
 
 
 def test_a_luid_that_left_the_counters_is_looked_up_again(host):
