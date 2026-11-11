@@ -356,6 +356,10 @@ async def finetune(ctx: NodeContext) -> dict:
     if objective in ("grpo", "dpo", "orpo"):
         # Same RL formatter as training, so held-out rows read as they trained.
         facts.update(rl_objective = objective, rl_mapping = rl_mapping)
+        fallback = str(config.get("rl_system_prompt") or "").strip()
+        if fallback:
+            # Training fills each row with no system message of its own with it, row by row.
+            facts["system_prompt_fallback"] = fallback
     checkpoint.update(facts)
     return {
         "checkpoint": checkpoint,

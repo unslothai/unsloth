@@ -1573,6 +1573,20 @@ def test_the_checkpoint_names_the_columns_training_read(monkeypatch, objective, 
     assert {k: checkpoint.get(k) for k in facts} == facts
 
 
+def test_a_grpo_checkpoint_keeps_the_fallback_system_prompt_beside_a_system_column(monkeypatch):
+    from core.flows.specs import GRPO_SYSTEM_PROMPT
+
+    # The first row has a system column, so no one system prompt fits every row; rows with an
+    # empty cell still trained with the fallback, which Benchmark applies row by row.
+    row = {"system": "Answer in French.", "prompt": "2+2?", "answer": "4"}
+    test_the_checkpoint_names_the_columns_training_read(
+        monkeypatch,
+        "grpo",
+        row,
+        {"system_prompt": None, "system_prompt_fallback": GRPO_SYSTEM_PROMPT.strip()},
+    )
+
+
 def test_a_loop_s_seed_bookkeeping_never_reaches_training(monkeypatch):
     from core.flows import loop as loop_rounds
 

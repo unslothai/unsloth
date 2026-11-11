@@ -968,6 +968,14 @@ def test_an_rl_row_s_system_message_tells_rows_apart():
     assert loop_rounds.drop_test_rows([failure], rows[:1], spec) == [failure]
 
 
+def test_an_rl_row_without_a_system_message_is_known_by_training_s_fallback():
+    spec = {"kind": "rl", "objective": "grpo", "mapping": None, "system_prompt": "Be brief."}
+    row = {"system": "", "prompt": "What is the secret?", "answer": "BLUE"}
+    # As Benchmark asked it: the fallback system message before the question.
+    assert loop_rounds._asked(row, spec) == "Be brief.\n\nWhat is the secret?"
+    assert loop_rounds._asked({**row, "system": "Be loud."}, spec).startswith("Be loud.")
+
+
 def test_a_prompt_s_assistant_prefill_tells_rows_apart():
     spec = {"kind": "column", "column": "prompt", "whole": False}
     rows = [
