@@ -434,6 +434,7 @@ class _ServedWindowHandler(_Handler):
 def _served(**attrs):
     ep_mod._served_windows.clear()
     ep_mod._served_templates.clear()
+    ep_mod._ollama_last_windows.clear()
     return type("Served", (_ServedWindowHandler,), {"gets": [], **attrs})
 
 
@@ -656,11 +657,29 @@ def test_an_idle_ollama_model_keeps_the_window_it_last_loaded(monkeypatch):
             )
             windows.append(await client.served_context_window("qwen3:1.7b"))
             server.ps = []
+            # another connection's refresh purges expired entries from the TTL cache.
+            ep_mod._served_windows.clear()
             windows.append(await client.served_context_window("qwen3:1.7b"))
 
         _run(go)
     assert windows == [4_096, 4_096]
     assert server.gets == ["/api/ps", "/api/ps"]
+
+
+def test_a_bare_ollama_model_name_matches_its_latest_tag():
+    server = _served(
+        ps = [{"name": "qwen3:latest", "model": "qwen3:latest", "context_length": 4_096}]
+    )
+    _, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = server,
+        model = "qwen3",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert _fits(sent, 4_096)
 
 
 def test_auto_compact_off_never_asks_ollama_for_its_window():

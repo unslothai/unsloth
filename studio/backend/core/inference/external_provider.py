@@ -84,6 +84,8 @@ _GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
+# outlives the TTL: Ollama unloads an idle model after keep_alive and reloads it at the same window.
+_ollama_last_windows: dict[tuple[str, str, str], int] = {}
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -7556,8 +7558,12 @@ class ExternalProviderClient:
         response.raise_for_status()
         body = response.json()
         loaded = body.get("models") if isinstance(body, dict) else None
+        # /api/ps always names the tag; a bare name means :latest.
+        wanted = (model if ":" in model.rsplit("/", 1)[-1] else f"{model}:latest").casefold()
         for entry in loaded if isinstance(loaded, list) else []:
-            if isinstance(entry, dict) and model in (entry.get("name"), entry.get("model")):
+            if isinstance(entry, dict) and wanted in {
+                str(entry.get(k) or "").casefold() for k in ("name", "model")
+            }:
                 return _positive_int(entry.get("context_length"))
         return None
 
@@ -7637,9 +7643,11 @@ class ExternalProviderClient:
             window = await asyncio.wait_for(
                 self._read_served_window(model), timeout = _SERVED_WINDOW_TIMEOUT_S
             )
-            if window is None and self.provider_type == "ollama":
-                # /api/ps lists a model only while it is loaded; an idle one reloads the same window.
-                return cached[1] if cached else None
+            if self.provider_type == "ollama":
+                # /api/ps lists a model only while it is loaded.
+                if window is None:
+                    return _ollama_last_windows.get(key)
+                _ollama_last_windows[key] = window
         except httpx.ConnectError as exc:
             # retry a down or restarting server next turn instead of caching the miss for a minute.
             logger.info("No served context window from %s: %s", self.provider_type, exc)
