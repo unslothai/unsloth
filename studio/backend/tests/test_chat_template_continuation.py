@@ -569,7 +569,6 @@ def test_native_fallback_keeps_participant_names():
 
 
 def _templateless_backend():
-    """A base model: the tokenizer has no chat template, so the generic formatter renders."""
     InferenceBackend = _inference_backend()
 
     class _Tokenizer:
