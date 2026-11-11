@@ -106,7 +106,7 @@ def test_delegated_load_probes_config_and_adapter_once(tmp_path, monkeypatch):
 
 
 def _fresh_mapper_cache(monkeypatch, clock):
-    monkeypatch.setattr(loader_utils, "_NEW_MAPPER_CACHE", {"tables": None, "at": None})
+    monkeypatch.setattr(loader_utils, "_NEW_MAPPER_CACHE", {"entry": None})
     monkeypatch.setattr(loader_utils, "_time_monotonic", lambda: clock[0])
     monkeypatch.setattr(loader_utils, "_env_says_offline", lambda: False)
 

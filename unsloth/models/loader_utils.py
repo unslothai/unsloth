@@ -1823,27 +1823,26 @@ def _load_probe_memo_scope(fn):
 # Failed fetches retry after a short pause, not per load: a firewall would cost each load the timeout.
 _NEW_MAPPER_TTL_S = 3600.0
 _NEW_MAPPER_RETRY_S = 300.0
-_NEW_MAPPER_CACHE = {"tables": None, "at": None}
-_NEW_MAPPER_LOCK = _threading.Lock()
+_NEW_MAPPER_CACHE = {
+    "entry": None
+}  # (tables, fetched_at) in one slot, so a reader never sees a torn pair
 
 
 def _new_mapper_tables():
     memo = _LOAD_PROBE_MEMO.get()
     if memo is not None and "new_mapper" in memo:
         return tuple(dict(table) for table in memo["new_mapper"])
-    with _NEW_MAPPER_LOCK:
-        cached, at = _NEW_MAPPER_CACHE["tables"], _NEW_MAPPER_CACHE["at"]
-        now = _time_monotonic()
-        if cached is not None and at is not None:
-            age = now - at
-            if 0 <= age < (_NEW_MAPPER_TTL_S if any(cached) else _NEW_MAPPER_RETRY_S):
-                tables = tuple(dict(table) for table in cached)
-                if memo is not None and any(tables):
-                    memo["new_mapper"] = tuple(dict(table) for table in tables)
-                return tables
+    entry = _NEW_MAPPER_CACHE["entry"]
+    tables = None
+    if entry is not None:
+        cached, at = entry
+        age = _time_monotonic() - at
+        if 0 <= age < (_NEW_MAPPER_TTL_S if any(cached) else _NEW_MAPPER_RETRY_S):
+            tables = tuple(dict(table) for table in cached)
+    if tables is None:
+        # No lock around the fetch: a fork while another thread is fetching must not leave the child waiting.
         tables = _get_new_mapper()
-        _NEW_MAPPER_CACHE["tables"] = tuple(dict(table) for table in tables)
-        _NEW_MAPPER_CACHE["at"] = _time_monotonic()
+        _NEW_MAPPER_CACHE["entry"] = (tuple(dict(table) for table in tables), _time_monotonic())
     if memo is not None and any(tables):
         memo["new_mapper"] = tuple(dict(table) for table in tables)
     return tables

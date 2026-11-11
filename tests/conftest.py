@@ -98,7 +98,7 @@ def _fresh_new_mapper_cache():
     """Reset loader_utils' process-wide mapper cache; never imports unsloth."""
     loader_utils = sys.modules.get("unsloth.models.loader_utils")
     if loader_utils is not None and hasattr(loader_utils, "_NEW_MAPPER_CACHE"):
-        loader_utils._NEW_MAPPER_CACHE.update(tables = None, at = None)
+        loader_utils._NEW_MAPPER_CACHE["entry"] = None
 
 
 @pytest.hookimpl(trylast = True)
