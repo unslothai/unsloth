@@ -281,6 +281,9 @@ def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
         for repo in offered
         if not repo.lower().startswith("unsloth/")
         and "hunyuan" not in repo.lower()
+        # MiniMax-H3-Image's in-tree loader fetches only the files it reads from the official base (its shards and
+        # Studio's hosted int8 encoder), never a whole-repo snapshot, so it has no mirror.
+        and repo.lower() != "minimaxai/minimax-h3-image"
         and repo.lower() not in mirrored
     )
     assert not missing, f"catalog offers these vendor bases with no unsloth mirror: {missing}"

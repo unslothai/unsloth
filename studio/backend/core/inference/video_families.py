@@ -1101,7 +1101,17 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 # named "fastwan", "i2v" or "fun" is not such a checkpoint), and "fun" only right after the Wan2.1 token, where every Fun
 # release puts it.
 _WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
+_H3_IMAGE_NOT_VIDEO = (
+    "MiniMax-H3-Image is a text-to-image and image-editing model, not a video model. Load it on the Images page "
+    "instead."
+)
 _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
+    (
+        # MiniMax-H3-Image carries the "minimax-h3" token of the video family but is an image model (no audio, PDD
+        # heads): it loads on the Images page, never as a video pick.
+        r"(?:^|[/\\])(?=[^/\\]*minimax[-_ .]?h3[-_ .]?image)[^/\\]*[/\\]*$",
+        _H3_IMAGE_NOT_VIDEO,
+    ),
     (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
         "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
@@ -1163,6 +1173,8 @@ def unsupported_video_checkpoint_reason(
         for pattern, message in _UNSUPPORTED_VIDEO_CHECKPOINTS:
             if re.search(pattern, needle):
                 return message
+    if any(is_minimax_h3_image_folder(str(identifier)) for identifier in identifiers if identifier):
+        return _H3_IMAGE_NOT_VIDEO
     return None
 
 
@@ -1211,6 +1223,54 @@ def _detect_video_family_memo() -> dict:
         memo = {}
         _detect_video_family_memo_state = (_FAMILIES, _UNSUPPORTED_VIDEO_CHECKPOINTS, memo)
     return memo
+
+
+# What a MiniMax-H3-Image folder declares about itself (the image partition of the H3 release: no audio, PDD heads).
+_H3_IMAGE_CLASSES = frozenset(
+    (
+        "MiniMaxH3ImagePipeline",
+        "MiniMaxH3ImageModularPipeline",
+        "MiniMaxH3ImageBlocks",
+        "MiniMaxH3ImageTransformer2DModel",
+    )
+)
+
+
+def is_minimax_h3_image_folder(path: Optional[str]) -> bool:
+    """True for a local folder whose own metadata says MiniMax-H3-Image, whatever the folder is called: its
+    model_index / modular index (class, blocks, or the release's ``_minimax_h3.partition == "image"``) or its
+    diffusers transformer config. Such a folder is an Images-page model even though it shares the video family's
+    "minimax-h3" / "h3" tokens."""
+    import json
+
+    root = (path or "").strip()
+    if not root or not os.path.isdir(root):
+        return False
+    for name in (
+        "model_index.json",
+        "modular_model_index.json",
+        os.path.join("transformer_diffusers", "config.json"),
+        os.path.join("transformer", "config.json"),
+    ):
+        try:
+            target = os.path.join(root, name)
+            if not os.path.isfile(target) or os.path.getsize(target) > 1_000_000:
+                continue
+            with open(target, encoding = "utf-8-sig") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, RecursionError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if (
+            payload.get("_class_name") in _H3_IMAGE_CLASSES
+            or payload.get("_blocks_class_name") in _H3_IMAGE_CLASSES
+        ):
+            return True
+        h3 = payload.get("_minimax_h3")
+        if isinstance(h3, dict) and str(h3.get("partition", "")).strip().lower() == "image":
+            return True
+    return False
 
 
 def _detect_video_family_by_name(repo_id: str) -> Optional[VideoFamily]:
