@@ -164,7 +164,5 @@ def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
             }
     except Exception as exc:  # noqa: BLE001 - a capability probe never fails the page
         logger.info("STT capabilities for %r unavailable (%s)", model, type(exc).__name__)
-        result.update(
-            timestamps = "unsupported", speakers = False, accent_hint = False, aligner = None
-        )
+        result.update(timestamps = "unsupported", speakers = False, accent_hint = False, aligner = None)
     return result

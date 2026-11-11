@@ -115,7 +115,9 @@ def transcribe_window(
     prompt = kwargs.pop("prompt", None)
     if prompt:
         # Each window is its own generate call, so every window is conditioned on the same hint.
-        kwargs["prompt_ids"] = processor.get_prompt_ids(prompt, return_tensors = "pt").to(model.device)
+        kwargs["prompt_ids"] = processor.get_prompt_ids(prompt, return_tensors = "pt").to(
+            model.device
+        )
     return_timestamps = bool(kwargs.get("return_timestamps"))
     if return_timestamps:
         kwargs["force_unique_generate_call"] = True

@@ -440,8 +440,11 @@ def test_an_accent_for_a_model_that_cannot_take_it_is_422_not_ignored(stub, mode
 def test_an_accent_longer_than_200_characters_is_422(stub):
     with _client(ALICE) as client:
         response, _ = _post(
-            client, model = "small", engine = "transformers",
-            source = {"input_id": _input(ALICE)}, speaker_accent = "x" * 201,
+            client,
+            model = "small",
+            engine = "transformers",
+            source = {"input_id": _input(ALICE)},
+            speaker_accent = "x" * 201,
         )
     assert response.status_code == 422 and not stub.bytes
 
