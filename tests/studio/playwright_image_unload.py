@@ -25,9 +25,7 @@ def main():
     generating = True
     unloads = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless = True, executable_path = os.getenv("PW_CHROME")
-        )
+        browser = playwright.chromium.launch(headless = True, executable_path = os.getenv("PW_CHROME"))
         context = browser.new_context(viewport = {"width": 1440, "height": 900})
         context.add_init_script("localStorage.setItem('unsloth_auth_token', 'rendered-ui-test')")
 
@@ -40,7 +38,13 @@ def main():
             elif url.path == "/api/inference/images/generate-progress":
                 _json(
                     route,
-                    {"active": generating, "step": 1, "fraction": 0.25, "total_steps": 4, "eta_seconds": 1},
+                    {
+                        "active": generating,
+                        "step": 1,
+                        "fraction": 0.25,
+                        "total_steps": 4,
+                        "eta_seconds": 1,
+                    },
                 )
             elif url.path == "/api/inference/images/unload":
                 assert route.request.method == "POST"
