@@ -133,17 +133,17 @@ export class RowHeights {
   private measured = new Map<string, number>();
   private densities = new Map<string, Density>();
   private counted = new Map<string, { role: string; lines: number; px: number }>();
-  private width = 0;
+  private layout: string | null = null;
 
-  /** A new column width re-wraps every row, so every height is forgotten. */
-  resize(width: number): void {
-    if (width === this.width) return;
-    if (this.width > 0) {
+  /** A new column width or typography re-wraps every row, so every height is forgotten. */
+  relayout(layout: string): void {
+    if (layout === this.layout) return;
+    if (this.layout !== null) {
       this.measured.clear();
       this.densities.clear();
       this.counted.clear();
     }
-    this.width = width;
+    this.layout = layout;
   }
 
   private equations = new Map<string, Equations>();

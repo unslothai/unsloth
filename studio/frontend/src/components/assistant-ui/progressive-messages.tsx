@@ -373,6 +373,19 @@ function isPinned(row: Element, selection: Range | null): boolean {
   return false;
 }
 
+/** What a row's wrapping depends on. The column, not the viewport: Chat width moves only the
+ *  column, and the chat font, text size and code font change no width at all. */
+function rowLayout(row: HTMLElement): string {
+  const style = getComputedStyle(row);
+  return [
+    row.clientWidth,
+    style.fontFamily,
+    style.fontSize,
+    style.letterSpacing,
+    style.getPropertyValue("--custom-code-font"),
+  ].join("\n");
+}
+
 /** Rows the reader is working in stay mounted where they are, apart from the window, so a jump
  *  keeps an unsaved edit without mounting what lies between. `tail` is a reply being streamed. */
 function keepPinned(
@@ -579,9 +592,8 @@ function useThreadWindow(
     const lookup = readMetas();
     const total = lookup.metas.length;
     const current = winRef.current;
-    // The column, not the viewport: the Chat width setting moves only the column.
     const column = viewport.querySelector<HTMLElement>(ROW_SELECTOR);
-    if (column) heights.resize(column.clientWidth);
+    if (column) heights.relayout(rowLayout(column));
     const measured = measureRows(viewport, lookup, heights);
     // Also here: a row can replace its root (an edit opening) without the window committing.
     ordinals(viewport, lookup);

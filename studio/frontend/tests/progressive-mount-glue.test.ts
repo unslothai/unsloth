@@ -581,12 +581,17 @@ test("a mounted row that shrinks or re-wraps wakes the window, and growth does n
     /if \(before && \(height < before\.height - 1 \|\| Math\.abs\(width - before\.width\) > 1\)\) \{\s*wake = true;/,
   );
   assert.match(GLUE, /if \(wake\) schedule\(\);/);
-  // Heights are keyed on the column: the Chat width setting moves it, not the viewport.
+  // Heights are keyed on a row's layout: Chat width moves the column, not the viewport, and the
+  // chat font, text size and code font move no width.
   assert.match(
     GLUE,
-    /const column = viewport\.querySelector<HTMLElement>\(ROW_SELECTOR\);\s*if \(column\) heights\.resize\(column\.clientWidth\);/,
+    /const column = viewport\.querySelector<HTMLElement>\(ROW_SELECTOR\);\s*if \(column\) heights\.relayout\(rowLayout\(column\)\);/,
   );
-  assert.doesNotMatch(GLUE, /heights\.resize\(viewport\.clientWidth\)/);
+  const layout = section(GLUE, "function rowLayout(row: HTMLElement): string {", "\n}");
+  for (const part of ["row.clientWidth", "style.fontFamily", "style.fontSize", "style.letterSpacing", '"--custom-code-font"']) {
+    assert.ok(layout.includes(part), `the row layout key lost ${part}`);
+  }
+  assert.doesNotMatch(GLUE, /heights\.re(?:size|layout)\(viewport\.clientWidth\)/);
   // Rows come and go: removed ones are let go, so the observer holds no detached row.
   assert.match(GLUE, /rowResize\.unobserve\(node\)/);
   assert.match(GLUE, /rowsChanged\.observe\(viewport, \{ childList: true \}\);/);

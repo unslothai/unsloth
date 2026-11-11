@@ -515,14 +515,14 @@ test("a window holding the tail also holds the prompt its reply answers", () => 
   assert.deepEqual(holdTailTurn(held, 10, 8), held);
 });
 
-test("a new column width forgets every height, since every row re-wraps", () => {
+test("a new row layout forgets every height, since every row re-wraps", () => {
   const heights = new RowHeights();
   const row = meta(1);
-  heights.resize(800);
+  heights.relayout("800 Inter 15px");
   heights.measure(row, 900);
-  heights.resize(800);
-  assert.equal(heights.heightOf(row), 900, "the same width keeps them");
-  heights.resize(400);
+  heights.relayout("800 Inter 15px");
+  assert.equal(heights.heightOf(row), 900, "the same layout keeps them");
+  heights.relayout("800 Inter 18px");
   assert.equal(heights.has(row.id), false);
   assert.notEqual(heights.heightOf(row), 900);
 });
