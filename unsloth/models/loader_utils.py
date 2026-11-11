@@ -23,6 +23,7 @@ import contextlib
 import contextvars
 import copy
 import threading as _threading
+from time import monotonic as _time_monotonic
 import functools
 import inspect
 from typing import Union
@@ -1819,11 +1820,31 @@ def _load_probe_memo_scope(fn):
     return _wrapper
 
 
+# The upstream mapper.py only feeds the "upgrade Unsloth" hint, so one fetch serves every load for a while;
+# a failed fetch is retried after a short pause instead of on every load (a firewall would cost each load the timeout).
+_NEW_MAPPER_TTL_S = 3600.0
+_NEW_MAPPER_RETRY_S = 300.0
+_NEW_MAPPER_CACHE = {"tables": None, "at": None}
+_NEW_MAPPER_LOCK = _threading.Lock()
+
+
 def _new_mapper_tables():
     memo = _LOAD_PROBE_MEMO.get()
     if memo is not None and "new_mapper" in memo:
         return tuple(dict(table) for table in memo["new_mapper"])
-    tables = _get_new_mapper()
+    with _NEW_MAPPER_LOCK:
+        cached, at = _NEW_MAPPER_CACHE["tables"], _NEW_MAPPER_CACHE["at"]
+        now = _time_monotonic()
+        if cached is not None and at is not None:
+            age = now - at
+            if 0 <= age < (_NEW_MAPPER_TTL_S if any(cached) else _NEW_MAPPER_RETRY_S):
+                tables = tuple(dict(table) for table in cached)
+                if memo is not None and any(tables):
+                    memo["new_mapper"] = tuple(dict(table) for table in tables)
+                return tables
+        tables = _get_new_mapper()
+        _NEW_MAPPER_CACHE["tables"] = tuple(dict(table) for table in tables)
+        _NEW_MAPPER_CACHE["at"] = _time_monotonic()
     if memo is not None and any(tables):
         memo["new_mapper"] = tuple(dict(table) for table in tables)
     return tables

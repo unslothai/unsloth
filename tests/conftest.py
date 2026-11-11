@@ -93,6 +93,15 @@ def _fresh_parallel_layout():
         tp_env._reset_env_layout()
 
 
+@pytest.fixture(autouse = True)
+def _fresh_new_mapper_cache():
+    """loader_utils keeps the fetched upstream mapper.py for an hour per process; each test starts with none, so a
+    test that serves its own mapper sees it. Only when the module is already imported: no unsloth import here."""
+    loader_utils = sys.modules.get("unsloth.models.loader_utils")
+    if loader_utils is not None and hasattr(loader_utils, "_NEW_MAPPER_CACHE"):
+        loader_utils._NEW_MAPPER_CACHE.update(tables = None, at = None)
+
+
 @pytest.hookimpl(trylast = True)
 def pytest_collection_modifyitems(config, items):
     """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
