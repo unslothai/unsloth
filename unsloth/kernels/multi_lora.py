@@ -138,6 +138,7 @@ if HAS_TRITON:
         SCALE: tl.constexpr,  # per-adapter scales given
         IEEE: tl.constexpr,  # fp32 inputs: ieee dot
         UPCAST: tl.constexpr,  # mixed input dtypes: upcast both tiles to fp32
+        ROUND: tl.constexpr,  # 16-bit inputs, fp32 OUT: keep fp16's 11 significant bits, round to nearest
         BLOCK_M: tl.constexpr,  # token tile, fixed 64
         BLOCK_N: tl.constexpr,  # from N (rank or out_features)
         BLOCK_K: tl.constexpr,  # from K (in_features or rank)
@@ -192,6 +193,11 @@ if HAS_TRITON:
                 acc += tl.dot(a, b)
         if SCALE:
             acc *= tl.load(SCALES + u).to(tl.float32)
+        if ROUND:
+            # tf32 dots read the top 11 significant bits and drop the rest (round toward zero). Rounding to
+            # nearest here makes them exact, so dH carries fp16's precision with fp32's range.
+            bits = acc.to(tl.int32, bitcast = True)
+            acc = ((bits + 0x1000) & -8192).to(tl.float32, bitcast = True)
         ptrs = OUT + out_rows[:, None] * stride_out + offs_n[None, :]
         mask = mask_m[:, None] & mask_n[None, :]
         if ADD:
@@ -319,6 +325,7 @@ def _launch_seg_mm(
         SCALE = scales is not None,
         IEEE = inp.dtype == torch.float32 and W.dtype == torch.float32,
         UPCAST = inp.dtype != W.dtype,
+        ROUND = out.dtype == torch.float32 and inp.dtype != torch.float32,
         BLOCK_M = BLOCK_M,
         BLOCK_N = BLOCK_N,
         BLOCK_K = BLOCK_K,
