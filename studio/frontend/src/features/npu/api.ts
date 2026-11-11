@@ -78,15 +78,29 @@ export function npuRowsFor(
         (!needle ||
           `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
     )
-    .sort((a, b) => qwenVersion(b.id) - qwenVersion(a.id));
+    .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
 }
 
-const QWEN_VERSION = /^qwen(\d+(?:\.\d+)?)/i;
+// Newest models that run on a Strix laptop NPU first. Big ones (qwen3.6-moe 35B-A3B, qwen3.8
+// 27B) fail to load or take hours to download there, so they keep the backend's order after.
+const NPU_RECOMMENDED = [
+  "qwen3.5:9b",
+  "qwen3.5:4b",
+  "gemma4-it:e4b",
+  "gpt-oss:20b",
+  "lfm3:1.7b",
+  "nemotron3.5-bolt:e4b",
+  "qwen3vl-it:4b",
+  "gemma4-it:e2b",
+  "qwen3.5:2b",
+  "qwen3.5:0.8b",
+  "phi4-mini-it:4b",
+  "llama3.2:3b",
+];
 
-// Newest Qwen first; everything else keeps the backend's order after them.
-function qwenVersion(id: string): number {
-  const match = QWEN_VERSION.exec(id);
-  return match ? Number(match[1]) : -1;
+function npuRank(checkpoint: string): number {
+  const rank = NPU_RECOMMENDED.indexOf(checkpoint);
+  return rank === -1 ? NPU_RECOMMENDED.length : rank;
 }
 
 /** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */
