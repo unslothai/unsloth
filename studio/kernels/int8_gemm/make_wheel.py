@@ -2,11 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pack a built library into ``unsloth_studio_i8gemm-<version>-py3-none-<platform>.whl``: one package directory with the
-binary under ``lib/`` and a tiny ``__init__`` naming it. py3-none because nothing in it links Python or torch, so one
-wheel per platform covers every interpreter, torch and CUDA 12 / 13 driver.
+"""Pack a built library into ``unsloth_studio_i8gemm-<version>-py3-none-<platform>.whl``.
 
-  python make_wheel.py --lib build/libunsloth_i8gemm.so --platform manylinux_2_28_x86_64 --out dist/
+python make_wheel.py --lib build/libunsloth_i8gemm.so --platform manylinux_2_28_x86_64 --out dist/
 """
 
 from __future__ import annotations

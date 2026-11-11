@@ -38,7 +38,7 @@ _MARK = "_unsloth_i8_gemm_prev"
 _FWD = "_unsloth_i8_gemm_fwd"
 # on a SwiGLU MLP whose down projection takes its codes from the gate / value halves
 _FF_MARK = "_unsloth_i8_gemm_swiglu_prev"
-# on a Linear whose fp16 input runs the prebuilt sm75 kernel (fp16 out, torchao's fp16 epilogue)
+# fp16 input runs the sm75 prebuilt kernel
 _F16 = "_unsloth_i8_gemm_f16"
 _OP16_NAME = "int8_mm_dequant_f16"
 _SWIGLU_FF_CLASSES = ("QwenImage21SwiGLUFeedForward",)
@@ -486,8 +486,7 @@ def tma_tile_for(index: Any, m: int) -> Optional[tuple]:
 
 
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
-    """Op body: the prebuilt CUTLASS tile that won this weight's race, else the probed Triton tile for this device and
-    shape, else (launch failure, ``_aligned`` false) the stock epilogue."""
+    """Op body: race-won CUTLASS tile, else probed Triton tile, else the stock epilogue."""
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     index = a.device.index
@@ -497,7 +496,7 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
         from . import diffusion_int8_cutlass as cut
         try:
             return cut.launch(a, w, xs, ws, bias, _CUT_FAMILY[index], tile, torch.bfloat16)
-        except Exception:  # noqa: BLE001 - a failed launch drops the prebuilt kernel on this card, same math below
+        except Exception:  # noqa: BLE001 - drops the prebuilt kernel on this card
             _CUT_PLAN.pop(index, None)
     cfg = tile_for(index, a.shape[0], w.shape[0], a.shape[1])
     if cfg is not None and w.stride(-1) == 1 and w.device == a.device and _aligned(a, w):
@@ -521,11 +520,10 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     return reference(a, w, xs, ws, bias)
 
 
-# device index -> {(N, K, xs dtype, ws dtype, bias): {race M: tile or None}} for the prebuilt CUTLASS kernel; a key
-# whose large-M entry holds a tile runs fused (``_cutlass_fused``), the others keep this module's path.
+# index -> {(N, K, xs dtype, ws dtype, bias): {race M: tile or None}}; a large-M tile runs ``_cutlass_fused``
 _CUT_PLAN: dict = {}
 _CUT_FAMILY: dict = {}
-_CUT_RACES: dict = {}  # index -> {key: race record} for the log / tests
+_CUT_RACES: dict = {}
 _CUT_LARGE_M = 1024
 _CUT_CACHE_NAME = "diffusion_int8_cutlass_race.json"
 _CUT_CACHE_MAX = 512
@@ -544,7 +542,6 @@ def _cutlass_tile(
     bias: Any,
     out_dtype: Any = None,
 ) -> Optional[int]:
-    """The CUTLASS tile this call runs, or None (no plan on this card, this key lost its race, ineligible operands)."""
     plan = _CUT_PLAN.get(index)
     if not plan:
         return None
@@ -562,9 +559,7 @@ def _cutlass_tile(
 
 
 def _cutlass_fused(index: Any, n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> bool:
-    """True when the prebuilt kernel won the large-M race for this weight on card ``index``."""
     from . import diffusion_int8_cutlass as cut
-
     entry = (_CUT_PLAN.get(index) or {}).get(_cut_key(n, k, xs_dtype, ws_dtype, bias))
     return bool(entry) and entry.get(max(cut._RACE_M)) is not None
 
@@ -654,7 +649,7 @@ def _cut_cache_write(table: dict) -> None:
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(table), encoding = "utf-8")
         os.replace(tmp, path)
-    except Exception:  # noqa: BLE001 - persistence is best-effort
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -665,8 +660,7 @@ def _xs_dtype(
     device: Any,
     dtype: Any = None,
 ) -> Any:
-    """The activation-scale dtype this Linear's act quant produces for ``dtype`` input (bf16 default; fp16 on the
-    sm75 family, which only takes torchao's own quant), read off a one-row quant."""
+    """Activation-scale dtype of this Linear's act quant, read off a one-row quant."""
     import torch
 
     dtype = dtype or torch.bfloat16
@@ -684,9 +678,7 @@ def _cutlass_plan(
     triton_on: bool,
     logger: Any = None,
 ) -> dict:
-    """Race every distinct int8 weight shape of ``recs`` on card ``index`` (CUTLASS tiles vs today's path: the Triton
-    kernel where ``triton_on``, else cuBLAS) and publish the winners to ``_CUT_PLAN``. Outside any trace / capture;
-    winners persist per card and toolchain. Returns the plan ({} = the prebuilt kernel stays off on this card)."""
+    """Race each int8 weight shape vs today's path, publish winners to ``_CUT_PLAN``; outside any capture."""
     import torch
 
     from . import diffusion_int8_cutlass as cut
@@ -722,7 +714,7 @@ def _cutlass_plan(
             n, k = int(wq.shape[0]), int(wq.shape[1])
             bias = getattr(module, "bias", None)
             if fam == 75 and kind != "v2":
-                continue  # fp16 family: torchao Int8Tensor weights only (their fp16 epilogue is the probed one)
+                continue  # fp16 family: torchao Int8Tensor only
             xs_dt = seen.get(("xs", kind, k))
             if xs_dt is None:
                 xs_dt = _xs_dtype(kind, weight, k, dev, act)
@@ -737,8 +729,7 @@ def _cutlass_plan(
             ):
                 plan[key] = {int(m): v for m, v in hit.items()}
                 continue
-            # random operands of this shape and dtypes: timing does not depend on the values, and a streamed weight
-            # need not be resident
+            # random operands: a streamed weight need not be resident
             w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
             wsr = (torch.rand(n, generator = g) * 1e-3 + 1e-5).to(ws.dtype).to(dev)
             br = (torch.randn(n, generator = g) * 0.1).to(act).to(dev) if bias is not None else None
@@ -747,9 +738,8 @@ def _cutlass_plan(
                 if triton_on:
                     today = lambda a, w_, x_, s_, b_: _launch_or_ref(index, a, w_, x_, s_, b_)  # noqa: E731
                 elif m >= _CUT_LARGE_M:
-                    today = None  # cuBLAS + the epilogue fused into the consumer (lower bound of the stock cost)
+                    today = None  # cuBLAS lower bound
                 else:
-                    # the in-op fallback: the stock epilogue in eager
                     today = lambda a, w_, x_, s_, b_: cut.reference(a, w_, x_, s_, b_, act)  # noqa: E731
                 r = cut.race(index, w, wsr, br, xs_dt, today, m)
                 if cut.mode() == "force" and r.get("us"):
@@ -767,7 +757,7 @@ def _cutlass_plan(
             table.pop(ckey, None)
             table[ckey] = cached
             _cut_cache_write(table)
-    except Exception as exc:  # noqa: BLE001 - any failure keeps today's path on this card
+    except Exception as exc:  # noqa: BLE001
         if logger is not None:
             logger.info(
                 "diffusion.int8_gemm: prebuilt CUTLASS race failed on cuda:%d (%s)", index, exc
@@ -781,7 +771,6 @@ def _cutlass_plan(
 
 
 def _launch_or_ref(index: int, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
-    """Today's in-op path for the race: the probed Triton tile for this shape, else the stock epilogue."""
     cfg = tile_for(index, a.shape[0], w.shape[0], a.shape[1])
     if cfg is not None and _aligned(a, w):
         return _launch(a, w, xs, ws, bias, cfg)
@@ -806,7 +795,7 @@ def _run16(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     if tile is not None:
         try:
             return cut.launch(a, w, xs, ws, bias, _CUT_FAMILY[index], tile, torch.float16)
-        except Exception:  # noqa: BLE001 - same math below
+        except Exception:  # noqa: BLE001
             _CUT_PLAN.pop(index, None)
     return cut.reference(a, w, xs, ws, bias, torch.float16)
 
@@ -843,8 +832,7 @@ def _op16() -> Any:
 
 
 def _linear_forward_f16(self: Any, x: Any, rec: tuple) -> Any:
-    """fp16 input on an sm75 card whose race this weight won: the module's own math (ConvRot rotation, torchao's act
-    quant) then the prebuilt kernel with torchao's fp16 epilogue, bit for bit the stock forward."""
+    """sm75 fp16 forward via the prebuilt kernel, bit for bit the stock forward."""
     import torch
 
     kind, group, _rotq, weight, _fused = rec
@@ -1417,7 +1405,6 @@ def _linear_forward(self: Any, x: Any) -> Any:
     if rec is None or not x.is_cuda:
         return type(self).forward(self, x)
     if self.__dict__.get(_F16):
-        # an sm75 record: fp16 runs the prebuilt kernel, anything else the module's own forward
         if x.dtype == torch.float16:
             return _linear_forward_f16(self, x, rec)
         return type(self).forward(self, x)
@@ -1729,11 +1716,10 @@ def _eligible(module: Any) -> Optional[tuple]:
     bias = module.bias
     import torch
 
-    # bf16 bias (the bf16 kernels); fp16 bias only reaches the sm75 prebuilt kernel (``_swap_on`` filters per card)
+    # fp16 bias only reaches the sm75 kernel (``_swap_on`` filters per card)
     if bias is not None and bias.dtype not in (torch.bfloat16, torch.float16):
         return None
-    # v1: bf16 scales only; v2 also fp32 (prequant checkpoints), fp16 for the sm75 prebuilt kernel only. Off-grid K
-    # runs masked loads, far slower than cuBLAS.
+    # off-grid K runs masked loads, far slower than cuBLAS
     out_f, in_f = getattr(module, "out_features", 0), getattr(module, "in_features", 0)
     if in_f % _K_ALIGN or out_f % _N_ALIGN:
         return None
@@ -1747,8 +1733,6 @@ def _eligible(module: Any) -> Optional[tuple]:
 
 
 def _card_dtypes_ok(module: Any, rec: tuple, f16_card: bool) -> bool:
-    """Bias / weight-scale dtypes the card's kernels take: fp16 activations (sm75) any compiled scale and an fp16
-    bias, the bf16 kernels a bf16 bias and bf16 / fp32 scales."""
     import torch
 
     bias = getattr(module, "bias", None)
@@ -1961,7 +1945,6 @@ def _swap_on(
         )
     if any(r[0] == "v1" for _, r in recs) and not _v1_act_quant_matches(index):
         recs = [(m, r) for m, r in recs if r[0] != "v1"]
-    # the prebuilt CUTLASS kernel, per weight shape where it beat today's path (Triton or cuBLAS)
     plan = _cutlass_plan(index, recs, triton_gemm, logger) if recs else {}
     cut_fused: dict = {}
     if plan:
@@ -1985,7 +1968,6 @@ def _swap_on(
             )
         gemm = gemm or any(cut_fused.values())
     if not triton_gemm:
-        # no Triton GEMM here: rotated Linears gain the fused rotation + act quant, the rest only a won CUTLASS race
         recs = [(m, r) for m, r in recs if (rotq and r[1] is not None) or cut_fused.get(id(m))]
     if not recs:
         return 0

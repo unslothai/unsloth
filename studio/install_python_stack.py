@@ -7902,8 +7902,7 @@ def _int8_gemm_install_disabled() -> bool:
 
 
 def _ensure_int8_gemm() -> None:
-    """The prebuilt int8 GEMM wheel (diffusion INT8 on sm75 / sm8x) for an NVIDIA CUDA torch; optional: a host without
-    it, or a release that does not carry it yet, keeps the Triton / cuBLAS path, so every failure only warns."""
+    """Optional prebuilt int8 GEMM wheel (diffusion INT8, sm75 / sm8x); every failure only warns."""
     if _int8_gemm_install_disabled() or NO_TORCH or IS_MACOS:
         return
     if _installed_distribution_version(I8GEMM_DISTRIBUTION) == I8GEMM_VERSION:

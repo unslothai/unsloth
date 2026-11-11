@@ -1,14 +1,6 @@
 # Prebuilt int8 GEMM for Unsloth Studio's INT8 ConvRot diffusion path (studio/kernels/int8_gemm).
-#
-# One C ABI library per platform, CUTLASS 2.x s8 x s8 -> s32 kernels with torchao's dequant epilogue fused, SASS for
-# sm_75 / sm_80 / sm_86 / sm_89, static CUDA runtime, no torch or Python ABI: one py3-none wheel per platform serves
-# every torch minor and both CUDA 12 and CUDA 13 drivers (built with CUDA 12.8, so a 525+ driver loads it). Studio
-# installs it next to flash-attn (install_python_stack._ensure_int8_gemm) and loads it with ctypes
-# (studio/backend/core/inference/diffusion_int8_cutlass.py); absent, it keeps today's Triton / cuBLAS path.
-#
-# Dispatch only; `publish: false` (the default) builds, smoke tests and signs, and leaves artifacts. The release is the
-# same tag prebuilt-cuda-wheels.yml publishes to, signed the same way (Sigstore, a gateable release-signing
-# environment, no key material we own).
+# C ABI + static cudart: one py3-none wheel per platform for every torch and CUDA 12/13 driver (built with 12.8).
+# Dispatch only; `publish: false` builds, tests and signs; publishing shares prebuilt-cuda-wheels.yml's tag.
 name: Prebuilt int8 GEMM
 
 on:
@@ -76,7 +68,6 @@ jobs:
           git -C cutlass checkout -q FETCH_HEAD
           test "$(git -C cutlass rev-parse HEAD)" = "$CUTLASS_SHA"
 
-      # manylinux_2_28 (glibc 2.28) so the wheel loads on every supported distro; CUDA 12.8 from NVIDIA's rhel8 repo.
       - name: Build (Linux, manylinux_2_28 container)
         if: runner.os == 'Linux'
         timeout-minutes: 60
@@ -92,7 +83,7 @@ jobs:
               --lib build/libunsloth_i8gemm.so --platform manylinux_2_28_x86_64 --out dist --cutlass-sha "$CUTLASS_SHA"
           '
 
-      # NVIDIA's own installer, Authenticode-checked (as prebuilt-cuda-wheels.yml): its output is what we sign.
+      # Authenticode-checked NVIDIA installer: its output is what we sign.
       - name: Install the CUDA 12.8 toolkit (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 25
@@ -134,8 +125,7 @@ jobs:
           python studio/kernels/int8_gemm/make_wheel.py --lib build/unsloth_i8gemm.dll --platform win_amd64 --out dist --cutlass-sha $env:CUTLASS_SHA
           if ($LASTEXITCODE -ne 0) { throw "make_wheel exited $LASTEXITCODE" }
 
-      # No GPU on the runner: the library must load (static CUDA runtime, libcuda resolved lazily) and report its ABI
-      # and tile tables, with the loader's own lookup.
+      # No GPU: the library must still load and report its ABI and tile tables.
       - name: Smoke (install the wheel, load it the way Studio does)
         run: |
           set -euo pipefail

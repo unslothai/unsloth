@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 //
-// s8 x s8 -> s32 GEMM (CUTLASS 2.x, tensor cores) with torchao's int8 dynamic-quant dequant epilogue fused, op for op:
-//
-//   t = c * x_scale           (in the x_scale dtype; an fp16 x_scale computes in fp32, as torchao does)
-//   t = t.to(out)
-//   y = t * w_scale           (rounded to out when w_scale has the out dtype, else kept in fp32)
-//   y = y + bias              (optional)
-//   y = y.to(out)
-//
-// every product and sum pinned with __fmul_rn / __fadd_rn (no FMA contraction) and every PyTorch cast reproduced
-// (int32 -> fp32 -> bf16 rounds twice). A [M, K] row-major, W [N, K] row-major (the nn.Linear weight), out [M, N].
-// No torch or Python dependency: the host side is a plain C ABI (i8gemm_api.cu) loaded with ctypes.
+// s8 GEMM with torchao's int8 dequant epilogue fused bit for bit: __fmul_rn / __fadd_rn (no FMA contraction),
+// every PyTorch cast reproduced. A [M, K], W [N, K], out [M, N], all row-major.
 
 #pragma once
 
@@ -33,7 +24,7 @@ namespace ui8 {
 
 using namespace cute;
 
-// Status codes shared with the Python loader.
+// shared with the Python loader
 enum Status : int {
   kOk = 0,
   kBadArgs = 1,
@@ -43,7 +34,6 @@ enum Status : int {
   kLaunchFailed = 5,
 };
 
-// Element kinds as passed over the C ABI.
 enum Kind : int { kFp32 = 0, kBf16 = 1, kFp16 = 2 };
 
 template <class T>
@@ -61,13 +51,10 @@ CUTLASS_DEVICE float round_to<float>(float x) {
   return x;
 }
 
-// Out: bf16 / fp16. XsT / WsT: the scale element types. Bias: a bias row (in Out) is added.
 template <class Out, class XsT, class WsT, bool Bias>
 struct Dequant {
-  // c * x_scale runs in bf16 only for a bf16 x_scale (torch promotes int32 * bf16 to bf16); an fp16 x_scale is
-  // widened to fp32 first (torchao's int_scaled_matmul), fp32 stays fp32.
+  // torch promotes int32 * bf16 to bf16; torchao widens an fp16 x_scale to fp32
   static constexpr bool kBf16Inter = std::is_same<XsT, cutlass::bfloat16_t>::value;
-  // y * w_scale rounds to Out only when the scale has the Out dtype; otherwise torch promotes to fp32.
   static constexpr bool kRoundWs = std::is_same<WsT, Out>::value;
 
   CUTLASS_DEVICE static float scaled(float c, float xs, float ws) {
@@ -103,8 +90,7 @@ struct Dequant {
   };
 };
 
-// Studio's native W8A8 Linear (diffusion_native_quant): fp32 x_scale and w_scale, ``(c * x_scale) * w_scale`` in fp32,
-// one cast to Out at the end, no bias.
+// diffusion_native_quant W8A8 Linear: fp32 epilogue, one cast, no bias
 template <class Out>
 struct NativeDequant {
   template <class T>
@@ -125,7 +111,6 @@ struct NativeDequant {
   };
 };
 
-// Epilogue kinds over the C ABI.
 enum Epilogue : int { kTorchao = 0, kNative = 1 };
 
 template <class Out, class XsT, class WsT, bool Bias, int Epi>

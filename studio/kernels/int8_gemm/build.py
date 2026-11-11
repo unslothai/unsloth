@@ -2,14 +2,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build the prebuilt int8 GEMM library (``libunsloth_i8gemm.so`` / ``unsloth_i8gemm.dll``): one translation unit per
-(arch family, tile), compiled in parallel by nvcc, linked with the static CUDA runtime. The library has no torch or
-Python ABI, so one binary per OS serves every torch and both CUDA 12 and 13 drivers.
+"""Build the prebuilt int8 GEMM library, one nvcc unit per (family, tile), static CUDA runtime.
 
   python build.py --cutlass /path/to/cutlass --out build/ [--jobs 16] [--families sm80,sm75]
 
-Families: ``sm80`` (Ampere / Ada int8 mma.sync with cp.async, SASS for sm_80 / sm_86 / sm_89), ``sm75`` (Turing,
-SASS for sm_75). No PTX is embedded: other archs keep Studio's other paths instead of a JIT build.
+SASS only (no PTX): other archs keep Studio's other paths instead of a JIT build.
 """
 
 from __future__ import annotations
@@ -43,12 +40,11 @@ FAMILIES = {
             (128, 128, 64, 64, 64, 64, 4, 4),
             (64, 64, 64, 32, 32, 64, 5, 1),
             (256, 128, 64, 64, 64, 64, 3, 4),
-            # deeper pipelines for deep K (FFN down / out projections); 96 KB of stages fits sm86 / sm89's 99 KB
+            # 96 KB of stages fits sm86 / sm89's 99 KB
             (128, 256, 64, 64, 64, 64, 4, 1),
             (256, 128, 64, 64, 64, 64, 4, 1),
             (128, 128, 64, 64, 64, 64, 6, 1),
             (128, 256, 64, 64, 64, 64, 4, 4),
-            # K-128 tiles in two stages (96 KB): fewer mainloop iterations on deep K
             (256, 128, 128, 64, 64, 128, 2, 1),
             (128, 256, 128, 64, 64, 128, 2, 1),
         ),
@@ -59,7 +55,6 @@ FAMILIES = {
         "out": ("cutlass::half_t",),
         "xs": ("cutlass::half_t", "float"),
         "ws": ("cutlass::half_t", "cutlass::bfloat16_t", "float"),
-        # Studio's native W8A8 Linear on fp16-only cards: fp32 scales, one rounding, no bias
         "native": True,
         "tiles": (
             (128, 256, 64, 64, 64, 64, 2, 1),

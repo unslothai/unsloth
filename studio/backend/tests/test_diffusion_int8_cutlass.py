@@ -196,7 +196,7 @@ def test_op_body_runs_the_race_winner_then_falls_back(monkeypatch):
     monkeypatch.setattr(cut, "launch", fake_launch)
     y = g8._run(a, w, xs, ws, b)
     assert calls == [(80, 3, 1100)] and not y.any()
-    # small M lost its race: today's path (no Triton tile on this host: the stock epilogue)
+    # small M lost its race: today's path
     small = a[:200]
     y = g8._run(small, w, xs[:200], ws, b)
     assert len(calls) == 1

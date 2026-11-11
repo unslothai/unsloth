@@ -1,15 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Prebuilt (ahead-of-time CUTLASS) int8 GEMM with torchao's dequant epilogue fused, for sm75 (fp16 out) and sm80 /
-sm86 / sm89 (bf16 out), whatever Triton is installed. The binary is a plain C ABI library (no torch or Python ABI,
-static CUDA runtime) from the ``unsloth-studio-i8gemm`` wheel, or ``UNSLOTH_DIFFUSION_INT8_CUTLASS_LIB``; absent,
-unloadable, the wrong ABI, or a tile failing the bit-exact probe against torchao's epilogue keeps today's path.
+"""Prebuilt CUTLASS int8 GEMM (C ABI, ctypes) with torchao's epilogue fused: sm75 fp16 out, sm8x bf16 out.
 
-Selection (``race``): per (card, N, K, dtypes, M bucket) every probed tile is timed against today's path (the Triton
-``i8mm_dq`` where Studio runs it, else cuBLAS ``_int_mm``); a tile replaces it only when it is faster by
-``_MARGIN``. Winners persist per card, toolchain and library build. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables,
-``=1`` skips the race (fastest probed tile by the size heuristic, timing only)."""
+Any load failure or tile failing the bit-exact probe keeps today's path; a tile replaces it only when it wins
+the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` skips the race."""
 
 from __future__ import annotations
 
@@ -25,7 +20,6 @@ WHEEL_MODULE = "unsloth_studio_i8gemm"
 ABI_VERSION = 1
 LIB_NAMES = ("libunsloth_i8gemm.so", "unsloth_i8gemm.dll")
 
-# ui8_gemm status codes
 _STATUS = {
     0: "ok",
     1: "bad arguments",
@@ -34,13 +28,11 @@ _STATUS = {
     4: "initialize failed",
     5: "launch failed",
 }
-# CUTLASS's tile beats today's path only by this much (fraction of today's time): ties keep today's path.
+# ties keep today's path
 _MARGIN = 0.02
-# M buckets the race times at (rows of the activation); a call runs the winner of the nearest bucket at or below.
 _RACE_M = (512, 4096)
 _LOCK = threading.Lock()
 _LOAD_ERROR: list = [None]
-# engagement census, never read inside a traced region
 _CALLS = [0]
 
 
@@ -54,7 +46,6 @@ def mode() -> str:
 
 
 def family(capability: Optional[tuple]) -> Optional[int]:
-    """Library family for a compute capability: 75 (Turing, fp16 out), 80 (sm80 / sm86 / sm87 / sm89, bf16 out)."""
     if capability is None:
         return None
     cap = (int(capability[0]), int(capability[1]))
@@ -108,7 +99,6 @@ def _bind(lib: Any) -> Any:
 
 @lru_cache(maxsize = 1)
 def library() -> Optional[Any]:
-    """The loaded library, or None (absent, unloadable, wrong ABI, ROCm / CPU torch, switched off)."""
     if mode() == "off":
         return None
     try:
@@ -156,8 +146,6 @@ def _kind(dtype: Any) -> Optional[int]:
     return {torch.float32: 0, torch.bfloat16: 1, torch.float16: 2}.get(dtype)
 
 
-# Epilogues: torchao's int8 dynamic Linear, or Studio's native W8A8 Linear (diffusion_native_quant: fp32 scales,
-# ``(c * x_scale) * w_scale`` in fp32, one cast, no bias).
 EPI_TORCHAO = 0
 EPI_NATIVE = 1
 
@@ -181,8 +169,6 @@ def has_kernel(
 
 
 def eligible(a: Any, w: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> bool:
-    """Operands the library takes: int8 [M, K] / [N, K] with unit inner stride, K % 16, N % 8, 16-byte aligned rows,
-    base pointers and scale / bias vectors, scales [M] / [N] contiguous, bias in the output dtype."""
     import torch
     try:
         if a.dtype != torch.int8 or w.dtype != torch.int8 or a.dim() != 2 or w.dim() != 2:
@@ -228,7 +214,6 @@ def launch(
     out_dtype: Any,
     epilogue: int = EPI_TORCHAO,
 ) -> Any:
-    """``out[M, N]`` from the library's ``tile`` kernel on the current stream; raises on any status but ok."""
     import torch
 
     lib = library()
@@ -267,12 +252,11 @@ def launch(
 
 
 def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> Any:
-    """torchao's int8 dynamic Linear after ``_int_mm``, op for op: ``c * x_scale`` in the x_scale dtype (fp32 for an
-    fp16 x_scale), cast to ``out_dtype``, ``* w_scale``, ``+ bias``, cast. bf16 out = ``diffusion_int8_gemm.reference``."""
+    """torchao's int8 dynamic Linear epilogue op for op (fp16 x_scale computes in fp32)."""
     import torch
 
     m = a.shape[0]
-    if m < 17:  # _int_mm's row floor: pad, then drop the pad rows (exact)
+    if m < 17:  # _int_mm row floor
         a = torch.cat([a, a.new_zeros((17 - m, a.shape[1]))])
     c = torch._int_mm(a, w.t())[:m]
     inter = torch.float32 if xs.dtype == torch.float16 else xs.dtype
@@ -284,8 +268,7 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> An
 
 
 def reference_native(a: Any, w: Any, xs: Any, ws: Any, out_dtype: Any) -> Any:
-    """Studio's native W8A8 Linear after its act quant (``NativeWeightOnlyLinear._int_mm_rows``, no bias): ``_int_mm``,
-    ``* x_scale`` then ``* w_scale`` in fp32, one cast to ``out_dtype``."""
+    """``NativeWeightOnlyLinear._int_mm_rows``: fp32 epilogue, one cast."""
     import torch
 
     m = a.shape[0]
@@ -296,7 +279,7 @@ def reference_native(a: Any, w: Any, xs: Any, ws: Any, out_dtype: Any) -> Any:
     return out.mul_(ws.reshape(-1).float()).to(out_dtype)
 
 
-# (M, N, K, bias, xs dtype tag, ws dtype tag): ragged M and N tails, K below / above one tile, bias, every scale kind.
+# (M, N, K, bias): ragged tails, K below / above one tile
 _PROBE_SHAPES = (
     (257, 384, 512, False),
     (33, 208, 144, True),
@@ -306,9 +289,7 @@ _PROBE_SHAPES = (
 
 
 def _scale_dtypes(fam: int) -> tuple:
-    """(xs, ws) dtype pairs the library carries for a family, in probe order."""
     import torch
-
     if fam == 75:
         return tuple(
             (x, w)
@@ -343,12 +324,12 @@ def _probe_tile(index: int, fam: int, tile: int, pairs: tuple) -> bool:
                     reference(a, w, xs, ws, b, out_dtype),
                 ):
                     return False
-            # int32 products one or two units off a 16-bit midpoint, both signs: the double rounding must match
+            # near-midpoint products: the double rounding must match
             a, w = tie_operands(dev)
             xs = torch.ones(a.shape[0], device = dev, dtype = xs_dt)
             ws = torch.ones(w.shape[0], device = dev, dtype = ws_dt)
             if fam == 75:
-                # fp16 overflows at these magnitudes: scale into range so the casts, not inf, are compared
+                # keep fp16 out of inf
                 xs = torch.full((a.shape[0],), 2.0**-12, device = dev, dtype = xs_dt)
             if not torch.equal(
                 launch(a, w, xs, ws, None, fam, tile, out_dtype),
@@ -372,7 +353,7 @@ def _probe_tile(index: int, fam: int, tile: int, pairs: tuple) -> bool:
                 return False
         torch.cuda.synchronize(dev)
         return True
-    except Exception:  # noqa: BLE001 - out of shared memory, launch failure, ...
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -380,7 +361,6 @@ _PROBED: dict = {}
 
 
 def probed_tiles(index: int) -> tuple:
-    """Tile ids passing the bit-exact probe on card ``index`` for every scale-dtype pair (cached per process)."""
     if index in _PROBED:
         return _PROBED[index]
     ok: tuple = ()
@@ -400,16 +380,13 @@ def available(index: int) -> bool:
     return bool(probed_tiles(index))
 
 
-# ---------------------------------------------------------------------------------------------------------------- race
-
-
 def time_us(
     fns: dict,
     rounds: int = 3,
     reps: int = 3,
     warm: int = 1,
 ) -> dict:
-    """{name: us}: each fn launched ``reps`` times back to back per round, rounds interleaved, min over rounds."""
+    """{name: us}, min over interleaved rounds."""
     import torch
 
     start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
@@ -439,9 +416,7 @@ def race(
     m: int,
     epilogue: int = EPI_TORCHAO,
 ) -> dict:
-    """{"tile": id or None, "us": {...}} for one weight at ``m`` rows: probed tiles screened once, the best three timed
-    against ``today(a, w, xs, ws, bias)`` (None = cuBLAS ``_int_mm`` + one read of its output, the stock GEMM with its
-    epilogue fused into the consumer). None keeps today's path."""
+    """Best probed tile vs ``today`` (None = cuBLAS ``_int_mm``); tile None keeps today's path."""
     import torch
 
     fam = family(torch.cuda.get_device_capability(index))
@@ -485,17 +460,14 @@ def race(
     return {"tile": best if keep else None, "us": us, "m": m}
 
 
-# ------------------------------------------------------------------------------------- native W8A8 Linear (fp16 cards)
-
-# (card, N, K) -> {race M: tile or None} for ``diffusion_native_quant.NativeWeightOnlyLinear`` on the sm75 family.
+# (card, N, K) -> {race M: tile or None}, sm75 NativeWeightOnlyLinear
 _NATIVE_PLAN: dict = {}
 _NATIVE_RACES: dict = {}
 _NATIVE_LARGE_M = 1024
 
 
 def native_prepare(weight_q: Any, x_dtype: Any, has_bias: bool) -> None:
-    """Once per (card, N, K), outside any trace / capture: race the native-epilogue tiles against the eager
-    ``_int_mm`` + fp32 epilogue this Linear runs today, and keep the winners (fp16 out, no bias, sm75 only)."""
+    """Once per (card, N, K), outside any capture: race native-epilogue tiles (sm75, fp16, no bias)."""
     import torch
     try:
         if mode() == "off" or has_bias or x_dtype != torch.float16 or not weight_q.is_cuda:
@@ -521,12 +493,11 @@ def native_prepare(weight_q: Any, x_dtype: Any, has_bias: bool) -> None:
             entry[m] = r["tile"]
             _NATIVE_RACES.setdefault(key, {})[m] = r
         _NATIVE_PLAN[key] = entry
-    except Exception:  # noqa: BLE001 - today's path stays
+    except Exception:  # noqa: BLE001
         return
 
 
 def native_tile(xq: Any, weight_q: Any, x_scale: Any, w_scale: Any) -> Optional[int]:
-    """The won tile for this call of a native W8A8 Linear, or None (no plan, lost race, ineligible, inside a trace)."""
     import torch
 
     if torch.compiler.is_compiling():
@@ -549,7 +520,6 @@ def native_tile(xq: Any, weight_q: Any, x_scale: Any, w_scale: Any) -> Optional[
 
 
 def native_gemm(xq: Any, weight_q: Any, x_scale: Any, w_scale: Any, tile: int) -> Any:
-    """fp16 ``[M, N]``: the native Linear's ``_int_mm`` and fp32 epilogue in one kernel (bit for bit)."""
     import torch
     return launch(
         xq,

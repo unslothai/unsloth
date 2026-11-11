@@ -169,10 +169,7 @@ MAMBA_SSM_PURE_VERSION = "2.3.2.post1"
 MAMBA_SSM_PURE_WHEEL = f"mamba_ssm-{MAMBA_SSM_PURE_VERSION}-py3-none-any.whl"
 
 
-# The prebuilt int8 GEMM for the diffusion INT8 ConvRot path (studio/kernels/int8_gemm): a C ABI library with the
-# static CUDA runtime and no torch or Python ABI, so one py3-none wheel per platform serves every torch minor and both
-# CUDA 12 and CUDA 13 drivers (built with CUDA 12.8). Built and signed by prebuilt-int8-gemm.yml on the same tag;
-# loaded with ctypes by core/inference/diffusion_int8_cutlass.py, which keeps today's path when it is absent.
+# studio/kernels/int8_gemm: C ABI + static cudart, so one py3-none wheel per platform fits every torch and CUDA 12/13.
 I8GEMM_DISTRIBUTION = "unsloth-studio-i8gemm"
 I8GEMM_VERSION = "1.0.0"
 _I8GEMM_PLATFORMS = {"linux_x86_64": "manylinux_2_28_x86_64", "win_amd64": "win_amd64"}

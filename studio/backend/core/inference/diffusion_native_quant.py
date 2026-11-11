@@ -698,7 +698,6 @@ def native_linear_class():
                 and x2.is_cuda
                 and not torch.compiler.is_compiling()
             ):
-                # sm75: the prebuilt kernel that won this weight's race, same maths in one launch (fp16 out)
                 from . import diffusion_int8_cutlass as _cut  # noqa: PLC0415
                 tile = _cut.native_tile(xq, self.weight_q, x_scale, w_scale)
                 if tile is not None:
@@ -878,7 +877,7 @@ def native_linear_class():
                 and x.dtype == torch.float16
                 and not torch.compiler.is_compiling()
             ):
-                # once per card and weight shape, before any capture: the sm75 prebuilt kernel's race
+                # race once per card and shape, before any graph capture
                 from . import diffusion_int8_cutlass as _cut  # noqa: PLC0415
                 _cut.native_prepare(self.weight_q, x.dtype, False)
             if self._int8pack_ok(x):
