@@ -10,12 +10,10 @@ import {
   fetchSttStatus,
   loadSttModel,
   sttEngineStatusFor,
-} from "@/features/chat";
-import {
-  requestSttDownload,
-  sttModelVariant,
-  useVoiceSettingsStore,
-} from "@/features/settings";
+} from "@/features/chat/adapters/studio-model-dictation-adapter";
+import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
+import { sttModelVariant } from "@/features/settings/stores/stt-model-catalog";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import type { VoiceTypingReadiness } from "./voice-typing-store";
 
 export interface VoiceTypingModelState {

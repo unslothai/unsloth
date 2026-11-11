@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The registered Transformers flex wrapper keeps short no-grad queries off flex_decoding where unsloth_zoo found it
-cannot compile (Triton 3.9 removed the block pointers torch 2.9 - 2.12's decode template builds)."""
-
 import sys
 import types
 
 import pytest
 
-import unsloth  # noqa: F401  (must precede transformers)
+import unsloth  # noqa: F401
 import unsloth.models._utils as u
 
 
@@ -34,13 +31,14 @@ def _wrapped_call(
     monkeypatch.setattr(u, "_flex_tuned_bwd_device_ok", lambda: False)
     monkeypatch.setattr(u, "_flex_small_smem_device_ok", lambda: small_ok)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: needs_backward)
+    monkeypatch.setattr(u, "_flex_small_smem_short_query_tiles", lambda: False)
     wrapped = u._wrap_flex_attention_forward(fake_flex)
 
     class M(torch.nn.Module):
         is_causal = True
 
-    q = torch.randn(1, 2, q_len, head_dim)
-    k = torch.randn(1, 2, 128, head_dim)
+    q = torch.randn(1, 2, q_len, head_dim, dtype = torch.bfloat16)
+    k = torch.randn(1, 2, 128, head_dim, dtype = torch.bfloat16)
     wrapped(M(), q, k, k.clone(), object(), **kwargs)
     return seen["kernel_options"]
 
@@ -93,12 +91,10 @@ def test_an_unsloth_zoo_without_the_check_keeps_auto(monkeypatch):
 
 
 def _select_torch_2_9(options):
-    # torch 2.9 lowering: no BACKEND; flex_decoding unless FORCE_USE_FLEX_ATTENTION.
     return "main" if options.get("FORCE_USE_FLEX_ATTENTION", False) else "decode"
 
 
 def _select_torch_2_12(options):
-    # torch 2.10 - 2.12: BACKEND plus the legacy knob is rejected; AUTO picks flex_decoding unless forced.
     if "BACKEND" in options and options.get("FORCE_USE_FLEX_ATTENTION", False):
         raise ValueError("BACKEND cannot be combined with legacy FORCE_USE_FLEX_ATTENTION")
     backend = options.get("BACKEND", "AUTO")
@@ -129,7 +125,6 @@ def test_an_explicit_auto_backend_takes_the_main_kernel_too(monkeypatch, needs_b
 @pytest.mark.parametrize("needs_backward", [False, True])
 @pytest.mark.parametrize("backend", ["TRITON_DECODE", "FLASH", "TRITON"])
 def test_a_named_backend_in_any_mapping_is_left_alone(monkeypatch, needs_backward, backend):
-    # torch reads kernel_options through dict(); a read-only mapping must not hide its BACKEND.
     from types import MappingProxyType
     opts = _wrapped_call(
         monkeypatch, True, 1, needs_backward, kernel_options = MappingProxyType({"BACKEND": backend})
@@ -156,7 +151,6 @@ def test_an_auto_backend_in_a_read_only_mapping_takes_the_main_kernel(monkeypatc
     ],
 )
 def test_small_memory_tiles_follow_the_kernel_that_runs(monkeypatch, requested, main_kernel):
-    # The fitted tiles are main-kernel tiles: a caller that keeps flex_decoding must not get them.
     kwargs = {} if requested is None else {"kernel_options": dict(requested)}
     opts = _wrapped_call(monkeypatch, True, 1, small_ok = True, head_dim = 256, **kwargs) or {}
     tiles = {k: opts.get(k) for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS}

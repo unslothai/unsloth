@@ -4,6 +4,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type * as NativeFilesModule from "../src/lib/native-files.ts";
 import * as fflate from "fflate";
 import * as zustand from "zustand";
 import * as zustandMiddleware from "zustand/middleware";
@@ -422,16 +423,25 @@ test("a chat attachment is not deleted when an open chat could not drop it after
   assert.deepEqual(emitted, [{ messageId: "m:1", attachmentId: "content-part-sha256-ab" }]);
 });
 
+const cancelledDownload = new Error("Save cancelled");
+
 function loadDownloads(
   fflate: object,
   saved: (File | Blob)[],
   fileNames: object,
   session: { epoch: number } = { epoch: 0 },
   fetched: (name: string) => void = () => {},
+  options: {
+    native?: boolean;
+    save?: (file: File | Blob) => Promise<unknown>;
+    nativeFiles?: Partial<typeof NativeFilesModule>;
+    downloadUrl?: (item: { id: string }) => Promise<string>;
+    errors?: unknown[];
+  } = {},
 ) {
-  const toast = Object.assign(() => {}, { loading: () => 0, dismiss: () => {}, error: () => {} });
+  const toast = Object.assign(() => {}, { loading: () => 0, dismiss: () => {}, error: (...args: unknown[]) => options.errors?.push(args) });
   return loadWithStubs<{
-    downloadLibraryItems: (items: { name: string; sizeBytes: number | null }[]) => Promise<void>;
+    downloadLibraryItems: (items: { id?: string; name: string; sizeBytes: number | null; textOnly?: boolean }[]) => Promise<void>;
   }>(new URL("../src/features/library/actions.ts", import.meta.url), {
     fflate,
     "@/config/env": { usePlatformStore: { getState: () => ({ deviceType: "linux" }) } },
@@ -442,24 +452,30 @@ function loadDownloads(
     "@/features/model-picker": {},
     "@/i18n": { translate: (key: string) => key },
     "@/lib/audio-utils": {},
-    "@/lib/api-base": { isTauri: false },
+    "@/lib/api-base": { isTauri: options.native ?? false },
     "@/lib/image-fit": {},
     "@/stores/image-edit-handoff": {},
     "@/lib/native-files": {
-      downloadFile: async (f: File | Blob) => saved.push(f),
-      isDownloadCancelled: () => false,
+      downloadFile: options.save ?? (async (f: File | Blob) => saved.push(f)),
+      downloadUrlStreaming: async (_url: string, name: string) => {
+        const save = options.save ?? (async (f: File | Blob) => saved.push(f));
+        return save(file(name));
+      },
+      isDownloadCancelled: (error: unknown) => error === cancelledDownload,
+      ...options.nativeFiles,
     },
     "@/lib/toast": { toast },
     "@/lib/video-utils": {},
     "./api": {
       errorMessage: String,
+      libraryDownloadUrl: options.downloadUrl ?? (async (i: { id: string }) => `/download/${i.id}`),
       libraryItemFile: async (i: { name: string }) => {
         fetched(i.name);
         return file(i.name);
       },
     },
     "./file-kind": {},
-    "./file-name": { hasOwnFile: () => true, ...fileNames },
+    "./file-name": { hasOwnFile: () => true, libraryFileName: (i: { name: string }) => i.name, ...fileNames },
     "./chat-handoff-store": {},
     "./start-chat": {},
   }).downloadLibraryItems;
@@ -544,4 +560,198 @@ test("a file named __proto__ is kept in a zipped download", async () => {
   ]);
   const archive = fflate.unzipSync(new Uint8Array(await saved[0]!.arrayBuffer()));
   assert.deepEqual(Object.keys(archive), ["__proto__ (2)", "a.txt"]);
+});
+
+
+function loadNativeDownloads(
+  invoke: (command: string, args?: { token?: string; url?: string; fileName?: string }) => Promise<unknown>,
+) {
+  return loadWithStubs<typeof NativeFilesModule>(new URL("../src/lib/native-files.ts", import.meta.url), {
+    "@/lib/api-base": { isTauri: true },
+    "@/lib/data-uri": {},
+    "@tauri-apps/api/core": { invoke },
+  });
+}
+
+test("Desktop exports images with numbered names through one directory without fetching their bodies", async () => {
+  const saved: { token?: string; url?: string; fileName?: string }[] = [];
+  const fetched: string[] = [];
+  let pickers = 0;
+  let released = 0;
+  const nativeFiles = loadNativeDownloads(async (command, args) => {
+    if (command === "pick_native_download_directory") {
+      pickers += 1;
+      return "directory-token";
+    }
+    if (command === "release_native_download_directory") {
+      assert.deepEqual(args, { token: "directory-token" });
+      released += 1;
+      return;
+    }
+    assert.equal(command, "save_native_file_in_directory");
+    saved.push(args!);
+    return "saved.png";
+  });
+  const download = loadDownloads({}, [], {}, undefined, (name) => fetched.push(name), {
+    native: true,
+    nativeFiles,
+  });
+  await download(Array.from({ length: 10 }, (_, index) => ({
+    id: `image:${index}`,
+    name: "same.png",
+    sizeBytes: index % 2 ? null : 300 * 1024 * 1024,
+  })));
+  assert.deepEqual(saved, [
+    "01-same.png", "02-same.png", "03-same.png", "04-same.png", "05-same.png",
+    "06-same.png", "07-same.png", "08-same.png", "09-same.png", "10-same.png",
+  ].map((fileName, index) => ({ token: "directory-token", url: `/download/image:${index}`, fileName })));
+  assert.deepEqual(fetched, []);
+  assert.equal(pickers, 1);
+  assert.equal(released, 1);
+});
+
+test("cancelling the directory picker stops a batch without fetching or saving its files", async () => {
+  const calls: string[] = [];
+  const errors: unknown[] = [];
+  const nativeFiles = loadNativeDownloads(async (command) => {
+    calls.push(command);
+    return null;
+  });
+  let lookups = 0;
+  const download = loadDownloads({}, [], {}, undefined, undefined, {
+    native: true,
+    nativeFiles,
+    errors,
+    downloadUrl: async () => {
+      lookups += 1;
+      return "/download/image";
+    },
+  });
+  await download([
+    { id: "image:first", name: "first.png", sizeBytes: 1 },
+    { id: "image:second", name: "second.png", sizeBytes: 1 },
+  ]);
+  assert.deepEqual(calls, ["pick_native_download_directory"]);
+  assert.equal(lookups, 0);
+  assert.deepEqual(errors, []);
+});
+
+test("a single Desktop image retains its individual save", async () => {
+  const saved: File[] = [];
+  let pickers = 0;
+  const download = loadDownloads({}, saved, {}, undefined, undefined, {
+    native: true,
+    nativeFiles: {
+      pickNativeDownloadDirectory: async () => {
+        pickers += 1;
+        return "directory-token";
+      },
+    },
+  });
+  await download([{ id: "image:first", name: "single.png", sizeBytes: 1 }]);
+  assert.deepEqual(names(saved), ["single.png"]);
+  assert.equal(pickers, 0);
+});
+
+test("a native batch stops after an account switch and a fresh attempt can save the full batch", async () => {
+  const session = { epoch: 1 };
+  const saved: string[] = [];
+  let pickers = 0;
+  let released = 0;
+  let switchAccount = true;
+  const nativeFiles = loadNativeDownloads(async (command, args) => {
+    if (command === "pick_native_download_directory") return `directory-${++pickers}`;
+    if (command === "release_native_download_directory") {
+      released += 1;
+      return;
+    }
+    assert.equal(command, "save_native_file_in_directory");
+    saved.push(args!.url!);
+    if (switchAccount) {
+      session.epoch += 1;
+      switchAccount = false;
+    }
+    return "saved.png";
+  });
+  const download = loadDownloads({}, [], {}, session, undefined, { native: true, nativeFiles });
+  const images = [
+    { id: "image:first", name: "first.png", sizeBytes: null },
+    { id: "image:second", name: "second.png", sizeBytes: null },
+  ];
+  await download(images);
+  assert.deepEqual(saved, ["/download/image:first"]);
+  assert.equal(released, 1);
+  await download(images);
+  assert.deepEqual(saved, ["/download/image:first", "/download/image:first", "/download/image:second"]);
+  assert.equal(pickers, 2);
+  assert.equal(released, 2);
+});
+
+for (const failure of ["lookup", "save"]) {
+  test(`a native batch reports a failed ${failure} but continues to the remaining images`, async () => {
+    const attempted: string[] = [];
+    const saved: string[] = [];
+    const errors: unknown[] = [];
+    let released = 0;
+    const nativeFiles = loadNativeDownloads(async (command, args) => {
+      if (command === "pick_native_download_directory") return "directory-token";
+      if (command === "release_native_download_directory") {
+        released += 1;
+        return;
+      }
+      assert.equal(command, "save_native_file_in_directory");
+      attempted.push(args!.url!);
+      if (failure === "save" && args!.url === "/download/image:failed") throw new Error("Disk full");
+      saved.push(args!.url!);
+      return "saved.png";
+    });
+    const lookedUp: string[] = [];
+    const download = loadDownloads({}, [], {}, undefined, undefined, {
+      native: true,
+      nativeFiles,
+      errors,
+      downloadUrl: async ({ id }) => {
+        lookedUp.push(id);
+        if (failure === "lookup" && id === "image:failed") throw new Error("Download failed with status 404");
+        return `/download/${id}`;
+      },
+    });
+    await download(["first", "failed", "remaining"].map((id) => ({
+      id: `image:${id}`, name: `${id}.png`, sizeBytes: 1,
+    })));
+    assert.deepEqual(lookedUp, ["image:first", "image:failed", "image:remaining"]);
+    assert.deepEqual(attempted, failure === "lookup"
+      ? ["/download/image:first", "/download/image:remaining"]
+      : ["/download/image:first", "/download/image:failed", "/download/image:remaining"]);
+    assert.deepEqual(saved, ["/download/image:first", "/download/image:remaining"]);
+    assert.equal(errors.length, 1);
+    assert.equal(released, 1);
+  });
+}
+
+test("cancelling a sequential export stops it and a later retry still saves every file", async () => {
+  const saved: File[] = [];
+  const attempts: string[] = [];
+  const errors: unknown[] = [];
+  let cancel = true;
+  const download = loadDownloads({}, saved, {}, undefined, undefined, {
+    native: true,
+    errors,
+    save: async (f) => {
+      const image = f as File;
+      attempts.push(image.name);
+      if (cancel) throw cancelledDownload;
+      saved.push(image);
+    },
+  });
+  const files = [
+    { name: "first.txt", sizeBytes: null, textOnly: true },
+    { name: "second.txt", sizeBytes: null, textOnly: true },
+  ];
+  await download(files);
+  assert.deepEqual(attempts, ["first.txt"]);
+  assert.deepEqual(errors, []);
+  cancel = false;
+  await download(files);
+  assert.deepEqual(names(saved), ["first.txt", "second.txt"]);
 });

@@ -8,7 +8,7 @@ accelerator (a failed load still retries on CPU). Values match RAG_EMBED_DEVICE
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 __all__ = [
     "AUDIO_DEVICE_CHOICES",
@@ -79,10 +79,15 @@ def audio_device_forces_cpu(value: Optional[str]) -> bool:
     return normalize_audio_device(value) == "cpu"
 
 
-def audio_load_runs_on_cpu(audio_type: Optional[str], value: Optional[str]) -> bool:
+def audio_load_runs_on_cpu(
+    audio_type: Optional[str],
+    value: Optional[str],
+    model: Any = None,
+) -> bool:
     """True when a native audio load of this type ends up in CPU RAM: asked for, or a GGUF
-    audio model on an audio.cpp runtime that only runs on the CPU (Auto cannot place it on a GPU)."""
-    if audio_device_forces_cpu(value):
+    audio model on an audio.cpp runtime that only runs on the CPU (Auto cannot place it on a GPU).
+    A CPU-only audio.cpp package (``model``, TQ2_1) runs on the CPU too."""
+    if audio_device_forces_cpu(value) or getattr(model, "cpu_only", False):
         return True
     from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
 

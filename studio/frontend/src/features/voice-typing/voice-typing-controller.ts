@@ -15,29 +15,30 @@
 
 import { authFetch } from "@/features/auth";
 import { isInAppDictationActive } from "@/features/chat/adapters/dictation-activity";
+import { subscribeDictationLevel } from "@/features/chat/adapters/dictation-level";
+import { joinTranscriptParts } from "@/features/chat/adapters/dictation-text";
+import { openMicrophone, stopMediaStream } from "@/features/chat/adapters/microphone";
+import { prewarmPcmCapture } from "@/features/chat/adapters/pcm-capture";
 import {
-  type StudioDictationSession,
-  StudioModelDictationAdapter,
   isStudioDictationAvailable,
-  joinTranscriptParts,
-  keepSttModelAlive,
   notifyStudioDictationUnavailable,
-  openMicrophone,
-  prewarmPcmCapture,
+} from "@/features/chat/adapters/studio-dictation-adapter";
+import {
+  StudioModelDictationAdapter,
+  keepSttModelAlive,
   sttEngineFor,
-  stopMediaStream,
-  subscribeDictationLevel,
-  useChatRuntimeStore,
-} from "@/features/chat";
+} from "@/features/chat/adapters/studio-model-dictation-adapter";
+import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   ensureMicrophonePermission,
   readMicrophonePermission,
 } from "@/features/microphone";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyDictationDictionary,
-  useSettingsDialogStore,
   useVoiceSettingsStore,
-} from "@/features/settings";
+} from "@/features/settings/stores/voice-settings-store";
 import { triggerShortcut } from "@/features/settings/hooks/use-shortcut";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";

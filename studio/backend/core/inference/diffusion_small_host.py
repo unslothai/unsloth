@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -268,8 +269,7 @@ def snapshot_weights_complete(
     skip: Any = (),
     variant: Optional[str] = None,
 ) -> bool:
-    """False when a ``model_index.json`` component lacks weights or index-listed shards; True without an index.
-    ``skip`` names caller-supplied components; ``variant`` checks only that layout's files."""
+    """Check pipeline weights for the requested variant, excluding caller-supplied components."""
     try:
         root = Path(snapshot)
         index = json.loads((root / "model_index.json").read_text(encoding = "utf-8"))
@@ -293,6 +293,7 @@ def snapshot_weights_complete(
             ]
         if not files and (sub / "config.json").is_file():
             return False  # a model folder without weights; tokenizer / scheduler folders have no config.json
+        indexed_shards = set()
         for shard_index in shard_indexes:
             try:
                 shards = set(
@@ -304,6 +305,14 @@ def snapshot_weights_complete(
                 return False
             if any(not (sub / shard).is_file() for shard in shards):
                 return False
+            indexed_shards.update(shards)
+        # All numbered shards still need the index the loader opens.
+        if any(
+            re.search(r"-\d{5}-of-\d{5}(?:\.[^.]+)?\.(?:safetensors|bin)$", f.name)
+            and f.name not in indexed_shards
+            for f in files
+        ):
+            return False
     return True
 
 
@@ -594,8 +603,9 @@ def torch_dtype_map(decision: SmallHostDecision, compute_dtype: Any) -> Any:
 
 
 INT8_ACT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT"
-# Measured on a T4 (LPIPS inside the fp32-vs-bf16 spread); qwen-image-edit shares the DiT but is unmeasured.
-INT8_ACT_FAMILIES = frozenset({"qwen-image"})
+# Measured on a T4 (LPIPS inside the fp32-vs-bf16 spread). qwen-image-edit shares the DiT: 2.03x per step, same
+# LPIPS distance to the bf16 reference as weight-only int8.
+INT8_ACT_FAMILIES = frozenset({"qwen-image", "qwen-image-edit"})
 # torch._int_mm: rows M > 16, K and N multiples of 8.
 _INT8_ACT_MIN_ROWS = 17
 _INT8_ACT_ALIGN = 8
@@ -649,6 +659,20 @@ def int8_act_device_ok(device: Any) -> bool:
     return ok
 
 
+def enable_int8_act_(module: Any) -> int:
+    """Let every int8-stored Linear of ``module`` run W8A8 (an explicit int8 request on an fp16-only card); returns
+    how many. The per-call gate is unchanged: float32 CUDA input on sm_75 with an exact ``_int_mm``, else dequantise.
+    ``UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT=0`` keeps them dequantised."""
+    if int8_act_disabled() or _INT8_CLS is None:
+        return 0
+    count = 0
+    for sub in module.modules():
+        if isinstance(sub, _INT8_CLS):
+            sub.act_int8 = True
+            count += 1
+    return count
+
+
 def _int8_linear_class():
     import torch
     import torch.nn.functional as F
@@ -688,10 +712,13 @@ def _int8_linear_class():
             return y.reshape(*x.shape[:-1], self.out_features)
 
         def forward(self, x):
+            # Eager-only: mutating a global int under Dynamo recompiles every call.
+            count = not torch.compiler.is_compiling()
             if self._int8_act_ok(x):
-                _INT8_ACT_COUNTS["int8_act"] += 1
+                if count:
+                    _INT8_ACT_COUNTS["int8_act"] += 1
                 return self._forward_int8_act(x)
-            if self.act_int8:
+            if self.act_int8 and count:
                 _INT8_ACT_COUNTS["dequant"] += 1
             scale = self.scale
             if scale.dtype == x.dtype:

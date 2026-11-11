@@ -24,6 +24,7 @@ def _shared_setup_2(monkeypatch):
         mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
     )
     monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+    monkeypatch.setattr(MtmdSttSidecar, "_count_prompt_tokens", staticmethod(lambda *a, **k: 20))
 
 
 class _FakeProcess:
@@ -79,12 +80,12 @@ def spawned(monkeypatch):
     monkeypatch.setattr(
         MtmdSttSidecar, "_ensure_model_downloaded", lambda self, model_id: ("m.gguf", "p.gguf")
     )
+    monkeypatch.setattr(MtmdSttSidecar, "_read_server_context", staticmethod(lambda *a, **k: 4096))
     return made, adopted, forgotten
 
 
 def test_training_preempts_a_startup_before_it_can_publish(spawned, monkeypatch):
-    """_process is only set once the server is ready, so training had nothing to
-    act on for the whole startup and raced a child that was still allocating."""
+    """_process is only set once ready, so training had nothing to act on during startup."""
     made, _, forgotten = spawned
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     started = threading.Event()
@@ -131,8 +132,7 @@ def test_a_child_that_ignores_sigterm_is_killed_not_abandoned(monkeypatch):
 
 
 def test_the_idle_timer_cannot_fire_during_a_long_transcription():
-    """Audio may run longer than the keep-alive, and posting happens outside the
-    lock, so an armed timer would kill llama-server mid-request."""
+    """Audio can outlast keep-alive; an armed idle timer would kill llama-server mid-request."""
     sidecar = MtmdSttSidecar(keep_alive_seconds = 300)
     with sidecar._lock:
         sidecar._active_requests = 1
@@ -349,14 +349,13 @@ def test_an_ordinary_load_lets_llama_cpp_fit_the_gpu(spawned, monkeypatch):
     assert "--no-mmproj-offload" not in cmd
     # A dictation never needs the model's 65536-token default, and the bounded
     # context is what leaves room for the weights.
-    assert cmd[cmd.index("-c") + 1] == "4096"
+    assert cmd[cmd.index("--ctx-size") + 1] == "4096"
     assert cmd[cmd.index("-fa") + 1] == "on"
     sidecar.unload()
 
 
 def test_unload_stops_a_startup_instead_of_letting_it_publish(spawned, monkeypatch):
-    """_process is unset during startup, so a plain release was a no-op and the
-    model came back resident moments after the user unloaded it."""
+    """_process is unset during startup, so unload must stop the startup or the model returns."""
     made, _, forgotten = spawned
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     started = threading.Event()
@@ -402,8 +401,7 @@ def test_the_cached_lookup_uses_studios_configured_cache(monkeypatch, tmp_path):
 
 
 def test_a_server_started_for_training_goes_back_to_the_gpu_after(spawned, monkeypatch):
-    """-ngl 0 was sticky: the same model matched, so dictation stayed on CPU
-    until the keep-alive expired."""
+    """-ngl 0 stuck: a matching model reused the CPU server until keep-alive expired."""
     commands = []
 
     def capture(cmd, **kwargs):
@@ -460,8 +458,7 @@ def test_a_running_transcription_outranks_the_offload_upgrade(spawned, monkeypat
 
 
 def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monkeypatch):
-    """load() returns before the request slot is taken, so the model can change
-    in between and the port read would be the other server's."""
+    """load() returns before the request slot is taken, so another client can swap the server."""
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
     _shared_setup_2(monkeypatch)
@@ -491,8 +488,7 @@ def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monk
 
 
 def test_a_busy_transcription_is_a_retry_not_a_server_error(monkeypatch):
-    """The model-switch race is ordinary concurrency, so the client is told to
-    try again rather than shown a 500."""
+    """Model-switch races are ordinary concurrency; clients should retry, not get a 500."""
     import asyncio
 
     import routes.inference as ri
@@ -525,8 +521,7 @@ def test_a_busy_transcription_is_a_retry_not_a_server_error(monkeypatch):
 
 
 def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
-    """load() starts at -ngl 0 while a run is active, so refusing here only
-    threw away a recording the preload had said was fine."""
+    """load() starts at -ngl 0 during training, so refusing would discard a usable recording."""
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
     monkeypatch.setattr(mtmd_mod, "_training_active", lambda: True)
     _shared_setup_2(monkeypatch)
@@ -565,6 +560,7 @@ def test_a_recorder_wav_skips_the_decode_round_trip(spawned, monkeypatch):
     """The recorder already sends 16 kHz mono PCM16, so decoding and re-encoding
     it through PyAV was pure overhead on every dictation."""
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_count_prompt_tokens", lambda self, *a, **k: 100)
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
 
     def should_not_decode(audio, cancel_event = None):
@@ -601,6 +597,7 @@ def test_long_audio_is_cut_into_windows_that_fit_the_context(spawned, monkeypatc
     request; each window has to stay well inside it and the text has to join."""
     import numpy as np
 
+    monkeypatch.setattr(MtmdSttSidecar, "_count_prompt_tokens", lambda self, *a, **k: 100)
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
     monkeypatch.setattr(
         mtmd_mod,
@@ -705,6 +702,7 @@ def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
     sidecar._process = process
     sidecar._port = 65000
     sidecar._model_id = "qwen3-asr-0.6b"
+    sidecar._context_length = 4096
     monkeypatch.setattr(sidecar, "load", lambda model, **kwargs: None)
 
     first_cancel = threading.Event()
@@ -722,6 +720,7 @@ def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
         *,
         language = None,
         cancel_event = None,
+        payload = None,
     ):
         nonlocal started
         with started_lock:
@@ -920,9 +919,8 @@ def test_a_startup_cancelled_for_training_is_retryable_not_unavailable(spawned, 
 def test_training_that_starts_while_the_old_server_is_reaped_still_pins_the_cpu(
     spawned, monkeypatch
 ):
-    """Reaping the previous server can take seconds, and training admission that
-    already ran cannot come back to cancel this load, so the offload flags have
-    to read training last rather than from the snapshot taken before the reap."""
+    """Reaping the old server can take seconds, and admission that already ran cannot cancel this
+    load, so offload flags must read training last, not from an earlier snapshot."""
     commands = []
     training = {"active": False}
     real_reap = mtmd_mod._reap
@@ -953,8 +951,7 @@ def test_training_that_starts_while_the_old_server_is_reaped_still_pins_the_cpu(
 
 
 def test_a_load_is_cancellable_before_it_decides_where_to_run(spawned, monkeypatch):
-    """The other order: admission arriving after the snapshot must find a load
-    it can cancel, so _loading is published before training is read."""
+    """Admission after the snapshot must find a load to cancel; _loading is published first."""
     seen = []
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
 
@@ -1003,8 +1000,7 @@ def _resident(sidecar: MtmdSttSidecar, process) -> None:
 
 
 def test_status_reads_do_not_block_behind_a_reap(monkeypatch):
-    """Status reads must not wait for a reap under _lock: the event loop and training admission read
-    them."""
+    """Status reads must not wait for a reap under _lock; the loop and admission read them."""
     monkeypatch.setattr(mtmd_mod, "forget_pid", lambda pid: None)
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     release = threading.Event()
@@ -1141,8 +1137,7 @@ def test_ggml_download_drops_its_adopted_pid(monkeypatch, tmp_path):
     import huggingface_hub
 
     class _Metadata:
-        """The stub's commit_hash must be a real 40-character sha, since _run() refuses any other
-        revision."""
+        """The stub commit_hash must be a real 40-char sha; _run() refuses other revisions."""
 
         size = 1
         etag = "stub"
@@ -1493,3 +1488,23 @@ def test_requested_language_reaches_the_decoder(
         assert progress, "prefilled responses still need to publish transcription progress"
         assert progress[-1] == {"text": "Hello world"}
         assert all("language " not in event["text"] for event in progress)
+
+
+def test_a_one_sample_recording_never_reaches_llama_server(monkeypatch):
+    """mtmd aborts llama-server on a one-sample clip; refuse it before the sidecar loads."""
+    import numpy as np
+    from core.inference.stt_sidecar import SttAudioDecodeError
+
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(mtmd_mod, "ensure_engine_available", lambda: "/bin/llama-server")
+    monkeypatch.setattr(
+        MtmdSttSidecar, "_ensure_model_downloaded", lambda self, model_id: ("m.gguf", "p.gguf")
+    )
+    monkeypatch.setattr(
+        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: np.zeros(1, np.float32)
+    )
+    loads = []
+    monkeypatch.setattr(MtmdSttSidecar, "load", lambda self, *a, **k: loads.append(a))
+    with pytest.raises(SttAudioDecodeError, match = "too short"):
+        sidecar.transcribe(b"RIFF", model = "qwen3-asr-0.6b")
+    assert loads == []

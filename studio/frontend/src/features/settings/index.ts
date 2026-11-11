@@ -21,11 +21,13 @@ export { updateHubSource } from "./api/hub-settings";
 export { loadLanAccess, publishLanUrls } from "./api/lan-access";
 export { lanApiUrls } from "./api/lan-access-state";
 export { loadMultiModelEnabled } from "./api/multi-model";
+export { useKeylessExampleAccess } from "./hooks/use-keyless-example-access";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export { listOpenAIModels } from "./api/openai-models";
 export {
   loadSystemOneSettings,
   subscribeSystemOneSettings,
+  tryFineTuneInDecisionApi,
   updateSystemOneSettings,
 } from "./api/systemone";
 export { DECISION_MODEL_LABELS } from "./lib/decision-model-labels";

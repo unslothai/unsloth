@@ -951,9 +951,8 @@ def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():
 
 
 def test_owner_can_cancel_its_active_start_when_tombstone_capacity_is_full():
-    """Exhausted unknown-request tombstone capacity must not make the currently active
-    start uncancellable: the UI's Stop button routes to /start-requests/{id}/cancel while
-    a start request owns the run, so a 429 there would leave the worker running."""
+    """Full tombstone capacity must not block cancelling the active start; a 429 would leave the
+    worker running."""
     backend = TrainingBackend()
     backend.reserve_start_request("request-owned", "job-owned")
     backend.resolve_start_request(
@@ -995,9 +994,8 @@ def test_owner_can_cancel_its_active_start_when_tombstone_capacity_is_full():
 
 
 def test_owner_cancel_at_capacity_keeps_other_live_cancellations():
-    """Reclaiming a slot by evicting the soonest-expiring tombstone would forget a live
-    cancellation, so a delayed /start for that id could spawn the job we just cancelled.
-    The owner overshoots the cap instead; there is only ever one active start."""
+    """Never evict a live tombstone to make room, since a delayed /start could spawn the cancelled
+    job; the owner overshoots the cap instead."""
     backend = TrainingBackend()
     backend.cancel_start_request("victim-race")
     backend.reserve_start_request("owner", "job-owner")

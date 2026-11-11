@@ -255,9 +255,8 @@ def _chunk_payload(line: str) -> dict[str, Any] | None:
 
 
 def _mint_streamed_card_id(taken: set[str], index: Any) -> str:
-    """The id the client painted an id-less call's card under. ``tool_call_<delta index>``, else the
-    lowest free ``tool_call_<n>``: the client's rule, reproduced so tool_start and tool_end reach
-    the card the stream drew. A card id only; the replayed id stays ``call_<round>_<pos>``."""
+    """Card id for an id-less call: tool_call_<delta index>, else lowest free tool_call_<n>, so
+    tool_end reaches the drawn card; the replayed id stays call_<round>_<pos>"""
     preferred = (
         f"tool_call_{index}" if isinstance(index, int) and not isinstance(index, bool) else ""
     )
@@ -906,9 +905,8 @@ class _Turn:
                         )
 
     def _scan(self, key: Any, text: str) -> tuple[list[str], str]:
-        """``_split_top_level_json_objects(text)``, resuming the scan for ``key``. The same answer
-        as scanning from byte zero, at the cost of the bytes this call added rather than of the
-        whole accumulation."""
+        """Resumes _split_top_level_json_objects(text) for key; same as a full rescan, costing only
+        new bytes."""
         scan = self.scan_by_key.get(key)
         if scan is None:
             scan = _BoundaryScan()
@@ -1251,8 +1249,7 @@ def _openai_compaction_item(event: Any) -> str | None:
 def _with_openai_compaction(
     conversation: list[dict[str, Any]], compaction: tuple[list[dict[str, Any]], str] | None
 ) -> list[dict[str, Any]]:
-    """Later rounds replay an OpenAI Responses compaction item after the messages it covers, or the provider compacts
-    the same history again."""
+    """OpenAI compaction item goes after the messages it covers, else the provider re-compacts."""
     if compaction is None:
         return conversation
     sent, encrypted = compaction
@@ -1465,8 +1462,18 @@ async def _stream_with_studio_tools(
     resumes_partial = run.continue_final_message
     # cap run-owned image parts across the full loop without counting caller attachments.
     loop_mcp_image_parts: list = list(run.promoted_image_parts)
-    # preserve the request branch for tools that search conversation history.
-    request_branch = list(restored)
+    # search_conversation filters on this: the request plus every message the loop added, so a
+    # result of this turn that a refit evicted stays findable (llama_cpp's _extend_live_branch).
+    live_branch = list(restored)
+    live_branch_ids = {id(message) for message in conversation}
+
+    def extend_live_branch() -> list[dict]:
+        for message in conversation:
+            if id(message) not in live_branch_ids:
+                live_branch_ids.add(id(message))
+                live_branch.append(message)
+        return list(live_branch)
+
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
@@ -1589,7 +1596,8 @@ async def _stream_with_studio_tools(
         # Hold the turn-ending chunk until finalize() says whether a call was promoted, then arm the headerless stripper; arming at promotion is too late.
         held_final: str | None = None
 
-        active_tools = controller.active_tools()
+        # External APIs cannot separate decoding schemas from the prompt's tools.
+        active_tools = controller.active_tools(include_deferred = True)
         tools_available = (
             tool_choice != "none" and bool(active_tools) and (unlimited or remaining > 0)
         )
@@ -1887,9 +1895,8 @@ async def _stream_with_studio_tools(
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
-                # The result below has to be replayed with its call: only the call that spent the last slot reaches
-                # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
-                # OpenAI, Anthropic and Gemini all reject that history instead of answering.
+                # Replay the result with its call; orphan tool messages get rejected by OpenAI,
+                # Anthropic, Gemini.
                 exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
                 if (
@@ -2103,7 +2110,7 @@ async def _stream_with_studio_tools(
                 # once a thread has an archive and needs the same branch: the stored rows are the whole DAG, and Retry
                 # leaves the replaced response in them.
                 if accepts_kwarg(execute_tool, "conversation_branch"):
-                    kwargs["conversation_branch"] = request_branch
+                    kwargs["conversation_branch"] = extend_live_branch()
                 if approved and accepts_kwarg(execute_tool, "host_access_approved"):
                     kwargs["host_access_approved"] = True
                 # External window is unknowable: 0 keeps the default page cap; unmeasurable budget means one recall, since 8 chunks is ~4K tokens replayed each later call.

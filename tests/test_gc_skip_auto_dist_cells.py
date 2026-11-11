@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""checkpoint_skip_layers = "auto" under torchrun, on CPU gloo: which runs take the collective, that
-every rank takes it at the same forward, and that DDP training is unchanged by the plan."""
 
 import datetime
+import math
 import multiprocessing
 import os
 import sys
@@ -27,8 +26,6 @@ def _load(
     tensor_parallel = False,
     pipeline_parallel = False,
 ):
-    """The planner from _utils.py, with its package-relative imports (is_distributed,
-    is_tensor_parallel, is_pipeline_parallel) answered by stubs instead of falling back."""
     sys.path.insert(0, HERE)
     import test_gc_skip_auto as T
 
@@ -53,7 +50,6 @@ def _load(
 
 
 def _spoof_cuda(ns, usable, memory):
-    # Process-local CPU stand-ins for the CUDA calls the planner makes (as T._fake_cuda does).
     torch.cuda.is_available = lambda: True
     torch.Tensor.is_cuda = property(lambda self: True)
     torch.cuda.reset_peak_memory_stats = lambda device = None: None
@@ -77,7 +73,6 @@ def _count_collectives():
 
 
 def _fake_scenario(rank, scenario, usable):
-    """The fake 8-layer model of test_gc_skip_auto, with rank-local extra forwards."""
     T, ns = _load(
         tensor_parallel = scenario == "tp",
         pipeline_parallel = scenario == "pp",
@@ -89,11 +84,9 @@ def _fake_scenario(rank, scenario, usable):
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     if scenario == "rank0_pretrain_forward" and rank == 0:
-        # A grad-enabled training forward only rank 0 runs before step 1 (no backward).
         model(torch.zeros(1, 16, 4))
     T._fake_step(model, rows = 16)
     if scenario == "rank0_eval_and_generate" and rank == 0:
-        # Rank-0-only evaluation / sample generation between steps: eval mode, no grad.
         model.eval()
         model(torch.zeros(1, 16, 4))
         model.train()
@@ -108,7 +101,6 @@ def _fake_scenario(rank, scenario, usable):
 
 
 def _ddp_scenario(rank, scenario, usable):
-    """A tiny Qwen3 under DDP (gloo), HF reentrant gradient checkpointing, 4 optimizer steps."""
     from torch.nn.parallel import DistributedDataParallel as DDP
 
     static_graph, find_unused, accumulation, auto = scenario
@@ -122,7 +114,7 @@ def _ddp_scenario(rank, scenario, usable):
     model = T._model(layers = 4)
     if auto:
         _spoof_cuda(ns, usable, memory)
-        # Each grad-mode layer call "allocates" 1/16 GiB, so the planner measures a cost.
+
         for layer in model.model.layers:
             layer.register_forward_hook(
                 lambda m, a, o: memory.__setitem__(
@@ -172,8 +164,67 @@ def _ddp_scenario(rank, scenario, usable):
     }
 
 
+def _fsdp2_grad_bytes_scenario(rank, scenario, usable):
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    root_only, mode = scenario
+    mesh = init_device_mesh("cpu", (torch.distributed.get_world_size(),))
+    T, ns = _load()
+    model = T._model(layers = 2)
+    global_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+    memory = {"allocated": 0}
+    _spoof_cuda(ns, usable, memory)
+    for layer in model.model.layers:
+        layer.register_forward_hook(
+            lambda m, a, o: memory.__setitem__(
+                "allocated", memory["allocated"] + (GIB // 16 if torch.is_grad_enabled() else 0)
+            )
+        )
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    if not root_only:
+        for layer in model.model.layers:
+            fully_shard(layer, mesh = mesh)
+    fully_shard(model, mesh = mesh)
+    optimizer = torch.optim.AdamW(model.parameters(), lr = 0.001)
+    # Only the planner's CUDA predicates are spoofed; AdamW still runs on CPU.
+    optimizer._accelerator_graph_capture_health_check = lambda: None
+    parameters = list(model.parameters())
+    local_numel = sum(p.to_local().numel() for p in parameters)
+    if mode != "sync":
+        model.set_requires_gradient_sync(False)
+        model.set_reshard_after_backward(mode != "defer")
+    ids = torch.randint(0, 128, (2, 16), generator = torch.Generator().manual_seed(rank))
+    model(input_ids = ids, labels = ids).loss.backward()
+    expected_grad = (
+        sum(p.grad.to_local().numel() * p.grad.element_size() for p in parameters)
+        if mode == "sync"
+        else global_bytes
+    )
+    measured_grad = planner._fresh_grad_bytes(torch.device("cpu"))
+    memory["allocated"] += expected_grad
+    if mode == "sync":
+        optimizer.step()
+        optimizer.zero_grad(set_to_none = True)
+        memory["allocated"] -= expected_grad
+    model.set_requires_gradient_sync(True)
+    model.set_reshard_after_backward(True)
+    activation = 2 * (GIB // 16) * 4 + (expected_grad if mode == "sync" else 0)
+    optimizer_bytes = local_numel * (4 if mode == "sync" else 12)
+    available = math.ceil(activation + optimizer_bytes + (GIB + GIB // 4) / 0.75) + 128
+    ns["usable_cuda_bytes"] = lambda device: available
+    model(input_ids = ids, labels = ids).loss.backward()
+    optimizer.step()
+    return {
+        "utils": T.UTILS,
+        "planner": measured_grad,
+        "expected": expected_grad,
+        "kept": planner.kept,
+    }
+
+
 def _join_scenario(rank, scenario, usable):
-    """DDP.join(): rank 0 runs out of inputs before rank 1's planning forward."""
     from torch.nn.parallel import DistributedDataParallel as DDP
 
     T, ns = _load()
@@ -230,7 +281,11 @@ def _worker(rank, world, port, kind, scenario, usable, queue):
             world_size = world,
             timeout = datetime.timedelta(seconds = 30),
         )
-        run = {"fake": _fake_scenario, "join": _join_scenario}.get(kind, _ddp_scenario)
+        run = {
+            "fake": _fake_scenario,
+            "join": _join_scenario,
+            "fsdp2_grad_bytes": _fsdp2_grad_bytes_scenario,
+        }.get(kind, _ddp_scenario)
         queue.put((rank, run(rank, scenario, usable[rank]), None))
     except Exception:
         import traceback
@@ -266,7 +321,6 @@ def _launch(kind, scenario, usable):
 
 @pytest.mark.parametrize("scenario", ["rank0_pretrain_forward", "rank0_eval_and_generate"])
 def test_rank_local_forwards_do_not_desync_the_collective(scenario):
-    # Rank 0 has room for 8 layers, rank 1 for 2; rank-local forwards must not move rank 0's plan.
     results = _launch("fake", scenario, [4 * GIB, 2 * GIB])
     assert results[0]["kept"] == results[1]["kept"] == [3, 7]
     assert results[0]["all_reduce"] == results[1]["all_reduce"] == 1
@@ -318,7 +372,7 @@ def test_single_process_plans_alone_without_a_collective(monkeypatch, world_size
     planner = model._unsloth_auto_skip
     T._fake_step(model, rows = 16)
     model(torch.zeros(1, 16, 4))
-    # (4 GiB - 0.5 GiB step) * 0.75 - 1 GiB = 1.6 GiB: all 8 sixteenth-GiB layers, as before.
+
     assert planner.kept == list(range(8))
     monkeypatch.undo()
 
@@ -341,7 +395,6 @@ def _assert_same_training(auto, reference):
     [(False, False, 1), (False, False, 2), (True, False, 1)],
 )
 def test_ddp_training_unchanged_and_ranks_agree(static_graph, find_unused, accumulation):
-    # Rank 0 fits 4, rank 1 fits 2: both keep 2; losses / weights match full checkpointing.
     usable = [8 * GIB, 2 * GIB + GIB // 4]
     auto = _launch("ddp", (static_graph, find_unused, accumulation, True), usable)
     reference = _launch("ddp", (static_graph, find_unused, accumulation, False), usable)
@@ -361,7 +414,6 @@ def _fsdp2_runs_on_cpu():
 @pytest.mark.skipif(not _fsdp2_runs_on_cpu(), reason = "this torch has no CPU FSDP2 path")
 @pytest.mark.parametrize("accumulation", [1, 2])
 def test_fsdp2_training_unchanged_and_ranks_agree(accumulation):
-    # The collective runs in the root forward pre-hook, next to FSDP2's own all-gathers.
     usable = [8 * GIB, 2 * GIB + GIB // 4]
     auto = _launch("ddp", ("fsdp2", False, accumulation, True), usable)
     reference = _launch("ddp", ("fsdp2", False, accumulation, False), usable)
@@ -370,6 +422,17 @@ def test_fsdp2_training_unchanged_and_ranks_agree(accumulation):
     for rank in (0, 1):
         assert reference[rank]["checkpointed"] == [True] * 4
         _assert_same_training(auto[rank], reference[rank])
+
+
+@pytest.mark.skipif(not _fsdp2_runs_on_cpu(), reason = "this torch has no CPU FSDP2 path")
+@pytest.mark.parametrize("root_only", [False, True])
+@pytest.mark.parametrize("mode", ["sync", "skip", "defer"])
+def test_fsdp2_gradient_bytes_are_rank_local(root_only, mode):
+    results = _launch("fsdp2_grad_bytes", (root_only, mode), [8 * GIB, 8 * GIB])
+    for rank, r in results.items():
+        print("FSDP2_GRAD_BYTES", rank, r)
+        assert r["planner"] == r["expected"] > 0, r
+        assert r["kept"] == [1], r
 
 
 def test_ddp_join_with_uneven_inputs_keeps_every_layer_checkpointed():

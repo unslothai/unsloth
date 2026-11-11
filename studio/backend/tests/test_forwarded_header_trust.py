@@ -74,7 +74,7 @@ def _served(*, is_colab = False, cloudflare_url = None):
     inner = Starlette(routes = [Route("/login", _login, methods = ["POST"])])
     inner.state.cloudflare_url = cloudflare_url
     kwargs = uvicorn_forwarded_kwargs(is_colab = is_colab)
-    served = inner if kwargs["proxy_headers"] else wrap_direct_server(inner, inner.state)
+    served = inner if kwargs["proxy_headers"] else wrap_direct_server(inner, inner.state, is_colab)
     config = uvicorn.Config(served, log_level = "warning", **kwargs)
     config.load()
     return config.loaded_app
@@ -131,18 +131,48 @@ def test_the_operator_opt_in_still_honours_forwarded_headers(_no_user, monkeypat
     assert seen[0]["scheme"] == "https"
 
 
-def test_colab_keeps_its_proxy_header_trust():
-    assert uvicorn_forwarded_kwargs(is_colab = True) == {
-        "proxy_headers": True,
-        "forwarded_allow_ips": "*",
-    }
+def test_colab_tunnel_visitor_cannot_pick_a_fresh_login_bucket(_no_user):
+    attempts = auth_routes._LOGIN_MAX_FAILS + 3
+    seen = _post_all(
+        _served(is_colab = True, cloudflare_url = _TUNNEL_URL),
+        [
+            {
+                "host": _TUNNEL_HOST,
+                "cf-connecting-ip": "198.51.100.7",
+                "x-forwarded-for": f"203.0.113.{i}, 198.51.100.7",
+                "x-forwarded-proto": "https",
+            }
+            for i in range(attempts)
+        ],
+        host = _TUNNEL_HOST,
+    )
+    assert {r["client"] for r in seen} == {"198.51.100.7"}
+    assert {r["scheme"] for r in seen} == {"https"}
+    statuses = [r["status"] for r in seen]
+    assert statuses[: auth_routes._LOGIN_MAX_FAILS] == [401] * auth_routes._LOGIN_MAX_FAILS
+    assert statuses[-1] == 429
+
+
+def test_colab_notebook_proxy_keeps_https_and_keys_on_the_address_it_appended(_no_user):
+    attempts = auth_routes._LOGIN_MAX_FAILS + 3
+    seen = _post_all(
+        _served(is_colab = True),
+        [
+            {"x-forwarded-for": f"203.0.113.{i}, 10.0.0.2", "x-forwarded-proto": "https"}
+            for i in range(attempts)
+        ],
+        host = "8888-test.prod.colab.dev",
+    )
+    assert {r["client"] for r in seen} == {"10.0.0.2"}
+    assert {r["scheme"] for r in seen} == {"https"}
+    assert [r["status"] for r in seen][-1] == 429
 
 
 def test_run_server_and_the_lan_listener_use_the_shared_arguments():
     backend = Path(__file__).resolve().parents[1]
     run_src = (backend / "run.py").read_text(encoding = "utf-8")
     assert "uvicorn_forwarded_kwargs(is_colab = _IS_COLAB)" in run_src
-    assert "wrap_direct_server(app, app.state)" in run_src
+    assert "wrap_direct_server(app, app.state, is_colab = _IS_COLAB)" in run_src
     import lan_access
 
     assert "uvicorn_forwarded_kwargs(is_colab = False)" in inspect.getsource(

@@ -52,6 +52,9 @@ import {
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
+import { observeReplyPaint } from "@/components/assistant-ui/reply-paint";
+import { observeDistantRow } from "@/components/assistant-ui/distant-rows";
+import { WindowedMessageBody } from "@/components/assistant-ui/windowed-message-body";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
@@ -135,7 +138,9 @@ import {
   richPasteMarkdown,
   currentDictationEntryMode,
   isStudioDictationAvailable,
+  micRecordsForModel,
   notifyStudioDictationUnavailable,
+  setMicAudioClipTarget,
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
   ChatComposerFocusableContext,
@@ -150,12 +155,12 @@ import {
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
-  BookmarkTurnButton,
   BookmarkTurnMenuItem,
   TurnNavigator,
 } from "@/components/assistant-ui/turn-navigation";
 import {
   IntentAwareScrollProvider,
+  useAdjustForContentInsertedAbove,
   useDetachThreadFromBottom,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
@@ -188,7 +193,10 @@ import {
   exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "@/features/chat/components/export-format-items";
 import {
   listPromptEntries,
   listPromptLists,
@@ -196,7 +204,12 @@ import {
   type PromptListEntry,
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
-import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { insertSavedPrompt } from "@/features/chat/prompt-storage/insert-prompt";
+import {
+  COMPOSER_POSITION_BOTTOM,
+  COMPOSER_POSITION_MIDDLE,
+  useChatPreferencesStore,
+} from "@/features/chat/stores/chat-preferences-store";
 import {
   sortProjectsByActivity,
   useChatProjects,
@@ -211,9 +224,11 @@ import {
   NativeAttachmentDragContext,
   type NativeIntent,
   useNativeAttachmentTargetKey,
+  useNativeAttachmentOwnerScope,
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
+import { wasAttachmentAddCancelled } from "@/features/chat/draft-attachment-adapter";
 import {
   attachLibraryChatFiles,
   useLibraryChatHandoffStore,
@@ -231,7 +246,12 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
-import { formatPrefillDetails, formatPrefillTimeLeft, prefillPercent } from "@/features/chat";
+import {
+  betweenToolRounds,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillPercent,
+} from "@/features/chat";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
@@ -313,6 +333,8 @@ import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   splitPlusMenuItems,
   CONVERSATION_MARKDOWN_LABEL,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
   chatHistoryClearBoundary,
@@ -335,8 +357,10 @@ import {
   shouldAbortPendingQueueForSettingsChange,
   resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
-  adoptLegacyDraft,
+  flushComposerDraft,
   latestDraft,
+  NEW_CHAT_DRAFT_ID,
+  stageComposerDraft,
   latestPasteDraft,
   publishDraft,
   subscribeDraft,
@@ -350,8 +374,8 @@ import {
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
   dictationFailed,
+  dictationProducedClip,
   dictationProducedTranscript,
-  readComposerDraft,
   type PromptQueueUIEntry,
   type PromptQueueUIItem,
   type PromptQueueUIItemStatus,
@@ -383,9 +407,14 @@ import {
   updateStoredChatThread,
 } from "@/features/chat/utils/chat-history-storage";
 import {
+  clipStillAttached,
   dictationSendBlocked,
   shouldSubmitDictation,
 } from "@/features/chat/utils/dictation-send";
+import {
+  micSendsAudioToModel,
+  pickAudioForModel,
+} from "@/features/chat/utils/mic-target";
 import {
   isRagClientError,
   listProjectDocuments,
@@ -419,7 +448,8 @@ import {
   ReadAloudIcon,
 } from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
-import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { markComposerScrollable, markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -2078,14 +2108,13 @@ export const Thread: FC<{
     startGrammarPrewarm();
   }, []);
   const composerAtBottom = useChatPreferencesStore(
-    (s) => s.newChatComposerAtBottom,
+    (s) => s.newChatComposerPosition >= COMPOSER_POSITION_BOTTOM,
   );
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
   const {
     ref: viewportRef,
-    markerRef,
     context: autoScrollContext,
   } = useIntentAwareAutoScroll();
 
@@ -2309,7 +2338,6 @@ export const Thread: FC<{
           scrollToBottomOnRunStart={false}
           scrollToBottomOnInitialize={false}
           scrollToBottomOnThreadSwitch={false}
-          ref={markerRef}
           className="aui-thread-host hidden"
           onDragEnter={onDragEnter}
           onDragOver={onDragOver}
@@ -2780,9 +2808,15 @@ const ThreadWelcome: FC<{
   });
   const customText = greeting.kind === "text" ? greeting.text : null;
   // At the bottom, Thread docks the composer and the greeting centres in the space above it.
-  const composerAtBottom = useChatPreferencesStore(
-    (s) => s.newChatComposerAtBottom,
+  const composerPosition = useChatPreferencesStore(
+    (s) => s.newChatComposerPosition,
   );
+  const composerAtBottom = composerPosition >= COMPOSER_POSITION_BOTTOM;
+  // Below 50 the top padding shrinks; above it, spacers split the leftover height.
+  const lift =
+    Math.min(composerPosition, COMPOSER_POSITION_MIDDLE) /
+    COMPOSER_POSITION_MIDDLE;
+  const sink = Math.max(0, composerPosition - COMPOSER_POSITION_MIDDLE);
   useMarkChatWelcome();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
@@ -2805,12 +2839,23 @@ const ThreadWelcome: FC<{
             ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
             : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
           // Without the greeting, its row and gap become padding, so the composer stays where it was.
+          // The image row's -76px margin needs at least that much padding.
           !composerAtBottom &&
-            (greeting.kind !== "off" || incognito
-              ? "pt-[27.5dvh]"
-              : "pt-[calc(27.5dvh_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
+            (greeting.kind === "image" && !incognito
+              ? "pt-[max(calc(76px*var(--ui-space-scale,1)),calc(27.5dvh*var(--welcome-lift,1)))]"
+              : greeting.kind !== "off" || incognito
+                ? "pt-[calc(27.5dvh*var(--welcome-lift,1))]"
+                : "pt-[calc(27.5dvh*var(--welcome-lift,1)_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
         )}
+        style={{ "--welcome-lift": lift } as CSSProperties}
       >
+        {!composerAtBottom && (
+          <div
+            aria-hidden="true"
+            className="[:has(.unsloth-files-panel)>&]:hidden"
+            style={{ flexGrow: sink }}
+          />
+        )}
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
@@ -2878,6 +2923,13 @@ const ThreadWelcome: FC<{
             <ComposerAnimated threadId={threadId} />
           )}
         </div>
+        {!composerAtBottom && (
+          <div
+            aria-hidden="true"
+            className="[:has(.unsloth-files-panel)>&]:hidden"
+            style={{ flexGrow: COMPOSER_POSITION_MIDDLE - sink }}
+          />
+        )}
       </div>
     </div>
   );
@@ -3156,6 +3208,7 @@ const Composer: FC<{
         event,
         async (file) => {
           await aui.composer().addAttachment(file);
+          if (wasAttachmentAddCancelled(file)) return;
           dropReplacedSelection();
         },
         () =>
@@ -3247,6 +3300,7 @@ const Composer: FC<{
       : null;
   // Expand only once the input wraps, latched so it cannot flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerSurfaceRef = useSurfaceRef(COMPOSER_INPUT_SELECTOR, inputRef);
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
@@ -3308,8 +3362,13 @@ const Composer: FC<{
   const handleEditorHeightChange = useCallback(
     (height: number, meta: { rowHeight: number }) => {
       setEditorHeight(height);
-      if (meta.rowHeight <= 0) return;
       const el = inputRef.current;
+      // Drafts set without typing change only the height.
+      if (el) {
+        markComposerScrollable(el);
+        markComposerScrollEdges(el);
+      }
+      if (meta.rowHeight <= 0) return;
       if (el && !lineMetricsRef.current) {
         const cs = getComputedStyle(el);
         const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
@@ -3346,7 +3405,11 @@ const Composer: FC<{
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.id,
+  );
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const nativeAttachmentOwnerScope = useNativeAttachmentOwnerScope();
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
 
@@ -3360,6 +3423,10 @@ const Composer: FC<{
         throw new Error("The chat changed before this file was attached.");
       }
       await aui.composer().addAttachment(file);
+      // The draft-scoped adapter resolves a cancelled add; throwing keeps the file held.
+      if (wasAttachmentAddCancelled(file)) {
+        throw new Error("The chat changed before this file was attached.");
+      }
     };
     const drain = async () => {
       const held = await attachLibraryChatFiles(targetKey, add);
@@ -3449,6 +3516,11 @@ const Composer: FC<{
   // A parked send must not fire on a failed drop. Assigned below once the callback exists.
   const cancelQueuedSendRef = useRef<(() => void) | null>(null);
   const composerIdentityRef = useRef("");
+  const nativeAttachmentOwner = nativeAttachmentOwnerScope
+    ? JSON.stringify([nativeAttachmentOwnerScope, threadListItemId ?? ""])
+    : threadListItemId ?? "";
+  const nativeAttachmentOwnerRef = useRef(nativeAttachmentOwner);
+  nativeAttachmentOwnerRef.current = nativeAttachmentOwner;
   const imageDropFailures = useNativeIntentStore(
     (s) => (nativeAttachmentTargetKey ? s.imageDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
   );
@@ -3481,20 +3553,22 @@ const Composer: FC<{
   }, [videoDropFailures]);
   // Hold the send gate while the dropped clip is registered and read.
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    // aui.composer() is still the previous chat until the runtime reaches this route's thread.
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimAudioAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     // A re-key follows the same composer; a thread switch parks the clip back.
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     // A remount hides the new key, so tag the batch; the next instance claims it.
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
@@ -3541,6 +3615,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               // The adapter toasted. Keep going: a later, smaller clip may still fit.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
@@ -3588,23 +3676,24 @@ const Composer: FC<{
       setMaterializingDroppedAudio(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
 
   // Same drain as audio: one clip per message, and the send gate holds across the read.
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimVideoAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3649,6 +3738,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               // Chat-wide failure and the adapter already toasted: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
@@ -3692,23 +3795,24 @@ const Composer: FC<{
       setMaterializingDroppedVideo(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
 
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimImageAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     // A fresh chat re-keys from "single:new" to its thread id under the same composer, so follow it.
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     const requeueKey = () =>
       stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3764,6 +3868,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               // Chat-wide failure and the adapter already toasted: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
@@ -3788,7 +3906,7 @@ const Composer: FC<{
         const pending =
           useNativeIntentStore.getState().pendingImageAttachments[targetKey]
             ?.length ?? 0;
-        if (pending > 0) {
+        if (pending > 0 && stillThisComposer()) {
           void drainPendingImages();
         } else {
           setMaterializingDroppedImages(false);
@@ -3821,21 +3939,22 @@ const Composer: FC<{
       setMaterializingDroppedImages(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const identityAtSetup = composerIdentityRef.current;
+    const identityAtSetup = nativeAttachmentOwnerRef.current;
     useNativeIntentStore
       .getState()
       .claimImageAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     const stillThisComposer = () =>
-      composerIdentityRef.current === identityAtSetup;
+      nativeAttachmentOwnerRef.current === identityAtSetup;
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3880,6 +3999,20 @@ const Composer: FC<{
             }
             try {
               await aui.composer().addAttachment(file);
+              if (wasAttachmentAddCancelled(file)) {
+                // Same owner and key means the destination refused it: retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
+              }
             } catch {
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
             }
@@ -3924,7 +4057,7 @@ const Composer: FC<{
       setMaterializingDroppedOpenDocuments(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
   const hasMaterializingImageAttachments =
     registeringImageDrops ||
     hasPendingImageAttachments ||
@@ -3940,9 +4073,6 @@ const Composer: FC<{
     hasPendingVideoAttachments ||
     materializingDroppedVideo;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
-  const threadListItemId = useAuiState(
-    ({ threadListItem }) => threadListItem.id,
-  );
   const threadListItemRemoteId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
   );
@@ -4042,33 +4172,78 @@ const Composer: FC<{
   const canQueueAttachmentPrompt =
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
-  // The shared draft, restored on every chat switch; a temporary chat never reads or writes it.
   const incognito = useChatRuntimeStore((s) => s.incognito);
-  const draftScope = incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId;
-  const draftKey = composerDraftKey();
+  const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
+  // Route and active IDs can lead the runtime switch; drafts belong to the composer on screen.
+  const draftThreadId = threadListItemRemoteId ?? NEW_CHAT_DRAFT_ID;
+  const restoredDraftScopeRef = useRef<string | undefined>(undefined);
+  const previousDraftIdentityRef = useRef({
+    draftThreadId,
+    threadListItemId,
+    incognito,
+  });
+  const draftKey = composerDraftKey(draftThreadId, shareDraft);
+  const draftScope = incognito
+    ? INCOGNITO_DRAFT_SCOPE
+    : `${draftKey}:${threadListItemId}`;
   // Text that came from Compare, so saving it back can't overwrite a newer write.
   const remoteDraftRef = useRef<string | null>(null);
   const [draftSource] = useState(() => Symbol("chat composer"));
   // Whose pastes are on screen: a temporary chat's never cross into the saved draft, nor back.
-  const pasteScopeShownRef = useRef<string | null>(draftScope);
+  const pasteKeyShownRef = useRef<string | null>(incognito ? null : draftKey);
   // unsent pasted File objects need a separate slot because they exist only in memory
-  const pasteDraftKey = composerPasteDraftKey();
+  const pasteDraftKey = composerPasteDraftKey(draftThreadId, shareDraft);
   const lastDraftScopeRef = useRef(draftScope);
   // save only after this chat's paste restore finishes to avoid premature clearing
   const restoredPasteScopeRef = useRef<string | null | undefined>(undefined);
   const restoringPasteScopeRef = useRef<string | null | undefined>(undefined);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // draftScope re-runs the restore on every chat switch, though the key stays the same.
+  const pendingDraftRef = useRef<{ key: string; text: string } | null>(null);
+  // The key flips before the runtime swaps threads: until the restore shows, the text is the last chat's.
+  const awaitingRestoreRef = useRef<{ scope: string; stale: string; text: string } | null>(null);
   useEffect(() => {
+    const previous = previousDraftIdentityRef.current;
+    previousDraftIdentityRef.current = {
+      draftThreadId,
+      threadListItemId,
+      incognito,
+    };
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
+    if (
+      restoredDraftScopeRef.current === draftScope &&
+      previous.threadListItemId === threadListItemId
+    ) return;
+    restoredDraftScopeRef.current = draftScope;
+    // First persistence names the same conversation; navigation must still restore its own draft.
+    if (
+      !incognito &&
+      !previous.incognito &&
+      !shareDraft &&
+      previous.draftThreadId === NEW_CHAT_DRAFT_ID &&
+      aui.threadListItem().getState().remoteId === draftThreadId &&
+      previous.threadListItemId === threadListItemId &&
+      previous.draftThreadId !== draftThreadId
+    ) {
+      const previousKey = composerDraftKey(previous.draftThreadId);
+      const previousPasteKey = composerPasteDraftKey(previous.draftThreadId);
+      if (justSentRef.current?.draftKey === previousKey) {
+        justSentRef.current = { ...justSentRef.current, draftKey };
+      }
+      const text = latestDraft(previousKey);
+      writeComposerDraft(draftKey, text);
+      stageComposerDraft(draftKey, text);
+      writePasteDraft(pasteDraftKey, latestPasteDraft(previousPasteKey));
+      writeComposerDraft(previousKey, "");
+      writePasteDraft(previousPasteKey, []);
+      pasteKeyShownRef.current = draftKey;
+    }
     if (draftScope === INCOGNITO_DRAFT_SCOPE) {
       composer.setText("");
       return;
     }
-    const draft = adoptLegacyDraft(draftScope)
-      ? (readComposerDraft(draftKey) ?? "")
-      : latestDraft();
+    remoteDraftRef.current = null;
+    const draft = latestDraft(draftKey);
     // A save that raced the send still holds the sent text, so restoring it
     // would undo the clear. Clear rather than return early, which would leave
     // the previous thread's text on screen under this one.
@@ -4079,21 +4254,32 @@ const Composer: FC<{
         draftSaveTimerRef.current = null;
       }
       writeComposerDraft(draftKey, "");
+      awaitingRestoreRef.current = { scope: draftScope, stale: composer.getState().text, text: "" };
       composer.setText("");
       return;
     }
+    awaitingRestoreRef.current = { scope: draftScope, stale: composer.getState().text, text: draft };
     composer.setText(draft);
-  }, [draftScope, draftKey, aui]);
+  }, [
+    draftScope,
+    draftKey,
+    pasteDraftKey,
+    shareDraft,
+    draftThreadId,
+    threadListItemId,
+    incognito,
+    aui,
+  ]);
   // Compare's composer, so whichever is on screen shows the latest draft.
   useEffect(() => {
-    if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
+    if (!shareDraft || draftScope === INCOGNITO_DRAFT_SCOPE) return;
     return subscribeDraft(draftSource, (text) => {
       const composer = aui.composer();
       if (!composer.getState().isEditing) return;
       remoteDraftRef.current = text;
       composer.setText(text);
     });
-  }, [draftScope, draftSource, aui]);
+  }, [draftScope, draftSource, shareDraft, aui]);
   // The saved-prompt menu and the prompt storage dialog fill the composer
   // directly, bypassing the guard. Text appearing after the send was put there
   // deliberately, so retire. Read live, or a
@@ -4110,10 +4296,7 @@ const Composer: FC<{
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
     if (restoredPasteScopeRef.current === draftScope) return;
-    if (
-      (pasteScopeShownRef.current === INCOGNITO_DRAFT_SCOPE) !==
-      (draftScope === INCOGNITO_DRAFT_SCOPE)
-    ) {
+    if (pasteKeyShownRef.current !== (incognito ? null : draftKey)) {
       const pasted = composer
         .getState()
         .attachments.filter(
@@ -4128,7 +4311,7 @@ const Composer: FC<{
         return;
       }
     }
-    pasteScopeShownRef.current = draftScope;
+    pasteKeyShownRef.current = incognito ? null : draftKey;
     if (draftScope === INCOGNITO_DRAFT_SCOPE) {
       restoredPasteScopeRef.current = draftScope;
       return;
@@ -4141,7 +4324,7 @@ const Composer: FC<{
         const text = pastedTextOf((attachment as { file?: File }).file);
         return text === undefined ? [] : [text];
       });
-    const missing = latestPasteDraft().filter((text) => {
+    const missing = latestPasteDraft(pasteDraftKey).filter((text) => {
       const at = shown.indexOf(text);
       if (at === -1) return true;
       shown.splice(at, 1);
@@ -4156,16 +4339,25 @@ const Composer: FC<{
     restoringPasteScopeRef.current = draftScope;
     // Claim the chat only once the attachments are in, so the save effect
     // cannot write an empty composer over the draft still being restored.
+    const restoredFiles = missing.map(createPastedTextFile);
     void Promise.all(
-      missing.map((text) => composer.addAttachment(createPastedTextFile(text))),
+      restoredFiles.map((file) => composer.addAttachment(file)),
     ).finally(() => {
       restoringPasteScopeRef.current = undefined;
       // A switch while these were added re-runs the restore for the new scope instead.
       if (draftScopeRef.current === draftScope) {
         restoredPasteScopeRef.current = draftScope;
+      } else {
+        // An adapter finishing after navigation reinserts its file; drop only this restore's files.
+        for (const attachment of composer.getState().attachments) {
+          const file = (attachment as { file?: File }).file;
+          if (file && restoredFiles.includes(file)) {
+            void composer.attachment({ id: attachment.id }).remove();
+          }
+        }
       }
     });
-  }, [draftScope, pasteDraftKey, composerAttachmentSignature, aui]);
+  }, [draftScope, draftKey, incognito, pasteDraftKey, composerAttachmentSignature, aui]);
   // Keyed on the paste identities, never their bodies, so typing beside a
   // megabyte paste does not rewrite it to localStorage every 300ms.
   useEffect(() => {
@@ -4192,18 +4384,42 @@ const Composer: FC<{
       return;
     }
     if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
+    if (composerText !== aui.composer().getState().text) return;
+    const awaiting = awaitingRestoreRef.current;
+    if (awaiting?.scope === draftScope) {
+      if (composerText === awaiting.stale && composerText !== awaiting.text) return;
+      awaitingRestoreRef.current = null;
+    }
     if (composerText === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
-    publishDraft(composerText, draftSource);
-    const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
+    if (shareDraft) publishDraft(composerText, draftSource);
+    if (!shareDraft) {
+      pendingDraftRef.current = { key: draftKey, text: composerText };
+      stageComposerDraft(draftKey, composerText);
+    }
+    const t = setTimeout(() => {
+      writeComposerDraft(draftKey, composerText);
+      pendingDraftRef.current = null;
+    }, 300);
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
-  }, [composerText, draftScope, draftKey, draftSource]);
+  }, [composerText, draftScope, draftKey, draftSource, shareDraft, aui]);
+  useEffect(() => () => {
+    const pending = pendingDraftRef.current;
+    if (pending && !sentTextGuardBlocksDraft(justSentRef.current, pending.text, pending.key)) {
+      flushComposerDraft(pending.key, pending.text);
+    }
+    pendingDraftRef.current = null;
+  }, [draftScope]);
   const draftScopeRef = useRef(draftScope);
+  const pasteDraftKeyRef = useRef(pasteDraftKey);
+  const shareDraftRef = useRef(shareDraft);
   useEffect(() => {
     draftKeyRef.current = draftKey;
     draftScopeRef.current = draftScope;
-  }, [draftKey, draftScope]);
+    pasteDraftKeyRef.current = pasteDraftKey;
+    shareDraftRef.current = shareDraft;
+  }, [draftKey, draftScope, pasteDraftKey, shareDraft]);
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
     justSentRef.current = armSentTextGuard(
@@ -4216,15 +4432,16 @@ const Composer: FC<{
     setIsWritingExpanded(false);
   }, [imeSessionOpenRef]);
   const clearStoredDraft = useCallback(() => {
+    pendingDraftRef.current = null;
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
       draftSaveTimerRef.current = null;
     }
     // A temporary chat's send was never the stored draft.
     if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) return;
-    publishDraft("", draftSource);
-    writeComposerDraft(composerDraftKey(), "");
-    writePasteDraft(composerPasteDraftKey(), []);
+    if (shareDraftRef.current) publishDraft("", draftSource);
+    if (draftKeyRef.current) writeComposerDraft(draftKeyRef.current, "");
+    writePasteDraft(pasteDraftKeyRef.current, []);
   }, [draftSource]);
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
@@ -5333,10 +5550,14 @@ const Composer: FC<{
   const startDictation = useCallback(() => {
     if (audioUpload.busy || dictationEntryDisabled) return;
     if (currentDictationEntryMode() === "recording-file") {
-      audioUpload.openDialog();
+      if (micRecordsForModel()) {
+        pickAudioForModel((file) => aui.composer().addAttachment(file));
+      } else {
+        audioUpload.openDialog();
+      }
       return;
     }
-    if (!isStudioDictationAvailable()) {
+    if (!micRecordsForModel() && !isStudioDictationAvailable()) {
       notifyStudioDictationUnavailable();
       return;
     }
@@ -5346,6 +5567,21 @@ const Composer: FC<{
       notifyStudioDictationUnavailable();
     }
   }, [aui, audioUpload, dictationEntryDisabled]);
+  useEffect(
+    () =>
+      setMicAudioClipTarget({
+        add: (file) => aui.composer().addAttachment(file),
+        attached: () =>
+          aui
+            .composer()
+            .getState()
+            .attachments.flatMap((attachment) =>
+              attachment.file ? [attachment.file] : [],
+            ),
+      }),
+    // Per chat: the old chat's unregister discards its unfinished clip.
+    [aui, composerIdentity],
+  );
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -5458,6 +5694,10 @@ const Composer: FC<{
         originComposer: dictationComposerRef.current,
         currentComposer: composerIdentity,
         producedTranscript: dictationProducedTranscript(),
+        producedClip: clipStillAttached(
+          dictationProducedClip(),
+          aui.composer().getState().attachments,
+        ),
         baseText: dictationBaseTextRef.current,
         text,
       });
@@ -5768,6 +6008,7 @@ const Composer: FC<{
           data-pill-compact={pillCompact}
         >
           <ComposerToolsMenu
+            inputRef={inputRef}
             side={effectiveMenuSide}
             researchAvailable={!researchUsed}
             audioUploadBusy={audioUpload.busy}
@@ -5815,7 +6056,7 @@ const Composer: FC<{
                 placeholder={
                   overlay ? "Type your edits for your image" : "Ask anything"
                 }
-                ref={inputRef}
+                ref={composerSurfaceRef}
                 data-type-to-activate="composer"
                 className="aui-composer-input unsloth-composer-input"
                 minRows={1}
@@ -5831,6 +6072,9 @@ const Composer: FC<{
                   markComposerScrollEdges(event.currentTarget)
                 }
                 onInputCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onFocusCapture={(event) =>
                   markComposerScrollEdges(event.currentTarget)
                 }
                 // Capture, so inputProps keeps the handlers it already owns.
@@ -5913,11 +6157,13 @@ const Composer: FC<{
     </>
   );
 
+  // The blur is only on while the overlay shows: WebKitGTK stops drawing the composer's own Glass
+  // blur while a hidden (opacity 0) child still carries a backdrop-filter.
   const dropOverlay = (
     <div
       className={cn(
-        "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
-        (pageDragging || nativeDragging) && "opacity-100",
+        "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 group-data-[dragging=true]/dropzone:backdrop-blur-sm dark:bg-card/90",
+        (pageDragging || nativeDragging) && "opacity-100 backdrop-blur-sm",
       )}
     >
       <HugeiconsIcon
@@ -6816,11 +7062,18 @@ function usePickComposerAttachment(): () => void {
   }, [aui, audioAttachmentsEnabled]);
 }
 
+const LazyLibraryAttachmentPicker = lazy(() =>
+  import("@/components/assistant-ui/library-attachment-picker").then((module) => ({
+    default: module.LibraryAttachmentPicker,
+  })),
+);
+
 const ComposerToolsMenu: FC<{
+  inputRef: RefObject<HTMLTextAreaElement | null>;
   side?: "top" | "bottom";
   researchAvailable: boolean;
   audioUploadBusy: boolean;
-}> = ({ side = "bottom", researchAvailable, audioUploadBusy }) => {
+}> = ({ inputRef, side = "bottom", researchAvailable, audioUploadBusy }) => {
   const t = useT();
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
@@ -6911,6 +7164,8 @@ const ComposerToolsMenu: FC<{
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
+  const libraryPickerRequested = useRef(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
@@ -7109,7 +7364,7 @@ const ComposerToolsMenu: FC<{
           {recentPrompts.map((p) => (
             <DropdownMenuItem
               key={`prompt:${p.id}`}
-              onSelect={() => aui.composer().setText(p.text)}
+              onSelect={() => insertSavedPrompt(inputRef.current, p.text, (next) => aui.composer().setText(next))}
             >
               <span className="truncate">{p.name}</span>
             </DropdownMenuItem>
@@ -7145,56 +7400,33 @@ const ComposerToolsMenu: FC<{
           collisionPadding={16}
           className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
-          <DropdownMenuItem
-            onSelect={() => {
+          <ExportFormatItems
+            options={[
+              { key: "raw", label: "Training JSONL" },
+              { key: "messages", label: "Message JSONL" },
+              { key: "csv", label: "CSV" },
+              { key: "sharegpt", label: "ShareGPT JSONL" },
+              { key: "markdown", label: CONVERSATION_MARKDOWN_LABEL },
+              { key: "html", label: CONVERSATION_HTML_LABEL },
+              { key: "pdf", label: CONVERSATION_PDF_LABEL },
+            ]}
+            subContentClassName="unsloth-plus-menu w-[calc(176px*var(--ui-space-scale,1))]"
+            onSelect={(key) => {
               if (!activeThreadId) return;
-              exportConversationRawJsonl(activeThreadId).catch((error) => {
+              const exporters = {
+                raw: exportConversationRawJsonl,
+                messages: exportConversationMessagesJsonl,
+                csv: exportConversationCsv,
+                sharegpt: exportConversationShareGPT,
+                markdown: exportConversationMarkdown,
+                html: exportConversationHtml,
+                pdf: exportConversationPdf,
+              };
+              exporters[key](activeThreadId).catch((error) => {
                 if (!isDownloadCancelled(error)) toast.error("Export failed.");
               });
             }}
-          >
-            Training JSONL
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationMessagesJsonl(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            Message JSONL
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationCsv(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            CSV
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationShareGPT(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            ShareGPT JSONL
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationMarkdown(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            {CONVERSATION_MARKDOWN_LABEL}
-          </DropdownMenuItem>
+          />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
@@ -7235,12 +7467,15 @@ const ComposerToolsMenu: FC<{
 
   return (
     <>
+    {libraryPickerOpen ? (
+      <Suspense fallback={null}>
+        <LazyLibraryAttachmentPicker onClose={() => setLibraryPickerOpen(false)} />
+      </Suspense>
+    ) : null}
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
-      onUse={(text) => {
-        aui.composer().setText(text);
-      }}
+      onUse={(text) => insertSavedPrompt(inputRef.current, text, (next) => aui.composer().setText(next))}
       onRunList={(items) => runPromptList(items, true)}
     />
     <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
@@ -7262,7 +7497,13 @@ const ComposerToolsMenu: FC<{
         avoidCollisions={true}
         className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
         // Don't refocus the + on close; restored focus showed a stray ring.
-        onCloseAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (libraryPickerRequested.current) {
+            libraryPickerRequested.current = false;
+            if (chatActive) setLibraryPickerOpen(true);
+          }
+        }}
       >
         <DropdownMenuItem
           disabled={!composerCanAddAttachments}
@@ -7357,6 +7598,14 @@ const ComposerToolsMenu: FC<{
             More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
+            <DropdownMenuItem
+              disabled={!composerCanAddAttachments}
+              onSelect={() => { libraryPickerRequested.current = true; }}
+            >
+              <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
+              Attach from Library
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             {overflowPlusItems.map((id) => (
               <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
             ))}
@@ -7438,6 +7687,16 @@ const ComposerRightControls: FC<{
   const t = useT();
   const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const micTarget = useVoiceSettingsStore((s) => s.micTarget);
+  const modelHearsAudio = useChatRuntimeStore(
+    (s) =>
+      !s.modelLoading &&
+      s.models.find((model) => model.id === s.params.checkpoint)
+        ?.hasAudioInput === true,
+  );
+  const micLabel = micSendsAudioToModel(micTarget, modelHearsAudio)
+    ? t("settings.voice.dictation.micRecordForModel")
+    : "Dictate";
   // A boolean, so typing re-renders this only when a line break comes or goes.
   const multiline = useAuiState(({ composer }) => composer.text.includes("\n"));
   const shortcutLabels = composerShortcutLabels(
@@ -7567,8 +7826,8 @@ const ComposerRightControls: FC<{
           </Button>
         ) : (
           <TooltipIconButton
-            tooltip="Dictate"
-            aria-label="Dictate"
+            tooltip={micLabel}
+            aria-label={micLabel}
             type="button"
             variant="ghost"
             className="size-9 rounded-full text-foreground"
@@ -7744,7 +8003,22 @@ const GeneratingIndicator: FC = () => {
   return <GeneratingStatus />;
 };
 
-// Mounted only under the empty running reply, so the thread's other messages subscribe to nothing new.
+// GeneratingIndicator's status for the gap after a tool result, until the next pass streams its first part.
+const NextRoundIndicator: FC = () => {
+  const show = useAuiState(({ message }) =>
+    betweenToolRounds(message.status?.type === "running", message.content),
+  );
+  if (!show) {
+    return null;
+  }
+  return (
+    <div data-slot="next-round-indicator" className="mt-2">
+      <GeneratingStatus />
+    </div>
+  );
+};
+
+// Mounted only under a running reply waiting on the model, so the thread's other messages subscribe to nothing new.
 const GeneratingStatus: FC = () => {
   // Keyed like DiffusionCanvas: a first turn reads "__default" until the thread persists.
   const threadKey =
@@ -7759,9 +8033,22 @@ const GeneratingStatus: FC = () => {
   const decoding = useChatRuntimeStore(
     (s) => s.liveGenerationByThreadId[threadKey]?.decode != null,
   );
+  const compacting = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.compacting === true,
+  );
   const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
   const locale = useLocale();
   const t = useT();
+  if (compacting) {
+    return (
+      <span
+        data-slot="compacting-progress"
+        className="generating-glint text-sm text-muted-foreground"
+      >
+        {t("generationStats.compactingContext")}
+      </span>
+    );
+  }
   const percent = prefill ? prefillPercent(prefill) : null;
   // Held at 100% until the first token: going back to Working... for that moment would flash too.
   if (prefill === null || !labelShown || percent === null || decoding) {
@@ -8213,6 +8500,14 @@ const ResearchMessageRunIdContext = createContext<string | null>(null);
 const AssistantMessage: FC = () => {
   const aui = useAui();
   const focusReveal = useActionBarFocusReveal();
+  const replyRef = focusReveal.ref;
+  useEffect(() => {
+    if (replyRef.current) return observeReplyPaint(replyRef.current);
+  }, [replyRef]);
+  const adjustAbove = useAdjustForContentInsertedAbove();
+  useEffect(() => {
+    if (replyRef.current) return observeDistantRow(replyRef.current, adjustAbove);
+  }, [replyRef, adjustAbove]);
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) =>
     "status" in message && message.status?.type === "running"
@@ -8295,6 +8590,7 @@ const AssistantMessage: FC = () => {
       onFocus={focusReveal.onFocus}
       onBlur={focusReveal.onBlur}
     >
+      <WindowedMessageBody enabled={!isEditing && messageContent !== null && !researchRunId}>
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0f1114] dark:text-foreground leading-relaxed">
         {isEditing ? (
           // Same surface as a prompt's EditComposer, at the reply's full width. Bottom gap is padding:
@@ -8335,6 +8631,7 @@ const AssistantMessage: FC = () => {
                 <DiffusionCanvas />
 
                 <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
+                <NextRoundIndicator />
                 <SourcesGroup />
                 <MessageHtmlArtifacts />
                 <ContinueMessageBar />
@@ -8353,6 +8650,7 @@ const AssistantMessage: FC = () => {
         <LiveGenerationLine />
         <AssistantActionBar />
       </div>
+      </WindowedMessageBody>
       {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
@@ -8618,8 +8916,12 @@ const DeleteMessageButton: FC = () => {
   );
 };
 
+// A thin diagonal reads small at the shared size.
+const EDIT_GLYPH = "size-[calc(var(--icon-size)*1.049)]";
 const MORE_MENU_CONTENT_CLASS =
   "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(8px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
+const MORE_MENU_ITEM_CLASS =
+  "aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50";
 
 // Loaded on first use: the dialog is not part of the first screen.
 const LazyRewindDialog = lazy(() =>
@@ -8716,7 +9018,7 @@ const EditAssistantMessageButton: FC = () => {
       <HugeiconsIcon
         icon={Edit03Icon}
         strokeWidth={1.75}
-        className="size-icon"
+        className={EDIT_GLYPH}
       />
     </TooltipIconButton>
   );
@@ -9008,6 +9310,11 @@ const ScheduledTaskSource: FC = () => {
 
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
+  const promptRef = focusReveal.ref;
+  const adjustAbove = useAdjustForContentInsertedAbove();
+  useEffect(() => {
+    if (promptRef.current) return observeDistantRow(promptRef.current, adjustAbove);
+  }, [promptRef, adjustAbove]);
   // Attachments alone (annotations, images) get no empty bubble under them.
   const hasContent = useAuiState(({ message }) =>
     message.content.some((part) => part.type !== "text" || part.text.trim() !== ""),
@@ -9019,6 +9326,7 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
+      <WindowedMessageBody>
       <ScheduledTaskSource />
       <UserMessageAttachments />
       <UserMessageAudio />
@@ -9027,7 +9335,7 @@ const UserMessage: FC = () => {
         {hasContent ? (
           <div
             dir="auto"
-            className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+            className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}
@@ -9036,6 +9344,7 @@ const UserMessage: FC = () => {
           <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
         </UserMessageFooter>
       </div>
+      </WindowedMessageBody>
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
       </MessagePrimitive.If>
@@ -9063,17 +9372,56 @@ const UserActionBar: FC = () => {
             <HugeiconsIcon
               icon={Edit03Icon}
               strokeWidth={1.75}
-              className="size-icon"
+              className={EDIT_GLYPH}
             />
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       )}
-      <BookmarkTurnButton />
       <RewindMessageButton />
       <ForkCountBadge />
-      <ForkMessageButton />
       <DeleteMessageButton />
+      <UserMoreMenu />
     </UserMessageActionBar>
+  );
+};
+
+const UserMoreMenu: FC = () => {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const collisionPadding = useWindowChromeCollisionPadding(undefined);
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+  return (
+    // Non-modal: see AssistantActionBar.
+    <ActionBarMorePrimitive.Root modal={false}>
+      <ActionBarMorePrimitive.Trigger asChild={true}>
+        <TooltipIconButton
+          ref={triggerRef}
+          tooltip="More"
+          className="data-[state=open]:bg-accent"
+        >
+          <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+        </TooltipIconButton>
+      </ActionBarMorePrimitive.Trigger>
+      <ActionBarMorePrimitive.Content
+        side="bottom"
+        align="end"
+        collisionPadding={collisionPadding}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        className={MORE_MENU_CONTENT_CLASS}
+      >
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <MenuDismissGuard triggerRef={triggerRef} />
+          <ActionBarMorePrimitive.Item
+            disabled={forkDisabled}
+            onSelect={() => void forkMessage()}
+            className={MORE_MENU_ITEM_CLASS}
+          >
+            <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-[calc(var(--icon-size)*0.97)]" />
+            Fork from here
+          </ActionBarMorePrimitive.Item>
+          <BookmarkTurnMenuItem ownTurn={true} className={MORE_MENU_ITEM_CLASS} />
+        </div>
+      </ActionBarMorePrimitive.Content>
+    </ActionBarMorePrimitive.Root>
   );
 };
 

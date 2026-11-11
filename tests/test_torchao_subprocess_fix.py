@@ -61,9 +61,8 @@ def test_it_does_not_overwrite_existing_torch_symbols():
 
 
 def test_the_child_never_imports_unsloth():
-    """Importing unsloth at the start of every subprocess would pay the full
-    import cost each time and could recurse back through
-    propagate_torchao_fix_to_subprocesses, so the logic is inlined."""
+    """The child must not import unsloth: that pays the full import cost in every subprocess and
+    could recurse through propagate_torchao_fix_to_subprocesses, so logic is inlined."""
     src = IF._subprocess_sitecustomize_source()
     assert "import unsloth" not in src
     assert "from unsloth" not in src
@@ -117,8 +116,7 @@ def _torchao_is_broken_here() -> bool:
 
 
 def test_it_is_a_noop_on_a_healthy_environment():
-    """Nothing is written and PYTHONPATH is untouched unless the fix is
-    actually needed."""
+    """Nothing is written and PYTHONPATH is left untouched unless the fix is actually needed."""
     if _torchao_is_broken_here():
         pytest.skip("this environment genuinely needs the fix")
     before = os.environ.get("PYTHONPATH")
@@ -163,9 +161,8 @@ def test_it_is_idempotent_on_pythonpath():
 
 
 def test_the_directory_is_private_to_this_user():
-    """The temp dir is shared and everything on PYTHONPATH runs in every
-    subprocess, so a fixed name there is code execution for whoever creates it
-    first."""
+    """The temp dir is shared and everything on PYTHONPATH runs in every subprocess, so a fixed name
+    there gives code execution to whoever creates it first."""
     directory = IF._subprocess_fix_directory()
     if hasattr(os, "getuid"):
         assert directory.endswith("-%d" % os.getuid()), directory
@@ -564,9 +561,8 @@ def test_our_own_hook_file_is_trusted(tmp_path):
 
 @pytest.mark.parametrize("kind", ["symlink", "group_writable"])
 def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, kind):
-    """End to end: a once-world-writable directory already holds a hook whose
-    contents match ours. Tightening the directory does not revoke write access
-    to that file, so leaving it is code execution in every subprocess."""
+    """A once world-writable directory may hold a hook matching our contents; tightening it does not
+    revoke that file's write access, so keeping it would mean code execution in every subprocess."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX ownership/permissions only")
     import torch.nn.functional as F
@@ -608,9 +604,8 @@ def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, 
 
 
 def test_a_pre_created_temporary_symlink_is_not_followed(monkeypatch, tmp_path):
-    """The other half of a once-world-writable directory: the temporary file
-    the hook is staged through. A predictable name lets someone leave a
-    symlink behind, and os.replace would install that link as the hook."""
+    """A predictable temp name lets someone leave a symlink behind, and os.replace would install
+    that link as the hook, so the staged temp file must not be followed."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX symlinks only")
     import stat as _stat
@@ -727,9 +722,8 @@ _COUNT_HOOKS = (
 
 
 def test_a_symlink_alias_of_our_own_directory_is_not_chained(staged, tmp_path):
-    """A string compare treats an alias as somebody else's sitecustomize, so
-    the two spellings load and execute one another until the stack runs out.
-    Every unwound level then installs another finder."""
+    """A string compare treats a symlink alias of our own directory as another sitecustomize, so the
+    two load each other until the stack runs out, and each unwound level installs a finder."""
     if not hasattr(os, "symlink"):
         pytest.skip("symlinks only")
     site, _fake = staged

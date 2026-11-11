@@ -116,6 +116,18 @@ def test_macos_profile_hides_install_root_then_allows_own_roots(tmp_path, monkey
     assert argv[3:] == ["bash", "-c", "true"]
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin" or not tool_confinement.shutil.which("sandbox-exec"),
+    reason = "needs macOS sandbox-exec",
+)
+def test_macos_confined_child_starts_bash_and_python(tmp_path):
+    _seed(tmp_path)
+    out = run_as(ALICE, tools._bash_exec, "/bin/echo TOOL_TERMINAL_OK", session_id = "chat")
+    assert "TOOL_TERMINAL_OK" in out, out
+    out = run_as(ALICE, tools._python_exec, "print('TOOL_PYTHON_OK')", session_id = "chat")
+    assert "TOOL_PYTHON_OK" in out, out
+
+
 def test_macos_profile_keeps_the_interpreter_readable_under_a_hidden_root(tmp_path, monkeypatch):
     """Later rules win: an interpreter prefix inside the install root must be allowed again."""
     venv = tmp_path / "studio" / "unsloth_studio"

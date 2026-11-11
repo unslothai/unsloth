@@ -10,6 +10,8 @@ import {
   resolveResidentInitialConfig,
   savedContextPin,
 } from "@/features/model-picker/model-config/per-model-config";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { pinnedReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
@@ -225,6 +227,10 @@ export function applyActiveModelStatusToStore(
   const preserveThinkingOnLoad = resolvePreserveThinkingOnLoad(status);
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
+  // Page-start adoption keeps the restored chat / installation value; the pin seeds loads only.
+  const pinnedThinking = options.adoptingExistingServerModel
+    ? null
+    : pinnedReasoningEnabled(checkpointId);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
   const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
@@ -447,7 +453,9 @@ export function applyActiveModelStatusToStore(
     reasoningEnabled: supportsReasoning
       ? reasoningStyle === "reasoning_effort"
         ? true
-        : useChatRuntimeStore.getState().reasoningEnabled
+        : hydratingExistingModel && pinnedThinking !== null
+          ? pinnedThinking
+          : useChatRuntimeStore.getState().reasoningEnabled
       : true,
     ...loadedContextFields(status),
     ...(status.is_gguf
@@ -699,7 +707,8 @@ export function applyActiveModelStatusToStore(
   if (
     supportsReasoning &&
     hydratingExistingModel &&
-    storedReasoningEnabled === null
+    storedReasoningEnabled === null &&
+    pinnedThinking === null
   ) {
     // Anchored size regex; mirrors use-chat-model-runtime.ts and the inline regex in llama_cpp.py.
     let reasoningDefault = true;

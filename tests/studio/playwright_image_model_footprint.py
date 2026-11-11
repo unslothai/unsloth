@@ -10,6 +10,8 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Route, sync_playwright
 
+from _playwright_robust import follow_os_reduced_motion
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:4173")
 ART_DIR = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_footprint"))
@@ -210,6 +212,7 @@ def main() -> None:
             reduced_motion = "reduce",
             color_scheme = "dark",
         )
+        follow_os_reduced_motion(context)
         context.add_init_script("localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');")
 
         def route_request(route: Route) -> None:

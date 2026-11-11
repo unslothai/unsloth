@@ -161,8 +161,7 @@ def test_web_search_returns_yahoo_section_results_when_every_other_engine_is_blo
         monkeypatch.setattr(DDGS, "_get_network_client", lambda self: None)
     monkeypatch.setattr(tools, "_wikipedia_search", lambda *args: [])
     for cls in ENGINES["text"].values():
-        # A real client cannot be built on the py<3.10 pin (see test_web_search_tiers); Google's
-        # build_payload still sets a cookie on it.
+        # Real clients cannot be built on py<3.10; Google's build_payload still sets a cookie.
         monkeypatch.setattr(cls, "__init__", _offline_init, raising = False)
     # _web_search swaps its Yahoo subclass into the shared registry; put the entry back afterwards.
     monkeypatch.setitem(ENGINES["text"], "yahoo", ENGINES["text"]["yahoo"])
