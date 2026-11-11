@@ -63,6 +63,7 @@ export function DatasetRows({ value }: { value: DatasetPreviewValue }) {
       </div>
       <p className="text-ui-11 text-muted-foreground">
         {value.preview.length} row{value.preview.length === 1 ? "" : "s"}
+        {value.run_id ? " · also on the Benchmarks page, Evals tab" : ""}
       </p>
     </div>
   );

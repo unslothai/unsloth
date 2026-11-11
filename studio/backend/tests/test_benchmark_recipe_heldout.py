@@ -153,6 +153,14 @@ def test_lm_eval_limit_reaches_simple_evaluate():
     assert "limit" not in kwargs
 
 
+def test_recipe_task_is_in_the_registry():
+    from routes import benchmark as evals
+
+    task = next(t for t in evals._CURATED_TASKS if t.id == "recipe_heldout")
+    assert task.runner == "recipe"
+    assert all(t.runner == "lm_eval" for t in evals._CURATED_TASKS if t.id != "recipe_heldout")
+
+
 def _request(**recipe):
     body = {
         "rows": ROWS,

@@ -6417,6 +6417,16 @@ def _benchmark_run_from_row(row: sqlite3.Row) -> dict:
     return data
 
 
+def list_benchmark_runs() -> list[dict]:
+    """List benchmark runs, newest first."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM eval_runs ORDER BY created_at DESC").fetchall()
+        return [_benchmark_run_from_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_benchmark_run(run_id: str) -> Optional[dict]:
     """Get a single benchmark run by id."""
     conn = get_connection()
@@ -6453,3 +6463,13 @@ def get_benchmark_run_detail(run_id: str) -> Optional[dict]:
     run["correct_count"] = correct_count
     run["total_count"] = len(samples) if samples else run["n_samples"]
     return run
+
+
+def delete_benchmark_run(run_id: str) -> None:
+    """Delete a benchmark run and its samples (CASCADE)."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM eval_runs WHERE id = ?", (run_id,))
+        conn.commit()
+    finally:
+        conn.close()

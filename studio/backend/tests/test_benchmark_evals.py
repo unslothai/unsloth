@@ -508,6 +508,15 @@ def test_concurrent_run_requests_get_one_slot(monkeypatch):
     assert not backend.is_active()
 
 
+def test_charts_keep_two_quants_of_one_model_apart():
+    from core.benchmark.graph import _legend_labels
+
+    a = "/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
+    b = "/models/Qwen3-30B-A3B-Instruct-2507-Q8_0.gguf"
+    labels = _legend_labels([a, b])
+    assert labels[a] != labels[b] and "Q4_K_M" in labels[a] and "Q8_0" in labels[b]
+
+
 def test_pypi_gguf_backend_is_reported_as_missing(monkeypatch):
     import sys
     import types
@@ -564,11 +573,12 @@ def test_tokenize_passthrough_sends_llama_server_key(monkeypatch):
 def test_a_new_run_does_not_start_with_the_last_runs_progress(monkeypatch):
     backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
     orch._report_progress(1318, 1319, "Running generate_until requests", "11:13", "00:00")
+    assert benchmark_routes._live_progress(backend) is None  # idle: nothing to show
     seq = backend.try_begin()
     assert seq is not None
     assert backend.get_latest_progress() is None
     orch._report_progress(21, 400, "Running loglikelihood requests", "00:01", "00:15")
-    assert backend.get_latest_progress()["current"] == 21
+    assert benchmark_routes._live_progress(backend)["current"] == 21
     backend.release(seq)
 
 
@@ -607,6 +617,29 @@ def test_a_cancel_token_stops_only_the_run_started_with_it(monkeypatch):
     # Without a token, Stop still cancels whatever is running, as the Evals page does.
     backend.try_begin(None, "mine")
     assert backend.cancel()
+
+
+def test_status_tells_a_dropped_run_request_whether_the_run_is_its_own(monkeypatch):
+    import asyncio
+
+    backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
+    monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", lambda: backend)
+    monkeypatch.setattr(benchmark_routes, "_has_managed_accounts", lambda: False)
+
+    def status(token):
+        return asyncio.run(
+            benchmark_routes.get_benchmark_status(run_token = token, current_subject = "u")
+        )
+
+    # This tab's /run never arrived; another tab's run went through instead.
+    backend.finish(backend.try_begin(None, "other-tab"))
+    assert status("mine").run_token_matches is False
+    assert status(None).run_token_matches is None
+    backend.finish(backend.try_begin(None, "mine"))
+    assert status("mine").run_token_matches is True
+    # A later run replaced it before this tab polled.
+    backend.try_begin(None, None)
+    assert status("mine").run_token_matches is False
 
 
 def test_a_reservation_starts_clean_of_the_last_runs_logs_and_outcome(monkeypatch):
@@ -686,3 +719,99 @@ def test_a_task_specific_filter_still_heads_the_run(name):
     assert pick_default_metric(metrics) == name
     # Exact names keep their priority over a family match.
     assert pick_default_metric([*metrics, {"name": "acc_norm", "score": 0.5}]) == "acc_norm"
+
+
+def test_chart_marks_a_missing_metric_instead_of_scoring_it_zero():
+    from core.benchmark.graph import _bar_chart_inner, _get_score_for_metric, _line_chart_inner
+
+    with_acc = {"task": "arc", "model": "a", "metrics": [{"name": "acc,none", "score": 0.5}]}
+    exact_only = {
+        "task": "gsm8k",
+        "model": "b",
+        "metrics": [{"name": "exact_match,strict-match", "score": 0.3}],
+    }
+    assert _get_score_for_metric(exact_only, "acc,none") is None
+    assert _get_score_for_metric(exact_only, "__accuracy__") is None
+    assert _get_score_for_metric(with_acc, "acc,none") == 50.0
+    for inner in (_bar_chart_inner, _line_chart_inner):
+        fig, ax = inner([with_acc, exact_only], "acc,none", 6, 4, "dark")
+        texts = [t.get_text() for t in ax.texts]
+        assert "50.0%" in texts and "n/a" in texts and "0.0%" not in texts
+
+
+def test_chart_keeps_units_of_non_ratio_metrics():
+    from core.benchmark.graph import (
+        _bar_chart_inner,
+        _get_score_for_metric,
+        _grouped_bar_chart_inner,
+        _line_chart_inner,
+        _radar_chart_inner,
+    )
+    from matplotlib.ticker import PercentFormatter
+
+    def run(task, name, score):
+        return {
+            "task": task,
+            "model": "m",
+            "default_metric": name,
+            "metrics": [{"name": name, "score": score}],
+        }
+
+    bpb = [run("wikitext", "bits_per_byte,none", 0.8), run("wikitext", "bits_per_byte,none", 0.6)]
+    ppl = [run("wikitext", "word_perplexity,none", 12.3)]
+    acc = [run("arc", "acc,none", 0.8)]
+    assert _get_score_for_metric(bpb[0], "bits_per_byte,none") == 0.8
+    assert _get_score_for_metric(bpb[0], "bits_per_byte") == 0.8
+    assert _get_score_for_metric(ppl[0], "word_perplexity,none") == 12.3
+    assert _get_score_for_metric(acc[0], "acc,none") == 80.0
+    # The synthetic primary metric stays a percent.
+    assert _get_score_for_metric(acc[0], "__accuracy__") == 80.0
+
+    for inner in (_bar_chart_inner, _line_chart_inner):
+        _, ax = inner(bpb, "bits_per_byte,none", 6, 4, "dark")
+        texts = [t.get_text() for t in ax.texts]
+        assert "0.8000" in texts and not any("%" in t for t in texts)
+        assert "%" not in ax.get_ylabel()
+        assert not isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
+        assert ax.get_ylim()[1] < 2
+        _, ax = inner(ppl, "word_perplexity,none", 6, 4, "dark")
+        assert [t.get_text() for t in ax.texts] == ["12.3"]
+        _, ax = inner(acc, "acc,none", 6, 4, "dark")
+        assert [t.get_text() for t in ax.texts] == ["80.0%"]
+        assert isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
+
+    tasks = [run(t, "bits_per_byte,none", 0.8) for t in ("a", "b", "c")]
+    for inner in (_grouped_bar_chart_inner, _radar_chart_inner):
+        _, ax = inner(tasks, "bits_per_byte,none", 6, 4, "dark")
+        assert not isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
+        _, ax = inner([run(t, "acc,none", 0.8) for t in ("a", "b", "c")], "acc,none", 6, 4, "dark")
+        assert isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
+
+
+def test_grouped_and_radar_plot_every_run_of_a_repeated_model_task():
+    from core.benchmark.graph import _grouped_bar_chart_inner, _radar_chart_inner
+
+    def run(task, score, shots):
+        return {
+            "task": task,
+            "model": "org/m",
+            "num_fewshot": shots,
+            "default_metric": "acc,none",
+            "metrics": [{"name": "acc,none", "score": score}],
+        }
+
+    def plotted(ax):
+        out = {}
+        for line in ax.get_lines():
+            out[line.get_label()] = [float(v) for v in line.get_ydata()]
+        for c in ax.containers:
+            out[c.get_label()] = [float(b.get_height()) for b in c]
+        return out
+
+    shots = [run("arc", 0.9, 5), run("arc", 0.4, 0), run("hs", 0.5, 5), run("mmlu", 0.6, 5)]
+    repeat = [run("arc", 0.9, 5), run("arc", 0.4, 5), run("hs", 0.5, 5), run("mmlu", 0.6, 5)]
+    for runs, a, b in ((shots, "m (5-shot)", "m (0-shot)"), (repeat, "m (run 1)", "m (run 2)")):
+        for inner in (_grouped_bar_chart_inner, _radar_chart_inner):
+            _, ax = inner(runs, "acc,none", 6, 4, "dark")
+            series = plotted(ax)
+            assert series[a][0] == 90.0 and series[b][0] == 40.0

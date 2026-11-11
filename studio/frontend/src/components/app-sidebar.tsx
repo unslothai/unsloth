@@ -118,6 +118,7 @@ import {
   DashboardCircleIcon,
   DashboardSquareEditIcon,
   Download01Icon,
+  DashboardSpeed01Icon,
   Edit03Icon,
   FlimSlateIcon,
   HelpCircleIcon,
@@ -3538,6 +3539,18 @@ export function AppSidebar() {
           </span>
         </button>
       ),
+    },
+    benchmarks: {
+      icon: DashboardSpeed01Icon,
+      label: t("shell.navigation.benchmarks"),
+      active: pathname === "/benchmarks",
+      onClick: () => {
+        navigate({ to: "/benchmarks" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/benchmarks" }));
+      },
     },
   };
   const navRowPinned = (item: SidebarNavItemPref) =>

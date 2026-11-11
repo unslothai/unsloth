@@ -16,6 +16,7 @@ _scorings = 0
 # A scoring outliving this would be a hung worker; the hold is let go when the worker ends anyway.
 SCORING_LEASE_S = 6 * 3600
 LOAD_PATHS = ("/api/inference/load", "/api/inference/unload")
+start_guards: list = []
 
 
 @contextlib.contextmanager
@@ -49,6 +50,8 @@ def scoring_hold():
     answers with. The scoring itself never loads."""
     global _scorings
     with _lock:
+        for guard in start_guards:
+            guard()
         _scorings += 1
     try:
         with _gpu_lease():

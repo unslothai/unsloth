@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+export function modelLabels(models: string[]): Record<string, string> {
+  const parts = (model: string) => model.split(/[\\/]/).filter(Boolean);
+  const label = (model: string, depth: number) => {
+    const p = parts(model);
+    return p.length ? p.slice(-depth).join("/") : model;
+  };
+  const labels: Record<string, string> = {};
+  for (const model of models) {
+    const deepest = Math.max(1, parts(model).length);
+    let depth = 1;
+    while (
+      depth < deepest &&
+      models.some((other) => other !== model && label(other, depth) === label(model, depth))
+    )
+      depth += 1;
+    labels[model] = label(model, depth);
+  }
+  return labels;
+}
+
+// core/benchmark/hold.py loaded_identity() format: a bare repo would let the backend accept any
+// quant of it, so a picked quant is pinned and the run fails if another quant is loaded instead.
+export function evalsExpectedModel(
+  model: string,
+  ggufVariant: string | null | undefined,
+): string | null {
+  return ggufVariant ? `${model}:${ggufVariant}` : null;
+}
+
+// A selection that mirrored the loaded quant follows a reload of the same repo (e.g. from another
+// tab); an explicit pick of a different quant keeps its pin so evalsExpectedModel still guards it.
+export function followResidentGgufVariant(
+  selected: string | null,
+  prevActive: string | null,
+  nextActive: string | null,
+): string | null {
+  return (selected ?? "").toLowerCase() === (prevActive ?? "").toLowerCase()
+    ? nextActive
+    : selected;
+}

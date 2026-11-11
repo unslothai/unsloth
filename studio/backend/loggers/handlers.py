@@ -102,6 +102,7 @@ _EXCLUDED_SUFFIXES = (
 )
 # 2xx GET polls carry no signal and are dropped; media and /api/hub progress log structured events.
 _QUIET_SUCCESS_PATHS = {
+    "/api/benchmarks/evals/status",
     "/api/inference/load-progress",
     # Their route handlers publish structured phase and 10 percent milestones.
     "/api/inference/images/load-progress",

@@ -1,0 +1,312 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Benchmark run storage, backed by studio.db. The frontend runs the sweep and posts
+the run here as it goes, so a run survives a reload and shows up on every device."""
+
+import time
+from typing import Any, Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
+
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from core.benchmark import hold
+from core.benchmark.hold import LOAD_PATHS
+from core.inference import gpu_arbiter
+from hub.utils.host_paths import host_paths_visible, redact_host_paths
+from storage.benchmark_runs_db import delete_run, get_run, list_runs, upsert_run
+
+router = APIRouter()
+
+MAX_RESULTS = 20_000
+MAX_RUNS_LISTED = 200
+LEASE_TTL_SECONDS = 45
+
+_lease_lock = hold._lock
+_lease: Optional[dict[str, Any]] = None
+
+
+def _redact_run(run: dict[str, Any], *, via_api_key: bool) -> dict[str, Any]:
+    """`model` and `config.tuneModel` hold the resolved absolute path of a local GGUF, the same
+    host identity the inference status route hides from API-key callers. The path redactor keys
+    on field name and neither is one it knows, so route them through identity keys it does and
+    map the references back."""
+    if host_paths_visible(via_api_key):
+        return run
+    config = run.get("config")
+    tune = config.get("tuneModel") if isinstance(config, dict) else None
+    ids = redact_host_paths(
+        {"active_model": run.get("model"), "model_name": tune},
+        via_api_key = via_api_key,
+    )
+    out = dict(run)
+    out["model"] = ids["active_model"]
+    if isinstance(config, dict) and "tuneModel" in config:
+        out["config"] = {**config, "tuneModel": ids["model_name"]}
+    return out
+
+
+class BenchmarkResult(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    variant: str = Field(max_length = 500)
+    rep: int = Field(ge = 0)
+    warmup: bool = False
+    promptIndex: int = Field(default = 0, ge = 0)
+    tps: Optional[float] = None
+    promptTps: Optional[float] = None
+    promptTokens: Optional[int] = None
+    genTokens: Optional[int] = None
+    ttftMs: Optional[float] = None
+    wallMs: float
+    clientTps: Optional[float] = None
+    draftN: Optional[int] = None
+    draftAccepted: Optional[int] = None
+    loadMs: Optional[float] = None
+    at: int
+
+
+class BenchmarkRun(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    id: str = Field(max_length = 128)
+    kind: Literal["sweep"] = "sweep"
+    sweep: str = Field(max_length = 64)
+    model: str = Field(max_length = 1000)
+    ggufVariant: Optional[str] = Field(default = None, max_length = 200)
+    kv: Optional[str] = Field(default = None, max_length = 64)
+    context: Optional[int] = None
+    config: dict[str, Any]
+    meta: dict[str, Any] = Field(default_factory = dict)
+    base: list[dict[str, Any]] = Field(default_factory = list, max_length = 200)
+    outcomes: list[dict[str, Any]] = Field(default_factory = list, max_length = 2_000)
+    results: list[BenchmarkResult] = Field(default_factory = list, max_length = MAX_RESULTS)
+    createdAt: int
+    finishedAt: Optional[int] = None
+
+
+@router.get("/runs")
+def get_runs(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    return {
+        "runs": [
+            _redact_run(run, via_api_key = via_api_key) for run in list_runs(limit = MAX_RUNS_LISTED)
+        ]
+    }
+
+
+@router.get("/runs/{run_id}")
+def get_one(
+    run_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code = 404, detail = "Benchmark run not found")
+    return _redact_run(run, via_api_key = via_api_key)
+
+
+@router.put("/runs/{run_id}")
+def put_run(
+    run_id: str,
+    run: BenchmarkRun,
+    current_subject: str = Depends(get_current_subject),
+):
+    if run.id != run_id:
+        raise HTTPException(status_code = 400, detail = "ID mismatch")
+    return upsert_run(run.model_dump())
+
+
+@router.delete("/runs/{run_id}", status_code = 204)
+def remove_run(run_id: str, current_subject: str = Depends(get_current_subject)):
+    if not delete_run(run_id):
+        raise HTTPException(status_code = 404, detail = "Benchmark run not found")
+
+
+class BenchmarkLease(BaseModel):
+    holder: str = Field(min_length = 8, max_length = 64, pattern = r"^[A-Za-z0-9_-]+$")
+    kind: Literal["sweep", "llama-bench", "evals"] = "sweep"
+
+
+@router.post("/lease")
+def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current_subject)):
+    """One benchmark at a time across tabs and devices: each reloads the one llama-server, so a
+    second runner would swap settings under the first and credit its rows to the wrong row."""
+    for attempt in range(40):
+        try:
+            return _take_lease(lease)
+        except gpu_arbiter.GpuLeaseHeldError as exc:
+            # The arbiter mid-change reads as busy for a moment; another operation's lease stays held.
+            if exc.label != "A model change" or attempt == 39:
+                raise exc.as_http_exception() from exc
+            time.sleep(0.25)
+
+
+def _arbiter_holder(holder: str) -> str:
+    return f"benchmark-sweep:{holder}"
+
+
+def _take_lease(lease: BenchmarkLease) -> dict[str, Any]:
+    global _lease
+    now = time.monotonic()
+    with _lease_lock:
+        if lease.kind == "sweep" and hold._scorings:
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "benchmark_running",
+                    "kind": "eval",
+                    "message": "An evaluation is scoring the loaded model. Stop it or let it finish first.",
+                },
+            )
+        if _lease and _lease["holder"] != lease.holder and _lease["expires"] > now:
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "benchmark_running",
+                    "kind": _lease["kind"],
+                    "message": "Another benchmark is running in another tab or on another device. "
+                    "Stop it or let it finish first.",
+                },
+            )
+        outside = _lease["outside"] if _lease and _lease["holder"] == lease.holder else 0
+        if _lease and _lease["holder"] != lease.holder:
+            gpu_arbiter.drop_lease(_arbiter_holder(_lease["holder"]))
+        # Image, video, audio and training loads go through the arbiter, not the chat load routes,
+        # so the sweep holds its lease too; its own reloads pass under BenchmarkTrafficMiddleware.
+        if lease.kind == "sweep":
+            gpu_arbiter.hold_lease(
+                "benchmark",
+                _arbiter_holder(lease.holder),
+                LEASE_TTL_SECONDS,
+                label = "A Config sweep",
+            )
+        else:
+            gpu_arbiter.drop_lease(_arbiter_holder(lease.holder))
+        _lease = {
+            "holder": lease.holder,
+            "kind": lease.kind,
+            "expires": now + LEASE_TTL_SECONDS,
+            "outside": outside,
+        }
+    return {"ttl": LEASE_TTL_SECONDS, "outside": outside}
+
+
+@router.delete("/lease", status_code = 204)
+def release_lease(
+    holder: str = Query(max_length = 64), current_subject: str = Depends(get_current_subject)
+):
+    global _lease
+    with _lease_lock:
+        if _lease and _lease["holder"] == holder:
+            _lease = None
+            gpu_arbiter.drop_lease(_arbiter_holder(holder))
+
+
+LEASE_HEADER = b"x-unsloth-bench-lease"
+
+
+def _sweep_holds_against(holder: Optional[str]) -> bool:
+    return bool(
+        _lease
+        and _lease["kind"] == "sweep"
+        and _lease["expires"] > time.monotonic()
+        and holder != _lease["holder"]
+    )
+
+
+def _refuse_under_sweep() -> None:
+    """A scoring's start guard: the sweep reloads the server between its rows and owns it until
+    it lets go."""
+    if _sweep_holds_against(None):
+        raise SweepRunningError(
+            "A Config sweep holds the server. Stop it or let it finish, then run the evaluation."
+        )
+
+
+class SweepRunningError(RuntimeError):
+    """A scoring cannot start: a Config sweep holds the one llama-server."""
+
+
+def sweep_refusal() -> None:
+    """409 for a run that would score under a running Config sweep (eval start and reservation)."""
+    with _lease_lock:
+        busy = _sweep_holds_against(None)
+    if busy:
+        raise HTTPException(
+            status_code = 409,
+            detail = "A Config sweep holds the server. Stop it or let it finish, then run the evaluation.",
+        )
+
+
+def load_refused(holder: Optional[str]) -> bool:
+    """A load reloads the one llama-server, so mid-sweep it would run the next rows under other settings."""
+    with _lease_lock:
+        return hold._scorings > 0 or _sweep_holds_against(holder)
+
+
+def note_inference_request(holder: Optional[str]) -> None:
+    """Count a generation that is not the sweep's own while a sweep holds the server."""
+    with _lease_lock:
+        if _sweep_holds_against(holder):
+            _lease["outside"] += 1
+
+
+class BenchmarkTrafficMiddleware:
+    """Pure ASGI: a sweep shares the one llama-server. Other generations during it are counted and
+    shown with the run; other loads, which would swap the server under its rows, are refused."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (
+            (_lease is not None or hold._scorings)
+            and scope.get("type") == "http"
+            and scope.get("method") == "POST"
+        ):
+            from core.inference.llama_keepwarm import (
+                _carries_bearer_credentials,
+                _is_inference_path,
+            )
+
+            path = scope.get("path") or ""
+            holder = next(
+                (
+                    v.decode("latin-1")
+                    for k, v in scope.get("headers") or ()
+                    if k.lower() == LEASE_HEADER
+                ),
+                None,
+            )
+            if (
+                path in LOAD_PATHS
+                and _carries_bearer_credentials(scope, path)
+                and load_refused(holder)
+            ):
+                from starlette.responses import JSONResponse
+                await JSONResponse(
+                    {
+                        "detail": "A benchmark is running on this model. Stop it (on the Benchmarks "
+                        "page, or the flow scoring it) or let it finish, then try again."
+                    },
+                    status_code = 409,
+                )(scope, receive, send)
+                return
+            if _is_inference_path(path):
+                note_inference_request(holder)
+            if holder and not _sweep_holds_against(holder) and _sweep_holds_against(None):
+                # The sweep's own reloads and unloads pass its GPU lease.
+                with gpu_arbiter.holding(_arbiter_holder(holder)):
+                    await self.app(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+hold.start_guards[:] = [
+    g for g in hold.start_guards if getattr(g, "__module__", None) != __name__
+] + [_refuse_under_sweep]

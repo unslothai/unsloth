@@ -393,6 +393,7 @@ export async function loadModel(
     /** What is taking the slot. Chat ignores its own loads when reconciling, so an Audio load
      *  announced as "chat" left chat naming a model it had evicted. */
     runtime?: ModelRuntime;
+    headers?: Record<string, string>;
   },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
@@ -416,7 +417,7 @@ export async function loadModel(
       try {
         const response = await authFetch("/api/inference/load", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { ...options?.headers, "Content-Type": "application/json" },
           body: JSON.stringify(wireLoadRequest(payload, preparedToken.token)),
           signal: options?.signal,
         });
