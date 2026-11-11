@@ -131,7 +131,7 @@ export function resolveExternalReasoningEffort(opts: {
 
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 // Only self-hosted listings report the served window; hosted catalogs list context, not output caps.
-const SERVED_WINDOW_PROVIDERS = new Set(["vllm", "llama_cpp", "custom"]);
+export const SERVED_WINDOW_PROVIDERS: ReadonlySet<string> = new Set(["vllm", "llama_cpp", "custom"]);
 
 const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   providerType: string;
@@ -217,10 +217,11 @@ export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
   connectionMaxOutputTokens?: number | null,
+  connectionId?: string | null,
 ): number {
   const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
   const documented = _documentedMaxOutputTokens(providerType, modelId);
-  const served = _servedWindow(providerType, modelId);
+  const served = _servedWindow(providerType, modelId, connectionId);
   // Half the window, as the backend's context fitter leaves for the prompt.
   let resolved =
     documented != null
@@ -236,25 +237,32 @@ export function getGroundedExternalMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
   connectionMaxOutputTokens?: number | null,
+  connectionId?: string | null,
 ): number | null {
   const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
   if (
     override == null &&
     _publishedMaxOutputTokens(providerType, modelId) == null &&
-    _servedWindow(providerType, modelId) == null
+    _servedWindow(providerType, modelId, connectionId) == null
   ) {
     return null;
   }
-  return getExternalMaxOutputTokens(providerType, modelId, connectionMaxOutputTokens);
+  return getExternalMaxOutputTokens(
+    providerType,
+    modelId,
+    connectionMaxOutputTokens,
+    connectionId,
+  );
 }
 
 export function externalMaxOutputTokensNeedsConnectionCap(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
+  connectionId?: string | null,
 ): boolean {
   return (
     _publishedMaxOutputTokens(providerType, modelId) == null &&
-    _servedWindow(providerType, modelId) == null
+    _servedWindow(providerType, modelId, connectionId) == null
   );
 }
 
@@ -316,9 +324,10 @@ function _documentedMaxOutputTokens(
 function _servedWindow(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
+  connectionId: string | null | undefined,
 ): number | null {
   return providerType && SERVED_WINDOW_PROVIDERS.has(providerType)
-    ? servedContextWindow(providerType, modelId)
+    ? servedContextWindow(connectionId, modelId)
     : null;
 }
 

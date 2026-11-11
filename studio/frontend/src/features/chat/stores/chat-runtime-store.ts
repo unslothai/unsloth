@@ -4893,6 +4893,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             provider.providerType,
             parsed?.modelId,
             provider.maxOutputTokens,
+            provider.id,
           );
           if (nextMaxTokens > cap) {
             nextMaxTokens = cap;

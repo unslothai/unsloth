@@ -121,6 +121,7 @@ import {
   resolveExternalMaxTokensClamp,
   subscribeModelCatalog,
 } from "./provider-capabilities";
+import { refreshServedContextWindow } from "./served-window-refresh";
 import {
   isLocalModelPath,
   useChatRuntimeStore,
@@ -828,11 +829,15 @@ export function ChatSettingsPanel({
     activeExternalProvider?.enablePromptCaching !== false;
   // The OpenRouter cap comes from the live catalog, which can land after this panel renders.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
+  useEffect(() => {
+    refreshServedContextWindow(activeExternalProvider, externalSelection?.modelId);
+  }, [activeExternalProvider, externalSelection?.modelId]);
   const maxTokensMax = isExternalModel
     ? getExternalMaxOutputTokens(
         externalProviderType,
         externalSelection?.modelId,
         activeExternalProvider?.maxOutputTokens,
+        activeExternalProvider?.id,
       )
     : localMaxTokensCeiling(baseContext, params.maxSeqLength);
   const showOpenAICodeExecSection =

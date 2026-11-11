@@ -274,15 +274,14 @@ function loadServedWindows(): Record<string, Record<string, number>> {
   return loaded;
 }
 
-/** Remembers the window a self-hosted server reports in its model listing. */
+/** Remembers, per connection, the window a self-hosted server reports in its model listing. */
 export function learnServedContextWindows(
-  providerType: string,
+  connectionId: string | null | undefined,
   models: readonly ProviderModelInfo[],
 ): void {
-  const provider = providerType.trim().toLowerCase();
-  if (!provider) return;
+  if (!connectionId) return;
   const all = loadServedWindows();
-  const windows = { ...(all[provider] ?? {}) };
+  const windows = { ...(all[connectionId] ?? {}) };
   let changed = false;
   for (const model of models) {
     const id = model.id?.trim().toLowerCase();
@@ -293,7 +292,7 @@ export function learnServedContextWindows(
     changed = true;
   }
   if (!changed) return;
-  all[provider] = windows;
+  all[connectionId] = windows;
   if (canUseStorage()) {
     try {
       localStorage.setItem(SERVED_WINDOWS_KEY, JSON.stringify(all));
@@ -305,13 +304,12 @@ export function learnServedContextWindows(
 }
 
 export function servedContextWindow(
-  providerType: string | null | undefined,
+  connectionId: string | null | undefined,
   modelId: string | null | undefined,
 ): number | null {
-  const provider = providerType?.trim().toLowerCase();
   const id = modelId?.trim().toLowerCase();
-  if (!provider || !id) return null;
-  return loadServedWindows()[provider]?.[id] ?? null;
+  if (!connectionId || !id) return null;
+  return loadServedWindows()[connectionId]?.[id] ?? null;
 }
 
 export function clearProviderModelCatalog(providerType: string): void {

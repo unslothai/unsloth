@@ -299,24 +299,80 @@ test("the published ceiling is reported without the override folded in", () => {
 
 test("a self-hosted server's listed window sets the default cap and bounds the override", async () => {
   const { learnServedContextWindows } = await import("../src/features/chat/model-catalog.ts");
-  learnServedContextWindows("vllm", [
+  learnServedContextWindows("conn-a", [
     { id: "Qwen/Qwen3-8B", display_name: "Qwen/Qwen3-8B", served_context_window: 16384 },
     { id: "big", display_name: "big", served_context_window: 262144 },
     { id: "no-window", display_name: "no-window", context_length: 131072 },
   ]);
-  learnServedContextWindows("openrouter", [
+  learnServedContextWindows("conn-b", [
     { id: "x/y", display_name: "x/y", served_context_window: 262144 },
+    { id: "Qwen/Qwen3-8B", display_name: "Qwen/Qwen3-8B", served_context_window: 131072 },
   ]);
 
-  assert.equal(getExternalMaxOutputTokens("vllm", "qwen/qwen3-8b"), 8192);
-  assert.equal(getExternalMaxOutputTokens("vllm", "big"), 131072);
-  assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", 262144), 16384);
-  assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", 4096), 4096);
-  assert.equal(getGroundedExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B"), 8192);
-  assert.equal(externalMaxOutputTokensNeedsConnectionCap("vllm", "Qwen/Qwen3-8B"), false);
+  assert.equal(getExternalMaxOutputTokens("vllm", "qwen/qwen3-8b", null, "conn-a"), 8192);
+  assert.equal(getExternalMaxOutputTokens("vllm", "big", null, "conn-a"), 131072);
+  assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", 262144, "conn-a"), 16384);
+  assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", 4096, "conn-a"), 4096);
+  assert.equal(getGroundedExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", null, "conn-a"), 8192);
+  assert.equal(externalMaxOutputTokensNeedsConnectionCap("vllm", "Qwen/Qwen3-8B", "conn-a"), false);
+  // Two connections serving one model id keep their own windows.
+  assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", null, "conn-b"), 65536);
   // A hosted context length is not an output bound, and only served-window providers read one.
-  assert.equal(getExternalMaxOutputTokens("vllm", "no-window"), EXTERNAL_MAX_OUTPUT_TOKENS);
-  assert.equal(getExternalMaxOutputTokens("openrouter", "x/y"), EXTERNAL_MAX_OUTPUT_TOKENS);
-  assert.equal(getExternalMaxOutputTokens("llama_cpp", "Qwen/Qwen3-8B"), EXTERNAL_MAX_OUTPUT_TOKENS);
-  assert.ok(store.get("unsloth_chat_served_context_windows")?.includes("qwen/qwen3-8b"));
+  assert.equal(getExternalMaxOutputTokens("vllm", "no-window", null, "conn-a"), EXTERNAL_MAX_OUTPUT_TOKENS);
+  assert.equal(getExternalMaxOutputTokens("openrouter", "x/y", null, "conn-b"), EXTERNAL_MAX_OUTPUT_TOKENS);
+  assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", null, "conn-c"), EXTERNAL_MAX_OUTPUT_TOKENS);
+  assert.ok(store.get("unsloth_chat_served_context_windows")?.includes("conn-a"));
+});
+
+test("a saved self-hosted connection learns its window without opening its editor", () => {
+  assert.match(
+    readSrc("features/chat/chat-settings-sheet.tsx"),
+    /refreshServedContextWindow\(activeExternalProvider, externalSelection\?\.modelId\)/,
+  );
+  assert.match(
+    readSrc("features/chat/llama-cpp-auto-reload.ts"),
+    /learnServedContextWindows\(provider\.id, listed\)/,
+  );
+});
+
+test("the run settings learner lists a saved vLLM connection once and learns its window", async () => {
+  const { refreshServedContextWindow } = await import(
+    "../src/features/chat/served-window-refresh.ts"
+  );
+  const calls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    calls.push(`${String(url)} ${String(init?.body ?? "")}`);
+    return new Response(
+      JSON.stringify([
+        { id: "Org/Saved-Model", display_name: "Org/Saved-Model", served_context_window: 40960 },
+      ]),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const provider = {
+      id: "conn-1",
+      providerType: "vllm",
+      name: "Box",
+      baseUrl: "http://10.0.0.5:8000/v1",
+      models: ["Org/Saved-Model"],
+      hasApiKey: true,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    assert.equal(getExternalMaxOutputTokens("vllm", "Org/Saved-Model", null, "conn-1"), EXTERNAL_MAX_OUTPUT_TOKENS);
+    refreshServedContextWindow(provider, "Org/Saved-Model");
+    refreshServedContextWindow(provider, "Org/Saved-Model");
+    for (let i = 0; i < 20 && getExternalMaxOutputTokens("vllm", "Org/Saved-Model", null, "conn-1") !== 20480; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(getExternalMaxOutputTokens("vllm", "Org/Saved-Model", null, "conn-1"), 20480);
+    assert.equal(calls.filter((c) => c.includes("/api/providers/models")).length, 1);
+    assert.match(calls[0], /"provider_id":"conn-1"/);
+    refreshServedContextWindow({ ...provider, providerType: "openai" }, "gpt-x");
+    assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
