@@ -536,7 +536,9 @@ export function Q4nxConvertCard({
       archFit,
     }),
   } satisfies Q4nxSummary);
-  useEffect(() => onSummary?.(JSON.parse(summaryJson)), [onSummary, summaryJson]);
+  useEffect(() => {
+    onSummary?.(JSON.parse(summaryJson));
+  }, [onSummary, summaryJson]);
 
   async function handleConvert() {
     setRunning(true);
