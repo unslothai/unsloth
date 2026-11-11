@@ -46,7 +46,7 @@
 :where(.group\/input-group):has(> input) .group-has-\[\>input\]\/input-group\:pt-3
 :where(.group\/input-group):has([data-slot="combobox-clear"]) .group-has-data-\[slot\=combobox-clear\]\/input-group\:hidden
 :where(.group\/menu-item):has([data-sidebar="menu-action"]) .group-has-data-\[sidebar\=menu-action\]\/menu-item\:pr-8
-:where(.group\/number):has(:is(input:disabled)) .group-has-\[input\:disabled\]\/number\:opacity-0
+:where(.group\/number):has(:is(input:disabled)) .group-has-\[input\:disabled\]\/number\:opacity-0\!
 :where(.group\/number):has(:is(input:disabled)) .group-has-\[input\:disabled\]\/number\:pointer-events-none
 [data-sonner-toast][data-styled="true"]:has([data-button]) [data-button]
 [data-sonner-toast][data-styled="true"]:has([data-button]) [data-content]

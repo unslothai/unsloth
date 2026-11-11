@@ -40,13 +40,18 @@ FP16_TYPES = [T.Q4_K, T.Q5_K, T.Q6_K, T.Q3_K, T.Q2_K, T.Q4_0, T.Q4_1, T.Q5_0, T.
 def _clean(monkeypatch):
     from core.inference import diffusion_compile_config as cc
 
+    from core.inference import diffusion_gguf_exact as ex
+
     monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_FUSED_CAST", raising = False)
     cc._reset_for_tests()
     gc.uninstall_all()
+    # diffusers' fp16 functions: the path UNSLOTH_DIFFUSION_GGUF_EXACT=0 keeps
+    ex.uninstall_exact_dequant()
     torch._dynamo.reset()
     with torch._inductor.config.patch(emulate_precision_casts = False):
         yield
     gc.uninstall_all()
+    ex.uninstall_exact_dequant()
     cc._reset_for_tests()
 
 

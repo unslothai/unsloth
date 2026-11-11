@@ -665,6 +665,8 @@ export const ar = {
     keepsRunning: "إغلاق هذه النافذة لا يوقف الإعداد. تظهر نتيجته في الإعدادات > الأمان.",
   },
   composerSettings: {
+    shareDraft: "مشاركة المسودات بين المحادثات",
+    shareDraftDescription: "استخدام مسودة واحدة للمحادثات والمقارنة. معطّل افتراضيًا؛ تحتفظ كل محادثة بمسودتها الخاصة.",
     title: "كتابة الرسائل",
     plainText: "محرر نص عادي",
     plainTextDescription: "إبقاء التعليمات البرمجية وMarkdown والروابط كنص حرفي. عطّل هذا الخيار لعرض معاينة منسقة.",
@@ -1661,6 +1663,13 @@ export const ar = {
         audioUploadCancel: "إلغاء التفريغ النصي",
         audioUploadTranscribing: "جارٍ التفريغ النصي للصوت…",
         sectionTitle: "الإملاء",
+        micTargetLabel: "زر الميكروفون",
+        micTargetAsr: "النسخ باستخدام ASR",
+        micTargetModel: "إرسال الصوت إلى النموذج",
+        micTargetAsrDescription: "يكتب زر الميكروفون ما تقوله في مربع الرسالة.",
+        micTargetModelDescription: "عند تحميل نموذج يقبل إدخال الصوت، يسجّل الميكروفون مقطعًا ويرفقه برسالتك. تحصل النماذج الأخرى على الإملاء كالمعتاد.",
+        micTargetModelUnavailable: "حمّل نموذجًا يقبل إدخال الصوت (مثل LFM3-Omni) لترسل إليه صوتك.",
+        micRecordForModel: "تسجيل صوت للنموذج",
         engineLabel: "محرك الإملاء",
         engineBrowser: "المتصفح",
         engineBrowserDescription:
@@ -1684,6 +1693,13 @@ export const ar = {
         sttQuantDescription:
           "اختر نموذج STT أو ابحث عنه لتشغيله محليًا، ثم اختر التكميم.",
         sttDeviceLabel: "التحميل إلى",
+        sttContextLabel: "سياق الصوت",
+        sttContextAuto: "تلقائي (موصى به)",
+        sttContextAutoDescription:
+          "يضبط حجم السياق حسب كل تسجيل، ويستخدم ذاكرة أكثر للتسجيلات الأطول. قد تحتاج بيئات التشغيل القديمة إلى حجم ثابت لتقليل استخدام الذاكرة. ينطبق على Qwen3-ASR في «الصوت» و«تفريغ نصي».",
+        sttContextFixedDescription:
+          "تستهلك الحدود الأصغر ذاكرة أقل. تحتاج التسجيلات التي تتجاوز الحد إلى حد أعلى أو الوضع التلقائي. ينطبق على Qwen3-ASR في «الصوت» و«تفريغ نصي».",
+        sttContextTokens: "{count} توكن",
         sttDeviceAuto: "وحدة معالجة الرسومات عند توفرها",
         sttDeviceCpu: "ذاكرة المعالج",
         sttDeviceAutoDescription:
@@ -3174,12 +3190,10 @@ export const ar = {
       exportingAction: "جارٍ التصدير...",
       exportConversations: "تصدير العناصر الأخيرة والمشاريع",
       exportConversationsDescription:
-        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة Training JSONL أو CSV أو ShareGPT JSONL أو Markdown، في ملف مجمّع أو في ملف لكل محادثة. يتوفر Message JSONL لكل محادثة فقط.",
+        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة Training JSONL أو CSV أو ShareGPT JSONL أو Markdown أو HTML أو PDF، في ملف مجمّع أو في ملف لكل محادثة. يتوفر Message JSONL لكل محادثة فقط.",
       exportConversationsAction: "تصدير",
       exportScopeRecents: "العناصر الأخيرة",
       exportScopeAll: "العناصر الأخيرة + المشاريع",
-      exportCombinedSuffix: "(مجمّعة)",
-      exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
         "استيراد ملفات JSON أو JSONL أو NDJSON أو CSV أو Markdown إلى الأخيرة.",

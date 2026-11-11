@@ -33,6 +33,14 @@ def _shared_setup_1(client):
     )
 
 
+def _nvfp4_not_rerouted(monkeypatch):
+    """Blackwell host: explicit nvfp4 still reaches the precision gates."""
+    from core.inference import diffusion_nvfp4_route as nvfp4_route
+    monkeypatch.setattr(
+        nvfp4_route, "device_profile", lambda **kw: nvfp4_route.DeviceProfile("nvidia", ((10, 0),))
+    )
+
+
 def _shared_setup_2(monkeypatch):
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
@@ -279,9 +287,7 @@ def client(monkeypatch, tmp_path):
 
 
 def _wait_terminal(client, timeout = 5.0) -> dict:
-    """Poll generate-progress until the background job records a terminal phase.
-    Generation is asynchronous now (the POST returns as soon as the job starts),
-    so its outcome is only observable here."""
+    """Generation is async, so the outcome is only observable by polling generate-progress."""
     deadline = time.monotonic() + timeout
     progress: dict = {}
     while time.monotonic() < deadline:
@@ -293,8 +299,7 @@ def _wait_terminal(client, timeout = 5.0) -> dict:
 
 
 def _generate_and_wait(client, payload) -> dict:
-    """Start a generation, assert the immediate accepted response, and return the
-    saved gallery record the completed progress state carries."""
+    """Start a generation; return the saved record that the completed progress state carries."""
     resp = client.post("/api/inference/video/generate", json = payload)
     assert resp.status_code == 200
     body = resp.json()
@@ -829,9 +834,7 @@ def test_delete_and_clear(client):
 
 
 def test_deleting_a_clip_clears_the_terminal_generation_record(client):
-    """The completed record outlives its job so a page mounting late still sees the clip. Once the
-    clip is deleted that record points at a file that is gone, and the Video page merged it back on
-    every reload as a card whose fetch 404s."""
+    """Deleting the clip must clear the terminal record, or reloads re-merge a card whose fetch 404s."""
     _shared_setup_1(client)
     clip = _generate_and_wait(client, {"prompt": "a"})
     progress = client.get("/api/inference/video/generate-progress").json()
@@ -856,8 +859,7 @@ def test_clearing_the_gallery_clears_the_terminal_generation_record(client):
 
 
 def test_deleting_a_different_clip_leaves_the_terminal_record_alone(client):
-    """Only the terminal clip's own deletion clears it: deleting an older clip must not drop the
-    record the page needs to show the run that just finished."""
+    """Only the terminal clip's own deletion clears the record; an older clip must not drop it."""
     _shared_setup_1(client)
     older = _generate_and_wait(client, {"prompt": "a"})
     newest = _generate_and_wait(client, {"prompt": "b"})
@@ -1587,6 +1589,7 @@ def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
 
 
 def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(client, monkeypatch):
+    _nvfp4_not_rerouted(monkeypatch)
     # Stub the host precision gate so the partition refusal is tested on CPU CI too.
     monkeypatch.setattr(
         video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
@@ -1651,6 +1654,7 @@ def test_video_download_plan_refuses_an_unsupported_combination_before_staging(c
 
 
 def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, monkeypatch):
+    _nvfp4_not_rerouted(monkeypatch)
     backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,
@@ -1673,6 +1677,7 @@ def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, mo
 
 
 def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypatch):
+    _nvfp4_not_rerouted(monkeypatch)
     backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,
@@ -1753,9 +1758,7 @@ def test_the_training_guard_runs_before_the_precision_probe(client, monkeypatch)
 
 @pytest.mark.parametrize("memory", ["balanced", "low_vram"])
 def test_the_video_precision_gate_sees_the_memory_request(monkeypatch, memory):
-    """balanced and low_vram settle the offload policy before anything is measured, and an
-    offloaded DiT skips the torchao build -- so load_pipeline's strict refusal arrived after
-    acquire_for and the teardown had already evicted the resident model."""
+    """balanced and low_vram settle offload first, so the precision gate runs before acquire_for evicts."""
     import types
 
     monkeypatch.setattr(video_module, "precision_fallback_allowed", lambda: False)
@@ -1988,8 +1991,7 @@ def test_status_names_the_load_an_unload_can_name(token_client):
 
 
 def test_status_and_load_id_name_the_same_load(token_client):
-    # A load admitted while status reads the backend makes it read again, so the id in the answer
-    # never names a load the answer does not show.
+    # A load admitted mid-status makes status re-read, so the id never names an unseen load.
     from core.inference import media_load_ids
     from hub.services.models import account_access
 

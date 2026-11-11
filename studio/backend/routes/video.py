@@ -158,6 +158,7 @@ async def video_download_plan(
     from routes.inference import (
         _refuse_disabled_nvfp4_checkpoint,
         _refuse_disabled_nvfp4_request,
+        _route_nvfp4_request,
     )
 
     _refuse_disabled_nvfp4_request(request)
@@ -173,6 +174,7 @@ async def video_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, _ = await _route_nvfp4_request(request, "video")
     from core.inference.diffusion import split_local_checkpoint_path
     from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.video import (
@@ -307,8 +309,10 @@ async def load_video_model_gated(
     route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
     """
     from routes.inference import (
+        _nvfp4_route_kwarg,
         _refuse_disabled_nvfp4_checkpoint,
         _refuse_disabled_nvfp4_request,
+        _route_nvfp4_request,
     )
 
     _refuse_disabled_nvfp4_request(request)
@@ -325,6 +329,9 @@ async def load_video_model_gated(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
+    request, nvfp4_route = await _route_nvfp4_request(
+        request, "video", user_initiated = user_initiated
+    )
     # Tested at entry (begin_load returns early) and written at launch (validation may 400 first).
     from routes.inference import (
         _note_load_fetched_with_a_request_token,
@@ -460,6 +467,7 @@ async def load_video_model_gated(
                 # The already-ranked card, so free VRAM drift cannot change the pick.
                 gpu_ordinal = gpu_ordinal,
                 allow_oversized_load = request.allow_oversized_load,
+                **_nvfp4_route_kwarg(backend.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("video", backend, request.load_token, prior)
             return started
@@ -523,9 +531,8 @@ async def load_video_model_gated(
         if forced_cpu:
             status_dict = await asyncio.to_thread(begin)
         elif device != "cpu":
-            # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
-            # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
-            # the same span.
+            # Register the load under the arbiter lock, else a racing acquire evicts VIDEO and both
+            # allocate.
             from core.inference.gpu_residency import media_fit_kwargs
             from routes.inference import _diffusion_training_admission
 
@@ -724,6 +731,8 @@ async def generate_video(
         )
         from core.inference.video_minimax_h3 import is_h3_native
         from core.inference.video_families import (
+            snap_num_frames,
+            validate_video_continuation,
             validate_video_flow_controls,
             validate_video_keyframe_conditioning,
             validate_video_reference_conditioning,
@@ -733,7 +742,9 @@ async def generate_video(
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
             return
-        validate_video_request_shape(fam, request.width, request.height, request.num_frames)
+        validate_video_request_shape(
+            fam, request.width, request.height, request.num_frames, fps = request.fps
+        )
         h3_task = expected_partition(pick)
         validate_video_keyframe_conditioning(
             fam,
@@ -757,6 +768,12 @@ async def generate_video(
         )
         validate_video_flow_controls(
             fam, request.flow_shift, request.audio_flow_shift, engine = engine
+        )
+        validate_video_continuation(
+            fam,
+            has_video = bool(request.continuation_video),
+            keep = request.continuation_keep,
+            num_frames = snap_num_frames(fam, request.num_frames or fam.default_num_frames),
         )
 
     # Before the backend is resolved: the requested model may be the one this brings up.
@@ -795,6 +812,8 @@ async def generate_video(
         reference_image_size = request.reference_image_size,
         flow_shift = request.flow_shift,
         audio_flow_shift = request.audio_flow_shift,
+        continuation_video = request.continuation_video,
+        continuation_keep = request.continuation_keep,
         live_preview = request.live_preview,
     )
     # Authorize the reservation-pinned token: a gap load must not render weights of another account.
@@ -962,8 +981,7 @@ async def video_status(
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("video")}
     status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
-    # This route answers long after the request that resolved the reference ended, so there is
-    # no handle in context to put back.
+    # This route answers after the resolving request ended, so no handle is in context to restore.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
@@ -1014,8 +1032,7 @@ async def unload_video_model(
             return MediaUnloadOutcome(unloaded = False, outcome = outcome)
     else:
         status_dict = await asyncio.to_thread(backend.unload, **unload_kwargs)
-    # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC
-    # (release_if). Mirrors images.
+    # Release VIDEO only if nothing is resident or loading; release_if keeps the check atomic.
     await asyncio.to_thread(
         release_if,
         VIDEO,
@@ -1836,6 +1853,8 @@ def _all_videos() -> list[VideoJob]:
 
 
 def _shape_error_param(exc: Exception, body) -> str:
+    if "frame rate" in str(exc):
+        return "fps"
     if "frame count" not in str(exc):
         return "size"
     return "num_frames" if body.num_frames is not None else "seconds"
@@ -2233,7 +2252,7 @@ def _refuse_family_inputs(
         if seconds is not None
         else None
     )
-    validate_video_request_shape(fam, width, height, want_frames)
+    validate_video_request_shape(fam, width, height, want_frames, fps = body.fps)
     ref2va = h3_task == H3_TASK_REFERENCES
     validate_video_keyframe_conditioning(
         fam,

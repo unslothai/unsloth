@@ -544,6 +544,39 @@ def _stock_in(t: Any) -> Any:
     t._unsloth_abort()
 
 
+def group_norm_stats(
+    x5: Any,
+    norm: Any,
+    in_bias: Any = None,
+) -> tuple:
+    """fp32 ``(mean, rstd)`` per (B*T, group) of ``x5 + in_bias`` (a fusable 5-D B,C,T,H,W view; stats per frame)."""
+    torch = _torch()
+    k = _kernels()
+    b, c, t, h, w = x5.shape
+    g = int(norm.num_groups)
+    hw = h * w
+    sb, sc, st, sh, sw = x5.stride()
+    ib = in_bias if in_bias is not None else x5
+    budget = 4096 if x5.element_size() == 4 else 8192
+    block_p = max(1, min(256, budget // c))
+    n_chunks = (hw + block_p - 1) // block_p
+    rows = b * t
+    pmean, pm2 = torch.empty((2, rows * n_chunks * g), dtype = torch.float32, device = x5.device)
+    pn = torch.empty(rows * n_chunks, dtype = torch.float32, device = x5.device)
+    with _on_card(x5):
+        k.gn_partials[(n_chunks, rows)](
+            x5, ib, pn, pmean, pm2, t, hw, w, n_chunks, sb, sc, st, sh, sw,
+            C = c, G = g, CPG = c // g, BLOCK_P = block_p, HAS_BIAS = in_bias is not None, num_warps = 4,
+        )  # fmt: skip
+    mean = torch.empty(rows * g, dtype = torch.float32, device = x5.device)
+    rstd = torch.empty(rows * g, dtype = torch.float32, device = x5.device)
+    with _on_card(pn):
+        k.gn_combine[(rows * g,)](
+            pn, pmean, pm2, mean, rstd, n_chunks, g, float(norm.eps), BLOCK = 1024, num_warps = 4
+        )
+    return mean, rstd
+
+
 def group_norm_act(
     x: Any,
     norm: Any,
@@ -575,23 +608,8 @@ def group_norm_act(
     hw = h * w
     sb, sc, st, sh, sw = x5.stride()
     ib = in_bias if in_bias is not None else x5
-    budget = 4096 if x5.element_size() == 4 else 8192
-    block_p = max(1, min(256, budget // c))
-    n_chunks = (hw + block_p - 1) // block_p
     rows = b * t
-    pmean, pm2 = torch.empty((2, rows * n_chunks * g), dtype = torch.float32, device = x.device)
-    pn = torch.empty(rows * n_chunks, dtype = torch.float32, device = x.device)
-    with _on_card(x5):
-        k.gn_partials[(n_chunks, rows)](
-            x5, ib, pn, pmean, pm2, t, hw, w, n_chunks, sb, sc, st, sh, sw,
-            C = c, G = g, CPG = cpg, BLOCK_P = block_p, HAS_BIAS = in_bias is not None, num_warps = 4,
-        )  # fmt: skip
-    mean = torch.empty(rows * g, dtype = torch.float32, device = x.device)
-    rstd = torch.empty(rows * g, dtype = torch.float32, device = x.device)
-    with _on_card(pn):
-        k.gn_combine[(rows * g,)](
-            pn, pmean, pm2, mean, rstd, n_chunks, g, float(norm.eps), BLOCK = 1024, num_warps = 4
-        )
+    mean, rstd = group_norm_stats(x5, norm, in_bias)
     out = torch.empty((b, t, h, w, c), dtype = x.dtype, device = x.device)
     block_c = min(128, _next_pow2(c))
     block_p2 = max(1, 4096 // block_c)
@@ -1175,6 +1193,7 @@ def uninstall(vae: Any) -> None:
     vae.__dict__.pop("_unsloth_vae_fused_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
     vae.__dict__.pop("_unsloth_vae_fused_cl_weights", None)
+    vae.__dict__.pop("_unsloth_vae_strips", None)
     for m in vae.modules():
         if isinstance(getattr(m, "processor", None), FusedSingleHeadProcessor):
             m.processor = m.processor.fallback
@@ -1191,6 +1210,7 @@ def uninstall(vae: Any) -> None:
                 pass
             module.__dict__.pop("_unsloth_vae_fused", None)
             module.__dict__.pop("_unsloth_vae_fused_failed", None)
+            module.__dict__.pop("_unsloth_vae_strips_failed", None)
         module.__dict__.pop("prepare_causal_attention_mask", None)
 
 
@@ -2199,6 +2219,9 @@ def _install(
     name = type(vae).__name__
     if name in ("AutoencoderKL", "AutoencoderKLFlux2"):
         n = install_group_norm_vae(vae, logger, encoder)
+        if n:
+            from . import diffusion_vae_strips  # noqa: PLC0415
+            n += int(diffusion_vae_strips.install(vae, logger))
         return n + (install_vectorised_blend(vae) if n else 0)
     if name in _WAN_VAES:
         n = install_wan_vae(vae, logger, encoder)
@@ -2218,10 +2241,9 @@ def _install(
 # one tiny decode); the fused decode must match stock within tolerance or the patch is removed.
 # Kill switch ``UNSLOTH_VAE_FUSED_STRUCTURAL=0``.
 STRUCTURAL_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL"
-# The calibration crop. The trace marks only the norm outputs (cheap at any size), so the crop is sized for the
-# kernels instead: 16 latents keeps every spatial extent a multiple of 16, the same Triton specialisations a full
-# decode uses, so calibrating compiles nothing the real decode would not (an 8-latent crop measured +1.5 to 2 s
-# of extra compiles on a cold Triton cache).
+# Calibration crop sized for the kernels: 16 latents keeps every spatial extent a multiple of 16,
+# the same Triton specialisations a full decode uses; an 8-latent crop added Triton compiles that a
+# full decode would not.
 _PROBE_LATENTS = 16
 _PROBE_FRAMES = 2
 # Calibration verdicts are kept on disk per (class, config, decoder layout, torch, triton, device capability), so a
