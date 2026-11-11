@@ -258,6 +258,8 @@ export function setProviderModelCatalog(
 // Kept out of LIVE_CATALOG: a live entry would shadow snapshot reasoning and feed compaction.
 const SERVED_WINDOWS_KEY = "unsloth_chat_served_context_windows";
 let servedWindows: Record<string, Record<string, number>> | null = null;
+// Endpoint each connection's windows were last listed from in this page load.
+const servedWindowsEndpoint = new Map<string, string>();
 
 function loadServedWindows(): Record<string, Record<string, number>> {
   if (servedWindows) return servedWindows;
@@ -278,8 +280,10 @@ function loadServedWindows(): Record<string, Record<string, number>> {
 export function learnServedContextWindows(
   connectionId: string | null | undefined,
   models: readonly ProviderModelInfo[],
+  baseUrl: string,
 ): void {
   if (!connectionId) return;
+  servedWindowsEndpoint.set(connectionId, baseUrl);
   const all = loadServedWindows();
   const windows: Record<string, number> = {};
   for (const model of models) {
@@ -299,6 +303,10 @@ export function learnServedContextWindows(
     }
   }
   notifyCatalogChange();
+}
+
+export function servedWindowsListedFrom(connectionId: string): string | undefined {
+  return servedWindowsEndpoint.get(connectionId);
 }
 
 export function servedContextWindow(

@@ -834,7 +834,7 @@ export function ChatProvidersSettings({
       learnCatalogModelCapabilities(providerType, models);
       // A draft Base URL is not the saved server; its window waits for Save and the next listing.
       if ((baseUrl ?? "") === (editingProvider?.baseUrl ?? "")) {
-        learnServedContextWindows(editingProviderId, models);
+        learnServedContextWindows(editingProviderId, models, editingProvider?.baseUrl ?? "");
       }
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []

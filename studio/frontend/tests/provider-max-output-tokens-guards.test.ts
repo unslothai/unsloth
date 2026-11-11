@@ -303,11 +303,11 @@ test("a self-hosted server's listed window sets the default cap and bounds the o
     { id: "Qwen/Qwen3-8B", display_name: "Qwen/Qwen3-8B", served_context_window: 16384 },
     { id: "big", display_name: "big", served_context_window: 262144 },
     { id: "no-window", display_name: "no-window", context_length: 131072 },
-  ]);
+  ], "http://h/v1");
   learnServedContextWindows("conn-b", [
     { id: "x/y", display_name: "x/y", served_context_window: 262144 },
     { id: "Qwen/Qwen3-8B", display_name: "Qwen/Qwen3-8B", served_context_window: 131072 },
-  ]);
+  ], "http://h/v1");
 
   assert.equal(getExternalMaxOutputTokens("vllm", "qwen/qwen3-8b", null, "conn-a"), 8192);
   assert.equal(getExternalMaxOutputTokens("vllm", "big", null, "conn-a"), 131072);
@@ -331,7 +331,7 @@ test("a saved self-hosted connection learns its window without opening its edito
   );
   assert.match(
     readSrc("features/chat/llama-cpp-auto-reload.ts"),
-    /learnServedContextWindows\(provider\.id, listed\)/,
+    /learnServedContextWindows\(provider\.id, listed, provider\.baseUrl\)/,
   );
 });
 
@@ -390,11 +390,60 @@ test("a fresh listing replaces a connection's windows, so a restarted server is 
   learnServedContextWindows("conn-r", [
     { id: "m", display_name: "m", served_context_window: 8192 },
     { id: "gone", display_name: "gone", served_context_window: 8192 },
-  ]);
+  ], "http://h/v1");
   assert.equal(getExternalMaxOutputTokens("vllm", "m", 65536, "conn-r"), 8192);
-  learnServedContextWindows("conn-r", [{ id: "m", display_name: "m", served_context_window: 131072 }]);
+  learnServedContextWindows("conn-r", [{ id: "m", display_name: "m", served_context_window: 131072 }], "http://h/v1");
   assert.equal(getExternalMaxOutputTokens("vllm", "m", 65536, "conn-r"), 65536);
   assert.equal(getExternalMaxOutputTokens("vllm", "gone", null, "conn-r"), EXTERNAL_MAX_OUTPUT_TOKENS);
-  learnServedContextWindows("conn-r", [{ id: "m", display_name: "m" }]);
+  learnServedContextWindows("conn-r", [{ id: "m", display_name: "m" }], "http://h/v1");
   assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-r"), EXTERNAL_MAX_OUTPUT_TOKENS);
+});
+
+test("returning a connection to an earlier endpoint lists it again", async () => {
+  const { refreshServedContextWindow } = await import(
+    "../src/features/chat/served-window-refresh.ts"
+  );
+  const { useExternalProvidersStore } = await import(
+    "../src/features/chat/stores/external-providers-store.ts"
+  );
+  const windows: Record<string, number> = { "http://a/v1": 65536, "http://b/v1": 262144 };
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+    calls += 1;
+    const base = JSON.parse(String(init?.body)).base_url as string;
+    return new Response(
+      JSON.stringify([{ id: "m", display_name: "m", served_context_window: windows[base] }]),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+  try {
+    const at = (baseUrl: string) => ({
+      id: "conn-ab",
+      providerType: "vllm",
+      name: "Box",
+      baseUrl,
+      models: ["m"],
+      hasApiKey: true,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    for (const [base, cap] of [
+      ["http://a/v1", 32768],
+      ["http://b/v1", 131072],
+      ["http://a/v1", 32768],
+    ] as const) {
+      useExternalProvidersStore.getState().setProviders([at(base)]);
+      refreshServedContextWindow(at(base), "m");
+      await settle();
+      assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-ab"), cap);
+    }
+    assert.equal(calls, 3);
+    refreshServedContextWindow(at("http://a/v1"), "m");
+    await settle();
+    assert.equal(calls, 3);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
