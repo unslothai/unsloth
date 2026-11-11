@@ -294,14 +294,14 @@ def planning_request(request: dict) -> dict:
 
 
 def planned_score(data: bytes) -> str:
+    """The plan's ABC, or "" when the response carries none readable."""
     try:
         payload = json.loads(data.decode("utf-8"))
-    except ValueError:
-        return ""
-    artifacts = payload.get("artifacts") if isinstance(payload, dict) else None
-    for artifact in artifacts or []:
-        if isinstance(artifact, dict) and artifact.get("id") == "score":
-            return base64.b64decode(artifact.get("payload") or "").decode("utf-8", "replace")
+        for artifact in payload.get("artifacts") or []:
+            if artifact.get("id") == "score":
+                return base64.b64decode(artifact["payload"]).decode("utf-8", "replace")
+    except (ValueError, TypeError, AttributeError, KeyError):
+        pass
     return ""
 
 
