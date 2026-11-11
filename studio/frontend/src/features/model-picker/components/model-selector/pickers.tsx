@@ -7777,6 +7777,7 @@ export function HubModelPicker({
     const downloading = model.id in npuCatalog.downloads;
     const progress = npuCatalog.downloads[model.id];
     const reconnecting = model.id in npuCatalog.reconnecting;
+    const phase = npuCatalog.phases[model.id];
     const details = [
       "NPU",
       npuSizeLabel(model.size_gb),
@@ -7793,7 +7794,7 @@ export function HubModelPicker({
         label={model.id}
         meta={
           downloading
-            ? `NPU · ${npuDownloadLabel(progress, reconnecting)}`
+            ? `NPU · ${npuDownloadLabel(progress, reconnecting, phase)}`
             : details.join(" · ")
         }
         selected={isSelected}

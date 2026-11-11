@@ -253,6 +253,8 @@ def test_studio_downloads_the_files_and_lemond_only_registers_them(npu, flm_mani
     percents = [event["percent"] for event in events]
     assert percents == sorted(percents) and percents[-1] == 100
     assert events[-1] == {"event": "complete", "model": "qwen3-0.6b-FLM", "percent": 100}
+    # lemond's register step sends nothing Studio relays, so the bar says it is finishing
+    assert events[-2] == {"event": "finishing", "percent": 99}
     pulls = [r for r in _requests(npu) if r["path"] in ("/v1/delete", "/v1/pull")]
     assert pulls == [
         {
@@ -261,6 +263,23 @@ def test_studio_downloads_the_files_and_lemond_only_registers_them(npu, flm_mani
         }
     ]
     assert {m.id: m.downloaded for m in npu.catalog()}["qwen3-0.6b-FLM"] is True
+
+
+def test_a_cancelled_download_keeps_its_partial_and_never_registers(npu, flm_manifest):
+    import threading
+
+    from .test_flm_files import CONFIG
+
+    cancel = threading.Event()
+    with pytest.raises(nb.NpuDownloadCancelled, match = "was cancelled"):
+        for event in npu.download("qwen3-0.6b-FLM", cancel = cancel):
+            if event.get("file") == "model.q4nx":
+                cancel.set()
+    folder = npu.root / "flm" / "models" / "Qwen3-0.6B-NPU2"
+    assert (folder / "model.q4nx.partial").stat().st_size > 0
+    assert not any(r["path"] == "/v1/pull" for r in _requests(npu))
+    assert {m.id: m.resume_percent for m in npu.catalog()}["qwen3-0.6b-FLM"] > 0
+    assert (folder / "config.json").read_bytes() == CONFIG
 
 
 def test_the_catalog_offers_to_resume_an_interrupted_download(npu, flm_manifest):

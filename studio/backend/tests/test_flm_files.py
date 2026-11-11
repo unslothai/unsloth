@@ -137,7 +137,13 @@ def test_an_interrupted_download_resumes_in_the_next_one(files, tmp_path):
 
     events = list(ff.download_files(model))
     assert files.ranges[-1] == f"bytes={kept}-"
-    assert events[0]["percent"] == (len(CONFIG) + kept) * 100 // model.total
+    # the kept bytes are rehashed first, and the bar says so instead of sitting still
+    assert [(e["event"], e["file"]) for e in events[:2]] == [
+        ("verifying", "config.json"),
+        ("verifying", "model.q4nx"),
+    ]
+    assert events[2]["event"] == "progress"
+    assert events[2]["percent"] == (len(CONFIG) + kept) * 100 // model.total
     assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
 
 
@@ -199,7 +205,8 @@ def test_a_complete_file_drops_a_leftover_partial(files, tmp_path):
     (tmp_path / "config.json").write_bytes(CONFIG)
     (tmp_path / "model.q4nx").write_bytes(WEIGHTS)
     (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[:4096])
-    assert list(ff.download_files(files.model(tmp_path))) == []
+    events = list(ff.download_files(files.model(tmp_path)))
+    assert [event["event"] for event in events] == ["verifying", "verifying"]
     assert not (tmp_path / "model.q4nx.partial").exists()
 
 
@@ -293,3 +300,111 @@ def test_the_file_list_comes_from_fastflowlm_manifests(tmp_path):
     )
     assert ff.read_model_files(flm, tmp_path / "flm", "gemma3:4b") is None
     assert ff.read_model_files(None, tmp_path / "flm", "llama3.2:1b") is None
+
+
+def test_too_little_free_space_fails_before_any_request(files, tmp_path, monkeypatch):
+    (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[: 1 << 20])
+    needed = len(CONFIG) + len(WEIGHTS) - (1 << 20)
+    monkeypatch.setattr(
+        ff.shutil, "disk_usage", lambda path: ff.shutil._ntuple_diskusage(10**12, 0, needed - 1)
+    )
+    with pytest.raises(ff.FlmDownloadError, match = r"needs 0\.0 GB more and only 0\.0 GB is free"):
+        list(ff.download_files(files.model(tmp_path)))
+    assert files.ranges == []
+    assert (tmp_path / "model.q4nx.partial").stat().st_size == 1 << 20
+
+
+def test_a_full_disk_mid_download_says_so_and_keeps_the_partial(files, tmp_path, monkeypatch):
+    real_open = open
+
+    class _Full:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.handle.close()
+
+        def write(self, chunk):
+            if self.handle.tell() >= 4096:
+                raise OSError(ff.errno.ENOSPC, "No space left on device")
+            return self.handle.write(chunk[:4096])
+
+    def _open(
+        path,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
+        handle = real_open(path, mode, *args, **kwargs)
+        return (
+            _Full(handle)
+            if "b" in mode and mode != "rb" and str(path).endswith("q4nx.partial")
+            else handle
+        )
+
+    monkeypatch.setattr(ff, "open", _open, raising = False)
+    with pytest.raises(ff.FlmDownloadError, match = "Out of disk space while downloading model.q4nx"):
+        list(ff.download_files(files.model(tmp_path)))
+    assert (tmp_path / "model.q4nx.partial").stat().st_size == 4096
+
+
+def test_cancel_stops_at_the_next_chunk_and_the_next_download_resumes(files, tmp_path):
+    model = files.model(tmp_path)
+    cancel = threading.Event()
+    with pytest.raises(ff.FlmDownloadCancelled):
+        for event in ff.download_files(model, cancel = cancel):
+            if event["file"] == "model.q4nx" and event["bytes_downloaded"] > len(CONFIG):
+                cancel.set()
+    kept = (tmp_path / "model.q4nx.partial").stat().st_size
+    assert 0 < kept < len(WEIGHTS)
+    list(ff.download_files(model))
+    assert files.ranges[-1] == f"bytes={kept}-"
+    assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
+
+
+def test_cancel_also_stops_a_rehash(files, tmp_path):
+    (tmp_path / "config.json").write_bytes(CONFIG)
+    (tmp_path / "model.q4nx").write_bytes(WEIGHTS)
+    cancel = threading.Event()
+    with pytest.raises(ff.FlmDownloadCancelled):
+        for event in ff.download_files(files.model(tmp_path), cancel = cancel):
+            if event["event"] == "verifying" and event["file"] == "model.q4nx":
+                cancel.set()
+    assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
+
+
+def _lock(tmp_path: Path) -> Path:
+    return tmp_path.with_name(tmp_path.name + ".unsloth-download.lock")
+
+
+def test_a_second_process_on_the_same_model_is_told_it_is_downloading(files, tmp_path, monkeypatch):
+    monkeypatch.setattr(ff, "_pid_alive", lambda pid: pid == 4242)
+    _lock(tmp_path).write_text("4242")
+    with pytest.raises(ff.FlmDownloadError, match = r"already downloading .*\(PID 4242\)"):
+        list(ff.download_files(files.model(tmp_path)))
+    assert files.ranges == []
+    assert _lock(tmp_path).read_text() == "4242"
+
+
+def test_a_lock_left_by_a_dead_process_is_taken_over_and_released(files, tmp_path, monkeypatch):
+    monkeypatch.setattr(ff, "_pid_alive", lambda pid: False)
+    _lock(tmp_path).write_text("4242")
+    model = files.model(tmp_path)
+    downloading = ff.download_files(model)
+    next(downloading)
+    assert _lock(tmp_path).read_text() == str(os.getpid())
+    list(downloading)
+    assert not _lock(tmp_path).exists()
+    assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
+
+
+def test_a_fresh_empty_lock_counts_as_held(files, tmp_path):
+    _lock(tmp_path).write_text("")
+    with pytest.raises(ff.FlmDownloadError, match = "already downloading"):
+        list(ff.download_files(files.model(tmp_path)))
+    os.utime(_lock(tmp_path), (0, 0))
+    list(ff.download_files(files.model(tmp_path)))
+    assert not _lock(tmp_path).exists()

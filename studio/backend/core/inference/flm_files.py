@@ -5,10 +5,14 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
+import threading
 import time
 from dataclasses import dataclass
 from functools import lru_cache
@@ -23,10 +27,16 @@ _CHUNK = 1 << 20
 _MAX_STALLED_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 2.0
 _RETRIED_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+# An empty lock this old is a crash between create and write, not a writer still starting.
+_EMPTY_LOCK_GRACE_SECONDS = 10.0
 
 
 class FlmDownloadError(RuntimeError):
     """A file could not be downloaded; the message is safe to show the user."""
+
+
+class FlmDownloadCancelled(FlmDownloadError):
+    """Stopped on request; partial files are kept so the next download resumes."""
 
 
 @dataclass(frozen = True)
@@ -48,8 +58,7 @@ class FlmModelFiles:
     def total(self) -> int:
         return sum(file.size for file in self.files)
 
-    def resume_percent(self) -> Optional[int]:
-        """How much of the model an interrupted download left on disk, or None if nothing."""
+    def on_disk(self) -> int:
         done = 0
         for file in self.files:
             for path in (self.folder / file.name, _partial(self.folder / file.name)):
@@ -58,6 +67,11 @@ class FlmModelFiles:
                     break
                 except OSError:
                     continue
+        return done
+
+    def resume_percent(self) -> Optional[int]:
+        """How much of the model an interrupted download left on disk, or None if nothing."""
+        done = self.on_disk()
         return done * 100 // self.total if done and self.total else None
 
 
@@ -125,26 +139,92 @@ def _hasher(file: FlmFile):
     return digest
 
 
-def _matches(path: Path, file: FlmFile) -> bool:
+def _check(cancel: threading.Event) -> None:
+    if cancel.is_set():
+        raise FlmDownloadCancelled("The download was cancelled.")
+
+
+def _matches(path: Path, file: FlmFile, cancel: threading.Event) -> bool:
     digest = _hasher(file)
     with open(path, "rb") as handle:
         while chunk := handle.read(_CHUNK):
+            _check(cancel)
             digest.update(chunk)
     return digest.hexdigest() == file.digest
 
 
+def _pid_alive(pid: int) -> bool:
+    import psutil
+    return psutil.pid_exists(pid)
+
+
+def _acquire_lock(model: FlmModelFiles) -> Path:
+    """One downloader per model across processes on this home; a dead owner's lock is taken over."""
+    # Beside the folder, not in it: FastFlowLM owns the folder's contents.
+    lock = model.folder.with_name(model.folder.name + ".unsloth-download.lock")
+    for _ in range(3):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                text = lock.read_text(encoding = "utf-8").strip()
+                age = time.time() - lock.stat().st_mtime
+            except OSError:
+                continue  # released between the open and the read
+            pid = int(text) if text.isdigit() else None
+            if pid is None:
+                busy = age < _EMPTY_LOCK_GRACE_SECONDS
+            else:
+                busy = _pid_alive(pid)
+            if busy:
+                owner = f" (PID {pid})" if pid is not None else ""
+                raise FlmDownloadError(
+                    f"This model is already downloading in another Unsloth Studio process{owner}."
+                )
+            logger.info("Removing stale download lock %s left by PID %s", lock, pid)
+            lock.unlink(missing_ok = True)
+            continue
+        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+            handle.write(str(os.getpid()))
+        return lock
+    raise FlmDownloadError("Could not lock this model's download folder; try again.")
+
+
+def _gb(size: int) -> str:
+    return f"{size / 1e9:.1f} GB"
+
+
+def _check_free_space(model: FlmModelFiles) -> None:
+    needed = model.total - model.on_disk()
+    free = shutil.disk_usage(model.folder).free
+    if needed > free:
+        raise FlmDownloadError(
+            f"Not enough disk space: this model needs {_gb(needed)} more and only "
+            f"{_gb(free)} is free in {model.folder.parent}."
+        )
+
+
 def download_files(
-    model: FlmModelFiles, client: Optional[httpx.Client] = None
+    model: FlmModelFiles,
+    client: Optional[httpx.Client] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> Iterator[dict[str, Any]]:
-    """Raises FlmDownloadError on a stall or bad hash; partial files are kept so the next call resumes."""
+    """Raises FlmDownloadError on a stall, bad hash, full disk or cancel; partial files are kept
+    so the next call resumes."""
+    cancel = cancel or threading.Event()
     model.folder.mkdir(parents = True, exist_ok = True)
+    lock = _acquire_lock(model)
     owned = client is None
-    client = client or httpx.Client(follow_redirects = True, timeout = httpx.Timeout(30.0, read = 120.0))
     total = model.total
     completed = 0  # bytes of the files already in place
     # One event per (file, percent): followers replay every event of a pull that can take hours.
     reported = None
+    file = None
     try:
+        _check_free_space(model)
+        client = client or httpx.Client(
+            follow_redirects = True, timeout = httpx.Timeout(30.0, read = 120.0)
+        )
         for file in model.files:
             final = model.folder / file.name
             partial = _partial(final)
@@ -152,8 +232,18 @@ def download_files(
                 have = final.stat().st_size
             except FileNotFoundError:
                 have = None
+            # Rehashing what is already on disk can take minutes on a 20 GB model.
+            verifying = {
+                "event": "verifying",
+                "file": file.name,
+                "bytes_downloaded": completed,
+                "bytes_total": total,
+                "percent": min(99, completed * 100 // total),
+            }
+            if have == file.size:
+                yield verifying
             # Same size is not proof: an older release's config.json differs only in its version.
-            if have == file.size and _matches(final, file):
+            if have == file.size and _matches(final, file, cancel):
                 partial.unlink(missing_ok = True)
                 completed += file.size
                 continue
@@ -165,7 +255,9 @@ def download_files(
                     final.replace(partial)
                 else:
                     final.unlink()
-            for offset in _download_file(client, file, partial):
+            if partial.exists():
+                yield verifying
+            for offset in _download_file(client, file, partial, cancel):
                 done = completed + offset
                 percent = min(99, done * 100 // total)
                 if (file.name, percent) != reported:
@@ -179,9 +271,18 @@ def download_files(
                     }
             partial.replace(final)
             completed += file.size
+    except OSError as exc:
+        if exc.errno != errno.ENOSPC:
+            raise
+        name = file.name if file is not None else "the model"
+        raise FlmDownloadError(
+            f"Out of disk space while downloading {name}. Free up space and download again; "
+            "it resumes where it stopped."
+        ) from exc
     finally:
-        if owned:
+        if owned and client is not None:
             client.close()
+        lock.unlink(missing_ok = True)
 
 
 def _resumed_from(response: httpx.Response) -> Optional[int]:
@@ -190,13 +291,16 @@ def _resumed_from(response: httpx.Response) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
-def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterator[int]:
+def _download_file(
+    client: httpx.Client, file: FlmFile, partial: Path, cancel: threading.Event
+) -> Iterator[int]:
     """Bring ``partial`` up to the whole file and check its hash, yielding its size as it grows."""
     digest = _hasher(file)
     offset = 0
     try:
         with open(partial, "rb") as handle:
             while chunk := handle.read(_CHUNK):
+                _check(cancel)
                 digest.update(chunk)
                 offset += len(chunk)
     except FileNotFoundError:
@@ -209,6 +313,7 @@ def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterat
     furthest = offset
     stalled = 0
     while offset < file.size:
+        _check(cancel)
         try:
             headers = {"Range": f"bytes={offset}-"} if offset else {}
             with client.stream("GET", file.url, headers = headers) as response:
@@ -228,6 +333,7 @@ def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterat
                     )
                 with open(partial, "ab") if offset else open(partial, "wb") as handle:
                     for chunk in response.iter_bytes():
+                        _check(cancel)
                         handle.write(chunk)
                         digest.update(chunk)
                         offset += len(chunk)
@@ -246,7 +352,7 @@ def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterat
                 file.size,
                 exc,
             )
-            time.sleep(_RETRY_DELAY_SECONDS * max(stalled, 1))
+            cancel.wait(_RETRY_DELAY_SECONDS * max(stalled, 1))
     if offset != file.size or digest.hexdigest() != file.digest:
         partial.unlink(missing_ok = True)
         raise FlmDownloadError(
