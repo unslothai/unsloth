@@ -2138,6 +2138,7 @@ class H3ImageLoadReport:
     load_s: float = 0.0
     quantized_linears: int = 0
     bytes_read: int = 0
+    speed_levers: tuple = ()
 
     def as_dict(self) -> dict:
         return {
@@ -2150,6 +2151,7 @@ class H3ImageLoadReport:
             "load_s": round(self.load_s, 1),
             "quantized_linears": self.quantized_linears,
             "bytes_read": self.bytes_read,
+            "speed_levers": list(self.speed_levers),
             **{f"plan_{k}": v for k, v in self.plan.as_dict().items()},
         }
 
@@ -2754,6 +2756,9 @@ def load_minimax_h3_image_pipeline(
         early_streamer = None
     if early_streamer is not None:
         early_streamer.remove()
+    from .diffusion_minimax_h3_image_speed import install_h3_image_speed
+
+    speed_levers = install_h3_image_speed(pipe, plan, device, logger)
     report = H3ImageLoadReport(
         scheme = scheme,
         scheme_reason = scheme_reason,
@@ -2765,6 +2770,7 @@ def load_minimax_h3_image_pipeline(
         load_s = time.perf_counter() - t0,
         quantized_linears = int(stats.get("quantized_linears", 0)),
         bytes_read = int(stats.get("bytes_read", 0)),
+        speed_levers = speed_levers,
     )
     pipe._unsloth_h3_report = report
     try:
