@@ -43,7 +43,6 @@ def test_repeated_help_spawns_once(fake_run, binary):
     assert [bk._sd_cpp_probe_output(binary, "--help") for _ in range(4)] == [first] * 4
     assert first == "usage: sd-cli --ref-video --max-vram"
     assert len(fake_run["calls"]) == 1
-    # The capability helpers a load calls share that one spawn.
     assert bk.sd_cpp_supports_minimax_h3(binary)
     assert bk._layer_split_supported(binary) is False
     assert len(fake_run["calls"]) == 1
@@ -81,7 +80,6 @@ def test_rewritten_binary_reprobes(fake_run, binary):
     fake_run["stdout"] = "usage: third build"
     assert bk._sd_cpp_probe_output(binary, "--help") == "usage: third build"
     assert len(fake_run["calls"]) == 3
-    # Only the current build of a path is kept.
     assert len(bk._HELP_TEXT_CACHE) == 1
 
 

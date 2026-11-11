@@ -573,8 +573,7 @@ def _usable_or_discard_managed(binary: str) -> bool:
     return False
 
 
-# Successful ``--help`` text per (path, size, mtime_ns): one load asks several capability questions of the
-# same binary, and each was a fresh spawn. A rewritten binary changes the key; None is never stored.
+# Successful ``--help`` text per (path, size, mtime_ns); a rewritten binary changes the key.
 _HELP_TEXT_CACHE: dict[tuple[str, int, int], str] = {}
 _HELP_TEXT_CACHE_MAX = 8
 _help_text_cache_lock = threading.Lock()
@@ -621,7 +620,6 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     # Re-stat: a binary replaced while it ran must not leave this text under the old build's key.
     if cache_key is not None and _help_cache_key(str(binary)) == cache_key:
         with _help_text_cache_lock:
-            # Drop entries for older builds of the same path first, then the oldest overall.
             for stale in [k for k in _HELP_TEXT_CACHE if k[0] == cache_key[0]]:
                 del _HELP_TEXT_CACHE[stale]
             while len(_HELP_TEXT_CACHE) >= _HELP_TEXT_CACHE_MAX:
