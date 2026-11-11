@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings lists llama.cpp, whisper.cpp, audio.cpp and MLX in Engines, and mlx-lm / mlx-vlm in Environment.
+// Settings lists llama.cpp, whisper.cpp, audio.cpp, MLX, FastFlowLM and Lemonade in Engines, and mlx-lm / mlx-vlm in Environment.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -55,6 +55,26 @@ test("the Engines section shows MLX only where it is installed", () => {
   assert.match(section, /row\.key !== "mlx" \|\| row\.installed != null/);
 });
 
+test("the Engines section shows FastFlowLM and Lemonade only where the NPU runtime is installed", () => {
+  const section = read(
+    "features/settings/components/engine-versions-section.tsx",
+  );
+  assert.match(section, /const \[npuStatus\] = useNpuStatus\(\);/);
+  for (const name of ["fastflowlm", "lemonade"]) {
+    assert.match(
+      section,
+      new RegExp(
+        `key: "${name}",[^}]*installed: versionTag\\(npuVersions\\?\\.${name}\\),\\s*offer: null,`,
+      ),
+      name,
+    );
+  }
+  assert.match(
+    section,
+    /\(row\.key !== "fastflowlm" && row\.key !== "lemonade"\) \|\|\s*row\.installed != null/,
+  );
+});
+
 test("the Environment section lists mlx-lm and mlx-vlm only where installed", () => {
   const env = read("features/settings/tabs/resources-tab.tsx");
   for (const [pkg, key] of [
@@ -93,7 +113,7 @@ test("a self-managed llama.cpp still lets Update install an offered audio.cpp re
   assert.doesNotMatch(section, /!supported/);
 });
 
-test("every locale labels the audio.cpp, MLX, mlx-lm and mlx-vlm rows", () => {
+test("every locale labels the audio.cpp, MLX, FastFlowLM, Lemonade, mlx-lm and mlx-vlm rows", () => {
   const locales = readdirSync(new URL("i18n/locales/", SRC)).filter((name) =>
     name.endsWith(".ts"),
   );
@@ -107,6 +127,11 @@ test("every locale labels the audio.cpp, MLX, mlx-lm and mlx-vlm rows", () => {
     assert.match(
       read(`i18n/locales/${name}`),
       /mlxVersion: "[^"\n]*MLX[^"\n]*",/,
+      name,
+    );
+    assert.match(
+      read(`i18n/locales/${name}`),
+      /fastflowlmVersion: "[^"\n]*FastFlowLM[^"\n]*",\s*lemonadeVersion: "[^"\n]*Lemonade[^"\n]*",/,
       name,
     );
     assert.match(

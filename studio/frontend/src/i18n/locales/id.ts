@@ -3991,6 +3991,8 @@ export const id = {
       llamaCppVersion: "Versi llama.cpp",
       audioCppVersion: "Versi audio.cpp",
       mlxVersion: "Versi MLX",
+      fastflowlmVersion: "Versi FastFlowLM",
+      lemonadeVersion: "Versi Lemonade",
       whisperCppVersion: "Versi whisper.cpp",
       engines: {
         title: "Engine",

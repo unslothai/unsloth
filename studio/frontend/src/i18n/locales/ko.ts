@@ -3683,6 +3683,8 @@ export const ko = {
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
       mlxVersion: "MLX 버전",
+      fastflowlmVersion: "FastFlowLM 버전",
+      lemonadeVersion: "Lemonade 버전",
       whisperCppVersion: "whisper.cpp 버전",
       engines: {
         title: "엔진",

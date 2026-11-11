@@ -3740,6 +3740,8 @@ export const de = {
       llamaCppVersion: "llama.cpp-Version",
       audioCppVersion: "audio.cpp-Version",
       mlxVersion: "MLX-Version",
+      fastflowlmVersion: "FastFlowLM-Version",
+      lemonadeVersion: "Lemonade-Version",
       whisperCppVersion: "whisper.cpp-Version",
       engines: {
         title: "Engines",

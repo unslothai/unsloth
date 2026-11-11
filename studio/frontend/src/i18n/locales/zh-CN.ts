@@ -3639,6 +3639,8 @@ export const zhCN = {
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
       mlxVersion: "MLX 版本",
+      fastflowlmVersion: "FastFlowLM 版本",
+      lemonadeVersion: "Lemonade 版本",
       whisperCppVersion: "whisper.cpp 版本",
       engines: {
         title: "引擎",

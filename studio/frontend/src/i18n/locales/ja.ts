@@ -3666,6 +3666,8 @@ export const ja = {
       llamaCppVersion: "llama.cpp バージョン",
       audioCppVersion: "audio.cpp バージョン",
       mlxVersion: "MLX バージョン",
+      fastflowlmVersion: "FastFlowLM バージョン",
+      lemonadeVersion: "Lemonade バージョン",
       whisperCppVersion: "whisper.cpp バージョン",
       engines: {
         title: "エンジン",

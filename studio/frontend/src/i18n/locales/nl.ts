@@ -4037,6 +4037,8 @@ export const nl = {
       llamaCppVersion: "llama.cpp-versie",
       audioCppVersion: "audio.cpp-versie",
       mlxVersion: "MLX-versie",
+      fastflowlmVersion: "FastFlowLM-versie",
+      lemonadeVersion: "Lemonade-versie",
       whisperCppVersion: "whisper.cpp-versie",
       engines: {
         title: "Engines",
