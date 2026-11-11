@@ -48,3 +48,20 @@ test("the NPU footer's setup path keeps the setup notice while a search is activ
   assert.match(browse, /\(!showHfSection \|\| !npuCatalog\.ready \|\| npuBrowseRows\.length > 0\)/);
   assert.match(browse, /\{showHfSection && npuCatalog\.ready \? null : \(\s*<NpuSetupNotice/);
 });
+
+test("NPU run settings show Auto until a load sizes the window, then the resident one", () => {
+  assert.doesNotMatch(configPage, /NPU_DEFAULT_CONTEXT_LENGTH/);
+  assert.match(
+    configPage,
+    /const npuServedWindow =\s+targetIsNpu && isActiveModel \? servedWindow\(loadedContextLength\) : null;/,
+  );
+  assert.match(configPage, /unknownLabel=\{targetIsNpu \? "Auto" : undefined\}/);
+  assert.match(configPage, /displayValue=\{isMlx && windowUnknown && !dragging \? unknownLabel : undefined\}/);
+});
+
+test("an NPU pin above the load's free-memory estimate warns", () => {
+  const warning = configPage.slice(configPage.indexOf("{targetIsNpu &&\n              isActiveModel &&"));
+  assert.match(warning, /savedContextPin\(config\) != null/);
+  assert.match(warning, /maxSeqLengthValue > loadedMaxContextLength/);
+  assert.match(warning, /free-memory estimate/);
+});
