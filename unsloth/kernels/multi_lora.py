@@ -515,8 +515,10 @@ class MultiLoRA_W(torch.autograd.Function):
         if dY.dtype != dtype:
             dY = dY.to(dtype)
         U, R, _ = A.shape
-        # dH is fp32 so it cannot overflow in either scale direction; the scale is applied once, here.
-        dH = torch.empty(X.shape[0], R, dtype = torch.float32, device = X.device)
+        # fp16 dH = scale * dY @ B can overflow while every true gradient is finite: keep it fp32 there.
+        # bf16 / fp32 have fp32 range, so they keep their dtype and kernels.
+        dH_dtype = torch.float32 if dtype == torch.float16 else dtype
+        dH = torch.empty(X.shape[0], R, dtype = dH_dtype, device = X.device)
         _seg_mm(
             dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, scales, False, True, False
         )

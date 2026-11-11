@@ -117,5 +117,7 @@ def test_backward_applies_the_scale_once_after_the_low_precision_store(tmp_path,
     argv = [sys.executable, str(script), str(REPO), mode]
     proc = subprocess.run(argv, env = env, capture_output = True, text = True, timeout = 600)
     if "INTERPRETER UNSUPPORTED" in proc.stdout:
-        pytest.skip(proc.stdout.strip())
+        # Some triton CPU interpreter builds cannot run a runtime-bounded loop with the installed NumPy, so
+        # the kernels cannot execute on this host at all; the probe output names the failure.
+        pytest.skip(reason = "TRITON_INTERPRET cannot run the kernels here: " + proc.stdout.strip())
     assert proc.returncode == 0 and "BACKWARD OK" in proc.stdout, proc.stdout + proc.stderr
