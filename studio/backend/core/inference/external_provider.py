@@ -1988,7 +1988,10 @@ class ExternalProviderClient:
         # Forward tools/tool_choice on every OAI-compat route; dropping them silently loses function calling.
         if tools:
             body["tools"] = tools
-        if tool_choice is not None:
+        # FastFlowLM turns a bare "none" into a decoding constraint, which turns NPU speculation off.
+        if tool_choice is not None and not (
+            self.provider_type == "lemonade" and tool_choice_disabled and not tools
+        ):
             body["tool_choice"] = tool_choice
         # JSON mode / guided decoding; dropping `response_format` silently turns output into free prose.
         if response_format is not None:

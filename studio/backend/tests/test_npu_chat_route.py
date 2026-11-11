@@ -544,6 +544,8 @@ def test_tool_choice_none_withholds_the_tools(flm):
     ]
     _call(stream = False, tools = tools, tool_choice = "none")
     assert "tools" not in recorded[-1]["body"]
+    # A forwarded "none" becomes a FastFlowLM constraint, which turns speculative decoding off.
+    assert "tool_choice" not in recorded[-1]["body"]
 
 
 def test_a_bare_error_line_becomes_an_error(flm):
