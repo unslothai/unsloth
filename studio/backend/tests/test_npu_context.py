@@ -318,7 +318,7 @@ def test_the_load_response_reports_the_fit_as_the_ceiling(fitted, expected):
         api_key = "key",
         fitted_context_length = fitted,
     )
-    response = routes._npu_load_response(resident, "loaded")
+    response = routes._npu_load_response(resident, "loaded", None)
     assert response.context_length == 8192
     assert response.max_context_length == expected
     assert response.native_context_length == 262144
