@@ -59,7 +59,9 @@ def test_de_de_host_reports_fractional_utilization(windows, combined):
 
 
 def test_de_de_host_sums_only_the_selected_adapter(windows):
-    windows(_ENGINES + (("pid_44_luid_0x00000000_0x0000beef_phys_0_eng_0_engtype_3D", "50.5"),), False)
+    windows(
+        _ENGINES + (("pid_44_luid_0x00000000_0x0000beef_phys_0_eng_0_engtype_3D", "50.5"),), False
+    )
     assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.8
     assert hw._rocm_windows_perf_counter_gpu_util_pct(0xBEEF) == 50.5
 
