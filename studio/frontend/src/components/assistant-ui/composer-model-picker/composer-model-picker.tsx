@@ -473,27 +473,28 @@ function TabButton({
   onSelect: () => void;
 }) {
   return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={shown}
-      aria-label={tab.label}
-      title={tab.label}
-      onClick={onSelect}
-      className={cn(
-        "relative grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center transition-colors hover:text-foreground",
-        shown ? "text-foreground" : "text-muted-foreground",
-      )}
-    >
-      {tab.icon}
-      <span
-        aria-hidden={true}
+    <Hint label={tab.label}>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={shown}
+        aria-label={tab.label}
+        onClick={onSelect}
         className={cn(
-          "composer-tab-line absolute bottom-0 left-1/2 h-[calc(2px*var(--ui-space-scale,1))] w-[calc(16px*var(--ui-space-scale,1))] -translate-x-1/2 rounded-full transition-opacity duration-150",
-          shown ? "opacity-100" : "opacity-0",
+          "relative grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center transition-colors hover:text-foreground",
+          shown ? "text-foreground" : "text-muted-foreground",
         )}
-      />
-    </button>
+      >
+        {tab.icon}
+        <span
+          aria-hidden={true}
+          className={cn(
+            "composer-tab-line absolute bottom-0 left-1/2 h-[calc(2px*var(--ui-space-scale,1))] w-[calc(16px*var(--ui-space-scale,1))] -translate-x-1/2 rounded-full transition-opacity duration-150",
+            shown ? "opacity-100" : "opacity-0",
+          )}
+        />
+      </button>
+    </Hint>
   );
 }
 
@@ -559,25 +560,38 @@ function QuantPill({ quant }: { quant: string }) {
   );
 }
 
+/** The Studio tooltip, in place of the browser's own `title`. */
+function Hint({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>{children}</TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function LoadedDot({ label, onEject }: { label: string; onEject: () => void }) {
   return (
-    <button
-      type="button"
-      title="Loaded. Click to eject"
-      aria-label={`Eject ${label}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onEject();
-      }}
-      className="group/eject -mx-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-    >
-      <span className="col-start-1 row-start-1 size-[calc(6px*var(--ui-space-scale,1))] rounded-full bg-status-success transition-opacity group-hover/eject:opacity-0 group-focus-visible/eject:opacity-0" />
-      <HugeiconsIcon
-        icon={RemoveCircleIcon}
-        strokeWidth={1.75}
-        className="composer-eject-icon col-start-1 row-start-1 text-red-500 opacity-0 transition-opacity group-hover/eject:opacity-100 group-focus-visible/eject:opacity-100"
-      />
-    </button>
+    <Hint label="Loaded. Click to eject">
+      <button
+        type="button"
+        aria-label={`Eject ${label}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onEject();
+        }}
+        className="group/eject -mx-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+      >
+        <span className="col-start-1 row-start-1 size-[calc(6px*var(--ui-space-scale,1))] rounded-full bg-status-success transition-opacity group-hover/eject:opacity-0 group-focus-visible/eject:opacity-0" />
+        <HugeiconsIcon
+          icon={RemoveCircleIcon}
+          strokeWidth={1.75}
+          className="composer-eject-icon col-start-1 row-start-1 text-red-500 opacity-0 transition-opacity group-hover/eject:opacity-100 group-focus-visible/eject:opacity-100"
+        />
+      </button>
+    </Hint>
   );
 }
 
@@ -1659,30 +1673,31 @@ export function ComposerModelPicker({
             </>
           ) : null}
           {canStar ? (
-            <button
-              type="button"
-              aria-label={
-                favorite
-                  ? `Remove ${row.label} from favorites`
-                  : `Favorite ${row.label}`
-              }
-              aria-pressed={favorite}
-              title={favorite ? "Remove favorite" : "Favorite"}
-              onClick={() => toggleFavorite(row)}
-              className={cn(
-                ACTION_ROUND,
-                favorite ? "text-foreground" : actionClass,
-              )}
-            >
-              <HugeiconsIcon
-                icon={StarIcon}
-                strokeWidth={1.75}
+            <Hint label={favorite ? "Remove favorite" : "Favorite"}>
+              <button
+                type="button"
+                aria-label={
+                  favorite
+                    ? `Remove ${row.label} from favorites`
+                    : `Favorite ${row.label}`
+                }
+                aria-pressed={favorite}
+                onClick={() => toggleFavorite(row)}
                 className={cn(
-                  "composer-row-icon",
-                  favorite && "[&_path]:fill-current",
+                  ACTION_ROUND,
+                  favorite ? "text-foreground" : actionClass,
                 )}
-              />
-            </button>
+              >
+                <HugeiconsIcon
+                  icon={StarIcon}
+                  strokeWidth={1.75}
+                  className={cn(
+                    "composer-row-icon",
+                    favorite && "[&_path]:fill-current",
+                  )}
+                />
+              </button>
+            </Hint>
           ) : null}
         </span>
       </div>
@@ -1751,27 +1766,28 @@ export function ComposerModelPicker({
           iconClassName="composer-row-icon"
         />
         {onDisk ? (
-          <button
-            type="button"
-            aria-label={
-              starred
-                ? `Remove ${row.label} ${variant.quant} from favorites`
-                : `Favorite ${row.label} ${variant.quant}`
-            }
-            aria-pressed={starred}
-            title={starred ? "Remove favorite" : "Favorite"}
-            onClick={() => togglePinned(row.id, variant.quant)}
-            className={cn(button, starred ? "text-foreground" : reveal)}
-          >
-            <HugeiconsIcon
-              icon={StarIcon}
-              strokeWidth={1.75}
-              className={cn(
-                "composer-row-icon",
-                starred && "[&_path]:fill-current",
-              )}
-            />
-          </button>
+          <Hint label={starred ? "Remove favorite" : "Favorite"}>
+            <button
+              type="button"
+              aria-label={
+                starred
+                  ? `Remove ${row.label} ${variant.quant} from favorites`
+                  : `Favorite ${row.label} ${variant.quant}`
+              }
+              aria-pressed={starred}
+              onClick={() => togglePinned(row.id, variant.quant)}
+              className={cn(button, starred ? "text-foreground" : reveal)}
+            >
+              <HugeiconsIcon
+                icon={StarIcon}
+                strokeWidth={1.75}
+                className={cn(
+                  "composer-row-icon",
+                  starred && "[&_path]:fill-current",
+                )}
+              />
+            </button>
+          </Hint>
         ) : null}
       </span>
     );
@@ -1937,31 +1953,32 @@ export function ComposerModelPicker({
           {modelLoading || pending ? (
             <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
           ) : chosenName && chosenLoaded ? (
-            // biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel.
-            <span
-              aria-hidden={true}
-              title="Eject model"
-              data-eject-hit={true}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (chosen) {
-                  eject(chosen);
-                } else if (checkpoint) {
-                  source?.eject(checkpoint);
-                }
-              }}
-              className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
-            >
-              <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
-                <RowMark row={chosenMark} />
+            <Hint label="Eject model">
+              {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
+              <span
+                aria-hidden={true}
+                data-eject-hit={true}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (chosen) {
+                    eject(chosen);
+                  } else if (checkpoint) {
+                    source?.eject(checkpoint);
+                  }
+                }}
+                className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+              >
+                <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
+                  <RowMark row={chosenMark} />
+                </span>
+                <HugeiconsIcon
+                  icon={RemoveCircleIcon}
+                  strokeWidth={1.75}
+                  className="invisible col-start-1 row-start-1 size-[calc(14px*var(--ui-space-scale,1))] text-red-500 group-hover/chip:visible"
+                />
               </span>
-              <HugeiconsIcon
-                icon={RemoveCircleIcon}
-                strokeWidth={1.75}
-                className="invisible col-start-1 row-start-1 size-[calc(14px*var(--ui-space-scale,1))] text-red-500 group-hover/chip:visible"
-              />
-            </span>
+            </Hint>
           ) : chosenName ? (
             <RowMark row={chosenMark} />
           ) : null}
@@ -1987,7 +2004,8 @@ export function ComposerModelPicker({
         align="end"
         sideOffset={8}
         data-composer-model-picker=""
-        className="unsloth-plus-menu composer-model-picker relative w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2 pt-1"
+        data-list-last={isExpanded && !hasFoot ? "" : undefined}
+        className="unsloth-plus-menu composer-model-picker relative w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2"
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
             requestAnimationFrame(() => searchRef.current?.focus());
@@ -2004,37 +2022,61 @@ export function ComposerModelPicker({
       >
         {isExpanded ? (
           <>
-            <div
-              role="tablist"
-              aria-label="Model sources"
-              className="flex shrink-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
-            >
-              {tabs.map((t) => (
-                <TabButton
-                  key={t.value}
-                  tab={t}
-                  shown={viewed === t.value}
-                  onSelect={() => setTab(t.value)}
-                />
-              ))}
-              {chosenName ? (
-                <button
-                  type="button"
-                  title="Collapse"
-                  aria-label="Collapse the model list"
-                  aria-expanded={true}
-                  onClick={() => setExpanded(false)}
-                  className="ml-auto grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={ChevronDownStandardIcon}
-                    strokeWidth={1.5}
-                    className="size-4 rotate-180"
+            <div className="flex shrink-0 items-center gap-1">
+              <div
+                role="tablist"
+                aria-label="Model sources"
+                className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+              >
+                {tabs.map((t) => (
+                  <TabButton
+                    key={t.value}
+                    tab={t}
+                    shown={viewed === t.value}
+                    onSelect={() => setTab(t.value)}
                   />
-                </button>
+                ))}
+              </div>
+              {chosenName ? (
+                <Hint label="Collapse">
+                  <button
+                    type="button"
+                    aria-label="Collapse the model list"
+                    aria-expanded={true}
+                    onClick={() => setExpanded(false)}
+                    className="ml-auto grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={ChevronDownStandardIcon}
+                      strokeWidth={1.5}
+                      className="size-4 rotate-180"
+                    />
+                  </button>
+                </Hint>
+              ) : null}
+              {/* Outside the scrolling tabs, so it holds the row's right end. */}
+              {chosenLoaded && !pending && !modelLoading ? (
+                <Hint label="Eject model">
+                  <button
+                    type="button"
+                    aria-label={`Eject ${chosenName ?? "model"}`}
+                    onClick={() =>
+                      chosen
+                        ? eject(chosen)
+                        : source?.eject(checkpoint ?? undefined)
+                    }
+                    className="mr-[calc(8px*var(--ui-space-scale,1))] grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-red-500 transition-colors hover:bg-sidebar-accent"
+                  >
+                    <HugeiconsIcon
+                      icon={RemoveCircleIcon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </button>
+                </Hint>
               ) : null}
             </div>
-            <div className="mt-2 flex h-[calc(32px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full bg-muted pr-1 pl-3">
+            <div className="mt-2 flex h-[calc(32px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full bg-muted pr-2 pl-3">
               <HugeiconsIcon
                 icon={Search01Icon}
                 strokeWidth={1.75}
@@ -2059,49 +2101,51 @@ export function ComposerModelPicker({
                 className="min-w-0 flex-1 bg-transparent text-ui-14 outline-none placeholder:text-muted-foreground"
               />
               {source && connectionId ? (
-                <button
-                  type="button"
-                  title="Connection settings"
-                  aria-label={`Open ${viewedTab?.label ?? ""} connection settings`}
-                  onClick={() => {
-                    setOpen(false);
-                    useSettingsDialogStore
-                      .getState()
-                      .openConnectionSettings(connectionId);
-                  }}
-                  className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={CloudIcon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
+                <Hint label="Connection settings">
+                  <button
+                    type="button"
+                    aria-label={`Open ${viewedTab?.label ?? ""} connection settings`}
+                    onClick={() => {
+                      setOpen(false);
+                      useSettingsDialogStore
+                        .getState()
+                        .openConnectionSettings(connectionId);
+                    }}
+                    className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={CloudIcon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </button>
+                </Hint>
               ) : source ? (
-                <button
-                  type="button"
-                  title="Model hub"
-                  aria-label="Open the Model hub"
-                  onClick={() => {
-                    setOpen(false);
-                    void navigate({
-                      to: "/hub",
-                      search: {
-                        tab:
-                          viewed === RECOMMENDED_TAB
-                            ? "discover"
-                            : "downloaded",
-                      },
-                    });
-                  }}
-                  className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={DashboardCircleIcon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
+                <Hint label="Model hub">
+                  <button
+                    type="button"
+                    aria-label="Open the Model hub"
+                    onClick={() => {
+                      setOpen(false);
+                      void navigate({
+                        to: "/hub",
+                        search: {
+                          tab:
+                            viewed === RECOMMENDED_TAB
+                              ? "discover"
+                              : "downloaded",
+                        },
+                      });
+                    }}
+                    className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={DashboardCircleIcon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </button>
+                </Hint>
               ) : null}
             </div>
             <div
@@ -2147,31 +2191,31 @@ export function ComposerModelPicker({
               )}
               <span className="truncate">{chosenName}</span>
               {!pending && chosenLoaded ? (
-                <span
-                  title="Loaded"
-                  className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
-                />
+                <Hint label="Loaded">
+                  <span className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success" />
+                </Hint>
               ) : null}
             </button>
             {!pending && chosenLoaded && !modelLoading ? (
-              <button
-                type="button"
-                title="Eject"
-                aria-label={`Eject ${chosenName}`}
-                onClick={() =>
-                  chosen
-                    ? eject(chosen)
-                    : source?.eject(checkpoint ?? undefined)
-                }
-                className="flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-ui-12 text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-              >
-                <HugeiconsIcon
-                  icon={RemoveCircleIcon}
-                  strokeWidth={1.75}
-                  className="composer-row-icon"
-                />
-                Eject
-              </button>
+              <Hint label="Eject">
+                <button
+                  type="button"
+                  aria-label={`Eject ${chosenName}`}
+                  onClick={() =>
+                    chosen
+                      ? eject(chosen)
+                      : source?.eject(checkpoint ?? undefined)
+                  }
+                  className="flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-ui-12 text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                >
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className="composer-row-icon"
+                  />
+                  Eject
+                </button>
+              </Hint>
             ) : null}
             <button
               type="button"
@@ -2262,29 +2306,30 @@ export function ComposerModelPicker({
                   title="Effort"
                   accessory={
                     reasoning.supportsFast ? (
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={reasoning.fast}
-                        aria-label="Fast mode"
-                        title="Fast mode"
-                        onClick={() => reasoning.setFast(!reasoning.fast)}
-                        className={cn(
-                          "grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full transition-colors hover:bg-sidebar-accent",
-                          reasoning.fast
-                            ? "text-primary"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        <HugeiconsIcon
-                          icon={FlashIcon}
-                          strokeWidth={1.75}
+                      <Hint label="Fast mode">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={reasoning.fast}
+                          aria-label="Fast mode"
+                          onClick={() => reasoning.setFast(!reasoning.fast)}
                           className={cn(
-                            "size-4",
-                            reasoning.fast && "[&_path]:fill-current",
+                            "grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full transition-colors hover:bg-sidebar-accent",
+                            reasoning.fast
+                              ? "text-primary"
+                              : "text-muted-foreground hover:text-foreground",
                           )}
-                        />
-                      </button>
+                        >
+                          <HugeiconsIcon
+                            icon={FlashIcon}
+                            strokeWidth={1.75}
+                            className={cn(
+                              "size-4",
+                              reasoning.fast && "[&_path]:fill-current",
+                            )}
+                          />
+                        </button>
+                      </Hint>
                     ) : undefined
                   }
                   levels={reasoning.levels}
