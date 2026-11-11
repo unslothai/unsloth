@@ -1155,7 +1155,6 @@ export function takeDeal(
 ): ActResult {
   const pid = b.player;
   if (!pid) return { state: s, ok: false, why: "you have no village" };
-  // The deal may predate a day's planning that turned this leader against the player.
   if (a.kind === "ally" && s.factions[fid]?.target === pid)
     return {
       state: s,

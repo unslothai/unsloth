@@ -3,6 +3,8 @@
 
 """Model residency across a run: reuse, load-ahead during CPU steps, cache-hit skips, unload at run end."""
 
+from __future__ import annotations
+
 import asyncio
 
 import pytest
