@@ -237,3 +237,24 @@ test("dialogue written while the reader is mid-scene is held for the next visit"
   );
   assert.equal(waits(midScene, start.rev + 1), false, "a stale revision is dropped");
 });
+
+test("a scene with no background keeps the last one set", () => {
+  const bg = (ref: string) => ({ kind: "image", ref }) as const;
+  const m = storyManifest([
+    { id: "a", background: bg("image:a"), lines: [{ text: "one" }], next: "b" },
+    { id: "b", lines: [{ text: "two" }], next: "c" },
+    { id: "c", background: bg("image:c"), lines: [{ text: "three" }], next: "d" },
+    { id: "d", lines: [{ text: "four" }] },
+  ] as Manifest["scenes"]);
+  let s = R.initialState(m);
+  assert.equal(R.stageBackground(m, s)?.ref, "image:a");
+  s = R.reduce(m, s, { type: "advance" });
+  assert.equal(s.sceneId, "b");
+  assert.equal(R.stageBackground(m, s)?.ref, "image:a");
+  assert.equal(R.backgroundFor(m, s, "b"), null, "b still has none of its own to paint over");
+  s = R.reduce(m, s, { type: "advance" });
+  assert.equal(R.stageBackground(m, s)?.ref, "image:c");
+  s = R.reduce(m, s, { type: "advance" });
+  assert.equal(s.sceneId, "d");
+  assert.equal(R.stageBackground(m, s)?.ref, "image:c");
+});

@@ -140,6 +140,8 @@ export function checkConnection(
   if (src.kind !== dst.kind) {
     return { ok: false, reason: "Story paths only connect to story nodes" };
   }
+  if (sourceId === targetId)
+    return { ok: false, reason: "A node cannot feed itself" };
   if (src.kind === "flow") {
     if (!sourceSpec.flow_out.includes(src.port) || !targetSpec.flow_in) {
       return { ok: false, reason: "Not a story path" };
@@ -151,8 +153,6 @@ export function checkConnection(
       targetPort: FLOW_TARGET_PORT,
     };
   }
-  if (sourceId === targetId)
-    return { ok: false, reason: "A node cannot feed itself" };
   const out = sourceSpec.outputs.find((p) => p.id === src.port);
   const inp = targetSpec.inputs.find((p) => p.id === dst.port);
   if (!out || !inp) return { ok: false, reason: "Unknown port" };
