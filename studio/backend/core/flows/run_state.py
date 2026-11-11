@@ -120,6 +120,8 @@ class RunState:
     marks: dict[str, float] = field(default_factory = dict)
     background: bool = False
     load_keys: dict[tuple, Optional[str]] = field(default_factory = dict, repr = False)
+    # One CPU limit for the whole run, so parallel For Each iterations share it.
+    cpu_gate: Optional[asyncio.Semaphore] = field(default = None, repr = False)
 
     def node(self, node_id: str) -> NodeState:
         state = self.nodes.get(node_id)
