@@ -955,6 +955,20 @@ def test_an_rl_row_is_known_by_the_prompt_training_formatted(spec, rows):
     assert loop_rounds.without_questions([{"x": "y"}], exclude) == [{"x": "y"}]
 
 
+def test_an_rl_row_keeps_a_mapped_output_like_column():
+    # DPO with `output` mapped to chosen: the column is the row's own, not a Benchmark annotation.
+    spec = {"kind": "rl", "objective": "dpo", "mapping": {"output": "chosen"}}
+    rows = [
+        {"instruction": f"Refund ticket number {i}", "output": "billing", "rejected": "sales"}
+        for i in range(3)
+    ]
+    frozen = loop_rounds.questions(rows[:1], spec)
+    assert frozen == ["Refund ticket number 0"]
+    assert loop_rounds.without_questions(rows, {"column": spec, "questions": frozen}) == rows[1:]
+    failure = {**rows[1], "model_output": "sales"}
+    assert loop_rounds.failure_row(failure, spec)["failed_prompt"] == "Refund ticket number 1"
+
+
 def test_an_rl_row_s_system_message_tells_rows_apart():
     spec = {"kind": "rl", "objective": "grpo", "mapping": None}
     rows = [
