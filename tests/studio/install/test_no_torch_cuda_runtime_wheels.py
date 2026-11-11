@@ -169,6 +169,13 @@ def test_linux_runtime_selection_can_see_needs_nothing(tmp_path, monkeypatch):
         (_host(driver = (12, 8)), ["cuda13"], ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12")),
         (_host(driver = (13, 0)), ["cuda12"], ()),
         (_host(driver = (13, 0)), ["cuda13", "cuda12"], ()),
+        # A CUDA 13 runtime cannot serve a pre-Turing GPU either.
+        (
+            _host(driver = (13, 0), caps = ("61",)),
+            ["cuda13"],
+            ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"),
+        ),
+        (_host(driver = (13, 0), caps = ("61",)), ["cuda13", "cuda12"], ()),
         (_host(nvidia = False), [], ()),
         (_host(machine = "aarch64"), [], ()),
         (_host(system = "Windows"), [], ()),

@@ -11582,14 +11582,17 @@ def _linux_cuda_runtime_wheels_to_supply(host: HostInfo) -> tuple[str, ...]:
     """
     if not (host.is_linux and host.is_x86_64 and host.has_usable_nvidia):
         return ()
-    driver_lines = compatible_linux_runtime_lines(host)
+    pre_turing = any(int(sm) < _TURING_MIN_SM for sm in normalize_compute_caps(host.compute_caps))
+    # A CUDA 13 runtime cannot serve a pre-Turing GPU, so it does not count as present.
+    driver_lines = [
+        line
+        for line in compatible_linux_runtime_lines(host)
+        if not (pre_turing and int(line.removeprefix("cuda")) >= 13)
+    ]
     if any(line in driver_lines for line in detected_linux_runtime_lines()[0]):
         return ()
-    pre_turing = any(int(sm) < _TURING_MIN_SM for sm in normalize_compute_caps(host.compute_caps))
     for line in driver_lines:
         major = int(line.removeprefix("cuda"))
-        if major >= 13 and pre_turing:
-            continue
         wheels = _CUDA_RUNTIME_WHEELS.get(("linux-cuda", major))
         if wheels:
             return wheels
