@@ -445,7 +445,11 @@ def _result_budget_tokens(
             "reasoning_content": "".join(turn.reasoning),
         }
     )
-    batch = [{"role": "assistant", "tool_calls": [call.get("function") for call in calls]}]
+    replayed = [
+        {"name": (call.get("function") or {}).get("name"), "arguments": call.get("arguments")}
+        for call in calls
+    ]
+    batch = [{"role": "assistant", "tool_calls": replayed}]
     held = estimate_messages_tokens_conservative(results, dense_ascii = True)
     spent = (
         estimate_messages_tokens_conservative(rest)
