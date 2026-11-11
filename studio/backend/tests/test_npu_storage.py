@@ -55,6 +55,9 @@ class _Lemond(LemonadeNpuBackend):
         for path in sorted(self.folders[model_id].rglob("*"), reverse = True):
             path.rmdir() if path.is_dir() else path.unlink()
         self.folders[model_id].rmdir()
+        for row in self.models:
+            if row["id"] == model_id:
+                row["downloaded"] = False
 
 
 @pytest.fixture
@@ -173,7 +176,7 @@ def test_a_folder_deletes_by_checkpoint_even_for_a_model_the_catalog_hides(npu_h
 def test_clearing_waits_for_a_running_npu_download(npu_home, monkeypatch):
     import routes.npu as npu_routes
 
-    monkeypatch.setattr(npu_routes, "downloads_running", lambda: True)
+    monkeypatch.setitem(npu_routes._downloads, "qwen3-4b-FLM", npu_routes._Download())
     result = purge_cache("npu_models")
     assert npu_home.deleted == []
     assert result["errors"] == [cache_inventory._PURGE_BUSY]
@@ -217,3 +220,24 @@ def test_a_folder_still_downloading_is_not_deleted(npu_home, monkeypatch):
     job.finished = True
     asyncio.run(npu_routes.delete_npu_checkpoint("qwen3:4b"))
     assert npu_home.deleted == ["qwen3-4b-FLM"]
+
+
+def test_no_pull_can_start_while_a_storage_delete_runs(npu_home, monkeypatch):
+    import asyncio
+
+    import routes.npu as npu_routes
+
+    monkeypatch.setattr(npu_routes, "get_npu_backend", lambda: npu_home)
+    held = []
+    delete = npu_home.delete
+
+    def watched(model_id):
+        # _start_download takes this lock to register a pull, so it waits out the delete.
+        held.append(npu_routes._downloads_lock.locked())
+        delete(model_id)
+
+    npu_home.delete = watched
+    asyncio.run(npu_routes.delete_npu_checkpoint("qwen3:4b"))
+    purge_cache("npu_models")
+    assert held == [True, True, True]
+    assert not npu_routes._downloads_lock.locked()

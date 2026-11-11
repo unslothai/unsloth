@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from contextlib import contextmanager
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -82,15 +83,22 @@ _downloads: dict[str, _Download] = {}
 _downloads_lock = threading.Lock()
 
 
-def downloads_running() -> bool:
+@contextmanager
+def downloads_held():
+    """Blocks new pulls while a delete runs, so none can start between the check and the delete.
+    Yields running(model_id=None): whether that model, or any, is still pulling."""
+
+    def running(model_id: Optional[str] = None) -> bool:
+        jobs = _downloads.values() if model_id is None else [_downloads.get(model_id)]
+        return any(job is not None and not job.finished for job in jobs)
+
     with _downloads_lock:
-        return any(not job.finished for job in _downloads.values())
+        yield running
 
 
-def _downloading(model_id: str) -> bool:
-    with _downloads_lock:
-        job = _downloads.get(model_id)
-        return job is not None and not job.finished
+def _delete_checkpoint(checkpoint: str) -> str:
+    with downloads_held() as running:
+        return get_npu_backend().delete_checkpoint(checkpoint, running)
 
 
 def _forget_storage_size() -> None:
@@ -220,9 +228,7 @@ async def delete_npu_model(model_id: str):
 async def delete_npu_checkpoint(checkpoint: str):
     """Settings > Storage's delete: its folders know their FastFlowLM checkpoint, not lemond's id."""
     try:
-        model_id = await asyncio.to_thread(
-            get_npu_backend().delete_checkpoint, checkpoint, _downloading
-        )
+        model_id = await asyncio.to_thread(_delete_checkpoint, checkpoint)
     except NpuError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
     finally:
