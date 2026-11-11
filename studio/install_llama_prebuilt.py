@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes.util
 import atexit
 import errno
 import fnmatch
@@ -28,6 +29,7 @@ import stat
 import struct
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import textwrap
 import time
@@ -11494,6 +11496,64 @@ def resolve_backends_payload(
     }
 
 
+# The fork's x64 CUDA bundles ship no cudart/cublas; full installs borrow torch's, chat-only installs
+# have none and llama-server silently runs on the CPU. NVIDIA's pip wheels fill the gap, once per CUDA line.
+_CUDA_RUNTIME_WHEELS = {
+    ("windows-cuda", 12): ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12==12.9.2.10"),
+    ("windows-cuda", 13): ("nvidia-cuda-runtime", "nvidia-cublas"),
+    ("linux-cuda", 12): ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"),
+    ("linux-cuda", 13): ("nvidia-cuda-runtime", "nvidia-cublas"),
+}
+
+
+def _missing_cuda_runtime_wheels(install_dir: Path) -> tuple[str, ...]:
+    """The wheels to install when this CUDA install has no cudart of its major anywhere, else ()."""
+    meta = load_prebuilt_metadata(install_dir) or {}
+    match = re.search(r"cuda-?(\d+)", str(meta.get("asset") or ""))
+    wheels = _CUDA_RUNTIME_WHEELS.get((meta.get("install_kind"), int(match.group(1)) if match else 0))
+    if not wheels:
+        return ()
+    major = match.group(1)
+    windows = meta.get("install_kind") == "windows-cuda"
+    name = f"cudart64_{major}.dll" if windows else f"libcudart.so.{major}"
+    site_packages = Path(sysconfig.get_paths()["purelib"])
+    roots = [install_dir, site_packages / "torch" / "lib", site_packages / "nvidia"]
+    cuda_home = os.environ.get("CUDA_PATH" if windows else "CUDA_HOME") or ("" if windows else "/usr/local/cuda")
+    if cuda_home:
+        roots.append(Path(cuda_home))
+    for root in roots:
+        try:
+            if root.is_dir() and next(root.rglob(name), None) is not None:
+                return ()
+        except OSError:
+            continue
+    if not windows:
+        found = ctypes.util.find_library("cudart") or ""
+        if found.endswith(f".so.{major}"):
+            return ()
+    return wheels
+
+
+def ensure_cuda_runtime_wheels(install_dir: Path) -> None:
+    """Installs NVIDIA's runtime wheels into this env when the CUDA install has none; never raises."""
+    try:
+        wheels = _missing_cuda_runtime_wheels(install_dir)
+        if not wheels:
+            return
+        uv = shutil.which("uv")
+        cmd = (
+            [uv, "pip", "install", "--python", sys.executable]
+            if uv
+            else [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+        )
+        log(f"no CUDA runtime found for this llama.cpp install; installing {', '.join(wheels)}")
+        result = subprocess.run([*cmd, "--only-binary", ":all:", *wheels], timeout = 1800)
+        if result.returncode != 0:
+            log(f"CUDA runtime wheel install failed (exit {result.returncode}); llama.cpp will run on the CPU")
+    except Exception as exc:
+        log(f"CUDA runtime wheel step skipped: {exc}")
+
+
 def main() -> int:
     args = parse_args()
     if args.check_existing_install is not None:
@@ -11507,6 +11567,8 @@ def main() -> int:
             runs = _existing_install_runs(install_dir, host) and _kept_install_covers_host(
                 load_prebuilt_metadata(install_dir), host
             )
+            # A CUDA install with no runtime falls back to the CPU, so let setup reinstall and fill it.
+            runs = runs and not _missing_cuda_runtime_wheels(install_dir)
         except Exception as exc:
             print(f"install check failed: {exc}", file = sys.stderr)
             runs = False
@@ -11613,6 +11675,7 @@ def main() -> int:
         llama_backend = requested_backend_arg(args),
         instruction_cleanup_root = install_arg.absolute(),
     )
+    ensure_cuda_runtime_wheels(install_arg.resolve())
     return EXIT_SUCCESS
 
 
