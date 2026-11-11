@@ -56,7 +56,7 @@ def _tiny_config(hidden: int = 32):
     )
 
 
-def _comfy_name(key: str) -> str:
+def _layout_key_name(key: str) -> str:
     if key.startswith("model.visual."):
         return key[len("model.") :]
     if key.startswith("model.language_model."):
@@ -88,7 +88,7 @@ def _write_file(tmp_path):
         if ".layers." in key and "language_model" in key:
             if int(key.split("layers.")[1].split(".")[0]) >= te.H3_TE_READ_LAYER:
                 continue
-        name = _comfy_name(key)
+        name = _layout_key_name(key)
         stem = name[: -len(".weight")]
         if "language_model.layers." in key and key.endswith("_proj.weight"):
             codes, scale = quantize_convrot_int8_weight(tensor.float(), te.H3_TE_CONVROT_GROUP)
@@ -248,7 +248,7 @@ def _write_gguf(tmp_path):
         if ".layers." in key and "language_model" in key:
             if int(key.split("layers.")[1].split(".")[0]) >= te.H3_TE_READ_LAYER:
                 continue
-        name = _comfy_name(key)
+        name = _layout_key_name(key)
         if "language_model.layers." in key and key.endswith("_proj.weight"):
             q = gguf.quants.quantize(tensor.float().numpy(), gguf.GGMLQuantizationType.Q8_0)
             writer.add_tensor(name, q, raw_dtype = gguf.GGMLQuantizationType.Q8_0)
