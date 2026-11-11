@@ -163,7 +163,6 @@ class NpuResident:
 def _total_ram_gb() -> Optional[float]:
     try:
         import psutil
-
         return psutil.virtual_memory().total / (1024**3)
     except Exception as exc:  # noqa: BLE001 -- no reading means no warning, never a failed listing
         logger.debug("Reading system RAM for the NPU memory window failed: %s", exc)
