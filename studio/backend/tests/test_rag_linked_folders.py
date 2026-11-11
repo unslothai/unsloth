@@ -1274,16 +1274,12 @@ def test_linked_folder_request_requires_one_source():
     from routes import rag as rag_routes
 
     with pytest.raises(HTTPException, match = "exactly one"):
-        rag_routes._create_linked_folder(
-            "project", "owner", rag_routes.LinkFolderRequest()
-        )
+        rag_routes._create_linked_folder("project", "owner", rag_routes.LinkFolderRequest())
     with pytest.raises(HTTPException, match = "exactly one"):
         rag_routes._create_linked_folder(
             "project",
             "owner",
-            rag_routes.LinkFolderRequest(
-                nativePathLease = "lease", serverPath = "/srv/docs"
-            ),
+            rag_routes.LinkFolderRequest(nativePathLease = "lease", serverPath = "/srv/docs"),
         )
 
 

@@ -259,9 +259,7 @@ class SearchRequest(BaseModel):
 class LinkFolderRequest(BaseModel):
     name: str | None = Field(default = None, alias = "displayName", max_length = 200)
     auto_sync: bool = Field(default = True, alias = "autoSync")
-    native_path_lease: str | None = Field(
-        default = None, alias = "nativePathLease", min_length = 1
-    )
+    native_path_lease: str | None = Field(default = None, alias = "nativePathLease", min_length = 1)
     server_path: str | None = Field(default = None, alias = "serverPath", min_length = 1)
 
 
@@ -304,7 +302,6 @@ def _resolve_server_linked_folder_path(server_path: str) -> tuple[str, tuple[int
     without granting arbitrary filesystem access.
     """
     from routes.models import resolve_browseable_directory
-
     try:
         target = resolve_browseable_directory(server_path)
         path = folder_sync.validate_folder_path(str(target))
@@ -392,6 +389,7 @@ def _require_document_owner(conn: sqlite3.Connection, document: dict) -> None:
 
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
     from utils.native_path_leases import redact_native_paths
+
     if bool(payload.native_path_lease) == bool(payload.server_path):
         raise HTTPException(
             status_code = 400,

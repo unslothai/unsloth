@@ -1933,9 +1933,7 @@ def resolve_browseable_directory(path: Optional[str]) -> Path:
             *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
-        allowed_roots = _build_browse_allowlist(
-            media_roots, external_media.windows_drive_roots()
-        )
+        allowed_roots = _build_browse_allowlist(media_roots, external_media.windows_drive_roots())
     return _resolve_browse_target(requested, allowed_roots)
 
 
