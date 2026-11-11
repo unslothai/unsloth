@@ -579,12 +579,20 @@ def test_deeply_nested_system_variables_fill_nothing():
     assert trace.messages[0].text == "{{x}}"
 
 
-def test_system_variables_print_like_js():
-    variables = '{"a":1e21,"b":[1e400,0.00001,3.0],"o":{"b":1,"2":2,"1":3}}'
-    thread = {"id": "t", "settings": {"systemPrompt": "{{a}} {{b}} {{o}}"}}
+def test_system_variable_numbers_print_like_js():
+    variables = '{"a":1e-7,"b":1e21,"c":12345678901234567890,"d":[1e400,0.00001,-0.0],"e":1e400}'
+    thread = {"id": "t", "settings": {"systemPrompt": "{{a}} {{b}} {{c}} {{d}} {{e}}"}}
     thread["settings"]["systemVariables"] = variables
     trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
-    assert trace.messages[0].text == '1e+21 [null,0.00001,3] {"1":3,"2":2,"b":1}'
+    assert trace.messages[0].text == "1e-7 1e+21 12345678901234567000 [null,0.00001,0] Infinity"
+
+
+def test_system_variable_objects_print_like_js():
+    variables = '{"o":{"b":1,"2":2,"1":3,"01":4,"4294967295":5},"s":{"\\udc00":"\\ud800x"}}'
+    thread = {"id": "t", "settings": {"systemPrompt": "{{o}} {{s}}", "systemVariables": variables}}
+    trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
+    expected = '{"1":3,"2":2,"b":1,"01":4,"4294967295":5} {"\\udc00":"\\ud800x"}'
+    assert trace.messages[0].text == expected
 
 
 def test_system_variable_too_deep_to_print_stays_as_written(monkeypatch):
