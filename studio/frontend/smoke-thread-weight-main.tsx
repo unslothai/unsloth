@@ -214,6 +214,7 @@ function buildMessages(
             : assistantMarkdown(index) +
               (options?.numbered
                 ? `\n\n$$\n\\begin{equation}E_{${index}} = mc^2\\end{equation}\n$$` +
+                  "\n\n$$\n\\begin{align}f &= \\begin{cases}1\\\\0\\end{cases}\\\\ g &= 2\\end{align}\n$$" +
                   // Examples, not math: they render verbatim and take no number.
                   "\n\n```latex\n\\begin{equation}x\\end{equation}\n```\n\nInline `\\begin{align}a\\end{align}` too."
                 : ""),

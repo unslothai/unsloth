@@ -575,9 +575,18 @@ test("the thread's messages are read imperatively, not through a selector", () =
   assert.match(GLUE, /const count = useAuiState\(\(\{ thread \}\) => thread\.messages\.length\);/);
 });
 
-test("a mounted row that shrinks wakes the window, and only a shrink does", () => {
-  assert.match(GLUE, /if \(before !== undefined && height < before - 1\) shrank = true;/);
-  assert.match(GLUE, /if \(shrank\) schedule\(\);/);
+test("a mounted row that shrinks or re-wraps wakes the window, and growth does not", () => {
+  assert.match(
+    GLUE,
+    /if \(before && \(height < before\.height - 1 \|\| Math\.abs\(width - before\.width\) > 1\)\) \{\s*wake = true;/,
+  );
+  assert.match(GLUE, /if \(wake\) schedule\(\);/);
+  // Heights are keyed on the column: the Chat width setting moves it, not the viewport.
+  assert.match(
+    GLUE,
+    /const column = viewport\.querySelector<HTMLElement>\(ROW_SELECTOR\);\s*if \(column\) heights\.resize\(column\.clientWidth\);/,
+  );
+  assert.doesNotMatch(GLUE, /heights\.resize\(viewport\.clientWidth\)/);
   // Rows come and go: removed ones are let go, so the observer holds no detached row.
   assert.match(GLUE, /rowResize\.unobserve\(node\)/);
   assert.match(GLUE, /rowsChanged\.observe\(viewport, \{ childList: true \}\);/);

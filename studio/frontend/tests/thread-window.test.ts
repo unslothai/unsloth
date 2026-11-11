@@ -533,6 +533,12 @@ test("numbered equations are counted where KaTeX's page-wide counters would coun
   assert.equal(numberedEquations(text("$$\\begin{equation}a=b\\end{equation}$$")), 1);
   assert.equal(numberedEquations(text("\\[\\begin{align}a\\\\b \\notag\\\\c\\end{align}\\]")), 2);
   assert.equal(numberedEquations(text("$$\\begin{equation}a\\tag{*}\\end{equation}$$")), 0);
+  // A nested environment's or a group's rows are not the outer one's.
+  assert.equal(
+    numberedEquations(text("$$\\begin{align}f &= \\begin{cases}1\\\\0\\end{cases}\\\\ g &= 2\\end{align}$$")),
+    2,
+  );
+  assert.equal(numberedEquations(text("$$\\begin{gather}\\substack{a\\\\b}\\\\c\\end{gather}$$")), 2);
   // Only display math renders them: bare, inline-coded or fenced, they are text.
   assert.equal(numberedEquations(text("\\begin{equation}a=b\\end{equation}")), 0);
   assert.equal(numberedEquations(text("Use `$$\\begin{equation}a\\end{equation}$$` here")), 0);

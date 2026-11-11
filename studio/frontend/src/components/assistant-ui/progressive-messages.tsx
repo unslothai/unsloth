@@ -579,7 +579,9 @@ function useThreadWindow(
     const lookup = readMetas();
     const total = lookup.metas.length;
     const current = winRef.current;
-    heights.resize(viewport.clientWidth);
+    // The column, not the viewport: the Chat width setting moves only the column.
+    const column = viewport.querySelector<HTMLElement>(ROW_SELECTOR);
+    if (column) heights.resize(column.clientWidth);
     const measured = measureRows(viewport, lookup, heights);
     // Also here: a row can replace its root (an edit opening) without the window committing.
     ordinals(viewport, lookup);
@@ -846,17 +848,20 @@ function useThreadWindow(
     const resize = new ResizeObserver(schedule);
     resize.observe(viewport);
     // A mounted row that shrinks (a code block collapsed) can bare a spacer with no scroll to
-    // wake the window. Only a shrink: a streamed reply grows on every chunk.
-    const rowHeights = new WeakMap<Element, number>();
+    // wake the window, and a new column width (Chat width setting) re-wraps every row. Not a
+    // growth: a streamed reply grows on every chunk.
+    const rowSizes = new WeakMap<Element, { width: number; height: number }>();
     const rowResize = new ResizeObserver((entries) => {
-      let shrank = false;
+      let wake = false;
       for (const entry of entries) {
-        const height = entry.contentRect.height;
-        const before = rowHeights.get(entry.target);
-        rowHeights.set(entry.target, height);
-        if (before !== undefined && height < before - 1) shrank = true;
+        const { width, height } = entry.contentRect;
+        const before = rowSizes.get(entry.target);
+        rowSizes.set(entry.target, { width, height });
+        if (before && (height < before.height - 1 || Math.abs(width - before.width) > 1)) {
+          wake = true;
+        }
       }
-      if (shrank) schedule();
+      if (wake) schedule();
     });
     const watchRows = (nodes: Iterable<Node>) => {
       for (const node of nodes) {

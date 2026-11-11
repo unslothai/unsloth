@@ -70,9 +70,40 @@ const CODE = /(^|\n) {0,3}(`{3,}|~{3,})[\s\S]*?(?:\n {0,3}\2[`~]*(?=[ \t]*(?:\n|
 /** Display math only: KaTeX refuses these environments inline. */
 const DISPLAY_MATH = /\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]/g;
 
+const UNNUMBERED = /\\(?:notag|nonumber|tag)\b/;
+const ENV_EDGE = /\\(begin|end)\{[^}]*\}/y;
+
+/** Split on `\\` at the environment's own level: a nested cases or matrix row takes no number. */
+function topLevelRows(body: string): string[] {
+  const rows: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let at = 0; at < body.length; at += 1) {
+    const char = body[at];
+    if (char === "{") depth += 1;
+    else if (char === "}") depth -= 1;
+    else if (char === "\\") {
+      ENV_EDGE.lastIndex = at;
+      const edge = ENV_EDGE.exec(body);
+      if (edge) {
+        depth += edge[1] === "begin" ? 1 : -1;
+        at = ENV_EDGE.lastIndex - 1;
+      } else if (body[at + 1] === "\\" && depth === 0) {
+        rows.push(body.slice(from, at));
+        from = at + 2;
+        at += 1;
+      } else {
+        at += 1;
+      }
+    }
+  }
+  rows.push(body.slice(from));
+  return rows;
+}
+
 /**
  * KaTeX numbers these on page-wide CSS counters, so a row left out of the DOM must still count
- * them: one per environment, one per line of the multi-line ones, less untagged lines.
+ * them: one per environment, one per top-level row of the multi-line ones, less tagged rows.
  */
 export function numberedEquations(content: readonly Part[] | undefined): number {
   let total = 0;
@@ -81,11 +112,8 @@ export function numberedEquations(content: readonly Part[] | undefined): number 
     const prose = part.text.replace(CODE, "$1");
     for (const [, dollars, brackets] of prose.matchAll(DISPLAY_MATH)) {
       for (const [, env, body] of (dollars ?? brackets).matchAll(NUMBERED_ENV)) {
-        const lines =
-          env === "equation" || env === "multline"
-            ? 1
-            : body.split("\\\\").filter((line) => line.trim() !== "").length;
-        total += Math.max(0, lines - (body.match(/\\(?:notag|nonumber|tag)\b/g) ?? []).length);
+        const rows = env === "equation" || env === "multline" ? [body] : topLevelRows(body);
+        total += rows.filter((row) => row.trim() !== "" && !UNNUMBERED.test(row)).length;
       }
     }
   }
