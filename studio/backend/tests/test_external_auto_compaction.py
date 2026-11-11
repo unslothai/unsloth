@@ -702,6 +702,18 @@ def test_a_custom_miss_on_the_same_server_does_not_hide_ollamas_window():
     assert windows == [None, 4_096]
 
 
+@pytest.mark.parametrize(
+    ("base", "probe"),
+    [
+        ("http://h:11434/v1", "http://h:11434/api/ps"),
+        ("http://h:11434", "http://h:11434/api/ps"),
+        ("https://gw.example/ollama/v1?tenant=a", "https://gw.example/ollama/api/ps?tenant=a"),
+    ],
+)
+def test_the_ollama_probe_keeps_the_base_path_and_query(base, probe):
+    assert ep_mod._native_server_path(base, "/api/ps") == probe
+
+
 def test_a_bare_ollama_model_name_matches_its_latest_tag():
     server = _served(
         ps = [{"name": "qwen3:latest", "model": "qwen3:latest", "context_length": 4_096}]

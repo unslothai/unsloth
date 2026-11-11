@@ -198,6 +198,12 @@ def _append_provider_path(base_url: str, endpoint: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
 
 
+def _native_server_path(base_url: str, endpoint: str) -> str:
+    parts = urlsplit(base_url)
+    root = urlunsplit(parts._replace(path = parts.path.rstrip("/").removesuffix("/v1")))
+    return _append_provider_path(root, endpoint)
+
+
 def caches_at_the_last_block(
     provider_type: Optional[str], model: Optional[str], enable_prompt_caching: Optional[bool]
 ) -> bool:
@@ -7551,7 +7557,7 @@ class ExternalProviderClient:
 
     async def _read_ollama_loaded_window(self, model: str) -> Optional[int]:
         response = await _client().get(
-            f"{self.base_url.removesuffix('/v1').rstrip('/')}/api/ps",
+            _native_server_path(self.base_url, "/api/ps"),
             headers = self._auth_headers(),
             timeout = _SERVED_WINDOW_TIMEOUT_S,
         )
