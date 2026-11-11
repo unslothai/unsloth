@@ -362,6 +362,15 @@ def test_library_probe_and_bit_exact_launch(real_lib):
                     ws_dt,
                     bias,
                 )
+    if fam == 75:  # the native W8A8 Linear's epilogue
+        a, w, _x, _w, _ = _operands(1031, 528, 1040, torch.float32, torch.float32, False, out = out)
+        a, w = a.cuda(), w.cuda()
+        xs = (torch.rand(1031) * 1e-4 + 1e-6).cuda()
+        ws = (torch.rand(528) * 1e-3 + 1e-6).cuda()
+        ref = cut.reference_native(a, w, xs, ws, out)
+        for tile in ok:
+            y = cut.launch(a, w, xs, ws, None, fam, tile, out, cut.EPI_NATIVE)
+            assert torch.equal(y.view(torch.int16), ref.view(torch.int16)), tile
 
 
 @_GPU
