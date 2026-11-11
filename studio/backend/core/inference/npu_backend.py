@@ -596,16 +596,23 @@ class LemonadeNpuBackend:
                 self._state = "idle"
             self._closing.clear()
 
-    def catalog(self) -> list[NpuModel]:
+    def _flm_rows(self) -> list[dict[str, Any]]:
+        """Every FastFlowLM model lemond knows, including the ones the catalog cannot chat with."""
         server = self._ensure_running()
         response = server.request("GET", "/v1/models?show_all=true", timeout = 60.0)
         if _failed(response):
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
+        return [
+            row
+            for row in response.json().get("data") or []
+            if isinstance(row, dict) and row.get("recipe") == "flm"
+        ]
+
+    def catalog(self) -> list[NpuModel]:
+        rows = self._flm_rows()
         models: list[NpuModel] = []
         flm_binary = self._flm_binary()
-        for row in response.json().get("data") or []:
-            if not isinstance(row, dict) or row.get("recipe") != "flm":
-                continue
+        for row in rows:
             labels = tuple(str(label) for label in row.get("labels") or ())
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
                 continue
@@ -736,10 +743,24 @@ class LemonadeNpuBackend:
             logger.debug("Could not list %s: %s", base, exc)
         return rows
 
+    def delete_checkpoint(self, checkpoint: str) -> str:
+        """Settings > Storage lists folders by checkpoint, chat models or not; lemond deletes by id."""
+        try:
+            model_ids = [
+                str(row.get("id")) for row in self._flm_rows() if row.get("checkpoint") == checkpoint
+            ]
+        except LemonadeUnavailable as exc:
+            raise NpuError(str(exc)) from exc
+        if not model_ids:
+            raise NpuError(f"Lemonade has no FastFlowLM model for {checkpoint}.")
+        for model_id in model_ids:
+            self.delete(model_id)
+        return model_ids[0]
+
     def delete_downloaded(self) -> tuple[int, list[str]]:
         """Delete every downloaded model through lemond, so its registry matches the disk."""
         try:
-            model_ids = [model.id for model in self.catalog() if model.downloaded]
+            model_ids = [str(row.get("id")) for row in self._flm_rows() if row.get("downloaded")]
         except (NpuError, LemonadeUnavailable) as exc:
             return 0, [str(exc)]
         deleted = 0

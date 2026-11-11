@@ -208,3 +208,15 @@ async def delete_npu_model(model_id: str):
     finally:
         _forget_storage_size()
     return {"status": "deleted", "model": model_id}
+
+
+@router.delete("/checkpoints/{checkpoint}", dependencies = [Depends(_require_installation_owner)])
+async def delete_npu_checkpoint(checkpoint: str):
+    """Settings > Storage's delete: its folders know their FastFlowLM checkpoint, not lemond's id."""
+    try:
+        model_id = await asyncio.to_thread(get_npu_backend().delete_checkpoint, checkpoint)
+    except NpuError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from None
+    finally:
+        _forget_storage_size()
+    return {"status": "deleted", "model": model_id}

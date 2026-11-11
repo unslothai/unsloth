@@ -186,31 +186,29 @@ test("the picker's NPU format holds no Hub repo", () => {
   }
 });
 
-test("Storage deletes an NPU folder through lemond's id for its checkpoint", async () => {
-  const models = [
-    { id: "qwen3-4b-FLM", checkpoint: "qwen3:4b", downloaded: true },
-    { id: "qwen3-0.6b-FLM", checkpoint: "qwen3:0.6b", downloaded: true },
-  ];
+test("Storage deletes an NPU folder by its checkpoint, which the backend resolves", async () => {
   const { api, requests } = client(() =>
-    requests.length === 1
-      ? Response.json({ models })
-      : Response.json({ status: "deleted" }),
+    Response.json({ status: "deleted", model: "qwen3-0.6b-FLM" }),
   );
-  assert.equal(await api.deleteNpuModelByCheckpoint("qwen3:0.6b"), "qwen3-0.6b-FLM");
+  assert.equal(
+    await api.deleteNpuModelByCheckpoint("qwen3:0.6b"),
+    "qwen3-0.6b-FLM",
+  );
   assert.deepEqual(
     requests.map((request) => [request.path, request.init?.method]),
-    [
-      ["/api/npu/models", undefined],
-      ["/api/npu/models/qwen3-0.6b-FLM", "DELETE"],
-    ],
+    [["/api/npu/checkpoints/qwen3%3A0.6b", "DELETE"]],
   );
 });
 
-test("Storage deletes nothing for a checkpoint the NPU catalog does not know", async () => {
-  const { api, requests } = client(() => Response.json({ models: [] }));
+test("a refused Storage delete surfaces the backend's reason", async () => {
+  const { api } = client(() =>
+    Response.json(
+      { detail: "Lemonade has no FastFlowLM model for gone:1b." },
+      { status: 409 },
+    ),
+  );
   await assert.rejects(
     api.deleteNpuModelByCheckpoint("gone:1b"),
-    /gone:1b is not in the NPU catalog/,
+    /no FastFlowLM model for gone:1b/,
   );
-  assert.equal(requests.length, 1);
 });

@@ -185,16 +185,20 @@ export async function deleteNpuModel(id: string): Promise<void> {
   }
 }
 
-/** Settings > Storage names NPU folders by FastFlowLM checkpoint; lemond deletes by its own id. */
+/** Settings > Storage names NPU folders by FastFlowLM checkpoint; the backend maps it to lemond's id. */
 export async function deleteNpuModelByCheckpoint(
   checkpoint: string,
 ): Promise<string> {
-  const model = (await listNpuModels()).find(
-    (candidate) => candidate.checkpoint === checkpoint,
+  const response = await authFetch(
+    `/api/npu/checkpoints/${encodeURIComponent(checkpoint)}`,
+    { method: "DELETE" },
   );
-  if (!model) throw new Error(`${checkpoint} is not in the NPU catalog`);
-  await deleteNpuModel(model.id);
-  return model.id;
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Could not delete the model"),
+    );
+  }
+  return ((await response.json()) as { model: string }).model;
 }
 
 export async function downloadNpuModel(
