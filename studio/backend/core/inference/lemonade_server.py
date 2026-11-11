@@ -67,7 +67,10 @@ _PORT_TAKEN = re.compile(
 
 # lemond's console format, "<date> <time> [Info] (Router) <message>". It relays a backend's own
 # stdout and stderr under the tag Process.
-_LEMOND_LINE = re.compile(r"\[(\w+)\] \(([^)]*)\) ")
+# Matched from the start of the line: chat content can carry the same text further in.
+_LEMOND_LINE = re.compile(
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\] \(([^)]*)\) "
+)
 # lemond's own line once /internal/set has taken effect.
 _BACK_AT_INFO = re.compile(r"Logging configuration updated \(level=info\b")
 _ANSI_COLOR = re.compile(r"\x1b\[[0-9;]*m")
@@ -217,7 +220,7 @@ class LemonadeServer:
         window = self._load_window
         if window is not None and not window.shared:
             return True
-        match = _LEMOND_LINE.search(line)
+        match = _LEMOND_LINE.match(line)
         severity, tag = match.groups() if match else ("", "")
         own = tag != "Process" and severity not in ("Trace", "Debug")
         until = self._filter_until
@@ -225,7 +228,8 @@ class LemonadeServer:
             return own
         # A chat joined the load, or the load is over and lemond may still be at debug: only
         # lemond's own lines at info and up, since debug content can run onto untagged lines.
-        if until is not None and (_BACK_AT_INFO.search(line) or time.monotonic() > until):
+        back = bool(match) and own and _BACK_AT_INFO.search(line)
+        if until is not None and (back or time.monotonic() > until):
             self._filter_until = None
         return bool(match) and own
 

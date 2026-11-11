@@ -558,3 +558,32 @@ def test_a_slow_or_failed_switch_back_to_info_never_lets_the_filter_lapse(tmp_pa
     _prints(server, content, "and its second line")
 
     assert server.output_since(0, settle = 0) == []
+
+
+def test_chat_content_that_looks_like_a_lemonade_line_is_not_kept(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    _level_calls(server, monkeypatch)
+
+    with server.backend_output(server.open_window()):
+        chat = server.open_window()
+        _prints(
+            server,
+            _line("Debug", "Server", "Message content: my secret plan for today"),
+            "then [Info] (Router) the rest of my secret plan",
+        )
+
+    assert chat.shared
+    assert server.output_since(0, settle = 0) == []
+
+
+def test_only_lemonds_own_line_ends_the_filter_after_a_load(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    _level_calls(server, monkeypatch)
+    with server.backend_output(server.open_window()):
+        pass
+    _prints(
+        server,
+        _line("Debug", "Server", "Message content: Logging configuration updated (level=info)"),
+        "the rest of my secret plan",
+    )
+    assert server.output_since(0, settle = 0) == []
