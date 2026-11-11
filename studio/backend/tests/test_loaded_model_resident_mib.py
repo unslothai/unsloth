@@ -220,7 +220,13 @@ def test_an_unknown_size_says_nothing_about_its_pool(monkeypatch):
     assert (status.resident_mib, status.resident_on_gpu) == (None, None)
 
 
-def _npu_status(monkeypatch, *, size_gb, rss_by_pid, children = (11, 12)):
+def _npu_status(
+    monkeypatch,
+    *,
+    size_gb,
+    rss_by_pid,
+    children = (11, 12),
+):
     """A resident NPU model: lemond (pid 10) runs FastFlowLM under it, all in system RAM."""
     psutil = pytest.importorskip("psutil")
     from core.inference import npu_backend as nb

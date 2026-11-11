@@ -22645,7 +22645,7 @@ def _npu_resident() -> "tuple[Optional[int], Optional[bool]]":
                 tree = root.children(recursive = True) if descendants is None else descendants
             except psutil.Error:
                 root, tree = None, []
-            for proc in ([root, *tree] if root is not None else []):
+            for proc in [root, *tree] if root is not None else []:
                 try:
                     proc = psutil.Process(proc) if isinstance(proc, int) else proc
                     measured += proc.memory_info().rss
