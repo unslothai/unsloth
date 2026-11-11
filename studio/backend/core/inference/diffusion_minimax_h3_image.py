@@ -2324,9 +2324,11 @@ def load_h3_image_text_encoder(
     hf_token: Optional[str],
     cache_dir: Optional[str],
     local_files_only: bool,
+    fallback_check: Optional[Callable[[], None]] = None,
 ) -> tuple[Any, Optional[str]]:
     """(encoder on the host, scheme engaged). int8 = Studio's hosted ConvRot conditioner (the video family's file),
-    bf16 = the released encoder; a broken hosted file falls back to bf16 (66.7 GB, only where the host has room)."""
+    bf16 = the released encoder; a broken hosted file falls back to bf16 (66.7 GB). ``fallback_check`` runs before
+    that fallback allocates anything and raises when the plan cannot hold it."""
     if scheme == "int8":
         from .video_minimax_h3_te import load_h3_quantized_text_encoder
 
@@ -2345,6 +2347,8 @@ def load_h3_image_text_encoder(
         )
         if encoder is not None:
             return encoder, "int8"
+        if fallback_check is not None:
+            fallback_check()
         logger.warning(
             "diffusion.minimax_h3_image: hosted int8 encoder unusable, loading the bf16 encoder"
         )
@@ -2542,7 +2546,27 @@ def load_minimax_h3_image_pipeline(
         ).eval()
         engaged_te = None
     if text_encoder is None and plan.te_kept_on_host:
-        text_encoder, engaged_te = load_h3_image_text_encoder(te_scheme, **te_kwargs)
+
+        def _bf16_fits() -> None:
+            # Raises (VRAM or host) before the 66.7 GB fallback is materialised; a plan that fits is used below.
+            again = replan_for_encoder(plan, H3_IMAGE_TE_BF16_GB, plan_args)
+            # With no accelerator budget the planner skips its host checks, and the host holds everything.
+            cpu_short = (
+                plan.vram_gb is None
+                and plan.host_gb is not None
+                and plan.host_gb < plan.dit_gb + H3_IMAGE_TE_BF16_GB + 1.0
+            )
+            if cpu_short or not again.te_kept_on_host:
+                raise RuntimeError(
+                    f"MiniMax-H3-Image: Studio's hosted int8 text encoder could not be loaded, and the "
+                    f"{H3_IMAGE_TE_BF16_GB:.1f} GB bf16 encoder it would fall back to does not fit this machine's "
+                    f"{plan.host_gb:.1f} GB of free system memory beside the model. Check the network or the "
+                    f"Hugging Face cache and load the model again."
+                )
+
+        text_encoder, engaged_te = load_h3_image_text_encoder(
+            te_scheme, fallback_check = _bf16_fits, **te_kwargs
+        )
     check()
     if text_encoder is not None:
         # A bf16 fallback or local text_encoder/ is far larger than the int8 size the plan assumed: plan again.
@@ -2560,8 +2584,18 @@ def load_minimax_h3_image_pipeline(
     pipe._unsloth_h3_owned = frozenset(owned)
     if text_encoder is None:
         # Low-host tier: load the encoder for each prompt, free it after.
+        def _refuse_bf16() -> None:
+            raise RuntimeError(
+                "MiniMax-H3-Image: Studio's hosted int8 text encoder could not be loaded, and the 66.7 GB bf16 "
+                "encoder it would fall back to does not fit this machine's memory plan (it loads the encoder "
+                "for each prompt because host memory is short). Check the network or the Hugging Face cache "
+                "and load the model again."
+            )
+
         def _te_loader() -> Any:
-            encoder, engaged = load_h3_image_text_encoder(te_scheme, **te_kwargs)
+            encoder, engaged = load_h3_image_text_encoder(
+                te_scheme, fallback_check = _refuse_bf16, **te_kwargs
+            )
             if te_scheme is not None and engaged != te_scheme:
                 # Placed under this plan, the bf16 fallback would overrun the budget the plan made for the int8 one.
                 free_module_storage(encoder)

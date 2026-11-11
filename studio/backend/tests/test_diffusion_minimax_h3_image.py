@@ -1010,6 +1010,54 @@ def test_the_plan_is_redone_when_the_int8_encoder_falls_back_to_bf16(
     pipe.release()
 
 
+def _no_hosted_int8(monkeypatch):
+    """The hosted int8 encoder is unusable; a bf16 ``from_pretrained`` would be recorded (never allocated)."""
+    import transformers
+    from core.inference import video_minimax_h3_te
+
+    monkeypatch.setattr(video_minimax_h3_te, "load_h3_quantized_text_encoder", lambda *a, **k: None)
+    calls = []
+
+    def _record(*a, **k):
+        calls.append(a)
+        raise AssertionError("the bf16 encoder was materialised")
+
+    monkeypatch.setattr(transformers.Qwen3VLForConditionalGeneration, "from_pretrained", _record)
+    return calls
+
+
+def test_the_bf16_fallback_is_refused_before_it_allocates_when_the_host_cannot_hold_it(
+    h3i, release, tmp_path, monkeypatch
+):
+    root, _ref, _te = release
+    rel = _release_copy(root, tmp_path / "rel", with_encoder = False)
+    calls = _no_hosted_int8(monkeypatch)
+    # Room for the 27.2 GB int8 encoder, not for the 66.7 GB bf16 one.
+    monkeypatch.setenv(h3i.HOST_BUDGET_ENV, "40")
+    with pytest.raises(RuntimeError, match = "free system memory"):
+        h3i.load_minimax_h3_image_pipeline(str(rel), device = "cpu", text_encoder_quant = "int8")
+    assert calls == []
+
+
+def test_the_per_prompt_encoder_refuses_the_bf16_fallback_before_it_allocates(h3i, monkeypatch):
+    calls = _no_hosted_int8(monkeypatch)
+
+    def refuse():
+        raise RuntimeError("refused")
+
+    with pytest.raises(RuntimeError, match = "refused"):
+        h3i.load_h3_image_text_encoder(
+            "int8",
+            dtype = None,
+            text_encoder_repo = "x/y",
+            hf_token = None,
+            cache_dir = None,
+            local_files_only = True,
+            fallback_check = refuse,
+        )
+    assert calls == []
+
+
 def test_the_plan_is_redone_for_a_local_text_encoder_folder(h3i, release, tmp_path, monkeypatch):
     import transformers
 
