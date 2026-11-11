@@ -76,6 +76,12 @@ test("beside a discrete card, spill and free come from each device's own usage",
     { ...card, vram_used_gb: undefined },
   ] as GpuDevice[];
   assert.equal(carveOutVramGb(unread, 100, null)?.freeGb, null);
+  // Past both cards' dedicated memory, the excess has spilled into the APU's shared pool.
+  assert.deepEqual(carveOutVramGb(unread, 125, null), {
+    totalGb: 119.82,
+    freeGb: null,
+    borrowableGb: 6.92,
+  });
 });
 
 test("no carve-out reading for discrete cards, unified pools, or a small UMA slice under a big shared pool", () => {

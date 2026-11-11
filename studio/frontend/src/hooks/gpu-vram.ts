@@ -143,9 +143,12 @@ export function carveOutVramGb(
       freeGb += Math.max(0, own - used);
       if (sharesHostMemoryDevice(device)) spilled += Math.max(0, used - own);
     }
-  } else if (aggregate !== null && apu.dedicated === totals.dedicated) {
-    freeGb = Math.max(0, totals.dedicated - aggregate);
+  } else if (aggregate !== null) {
+    // Past every card's dedicated memory it has spilled at least that much; free is only known with no discrete card.
     spilled = Math.max(0, aggregate - totals.dedicated);
+    if (apu.dedicated === totals.dedicated) {
+      freeGb = Math.max(0, totals.dedicated - aggregate);
+    }
   }
   return {
     totalGb: totals.dedicated,
