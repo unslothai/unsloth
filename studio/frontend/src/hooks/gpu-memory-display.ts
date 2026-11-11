@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { sharesHostMemoryDevice } from "./gpu-vram.ts";
 import type { GpuDevice, SystemGpuInfo } from "./use-system";
 
 export function hasSharedMemoryHeadroom(device: GpuDevice): boolean {
@@ -36,12 +37,31 @@ export function sharedMemoryAvailableGb(devices: GpuDevice[]): number | null {
   return Math.max(...devices.map((device) => device.vram_free_gb as number));
 }
 
+/** A shared iGPU with no usage counter beside cards that all report one: shown as shared RAM rather
+ * than blanking the cards' used VRAM, or counting its pool as free. */
+function parkedSharedDevices(
+  devices: GpuDevice[],
+  aggregate: number | null | undefined,
+): GpuDevice[] {
+  if (Number.isFinite(aggregate)) return [];
+  const rest = devices.filter((device) => !hasSharedMemoryHeadroom(device));
+  const unread = rest.filter((device) => !Number.isFinite(device.vram_used_gb));
+  return unread.length > 0 &&
+    unread.every(sharesHostMemoryDevice) &&
+    rest.some((device) => !sharesHostMemoryDevice(device))
+    ? unread
+    : [];
+}
+
 /** Presentation only. Keep allocation budgets and model-fit capacity unchanged. */
 export function gpuMemoryDisplay(gpu: SystemGpuInfo | null | undefined) {
   const devices = gpu?.devices ?? [];
-  const sharedDevices = devices.filter(hasSharedMemoryHeadroom);
+  const parked = parkedSharedDevices(devices, gpu?.vram_used_gb_aggregate);
+  const sharedDevices = devices.filter(
+    (device) => hasSharedMemoryHeadroom(device) || parked.includes(device),
+  );
   const usageDevices = devices.filter(
-    (device) => !hasSharedMemoryHeadroom(device),
+    (device) => !sharedDevices.includes(device),
   );
   return {
     sharedDevices,
