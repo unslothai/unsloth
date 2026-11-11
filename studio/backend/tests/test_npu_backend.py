@@ -273,7 +273,8 @@ def test_a_cancelled_download_keeps_its_partial_and_never_registers(npu, flm_man
     cancel = threading.Event()
     with pytest.raises(nb.NpuDownloadCancelled, match = "was cancelled"):
         for event in npu.download("qwen3-0.6b-FLM", cancel = cancel):
-            if event.get("file") == "model.q4nx":
+            # Once the weights have bytes on disk: a cancel before the first byte leaves no partial.
+            if event.get("file") == "model.q4nx" and event["bytes_downloaded"] > len(CONFIG):
                 cancel.set()
     folder = npu.root / "flm" / "models" / "Qwen3-0.6B-NPU2"
     assert (folder / "model.q4nx.partial").stat().st_size > 0
