@@ -7542,7 +7542,6 @@ class VideoBackend:
             if _h3_precision_pinned_dense(text_encoder_quant):
                 return None
             if _h3_precision_unset(text_encoder_quant):
-                # int8 where the host keeps it resident, the 4-bit file where it would be re-read every prompt.
                 auto = h3_te_auto_scheme()
                 return (
                     auto
@@ -7932,7 +7931,6 @@ class VideoBackend:
         filename = h3_te_quant_filename(scheme)
         if filename is None:
             return None, []
-        # Size and presence come from the scheme's own unsloth repo (never the repack).
         repo = h3_te_quant_source(scheme)
         try:
             info = api.model_info(repo, files_metadata = True)

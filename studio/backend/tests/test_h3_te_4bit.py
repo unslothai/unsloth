@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The opt-in 4-bit GGUF conditioner (hosted Q4_K_M) through the H3 loader, the int8 path beside it, and the
-host-RAM switch. CPU only; the real 18.2 GB file is GPU / accuracy tested outside the suite."""
+"""H3 4-bit GGUF and int8 conditioner loads and the host-RAM pick, on a tiny CPU model."""
 
 from __future__ import annotations
 
@@ -15,8 +14,6 @@ torch = pytest.importorskip("torch")
 
 from core.inference import video_minimax_h3_te as te  # noqa: E402
 
-
-# --- the H3 loader on a tiny Qwen3-VL -------------------------------------------------------------------------
 
 _LAYERS = te.H3_TE_READ_LAYER + 2
 
@@ -69,7 +66,6 @@ def _blob(meta: dict):
 
 
 def _write_file(tmp_path):
-    """The hosted int8 layout cut from a random tiny model, plus the dense reference."""
     import transformers
     from safetensors.torch import save_file
 
@@ -153,9 +149,6 @@ def test_a_file_under_the_wrong_scheme_is_refused(monkeypatch, tmp_path):
     assert _load(monkeypatch, other, "int8", pathg) is None
 
 
-# --- the automatic pick ---------------------------------------------------------------------------------------
-
-
 def _gguf_reader(monkeypatch, present: bool):
     import importlib.util
     real = importlib.util.find_spec
@@ -190,10 +183,9 @@ def test_the_switch_when_on_follows_host_ram(monkeypatch):
     assert te.h3_te_auto_scheme(host_capacity_gb = 200.0) == "int8"
     assert te.h3_te_auto_scheme(host_capacity_gb = te.H3_TE_INT8_HOST_SET_GB + 0.1) == "int8"
     assert te.h3_te_auto_scheme(host_capacity_gb = 53.0) == te.H3_TE_LOW_RAM_SCHEME
-    # a bigger denoiser raises the bar
     assert te.h3_te_auto_scheme(host_capacity_gb = 66.0, denoiser_gb = 30.0) == te.H3_TE_LOW_RAM_SCHEME
     assert te.H3_TE_LOW_RAM_SCHEME in te.H3_TE_AUTO_ONLY_SCHEMES
-    # no GGUF reader: the 4-bit load would fall back to the dense encoder, so int8 stays
+    # no gguf module: int8 stays
     _gguf_reader(monkeypatch, False)
     assert te.h3_te_auto_scheme(host_capacity_gb = 53.0) == "int8"
 
@@ -211,7 +203,6 @@ def test_the_pick_reaches_the_video_resolver(monkeypatch):
     assert VideoBackend._h3_te_quant_scheme(fam, None, "MiniMaxAI/MiniMax-H3", target) == "int8"
     monkeypatch.setenv(te.H3_TE_QUANT_AUTO_ENV, "q4_k_m")
     assert VideoBackend._h3_te_quant_scheme(fam, None, "MiniMaxAI/MiniMax-H3", target) == "q4_k_m"
-    # explicit int8 is honoured; the 4-bit file is never a request value
     assert VideoBackend._h3_te_quant_scheme(fam, "int8", "MiniMaxAI/MiniMax-H3", target) == "int8"
     assert VideoBackend._h3_te_quant_scheme(fam, "nvfp4", "MiniMaxAI/MiniMax-H3", target) is None
 
@@ -225,12 +216,8 @@ def test_the_4bit_file_is_not_a_request_value_and_is_sized():
     assert te.h3_te_resident_gb("q4_k_m", bf16_gb = 66.7) < te.h3_te_resident_gb("int8", bf16_gb = 66.7)
 
 
-# --- the GGUF conditioner (the hosted Q4_K_M) through GGUFLinear ----------------------------------------------
-
-
 def _write_gguf(tmp_path):
-    """The tiny model as a GGUF in the hosted file's naming: Q8_0 projections (the block type gguf-py can write;
-    Q4_K / Q6_K take the same GGUFLinear path), a bf16 vocabulary table, f32 everything else."""
+    """Tiny GGUF in the hosted naming; Q8_0 since gguf-py cannot write Q4_K, which takes the same path."""
     gguf = pytest.importorskip("gguf")
     import numpy as np
     import transformers
@@ -300,7 +287,6 @@ def test_the_gguf_conditioner_comes_from_the_gguf_mirror():
     assert te.h3_te_quant_filename("q4_k_m") == "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
     from core.inference.video_minimax_h3 import H3_GGUF_REPO, H3_QWEN_Q4
 
-    # the very file the sd.cpp path already pulls: no second copy
     assert (te.h3_te_quant_source("q4_k_m"), te.h3_te_quant_filename("q4_k_m")) == (
         H3_GGUF_REPO,
         H3_QWEN_Q4,

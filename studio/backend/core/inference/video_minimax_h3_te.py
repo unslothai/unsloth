@@ -21,45 +21,35 @@ from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests na
 # Not H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror, the conditioner did not.
 H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
 H3_TE_INT8 = "int8"
-# The hosted Q4_K_M GGUF (Q4_K projections, Q6_K v_proj / down_proj, bf16 table), the sd.cpp path's conditioner,
-# read through diffusers' GGUFLinear: 18.2 GB against 27.2, at 5.8% hidden_states[50] error vs bf16 against 1.6%.
+# Hosted Q4_K_M GGUF: 18.2 GB vs 27.2, but 5.8% hidden_states[50] error vs bf16 against int8's 1.6%.
 H3_TE_Q4_K_M = "q4_k_m"
-# Hosted quantized conditioners, by scheme. The table is the one place to add one.
 H3_TE_QUANT_FILES: dict[str, str] = {
     # Built from MiniMaxAI text_encoder/ with quantize_convrot_int8_weight; reads the official path
     # only.
     H3_TE_INT8: "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
     H3_TE_Q4_K_M: "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
 }
-# Where each scheme's file lives; the GGUF conditioner is the one the GGUF mirror already serves to sd.cpp.
 H3_TE_QUANT_SOURCES: dict[str, str] = {
     H3_TE_INT8: H3_TE_QUANT_REPO,
     H3_TE_Q4_K_M: "unsloth/MiniMax-H3-GGUF",
 }
-# Schemes only UNSLOTH_H3_TE_QUANT_AUTO (or the low-RAM switch, when on) reaches: not a text_encoder_quant request
-# value, so an explicit "nvfp4" keeps meaning Unsloth's W4A4 runtime cast (refused for H3), never these files.
+# Never a request value: an explicit "nvfp4" keeps meaning the W4A4 runtime cast (refused for H3).
 H3_TE_AUTO_ONLY_SCHEMES = frozenset({H3_TE_Q4_K_M})
 
 # Default int8: 27 GB over 50 layers vs 66.7 GB dense 64-layer; transformers has no early exit.
 # Not an INT8 GEMM: ConvRot dequantizes then F.linear; the win is bytes moved, not math.
 H3_TE_QUANT_DEFAULT = H3_TE_INT8
 
-# From Hub file sizes; the load is storage-faithful, so file size == resident size.
 H3_TE_QUANT_RESIDENT_GB: dict[str, float] = {
     H3_TE_INT8: 27.2,
     H3_TE_Q4_K_M: 18.3,
 }
 
-# Forces the automatic conditioner pick ("int8" / "q4_k_m"); unset = int8 (or by host RAM once the switch is on).
 H3_TE_QUANT_AUTO_ENV = "UNSLOTH_H3_TE_QUANT_AUTO"
-# The int8 conditioner stays host-resident beside the int8 denoiser only when the host holds all of them at once
-# (conditioner + denoiser + VAEs + the offload tier's headroom: 27.2 + 20.3 + 11.1 + 5.9 GB). Below that it is re-read
-# from disk on every new prompt; the 4-bit file holds 8.9 GB less. L4 at 12 GiB, 55.5 GB host,
-# 8 new prompts: int8 47-53 s per encode with ~33k major faults each, q4_k_m 19.7 s with none.
+# Conditioner + denoiser + VAEs + headroom; below it int8 is re-read every prompt (L4: 47-53 s vs 19.7 s).
 H3_TE_INT8_HOST_SET_GB = 27.2 + 20.3 + 11.1 + 5.9
 H3_TE_LOW_RAM_SCHEME = H3_TE_Q4_K_M
-# The host-RAM switch is off: an unset request keeps int8 on every host until the accuracy trade (q4_k_m 5.8% vs int8
-# 1.6% hidden_states[50] error; clip LPIPS 0.08-0.30 against int8) is accepted. True turns the low-RAM pick on.
+# Off until the q4_k_m accuracy trade (LPIPS 0.08-0.30 vs int8) is accepted.
 H3_TE_LOW_RAM_AUTO = False
 
 
@@ -88,10 +78,7 @@ def h3_te_quant_scheme(mode: Optional[str]) -> Optional[str]:
 def h3_te_auto_scheme(
     *, host_capacity_gb: Optional[float] = None, denoiser_gb: Optional[float] = None
 ) -> str:
-    """The conditioner an UNSET request takes: int8, or with ``H3_TE_LOW_RAM_AUTO`` on, int8 when the host can keep it
-    resident beside the denoiser and ``H3_TE_LOW_RAM_SCHEME`` below that. Deterministic for a host (total RAM capped by the cgroup limit, not what is free right now), so the
-    download plan, the staging and the assembly all see the same pick. ``UNSLOTH_H3_TE_QUANT_AUTO`` forces one.
-    Never raises; an unreadable host keeps int8."""
+    """Scheme for an unset request. Uses total (cgroup-capped) RAM, not free RAM, so plan, staging and assembly agree."""
     import os
 
     forced = h3_te_quant_scheme(os.environ.get(H3_TE_QUANT_AUTO_ENV))
@@ -112,8 +99,7 @@ def h3_te_auto_scheme(
             need = need - 20.3 + float(denoiser_gb)
         if float(host_capacity_gb) >= need:
             return H3_TE_INT8
-        # The GGUF reader is a Studio requirement, but without it the 4-bit load would fall back to the dense 66.7 GB
-        # encoder, far worse than int8 re-read from disk.
+        # Without gguf the 4-bit load falls back to the 66.7 GB dense encoder.
         import importlib.util
 
         if H3_TE_LOW_RAM_SCHEME == H3_TE_Q4_K_M and importlib.util.find_spec("gguf") is None:
@@ -129,9 +115,7 @@ def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:
 
 
 def h3_te_quant_source(scheme: Optional[str]) -> str:
-    """The repo to fetch the hosted quantized conditioner for ``scheme`` from (``H3_TE_QUANT_SOURCES``, an unsloth
-    repo; ``H3_TE_QUANT_REPO`` for anything unknown). A video load never reads from a third-party repack, not even
-    bytes an older install cached under it."""
+    """Unsloth repo for ``scheme``; never a third-party repack, even one an older install cached."""
     return H3_TE_QUANT_SOURCES.get(h3_te_quant_scheme(scheme) or "", H3_TE_QUANT_REPO)
 
 
@@ -404,7 +388,7 @@ def load_h3_quantized_text_encoder(
                 f"e.g. {', '.join(sorted(dense)[:3])}; it is not the {scheme} checkpoint this "
                 f"path budgets for"
             )
-        # The GGUF projections already hold their blocks (swapped in whole), so only they may be absent.
+        # GGUF projections were swapped in whole, so only their weights may be missing.
         missing, unexpected = encoder.load_state_dict(state_dict, strict = False, assign = True)
         if unexpected or set(missing) - gguf_weights:
             raise ValueError(
@@ -442,7 +426,6 @@ def load_h3_quantized_text_encoder(
 
 
 def _model_shape(module: Any, name: str) -> Optional[tuple]:
-    """Shape of the parameter or buffer ``name`` (meta or real), or None when the model has no such tensor."""
     owner_path, _, leaf = name.rpartition(".")
     try:
         owner = module.get_submodule(owner_path) if owner_path else module
@@ -455,9 +438,7 @@ def _model_shape(module: Any, name: str) -> Optional[tuple]:
 
 
 def _h3_gguf_state(encoder: Any, path: str, dtype: Any) -> tuple[dict, set, set]:
-    """``(dense state dict, quantized layer names, swapped weight keys)`` for a GGUF conditioner (the hosted
-    Q4_K_M): every block-quantized projection becomes a ``GGUFLinear`` over its blocks, float tensors load as usual.
-    Names are the safetensors layout's (``model.layers.N...``), remapped the same way."""
+    """``(dense state dict, quantized layer names, swapped weight keys)``; quantized projections become ``GGUFLinear``."""
     import math
 
     import gguf
@@ -475,7 +456,7 @@ def _h3_gguf_state(encoder: Any, path: str, dtype: Any) -> tuple[dict, set, set]
         if qtype is None:
             if tensor.is_floating_point() and dtype is not None:
                 tensor = tensor.to(dtype)
-            # GGUF holds at most 4 dimensions: the vision patch conv (5-D) is stored with its first two merged.
+            # GGUF caps tensors at 4-D: the 5-D patch conv is stored with its first two dims merged.
             want = _model_shape(encoder, target)
             if want is not None and tuple(tensor.shape) != want:
                 if tensor.numel() != math.prod(want) or len(tensor.shape) > len(want):

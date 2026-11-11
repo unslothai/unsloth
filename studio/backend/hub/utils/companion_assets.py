@@ -255,7 +255,7 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
         )
 
         # Old released builds kept the identical conditioner outside official/; both locations are this asset.
-        # The GGUF conditioner lives in the GGUF mirror, which the sd.cpp companion table already covers.
+        # The GGUF conditioner ships from the GGUF mirror, already covered elsewhere.
         names = [
             n
             for scheme, name in H3_TE_QUANT_FILES.items()

@@ -64,7 +64,6 @@ def _mps_target():
 
 
 def test_only_int8_has_a_hosted_conditioner():
-    # (the 4-bit file is an automatic low-RAM pick, never a request value: test_h3_te_4bit.py)
     assert h3_te_quant_scheme("int8") == "int8"
     assert h3_te_quant_scheme("INT8") == "int8"
     for mode in ("fp8", "fp8_dynamic", "nvfp4", "fp8-dynamic", "", None):

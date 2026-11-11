@@ -1,28 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Weight-only GGUF layers for text encoders, any device.
-
-GGUF block formats (Q4_K / Q6_K / ...) load as diffusers' ``GGUFLinear`` over the file's blocks, the layer Studio's
-GGUF denoisers already use (its dequant is Studio's compiled / fused one when installed): the blocks stay resident and
-each call rebuilds a transient dense weight in the compute dtype for a float GEMM, so any GPU or the CPU runs it. Meant
-for modules that run once per request (text encoders), where bytes resident and bytes moved matter and GEMM throughput
-does not.
-
-Every helper imports torch lazily: importing this module never imports torch."""
+"""Weight-only GGUF layers for text encoders: blocks stay resident, dequantized per call. Imports torch lazily."""
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
 
-# --- GGUF (llama.cpp block formats) through diffusers' GGUFLinear --------------------------------------------------
-
-
 def gguf_tensor(reader_tensor: Any) -> tuple[Any, Optional[int]]:
-    """``(torch tensor, quant_type or None)`` for one ``gguf.GGUFReader`` tensor. Block-quantized tensors come back as
-    their raw ``[rows, bytes]`` uint8 payload (a copy: anonymous memory, the residency the conditioner wants); float
-    tensors in their own dtype, shaped ``[rows, cols]`` (GGUF lists dimensions innermost first)."""
+    """``(tensor, quant_type or None)``: quantized as a raw ``[rows, bytes]`` uint8 copy, floats reshaped ``[rows, cols]``."""
     import gguf
     import numpy as np
     import torch
@@ -43,9 +30,7 @@ def gguf_tensor(reader_tensor: Any) -> tuple[Any, Optional[int]]:
 def gguf_weight_only_linear(
     raw: Any, quant_type: int, *, in_features: int, out_features: int, compute_dtype: Any
 ) -> Any:
-    """diffusers' ``GGUFLinear`` holding ``raw`` (``[out, bytes]`` uint8) as a ``GGUFParameter``: dequantized per call
-    in the compute dtype, so the resident weight stays the file's blocks (Studio's compiled / fused dequant applies when
-    installed). Raises when the payload does not hold exactly ``out x in`` weights of that type."""
+    """A ``GGUFLinear`` over ``raw``; raises unless it holds exactly ``out x in`` weights."""
     import gguf
     import torch
     from diffusers.quantizers.gguf.utils import GGUFLinear, GGUFParameter
@@ -66,7 +51,6 @@ def gguf_weight_only_linear(
 
 
 def is_dense_linear(module: Any) -> bool:
-    """A plain float ``nn.Linear`` (diffusers' ``GGUFLinear`` subclasses it but holds blocks, not weights)."""
     import torch
     return (
         isinstance(module, torch.nn.Linear) and getattr(module.weight, "quant_type", None) is None
