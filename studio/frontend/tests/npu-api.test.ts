@@ -14,7 +14,7 @@ function client(response: () => Response) {
   const api = loadWithStubs<typeof NpuApi>(
     new URL("../src/features/npu/api.ts", import.meta.url),
     {
-      "@/features/auth": {
+      "@/features/auth/api": {
         authFetch: async (path: string, init?: RequestInit) => {
           requests.push({ path, init });
           return response();

@@ -5,6 +5,7 @@ import {
   buildExternalModelId,
   parseExternalModelId,
 } from "../external-providers";
+import { isNpuModelId } from "../../npu/api";
 import { encryptProviderApiKey } from "../api/providers-api";
 import {
   type CustomReasoningConfig,
@@ -315,6 +316,9 @@ export function titleCheckpoint(
   activeCheckpoint: string,
 ): string {
   if (parseExternalModelId(answeredWith) !== null) return answeredWith;
+  // The NPU keeps one conversation cache: a title request evicts the chat's, so the next turn
+  // re-prefills everything. The heuristic title is used instead.
+  if (isNpuModelId(activeCheckpoint)) return "";
   return parseExternalModelId(activeCheckpoint) === null
     ? activeCheckpoint
     : "";
