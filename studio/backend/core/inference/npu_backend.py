@@ -727,7 +727,9 @@ class LemonadeNpuBackend:
             children = sorted(base.iterdir()) if base.is_dir() else []
             for child in children:
                 if models is not None and child == models and child.is_dir():
-                    rows.extend((entry, checkpoints.get(entry.name)) for entry in sorted(child.iterdir()))
+                    rows.extend(
+                        (entry, checkpoints.get(entry.name)) for entry in sorted(child.iterdir())
+                    )
                 else:
                     rows.append((child, None))
         except OSError as exc:

@@ -413,13 +413,12 @@ def _purge_npu_models() -> PurgeOutcome:
     except ImportError as exc:
         logger.debug(f"Could not read the NPU downloads: {exc}")
     from core.inference.npu_backend import get_npu_backend
+
     roots = _npu_model_dirs()
     before = sum(_measure_root(root)[0] for root in roots)
     deleted, errors = get_npu_backend().delete_downloaded()
     after = sum(_measure_root(root)[0] for root in roots)
-    return PurgeOutcome(
-        freed_bytes = max(0, before - after), removed_entries = deleted, errors = errors
-    )
+    return PurgeOutcome(freed_bytes = max(0, before - after), removed_entries = deleted, errors = errors)
 
 
 CACHE_DEFINITIONS: tuple[CacheDefinition, ...] = (
@@ -965,6 +964,7 @@ def _model_cache_action(root: Path, entry: os.DirEntry) -> dict:
 
 def _npu_breakdown() -> dict:
     from core.inference.npu_backend import get_npu_backend
+
     rows = []
     for path, checkpoint in get_npu_backend().model_folders():
         try:
