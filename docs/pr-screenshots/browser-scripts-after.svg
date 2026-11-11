@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <rect width="1200" height="700" fill="#0b1220"/>
+  <rect x="48" y="42" width="1104" height="616" rx="18" fill="#111b2e" stroke="#334155" stroke-width="2"/>
+  <text x="88" y="102" fill="#f8fafc" font-family="Arial, sans-serif" font-size="30" font-weight="700">Settings › Browser use</text>
+  <text x="88" y="144" fill="#94a3b8" font-family="Arial, sans-serif" font-size="20">Run scripts</text>
+  <rect x="88" y="190" width="1024" height="126" rx="12" fill="#172236"/>
+  <text x="120" y="235" fill="#e2e8f0" font-family="Arial, sans-serif" font-size="22">Run scripts</text>
+  <text x="120" y="276" fill="#94a3b8" font-family="Arial, sans-serif" font-size="17">Choose whether models can run scripts on pages.</text>
+  <rect x="840" y="218" width="220" height="52" rx="8" fill="#164e63" stroke="#34d399" stroke-width="2"/>
+  <text x="875" y="251" fill="#ecfdf5" font-family="Arial, sans-serif" font-size="20">Always allow</text>
+  <rect x="88" y="358" width="1024" height="210" rx="12" fill="#1b263b"/>
+  <text x="120" y="405" fill="#86efac" font-family="Arial, sans-serif" font-size="22" font-weight="700">browser_evaluate runs without a prompt</text>
+  <text x="120" y="449" fill="#cbd5e1" font-family="Arial, sans-serif" font-size="18">The default remains Ask every time; Always allow is an explicit global opt-in for trusted pages.</text>
+  <text x="120" y="500" fill="#94a3b8" font-family="monospace" font-size="19">Ask every time  ·  Always allow  ·  Never</text>
+  <text x="820" y="500" fill="#6ee7b7" font-family="Arial, sans-serif" font-size="19">Global opt-in</text>
+</svg>

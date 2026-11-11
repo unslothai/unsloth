@@ -170,6 +170,8 @@ test("Run scripts set to Never drops browser_evaluate from the turn", async () =
   setBrowserPanelAvailable(true);
   useBrowserAgentStore.setState({ enabled: true, historyAccess: "ask", scriptAccess: "ask" });
   assert.ok(browserAgentToolsForTurn().includes("browser_evaluate"));
+  useBrowserAgentStore.setState({ scriptAccess: "allow" });
+  assert.ok(browserAgentToolsForTurn().includes("browser_evaluate"));
   useBrowserAgentStore.setState({ scriptAccess: "never" });
   const tools = browserAgentToolsForTurn();
   assert.ok(!tools.includes("browser_evaluate"));

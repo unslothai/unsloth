@@ -42,4 +42,8 @@ test("a script approved after Run scripts was set to Never does not run", async 
   assert.equal(posted.at(-1)?.result.ok, false);
   assert.match(posted.at(-1)?.result.error ?? "", /doesn't let the agent run scripts/);
   assert.ok(!sent.includes("evaluate"));
+  useBrowserAgentStore.setState({ scriptAccess: "allow" });
+  await runBrowserAction({ id: "e2", sessionId: "s", op: "evaluate", script: "return 1;", direction: "down", policy }, run);
+  assert.equal(posted.at(-1)?.result.ok, true);
+  assert.ok(sent.includes("evaluate"));
 });

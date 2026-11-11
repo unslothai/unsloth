@@ -13,8 +13,8 @@ export type UnlabelledRule = "ask" | "allow";
 export type SiteRule = { browsing: BrowsingRule; actions: ActionsRule; downloads: DownloadsRule; unlabelled: UnlabelledRule };
 export type AgentPermissions = { defaults: SiteRule; sites: Record<string, SiteRule> };
 export type HistoryAccess = "ask" | "allow" | "never";
-/** No "allow": approving each script is the only check a script passes. */
-export type ScriptAccess = "ask" | "never";
+/** Whether scripts prompt every time, run without a prompt, or are unavailable. */
+export type ScriptAccess = "ask" | "allow" | "never";
 
 export const DEFAULT_RULE: SiteRule = { browsing: "ask", actions: "ask", downloads: "ask", unlabelled: "ask" };
 export const DEFAULT_PERMISSIONS: AgentPermissions = { defaults: DEFAULT_RULE, sites: {} };
