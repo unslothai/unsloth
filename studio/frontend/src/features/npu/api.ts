@@ -109,6 +109,21 @@ export function npuStatusIsProvisional(status: NpuStatus | null): boolean {
   return status?.gpu_recommended === null;
 }
 
+// One inventory pass can sit through nvidia-smi's 10 s timeout and then a 10 s AMD probe, so the
+// re-read window has to outlast both; bounded so a host that never answers is not polled forever.
+const NPU_PROVISIONAL_RETRY_MS = 2000;
+const NPU_PROVISIONAL_RETRIES = 20;
+
+/** How long to wait before re-reading a provisional status, or null to stop (settled, or out of tries). */
+export function npuProvisionalRetryMs(
+  status: NpuStatus | null,
+  attempt: number,
+): number | null {
+  return npuStatusIsProvisional(status) && attempt < NPU_PROVISIONAL_RETRIES
+    ? NPU_PROVISIONAL_RETRY_MS
+    : null;
+}
+
 /** A catalog listed while the GPU scan was pending has no known-issue tags; list again once it says yes. */
 export function npuGpuHintArrived(
   before: NpuStatus["gpu_recommended"],

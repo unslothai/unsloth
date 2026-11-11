@@ -193,6 +193,27 @@ test("a status read before the GPU scan answered is provisional, an answer is no
   assert.equal(api.npuStatusIsProvisional(null), false);
 });
 
+test("a pending status is re-read for longer than the slowest GPU scan, then left alone", () => {
+  const { api } = client(() => new Response(null));
+  const status = (gpu_recommended?: boolean | null) =>
+    ({ gpu_recommended }) as Parameters<typeof api.npuProvisionalRetryMs>[0];
+  let waited = 0;
+  let attempt = 0;
+  for (;;) {
+    const wait = api.npuProvisionalRetryMs(status(null), attempt);
+    if (wait == null) break;
+    waited += wait;
+    attempt += 1;
+    assert.ok(attempt < 1000, "the re-read never stops");
+  }
+  // nvidia-smi's 10 s timeout, then a 10 s AMD probe, with room to spare.
+  assert.ok(waited >= 30_000, `only ${waited} ms of re-reads`);
+  assert.equal(api.npuProvisionalRetryMs(status(true), 0), null);
+  assert.equal(api.npuProvisionalRetryMs(status(false), 0), null);
+  assert.equal(api.npuProvisionalRetryMs(status(), 0), null);
+  assert.equal(api.npuProvisionalRetryMs(null, 0), null);
+});
+
 test("only a pending GPU scan that came back yes asks for a new listing", () => {
   const { api } = client(() => new Response(null));
   assert.equal(api.npuGpuHintArrived(null, true), true);

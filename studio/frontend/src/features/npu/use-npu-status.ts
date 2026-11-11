@@ -2,11 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
-import { type NpuStatus, getNpuStatus, npuStatusIsProvisional } from "./api";
-
-// The backend's GPU scan takes a second or two on a fresh start; bounded so a host that never answers is not polled.
-const PROVISIONAL_RETRIES = 3;
-const PROVISIONAL_RETRY_MS = 2000;
+import { type NpuStatus, getNpuStatus, npuProvisionalRetryMs } from "./api";
 
 let cached: NpuStatus | null = null;
 let pending: Promise<NpuStatus | null> | null = null;
@@ -32,15 +28,14 @@ export function useNpuStatus(
     if (!active) return;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const read = (retries: number) =>
+    const read = (attempt: number) =>
       void fetchOnce().then((next) => {
         if (!live || !next) return;
         setStatus(next);
-        if (retries > 0 && npuStatusIsProvisional(next)) {
-          timer = setTimeout(() => read(retries - 1), PROVISIONAL_RETRY_MS);
-        }
+        const wait = npuProvisionalRetryMs(next, attempt);
+        if (wait != null) timer = setTimeout(() => read(attempt + 1), wait);
       });
-    read(PROVISIONAL_RETRIES);
+    read(0);
     return () => {
       live = false;
       clearTimeout(timer);
