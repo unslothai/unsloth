@@ -7,6 +7,8 @@ The system text uses the thread's latest saved settings and the project's curren
 Studio keeps no history of either, so an earlier turn may have seen different text.
 """
 
+from __future__ import annotations
+
 import json
 import re
 from typing import Optional
@@ -194,52 +196,12 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                 current.reasoning = _append_text(current.reasoning, reasoning, current is reasoned)
                 reasoned = current  # pendingReasoningParts.join("\n") also keeps "" parts
             elif kind == "tool-call" and role == "assistant":
-                call_id = str(part.get("toolCallId") or f"{message_id}-{position}")
-                if call_id in call_ids:
-                    names = (f"{call_id}#{n}" for n in range(2, len(call_ids) + 3))
-                    renamed = next(name for name in names if name not in call_ids)
-                    note = f"Tool call id {call_id!r} repeats; renamed to {renamed!r}"
-                    warnings.append(TraceWarning("duplicate_tool_call_id", note, message_id))
-                    call_id = renamed
-                call_ids.add(call_id)
-                args, raw = part.get("args"), part.get("argsText")
-                try:  # toolCallReplayArguments sends argsText as is when it is one JSON object
-                    exact = json.loads(raw, parse_constant = _reject_constant)
-                except (TypeError, ValueError, RecursionError):
-                    exact = None
-                marker = isinstance(raw, str) and raw and args == {"_raw": raw}  # replays as {}
-                args = exact if isinstance(exact, dict) else {} if marker else args
+                call_id = _unique_call_id(part, message_id, position, call_ids, warnings)
                 name = str(part.get("toolName") or "")
                 current.tool_calls.append(
-                    ToolCall(
-                        id = call_id,
-                        name = name or "unknown",
-                        arguments = args if isinstance(args, dict) else {},
-                    )
+                    ToolCall(call_id, name or "unknown", _call_arguments(part))
                 )
-                wire = {"role": "tool", "name": name}
-                result = part["result"]  # isMcpUiToolResult, then the gated isMcpImageToolResult
-                ui = _as_dict(result.get("ui")) if isinstance(result, dict) else {}
-                if name.startswith("mcp__") and isinstance(ui.get("resourceUri"), str):
-                    result = result["text"] if isinstance(result.get("text"), str) else result
-                elif _mcp_image_result(result) and not _search_images_result(result):
-                    image_tool = name == "view_image" or name.startswith("mcp__")  # isImageToolName
-                    if "ui" in result or not (image_tool or set(result) <= {"text", "images"}):
-                        result = json.dumps(result, ensure_ascii = False, separators = (",", ":"))
-                wire["content"] = _tool_result_content(result, name)
-                suffix = _as_dict(part.get("provenance")).get("model_suffix")
-                if isinstance(suffix, str) and suffix:
-                    wire["extra_content"] = {TOOL_MODEL_SUFFIX_KEY: suffix}
-                pending.append(
-                    TraceMessage(
-                        id = f"{message_id}:{call_id}",
-                        role = "tool",
-                        text = restore_replayed_tool_results([wire])[0]["content"],
-                        tool_call_id = call_id,
-                        is_error = bool(part.get("isError")),
-                        created_at = message.get("createdAt"),
-                    )
-                )
+                pending.append(_tool_message(part, name, call_id, message))
                 if flush_pair:
                     out.extend(pending)
                     pending, pending_round = [], None
@@ -249,11 +211,70 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                 warnings.append(TraceWarning("unsupported_part", note, message_id))
         out.extend(pending)
         kept += out[start:][:1] if imaged else []  # collectImageParts: the row's first UI group
-        reason = _as_dict(_as_dict(message.get("metadata")).get("incomplete")).get("reason")
-        if isinstance(reason, str) and reason in _STOP_LABELS:
-            for m in out[start:]:
-                if not (_sanitised_assistant_text(m.text) or m.tool_calls or m in kept):
-                    m.reasoning = ""  # shouldReplayAssistantReasoning: the text check is untrimmed
+        _clear_stopped_reasoning(message, out[start:], kept)
+    return _replayable(out)
+
+
+def _unique_call_id(
+    part: dict, message_id: str, position: int, call_ids: set[str], warnings: list[TraceWarning]
+) -> str:
+    call_id = str(part.get("toolCallId") or f"{message_id}-{position}")
+    if call_id in call_ids:
+        names = (f"{call_id}#{n}" for n in range(2, len(call_ids) + 3))
+        renamed = next(name for name in names if name not in call_ids)
+        note = f"Tool call id {call_id!r} repeats; renamed to {renamed!r}"
+        warnings.append(TraceWarning("duplicate_tool_call_id", note, message_id))
+        call_id = renamed
+    call_ids.add(call_id)
+    return call_id
+
+
+def _call_arguments(part: dict) -> dict:
+    args, raw = part.get("args"), part.get("argsText")
+    try:  # toolCallReplayArguments sends argsText as is when it is one JSON object
+        exact = json.loads(raw, parse_constant = _reject_constant)
+    except (TypeError, ValueError, RecursionError):
+        exact = None
+    marker = isinstance(raw, str) and raw and args == {"_raw": raw}  # replays as {}
+    args = exact if isinstance(exact, dict) else {} if marker else args
+    return args if isinstance(args, dict) else {}
+
+
+def _tool_message(part: dict, name: str, call_id: str, message: dict) -> TraceMessage:
+    wire = {"role": "tool", "name": name}
+    result = part["result"]  # isMcpUiToolResult, then the gated isMcpImageToolResult
+    ui = _as_dict(result.get("ui")) if isinstance(result, dict) else {}
+    if name.startswith("mcp__") and isinstance(ui.get("resourceUri"), str):
+        result = result["text"] if isinstance(result.get("text"), str) else result
+    elif _mcp_image_result(result) and not _search_images_result(result):
+        image_tool = name == "view_image" or name.startswith("mcp__")  # isImageToolName
+        if "ui" in result or not (image_tool or set(result) <= {"text", "images"}):
+            result = json.dumps(result, ensure_ascii = False, separators = (",", ":"))
+    wire["content"] = _tool_result_content(result, name)
+    suffix = _as_dict(part.get("provenance")).get("model_suffix")
+    if isinstance(suffix, str) and suffix:
+        wire["extra_content"] = {TOOL_MODEL_SUFFIX_KEY: suffix}
+    return TraceMessage(
+        id = f"{message['id']}:{call_id}",
+        role = "tool",
+        text = restore_replayed_tool_results([wire])[0]["content"],
+        tool_call_id = call_id,
+        is_error = bool(part.get("isError")),
+        created_at = message.get("createdAt"),
+    )
+
+
+def _clear_stopped_reasoning(
+    message: dict, turn: list[TraceMessage], kept: list[TraceMessage]
+) -> None:
+    reason = _as_dict(_as_dict(message.get("metadata")).get("incomplete")).get("reason")
+    if isinstance(reason, str) and reason in _STOP_LABELS:
+        for m in turn:
+            if not (_sanitised_assistant_text(m.text) or m.tool_calls or m in kept):
+                m.reasoning = ""  # shouldReplayAssistantReasoning: the text check is untrimmed
+
+
+def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
     for m in out:
         if m.role == "assistant":
             m.text = _sanitised_assistant_text(m.text)
@@ -294,35 +315,37 @@ def _skipped_call(part: dict, message_id: str, position: int) -> Optional[TraceW
     return None
 
 
+def _replayed(message: dict, reasoning: bool) -> bool:
+    # The UI sends an image (collectImageParts) and a native Gemini call; the trace drops both.
+    return any(
+        p.get("image") if p.get("type") == "image" else _server_builtin(p)[1]
+        for p in _model_parts(message)
+        if isinstance(p, dict) and p.get("type") in ("image", "tool-call")
+    ) or any(
+        m.text.strip() or m.tool_calls or (m.reasoning and (reasoning or m.text))
+        for m in _convert([message], [])
+    )
+
+
+def _abandoned(message: dict) -> bool:
+    # assistantTurnCarriesPayload reads the raw parts, before the replay sanitiser, and
+    # isAbandonedAssistantTurn keeps any turn with a reasoning part, even an empty one.
+    payload = any(
+        isinstance(p, dict)
+        and (
+            p.get("type") == "reasoning"
+            or (p.get("type") == "image" and p.get("image"))
+            or (p.get("type") == "text" and str(p.get("text") or "").strip())
+        )
+        for p in _model_parts(message)
+    )
+    return not payload and not _replayed(message, reasoning = True)
+
+
 def _prune(chain: list[dict]) -> list[dict]:
     """Drop refused and abandoned turns as pruneOutboundHistory (chat-adapter.ts) does, and give an
     empty stopped turn its label, as fillStoppedAssistantReplay does. An unsettled run's row gets no
     "Response interrupted" label: the UI asks the server if the run is live, and rows lack that."""
-
-    def replayed(message, reasoning):
-        # The UI sends an image (collectImageParts) and a native Gemini call; the trace drops both.
-        return any(
-            p.get("image") if p.get("type") == "image" else _server_builtin(p)[1]
-            for p in _model_parts(message)
-            if isinstance(p, dict) and p.get("type") in ("image", "tool-call")
-        ) or any(
-            m.text.strip() or m.tool_calls or (m.reasoning and (reasoning or m.text))
-            for m in _convert([message], [])
-        )
-
-    def abandoned(message):
-        # assistantTurnCarriesPayload reads the raw parts, before the replay sanitiser, and
-        # isAbandonedAssistantTurn keeps any turn with a reasoning part, even an empty one.
-        payload = any(
-            isinstance(p, dict)
-            and (
-                p.get("type") == "reasoning"
-                or (p.get("type") == "image" and p.get("image"))
-                or (p.get("type") == "text" and str(p.get("text") or "").strip())
-            )
-            for p in _model_parts(message)
-        )
-        return not payload and not replayed(message, reasoning = True)
 
     meta = [_as_dict(m.get("metadata")) for m in chain]  # runtime-provider.tsx: metadata.custom
     assistant = [m.get("role") != "user" for m in chain]
@@ -330,7 +353,7 @@ def _prune(chain: list[dict]) -> list[dict]:
     reasons = [_as_dict(d.get("incomplete")).get("reason") for d in meta]
     stopped = [isinstance(r, str) and r in _STOP_LABELS for r in reasons]
     dropped = [
-        r or (a and not s and abandoned(m))
+        r or (a and not s and _abandoned(m))
         for m, a, r, s in zip(chain, assistant, refused, stopped)
     ]
     last = max((i for i, d in enumerate(dropped) if not d), default = -1)
@@ -341,7 +364,7 @@ def _prune(chain: list[dict]) -> list[dict]:
                 kept.pop()
             continue
         # The UI never replays the reasoning of a stopped turn with no text and no calls.
-        if assistant[index] and stopped[index] and not replayed(message, reasoning = False):
+        if assistant[index] and stopped[index] and not _replayed(message, reasoning = False):
             label = _STOP_LABELS[reasons[index]]
             message = {**message, "content": [{"type": "text", "text": label}], "attachments": []}
         kept.append(message)
@@ -371,7 +394,7 @@ def _fill_variables(prompt: str, raw: object) -> str:
     except ValueError:
         values = {}
 
-    def fill(match):
+    def fill(match: re.Match) -> str:
         current = values if isinstance(values, dict) else {}
         if match.group(1) in ("$date", "$time", "$now"):
             return match.group(0)
