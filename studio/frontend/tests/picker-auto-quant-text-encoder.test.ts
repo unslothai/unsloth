@@ -49,7 +49,6 @@ test("each auto-quantised row states the hosted encoder file the backend loads",
     [QWEN_21, 17_534_340_584, 9_349_769_248],
     [QWEN_21_TURBO, 17_534_340_584, 9_349_769_248],
     [KONTEXT, 9_524_648_584, 6_163_991_880],
-    // No te_quant_auto: the in-tree loader takes the hosted int8 Qwen3-VL-32B itself when no encoder is set.
     [MINIMAX_H3_IMAGE, 66_726_510_529, 27_141_342_152],
   ] as const) {
     const te = artifactForRepoId(id, IMAGE_CATALOG)?.artifact.autoQuantTextEncoderGb;

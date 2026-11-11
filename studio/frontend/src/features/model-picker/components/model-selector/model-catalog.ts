@@ -217,9 +217,7 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
 const FLUX3_KLEIN_AUTO_TE = { denseGb: 8.27, quantisedGb: 4.89 } as const;
 const QWEN_IMAGE_21_AUTO_TE = { denseGb: 16.33, quantisedGb: 8.71 } as const;
 const FLUX1_KONTEXT_AUTO_TE = { denseGb: 8.87, quantisedGb: 5.74 } as const;
-// MiniMax-H3-Image has no te_quant_auto: its in-tree loader takes Studio's hosted int8 ConvRot Qwen3-VL-32B
-// (unsloth/MiniMax-H3-FP8, 27,141,342,152 bytes) whenever no encoder is set, in place of the 66,726,510,529-byte
-// bf16 text_encoder/ of the official repo.
+// No te_quant_auto: the loader itself takes the hosted int8 Qwen3-VL-32B (unsloth/MiniMax-H3-FP8) when no encoder is set.
 const MINIMAX_H3_IMAGE_AUTO_TE = { denseGb: 62.14, quantisedGb: 25.28 } as const;
 
 export const IMAGE_CATALOG: CatalogGroup[] = [
@@ -247,11 +245,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
-    // MiniMax-H3-Image: text to image and edits with 1-16 <Picture N> references. CUDA / ROCm only. Pinned first, so
-    // its "Fast FP8" row leads the list above FLUX.3 Image Klein's. The row keeps the official id (the in-tree loader
-    // reads the VAE, tokenizer and config from it); the DiT comes from unsloth/MiniMax-H3-Image-FP8 and the encoder
-    // from Studio's hosted int8 Qwen3-VL-32B, so no fetchedFrom. Size is the released bf16 total; tiers are measured
-    // offloaded runs, which the fit rule reads instead of the size.
+    // CUDA / ROCm only. Keeps the official id (loader reads VAE, tokenizer, config from it), so no fetchedFrom.
+    // Size is the bf16 total; the fit rule reads the measured offload tiers instead.
     canonicalId: "MiniMaxAI/MiniMax-H3-Image",
     displayName: "MiniMax-H3-Image",
     description: "Text-to-image and image editing with up to 16 pictures",
@@ -264,8 +259,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("MiniMaxAI/MiniMax-H3-Image", 126, {
         totalParams: 33122643440,
         prequantRepo: "unsloth/MiniMax-H3-Image-FP8",
-        // MiniMax-H3-Image-FP8.safetensors 20,269,221,000 B, MiniMax-H3-Image-INT8-ConvRot.safetensors 20,272,349,984 B.
-        prequantSizeGb: { fp8: 18.88, int8: 18.88 },
+            prequantSizeGb: { fp8: 18.88, int8: 18.88 },
         autoQuantTextEncoderGb: MINIMAX_H3_IMAGE_AUTO_TE,
         offloadFitTiers: [
           { gpuGb: 22, systemRamGb: 48, requiresDenseQuant: true },
@@ -276,7 +270,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
   {
     // FLUX.3 Image Klein (distilled): text to image and up to 10 reference images. Pinned right under
-    // MiniMax-H3-Image, so its "Fast FP8" and GGUF rows sit above Qwen-Image 2.1's. The bf16 row keeps the gated BFL id; the backend
+    // MiniMax-H3-Image. The bf16 row keeps the gated BFL id; the backend
     // fetches it from unsloth/flux-3-image-klein-FP8, which carries the official diffusers folders
     // byte-identical beside the FP8 / INT8 checkpoints. The GGUFs pair with the same repo for the Qwen3-VL
     // text encoder and the FLUX.2 VAE.

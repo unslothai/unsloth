@@ -665,9 +665,7 @@ test("pinned families lead Recommended whatever the listing sort, lead rows firs
     order(pinnedFamilies, (r) => Boolean(r.isGguf)),
     [flux3Gguf, qwen21Gguf, turboGguf, qwen2512, zImageTurbo],
   );
-  // As shipped: "MiniMax-H3-Image (Fast FP8)" on top, then "FLUX.3 Image Klein (Fast FP8)" with its GGUF right
-  // under it, then "Qwen-Image 2.1 (Fast FP8)" and "Qwen-Image 2.1 Turbo (Fast FP8)", then their GGUF rows. The
-  // unpinned Base keeps its place among the other models.
+  // The unpinned Base keeps its place among the other models.
   assert.deepEqual(order(pinnedFamilies, () => true, pinnedTogether), [
     h3i,
     flux3,
