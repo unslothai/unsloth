@@ -117,7 +117,7 @@ export interface CarveOutVramGb {
  * RAM tile already counts. null unless the carve-out is the larger part: a small UMA slice beside a big shared pool
  * keeps the pool as its GPU memory. */
 export function carveOutVramGb(
-  devices: MemoryTotalDevice[],
+  devices: (MemoryTotalDevice & VramReportingDevice)[],
   usedGb: number | null,
   ramAvailableGb: number | null,
 ): CarveOutVramGb | null {
@@ -125,21 +125,33 @@ export function carveOutVramGb(
   const apu = gpuMemoryTotalsGb(devices.filter(sharesHostMemoryDevice));
   if (!(apu.shared > 0 && apu.dedicated >= apu.shared)) return null;
   const totals = gpuMemoryTotalsGb(devices);
-  const used = usedGb !== null && Number.isFinite(usedGb) ? usedGb : null;
-  // Usage past the carve-out already sits in shared RAM.
-  const spilled = used === null ? 0 : Math.max(0, used - totals.dedicated);
   const ram =
     ramAvailableGb !== null && Number.isFinite(ramAvailableGb) && ramAvailableGb >= 0
       ? ramAvailableGb
       : Number.POSITIVE_INFINITY;
+  // Usage past a carve-out already sits in shared RAM. With a discrete card beside the APU only per-device readings
+  // say whose usage it is; an aggregate alone leaves free and the spill unknown.
+  const perDevice = devices.every((device) => Number.isFinite(device.vram_used_gb));
+  const aggregate = usedGb !== null && Number.isFinite(usedGb) ? usedGb : null;
+  let freeGb: number | null = null;
+  let spilled = 0;
+  if (perDevice) {
+    freeGb = 0;
+    for (const device of devices) {
+      const own = gpuMemoryTotalsGb([device]).dedicated;
+      const used = device.vram_used_gb as number;
+      freeGb += Math.max(0, own - used);
+      if (sharesHostMemoryDevice(device)) spilled += Math.max(0, used - own);
+    }
+  } else if (aggregate !== null && apu.dedicated === totals.dedicated) {
+    freeGb = Math.max(0, totals.dedicated - aggregate);
+    spilled = Math.max(0, aggregate - totals.dedicated);
+  }
   return {
     totalGb: totals.dedicated,
-    freeGb:
-      used === null
-        ? null
-        : roundToDevicePrecision(Math.max(0, totals.dedicated - used)),
+    freeGb: freeGb === null ? null : roundToDevicePrecision(freeGb),
     borrowableGb: roundToDevicePrecision(
-      Math.max(0, Math.min(totals.shared - spilled, ram)),
+      Math.max(0, Math.min(apu.shared - spilled, ram)),
     ),
   };
 }

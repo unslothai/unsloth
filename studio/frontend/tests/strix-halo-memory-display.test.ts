@@ -50,16 +50,32 @@ test("Strix Halo: the floating monitor divides by the carve-out, not carve-out p
 });
 
 test("usage past the carve-out leaves less RAM to borrow, and free stops at zero", () => {
-  assert.deepEqual(carveOutVramGb([strixHalo], 100, null), {
+  assert.deepEqual(carveOutVramGb([{ ...strixHalo, vram_used_gb: 100 }], 100, null), {
     totalGb: 95.82,
     freeGb: 0,
     borrowableGb: 7.92,
   });
-  assert.deepEqual(carveOutVramGb([strixHalo], null, 50), {
+  assert.deepEqual(carveOutVramGb([{ ...strixHalo, vram_used_gb: undefined }], null, 50), {
     totalGb: 95.82,
     freeGb: null,
     borrowableGb: 12.1,
   });
+});
+
+test("beside a discrete card, spill and free come from each device's own usage", () => {
+  const card = { memory_total_gb: 24, shared_memory: false, vram_used_gb: 0 };
+  const apu = { ...strixHalo, vram_used_gb: 100 };
+  assert.deepEqual(carveOutVramGb([apu, card] as GpuDevice[], 100, null), {
+    totalGb: 119.82,
+    freeGb: 24,
+    borrowableGb: 7.92,
+  });
+  // An aggregate reading can't say whose usage it is, so free stays unknown.
+  const unread = [
+    { ...apu, vram_used_gb: undefined },
+    { ...card, vram_used_gb: undefined },
+  ] as GpuDevice[];
+  assert.equal(carveOutVramGb(unread, 100, null)?.freeGb, null);
 });
 
 test("no carve-out reading for discrete cards, unified pools, or a small UMA slice under a big shared pool", () => {
