@@ -648,6 +648,7 @@ export {
   releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";
 export { ChatSkillsDialog } from "./components/chat-skills-dialog";
+export { isSkillsCommand } from "./utils/skills-command";
 export { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 export { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
 export { currentDictationEntryMode } from "./utils/dictation-entry";
