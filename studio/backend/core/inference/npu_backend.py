@@ -892,7 +892,10 @@ class LemonadeNpuBackend:
             for child in children:
                 if models is not None and child == models and child.is_dir():
                     rows.extend(
-                        (entry, checkpoints.get(entry.name)) for entry in sorted(child.iterdir())
+                        (entry, checkpoints.get(entry.name))
+                        for entry in sorted(child.iterdir())
+                        # Studio's per-model download locks (flm_files), not models.
+                        if not entry.name.endswith(".unsloth-download.lock")
                     )
                 else:
                     rows.append((child, None))

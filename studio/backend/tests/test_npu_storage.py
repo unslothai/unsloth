@@ -144,6 +144,13 @@ def test_the_breakdown_names_each_model_folder_by_checkpoint(npu_home):
     assert [row["name"] for row in cache_breakdown("npu_models")["entries"]][0] == "Qwen3-4B-NPU2"
 
 
+def test_a_download_lock_beside_a_model_folder_is_not_a_row(npu_home):
+    _write(npu_home.root / "flm" / "models" / "Qwen3-4B-NPU2.unsloth-download.lock", 7)
+    names = [row["name"] for row in cache_breakdown("npu_models")["entries"]]
+    assert "Qwen3-4B-NPU2.unsloth-download.lock" not in names
+    assert "Qwen3-4B-NPU2" in names
+
+
 def test_clearing_npu_models_deletes_through_lemond_not_the_disk(npu_home):
     result = purge_cache("npu_models")
     assert npu_home.deleted == ["qwen3-0.6b-FLM", "qwen3-4b-FLM", "embed-gemma-300m-FLM"]
@@ -241,7 +248,11 @@ def test_a_pull_asked_for_during_a_storage_delete_is_refused_without_waiting(npu
     started = []
 
     class _Npu:
-        def download(self, model_id):
+        def download(
+            self,
+            model_id,
+            cancel = None,
+        ):
             started.append(model_id)
             return iter(())
 
