@@ -359,6 +359,7 @@ def test_stopped_turn_replays_reasoning_beside_text_or_calls():
     assert (trace.messages[1].text, trace.messages[1].reasoning) == ("   ", "think")
     assert _shape(_turn(_STOPPED, [_call("k"), think]))[2:4] == [("tool", "k"), ("user", "again")]
     assert _turn({}, [_call("k"), think]).messages[3].reasoning == "think"
+    assert _turn({}, [_NATIVE, think]).messages[1].reasoning == "think"
 
 
 @pytest.mark.parametrize("custom", [{}, _STOPPED])
