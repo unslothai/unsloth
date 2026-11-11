@@ -9,9 +9,11 @@ __all__ = [
     "UnslothAsyncVLLMServer",
 ]
 
+import hmac
 import itertools
 import json
 import logging
+import secrets
 import threading
 import time
 import uuid
@@ -274,17 +276,36 @@ class _Handler(BaseHTTPRequestHandler):
             # The rollout process exits with requests in flight when training ends.
             self.close_connection = True
 
+    def _route(self):
+        # Any local process can reach 127.0.0.1, so the URL carries a per-run secret: "/<token>/<endpoint>".
+        _, _, rest = urlparse(self.path).path.partition("/")
+        token, slash, path = rest.partition("/")
+        if not slash or not hmac.compare_digest(token.encode(), self.server.owner._token.encode()):
+            return None
+        return "/" + path
+
     def do_GET(self):
-        self._send(*self.server.owner.get(urlparse(self.path).path))
+        path = self._route()
+        if path is None:
+            return self._send(404, {"error": "not found"})
+        self._send(*self.server.owner.get(path))
 
     def do_POST(self):
         owner = self.server.owner
         length = int(self.headers.get("Content-Length") or 0)
+        path = self._route()
+        if path is None:
+            self.close_connection = True
+            return self._send(404, {"error": "not found"})
+        # TRL sends JSON or no body; a browser can POST text/plain cross-origin without a preflight.
+        content_type = self.headers.get("Content-Type")
+        if content_type and content_type.split(";")[0].strip().lower() != "application/json":
+            self.close_connection = True
+            return self._send(415, {"error": "Content-Type must be application/json"})
         try:
             body = json.loads(self.rfile.read(length) or b"{}") if length else {}
         except ValueError as error:
             return self._send(400, {"error": f"bad JSON: {error}"})
-        path = urlparse(self.path).path
         if path == "/v1/completions":
             try:
                 return self._send(200, owner.finish(owner.start(body).result()))
@@ -323,7 +344,8 @@ class UnslothAsyncVLLMServer:
         _keep_awake(llm)
         self.engine = _Engine(llm, load_lora, sampling_params)
         self.stopped = False
-        self.url = f"http://127.0.0.1:{self._serve()}"
+        self._token = secrets.token_urlsafe(32)
+        self.url = f"http://127.0.0.1:{self._serve()}/{self._token}"
 
     def _serve(self):
         httpd = _Server(("127.0.0.1", 0), _Handler)

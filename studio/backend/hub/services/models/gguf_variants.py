@@ -39,6 +39,7 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
 )
 from hub.utils.gguf import (
+    HUB_MODEL_INFO_SINK,
     GgufVariantInfo,
     extract_quant_label,
     gguf_variant_family,
@@ -1151,9 +1152,11 @@ async def _mlx_precision_variants_answer(
     hf_token: Optional[str],
     offline: bool,
     cache_readable: bool = True,
+    info = None,
 ) -> Optional[VariantsAnswer]:
     """The precision folders of an MLX repo (``4-bit/``, ``6-bit/``, ``8bit/``) as its variants,
-    else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone."""
+    else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone.
+    *info* is this request's own ``model_info`` (same token, files_metadata), reused if given."""
     if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
         return None
     from hub.utils.mlx_variants import cached_precision_folder, looks_like_mlx_repo
@@ -1170,25 +1173,27 @@ async def _mlx_precision_variants_answer(
         if not offline:
             from huggingface_hub import HfApi
             try:
-                info = call_with_anonymous_retry(
-                    lambda token: HfApi(token = token).model_info(
-                        repo_id, files_metadata = True, timeout = 5.0
-                    ),
-                    hf_token,
-                )
+                hub_info = info
+                if hub_info is None:
+                    hub_info = call_with_anonymous_retry(
+                        lambda token: HfApi(token = token).model_info(
+                            repo_id, files_metadata = True, timeout = 5.0
+                        ),
+                        hf_token,
+                    )
             except Exception as exc:  # noqa: BLE001 - fall back to the cached copy below
                 logger.debug("MLX precision folders for %s unavailable: %s", repo_id, exc)
             else:
-                tags = {str(tag).lower() for tag in (info.tags or [])}
+                tags = {str(tag).lower() for tag in (hub_info.tags or [])}
                 if (
                     "mlx" not in tags
-                    and str(info.library_name or "").lower() != "mlx"
+                    and str(hub_info.library_name or "").lower() != "mlx"
                     and not looks_like_mlx_repo(repo_id)
                 ):
                     return None
-                sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
-                hashes = {s.rfilename: sibling_sha256(s) for s in (info.siblings or [])}
-                has_vision = str(info.pipeline_tag or "").lower() in _VISION_PIPELINE_TAGS
+                sizes = {s.rfilename: int(s.size or 0) for s in (hub_info.siblings or [])}
+                hashes = {s.rfilename: sibling_sha256(s) for s in (hub_info.siblings or [])}
+                has_vision = str(hub_info.pipeline_tag or "").lower() in _VISION_PIPELINE_TAGS
         if not sizes:
             # A caller refused this repo's cache learns nothing from it.
             if not cache_readable:
@@ -1646,6 +1651,7 @@ async def get_gguf_variants_answer(
     cache_authorized = [True]
     variant_context_sources: dict[str, str] = {}
     hub_listing = None
+    hub_model_info: list = []
     # The downloaded rows a Hub-less answer proved complete from disk, see _locally_resolved.
     locally_proven: list[Optional[frozenset]] = [None]
 
@@ -2169,7 +2175,11 @@ async def get_gguf_variants_answer(
 
         try:
             if hub_listing is None:
-                hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
+                sink_token = HUB_MODEL_INFO_SINK.set(hub_model_info)
+                try:
+                    hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
+                finally:
+                    HUB_MODEL_INFO_SINK.reset(sink_token)
             variants, has_vision, siblings = hub_listing
         except Exception:
             # Ungated: _cache_fallback_response already refuses an unauthorized caller.
@@ -2736,7 +2746,11 @@ async def get_gguf_variants_answer(
         # Only after an empty GGUF listing, so GGUF answers never change.
         if not answer.response.variants and not local_path:
             mlx_answer = await _mlx_precision_variants_answer(
-                repo_id, hf_token, offline, cache_readable = answer.cache_authorized
+                repo_id,
+                hf_token,
+                offline,
+                cache_readable = answer.cache_authorized,
+                info = hub_model_info[-1] if hub_model_info and not offline else None,
             )
             if mlx_answer is not None:
                 return mlx_answer

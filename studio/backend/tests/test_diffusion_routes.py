@@ -3327,6 +3327,241 @@ def test_external_connection_refuses_options_it_cannot_forward(client, monkeypat
     assert sent == []
 
 
+def _png_data_url(
+    size,
+    color = (30, 120, 200),
+    fmt = "PNG",
+    **save,
+):
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format = fmt, **save)
+    return f"data:image/{fmt.lower()};base64,{base64.b64encode(buf.getvalue()).decode()}"
+
+
+def _edit_endpoint(sent, result_size = (96, 64)):
+    """A connection whose /images/edits records each multipart request it receives."""
+    import base64
+    import email
+    import io
+
+    import httpx
+    from PIL import Image
+
+    def handler(req):
+        message = email.message_from_bytes(
+            b"Content-Type: " + req.headers["content-type"].encode() + b"\r\n\r\n" + req.content
+        )
+        fields, files = {}, []
+        for part in message.get_payload():
+            name = part.get_param("name", header = "content-disposition")
+            payload = part.get_payload(decode = True)
+            if part.get_filename() is None:
+                fields[name] = payload.decode()
+            else:
+                image = Image.open(io.BytesIO(payload))
+                files.append((name, part.get_content_type(), image.format, image.size))
+        sent.append((str(req.url), req.headers.get("authorization"), fields, files))
+        buf = io.BytesIO()
+        Image.new("RGB", result_size, (10, 200, 10)).save(buf, format = "PNG")
+        png = base64.b64encode(buf.getvalue()).decode()
+        return httpx.Response(
+            200, json = {"created": 0, "data": [{"b64_json": png}] * int(fields.get("n", 1))}
+        )
+
+    return handler
+
+
+def test_external_connection_edits_an_image_through_images_edits(client, monkeypatch):
+    sent = []
+    _external_image_connection(monkeypatch, _edit_endpoint(sent))
+    resp = _post_generate(
+        client,
+        prompt = "make it night",
+        workflow = "edit",
+        init_image = _png_data_url((96, 64)),
+        batch_size = 2,
+        provider_id = "conn-1",
+        model = "flux2-klein",
+    )
+    assert resp.status_code == 200, resp.text
+    assert sent == [
+        (
+            "http://127.0.0.1:8000/v1/images/edits",
+            "Bearer sk-test",
+            {
+                "model": "flux2-klein",
+                "prompt": "make it night",
+                "n": "2",
+                "response_format": "b64_json",
+            },
+            [("image", "image/png", "PNG", (96, 64))],
+        )
+    ]
+    images = resp.json()["images"]
+    assert [
+        (i["prompt"], i["model"], i["model_kind"], i["workflow"], i["width"], i["height"])
+        for i in images
+    ] == [("make it night", "flux2-klein", "connection", "edit", 96, 64)] * 2
+    assert [i["reference_image_count"] for i in images] == [None, None]
+    assert len(client.get("/api/inference/images/gallery").json()["images"]) == 2
+
+
+def test_external_connection_edit_sends_every_input_image_in_order(client, monkeypatch):
+    sent = []
+    _external_image_connection(monkeypatch, _edit_endpoint(sent))
+    resp = _post_generate(
+        client,
+        prompt = "put the hat from image 2 on the cat",
+        workflow = "edit",
+        init_image = _png_data_url((96, 64)),
+        reference_images = [_png_data_url((48, 48)), _png_data_url((32, 80))],
+        provider_id = "conn-1",
+        model = "flux2-klein",
+    )
+    assert resp.status_code == 200, resp.text
+    assert [f[0] for f in sent[0][3]] == ["image[]"] * 3
+    assert [f[3] for f in sent[0][3]] == [(96, 64), (48, 48), (32, 80)]
+    assert resp.json()["images"][0]["reference_image_count"] == 2
+
+
+def test_external_connection_edit_uploads_a_rotated_photo_upright(client, monkeypatch):
+    from PIL import Image
+
+    exif = Image.Exif()
+    exif[0x0112] = 6  # stored sideways, displayed 64x96
+    sent = []
+    _external_image_connection(monkeypatch, _edit_endpoint(sent))
+    resp = _post_generate(
+        client,
+        prompt = "make it night",
+        workflow = "edit",
+        init_image = _png_data_url((96, 64), fmt = "JPEG", exif = exif),
+        provider_id = "conn-1",
+        model = "flux2-klein",
+    )
+    assert resp.status_code == 200, resp.text
+    assert sent[0][3] == [("image", "image/png", "PNG", (64, 96))]
+
+
+def test_external_connection_refuses_the_other_image_input_workflows(client, monkeypatch):
+    import httpx
+
+    sent = []
+    _external_image_connection(monkeypatch, lambda req: sent.append(req) or httpx.Response(500))
+    source = _png_data_url((64, 64))
+    refused = "An external image connection only supports text to image and image edits."
+    for extra, detail in (
+        ({"init_image": source}, refused),
+        ({"init_image": source, "workflow": "reference"}, refused),
+        ({"reference_images": [source]}, refused),
+        ({"init_image": source, "workflow": "edit", "mask_image": source}, refused),
+        ({"init_image": source, "workflow": "edit", "strength": 0.5}, refused),
+        ({"init_image": source, "workflow": "edit", "reference_resolution": 1024}, refused),
+        (
+            {"workflow": "edit"},
+            "init_image is required to edit an image through an external connection.",
+        ),
+    ):
+        resp = _post_generate(
+            client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image", **extra
+        )
+        assert resp.status_code == 400, (extra, resp.text)
+        assert resp.json()["detail"] == detail, extra
+    assert sent == []
+
+
+def test_external_connection_edit_refuses_an_unreadable_or_oversized_source(client, monkeypatch):
+    import httpx
+
+    sent = []
+    _external_image_connection(monkeypatch, lambda req: sent.append(req) or httpx.Response(500))
+    for source, reason in (
+        ("data:image/png;base64,bm90IGFuIGltYWdl", "Could not decode the image to edit."),
+        (_png_data_url((4100, 16)), "Image is too large (4100x16); maximum is 4096px per side."),
+    ):
+        resp = _post_generate(
+            client,
+            prompt = "make it night",
+            workflow = "edit",
+            init_image = source,
+            provider_id = "conn-1",
+            model = "flux2-klein",
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"] == reason
+    assert sent == []
+
+
+def test_stop_during_source_normalization_cancels_a_connection_edit(client, monkeypatch):
+    import asyncio
+    import threading
+
+    import httpx
+
+    sent = []
+    _external_image_connection(monkeypatch, lambda req: sent.append(req) or httpx.Response(500))
+    entered, release = threading.Event(), threading.Event()
+    real = inference_routes._external_edit_uploads
+
+    def slow_uploads(sources):
+        entered.set()
+        release.wait(5)
+        return real(sources)
+
+    monkeypatch.setattr(inference_routes, "_external_edit_uploads", slow_uploads)
+
+    async def run():
+        transport = httpx.ASGITransport(app = client.app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as ac:
+            gen = asyncio.create_task(
+                ac.post(
+                    "/api/inference/images/generate",
+                    json = {
+                        "prompt": "make it night",
+                        "workflow": "edit",
+                        "init_image": _png_data_url((64, 64)),
+                        "provider_id": "conn-1",
+                        "model": "flux2-klein",
+                    },
+                )
+            )
+            assert await asyncio.to_thread(entered.wait, 5)
+            progress = (await ac.get("/api/inference/images/generate-progress")).json()
+            stop = (await ac.post("/api/inference/images/generate/cancel?target=connection")).json()
+            release.set()
+            resp = await asyncio.wait_for(gen, 5)
+            return progress, stop, resp
+
+    progress, stop, resp = asyncio.run(run())
+    assert progress["target"] == "connection"
+    assert stop == {"cancelled": True}
+    assert resp.status_code == 409
+    assert sent == []
+    assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
+def test_external_connection_without_an_edit_endpoint_is_a_502_naming_it(client, monkeypatch):
+    import httpx
+
+    _external_image_connection(monkeypatch, lambda req: httpx.Response(404, text = "Not Found"))
+    resp = _post_generate(
+        client,
+        prompt = "make it night",
+        workflow = "edit",
+        init_image = _png_data_url((64, 64)),
+        provider_id = "conn-1",
+        model = "flux2-klein",
+    )
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "Image edit endpoint returned HTTP 404: Not Found"
+    assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
 def test_connection_images_are_marked_in_the_gallery(client, monkeypatch):
     import base64
     import io

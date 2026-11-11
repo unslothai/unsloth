@@ -181,6 +181,37 @@ class TestPathContainment:
         assert result.startswith("Error:")
         assert outside.read_text() == "secret\n"
 
+    @pytest.mark.skipif(os.name != "posix", reason = "uses a symlink")
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_a_parent_swapped_for_a_link_after_the_check_is_not_written_through(
+        self, workdir, tmp_path_factory, monkeypatch, existing
+    ):
+        # A sandboxed process can flip a folder to a link between the containment recheck and the open.
+        outside = tmp_path_factory.mktemp("outside")
+        (workdir / "a").mkdir()
+        if existing:
+            (workdir / "a" / "f.txt").write_text("old\n")
+            (outside / "f.txt").write_text("old\n")
+        check = tools._is_outside_workdir
+
+        def check_then_swap(path, root = None):
+            result = check(path, root)
+            if sys._getframe(1).f_code.co_name in ("_edit_file_create", "_edit_file_write"):
+                monkeypatch.setattr(tools, "_is_outside_workdir", check)
+                (workdir / "a").rename(workdir / "real")
+                os.symlink(outside, workdir / "a")
+            return result
+
+        monkeypatch.setattr(tools, "_is_outside_workdir", check_then_swap)
+        if existing:
+            _edit(path = "a/f.txt", old_string = "old", new_string = "new")
+            assert (outside / "f.txt").read_text() == "old\n"
+        else:
+            _edit(path = "a/f.txt", old_string = "", new_string = "new\n")
+            assert not (outside / "f.txt").exists()
+        assert os.listdir(outside) == (["f.txt"] if existing else [])
+        assert (workdir / "real" / "f.txt").read_text() == "new\n"
+
     def test_a_code_interpreter_habit_path_keeps_its_suffix(self, workdir):
         result = _edit(path = "/mnt/data/out.txt", old_string = "", new_string = "hi\n")
         assert not result.startswith("Error:")

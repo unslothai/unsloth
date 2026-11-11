@@ -18,6 +18,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
+  ArrowReloadHorizontalIcon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Download01Icon,
@@ -33,6 +34,8 @@ import {
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
+import { isRetryableDownload } from "./retry-download";
+import { retryDownload } from "./retry-start";
 import {
   type PendingStart,
   usePendingStarts,
@@ -206,6 +209,10 @@ function DownloadRow({
     job.state === "complete" ||
     job.state === "cancelled" ||
     job.state === "error";
+  const canRetry =
+    (job.state === "error" || job.state === "cancelled") &&
+    !starting &&
+    isRetryableDownload(job);
   const progress = presentedProgress(job);
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
@@ -224,6 +231,30 @@ function DownloadRow({
             strokeWidth={2}
             className="size-4 shrink-0 text-destructive"
           />
+        )}
+        {canRetry && (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label="Retry download"
+                onClick={() => void retryDownload(job)}
+                className={cn(
+                  "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
+                  "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={ArrowReloadHorizontalIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={4}>
+              Retry download
+            </TooltipContent>
+          </Tooltip>
         )}
         <Tooltip>
           <TooltipTrigger asChild={true}>

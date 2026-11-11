@@ -65,6 +65,9 @@ KEEP_BF16 = (
     "chroma",
     "anima",
 )
+# Families whose in-tree loader picks the encoder itself, outside te_quant_auto: MiniMax-H3-Image's loader defaults
+# its Qwen3-VL-32B conditioner to Studio's hosted int8 ConvRot file (text_encoder_quant = "int8").
+IN_TREE_TE_DEFAULT = ("minimax-h3-image",)
 
 
 def _fam(name):
@@ -104,9 +107,15 @@ def test_none_still_pins_the_bf16_encoder(name, value):
 def test_every_image_family_is_either_defaulted_or_measured_and_kept_bf16():
     undefaulted = {f.name for f in _FAMILIES if f.te_quant_auto is None}
     # FLUX.3 Klein and Qwen-Image-2.1 default to int8 ConvRot on their own; everything else is listed above.
-    assert undefaulted == set(KEEP_BF16)
+    assert undefaulted == set(KEEP_BF16) | set(IN_TREE_TE_DEFAULT)
     for name in KEEP_BF16:
         assert resolve_te_quant_request(None, _fam(name).te_quant_auto) == (None, False)
+    import inspect
+
+    from core.inference import diffusion_minimax_h3_image as h3i
+
+    default = inspect.signature(h3i.load_minimax_h3_image_pipeline).parameters["text_encoder_quant"]
+    assert default.default == "int8"
 
 
 @pytest.mark.parametrize(

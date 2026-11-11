@@ -84,7 +84,7 @@ def cached_revision(cache: Optional[Path], repo: str) -> Optional[str]:
     if cache is None or "/" not in repo or ".." in repo:
         return None
     try:
-        sha = (_repo_dir(cache, repo) / "refs" / "main").read_text().strip()
+        sha = (_repo_dir(cache, repo) / "refs" / "main").read_text(encoding = "utf-8").strip()
     except OSError:
         return None
     return sha if _SHA.match(sha) else None

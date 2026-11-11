@@ -104,6 +104,17 @@ def test_run_with_unsaved_editor_doc_and_compile_errors(flows_client):
     assert broken.json()["detail"]["errors"][0]["node_id"] == "s"
 
 
+def test_an_app_run_with_new_input_values_does_not_reuse_their_baked_outputs(flows_client):
+    baked = {**_simple(), "baked": {"a": {"text": "baked"}}}
+    flows_client.post("/api/flows", json = {"doc": baked})
+    same = flows_client.post("/api/flows/flow1/runs", json = {"doc": baked}).json()["run_id"]
+    assert wait_run(flows_client, same)["run"]["outputs"] == {"greeting": "baked"}
+    filled = {**baked, "nodes": [dict(n) for n in baked["nodes"]]}
+    filled["nodes"][0] = {**filled["nodes"][0], "params": {"value": "typed in the app"}}
+    run_id = flows_client.post("/api/flows/flow1/runs", json = {"doc": filled}).json()["run_id"]
+    assert wait_run(flows_client, run_id)["run"]["outputs"] == {"greeting": "typed in the app"}
+
+
 def test_a_run_refuses_a_document_of_another_flow(flows_client):
     flows_client.post("/api/flows", json = {"doc": _simple()})
     other = flows_client.post("/api/flows/flow1/runs", json = {"doc": _simple("flow2")})
