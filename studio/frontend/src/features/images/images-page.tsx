@@ -2413,7 +2413,6 @@ export function ImagesPage({
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
-  // A family that runs a fixed step count (MiniMax-H3-Image: 6) keeps the slider on it.
   const fixedSteps = !external && status?.loaded === true ? fixedStepsFor(status.family) : null;
   useEffect(() => {
     if (fixedSteps !== null && steps !== fixedSteps) setSteps(fixedSteps);

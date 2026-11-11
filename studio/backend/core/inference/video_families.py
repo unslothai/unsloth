@@ -1173,7 +1173,6 @@ def unsupported_video_checkpoint_reason(
         for pattern, message in _UNSUPPORTED_VIDEO_CHECKPOINTS:
             if re.search(pattern, needle):
                 return message
-    # A MiniMax-H3-Image folder under any name: its own metadata says so.
     if any(is_minimax_h3_image_folder(str(identifier)) for identifier in identifiers if identifier):
         return _H3_IMAGE_NOT_VIDEO
     return None

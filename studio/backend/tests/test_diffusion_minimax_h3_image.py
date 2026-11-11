@@ -63,9 +63,6 @@ def pipe(h3i, release):
     return h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
 
 
-# -- vendored source ----------------------------------------------------------------------------------------------
-
-
 def test_vendored_files_match_the_manifest():
     manifest = json.loads(
         (_BACKEND / "vendor" / "diffusers_minimax_h3_image_manifest.json").read_text(
@@ -81,7 +78,6 @@ def test_vendored_files_match_the_manifest():
         if rel.endswith(".py") and rel not in manifest["guard_files"]:
             text = (_BACKEND / "vendor" / rel).read_text(encoding = "utf-8")
             assert "Licensed under the Apache License, Version 2.0" in text
-            # Every relative import was rewritten onto the installed diffusers.
             assert "\nfrom ." not in text
 
 
@@ -102,9 +98,6 @@ def test_classes_resolve_to_diffusers_or_the_vendored_copy(h3i):
     assert h3i.classes_source() in ("diffusers", "vendored")
     assert h3i.in_tree_class("MiniMaxH3DiTModel") is t
     assert h3i.in_tree_class("MiniMaxH3ImagePipeline") is h3i.MiniMaxH3ImagePipeline
-
-
-# -- conversion ---------------------------------------------------------------------------------------------------
 
 
 def test_native_release_loads_bitwise(h3i, release):
@@ -216,9 +209,6 @@ def test_native_config_maps_and_refuses_the_video_dit(h3i):
         h3i.transformer_config_from_native({**real, "audio_enabled": True})
 
 
-# -- AdaLN table ---------------------------------------------------------------------------------------------------
-
-
 def _forward_inputs(
     h3i,
     timesteps,
@@ -268,7 +258,6 @@ def test_table_adaln_matches_the_dense_projection(h3i, release, n_ref):
         with torch.no_grad():
             want = dense(**kw)[0]
             got = table(**kw)[0]
-        # Same bf16 rows the dense projection emits; only the batch of timesteps it ran over differs.
         assert torch.allclose(got, want, atol = 2e-2, rtol = 0), (i, (got - want).abs().max())
         assert (got - want).abs().mean() < 2e-3
 
@@ -296,9 +285,6 @@ def test_grid_has_seven_timesteps_and_refuses_off_grid(h3i):
     assert embedder(torch.tensor(grid)).argmax(dim = 1).tolist() == list(range(7))
     with pytest.raises(ValueError, match = "fixed 6-step grid"):
         embedder(torch.tensor([0.5]))
-
-
-# -- recipe --------------------------------------------------------------------------------------------------------
 
 
 def test_canvas_rule(h3i):
@@ -338,7 +324,6 @@ def test_packed_layout_text_references_target(h3i):
     assert tok[:7].tolist() == tags.tolist() and bool((tok[7:] == h3i.H3_IMAGE_IMAGE_TAG).all())
     assert pos.dtype == torch.float64
     assert pos[:7, 0].tolist() == list(range(7))
-    # One rotary frame slot per reference, then the target, starting where the text ends.
     assert set(pos[7:13, 0].tolist()) == {7.0} and set(pos[13:17, 0].tolist()) == {8.0}
     assert set(pos[17:, 0].tolist()) == {9.0} and pos.shape[0] == 7 + 10 + 16
     plan = h3i.row_timestep_plan(torch.tensor([0.0, 0.5]), pos.shape[0], img[:nref])
@@ -381,9 +366,6 @@ def test_vae_encode_decode_shapes(h3i, release):
     assert z.shape[1] == 24 and z.shape[-2:] == (4, 6)
     y = vae.decode(z.squeeze(2) if z.ndim == 5 else z, return_dict = False)[0]
     assert y.shape == (1, 3, 64, 96)
-
-
-# -- pipeline --------------------------------------------------------------------------------------------------------
 
 
 def test_t2i_renders_at_the_requested_size_and_is_seeded(h3i, pipe):
@@ -500,9 +482,6 @@ def test_step_callback_sees_bchw_latents_and_interrupt_stops(h3i, pipe):
     assert out.images == []
 
 
-# -- quantization / placement ---------------------------------------------------------------------------------------
-
-
 def test_int8_quantizes_only_the_block_linears(h3i, release):
     import torch
 
@@ -589,9 +568,6 @@ def test_streamer_runs_blocks_from_the_host(h3i):
     got = blocks[2](blocks[1](blocks[0](x)))
     assert torch.equal(got, want)
     streamer.remove()
-
-
-# -- Studio routing and the backend ---------------------------------------------------------------------------------
 
 
 def test_family_routing_and_defaults():
@@ -734,9 +710,6 @@ def test_int8_linears_pad_rows_to_the_supported_multiple_exactly(h3i):
     assert torch.equal(got, want)
 
 
-# -- hosted pre-quantized DiT ---------------------------------------------------------------------------------------
-
-
 def test_the_family_declares_the_hosted_dits(h3i):
     from core.inference.diffusion_families import (
         detect_family,
@@ -829,13 +802,9 @@ def test_the_prepare_hook_installs_the_curve_form(h3i):
     # The pipeline's raw float32 timesteps (0.999 reference rows included) drive the curve directly.
     t = torch.tensor([0.25, 0.999], dtype = torch.float32)
     assert torch.equal(model.time_proj(t), t)
-    # A dense checkpoint (no form) is left alone.
     dense = h3i.transformer_class()(**cfg).eval()
     prepare(dense, {})
     assert dense.transformer_blocks[0].adaln_proj.linear.in_features != 8
-
-
-# -- devices ---------------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -863,9 +832,6 @@ def test_the_backend_refuses_a_cpu_host_before_loading(h3i, release, monkeypatch
     with pytest.raises(ValueError, match = "needs an NVIDIA or AMD GPU"):
         backend.validate_load_request(str(root), model_kind = "pipeline")
     assert backend._state is None
-
-
-# -- routing between the Images and Video pages ---------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -962,11 +928,7 @@ def test_the_hosted_files_conditioning_path_runs_dense(h3i, monkeypatch):
     assert not is_quantized_linear(model.context_embedder)
     assert not is_quantized_linear(model.token_refiner.refiner_blocks[0])
     assert torch.equal(model.context_embedder.weight, want)
-    # The denoiser blocks keep their quantized weights.
     assert is_quantized_linear(model.transformer_blocks[0])
-
-
-# -- an encoder larger than the plan budgeted (bf16 fallback, local text_encoder/ folder) ---------------------------
 
 
 def _release_copy(root, dst, with_encoder):
@@ -1099,7 +1061,6 @@ def test_a_streamed_dit_is_placed_before_the_encoder_is_materialised(
     seen = []
 
     def load_te(scheme, **kw):
-        # The streamer's hooks exist on the non-resident blocks by the time the encoder loads.
         blocks = pipe_blocks[0]
         seen.append([bool(b._forward_pre_hooks) for b in blocks])
         return copy.deepcopy(te), "int8"
@@ -1149,7 +1110,6 @@ def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i):
     # The whole bf16 encoder no longer fits beside the DiT: the DiT stays, the encoder streams.
     again = h3i.replan_for_encoder(plan, h3i.H3_IMAGE_TE_BF16_GB, args)
     assert again.placement == h3i.PLACE_DIT_RESIDENT and again.te_gb == h3i.H3_IMAGE_TE_BF16_GB
-    # Within the slack: the plan is kept as it is.
     assert h3i.replan_for_encoder(plan, h3i.H3_IMAGE_TE_INT8_GB + 0.5, args) is plan
     small = dict(args, vram_gb = 6.0)
     with pytest.raises(RuntimeError, match = "no placement fits"):

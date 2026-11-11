@@ -1492,7 +1492,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "MiniMaxH3ImageTransformer2DModel",
         base_repo = "MiniMaxAI/MiniMax-H3-Image",
         aliases = ("minimax_h3_image", "minimaxh3image", "h3-image", "h3_image"),
-        # Guidance-distilled to 6 fixed PDD steps: no CFG, no negative prompt.
         uses_negative_prompt = False,
         uses_guidance = False,
         # Text-to-image that also takes 1-16 reference images (<Picture N>); edits go through the same call.
@@ -1500,7 +1499,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         reference_edit = True,
         max_condition_images = 16,
         dimension_multiple = 32,
-        # Card: 4-20 MP working range, 16 MP sizes up to 6272x2688.
         max_output_side = 6272,
         max_output_pixels = 20 * 1024 * 1024,
         prompt_hint = (
@@ -2295,7 +2293,6 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
-    # MiniMax-H3-Image: 6 PDD steps, one output head each, no CFG (guidance 1).
     ("minimax-h3-image", 6, 1.0),
     ("minimax_h3_image", 6, 1.0),
     ("minimaxh3image", 6, 1.0),

@@ -162,7 +162,6 @@ test("the page opens on 6 steps at guidance 1, and the step count is locked", ()
     steps: 6,
     guidance: 1,
   });
-  // An opaque local folder resolves through the explicit family.
   assert.deepEqual(
     defaultsFor(defaultsKeyFor("/models/opaque", "minimax-h3-image")),
     { steps: 6, guidance: 1 },
@@ -187,7 +186,6 @@ test("its size presets are the 4 MP and 16 MP tables, all inside the backend's l
   }
   assert.equal(presets.filter((p) => p.label.endsWith("16 MP")).length, 8);
   assert.match(familyPresetsCopy("minimax-h3-image").hint, /at least 4 MP/);
-  // Every other family keeps the 2K table.
   assert.deepEqual(
     familyPresetsWithin("flux.3-klein", limits),
     presetsWithin(limits),

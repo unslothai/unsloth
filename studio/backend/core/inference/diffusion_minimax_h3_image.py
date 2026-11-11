@@ -40,7 +40,6 @@ H3_IMAGE_BASE_REPO = "MiniMaxAI/MiniMax-H3-Image"
 # The image release conditions on MiniMax-H3's text encoder without carrying it (model_index.json names this repo).
 H3_IMAGE_TEXT_ENCODER_REPO = "MiniMaxAI/MiniMax-H3"
 H3_IMAGE_PIPELINE_CLASS = "MiniMaxH3ImagePipeline"
-# The diffusers class; the release's own model_index names its native class MiniMaxH3DiTModel.
 H3_IMAGE_TRANSFORMER_CLASS = "MiniMaxH3ImageTransformer2DModel"
 H3_IMAGE_NATIVE_TRANSFORMER_CLASS = "MiniMaxH3DiTModel"
 H3_IMAGE_VAE_CLASS = "AutoencoderKLMiniMaxH3Image"
@@ -86,7 +85,6 @@ H3_IMAGE_16MP_SIZES: tuple[tuple[int, int], ...] = (
     (3072, 5472),
     (6272, 2688),
 )
-# The UI presets: the 4 MP default canvas per aspect plus the card's 16 MP table.
 H3_IMAGE_PRESETS: tuple[tuple[int, int], ...] = (
     (2048, 2048),
     (2368, 1760),
@@ -97,7 +95,6 @@ H3_IMAGE_PRESETS: tuple[tuple[int, int], ...] = (
     (1536, 2720),
 ) + H3_IMAGE_16MP_SIZES
 
-# Decimal GB, from the safetensors headers.
 H3_IMAGE_DIT_BF16_GB = 66.3
 H3_IMAGE_DIT_TABLE_BF16_GB = 40.3
 H3_IMAGE_DIT_TABLE_INT8_GB = 21.9
@@ -107,7 +104,6 @@ H3_IMAGE_TE_INT8_GB = 27.2
 
 PDD_HEADS_FILE = "pdd_fused_heads.safetensors"
 PDD_CONFIG_FILE = "pdd_config.json"
-# A converted (diffusers-layout) repo keeps these beside the native transformer/ and vae/.
 DIFFUSERS_TRANSFORMER_SUBFOLDER = "transformer_diffusers"
 DIFFUSERS_VAE_SUBFOLDER = "vae_diffusers"
 
@@ -136,10 +132,6 @@ QUANT_LINEAR_SUFFIXES = (
 def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
 
-
-# ---------------------------------------------------------------------------------------------------------------------
-# Classes: diffusers when it ships them, else the vendored PR copy.
-# ---------------------------------------------------------------------------------------------------------------------
 
 _VENDOR_DIR = Path(__file__).resolve().parents[2] / "vendor" / "diffusers_minimax_h3_image"
 _VENDOR_PACKAGE = "unsloth_studio_vendor_minimax_h3_image"
@@ -174,7 +166,6 @@ def _diffusers_class(name: str) -> Any:
         cls = getattr(diffusers, name, None)
     except Exception:  # noqa: BLE001 - lazy-import failure inside diffusers
         return None
-    # A dummy object (missing backend) has no from_config.
     return (
         cls if cls is not None and hasattr(cls, "from_config") and hasattr(cls, "forward") else None
     )
@@ -213,11 +204,6 @@ def in_tree_class(name: str) -> Any:
     if name == "MiniMaxH3ImageScheduler":
         return MiniMaxH3ImageScheduler
     raise KeyError(name)
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# Native checkpoint -> diffusers layout, applied per tensor while streaming.
-# ---------------------------------------------------------------------------------------------------------------------
 
 
 def transformer_config_from_native(native: dict, num_pdd_heads: int = H3_IMAGE_STEPS) -> dict:
@@ -265,8 +251,6 @@ def vae_config_from_native(native: dict) -> dict:
     bad = {k: native.get(k) for k, v in expected.items() if native.get(k, v) != v}
     if bad:
         raise ValueError(f"MiniMax-H3-Image VAE tile geometry differs from the released one: {bad}")
-    # The release leaves the CNN encoder geometry to the class defaults; a config that names it (tiny test copies)
-    # is passed through.
     geometry = {
         k: list(native[k])
         for k in ("block_out_channels", "spatial_downsample_factors", "temporal_downsample_factors")
@@ -416,11 +400,6 @@ def convert_native_vae_tensor(key: str, tensor: Any, heads: int, head_dim: int) 
     return [(name, tensor)]
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Fixed-grid AdaLN table.
-# ---------------------------------------------------------------------------------------------------------------------
-
-
 def grid_timesteps(sigmas: Sequence[float] = H3_IMAGE_SIGMAS) -> list[float]:
     """Every timestep a render can ask the DiT for: the float32 ``1 - sigma`` of each step, then the reference
     level. Float32 values, as the pipeline builds them."""
@@ -448,7 +427,6 @@ def _grid_embedder_class() -> Any:
 
         def __init__(self, grid: Sequence[float]) -> None:
             super().__init__()
-            # float32: also the dtype the transformer casts its timesteps to before the embedder.
             self.register_buffer(
                 "grid", torch.tensor(list(grid), dtype = torch.float32), persistent = False
             )
@@ -570,11 +548,6 @@ def convert_dense_transformer_to_table(
         )
     install_grid_time_embedding(transformer, grid)
     return converted
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# Sampling recipe.
-# ---------------------------------------------------------------------------------------------------------------------
 
 
 def canvas_size(
@@ -790,10 +763,6 @@ class MiniMaxH3ImageScheduler(_SchedulerMixin, _ConfigMixin):
         return t * sample + (1.0 - t) * noise
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Placement: resident, sequential (one big component on the device at a time) or streamed blocks.
-# ---------------------------------------------------------------------------------------------------------------------
-
 PLACE_RESIDENT = "resident"
 PLACE_DIT_RESIDENT = "dit_resident"
 PLACE_SEQUENTIAL = "sequential"
@@ -811,7 +780,6 @@ class H3ImagePlan:
     vae_gb: float
     vram_gb: Optional[float]
     host_gb: Optional[float]
-    # streamed tier only: how many DiT blocks / TE layers stay on the device
     dit_resident_blocks: Optional[int] = None
     te_resident_layers: Optional[int] = None
     # False: the encoder is loaded for each encode and freed after (host RAM cannot hold it beside the DiT)
@@ -929,7 +897,6 @@ def plan_placement(
         plan.te_resident_layers = max(0, min(te_layers, int(spare / layer_gb)))
         reasons.append(f"{plan.te_resident_layers}/{te_layers} encoder layers stay on the device")
     elif choice == PLACE_STREAM:
-        # The encoder's embedding + vision tower stay on the card in this tier too.
         spare = vram_gb - act - margin - vae_gb - DIT_TOP_GB - TE_TOP_GB - block_gb
         plan.dit_resident_blocks = max(0, min(num_blocks, int(spare / block_gb)))
         # The resident blocks hold their room through the encode, so every encoder layer streams.
@@ -938,8 +905,6 @@ def plan_placement(
             f"{plan.dit_resident_blocks}/{num_blocks} DiT blocks stay on the device; encoder streams"
         )
     if host_gb is not None:
-        # What the host holds once placed: the DiT blocks that are not on the card (and, sequential, the VAE),
-        # plus the whole encoder while it loads (it is materialised on the host before placement).
         dit_host = {
             PLACE_RESIDENT: 0.0,
             PLACE_DIT_RESIDENT: 0.0,
@@ -1041,11 +1006,6 @@ class ModuleListStreamer:
         self.handles = []
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# The pipeline.
-# ---------------------------------------------------------------------------------------------------------------------
-
-
 def torch_no_grad(fn: Callable) -> Callable:
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -1098,14 +1058,11 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         )
         self._interrupt = False
         self._num_timesteps = H3_IMAGE_STEPS
-        # Set by the loader: placement plan, compute device, and the per-prompt encoder loader (low-host tier).
         self._unsloth_h3_plan: Optional[H3ImagePlan] = None
         self._unsloth_h3_device: Any = None
         self._unsloth_h3_te_loader: Optional[Callable[[], Any]] = None
         self._unsloth_h3_streamers: list = []
         self._unsloth_h3_last_stats: dict = {}
-
-    # -- placement ---------------------------------------------------------------------------------------------------
 
     @property
     def interrupt(self) -> bool:
@@ -1145,7 +1102,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             module.to("cpu")
             _empty_cache()
         if name == "text_encoder" and self._unsloth_h3_te_loader is not None:
-            # Low-host tier: the encoder does not fit beside the DiT, so it is freed after every encode.
             self.text_encoder = None
             for streamer in list(self._unsloth_h3_streamers):
                 if getattr(streamer, "_unsloth_role", None) == "text_encoder":
@@ -1175,8 +1131,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         gc.collect()
         _empty_cache()
 
-    # -- encoders ----------------------------------------------------------------------------------------------------
-
     def _processor(self) -> Any:
         if self.processor is not None:
             return self.processor
@@ -1200,7 +1154,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             start = tokenizer.convert_tokens_to_ids("<|vision_start|>")
             pad = tokenizer.convert_tokens_to_ids("<|image_pad|>")
             end = tokenizer.convert_tokens_to_ids("<|vision_end|>")
-            # The label carries no angle brackets, unlike the <Picture i> the prompt refers to it by.
             for index, grid in enumerate(vision["image_grid_thw"]):
                 label = tokenizer(f"Picture {index + 1}: ", add_special_tokens = False)["input_ids"][
                     :max_len
@@ -1257,8 +1210,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         finally:
             self._leave("vae")
 
-    # -- call --------------------------------------------------------------------------------------------------------
-
     @staticmethod
     def prepare_references(images: Any) -> tuple[list, list]:
         """(VAE copies, encoder copies) of the references: upright, RGB, short edge bounded per consumer."""
@@ -1284,7 +1235,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
 
         def resize(image: Any, lo: int, hi: int) -> Any:
             size = bound_short_edge(*image.size, lo, hi)
-            # diffusers VaeImageProcessor.resize (PIL, lanczos), as the reference resize step does.
             return image if image.size == size else image.resize(size, resample = Image.LANCZOS)
 
         vae_images = [resize(i, *H3_IMAGE_REFERENCE_SHORT_EDGE) for i in prepared]
@@ -1513,7 +1463,6 @@ def _module_dtype(module: Any, skip_fp32: bool = False) -> Any:
             and any(k in name for k in ("proj_in", "time_embedder", "pdd_proj_out", "rope"))
         ):
             continue
-        # torchao subclass weights report their logical dtype
         return p.dtype
     return torch.float32
 
@@ -1652,10 +1601,6 @@ class _ReadLayerReached(Exception):
     """Stops the conditioner once the read layer has run: nothing after it is used."""
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Loader: streams the native shards into a table-form, optionally quantized, placed transformer.
-# ---------------------------------------------------------------------------------------------------------------------
-
 # Metadata a hosted table-form checkpoint declares (the prequant_repos extension point), mirroring video's curve form.
 ADALN_FORM_KEY = "adaln_form"
 ADALN_GRID_FORM = "grid_table"
@@ -1777,7 +1722,6 @@ def quantize_block_(block: Any, scheme: str, *, device: Any) -> int:
         from .diffusion_convrot import rotate_linears_
 
         modules = dict(block.named_modules())
-        # Every released axis (5376, 7168, 14336) divides the group; a narrower test copy runs plain int8.
         rotatable = [n for n in names if modules[n].in_features % CONVROT_GROUP == 0]
         rotate_linears_(block, rotatable, CONVROT_GROUP)
     wanted = set(names)
@@ -2210,7 +2154,6 @@ def load_h3_image_transformer(
         return out
 
     try:
-        # 1. Everything outside the block stack (small): embedders, refiner, output norm, PDD heads.
         top: dict = {}
         block_prefix = "blocks." if native else "transformer_blocks."
         for key in shard_map:
@@ -2246,7 +2189,6 @@ def load_h3_image_transformer(
             rows = dense_adaln_rows(temb, lin.weight, lin.bias, dtype, target)
             convert_norm_out_to_table(model.norm_out, rows)
         check()
-        # 2. The block stack, one block at a time.
         for index, block in enumerate(model.transformer_blocks):
             native_prefix = f"blocks.{index}." if native else f"transformer_blocks.{index}."
             state = converted(native_prefix)
@@ -2270,7 +2212,6 @@ def load_h3_image_transformer(
         if keep_on_device:
             model.to(target)
         else:
-            # Everything but the blocks is small (refiner, embedders, heads): it lives where the blocks run.
             for name, child in model.named_children():
                 if name != "transformer_blocks":
                     child.to(target if keep_on_device else "cpu")
@@ -2443,7 +2384,6 @@ def load_minimax_h3_image_pipeline(
     dtype = dtype or torch.bfloat16
     device = torch.device(device)
     vram, host = device_budgets(device)
-    # Small files first; the 66 GB of DiT shards only once no hosted prequant DiT replaces them.
     patterns = [
         "model_index.json",
         PDD_CONFIG_FILE,
@@ -2564,9 +2504,7 @@ def load_minimax_h3_image_pipeline(
     engaged_te = te_scheme if text_encoder is None else "supplied"
 
     def _encoder_fits(te_gb: float, what: str) -> None:
-        # Raises (VRAM or host) before an encoder larger than the planned one is materialised.
         again = replan_for_encoder(plan, te_gb, plan_args)
-        # With no accelerator budget the planner skips its host checks, and the host holds everything.
         cpu_short = (
             plan.vram_gb is None
             and plan.host_gb is not None
@@ -2580,7 +2518,6 @@ def load_minimax_h3_image_pipeline(
 
     local_te = root / "text_encoder"
     if text_encoder is None and (local_te / "config.json").is_file():
-        # A local folder that carries its own encoder reads it there; a Hub snapshot never fetches that folder.
         local_gb = sum(f.stat().st_size for f in local_te.glob("*.safetensors")) / 1e9
         if local_gb > plan.te_gb + 1.0:
             _encoder_fits(local_gb, "the text encoder in this model folder")
@@ -2604,7 +2541,6 @@ def load_minimax_h3_image_pipeline(
         )
     check()
     if text_encoder is not None:
-        # A bf16 fallback or local text_encoder/ is far larger than the int8 size the plan assumed: plan again.
         plan = replan_for_encoder(plan, _module_gb(text_encoder), plan_args)
     pipe = MiniMaxH3ImagePipeline(
         transformer = transformer,
@@ -2618,7 +2554,7 @@ def load_minimax_h3_image_pipeline(
     pipe._unsloth_h3_device = str(device)
     pipe._unsloth_h3_owned = frozenset(owned)
     if text_encoder is None:
-        # Low-host tier: load the encoder for each prompt, free it after.
+
         def _refuse_bf16() -> None:
             raise RuntimeError(
                 "MiniMax-H3-Image: Studio's hosted int8 text encoder could not be loaded, and the 66.7 GB bf16 "
@@ -2646,12 +2582,10 @@ def load_minimax_h3_image_pipeline(
     else:
         _place_text_encoder(pipe, text_encoder, plan, device)
     if plan.placement != PLACE_SEQUENTIAL:
-        # The VAE (2.3 GB) stays on the card in every tier but the one that swaps whole components.
         vae.to(device)
     if plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
         transformer.to(device)
     elif plan.placement == PLACE_SEQUENTIAL:
-        # A replan can land here after the DiT was loaded onto the card for a resident tier.
         transformer.to("cpu")
     elif plan.placement == PLACE_STREAM:
         resident = int(plan.dit_resident_blocks or 0)
@@ -2662,7 +2596,6 @@ def load_minimax_h3_image_pipeline(
         pipe._unsloth_h3_streamers.append(early_streamer)
         early_streamer = None
     if early_streamer is not None:
-        # A replan left the streamed tier: the code above placed the DiT for the new one.
         early_streamer.remove()
     report = H3ImageLoadReport(
         scheme = scheme,

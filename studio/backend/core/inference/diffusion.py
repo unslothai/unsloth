@@ -5501,7 +5501,6 @@ class DiffusionBackend:
         if text_encoder_files or vae_file:
             self._validate_component_files(fam, kind, repo_id, text_encoder_files, vae_file)
         if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
-            # Refused here, before anything is staged or the resident model is evicted.
             from .diffusion_minimax_h3_image import h3_image_device_refusal
             refusal = h3_image_device_refusal(resolve_diffusion_device_target().device)
             if refusal:
@@ -16208,7 +16207,6 @@ class DiffusionBackend:
         uninstall_static_step_skip(state.pipe)
         prompt_cache.release(state.pipe)
         if getattr(state.family, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
-            # Its streaming hooks hold the host copies of the streamed blocks: drop them with the components.
             try:
                 state.pipe.release()
             except Exception as exc:  # noqa: BLE001 - teardown is best effort; the pipe is dropped below anyway

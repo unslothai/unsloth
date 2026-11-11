@@ -114,7 +114,6 @@ function isMinimaxH3Image(family: string | null | undefined): boolean {
   return (family ?? "").trim().toLowerCase() === MINIMAX_H3_IMAGE_FAMILY;
 }
 
-/** The size presets the page offers for the loaded family, within its limits. */
 export function familyPresetsWithin(
   family: string | null | undefined,
   limits: SizeLimits,
@@ -129,7 +128,6 @@ export function familyPresetsWithin(
   );
 }
 
-/** Label and hint for the family's preset picker. */
 export function familyPresetsCopy(family: string | null | undefined): {
   label: string;
   hint: string;
@@ -153,7 +151,6 @@ export function inputImageWord(
   return isMinimaxH3Image(family) ? "Picture" : "Image";
 }
 
-/** How the prompt names input ``n`` (1-based) for the loaded family. */
 export function inputImageReference(
   family: string | null | undefined,
   n: number,
