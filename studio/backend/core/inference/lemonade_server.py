@@ -141,8 +141,10 @@ class LemonadeServer:
             # Nothing yet means the drain may still be behind: keep waiting to the deadline.
             elif seen > mark and time.monotonic() - changed >= quiet_for:
                 break
+        # Copy before counting: a line drained in between would shift the window past the mark.
+        tail = list(self._tail)
         count = min(self._lines_seen - mark, lines)
-        return list(self._tail)[-count:] if count > 0 else []
+        return tail[-count:] if count > 0 else []
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -238,15 +240,20 @@ class LemonadeServer:
                 **child_popen_kwargs(_kill_with_the_parent),
             )
 
-        proc = spawn_on_lifetime_thread(_spawn)
-        adopt_pid(proc.pid)
-        self._process = proc
-        self.port = port
-        self.api_key = api_key
-        # Shutdown may have swept children before this process was adopted.
-        if is_process_shutting_down():
-            self._kill_locked()
-            raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
+        try:
+            proc = spawn_on_lifetime_thread(_spawn)
+            adopt_pid(proc.pid)
+            self._process = proc
+            self.port = port
+            self.api_key = api_key
+            # Shutdown may have swept children before this process was adopted.
+            if is_process_shutting_down():
+                self._kill_locked()
+                raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
+        except BaseException:
+            # No drain thread will close it.
+            self._close_log_file(log_file)
+            raise
         self._drain_thread = threading.Thread(
             target = self._drain, args = (proc, log_file), daemon = True, name = "lemond-drain"
         )
@@ -319,12 +326,16 @@ class LemonadeServer:
         except Exception:  # noqa: BLE001 -- the pipe closes at teardown
             pass
         finally:
-            if log_file is not None:
-                with self._log_lock:
-                    # A restart may already have opened the next file; only close this one.
-                    if self._log_file is log_file:
-                        self._log_file = None
-                    log_file.close()
+            self._close_log_file(log_file)
+
+    def _close_log_file(self, log_file) -> None:
+        if log_file is None:
+            return
+        with self._log_lock:
+            # A restart may already have opened the next file; only close this one.
+            if self._log_file is log_file:
+                self._log_file = None
+            log_file.close()
 
     def _wait_ready(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout

@@ -237,7 +237,7 @@ def _explain(server: Optional[LemonadeServer], mark: int, message: str) -> str:
         lemonade_log = log_name,
         lemonade_output = lines,
     )
-    if explained == message:
+    if explained == message and log_name:
         return f"{message} (Lemonade's output is on the Logs page.)"
     return explained
 
