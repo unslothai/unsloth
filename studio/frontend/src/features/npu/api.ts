@@ -125,9 +125,9 @@ export function npuSizeLabel(sizeGb: number | null): string | null {
     : `${sizeGb.toFixed(1)} GB`;
 }
 
-/** FastFlowLM pins most repos to a branch, so their card is HF's latest, not the hash-checked files. */
+/** FastFlowLM pins repos by branch, which moves; only a commit revision matches the hash-checked files. */
 export function npuReadmeNote(model: NpuModel): string | null {
-  return model.hf_repo && !model.hf_revision
+  return model.hf_repo && !/^[0-9a-f]{40}$/i.test(model.hf_revision ?? "")
     ? "Latest on Hugging Face (may be newer than the installed files)"
     : null;
 }

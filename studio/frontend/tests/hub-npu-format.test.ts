@@ -46,4 +46,6 @@ test("the Hub switches to NPU on the link's tab before the clearing effect can d
   // setFormatFilter picks Discover or On Device from the current tab.
   assert.match(effects, /if \(npuLinkPending\) setFormatFilter\("npu"\);/);
   assert.match(effects, /if \(\s*!urlNpu \|\|\s*npuLinkPending \|\|/);
+  // Closing the pane forgets the link, so the same link followed again switches again.
+  assert.match(effects, /if \(!urlNpu\) setNpuLinkShown\(null\);/);
 });

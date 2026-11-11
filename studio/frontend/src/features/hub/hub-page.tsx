@@ -678,7 +678,9 @@ export function ModelsPage() {
       npuSupported: npuSource !== undefined,
     });
   useEffect(() => {
-    if (showNpuCatalog && urlNpu) setNpuLinkShown(urlNpu);
+    // Reset on close so following the same link again switches again.
+    if (!urlNpu) setNpuLinkShown(null);
+    else if (showNpuCatalog) setNpuLinkShown(urlNpu);
   }, [showNpuCatalog, urlNpu]);
   // Leaving the NPU list (format, tab, kind) or losing the row closes its pane.
   useEffect(() => {
