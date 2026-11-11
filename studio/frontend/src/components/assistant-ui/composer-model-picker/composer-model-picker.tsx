@@ -2063,12 +2063,12 @@ export function ComposerModelPicker({
                     aria-label="Collapse the model list"
                     aria-expanded={true}
                     onClick={() => setExpanded(false)}
-                    className="mr-[calc(4px*var(--ui-space-scale,1))] grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                    className="mr-[calc(8px*var(--ui-space-scale,1))] grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
                   >
                     <HugeiconsIcon
                       icon={ChevronDownStandardIcon}
                       strokeWidth={1.5}
-                      className="size-4 rotate-180"
+                      className="size-4 translate-x-[-0.4px] translate-y-[-0.4px] rotate-180"
                     />
                   </button>
                 </Hint>
