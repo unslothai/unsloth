@@ -772,8 +772,14 @@ class LemonadeNpuBackend:
 
     def delete_downloaded(self) -> tuple[int, list[str]]:
         """Delete every downloaded model through lemond, so its registry matches the disk."""
+        # A failed pull keeps its files to resume, but lemond calls that model not downloaded.
+        on_disk = {checkpoint for _, checkpoint in self.model_folders() if checkpoint is not None}
         try:
-            model_ids = [str(row.get("id")) for row in self._flm_rows() if row.get("downloaded")]
+            model_ids = [
+                str(row.get("id"))
+                for row in self._flm_rows()
+                if row.get("downloaded") or row.get("checkpoint") in on_disk
+            ]
         except (NpuError, LemonadeUnavailable) as exc:
             return 0, [str(exc)]
         deleted = 0

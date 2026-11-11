@@ -164,6 +164,14 @@ def test_a_model_lemond_refuses_to_delete_is_reported_and_kept(npu_home):
     assert result["errors"] == ["Unload the model before deleting it."]
 
 
+def test_clearing_takes_a_partial_pull_lemond_calls_not_downloaded(npu_home):
+    npu_home.models[1]["downloaded"] = False
+    result = purge_cache("npu_models")
+    assert npu_home.deleted == ["qwen3-0.6b-FLM", "qwen3-4b-FLM", "embed-gemma-300m-FLM"]
+    assert not (npu_home.root / "flm" / "models" / "Qwen3-4B-NPU2").exists()
+    assert result["errors"] == []
+
+
 def test_a_folder_deletes_by_checkpoint_even_for_a_model_the_catalog_hides(npu_home):
     assert "embed-gemma-300m-FLM" not in [model.id for model in npu_home.catalog()]
     assert npu_home.delete_checkpoint("embed-gemma:300m") == "embed-gemma-300m-FLM"
