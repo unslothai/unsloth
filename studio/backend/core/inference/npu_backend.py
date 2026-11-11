@@ -58,6 +58,14 @@ _FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192, "qwen3.8-dflash2:27b": 8192}
 # lemond's console format: "<date> <time> [Error] (Router) <message>".
 _LEMOND_ERROR = re.compile(r"\[(?:Error|Fatal)\]\s*\([^)]*\)\s*(.+)")
 
+# Windows maps at most about half of system RAM to the NPU (lemonade-sdk/lemonade#839, surfacing
+# as FastFlowLM#904); taken from those issues, not measured here, so it only ever warns.
+_WINDOWS_NPU_RAM_SHARE = 0.5
+_NPU_OS_RESERVE_GB = 2.0
+# A loaded model holds its weights plus context buffers and the runtime; a flat 1 GB covers those
+# at the default 8192 context without flagging models that sit just under the window.
+_NPU_LOAD_MARGIN_GB = 1.0
+
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
     ("npu_driver_ok", "The AMD NPU driver is missing or too old."),
@@ -98,6 +106,8 @@ class NpuModel:
     resume_percent: Optional[int] = None
     hf_repo: Optional[str] = None
     hf_revision: Optional[str] = None
+    memory_needed_gb: Optional[float] = None
+    fits_memory: Optional[bool] = None
 
     @property
     def vision(self) -> bool:
@@ -130,6 +140,8 @@ class NpuModel:
             "resume_percent": self.resume_percent,
             "hf_repo": self.hf_repo,
             "hf_revision": self.hf_revision,
+            "memory_needed_gb": self.memory_needed_gb,
+            "fits_memory": self.fits_memory,
         }
 
 
@@ -168,6 +180,40 @@ class NpuResident:
     api_key: str
     # Largest context free RAM held at load time; None when it could not be priced.
     fitted_context_length: Optional[int] = None
+
+
+def _total_ram_gb() -> Optional[float]:
+    try:
+        import psutil
+        return psutil.virtual_memory().total / (1024**3)
+    except Exception as exc:  # noqa: BLE001 -- no reading means no warning, never a failed listing
+        logger.debug("Reading system RAM for the NPU memory window failed: %s", exc)
+        return None
+
+
+def npu_memory_window_gb(
+    total_ram_gb: Optional[float], platform: Optional[str] = None
+) -> Optional[float]:
+    """About how much memory this machine can give the NPU, or None when RAM is unknown."""
+    if not total_ram_gb or total_ram_gb <= 0:
+        return None
+    if (platform or sys.platform) == "win32":
+        return round(total_ram_gb * _WINDOWS_NPU_RAM_SHARE, 1)
+    return round(max(total_ram_gb - _NPU_OS_RESERVE_GB, 0.0), 1)
+
+
+def npu_memory_needed_gb(size_gb: Optional[float]) -> Optional[float]:
+    if size_gb is None or size_gb <= 0:
+        return None
+    return round(size_gb + _NPU_LOAD_MARGIN_GB, 1)
+
+
+def fits_npu_memory(size_gb: Optional[float], window_gb: Optional[float]) -> Optional[bool]:
+    """Whether a model of this size loads within the window; None when either is unknown."""
+    needed = npu_memory_needed_gb(size_gb)
+    if needed is None or window_gb is None:
+        return None
+    return needed <= window_gb
 
 
 def is_npu_model_path(model_path: Optional[str]) -> bool:
@@ -470,6 +516,7 @@ class LemonadeNpuBackend:
             "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
             "versions": self._versions(binary, validated),
+            "memory_window_gb": npu_memory_window_gb(_total_ram_gb()),
         }
 
     def _server_for(self, binary: Path) -> LemonadeServer:
@@ -652,6 +699,7 @@ class LemonadeNpuBackend:
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         models: list[NpuModel] = []
         flm_binary = self._flm_binary()
+        window_gb = npu_memory_window_gb(_total_ram_gb())
         for row in response.json().get("data") or []:
             if not isinstance(row, dict) or row.get("recipe") != "flm":
                 continue
@@ -659,6 +707,7 @@ class LemonadeNpuBackend:
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
                 continue
             size = row.get("size")
+            size_gb = float(size) if isinstance(size, (int, float)) else None
             checkpoint = str(row.get("checkpoint") or "")
             downloaded = bool(row.get("downloaded"))
             files = None if downloaded else self._model_files(checkpoint, flm_binary)
@@ -667,7 +716,7 @@ class LemonadeNpuBackend:
                 NpuModel(
                     id = str(row.get("id")),
                     checkpoint = checkpoint,
-                    size_gb = float(size) if isinstance(size, (int, float)) else None,
+                    size_gb = size_gb,
                     downloaded = downloaded,
                     labels = labels,
                     max_context_length = _max_context_length(
@@ -676,6 +725,8 @@ class LemonadeNpuBackend:
                     resume_percent = files.resume_percent() if files else None,
                     hf_repo = hf_repo,
                     hf_revision = hf_revision,
+                    memory_needed_gb = npu_memory_needed_gb(size_gb),
+                    fits_memory = fits_npu_memory(size_gb, window_gb),
                 )
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))

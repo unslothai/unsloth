@@ -6,6 +6,7 @@ import {
   type NpuModel,
   npuCapabilities,
   npuContextLabel,
+  npuMemoryWarning,
   npuReadmeNote,
   npuResumeLabel,
   npuSizeLabel,
@@ -59,6 +60,7 @@ export function NpuModelDetail({
   const readmeNote = npuReadmeNote(model);
   const resumeLabel =
     model.id in catalog.downloads ? null : npuResumeLabel(model);
+  const memoryWarning = npuMemoryWarning(model, catalog.status);
 
   return (
     <div data-testid="hub-npu-detail" className="flex flex-col">
@@ -114,6 +116,14 @@ export function NpuModelDetail({
           {resumeLabel && (
             <span className="text-ui-12 text-muted-foreground">
               {resumeLabel}
+            </span>
+          )}
+          {memoryWarning && (
+            <span
+              data-testid="hub-npu-memory-warning"
+              className="text-ui-12 text-amber-600 dark:text-amber-500"
+            >
+              {memoryWarning}
             </span>
           )}
         </div>
