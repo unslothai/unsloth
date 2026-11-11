@@ -786,3 +786,32 @@ def test_chart_keeps_units_of_non_ratio_metrics():
         assert not isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
         _, ax = inner([run(t, "acc,none", 0.8) for t in ("a", "b", "c")], "acc,none", 6, 4, "dark")
         assert isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
+
+
+def test_grouped_and_radar_plot_every_run_of_a_repeated_model_task():
+    from core.benchmark.graph import _grouped_bar_chart_inner, _radar_chart_inner
+
+    def run(task, score, shots):
+        return {
+            "task": task,
+            "model": "org/m",
+            "num_fewshot": shots,
+            "default_metric": "acc,none",
+            "metrics": [{"name": "acc,none", "score": score}],
+        }
+
+    def plotted(ax):
+        out = {}
+        for line in ax.get_lines():
+            out[line.get_label()] = [float(v) for v in line.get_ydata()]
+        for c in ax.containers:
+            out[c.get_label()] = [float(b.get_height()) for b in c]
+        return out
+
+    shots = [run("arc", 0.9, 5), run("arc", 0.4, 0), run("hs", 0.5, 5), run("mmlu", 0.6, 5)]
+    repeat = [run("arc", 0.9, 5), run("arc", 0.4, 5), run("hs", 0.5, 5), run("mmlu", 0.6, 5)]
+    for runs, a, b in ((shots, "m (5-shot)", "m (0-shot)"), (repeat, "m (run 1)", "m (run 2)")):
+        for inner in (_grouped_bar_chart_inner, _radar_chart_inner):
+            _, ax = inner(runs, "acc,none", 6, 4, "dark")
+            series = plotted(ax)
+            assert series[a][0] == 90.0 and series[b][0] == 40.0

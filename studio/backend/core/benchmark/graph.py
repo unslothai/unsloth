@@ -365,24 +365,58 @@ def _legend_labels(models: list[str]) -> dict[str, str]:
     return labels
 
 
+def _shots_label(shots: Any) -> str:
+    return f"{shots}-shot" if shots is not None else "default shots"
+
+
+def _task_series(
+    runs: list[dict[str, Any]], metric_name: str
+) -> tuple[
+    list[str], list[tuple], dict[tuple, str], dict[str, dict[tuple, Optional[float]]], list[_Point]
+]:
+    """Split runs into per-task series for grouped/radar charts.
+
+    One series per model, except that repeated (model, task) runs (e.g. different
+    few-shot counts) get their own series instead of overwriting each other: keyed
+    by few-shot count, then by occurrence order for exact repeats.
+    """
+    task_series: dict[str, dict[tuple, Optional[float]]] = {}
+    points: list[_Point] = []
+    seen: dict[tuple, int] = {}
+    for r in runs:
+        task = r.get("task", "???")
+        model = str(r.get("model", "???"))
+        shots = r.get("num_fewshot")
+        k = seen.get((model, shots, task), 0)
+        seen[(model, shots, task)] = k + 1
+        point = _get_point_for_metric(r, metric_name)
+        points.append(point)
+        task_series.setdefault(task, {})[(model, shots, k)] = point[0]
+
+    tasks = list(task_series.keys())
+    series = list(dict.fromkeys(s for d in task_series.values() for s in d))
+    models = list(dict.fromkeys(m for m, _, _ in series))
+    base = _legend_labels(models)
+    labels: dict[tuple, str] = {}
+    for key in series:
+        model, shots, k = key
+        siblings = [s for s in series if s[0] == model]
+        parts = []
+        if len({s[1] for s in siblings}) > 1:
+            parts.append(_shots_label(shots))
+        if any(s[2] > 0 for s in siblings if s[1] == shots):
+            parts.append(f"run {k + 1}")
+        labels[key] = f"{base[model]} ({', '.join(parts)})" if parts else base[model]
+    return tasks, series, labels, task_series, points
+
+
 def _grouped_bar_chart_inner(
     runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> tuple[Any, Any]:
     """Grouped bar: tasks on x-axis, models as grouped bars within each task."""
     fig, ax = plt.subplots(figsize = (width, height))
 
-    task_model: dict[str, dict[str, Optional[float]]] = {}
-    points: list[_Point] = []
-    for r in runs:
-        task = r.get("task", "???")
-        model = str(r.get("model", "???"))
-        point = _get_point_for_metric(r, metric_name)
-        points.append(point)
-        task_model.setdefault(task, {})[model] = point[0]
-
-    tasks = list(task_model.keys())
-    models = list(dict.fromkeys(m for d in task_model.values() for m in d))
-    legend = _legend_labels(models)
+    tasks, models, legend, task_model, points = _task_series(runs, metric_name)
     colors = _resolve_palette(theme, len(models))
 
     n_tasks = len(tasks)
@@ -426,18 +460,7 @@ def _radar_chart_inner(
     runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> tuple[Any, Any]:
     """Radar: tasks as axes, each model as its own ring."""
-    task_model: dict[str, dict[str, Optional[float]]] = {}
-    points: list[_Point] = []
-    for r in runs:
-        task = r.get("task", "???")
-        model = str(r.get("model", "???"))
-        point = _get_point_for_metric(r, metric_name)
-        points.append(point)
-        task_model.setdefault(task, {})[model] = point[0]
-
-    tasks = list(task_model.keys())
-    models = list(dict.fromkeys(m for d in task_model.values() for m in d))
-    legend = _legend_labels(models)
+    tasks, models, legend, task_model, points = _task_series(runs, metric_name)
 
     if len(tasks) < 3:
         raise ValueError(
