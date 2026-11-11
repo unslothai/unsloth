@@ -879,6 +879,8 @@ export function ChatSettingsPanel({
   }
 
   const setSeed = set("seed");
+  // A render value, so the clamp re-runs when the window listing lands even if the cap is unchanged.
+  const maxTokensCapSettled = externalMaxTokensCapSettled(activeExternalProvider);
 
   useEffect(() => {
     const clampedMaxTokens = resolveExternalMaxTokensClamp({
@@ -887,7 +889,7 @@ export function ChatSettingsPanel({
       isExternalModel,
       maxTokens: params.maxTokens,
       maxTokensMax,
-      capSettled: externalMaxTokensCapSettled(activeExternalProvider),
+      capSettled: maxTokensCapSettled,
     });
     if (clampedMaxTokens == null) {
       return;
@@ -904,6 +906,7 @@ export function ChatSettingsPanel({
     activePresetBaseline,
     isExternalModel,
     maxTokensMax,
+    maxTokensCapSettled,
     setParams,
     params,
     settingsHydrated,

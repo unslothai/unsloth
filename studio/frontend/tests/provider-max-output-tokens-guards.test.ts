@@ -510,6 +510,6 @@ test("a self-hosted cap clamps persistently only once this page load listed its 
   );
   assert.match(
     readSrc("features/chat/chat-settings-sheet.tsx"),
-    /capSettled: externalMaxTokensCapSettled\(activeExternalProvider\)/,
+    /capSettled: maxTokensCapSettled,[\s\S]*?maxTokensMax,\s*maxTokensCapSettled,/,
   );
 });
