@@ -149,11 +149,21 @@ def info(message: str) -> None:
     print(f"[thread-window] {message}", flush = True)
 
 
-def open_thread(context, messages: int, *, windowed: bool, stream: bool = False):
+def open_thread(
+    context,
+    messages: int,
+    *,
+    windowed: bool,
+    stream: bool = False,
+):
     page = context.new_page()
     errors: list[str] = []
     page.on("pageerror", lambda error: errors.append(str(error)))
-    query = "shell=1" + ("&window=1" if windowed else "") + (f"&stream={STREAM_CHUNKS}" if stream else "")
+    query = (
+        "shell=1"
+        + ("&window=1" if windowed else "")
+        + (f"&stream={STREAM_CHUNKS}" if stream else "")
+    )
     page.goto(f"{BASE}/smoke-thread-weight.html?{query}", wait_until = "load")
     page.wait_for_function("() => window.__threadWeight !== undefined", timeout = 120_000)
     page.evaluate("([n, o]) => window.__threadWeight.seed(n, o)", [messages, SEED])
@@ -188,9 +198,9 @@ def check_ordinals(state: dict, label: str) -> None:
         f"{label}: rows must all publish the thread's length {state['length']} as aria-setsize, "
         f"got {state['sizes']}"
     )
-    assert positions == list(range(positions[0], positions[0] + len(positions))), (
-        f"{label}: mounted rows are not consecutive messages: {positions}"
-    )
+    assert positions == list(
+        range(positions[0], positions[0] + len(positions))
+    ), f"{label}: mounted rows are not consecutive messages: {positions}"
 
 
 def check_engine(playwright, engine: str) -> None:
@@ -218,9 +228,9 @@ def check_engine(playwright, engine: str) -> None:
             f"for {SMALL}: the mounted rows grow with the chat"
         )
         check_ordinals(opened, "on open")
-        assert opened["positions"][-1] == LARGE, (
-            f"the thread did not open on its last message: {opened['positions']}"
-        )
+        assert (
+            opened["positions"][-1] == LARGE
+        ), f"the thread did not open on its last message: {opened['positions']}"
         bottom = opened["scrollHeight"] - opened["clientHeight"] - opened["scrollTop"]
         assert abs(bottom) <= 2, f"the thread opened {bottom}px above its end"
 
@@ -254,10 +264,15 @@ def check_engine(playwright, engine: str) -> None:
                 rest_checked = True
                 page.wait_for_timeout(700)
                 offsets = page.evaluate(REST, 40)
-                assert offsets and None not in offsets, f"the reader's row unmounted at rest: {offsets}"
+                assert (
+                    offsets and None not in offsets
+                ), f"the reader's row unmounted at rest: {offsets}"
                 moved = max(offsets) - min(offsets)
                 assert moved <= 1, f"a reader at rest moved {moved}px while the window settled"
-            if step % 10 == 9 and page.evaluate("() => window.__threadWeight.viewport().scrollTop") <= 0:
+            if (
+                step % 10 == 9
+                and page.evaluate("() => window.__threadWeight.viewport().scrollTop") <= 0
+            ):
                 break
         page.wait_for_timeout(600)
         record = page.evaluate(STOP_RECORD)
@@ -277,9 +292,9 @@ def check_engine(playwright, engine: str) -> None:
             f"the top of the thread is not its first message: {top['positions'][:3]}, "
             f"scrollTop {top['scrollTop']}, spacer {top['topSpacer']}"
         )
-        assert top["mounted"] <= small["mounted"] + 2 * ROW_SLACK, (
-            f"{top['mounted']} rows are still mounted after the sweep: rows are not unmounting"
-        )
+        assert (
+            top["mounted"] <= small["mounted"] + 2 * ROW_SLACK
+        ), f"{top['mounted']} rows are still mounted after the sweep: rows are not unmounting"
 
         # 5. A jump lands on mounted rows.
         page.evaluate(RECORD)
@@ -302,9 +317,9 @@ def check_engine(playwright, engine: str) -> None:
             f"{engine}: copy holds {copied['chars']} characters with {copied['mounted']} rows "
             f"mounted; the mounted thread selects {full_chars}"
         )
-        assert copied["mounted"] == LARGE, (
-            f"a copy over the whole thread ran with {copied['mounted']} of {LARGE} rows mounted"
-        )
+        assert (
+            copied["mounted"] == LARGE
+        ), f"a copy over the whole thread ran with {copied['mounted']} of {LARGE} rows mounted"
         assert copied["chars"] == full_chars, (
             f"the copy holds {copied['chars']} characters and the mounted thread {full_chars}: "
             f"text was lost or added"
@@ -322,14 +337,18 @@ def check_engine(playwright, engine: str) -> None:
         # 7. A hidden thread stays as it is.
         page, errors = open_thread(context, LARGE, windowed = True)
         shown = page.evaluate(STATE)
-        page.evaluate("() => { document.querySelector('[data-smoke=\"thread\"]').style.display = 'none'; }")
+        page.evaluate(
+            "() => { document.querySelector('[data-smoke=\"thread\"]').style.display = 'none'; }"
+        )
         page.wait_for_timeout(1_500)
         hidden = page.evaluate("() => document.querySelectorAll('[data-role]').length")
         assert hidden == shown["mounted"], (
             f"{hidden} rows mounted while the thread was hidden, {shown['mounted']} before: "
             f"a thread with no boxes is walking itself"
         )
-        page.evaluate("() => { document.querySelector('[data-smoke=\"thread\"]').style.display = 'flex'; }")
+        page.evaluate(
+            "() => { document.querySelector('[data-smoke=\"thread\"]').style.display = 'flex'; }"
+        )
         back = settle(page)
         check_ordinals(back, "shown again")
         drift = abs(back["scrollHeight"] - shown["scrollHeight"]) / shown["scrollHeight"]
@@ -350,13 +369,13 @@ def check_engine(playwright, engine: str) -> None:
         sent = settle(page)
         check_ordinals(sent, "after a reply")
         text = page.evaluate("() => window.__threadWeight.lastAssistantMessage()?.innerText ?? ''")
-        assert sent["length"] == LARGE + 2 and sent["positions"][-1] == LARGE + 2, (
-            f"the reply is not the mounted tail: {sent['length']} messages, {sent['positions']}"
-        )
+        assert (
+            sent["length"] == LARGE + 2 and sent["positions"][-1] == LARGE + 2
+        ), f"the reply is not the mounted tail: {sent['length']} messages, {sent['positions']}"
         assert f"word{STREAM_CHUNKS - 1}" in text, "the stream did not finish in the mounted row"
-        assert sent["mounted"] <= small["mounted"] + 2 * ROW_SLACK, (
-            f"{sent['mounted']} rows mounted after a reply"
-        )
+        assert (
+            sent["mounted"] <= small["mounted"] + 2 * ROW_SLACK
+        ), f"{sent['mounted']} rows mounted after a reply"
         assert not errors, errors
         page.close()
         info(f"{engine}: ok " + json.dumps({"small": small["mounted"], "large": opened["mounted"]}))
