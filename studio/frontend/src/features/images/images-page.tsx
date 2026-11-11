@@ -1697,7 +1697,33 @@ const GalleryStripTile = memo(function GalleryStripTile({
       draggable={true}
       onDragStart={(event: DragEvent<HTMLElement>) => actions.get().tileProps(id).onDragStart(event)}
       onDragEnd={() => actions.get().tileProps(id).onDragEnd()}
-      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => actions.get().tileProps(id).onKeyDown(event)}
+      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => {
+        // Keep the existing Alt+arrow reorder shortcut, while plain arrows move
+        // selection and focus through the visible gallery tiles.
+        if (
+          event.currentTarget.contains(event.target as Node) &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          (event.key === "ArrowLeft" || event.key === "ArrowRight")
+        ) {
+          const strip = event.currentTarget.parentElement;
+          const tiles = strip
+            ? [...strip.querySelectorAll<HTMLElement>("[data-reorder-id]")]
+            : [];
+          const index = tiles.findIndex((tile) => tile.dataset.reorderId === id);
+          const next = index + (event.key === "ArrowLeft" ? -1 : 1);
+          const nextTile = next >= 0 && next < tiles.length ? tiles[next] : null;
+          const nextId = nextTile?.dataset.reorderId;
+          if (nextId) {
+            event.preventDefault();
+            actions.get().select(nextId);
+            nextTile.querySelector<HTMLButtonElement>("button")?.focus();
+            return;
+          }
+        }
+        actions.get().tileProps(id).onKeyDown(event);
+      }}
       // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
       // Portalled children (the New project dialog) bubble here too: leave their menu alone.
       onContextMenu={(event) => {
