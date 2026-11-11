@@ -48,4 +48,9 @@ test("the Hub switches to NPU on the link's tab before the clearing effect can d
   assert.match(effects, /if \(\s*!urlNpu \|\|\s*npuLinkPending \|\|/);
   // Closing the pane forgets the link, so the same link followed again switches again.
   assert.match(effects, /if \(!urlNpu\) setNpuLinkShown\(null\);/);
+  // An NPU runtime still in setup keeps the link until the list can resolve it.
+  assert.match(
+    page,
+    /const npuListing =\s*showNpuCatalog && \(!npuCatalog\?\.ready \|\| npuModels === null\);/,
+  );
 });

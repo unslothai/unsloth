@@ -659,7 +659,9 @@ export function ModelsPage() {
   const npuCatalog = useNpuCatalog(npuCatalogSource);
   const urlNpu = hubSearch.npu ?? null;
   const npuModels = npuCatalog?.models ?? null;
-  const npuListing = showNpuCatalog && npuCatalog?.ready && npuModels === null;
+  // Setup pending counts too: enabling the runtime from the notice should still open the link.
+  const npuListing =
+    showNpuCatalog && (!npuCatalog?.ready || npuModels === null);
   const selectedNpu =
     showNpuCatalog && urlNpu
       ? (npuModels?.find(
