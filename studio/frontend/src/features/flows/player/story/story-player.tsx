@@ -73,6 +73,7 @@ import {
   saveFits,
   sceneOf,
   stageAt,
+  stageBackground,
   visibleChoices,
 } from "./reducer";
 import { playCues } from "./sound-cues";
@@ -376,7 +377,7 @@ export function StoryPlayer({
     scene && state.status === "choosing"
       ? visibleChoices(scene, state.vars)
       : [];
-  const bgMedia = backgroundFor(manifest, state, state.sceneId);
+  const bgMedia = stageBackground(manifest, state);
   const bgUrl = useMediaUrl(api, bgMedia);
 
   useEffect(() => {
