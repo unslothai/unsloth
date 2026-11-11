@@ -23,7 +23,12 @@ def _inventory(*devices, unanswered = ()):
     }
 
 
-def _pin_inventory(monkeypatch, inventory, system = "Windows", kfd = None):
+def _pin_inventory(
+    monkeypatch,
+    inventory,
+    system = "Windows",
+    kfd = None,
+):
     monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda **_kwargs: inventory)
     monkeypatch.setattr(hw.platform, "system", lambda: system)
     monkeypatch.setattr(amd, "amd_kfd_gpu_gfx_targets", lambda *_args: kfd)
@@ -79,7 +84,12 @@ class _Installer:
         return None
 
 
-def _backend(tmp_path, monkeypatch, strix_halo, hardware = _XDNA2):
+def _backend(
+    tmp_path,
+    monkeypatch,
+    strix_halo,
+    hardware = _XDNA2,
+):
     answers = iter(strix_halo if isinstance(strix_halo, list) else [strix_halo] * 99)
     monkeypatch.setattr(nb, "_installer_module", lambda: _Installer())
     monkeypatch.setattr(nb, "_pinned_flm_version", lambda: None)
@@ -115,7 +125,13 @@ class _Response:
     def json(self):
         return {
             "data": [
-                {"id": name, "recipe": "flm", "labels": ["chat"], "checkpoint": tag, "downloaded": True}
+                {
+                    "id": name,
+                    "recipe": "flm",
+                    "labels": ["chat"],
+                    "checkpoint": tag,
+                    "downloaded": True,
+                }
                 for name, tag in (
                     ("qwen3.5-4b-FLM", "qwen3.5:4b"),
                     ("qwen3.6-moe-35b-FLM", "qwen3.6-moe:35b-a3b"),
@@ -155,5 +171,4 @@ def test_the_catalog_tags_nothing_off_strix_halo(tmp_path, monkeypatch):
 
 def test_managed_accounts_get_no_gpu_hint():
     from routes import npu as npu_route
-
     assert npu_route._MANAGED_ACCOUNT_STATUS["gpu_recommended"] is False
