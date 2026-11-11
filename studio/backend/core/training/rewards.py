@@ -139,7 +139,6 @@ _TRL_REWARD_ARGS = frozenset(
     | {"chosen", "rejected", "messages", "label", "images"}
 )
 
-# Seconds one user-pattern match may take before it scores as a miss (needs the regex module).
 MATCH_TIMEOUT_S = 1.0
 
 
@@ -243,7 +242,6 @@ def validate_rule(rule: dict) -> dict:
         if column in ("tools", PREFILL_COLUMN):
             raise RewardError(f"compare_to cannot be '{column}': Studio uses that column itself.")
         out["compare_to"] = column
-        # GSM8K-style "#### 72" references.
         out["reference_extract"] = _validate_extract(rule.get("reference_extract"))
         out["missing"] = _number(rule.get("missing", 0.0), "missing")
         if kind == "exact_match":
@@ -286,7 +284,6 @@ def validate_rule(rule: dict) -> dict:
         schema_type = schema.get("type", "object")
         if not isinstance(schema_type, str) or schema_type not in _JSON_TYPES:
             raise RewardError(f"schema.type must be one of {', '.join(_JSON_TYPES)}.")
-        # Strings only: str() of a nested YAML alias expands it exponentially.
         required = schema.get("required", []) or []
         if (
             not isinstance(required, list)
@@ -423,7 +420,6 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
             )
         created = not target.exists()
         target.mkdir(parents = True, exist_ok = True)
-        # Atomic replace: a failed write never leaves a truncated reward.
         tmp = target / f".REWARD.md.{os.getpid()}.tmp"
         try:
             tmp.write_text(text, encoding = "utf-8")

@@ -21,7 +21,6 @@ RL_ROLES = {
     "orpo": ("prompt", "chosen", "rejected", "system"),
     "grpo": ("prompt", "answer", "system"),
 }
-# Preference rows may hold the prompt as chosen/rejected's shared turns, so prompt is optional.
 _REQUIRED_ROLES = {
     "dpo": ("chosen", "rejected"),
     "orpo": ("chosen", "rejected"),
@@ -101,7 +100,6 @@ def rl_log_metrics(logs: dict) -> Optional[dict]:
     return out or None
 
 
-# Columns each objective rebuilds; a reward's compare_to column of another name survives.
 _TRL_ROW_COLUMNS = ("tools", "chat_template_kwargs")
 _RL_OUTPUT_COLUMNS = {
     "grpo": frozenset({"prompt", "answer"}),
@@ -115,7 +113,6 @@ def normalize_objective(value: Any) -> str:
     return objective if objective in OBJECTIVES else "sft"
 
 
-# A column the user set to Ignore (frontend RL_IGNORE): never auto-mapped.
 _IGNORE_ROLE = "ignore"
 
 
@@ -266,7 +263,6 @@ def format_rl_dataset(
                 chosen_cell, rejected_cell = _implicit_text_prompt(chosen_cell, rejected_cell)
             chosen = _as_messages(chosen_cell, "assistant")
             rejected = _as_messages(rejected_cell, "assistant")
-            # Longest shared prefix is the prompt (TRL's extract_prompt).
             shared = 0
             # Ignore nulls: Arrow pads tool arguments with other calls' keys.
             while shared < min(len(chosen), len(rejected)) and _strip_nulls(
@@ -285,7 +281,6 @@ def format_rl_dataset(
                 and chosen[0]["role"] == "assistant"
                 and rejected[0]["role"] == "assistant"
             ):
-                # Completion-only lists: every turn is the answer.
                 out["chosen"], out["rejected"] = chosen, rejected
             elif 0 < shared < min(len(chosen), len(rejected)) and any(
                 m["role"] != "assistant" for m in chosen[:shared]
@@ -309,7 +304,6 @@ def format_rl_dataset(
         for column in extra:
             out[column] = row[column]
         if "chat_template_kwargs" in out and out["chat_template_kwargs"] is None:
-            # A row without its own kwargs reads as None; TRL expands this with **.
             out["chat_template_kwargs"] = {}
         return out
 
@@ -514,7 +508,6 @@ def _without_padded_arguments(messages: Any, tools: Any) -> Any:
 
 
 def _without_nulls(value: Any) -> Any:
-    # Drop Arrow's None padding; a message's own null content and tool-call arguments stay.
     if isinstance(value, list):
         from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
@@ -804,7 +797,6 @@ def build_rl_trainer(
         train_dataset = render_preference_rows(train_dataset, tokenizer, appends_eos)
         if eval_dataset is not None:
             eval_dataset = render_preference_rows(eval_dataset, tokenizer, appends_eos)
-        # TRL 1.x dropped max_prompt_length; _config_kwargs keeps only fields the config has.
         if "max_prompt_length" not in {f.name for f in dataclasses.fields(config_cls)}:
             train_dataset = drop_long_prompts(train_dataset, tokenizer, max_prompt_length)
             if eval_dataset is not None:
@@ -886,7 +878,6 @@ def build_rl_trainer(
                 **(grpo_base.get("generation_kwargs") or {}),
                 "remove_invalid_values": True,
             }
-        # TRL's batches are global: per-device size x processes (WORLD_SIZE under a launcher).
         try:
             world = max(int(os.environ.get("WORLD_SIZE") or 1), 1)
         except ValueError:

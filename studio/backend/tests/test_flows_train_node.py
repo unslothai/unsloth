@@ -870,7 +870,6 @@ def test_the_checkpoint_carries_the_one_system_prompt_training_used():
         "rl_system_prompt": "Use <answer> tags.",
         "custom_format_mapping": {"q": "prompt", "a": "answer"},
     }
-    # GRPO's prompt fills in for every prompt with no system message, as a new chat prompt is.
     row = {"q": "What is 2 + 2?", "a": "4"}
     assert training.trained_system_prompt(grpo, row) == "Use <answer> tags."
     question = {"question": "What is 2 + 2?", "answer": "4"}
@@ -878,13 +877,10 @@ def test_the_checkpoint_carries_the_one_system_prompt_training_used():
         "Use <answer> tags."
     )
     assert training.trained_system_prompt({**grpo, "rl_system_prompt": None}, row) == ""
-    # Rows unread (a Hub dataset that could not be read): a system column may have won.
     assert training.trained_system_prompt(grpo) == ""
     assert training._first_row({"source": "local", "ref": "/no/such/data.jsonl"}, None) is None
-    # A conversation prompt can carry its own system message, which training kept.
     convo = {"prompt": [{"role": "system", "content": "Respond with JSON only."}], "answer": "4"}
     assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, convo) == ""
-    # A conversation prompt with no system message got the GRPO one in training.
     user_only = {"prompt": [{"role": "user", "content": "What is 2 + 2?"}], "answer": "4"}
     assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, user_only) == (
         "Use <answer> tags."
@@ -1280,7 +1276,6 @@ def test_a_grpo_run_with_a_system_column_does_not_claim_the_fallback_prompt():
     assert training.trained_system_prompt(config) == ""
     config["custom_format_mapping"] = {"q": "prompt", "gold": "answer"}
     assert training.trained_system_prompt(config, {"q": "x", "gold": "1", "system": "s"}) == ""
-    # GSM8K: question and answer only, so every prompt got the fallback.
     assert training.trained_system_prompt(config, {"q": "x", "gold": "1"}) == "Reason, then answer."
     config["custom_format_mapping"] = {"q": "prompt", "system": "ignore"}
     assert training.trained_system_prompt(config, {"q": "x", "system": "s"}) == (

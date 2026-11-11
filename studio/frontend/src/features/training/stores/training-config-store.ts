@@ -1710,7 +1710,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setTrainingObjective: (trainingObjective) => {
           const state = get();
           if (state.trainingObjective === trainingObjective) return;
-          // CPT is its own objective; the selector disables RL for it, this keeps the store honest.
           if (
             (state.trainingMethod === "cpt" || !rlObjectiveSupported(state)) &&
             trainingObjective !== "sft"

@@ -43,7 +43,6 @@ def test_grpo_mapping_system_prompt_and_kept_reward_columns():
 
 
 def test_preference_rows_strip_the_user_turn_from_full_conversations():
-    # ultrafeedback_binarized stores chosen/rejected as the whole conversation.
     convo = lambda reply: [
         {"role": "user", "content": "q"},
         {"role": "assistant", "content": reply},
@@ -78,7 +77,6 @@ def test_preference_rows_without_a_prompt_column_use_the_shared_turns(objective)
     )
     assert [m["content"] for m in out[0]["prompt"]] == ["Welcome!", "What is 2 + 2?"]
     assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
-    # hh-rlhf text pairs: the shared start is the prompt.
     out, _ = format_rl_dataset(
         Dataset.from_list([{"chosen": "The sky is blue.", "rejected": "The sky is green."}]),
         objective,
@@ -328,7 +326,6 @@ def test_request_refuses_unknown_grpo_variant():
 
 
 def test_fsdp_stub_only_when_the_real_module_cannot_import(monkeypatch):
-    # The stub needs torch itself (the no-torch legs lack it).
     pytest.importorskip("torch")
     import builtins
 
@@ -641,7 +638,6 @@ def test_grpo_epoch_rows_drop_the_partial_prompt_group():
     from core.training.trainer import grpo_completion_rows
 
     args = types.SimpleNamespace(num_generations = 4, generation_batch_size = 8)
-    # Five prompts in groups of two: TRL trains four, so 16 rows.
     assert grpo_completion_rows(5, args) == 16
     assert grpo_completion_rows(6, args) == 24
     assert grpo_completion_rows(5, types.SimpleNamespace(num_generations = 4)) == 20
@@ -916,7 +912,6 @@ def test_template_keys_only_some_rows_set_are_not_passed_as_null():
             **kw,
         ):
             if "reasoning_effort" in kw:
-                # GPT-OSS concatenates the value into the system turn.
                 return "effort " + kw["reasoning_effort"]
             return "plain"
 
@@ -1438,7 +1433,6 @@ def test_tool_ended_preference_rows_never_repeat_the_prompt_in_a_completion():
             **kw,
         ):
             text = "".join(f"<{m['role']}>{m['content']}" for m in messages)
-            # Like Qwen3 with thinking off: the generation header carries an empty think block.
             return text + ("<assistant><think></think>" if add_generation_prompt else "")
 
     prompt = [{"role": "user", "content": "w?"}, {"role": "tool", "content": "sunny"}]
@@ -1784,7 +1778,6 @@ def test_preference_rows_drop_arrow_padding_from_structured_tool_arguments():
             "rejected": [{"role": "assistant", "content": "No."}],
         }
 
-    # Two rows calling different tools: Arrow pads each row's arguments with the other's keys.
     ds = Dataset.from_list(
         [
             row(call("weather", {"city": "Paris"})),
