@@ -271,7 +271,7 @@ function metaOf(message: ThreadMessage, index: number, expanded: Expanded): RowM
     role,
     weight: messageWeight(message.content, expanded),
     // Only replies render markdown math: a prompt shows its source as text.
-    equations: renders && role === "assistant" ? numberedEquations(message.content) : 0,
+    equations: renders && role === "assistant" ? numberedEquations(message.content, expanded) : 0,
     renders,
   };
   metaCache.set(message, { expanded, meta });

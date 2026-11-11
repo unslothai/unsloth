@@ -578,3 +578,22 @@ test("always expanded thinking and tool cards count their text", () => {
   assert.ok(messageWeight(content, { reasoning: true, tools: false }) >= collapsed + 40);
   assert.ok(messageWeight(content, { reasoning: false, tools: true }) >= collapsed + 20);
 });
+
+test("an open trace's equations count, a closed one's do not", () => {
+  const content = [
+    { type: "reasoning", text: "$$\\begin{equation}a\\end{equation}$$" },
+    { type: "text", text: "done" },
+  ];
+  assert.equal(numberedEquations(content), 0);
+  assert.equal(numberedEquations(content, { reasoning: true, tools: false }), 1);
+});
+
+test("a relayout forgets the equation counts read off the page", () => {
+  const heights = new RowHeights();
+  const row = { ...meta(1), equations: 0 };
+  heights.relayout("thinking expanded");
+  heights.countEquations(row.id, { html: 2, mathml: 2 });
+  assert.deepEqual(heights.equationsIn([row], 0, 1), { html: 2, mathml: 2 });
+  heights.relayout("thinking collapsed");
+  assert.deepEqual(heights.equationsIn([row], 0, 1), { html: 0, mathml: 0 });
+});

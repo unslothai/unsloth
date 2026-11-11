@@ -615,7 +615,7 @@ test("a reader that stops waiting for a full mount lets the window slide again",
 test("only a rendered reply's equations count toward the spacers", () => {
   assert.match(
     GLUE,
-    /equations: renders && role === "assistant" \? numberedEquations\(message\.content\) : 0,/,
+    /equations: renders && role === "assistant" \? numberedEquations\(message\.content, expanded\) : 0,/,
   );
 });
 

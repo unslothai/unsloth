@@ -133,10 +133,15 @@ function topLevelRows(body: string): string[] {
  * KaTeX numbers these on page-wide CSS counters, so a row left out of the DOM must still count
  * them: one per environment, one per top-level row of the multi-line ones, less tagged rows.
  */
-export function numberedEquations(content: readonly Part[] | undefined): number {
+export function numberedEquations(
+  content: readonly Part[] | undefined,
+  expanded: Expanded = COLLAPSED,
+): number {
   let total = 0;
   for (const part of content ?? []) {
-    if (part.type !== "text" || !part.text?.includes("\\begin{")) continue;
+    // A trace renders markdown too, but is on the page only while open.
+    const shown = part.type === "text" || (part.type === "reasoning" && expanded.reasoning);
+    if (!shown || !part.text?.includes("\\begin{")) continue;
     const prose = withoutCode(part.text);
     for (const [, dollars, brackets] of prose.matchAll(DISPLAY_MATH)) {
       for (const [, env, body] of (dollars ?? brackets).matchAll(NUMBERED_ENV)) {
@@ -173,6 +178,8 @@ export class RowHeights {
     this.measured.clear();
     this.densities.clear();
     this.counted.clear();
+    // Opening or closing every trace adds or drops its equations too.
+    this.equations.clear();
     return true;
   }
 
