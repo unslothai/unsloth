@@ -104,6 +104,7 @@ export interface BenchmarkRunParams {
   batch_size?: string;
   num_fewshot?: number | null;
   max_tokens?: number | null;
+  expected_model?: string | null;
 }
 
 export async function runBenchmark(params: BenchmarkRunParams): Promise<BenchmarkOperationResponse> {

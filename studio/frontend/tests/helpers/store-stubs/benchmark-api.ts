@@ -7,8 +7,11 @@ export async function getBenchmarkStatus() {
   return { is_benchmark_active: false, last_op_seq: 0 };
 }
 
-export async function runBenchmark() {
+export const runParams: Record<string, unknown>[] = [];
+
+export async function runBenchmark(params: Record<string, unknown>) {
   calls.push("run");
+  runParams.push(params);
   return { success: true };
 }
 

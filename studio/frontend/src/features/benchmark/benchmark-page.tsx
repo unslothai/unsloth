@@ -31,6 +31,7 @@ import type { BenchmarkTaskConfig, BenchmarkTaskInfo } from "./api/benchmark-api
 import { fetchBenchmarkTaskConfig, fetchBenchmarkTasks } from "./api/benchmark-api";
 import type { EvalsModel } from "./use-evals-model";
 import { fewshotParam } from "./lib/fewshot";
+import { evalsExpectedModel } from "./lib/model-labels";
 import { BenchmarkRunPanel } from "./components/benchmark-run-panel";
 import { BenchmarkHistoryPanel } from "./components/benchmark-history-panel";
 import { EvalScoreboard } from "./components/eval-scoreboard";
@@ -186,6 +187,7 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
         numFewshot,
       ),
       max_tokens: maxTokens,
+      expected_model: evalsExpectedModel(model, evals.selectedGgufVariant),
     };
 
     const needsDownload =

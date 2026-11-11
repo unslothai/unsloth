@@ -20,3 +20,12 @@ export function modelLabels(models: string[]): Record<string, string> {
   }
   return labels;
 }
+
+// core/benchmark/hold.py loaded_identity() format: a bare repo would let the backend accept any
+// quant of it, so a picked quant is pinned and the run fails if another quant is loaded instead.
+export function evalsExpectedModel(
+  model: string,
+  ggufVariant: string | null | undefined,
+): string | null {
+  return ggufVariant ? `${model}:${ggufVariant}` : null;
+}

@@ -7,7 +7,7 @@ import test from "node:test";
 
 register("./benchmark-runtime-resolver.mjs", import.meta.url);
 
-const { calls } = await import("./helpers/store-stubs/benchmark-api.ts");
+const { calls, runParams } = await import("./helpers/store-stubs/benchmark-api.ts");
 const { useBenchmarkRuntimeStore } = await import(
   "../src/features/benchmark/stores/benchmark-runtime-store.ts"
 );
@@ -32,4 +32,24 @@ test("after its own run ends, the tab follows a run started elsewhere", async ()
     .applyBackendStatus({ is_benchmark_active: false, last_op_seq: 2, last_op_status: "cancelled" });
   assert.equal(store.getState().phase, "canceled");
   assert.equal(store.getState().isRunning, false);
+});
+
+test("a picked quant is pinned as expected_model so a swapped quant fails the run", async () => {
+  const { evalsExpectedModel } = await import(
+    "../src/features/benchmark/lib/model-labels.ts"
+  );
+  const expected = evalsExpectedModel("unsloth/Qwen3-0.6B-GGUF", "UD-Q4_K_XL");
+  assert.equal(expected, "unsloth/Qwen3-0.6B-GGUF:UD-Q4_K_XL");
+  assert.equal(evalsExpectedModel("unsloth/Qwen3-0.6B", null), null);
+
+  const store = useBenchmarkRuntimeStore;
+  store.getState().reset();
+  await store.getState().run("unsloth/Qwen3-0.6B-GGUF", "local", "arc_easy", {
+    expected_model: expected,
+  });
+  assert.equal(runParams.at(-1)?.expected_model, "unsloth/Qwen3-0.6B-GGUF:UD-Q4_K_XL");
+  assert.equal(runParams.at(-1)?.checkpoint_path, "unsloth/Qwen3-0.6B-GGUF");
+
+  await store.getState().run("unsloth/Qwen3-0.6B", "local", "arc_easy", { expected_model: null });
+  assert.equal("expected_model" in (runParams.at(-1) ?? {}), false);
 });

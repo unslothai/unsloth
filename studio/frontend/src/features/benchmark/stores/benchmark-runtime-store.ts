@@ -115,7 +115,7 @@ interface BenchmarkRuntimeState {
 }
 
 interface BenchmarkRuntimeActions {
-  run: (checkpointPath: string, modelSource: "checkpoint" | "hf" | "local", task?: string, extraParams?: { batch_size?: string; num_fewshot?: number | null; max_tokens?: number | null }) => Promise<void>;
+  run: (checkpointPath: string, modelSource: "checkpoint" | "hf" | "local", task?: string, extraParams?: { batch_size?: string; num_fewshot?: number | null; max_tokens?: number | null; expected_model?: string | null }) => Promise<void>;
   requestCancel: () => Promise<void>;
   appendLog: (entry: BenchmarkLogEntry, seq?: number) => void;
   setConnected: (value: boolean) => void;
@@ -324,6 +324,9 @@ const apiParams = {
           batch_size: extraParams?.batch_size ?? "auto",
           num_fewshot: extraParams?.num_fewshot ?? null,
           max_tokens: extraParams?.max_tokens ?? null,
+          ...(extraParams?.expected_model
+            ? { expected_model: extraParams.expected_model }
+            : {}),
         };
       await runRecoverableOp(() =>
         runBenchmark(apiParams),
