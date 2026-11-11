@@ -3232,7 +3232,7 @@ export function ComposerModelPicker({
           <>
             <div
               ref={settingsRef}
-              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7"
+              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto pt-4.5 pr-[var(--run-settings-pad-r)] pb-4.5 pl-[var(--run-settings-pad-l)] [--run-settings-pad-l:calc(22px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(22px*var(--ui-space-scale,1))]"
             >
               <ModelConfigPage
                 key={modelConfigInstanceKey(

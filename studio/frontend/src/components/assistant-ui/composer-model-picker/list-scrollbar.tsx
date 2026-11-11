@@ -113,7 +113,7 @@ export function ListScrollbar({
         className={cn(
           "composer-list-thumb absolute inset-y-0 w-[calc(5px*var(--ui-space-scale,1))] rounded-full opacity-0 transition-[width,opacity] duration-150 group-hover/bar:w-[calc(7px*var(--ui-space-scale,1))]",
           edge
-            ? "right-[calc(3px*var(--ui-space-scale,1))]"
+            ? "right-px"
             : "right-[calc(5px*var(--ui-space-scale,1))]",
           (listHover || barHover || dragging) && "opacity-100",
         )}
