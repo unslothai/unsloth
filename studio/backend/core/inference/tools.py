@@ -8527,6 +8527,40 @@ def _python_is_high_risk(code: str) -> bool:
                     return True
             elif _is_destructive_attr(attr_name, func.args[0]):
                 return True
+    # Handed to map, partial or a thread, the function runs with no call node naming it.
+    bound = {
+        id(node.value)
+        for node in _tree_nodes(tree)
+        if (isinstance(node, ast.Assign) and all(isinstance(tgt, ast.Name) for tgt in node.targets))
+        or (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and isinstance(node.value, ast.Attribute)
+        )
+    }
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Load) and node.id in destructive_fs_aliases:
+                return True
+        elif id(node) in bound:
+            continue
+        elif isinstance(node, ast.Attribute):
+            if isinstance(node.ctx, ast.Load) and (
+                _is_destructive_attr(node.attr, node.value) or _is_process_kill(node)
+            ):
+                return True
+        elif isinstance(node, ast.Subscript):
+            if _folded_str_literal(node.slice) is not None and _is_module_dict_lookup(node):
+                return True
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+        ):
+            attr_name = _folded_str_literal(node.args[1])
+            if attr_name is not None and _is_destructive_attr(attr_name, node.args[0]):
+                return True
     # Fold split paths through variables; unresolved fragments use a sentinel so partial folds
     # never false-positive.
     str_vars: "dict[str, str]" = {}
