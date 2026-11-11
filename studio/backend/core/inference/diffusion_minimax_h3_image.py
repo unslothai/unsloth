@@ -710,8 +710,15 @@ def _scheduler_bases() -> tuple:
         from diffusers.configuration_utils import ConfigMixin, register_to_config
         from diffusers.schedulers.scheduling_utils import SchedulerMixin
         return SchedulerMixin, ConfigMixin, register_to_config
-    except Exception:  # noqa: BLE001 - diffusers missing: plain object, tests only
-        return object, object, (lambda f: f)
+    except Exception:  # noqa: BLE001 - diffusers missing: distinct empty bases (object twice is a TypeError)
+
+        class _NoSchedulerMixin:
+            pass
+
+        class _NoConfigMixin:
+            pass
+
+        return _NoSchedulerMixin, _NoConfigMixin, (lambda f: f)
 
 
 _SchedulerMixin, _ConfigMixin, _register_to_config = _scheduler_bases()
