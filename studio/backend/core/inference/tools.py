@@ -15913,11 +15913,13 @@ def _read_capped_body(
     got = 0
     body_at = None
     window_end = None
+    fallback_end = None
     body_locator = _HTMLBodyLocator(charset) if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
-            if window_end is not None:
+            if fallback_end is not None:
+                window_end = fallback_end
                 break
             try:
                 resp.close()
@@ -15932,7 +15934,8 @@ def _read_capped_body(
         try:
             chunk = read(min(65536, remaining))
         except Exception as exc:
-            if window_end is not None:
+            if fallback_end is not None:
+                window_end = fallback_end
                 break
             if decoder is None or not isinstance(exc, (ValueError, zlib.error)):
                 raise
@@ -15966,10 +15969,10 @@ def _read_capped_body(
             and not _has_pdf_magic(so_far := b"".join(chunks))
             and not _HTML_CONTENT_START_RE.search(so_far, body_at)
         ):
-            window_end = got
+            window_end = fallback_end = got
             remaining = max_bytes - got
     budget_error = _fetch_budget_exceeded(
-        None if window_end is not None else deadline, cancel_event
+        None if fallback_end is not None else deadline, cancel_event
     )
     if budget_error is not None:
         try:

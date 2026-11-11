@@ -597,6 +597,20 @@ def test_failed_read_past_the_window_keeps_the_first_window():
     assert _read_html(resp) == (None, _first_window(body))
 
 
+def test_failed_read_after_a_late_content_start_keeps_the_first_window():
+    body = _menu_page(b"<main><h1>Start</h1>" + _LINES + b"</main>")
+    resp = _FakeResp(body, "text/html")
+    read = resp.read
+
+    def stalling_read(n = None):
+        if resp._pos > body.index(b"<main>") + 65536:
+            raise TimeoutError("timed out")
+        return read(n)
+
+    resp.read = stalling_read
+    assert _read_html(resp) == (None, _first_window(body))
+
+
 def test_read_past_the_window_stops_when_cancelled():
     cancel = threading.Event()
     resp = _FakeResp(_menu_page(_LINES), "text/html")
