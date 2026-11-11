@@ -65,6 +65,10 @@ export function messageWeight(content: readonly Part[] | undefined): number {
 }
 
 const NUMBERED_ENV = /\\begin\{(equation|multline|align|gather|alignat|flalign|eqnarray)\}([\s\S]*?)\\end\{\1\}/g;
+/** Code renders verbatim, so an environment in it is an example, not math. */
+const CODE = /(^|\n) {0,3}(`{3,}|~{3,})[\s\S]*?(?:\n {0,3}\2[`~]*(?=[ \t]*(?:\n|$))|$)|`[^`\n]*`/g;
+/** Display math only: KaTeX refuses these environments inline. */
+const DISPLAY_MATH = /\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]/g;
 
 /**
  * KaTeX numbers these on page-wide CSS counters, so a row left out of the DOM must still count
@@ -74,12 +78,15 @@ export function numberedEquations(content: readonly Part[] | undefined): number 
   let total = 0;
   for (const part of content ?? []) {
     if (part.type !== "text" || !part.text?.includes("\\begin{")) continue;
-    for (const [, env, body] of part.text.matchAll(NUMBERED_ENV)) {
-      const lines =
-        env === "equation" || env === "multline"
-          ? 1
-          : body.split("\\\\").filter((line) => line.trim() !== "").length;
-      total += Math.max(0, lines - (body.match(/\\(?:notag|nonumber|tag)\b/g) ?? []).length);
+    const prose = part.text.replace(CODE, "$1");
+    for (const [, dollars, brackets] of prose.matchAll(DISPLAY_MATH)) {
+      for (const [, env, body] of (dollars ?? brackets).matchAll(NUMBERED_ENV)) {
+        const lines =
+          env === "equation" || env === "multline"
+            ? 1
+            : body.split("\\\\").filter((line) => line.trim() !== "").length;
+        total += Math.max(0, lines - (body.match(/\\(?:notag|nonumber|tag)\b/g) ?? []).length);
+      }
     }
   }
   return total;

@@ -341,6 +341,8 @@ test("the whole document is mounted for the readers that need it", () => {
   const print = section(GLUE, "const beforePrint = () => {", "};");
   // Synchronous: the print dialog opens when this handler returns.
   assert.match(print, /commit\(null, true\);/);
+  // Not for a hidden thread: it is not printed, and its step would leave it fully mounted.
+  assert.match(print, /if \(winRef\.current != null && viewport\.clientHeight > 0\) commit\(null, true\);/);
   const key = section(GLUE, "const onKeyDown = (event: KeyboardEvent) => {", "};");
   assert.match(key, /event\.key\.toLowerCase\(\) !== "a"/);
   assert.match(key, /closest\?\.\("input, textarea, \[contenteditable=true\]"\)\) return;/);

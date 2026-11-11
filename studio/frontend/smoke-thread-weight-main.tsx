@@ -110,7 +110,8 @@ type SeedOptions = {
    * `sources` adds six URL source parts after every web_search call.
    */
   agent?: { rounds: number; compactionEvery?: number; sources?: boolean; rich?: boolean };
-  /** Each default reply also carries a numbered equation, which KaTeX counts page-wide. */
+  /** Each default reply also carries a numbered equation, which KaTeX counts page-wide, and
+   *  the same environments as code. */
   numbered?: boolean;
 };
 
@@ -212,7 +213,9 @@ function buildMessages(
             ? plainAssistantMarkdown(index)
             : assistantMarkdown(index) +
               (options?.numbered
-                ? `\n\n$$\n\\begin{equation}E_{${index}} = mc^2\\end{equation}\n$$`
+                ? `\n\n$$\n\\begin{equation}E_{${index}} = mc^2\\end{equation}\n$$` +
+                  // Examples, not math: they render verbatim and take no number.
+                  "\n\n```latex\n\\begin{equation}x\\end{equation}\n```\n\nInline `\\begin{align}a\\end{align}` too."
                 : ""),
         },
       ],

@@ -530,9 +530,19 @@ test("a new column width forgets every height, since every row re-wraps", () => 
 test("numbered equations are counted where KaTeX's page-wide counters would count them", () => {
   const text = (value: string) => [{ type: "text", text: value }];
   assert.equal(numberedEquations(text("$$x$$ and \\begin{equation*}y\\end{equation*}")), 0);
-  assert.equal(numberedEquations(text("\\begin{equation}a=b\\end{equation}")), 1);
-  assert.equal(numberedEquations(text("\\begin{align}a\\\\b \\notag\\\\c\\end{align}")), 2);
-  assert.equal(numberedEquations(text("\\begin{equation}a\\tag{*}\\end{equation}")), 0);
+  assert.equal(numberedEquations(text("$$\\begin{equation}a=b\\end{equation}$$")), 1);
+  assert.equal(numberedEquations(text("\\[\\begin{align}a\\\\b \\notag\\\\c\\end{align}\\]")), 2);
+  assert.equal(numberedEquations(text("$$\\begin{equation}a\\tag{*}\\end{equation}$$")), 0);
+  // Only display math renders them: bare, inline-coded or fenced, they are text.
+  assert.equal(numberedEquations(text("\\begin{equation}a=b\\end{equation}")), 0);
+  assert.equal(numberedEquations(text("Use `$$\\begin{equation}a\\end{equation}$$` here")), 0);
+  assert.equal(
+    numberedEquations(
+      text("```latex\n$$\\begin{equation}a\\end{equation}$$\n```\n\n$$\\begin{equation}b\\end{equation}$$"),
+    ),
+    1,
+  );
+  assert.equal(numberedEquations(text("~~~\n$$\\begin{equation}a\\end{equation}$$")), 0);
   assert.equal(numberedEquations([{ type: "reasoning", text: "\\begin{equation}a\\end{equation}" }]), 0);
 });
 

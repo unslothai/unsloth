@@ -877,8 +877,9 @@ function useThreadWindow(
     const beforePrint = () => {
       printingRef.current = true;
       modeRef.current = "fill";
-      // Print lays out only what is mounted, even over a commit in flight.
-      if (winRef.current != null) commit(null, true);
+      // Print lays out only what is mounted, even over a commit in flight. A hidden thread is not
+      // printed, and its step would not rewindow it until shown.
+      if (winRef.current != null && viewport.clientHeight > 0) commit(null, true);
     };
     const afterPrint = () => {
       printingRef.current = media.matches;
