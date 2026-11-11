@@ -5,6 +5,8 @@
 
 export interface VramReportingDevice {
   vram_used_gb?: number;
+  shared_memory?: boolean;
+  unified_memory?: boolean;
 }
 
 export interface MemoryTotalDevice {
@@ -348,7 +350,22 @@ export function resolveGpuVramUsedGb(
     return devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0);
   }
   const aggregate = gpu?.vram_used_gb_aggregate;
-  return Number.isFinite(aggregate) ? (aggregate as number) : null;
+  if (Number.isFinite(aggregate)) return aggregate as number;
+  // A shared iGPU often has no counter beside readable discrete cards; its usage lives in system
+  // RAM, so leave it out of "used" instead of blanking the whole figure.
+  const unread = devices.filter((device) => !Number.isFinite(device.vram_used_gb));
+  if (
+    unread.length > 0 &&
+    unread.every(sharesHostMemoryDevice) &&
+    devices.some((device) => !sharesHostMemoryDevice(device))
+  ) {
+    return devices.reduce(
+      (sum, device) =>
+        sum + (Number.isFinite(device.vram_used_gb) ? (device.vram_used_gb as number) : 0),
+      0,
+    );
+  }
+  return null;
 }
 
 /** The loader's default VRAM fraction (`_CTX_FIT_VRAM_FRACTION`). */
