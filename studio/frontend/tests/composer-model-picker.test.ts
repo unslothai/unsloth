@@ -328,3 +328,39 @@ test("On Device sections follow the header picker's buckets and order", () => {
     ["b", "d", "c", "a", "e"],
   );
 });
+
+test("a quant still resolving never overrides a newer pick", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /await rowQuants\(target\);\s+if \(pickSeq\.current !== seq\) \{\s+return;/,
+  );
+  assert.match(
+    picker,
+    /if \(list\.length === 1\) \{\s+if \(pickSeq\.current === seq\)/,
+  );
+  assert.match(picker, /const seq = supersede\(\);/);
+});
+
+test("composer search keeps Mac-native repos, as the header picker did", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /isMac &&\s+isRecommendableFormat\(r\.id, r\.isGguf, true, r\.quantMethod\)/,
+  );
+});
+
+test("on-disk quant lists are re-read when the picker opens or inventory changes", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /\[open, inventory\.cachedGguf, loraModels\]/);
+  assert.match(
+    picker,
+    /quantsReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
+  );
+});

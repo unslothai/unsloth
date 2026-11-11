@@ -106,6 +106,7 @@ export { ModelLoadSettingsAction } from "./components/model-selector/model-load-
 export {
   chatGgufFit,
   estimateQuantBytes,
+  isRecommendableFormat,
   paramsFromId,
 } from "./components/model-selector/recommended-fit";
 export {

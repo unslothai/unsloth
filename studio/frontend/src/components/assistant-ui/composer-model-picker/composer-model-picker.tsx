@@ -13,6 +13,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import type {
   CachedGgufRepo,
   CachedModelRepo,
@@ -51,6 +52,7 @@ import {
   estimateQuantBytes,
   isMediaCatalogRepo,
   isOverBudget,
+  isRecommendableFormat,
   loraOptionLabel,
   modelConfigInstanceKey,
   modelConfigTarget,
@@ -854,6 +856,7 @@ export function ComposerModelPicker({
   const online = useOnlineStatus();
   const hfToken = useHfTokenStore((s) => s.token);
   const quantFormats = useGpuInfo().checkpointQuantFormats;
+  const isMac = usePlatformStore((s) => s.deviceType === "mac");
   const hubQuery = useDebouncedValue(onRecommended ? query.trim() : "");
   const hubSearch = useHubModelSearch(hubQuery, {
     ownerScope: hubQuery ? "all" : "unsloth",
@@ -911,13 +914,22 @@ export function ComposerModelPicker({
     const fromHub = hubResults
       .filter(
         (r) =>
-          matchesRecommendedBrowse(r, quantFormats, !hubQuery) &&
+          (matchesRecommendedBrowse(r, quantFormats, !hubQuery) ||
+            // A Mac runs MLX and plain safetensors too, as the header picker lists them; the browse
+            // gates (maker logo or likes) still apply, read as for a GGUF.
+            (isMac &&
+              isRecommendableFormat(r.id, r.isGguf, true, r.quantMethod) &&
+              matchesRecommendedBrowse(
+                { ...r, isGguf: true },
+                quantFormats,
+                !hubQuery,
+              ))) &&
           isChatTask(r.pipelineTag) &&
           !isMediaCatalogRepo(r.id),
       )
       .map((r) => ({ id: r.id, name: r.id, isGguf: r.isGguf }));
     return fromHub.length > 0 ? fromHub : [...(source?.models ?? [])];
-  }, [hubResults, quantFormats, hubQuery, source?.models]);
+  }, [hubResults, quantFormats, hubQuery, isMac, source?.models]);
   const loraModels = source?.loraModels;
   const externalModels = source?.externalModels;
 
@@ -1083,6 +1095,14 @@ export function ComposerModelPicker({
     externalModels,
   ]);
 
+  // Re-read on every opening and inventory change, so a newly downloaded quant shows; until then
+  // the last list stays, and a failed read keeps it rather than caching an empty one.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new inventory is the trigger, not an input.
+  const quantsEpoch = useMemo(
+    () => ({ open }),
+    [open, inventory.cachedGguf, loraModels],
+  );
+  const quantsReadAt = useRef(new Map<string, object>());
   useEffect(() => {
     if (!open) {
       return;
@@ -1090,7 +1110,7 @@ export function ComposerModelPicker({
     const wanted = rows.filter(
       (row) =>
         (row.kind === "gguf" || row.kind === "localGguf") &&
-        !deviceQuants.has(row.key),
+        quantsReadAt.current.get(row.key) !== quantsEpoch,
     );
     if (wanted.length === 0) {
       return;
@@ -1105,17 +1125,24 @@ export function ComposerModelPicker({
         try {
           return [row.key, (await rowQuants(target)).quants] as const;
         } catch {
-          return [row.key, [] as GgufVariantDetail[]] as const;
+          return [row.key, null] as const;
         }
       }),
     ).then((found) => {
       if (!live) {
         return;
       }
+      for (const [key] of found) {
+        quantsReadAt.current.set(key, quantsEpoch);
+      }
       setDeviceQuants((prev) => {
         const next = new Map(prev);
         for (const [key, list] of found) {
-          next.set(key, list);
+          if (list) {
+            next.set(key, list);
+          } else if (!next.has(key)) {
+            next.set(key, []);
+          }
         }
         return next;
       });
@@ -1123,7 +1150,7 @@ export function ComposerModelPicker({
     return () => {
       live = false;
     };
-  }, [open, rows, deviceQuants]);
+  }, [open, rows, quantsEpoch]);
 
   const isFavorite = useCallback(
     (row: Row) =>
@@ -1400,11 +1427,21 @@ export function ComposerModelPicker({
     openModelCard(row);
   };
 
-  const pickQuantRow = async (row: Row, target: QuantTarget) => {
+  // Each pick supersedes any still resolving its quant, so a slow lookup never overrides a newer choice.
+  const pickSeq = useRef(0);
+  const supersede = () => {
+    pickSeq.current += 1;
+    return pickSeq.current;
+  };
+
+  const pickQuantRow = async (row: Row, target: QuantTarget, seq: number) => {
     if (!source) {
       return;
     }
     const { quants: list, defaultVariant } = await rowQuants(target);
+    if (pickSeq.current !== seq) {
+      return;
+    }
     const fetched = list.filter((v) => v.downloaded === true);
     const quant = chooseQuant(
       target.remote && fetched.length > 0 ? fetched : list,
@@ -1423,7 +1460,7 @@ export function ComposerModelPicker({
     );
   };
 
-  const toggleOffer = async (row: Row, target: QuantTarget) => {
+  const toggleOffer = async (row: Row, target: QuantTarget, seq: number) => {
     if (offer?.key === row.key) {
       setOffer(null);
       return;
@@ -1437,8 +1474,10 @@ export function ComposerModelPicker({
     try {
       const { quants: list, defaultVariant } = await rowQuants(target);
       if (list.length === 1) {
-        setOffer(null);
-        pickOfferQuant(row, list[0]);
+        if (pickSeq.current === seq) {
+          setOffer(null);
+          pickOfferQuant(row, list[0]);
+        }
         return;
       }
       setOffer((now) =>
@@ -1460,11 +1499,12 @@ export function ComposerModelPicker({
     if (row.id !== chosen?.id) {
       setPending(row);
     }
+    supersede();
     source.onPick(row.id, ggufMeta(row, variant, variant.downloaded === true));
     resetView();
   };
 
-  const pickNpu = (row: Row, model: NpuModel) => {
+  const pickNpu = (row: Row, model: NpuModel, seq: number) => {
     if (!(source && npuCatalog) || model.id in npuCatalog.downloads) {
       return;
     }
@@ -1485,7 +1525,12 @@ export function ComposerModelPicker({
     void npuCatalog.download(model).then((done) => {
       const now = useChatRuntimeStore.getState();
       // A model picked while this downloaded is the user's newer choice; keep it.
-      if (done && now.params.checkpoint === before && !now.loadingModelPick) {
+      if (
+        done &&
+        pickSeq.current === seq &&
+        now.params.checkpoint === before &&
+        !now.loadingModelPick
+      ) {
         source.onPick(model.model_path, meta);
       }
     });
@@ -1495,13 +1540,14 @@ export function ComposerModelPicker({
     if (!source) {
       return;
     }
+    const seq = supersede();
     if (row.npu) {
-      pickNpu(row, row.npu);
+      pickNpu(row, row.npu, seq);
       return;
     }
     const target = quantTarget(row);
     if (target?.remote && !row.onDevice) {
-      await toggleOffer(row, target);
+      await toggleOffer(row, target, seq);
       return;
     }
     if ((deviceQuants.get(row.key)?.length ?? 0) > 1) {
@@ -1517,7 +1563,7 @@ export function ComposerModelPicker({
     if (target) {
       setResolving(row.key);
       try {
-        await pickQuantRow(row, target);
+        await pickQuantRow(row, target, seq);
       } catch {
         handOff(row);
         return;
@@ -1586,6 +1632,7 @@ export function ComposerModelPicker({
   const pickQuant = (variant: GgufVariantDetail) => {
     setQuantsOpen(false);
     if (source && chosen) {
+      supersede();
       source.onPick(chosen.id, ggufMeta(chosen, variant, true));
     }
   };
@@ -2160,6 +2207,7 @@ export function ComposerModelPicker({
                   if (row.id !== chosen?.id) {
                     setPending(row);
                   }
+                  supersede();
                   source.onPick(row.id, ggufMeta(row, variant, true));
                   resetView();
                 }}
@@ -2451,6 +2499,7 @@ export function ComposerModelPicker({
                 }
                 focusField={configFocus ?? undefined}
                 onRun={(config, isDiffusion) => {
+                  supersede();
                   source?.onPick(configTarget.configId ?? configTarget.id, {
                     ...configTarget.meta,
                     config,
