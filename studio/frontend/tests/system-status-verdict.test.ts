@@ -140,10 +140,12 @@ test("no tile fabricates a usage percentage for a host it has not read", () => {
     if (/showUsage=\{false\}/.test(tile) && percent === "null") continue;
     assert.match(
       percent,
-      /hostUnread \? null :|vramUsageKnown \? metrics\.vramPercent : null/,
+      /hostUnread \? null :|vramUsageKnown \? metrics\.vramPercent : null|^npu\.loadPercent$/,
       `${label} gates its percentage`,
     );
   }
+  // The NPU tile's percentage is gated where its card is built.
+  assert.match(tabSrc, /const npu = hostUnread\s*\?\s*null/);
 });
 
 test("the two non-answers are worded for the whole host, not just its GPUs", () => {

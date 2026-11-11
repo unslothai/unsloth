@@ -52,13 +52,21 @@ test("both toggles are off by default and only poll loaded models when one is on
   assert.match(store, /showModelBreakdown: false/);
   assert.match(
     readSrc("features/settings/tabs/resources-tab.tsx"),
-    /useLoadedModels\(\s*wantsModels,\s*wantsModels,?\s*\)/,
+    /useLoadedModels\(\s*wantsModelRows,\s*wantsModelRows,?\s*\)/,
+  );
+  // An NPU host polls them too: its card names the resident model.
+  assert.match(
+    readSrc("features/settings/tabs/resources-tab.tsx"),
+    /const wantsModelRows = wantsModels \|\| Boolean\(npuStatus\?\.hardware\.supported\);/,
   );
   // Floating monitor: mounted only while a toggle is on, and lazy (a static import breaks the startup chunking).
   const monitor = readSrc("components/floating-monitor.tsx");
   assert.match(monitor, /lazy\(\(\) => import\("\.\/monitor-loaded-models"\)\)/);
   // Not while suppressed beside Run settings: nothing shows it.
-  assert.match(monitor, /\{wantsModels && !suppressed && \(\s*<Suspense/);
+  assert.match(
+    monitor,
+    /\{\(wantsModels \|\| npuStatus\?\.hardware\.supported\) && !suppressed && \(\s*<Suspense/,
+  );
 });
 
 test("Unsloth's share never reads below the models it holds in that pool", () => {
