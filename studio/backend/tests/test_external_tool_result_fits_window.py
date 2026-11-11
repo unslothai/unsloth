@@ -104,14 +104,18 @@ def _serves(window):
     return _read
 
 
-def _forwarded(turns, **run_kwargs):
+def _forwarded(
+    turns,
+    history = (),
+    **run_kwargs,
+):
     transport = turns if isinstance(turns, FakeTransport) else FakeTransport(turns)
 
     async def _collect():
         agen = stream_with_studio_tools(
             transport,
             run = ToolLoopRun(
-                messages = [{"role": "user", "content": "which orders shipped?"}],
+                messages = [*history, {"role": "user", "content": "which orders shipped?"}],
                 session_id = "s1",
                 thread_id = "t1",
                 **run_kwargs,
@@ -185,3 +189,24 @@ def test_a_result_is_forwarded_whole_when_the_window_is_unknown(run_kwargs):
     messages = _forwarded([_call_turn("c1"), _ANSWER_TURN], **run_kwargs)
 
     assert _results(messages) == [_LONG]
+
+
+class CompactingTransport(FakeTransport):
+    def stream(self, *, messages, **kwargs):
+        self.sent_messages = messages[-1:] if messages[-1]["role"] == "user" else messages[-3:]
+        return super().stream(messages = self.sent_messages, **kwargs)
+
+
+def test_a_result_is_sized_to_the_history_left_after_compaction():
+    history = [
+        {"role": role, "content": f"turn {i} " + "x" * 2000}
+        for i in range(20)
+        for role in ("user", "assistant")
+    ]
+    transport = CompactingTransport([_call_turn("c1"), _ANSWER_TURN])
+
+    messages = _forwarded(transport, history = history, served_window = _serves(4096))
+
+    (result,) = _results(messages)
+    assert result.startswith(_LONG[:200])
+    assert estimate_messages_tokens_conservative(messages) < 4096

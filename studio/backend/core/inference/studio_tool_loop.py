@@ -2169,7 +2169,7 @@ async def _stream_with_studio_tools(
                     kwargs["result_budget_tokens"] = _result_budget_tokens(
                         window,
                         run.max_tokens,
-                        conversation,
+                        getattr(transport, "sent_messages", None) or conversation,
                         tools,
                         turn,
                         calls,
