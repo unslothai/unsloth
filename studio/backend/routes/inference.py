@@ -34600,8 +34600,7 @@ async def produce_openai_chat_completions(
         # Images stay in the loop only for vision models without a client catalog, so client
         # tools are not swapped for built-ins. Replayed MCP images count too.
         and (not _sf_has_any_image or (bool(_sf_model_info.get("is_vision")) and not payload.tools))
-        # A caller's several images and a video clip stay out of the loop, as on main.
-        and not images
+        # A video clip stays out of the loop, as on main.
         and not _video_clips
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
@@ -34751,6 +34750,11 @@ async def produce_openai_chat_completions(
                 _pil_to_png_b64(image),
                 placed_at = _sf_attachment_at,
             )
+        elif images:
+            # Promotion already interleaved the caller's decoded images in marker order.
+            _sf_attachment_at = [
+                at for at, one in enumerate(_sf_loop_images) if any(one is own for own in images)
+            ]
 
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
