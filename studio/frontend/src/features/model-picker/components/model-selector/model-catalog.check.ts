@@ -160,10 +160,40 @@ for (const [base, fp8Repo, name] of [
     `${base.split("/")[1]}-GGUF (Slow)`,
   );
 }
-assert.equal(
-  IMAGE_CATALOG.find((g) => g.pinToTop)?.canonicalId,
-  "black-forest-labs/flux-3-image-klein",
+// MiniMax-H3-Image leads the pinned order, FLUX.3 Image Klein right under it, then Qwen-Image 2.1 and its Turbo.
+assert.deepEqual(
+  IMAGE_CATALOG.filter((g) => g.pinToTop).map((g) => g.canonicalId),
+  ["MiniMaxAI/MiniMax-H3-Image", "black-forest-labs/flux-3-image-klein", "unsloth/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"],
 );
+{
+  const h3i = "MiniMaxAI/MiniMax-H3-Image";
+  const group = groupForRepoId(h3i, IMAGE_CATALOG);
+  assert.ok(group);
+  assert.equal(groupForRepoId("unsloth/MiniMax-H3-Image-FP8", IMAGE_CATALOG), group);
+  // The dense row IS the Fast FP8 row: no unpinned bf16 twin.
+  assert.equal(group.artifacts.length, 1);
+  assert.equal(group.artifacts[0].prequantRepo, "unsloth/MiniMax-H3-Image-FP8");
+  assert.deepEqual(group.artifacts[0].prequantSizeGb, { fp8: 18.88, int8: 18.88 });
+  assert.equal(group.artifacts[0].fetchedFrom, undefined);
+  for (const schemes of [["int8", "fp8"], ["fp8"], ["int8"]]) {
+    assert.equal(curatedRowLabelFor(h3i, IMAGE_CATALOG, "dense-quant", schemes)?.name, "MiniMax-H3-Image (Fast FP8)");
+  }
+  // The backend refuses Apple Silicon and CPU.
+  for (const host of ["accelerated", "gguf-only", "unknown"] as const) {
+    assert.equal(curatedRowLabelFor(h3i, IMAGE_CATALOG, host)?.name, "MiniMax-H3-Image", host);
+  }
+  const names = catalogToModelOptions(IMAGE_CATALOG, "dense-quant", ["int8", "fp8"])
+    .filter((o) => IMAGE_CATALOG.some((g) => g.pinToTop && groupForRepoId(o.id, IMAGE_CATALOG) === g))
+    .map((o) => o.name);
+  assert.deepEqual(names.slice(0, 2), ["MiniMax-H3-Image (Fast FP8)", "FLUX.3 Image Klein (Fast FP8)"]);
+  const fits = (gpuGb: number, systemRamGb: number, denseQuantSchemes?: string[]) =>
+    curatedArtifactFitsDevice(h3i, IMAGE_CATALOG, { gpuGb, systemRamGb, denseQuantSchemes });
+  assert.equal(fits(24, 64, ["int8", "fp8"]), true);
+  assert.equal(fits(40, 64, ["int8", "fp8"]), true);
+  assert.equal(fits(24, 64), false);
+  assert.equal(fits(24, 32, ["int8", "fp8"]), false);
+  assert.equal(fits(16, 64, ["int8", "fp8"]), false);
+}
 // MOSS-Image: a dense row on the OpenMOSS id (fetched from the FP8 repo), with sd.cpp GGUF rows in the same group.
 for (const [base, fp8Repo, ggufRepo, name] of [
   ["OpenMOSS-Team/MOSS-Image-SFT", "unsloth/MOSS-Image-SFT-FP8", "unsloth/MOSS-Image-SFT-GGUF", "MOSS-Image"],
@@ -1188,6 +1218,7 @@ const PREQUANT_ROWS = [
   ["black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base-FP8"],
   ["OpenMOSS-Team/MOSS-Image-SFT", "unsloth/MOSS-Image-SFT-FP8"],
   ["OpenMOSS-Team/MOSS-Image-Base", "unsloth/MOSS-Image-Base-FP8"],
+  ["MiniMaxAI/MiniMax-H3-Image", "unsloth/MiniMax-H3-Image-FP8"],
 ] as const;
 
 for (const [id, repo] of PREQUANT_ROWS) {
