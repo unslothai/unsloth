@@ -426,7 +426,6 @@ class PublishedLlamaArtifact:
     rank: int
     gfx_target: str | None = None
     mapped_targets: list[str] = field(default_factory = list)
-    # The bundle ships cudart/cublas itself, so it needs the NVIDIA driver and nothing else.
     bundles_cuda_runtime: bool = False
 
 
@@ -1671,7 +1670,6 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         rank = rank,
         gfx_target = gfx_target,
         mapped_targets = mapped_targets,
-        # Absent on releases cut before the field existed, which carry no runtime.
         bundles_cuda_runtime = raw.get("bundles_cuda_runtime") is True,
     )
 
@@ -2102,10 +2100,7 @@ def linux_cuda_choice_from_release(
         selection_log.append(
             "linux_cuda_selection: compute capability detection unavailable; prefer portable by runtime line"
         )
-    # A chat-only install has no PyTorch, and the NVIDIA driver ships no cudart/cublas, so such a
-    # host detects no runtime line. A bundle that carries its own runtime needs only a driver
-    # that can run it. Only when no detected line is one the driver can run, as the Windows
-    # selector does: a host with a usable runtime on disk keeps the lines and the order it had.
+    # No usable runtime on disk (no torch): take bundles that carry their own, as Windows does.
     bundled_runtime_lines = (
         []
         if runtime_lines
@@ -8488,10 +8483,9 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
 
 def _fallback_runtime_line(host: HostInfo) -> "str | None":
     """None if undecidable; mirrors linux_cuda_choice_from_release and windows_cuda_attempts without
-    a release (Linux: detected lines the driver can run, in detection order, and undecidable
-    with none, where the pick depends on which bundles carry their own runtime;
-    Windows: driver-compatible lines narrowed to detected, or all if none); Blackwell routes
-    by its own rule before any preference."""
+    a release (Linux: detected lines the driver can run, in detection order, None if none since
+    the pick then depends on which bundles carry a runtime; Windows: driver-compatible lines
+    narrowed to detected, or all if none); Blackwell routes by its own rule before any preference."""
     try:
         if _host_is_blackwell(host):
             return None
@@ -8524,10 +8518,9 @@ def _torch_runtime_preference_for_marker(host: "HostInfo | None") -> "str | None
 
 def _runtime_line_selectable(host: HostInfo, line: str) -> bool:
     """Whether the CUDA selectors could pick *line* here. Linux filters on the runtime being
-    on disk and the driver running it (a preference comes from torch, which puts its runtime
-    on disk, so the self-contained bundles a host without one takes are never asked about);
-    the Windows selector only orders by detected DLLs (a bundle carries its own runtime), so
-    every driver-compatible line is selectable there."""
+    on disk and the driver running it (a torch preference puts its runtime on disk); the Windows
+    selector only orders by detected DLLs (a bundle carries its own runtime), so every
+    driver-compatible line is selectable there."""
     try:
         if host.is_linux:
             detected = detected_linux_runtime_lines()[0]

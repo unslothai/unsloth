@@ -1174,7 +1174,6 @@ class TestLinuxCudaChoiceFromRelease:
         assert linux_cuda_choice_from_release(host, release) is None
 
     def test_no_runtime_detected_takes_a_bundle_that_carries_its_own(self, monkeypatch):
-        # A chat-only install: the NVIDIA driver alone, no cudart/cublas anywhere on disk.
         mock_linux_runtime(monkeypatch, [])
         host = make_host(driver_cuda_version = (12, 8))
         art = make_artifact("bundle-cuda12.tar.gz", bundles_cuda_runtime = True)
@@ -1195,7 +1194,6 @@ class TestLinuxCudaChoiceFromRelease:
         assert [a.runtime_line for a in result.attempts] == ["cuda13", "cuda12"]
 
     def test_no_runtime_detected_skips_bundles_without_a_runtime(self, monkeypatch):
-        # Same line, same coverage: only the self-contained one can run here.
         mock_linux_runtime(monkeypatch, [])
         host = make_host(driver_cuda_version = (12, 8))
         bare = make_artifact("bare-cuda12.tar.gz", rank = 1)
@@ -1217,7 +1215,6 @@ class TestLinuxCudaChoiceFromRelease:
         assert linux_cuda_choice_from_release(host, make_release([art13])) is None
 
     def test_a_runtime_the_driver_cannot_run_counts_as_none(self, monkeypatch):
-        # cuda13 libraries on disk, a driver that only runs cuda12: nothing detected is usable.
         mock_linux_runtime(monkeypatch, ["cuda13"])
         host = make_host(driver_cuda_version = (12, 8))
         art12 = make_artifact("bundle-cuda12.tar.gz", bundles_cuda_runtime = True)
@@ -1229,7 +1226,6 @@ class TestLinuxCudaChoiceFromRelease:
         assert [a.name for a in result.attempts] == ["bundle-cuda12.tar.gz"]
 
     def test_a_detected_runtime_keeps_its_lines(self, monkeypatch):
-        # cuda12 on disk, a driver that could also run a self-contained cuda13 bundle: unchanged.
         mock_linux_runtime(monkeypatch, ["cuda12"])
         host = make_host(driver_cuda_version = (13, 0))
         art12 = make_artifact("bundle-cuda12.tar.gz")
