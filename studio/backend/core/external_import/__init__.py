@@ -238,8 +238,12 @@ def _pending_messages(
     reseated = []
     for message in pending:
         parent = message.get("parentId")
-        while parent and parent not in present:
+        seen = set()
+        while parent and parent not in present and parent not in seen:
+            seen.add(parent)
             parent = by_id.get(parent, {}).get("parentId")
+        if parent in seen:
+            parent = None  # a cyclic chain has no surviving ancestor; a missing one orphans the row
         reseated.append({**message, "parentId": parent})
         present.add(message["id"])
     return reseated
@@ -333,7 +337,13 @@ def _import_project(
         }
     )
     before = (summary.new_chats, summary.messages)
-    imported = sum(_import_session(source, path, project_id, summary) for path in project.sessions)
+    imported = 0
+    for path in project.sessions:
+        try:
+            imported += _import_session(source, path, project_id, summary)
+        except Exception as exc:
+            # A corrupt file costs only its own chat; the rest of the import still runs.
+            summary.warnings.append(f"{path.name}: could not be imported ({exc}).")
     if studio_db.list_chat_threads(project_id = project_id):
         # updatedAt only moves when something landed, so a no-op click does not re-sort the sidebar.
         if (summary.new_chats, summary.messages) != before:
