@@ -13,6 +13,7 @@ from .mcp_harness import bodies, register_export_job, run_tool, sequence
 
 START = "/api/train/start-requests/req-1/cancel"
 RECIPE = "/api/data-recipe/jobs/rec-1/cancel"
+FLOW = "/api/flows/runs/run-1/cancel"
 DOWNLOAD = "/api/hub/datasets/download/cancel"
 MODEL_DOWNLOAD = "/api/hub/download/cancel"
 VIDEO = "/api/inference/video/generate/cancel"
@@ -29,6 +30,7 @@ PAYLOADS = {
     ("GET", "/api/export/status"): {"is_export_active": True, "active_op_kind": "export_gguf"},
     ("POST", "/api/export/cancel"): {"success": True, "message": "Export cancelled"},
     ("POST", RECIPE): {"job_id": "rec-1", "status": "cancelling"},
+    ("POST", FLOW): {"status": "cancelling"},
     ("POST", "/api/inference/images/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/video/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/cancel"): {"cancelled": 1},
@@ -68,6 +70,7 @@ def _call(
             {"save": False},
         ),
         ({"kind": "recipe", "id": "rec-1"}, RECIPE, None),
+        ({"kind": "flow", "id": "run-1"}, FLOW, None),
         ({"kind": "image"}, "/api/inference/images/generate/cancel", None),
         ({"kind": "video"}, VIDEO, {"video_id": None}),
         ({"kind": "video", "id": "vid-1"}, VIDEO, {"video_id": "vid-1"}),
@@ -255,6 +258,8 @@ IDLE_ANSWERS = [
     IDLE_EXPORT,
     ("recipe", RECIPE, {"job_id": "rec-1", "status": "completed"}),
     ("recipe", RECIPE, {"job_id": "rec-1", "status": "cancelled"}),
+    ("flow", FLOW, {"status": "completed"}),
+    ("flow", FLOW, {"status": "cancelled"}),
     ("image", "/api/inference/images/generate/cancel", {"cancelled": False}),
     ("video", "/api/inference/video/generate/cancel", {"cancelled": False}),
     ("chat", "/api/inference/cancel", {"cancelled": 0}),
@@ -266,6 +271,7 @@ IDS = {
     "training": "job-7",
     "training_start": "req-1",
     "recipe": "rec-1",
+    "flow": "run-1",
     "chat": "mcp-abc",
     "dataset_download": "a/b",
     "model_download": "a/b",

@@ -56,6 +56,8 @@ export interface StoryState {
   seed: number;
   // Sounds passed while leaving a scene, played at the next stop.
   cues?: string[];
+  // The last scene left that had a background: it stays up until a scene sets its own.
+  backdropFrom?: string;
 }
 
 export type StoryAction =
@@ -239,6 +241,8 @@ function enter(
 ): StoryState {
   if (hops > MAX_HOPS)
     return fail(s0, "The story loops forever without showing anything.");
+  if (s0.sceneId !== sceneId && backgroundFor(m, s0, s0.sceneId))
+    s0 = { ...s0, backdropFrom: s0.sceneId };
   const scene = sceneOf(m, s0, sceneId);
   if (!scene) {
     if (m.mode === "infinite" && m.entry_points?.next_scene) {
@@ -519,6 +523,17 @@ export function backgroundFor(
 ): MediaValue | null {
   const scene = sceneOf(m, s, sceneId);
   return s.backgrounds[sceneId] ?? scene?.background ?? null;
+}
+
+/** What the stage shows: the scene's own background, else the last one set before it. */
+export function stageBackground(
+  m: StoryManifest,
+  s: StoryState,
+): MediaValue | null {
+  return (
+    backgroundFor(m, s, s.sceneId) ??
+    (s.backdropFrom ? backgroundFor(m, s, s.backdropFrom) : null)
+  );
 }
 
 export interface StageSlot {
