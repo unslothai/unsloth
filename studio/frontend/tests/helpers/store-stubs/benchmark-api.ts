@@ -3,7 +3,15 @@
 
 export const calls: string[] = [];
 
+let statusGate: Promise<void> | null = null;
+
+/** Hold the next getBenchmarkStatus() calls until `gate` resolves; null releases. */
+export function setStatusGate(gate: Promise<void> | null): void {
+  statusGate = gate;
+}
+
 export async function getBenchmarkStatus() {
+  if (statusGate) await statusGate;
   return { is_benchmark_active: false, last_op_seq: 0 };
 }
 

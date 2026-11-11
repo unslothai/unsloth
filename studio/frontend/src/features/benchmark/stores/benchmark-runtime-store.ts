@@ -297,6 +297,8 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
       } catch {
         baseline = null;
       }
+      // A cancel sent while the status probe was pending found nothing to cancel.
+      if (get().cancelRequested) throw new BenchmarkCanceledError();
       let res: BenchmarkOperationResponse;
       try {
         res = await post();
