@@ -327,10 +327,19 @@ def _patched_trainer(
         def compute_loss_context_manager(self):
             return contextlib.nullcontext()
 
-        def compute_loss(self, model, inputs):
+        def compute_loss(
+            self,
+            model,
+            inputs,
+            num_items_in_batch = None,
+        ):
+            # Like TRL's SFTTrainer: a per-token loss of 1 over this shard's targets, divided by the
+            # num_items_in_batch argument (an inputs["num_items_in_batch"] key is not read).
             assert inputs["use_cache"] is False
             targets = inputs["shift_labels"].ne(-100).sum()
-            return targets.float() / inputs["num_items_in_batch"]
+            if num_items_in_batch is None:
+                num_items_in_batch = targets.clamp_min(1)
+            return targets.float() / num_items_in_batch
 
         def train(self, *a, **k):
             return "trained"
@@ -381,6 +390,71 @@ def test_eval_loss_is_the_token_mean_even_with_an_empty_shard(monkeypatch, world
     assert logits is None and labels_out is None
     with pytest.raises(NotImplementedError, match = "loss-only"):
         trainer.prediction_step(None, batch(), False)
+
+
+def _model_normalised_loss(
+    self,
+    model,
+    inputs,
+    num_items_in_batch = None,
+):
+    # TRL < 1 hands inputs to the model: sum / inputs["num_items_in_batch"] when the key is there, else
+    # transformers' token mean over this shard, 0 / 0 on a shard without targets.
+    targets = inputs["shift_labels"].ne(-100).sum().float()
+    count = inputs.get("num_items_in_batch")
+    return targets / (targets if count is None else count)
+
+
+@pytest.mark.parametrize("compute_loss", ["trl", "model"])
+def test_eval_loss_is_not_multiplied_by_the_cp_size(monkeypatch, compute_loss):
+    import types
+
+    @contextlib.contextmanager
+    def first_half(mesh, buffers, buffer_seq_dims, no_restore_buffers):
+        for buffer in buffers:
+            buffer.data = buffer[:, : buffer.shape[1] // 2].clone()
+        yield
+
+    monkeypatch.setattr(cp, "context_parallel", first_half)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    Trainer = _patched_trainer(monkeypatch)
+    if compute_loss == "model":
+        monkeypatch.setattr(Trainer, "compute_loss", _model_normalised_loss)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
+    manager = _manager(size = 2)
+    manager.mesh = types.SimpleNamespace(get_group = lambda: "cp")
+    trainer._context_parallel_manager = manager
+    # Two ranks holding 2 of the 4 targets each, with the same per-token loss: the sum is 1, not 2.
+    monkeypatch.setattr(cp.dist, "all_reduce", lambda tensor, group = None: tensor.mul_(2))
+    labels = torch.tensor([[-100, 1, 1, -100, -100, -100, -100, 1, 1]])  # padded to 12, halves of 6
+    batch = {"input_ids": torch.ones(1, 9, dtype = torch.long), "labels": labels}
+    loss, _, _ = trainer.prediction_step(None, batch, True)
+    assert loss.item() == pytest.approx(1.0)
+
+
+def test_eval_loss_of_a_shard_without_targets_is_zero_even_when_its_mean_is_nan(monkeypatch):
+    import types
+
+    @contextlib.contextmanager
+    def first_half(mesh, buffers, buffer_seq_dims, no_restore_buffers):
+        for buffer in buffers:
+            buffer.data = buffer[:, : buffer.shape[1] // 2].clone()
+        yield
+
+    monkeypatch.setattr(cp, "context_parallel", first_half)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    Trainer = _patched_trainer(monkeypatch)
+    monkeypatch.setattr(Trainer, "compute_loss", _model_normalised_loss)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
+    manager = _manager(size = 2)
+    manager.mesh = types.SimpleNamespace(get_group = lambda: "cp")
+    trainer._context_parallel_manager = manager
+    # This rank holds the prompt (no targets), the other rank's share is the whole mean, 1.
+    monkeypatch.setattr(cp.dist, "all_reduce", lambda tensor, group = None: tensor.add_(1.0))
+    labels = torch.tensor([[-100] * 7 + [1, 1]])
+    batch = {"input_ids": torch.ones(1, 9, dtype = torch.long), "labels": labels}
+    loss, _, _ = trainer.prediction_step(None, batch, True)
+    assert loss.item() == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize(
