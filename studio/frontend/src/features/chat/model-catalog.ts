@@ -255,36 +255,18 @@ export function setProviderModelCatalog(
   notifyCatalogChange();
 }
 
-// Kept out of LIVE_CATALOG: a live entry would shadow snapshot reasoning and feed compaction.
-const SERVED_WINDOWS_KEY = "unsloth_chat_served_context_windows";
-let servedWindows: Record<string, Record<string, number>> | null = null;
-// Endpoint each connection's windows were last listed from in this page load.
-const servedWindowsEndpoint = new Map<string, string>();
+// Kept out of LIVE_CATALOG (it would shadow snapshot reasoning and feed compaction) and never
+// persisted: a window from an earlier page load may belong to a server since restarted, and the
+// Max Tokens clamp only lowers, so a stale value would stick.
+const servedWindows = new Map<string, { endpoint: string; windows: Record<string, number> }>();
 
-function loadServedWindows(): Record<string, Record<string, number>> {
-  if (servedWindows) return servedWindows;
-  let loaded: Record<string, Record<string, number>> = {};
-  if (canUseStorage()) {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(SERVED_WINDOWS_KEY) ?? "{}");
-      if (parsed && typeof parsed === "object") loaded = parsed;
-    } catch {
-      // Invalid browser state; the next model listing rewrites it.
-    }
-  }
-  servedWindows = loaded;
-  return loaded;
-}
-
-/** Replaces a connection's windows with what its server lists now; a restarted server drops stale ones. */
+/** Replaces a connection's windows with what its server lists now. */
 export function learnServedContextWindows(
   connectionId: string | null | undefined,
   models: readonly ProviderModelInfo[],
   baseUrl: string,
 ): void {
   if (!connectionId) return;
-  servedWindowsEndpoint.set(connectionId, baseUrl);
-  const all = loadServedWindows();
   const windows: Record<string, number> = {};
   for (const model of models) {
     const id = model.id?.trim().toLowerCase();
@@ -292,36 +274,17 @@ export function learnServedContextWindows(
     if (!id || typeof served !== "number" || !Number.isFinite(served) || served <= 0) continue;
     windows[id] = Math.floor(served);
   }
-  if (JSON.stringify(windows) === JSON.stringify(all[connectionId] ?? {})) return;
-  if (Object.keys(windows).length > 0) all[connectionId] = windows;
-  else delete all[connectionId];
-  if (canUseStorage()) {
-    try {
-      localStorage.setItem(SERVED_WINDOWS_KEY, JSON.stringify(all));
-    } catch {
-      // Storage failures leave the in-memory copy valid for this session.
-    }
-  }
-  notifyCatalogChange();
+  const previous = servedWindows.get(connectionId);
+  servedWindows.set(connectionId, { endpoint: baseUrl, windows });
+  if (JSON.stringify(windows) !== JSON.stringify(previous?.windows ?? {})) notifyCatalogChange();
 }
 
 export function forgetServedContextWindows(connectionId: string): void {
-  servedWindowsEndpoint.delete(connectionId);
-  const all = loadServedWindows();
-  if (!(connectionId in all)) return;
-  delete all[connectionId];
-  if (canUseStorage()) {
-    try {
-      localStorage.setItem(SERVED_WINDOWS_KEY, JSON.stringify(all));
-    } catch {
-      // Storage failures leave the in-memory copy valid for this session.
-    }
-  }
-  notifyCatalogChange();
+  if (servedWindows.delete(connectionId)) notifyCatalogChange();
 }
 
 export function servedWindowsListedFrom(connectionId: string): string | undefined {
-  return servedWindowsEndpoint.get(connectionId);
+  return servedWindows.get(connectionId)?.endpoint;
 }
 
 export function servedContextWindow(
@@ -330,7 +293,7 @@ export function servedContextWindow(
 ): number | null {
   const id = modelId?.trim().toLowerCase();
   if (!connectionId || !id) return null;
-  return loadServedWindows()[connectionId]?.[id] ?? null;
+  return servedWindows.get(connectionId)?.windows[id] ?? null;
 }
 
 export function clearProviderModelCatalog(providerType: string): void {

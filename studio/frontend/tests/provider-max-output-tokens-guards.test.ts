@@ -321,7 +321,8 @@ test("a self-hosted server's listed window sets the default cap and bounds the o
   assert.equal(getExternalMaxOutputTokens("vllm", "no-window", null, "conn-a"), EXTERNAL_MAX_OUTPUT_TOKENS);
   assert.equal(getExternalMaxOutputTokens("openrouter", "x/y", null, "conn-b"), EXTERNAL_MAX_OUTPUT_TOKENS);
   assert.equal(getExternalMaxOutputTokens("vllm", "Qwen/Qwen3-8B", null, "conn-c"), EXTERNAL_MAX_OUTPUT_TOKENS);
-  assert.ok(store.get("unsloth_chat_served_context_windows")?.includes("conn-a"));
+  // Never persisted: a window from an earlier page load may belong to a restarted server.
+  assert.equal(store.get("unsloth_chat_served_context_windows"), undefined);
 });
 
 test("a saved self-hosted connection learns its window without opening its editor", () => {
