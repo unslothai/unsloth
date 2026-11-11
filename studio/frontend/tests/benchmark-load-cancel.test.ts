@@ -57,8 +57,8 @@ function harness() {
       },
       "@/hooks/gpu-vram": { resolveGpuVramUsedGb: () => null },
       "./chat-base": {
-        chatBaseLoad: () => ({
-          model_path: "org/model-GGUF",
+        chatBaseLoad: (st: { active_model: string }) => ({
+          model_path: st.active_model,
           llama_extra_args: [],
         }),
         chatSampling: () => ({ temperature: 0 }),
@@ -145,5 +145,32 @@ test("stopping the sweep mid-load cancels that load on the backend", async (t) =
   assert.deepEqual(
     cancelsOf(fetches).map((c) => c.body?.cancel_load_request_id),
     [loads[0].load_request_id],
+  );
+});
+
+test("stopping during the initial model swap cancels that load on the backend", async (t) => {
+  (globalThis as { window?: unknown }).window = globalThis;
+  t.after(() => mock.restoreAll());
+  const { runner, config, events, fetches, loads } = harness();
+  const ctl = new AbortController();
+  const running = runner.runBenchmark(
+    { ...config, tuneModel: "org/other-GGUF", tuneVariant: "Q8_0" },
+    events,
+    ctl.signal,
+  );
+  await untilLoadStarts(loads);
+  ctl.abort();
+  await assert.rejects(running, { name: "AbortError" });
+
+  assert.equal(loads[0].model_path, "org/other-GGUF");
+  assert.ok(loads[0].load_request_id, "the swap carries no request id");
+  assert.deepEqual(
+    cancelsOf(fetches).map((c) => c.body),
+    [
+      {
+        model_path: "org/other-GGUF",
+        cancel_load_request_id: loads[0].load_request_id,
+      },
+    ],
   );
 });

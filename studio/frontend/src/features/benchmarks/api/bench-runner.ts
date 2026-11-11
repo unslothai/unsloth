@@ -319,18 +319,26 @@ export async function runBenchmark(
     ) {
       events.onProgress(`Loading ${config.tuneModel}`);
       swapped = true;
-      await loadModel(
-        {
-          ...chatBaseLoad({
-            ...status,
-            active_model: config.tuneModel,
-            gguf_variant: config.tuneVariant ?? null,
-          }),
+      const swap = {
+        ...chatBaseLoad({
+          ...status,
+          active_model: config.tuneModel,
           gguf_variant: config.tuneVariant ?? null,
-          force_reload: true,
-        },
-        { signal, runtime: "chat", headers: leaseHeaders(events.leaseHolder) },
-      );
+        }),
+        gguf_variant: config.tuneVariant ?? null,
+        force_reload: true,
+        load_request_id: loadRequestId(),
+      };
+      try {
+        await loadModel(swap, {
+          signal,
+          runtime: "chat",
+          headers: leaseHeaders(events.leaseHolder),
+        });
+      } catch (err) {
+        if (signal.aborted) await cancelLoad(swap, events.leaseHolder);
+        throw err;
+      }
       status = await getInferenceStatus(signal);
     }
     if (!status.active_model)
@@ -589,6 +597,8 @@ async function cancelLoad(
       "Content-Type": "application/json",
       ...leaseHeaders(leaseHolder),
     },
+    // Bounded so a wedged backend cannot hold the stop or the restore.
+    signal: AbortSignal.timeout(30_000),
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_path: payload.model_path,
