@@ -420,6 +420,36 @@ def test_user_attachments_are_model_input():
     assert _codes(trace).count("unsupported_part") == 1
 
 
+def test_image_only_user_turn_stays_and_string_content_warns_once():
+    rows = [
+        _row("u1", "user", _text("hi"), None, 1),
+        _row("a1", "assistant", _text("ok"), "u1", 2),
+        _row("u2", "user", [{"type": "image", "image": "x"}], "a1", 3),
+        _row("a2", "assistant", _text("a cat"), "u2", 4),
+        _row("u3", "user", "hello", "a2", 5),
+    ]
+    trace = session_to_trace({"id": "t"}, rows)
+    assert _shape(trace) == [
+        ("user", "hi"),
+        ("assistant", "ok"),
+        ("user", ""),
+        ("assistant", "a cat"),
+    ]
+    assert _codes(trace) == ["string_content_dropped", "unsupported_part"]
+
+
+def test_infinite_args_text_falls_back_to_args():
+    part = _call("A", args = {"a": 1}, argsText = '{"a":1e400}')
+    assert _assistant([part]).messages[1].tool_calls[0].arguments == {"a": 1}
+
+
+def test_deeply_nested_system_variables_fill_nothing():
+    deep = "[" * 100000 + "]" * 100000
+    thread = {"id": "t", "settings": {"systemPrompt": "{{x}}", "systemVariables": deep}}
+    trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
+    assert trace.messages[0].text == "{{x}}"
+
+
 @pytest.mark.parametrize(
     "settings, project, text, codes",
     [

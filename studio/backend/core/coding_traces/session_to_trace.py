@@ -10,8 +10,9 @@ Studio keeps no history of either, so an earlier turn may have seen different te
 from __future__ import annotations
 
 import json
+import math
 import re
-from typing import Optional
+from typing import Optional, Union
 
 from core.agents_md import agents_md_enabled
 from core.coding_traces.schema import (
@@ -107,7 +108,9 @@ def _newest_leaf(head_id: str, ordered: list[dict], parents: dict[str, Optional[
 def _model_parts(message: dict) -> list:
     """Parts minus mcpToolOnly ones (modelVisibleMessage); only user rows keep attachments."""
     parts = _with_attachments(message) if message.get("role") == "user" else message.get("content")
-    return [p for p in parts or [] if not (isinstance(p, dict) and p.get("mcpToolOnly") is True)]
+    if not isinstance(parts, list):
+        return []  # toThreadMessage loads string content as one empty text part
+    return [p for p in parts if not (isinstance(p, dict) and p.get("mcpToolOnly") is True)]
 
 
 def _append_text(current: str, addition: str, joined: bool) -> str:
@@ -150,11 +153,14 @@ def _branch(
 def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessage]:
     out: list[TraceMessage] = []
     call_ids: set[str] = set()
+    imaged: list[TraceMessage] = []
     for message in chain:
         start = len(out)
         kept = _convert_row(message, out, call_ids, warnings)
         _clear_stopped_reasoning(message, out[start:], kept)
-    return _replayable(out)
+        # The UI still sends a user turn whose only content is an image (hasReplayContent).
+        imaged += [m for m in kept if m.role == "user"]
+    return _replayable(out, imaged)
 
 
 def _convert_row(
@@ -262,7 +268,7 @@ def _unique_call_id(
 def _call_arguments(part: dict) -> dict:
     args, raw = part.get("args"), part.get("argsText")
     try:  # toolCallReplayArguments sends argsText as is when it is one JSON object
-        exact = json.loads(raw, parse_constant = _reject_constant)
+        exact = json.loads(raw, parse_float = _finite_float, parse_constant = _reject_constant)
     except (TypeError, ValueError, RecursionError):
         exact = None
     marker = isinstance(raw, str) and raw and args == {"_raw": raw}  # replays as {}
@@ -304,7 +310,7 @@ def _clear_stopped_reasoning(
                 m.reasoning = ""  # shouldReplayAssistantReasoning: the text check is untrimmed
 
 
-def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
+def _replayable(out: list[TraceMessage], imaged: list[TraceMessage]) -> list[TraceMessage]:
     for m in out:
         if m.role == "assistant":
             m.text = _sanitised_assistant_text(m.text)
@@ -316,6 +322,7 @@ def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
         or m.reasoning
         or m.tool_calls
         or m.role == "tool"
+        or any(m is i for i in imaged)
     ]
 
 
@@ -401,9 +408,17 @@ def _prune(chain: list[dict]) -> list[dict]:
     return kept
 
 
-def _js_float(text: str) -> float | int:
+def _js_float(text: str) -> Union[float, int]:
     value = float(text)
     return int(value) if value.is_integer() and abs(value) < 2**53 else value
+
+
+def _finite_float(text: str) -> float:
+    # JS parses 1e400 as Infinity, which a dict cannot carry as valid JSON; use args instead.
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{text} is not a finite number")
+    return value
 
 
 def _reject_constant(text: str) -> None:
@@ -421,7 +436,7 @@ def _fill_variables(prompt: str, raw: object) -> str:
             if isinstance(raw, str) and raw.strip()
             else {}
         )
-    except ValueError:
+    except (ValueError, RecursionError):
         values = {}
 
     def fill(match: re.Match) -> str:
@@ -488,7 +503,13 @@ def session_to_trace(
     if not messages:
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no messages")
     warnings: list[TraceWarning] = []
-    trace_messages = _convert(_prune(_branch(messages, head_id, warnings)), warnings)
+    chain = _branch(messages, head_id, warnings)
+    for message in chain:
+        content = message.get("content")
+        if isinstance(content, str) and content and not _model_parts(message):
+            note = "Dropped string content; the UI loads it as an empty text part"
+            warnings.append(TraceWarning("string_content_dropped", note, message["id"]))
+    trace_messages = _convert(_prune(chain), warnings)
     if not trace_messages:
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no usable content on this branch")
     if not any(m.role == "user" for m in trace_messages):
