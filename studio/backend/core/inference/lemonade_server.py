@@ -68,9 +68,7 @@ _PORT_TAKEN = re.compile(
 # lemond's console format, "<date> <time> [Info] (Router) <message>". It relays a backend's own
 # stdout and stderr under the tag Process.
 # Matched from the start of the line: chat content can carry the same text further in.
-_LEMOND_LINE = re.compile(
-    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\] \(([^)]*)\) "
-)
+_LEMOND_LINE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\] \(([^)]*)\) ")
 # lemond's own line once /internal/set has taken effect.
 _BACK_AT_INFO = re.compile(r"Logging configuration updated \(level=info\b")
 _ANSI_COLOR = re.compile(r"\x1b\[[0-9;]*m")
