@@ -611,8 +611,18 @@ def test_backend_loads_and_generates(h3i, release, tmp_path, monkeypatch):
         status = backend.load_pipeline(str(root), model_kind = "pipeline")
         assert backend._state is not None and backend._state.family.name == "minimax-h3-image"
         assert backend._state.pipe._unsloth_h3_report.layout == "native"
+        from core.inference import diffusion_prompt_cache as prompt_cache
+
+        cache = prompt_cache.cache_for(backend._state.pipe)
+        assert cache is not None, "the H3-Image load must install the prompt cache"
         out = backend.generate(prompt = "a cat", width = 256, height = 256, steps = 6, guidance = 1.0, seed = 3)
         assert out["images"], out
+        assert cache.stats["misses"] == 1 and cache.stats["hits"] == 0
+        again = backend.generate(
+            prompt = "a cat", width = 256, height = 256, steps = 6, guidance = 1.0, seed = 4
+        )
+        assert again["images"] and cache.stats["hits"] == 1
+        assert backend._state.pipe._unsloth_h3_last_stats["encode_cached"] is True
         raw = out["images"][0]
         data = raw.get("b64") if isinstance(raw, dict) else raw
         if isinstance(data, str):
@@ -1139,3 +1149,163 @@ def test_the_per_prompt_encoder_refuses_a_bf16_fallback(h3i, release, tmp_path, 
     with pytest.raises(RuntimeError, match = "bf16 encoder it would fall back to"):
         pipe._unsloth_h3_te_loader()
     pipe.release()
+
+
+def _cached_pipe(h3i, release):
+    from core.inference import diffusion_prompt_cache as prompt_cache
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    assert prompt_cache.install(p, identity = {"family": "minimax-h3-image"})
+    return p, prompt_cache.cache_for(p)
+
+
+def _latents(
+    p,
+    prompt,
+    seed,
+    image = None,
+):
+    import torch
+    out = p(
+        prompt = prompt,
+        image = image,
+        height = 256,
+        width = 256,
+        generator = torch.Generator("cpu").manual_seed(seed),
+        output_type = "latent",
+    )
+    return out.images[0]
+
+
+def test_a_repeated_prompt_reuses_the_conditioning_bitwise(h3i, release, monkeypatch):
+    import torch
+
+    p, cache = _cached_pipe(h3i, release)
+    calls = []
+    real = h3i.qwen3vl_hidden_state
+    monkeypatch.setattr(
+        h3i, "qwen3vl_hidden_state", lambda *a, **k: calls.append(1) or real(*a, **k)
+    )
+    first = _latents(p, "a red bicycle", 5)
+    hit = _latents(p, "a red bicycle", 5)
+    assert (
+        len(calls) == 1 and cache.stats["hits"] == 1 and p._unsloth_h3_last_stats["encode_cached"]
+    )
+    assert torch.equal(first, hit)
+    _latents(p, "a blue bicycle", 5)
+    assert len(calls) == 2 and not p._unsloth_h3_last_stats["encode_cached"]
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PROMPT_CACHE", "0")
+    from core.inference import diffusion_prompt_cache as prompt_cache
+
+    q = h3i.load_minimax_h3_image_pipeline(str(release[0]), device = "cpu", text_encoder = release[2])
+    assert not prompt_cache.install(q, identity = {"family": "minimax-h3-image"})
+    assert torch.equal(_latents(q, "a red bicycle", 5), first)
+
+
+def test_the_conditioning_cache_keys_on_the_reference_pixels(h3i, release, monkeypatch):
+    from PIL import Image
+
+    p, cache = _cached_pipe(h3i, release)
+    seen = []
+    real = h3i.qwen3vl_hidden_state
+    monkeypatch.setattr(
+        h3i, "qwen3vl_hidden_state", lambda *a, **k: seen.append(1) or real(*a, **k)
+    )
+    if p.processor is None:
+        pytest.skip("tiny release has no processor")
+    red = Image.new("RGB", (128, 128), (200, 10, 10))
+    blue = Image.new("RGB", (128, 128), (10, 10, 200))
+    _latents(p, "<Picture 1> at night", 1, image = [red])
+    _latents(p, "<Picture 1> at night", 2, image = [red.copy()])
+    assert len(seen) == 1 and cache.stats["hits"] == 1
+    _latents(p, "<Picture 1> at night", 1, image = [blue])
+    assert len(seen) == 2
+
+
+def test_every_backend_loader_installs_the_prompt_cache():
+    """Each DiffusionBackend method that commits a load (builds a _LoadState) installs the conditioning cache."""
+    import ast
+
+    path = _BACKEND / "core" / "inference" / "diffusion.py"
+    src = path.read_text(encoding = "utf-8")
+    loaders = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = {ast.unparse(c.func) for c in ast.walk(node) if isinstance(c, ast.Call)}
+        if "_LoadState" in calls:
+            loaders.append(node.name)
+            assert (
+                "prompt_cache.install" in calls
+            ), f"{node.name} commits a load without the prompt cache"
+    assert {"load_pipeline", "_load_h3_image_locked"} <= set(loaders), loaders
+
+
+def test_a_declared_int8_attention_maps_to_sage():
+    from core.inference import diffusion_attention as da
+
+    assert da.checkpoint_attention_backend("int8") == "sage"
+    assert da.checkpoint_attention_backend(" INT8 ") == "sage"
+    assert da.checkpoint_attention_backend("fp4") is None
+    assert da.checkpoint_attention_backend(None) is None
+
+
+def test_int8_attention_follows_the_checkpoint_and_the_switch(h3i, monkeypatch):
+    import types
+
+    t = types.SimpleNamespace()
+    monkeypatch.delenv(h3i.INT8_ATTENTION_ENV, raising = False)
+    assert h3i.checkpoint_attention_wanted(t, "int8") == "sage"
+    assert h3i.checkpoint_attention_wanted(t, "fp8") is None
+    assert h3i.checkpoint_attention_wanted(t, None) is None
+    setattr(t, h3i.CHECKPOINT_ATTENTION_ATTR, "int8")
+    assert h3i.checkpoint_attention_wanted(t, "fp8") == "sage"
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "0")
+    assert h3i.checkpoint_attention_wanted(t, "int8") is None
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "1")
+    assert h3i.checkpoint_attention_wanted(types.SimpleNamespace(), None) == "sage"
+
+
+def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, monkeypatch):
+    from core.inference import diffusion_attention as da
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    mods = h3i._attention_processors(p.transformer)
+    blocks = {id(m) for b in p.transformer.transformer_blocks for m in b.modules()}
+    before = {id(m): m.processor._attention_backend for m in mods}
+
+    def fake_apply(
+        pipe,
+        backend,
+        logger = None,
+        target = None,
+    ):
+        for m in h3i._attention_processors(pipe.transformer):
+            m.processor._attention_backend = backend
+        return backend
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") == "sage"
+    for m in mods:
+        want = "sage" if id(m) in blocks else before[id(m)]
+        assert m.processor._attention_backend == want
+    assert any(id(m) not in blocks for m in mods)
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    monkeypatch.setattr(
+        da, "apply_attention_backend", lambda *a, **k: fake_apply(a[0], None) and None
+    )
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    assert h3i.install_checkpoint_attention(p, "cpu", scheme = "int8") is None
+
+
+def test_hosted_metadata_attention_is_recorded(h3i):
+    import types
+
+    t = types.SimpleNamespace()
+    h3i.h3_image_prepare_prequant_model()(t, {"attention": "INT8"})
+    assert getattr(t, h3i.CHECKPOINT_ATTENTION_ATTR) == "int8"

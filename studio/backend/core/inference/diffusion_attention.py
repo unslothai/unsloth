@@ -4058,3 +4058,13 @@ def install_hunyuan_attention_trim(
     if engaged and logger is not None:
         logger.info("diffusion.attention: hunyuan padded-text trim engaged")
     return engaged
+
+
+# declared checkpoint attention -> Studio backend of the same arithmetic (still probe-gated)
+CHECKPOINT_ATTENTION_BACKENDS = {"int8": "sage"}
+
+
+def checkpoint_attention_backend(declared: Any) -> Optional[str]:
+    if not isinstance(declared, str):
+        return None
+    return CHECKPOINT_ATTENTION_BACKENDS.get(declared.strip().lower())

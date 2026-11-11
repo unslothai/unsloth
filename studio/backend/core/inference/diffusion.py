@@ -11815,6 +11815,17 @@ class DiffusionBackend:
         )
         report = pipe._unsloth_h3_report
         plan = report.plan
+        prompt_cache.install(
+            pipe,
+            identity = {
+                "family": fam.name,
+                "repo": str(repo_id),
+                "base": str(base or repo_id),
+                "dtype": str(target.dtype),
+                "te_quant": str(report.te_scheme),
+            },
+            logger = logger,
+        )
         policy = (
             OFFLOAD_NONE
             if plan.placement == PLACE_RESIDENT
