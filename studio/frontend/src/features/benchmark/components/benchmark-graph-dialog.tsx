@@ -26,7 +26,7 @@ import {
 } from "@/lib/chevron-icons";
 import { AlertCircleIcon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useMemo, useState } from "react";
+import { type ReactElement, useCallback, useMemo, useState } from "react";
 import {
   BenchmarkRequestError,
   type BenchmarkRunMetric,
@@ -76,6 +76,21 @@ interface GraphDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   selectedRuns: BenchmarkRunSummary[];
+}
+
+
+function RunScore({
+  metric,
+}: {
+  metric: ReturnType<typeof getDefaultMetric>;
+}): ReactElement {
+  if (!metric) return <>n/a</>;
+  return (
+    <>
+      {formatMetricValue(metric)}
+      {metric.score >= 0 && metric.score <= 1 ? "%" : ""}
+    </>
+  );
 }
 
 export function GraphDialog({
@@ -236,13 +251,7 @@ export function GraphDialog({
                     {runLabel(run)}
                   </span>
                   <span className="shrink-0 font-mono text-muted-foreground/60">
-                    {formatMetricValue(
-                      getDefaultMetric(run) ?? { name: "", score: 0 },
-                    )}
-                    {(getDefaultMetric(run)?.score ?? 0) >= 0 &&
-                     (getDefaultMetric(run)?.score ?? 0) <= 1
-                      ? "%"
-                      : ""}
+                    <RunScore metric={getDefaultMetric(run)} />
                   </span>
                   <div className="flex shrink-0 flex-col">
                     <button
