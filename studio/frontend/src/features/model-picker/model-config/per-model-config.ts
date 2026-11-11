@@ -245,6 +245,7 @@ export function resumesThought(x: {
 export function loadedContextFields(resp: {
   is_gguf?: boolean;
   is_mlx?: boolean;
+  is_npu?: boolean;
   context_length?: number | null;
   native_context_length?: number | null;
   max_context_length?: number | null;
@@ -279,7 +280,13 @@ export function loadedContextFields(resp: {
   const isGguf = resp.is_gguf ?? false;
   // Unknown, not a default: omitted when reading the window failed.
   const loaded = resp.context_length ?? null;
-  if (!isGguf && !resp.is_mlx && resp.native_context_length == null) {
+  // The NPU reports the ctx_size it loaded even when Lemonade gives no model limit.
+  if (
+    !isGguf &&
+    !resp.is_mlx &&
+    !resp.is_npu &&
+    resp.native_context_length == null
+  ) {
     return {
       loadedContextLength: null,
       maxContextLength: null,
