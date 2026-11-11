@@ -56,6 +56,9 @@ import { observeReplyPaint } from "@/components/assistant-ui/reply-paint";
 import { observeDistantRow } from "@/components/assistant-ui/distant-rows";
 import { WindowedMessageBody } from "@/components/assistant-ui/windowed-message-body";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
+
+import { useAgentHistoryModeStore } from "@/features/chat/stores/agent-history-mode-store";
+import { agentHistoryLevelFor, agentHistoryWindowFor } from "@/features/chat/stores/agent-history-preference-policy";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
 import { LiveGenerationLine } from "@/components/assistant-ui/live-generation-line";
@@ -2092,6 +2095,15 @@ const startGrammarPrewarm = (): void => {
 // being rebuilt, and the bail-out below it would never get to run.
 const renderThreadMessage = proplessSlot(ThreadMessage);
 
+// The bounded Agent History renderer is opt-in. Keep its sizable DOM/windowing
+// implementation out of the eager normal-chat startup bundle.
+const AgentHistoryScrollMessages = lazy(() =>
+  import("@/components/assistant-ui/agent-history-scroll-messages").then(
+    ({ AgentHistoryScrollMessages }) => ({ default: AgentHistoryScrollMessages }),
+  ),
+);
+
+
 // Memoized: chat-page renders this inside a store-subscribing component.
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -2120,6 +2132,13 @@ export const Thread: FC<{
   );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
+  const agentHistoryLevel = useAgentHistoryModeStore((state) =>
+    agentHistoryLevelFor(state, threadId),
+  );
+  const agentHistoryEnabled = agentHistoryLevel !== "off";
+  const agentWindowRows = useAgentHistoryModeStore((state) =>
+    agentHistoryWindowFor(state, threadId),
+  );
   const aui = useAui();
   useThreadForkCounts();
   useTrackForkBoundaryAnchor(threadId);
@@ -2358,11 +2377,28 @@ export const Thread: FC<{
           completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
           reason: React's bail-out needs one shared element per row. See
           progressive-mount-controller.ts. */}
-          <ProgressiveMessages
-            renderMessage={renderThreadMessage}
-            resetKey={runtimeThreadId}
-            viewportRef={viewportElRef}
-          />
+          {agentHistoryEnabled ? (
+            <Suspense fallback={null}>
+              <AgentHistoryScrollMessages
+                renderMessage={renderThreadMessage}
+                resetKey={runtimeThreadId}
+                viewportRef={viewportElRef}
+                windowRows={agentWindowRows}
+                domLevel={agentHistoryLevel === "dynamic"
+                  ? "medium" : agentHistoryLevel === "low" || agentHistoryLevel === "dynamic-low"
+                    ? "low" : agentHistoryLevel === "high" || agentHistoryLevel === "dynamic-high"
+                      ? "high" : undefined}
+                fixedRowsStrict={agentHistoryLevel === "fixed-high"}
+                fixedViewportAdaptive={agentHistoryLevel === "fixed-low"}
+              />
+            </Suspense>
+          ) : (
+            <ProgressiveMessages
+              renderMessage={renderThreadMessage}
+              resetKey={runtimeThreadId}
+              viewportRef={viewportElRef}
+            />
+          )}
 
           {/* Bottom slack so the last message has room above the sticky
           scroll-to-bottom button (and floating composer in single mode),
@@ -2425,6 +2461,8 @@ export const Thread: FC<{
             ref={composedViewportRef}
             className={cn(
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+              // Preserve normal-chat styling; only bounded history needs instant scroll.
+              agentHistoryEnabled && "scroll-auto",
               hideComposer
                 ? "pt-4"
                 : "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)-var(--studio-chat-scroller-top,0px)+var(--studio-chat-header-height,48px))] mt-[var(--studio-chat-scroller-top,0px)] pt-[var(--thread-header-offset)]",

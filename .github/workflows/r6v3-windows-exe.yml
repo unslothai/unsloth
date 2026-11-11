@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Fork-only QA build. Unsigned Windows binary; no publishing, installing, or release signing.
+name: R6V3 Windows unsigned frontend executable
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches:
+      - qa/r6v3-mainline-base-20261109
+      - qa/r6v3-upstream-main-20261111
+    paths:
+      - 'studio/frontend/**'
+      - 'studio/src-tauri/**'
+      - '.github/workflows/r6v3-windows-exe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  windows-unsigned:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact integration SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      - name: Supply chain preflight
+        run: python scripts/lockfile_supply_chain_audit.py
+      - name: Install frontend dependencies
+        working-directory: studio/frontend
+        run: npm ci --no-fund --no-audit
+      - name: Frontend typecheck and Vite build
+        working-directory: studio/frontend
+        run: npm run build
+      - name: Agent History targeted tests
+        working-directory: studio/frontend
+        run: node --experimental-strip-types --test tests/agent-history-*.test.ts
+      - name: Install Tauri CLI
+        run: npm ci --prefix studio --no-fund --no-audit
+      - name: Build unsigned Windows executable
+        run: npx --prefix studio tauri build --no-bundle
+      - name: Prepare exact binary and checksums
+        shell: pwsh
+        run: |
+          $exe = 'studio/src-tauri/target/release/unsloth-studio.exe'
+          if (-not (Test-Path $exe)) { throw "Built executable not found: $exe" }
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          Copy-Item $exe artifact/unsloth-studio-R6V3-unsigned.exe
+          (Get-FileHash artifact/unsloth-studio-R6V3-unsigned.exe -Algorithm SHA256).Hash.ToLower() |
+            Set-Content artifact/SHA256.txt
+          $env:GITHUB_SHA | Set-Content artifact/BUILD_SHA.txt
+          'UNSIGNED QA build. Make a backup; close Desktop fully before any isolated replacement test. Not an installer.' |
+            Set-Content artifact/README.txt
+      - name: Upload unsigned executable
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: r6v3-windows-unsigned-exe
+          path: artifact/*
+          retention-days: 7
+          if-no-files-found: error
