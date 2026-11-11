@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Optional, Union
+from typing import Optional
 
 from core.agents_md import agents_md_enabled
 from core.coding_traces.schema import (
@@ -57,6 +57,12 @@ _PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
 # fromThreadMessageLike in @assistant-ui/core keeps only these assistant images.
 # JS "." stops at line breaks, so a data URL with one is dropped too.
 _DATA_IMAGE = re.compile(r"data:image/(png|jpeg|jpg|gif|webp);base64,[^\n\r\u2028\u2029]*")
+
+# The characters JS trim() removes; Python's str.strip() also strips \x1c-\x1f and \x85, not \ufeff.
+_JS_SPACE = (
+    " \t\n\v\f\r\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
 
 
 def _as_dict(value: object) -> dict:
@@ -174,7 +180,7 @@ def _legacy_load(chain: list[dict], messages: list[dict]) -> list[dict]:
 def _legacy_dropped(part: object) -> bool:
     kind = part.get("type") if isinstance(part, dict) else None
     if kind in ("text", "reasoning"):
-        return not str(part.get("text") or "").strip()
+        return not str(part.get("text") or "").strip(_JS_SPACE)
     return kind == "image" and not _DATA_IMAGE.fullmatch(str(part.get("image") or ""))
 
 
@@ -190,12 +196,11 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
 
 def _convert_row(
     message: dict, out: list[TraceMessage], call_ids: set[str], warnings: list[TraceWarning]
-) -> list[TraceMessage]:
-    """Append one stored row's trace messages to ``out``; returns the ones whose reasoning a stop
-    label keeps."""
+) -> dict[int, Optional[int]]:
+    """Append one stored row's trace messages to ``out``; returns the reasoning a stop keeps."""
     # toThreadMessage loads every row that is not "user" as an assistant turn.
     role = "user" if message.get("role") == "user" else "assistant"
-    message_id, start, kept = message["id"], len(out), []
+    message_id, start, kept = message["id"], len(out), {}
     if role == "user":
         current = TraceMessage(id = message_id, role = role, created_at = message.get("createdAt"))
         out.append(current)
@@ -210,7 +215,8 @@ def _convert_row(
             skipped = _skipped_call(part, message_id, position) if kind == "tool-call" else None
             if skipped:
                 warnings.append(skipped)
-                kept += out[start:][-1:] if _server_builtin(part)[1] else []
+                ended = {id(m): len(m.reasoning) for m in out[start:][-1:]}
+                kept.update(ended if _server_builtin(part)[1] else {})
                 continue
             flush_pair, pending_round = _close_call_group(part, kind, pending, pending_round, out)
             pieces = _open_assistant(message, out, pieces)
@@ -236,7 +242,7 @@ def _convert_row(
                 TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
             )
     out.extend(pending)
-    kept += out[start:][:1] if imaged else []  # collectImageParts: the row's first UI group
+    kept.update({id(m): kept.get(id(m)) for m in out[start:][:1] if imaged})  # collectImageParts
     return kept
 
 
@@ -326,13 +332,16 @@ def _tool_message(part: dict, name: str, call_id: str, message: dict) -> TraceMe
 
 
 def _clear_stopped_reasoning(
-    message: dict, turn: list[TraceMessage], kept: list[TraceMessage]
+    message: dict, turn: list[TraceMessage], kept: dict[int, Optional[int]]
 ) -> None:
+    """Drop a stopped turn's reasoning as the UI does. ``kept`` maps id() to the reasoning length
+    to keep: a native call ends its UI group, and an image keeps the row's first group whole."""
     reason = _as_dict(_as_dict(message.get("metadata")).get("incomplete")).get("reason")
     if isinstance(reason, str) and reason in _STOP_LABELS:
         for m in turn:
-            if not (_sanitised_assistant_text(m.text) or m.tool_calls or m in kept):
-                m.reasoning = ""  # shouldReplayAssistantReasoning: the text check is untrimmed
+            if not (_sanitised_assistant_text(m.text) or m.tool_calls):
+                # shouldReplayAssistantReasoning: the text check is untrimmed.
+                m.reasoning = m.reasoning[: kept[id(m)]] if id(m) in kept else ""
 
 
 def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
@@ -343,7 +352,7 @@ def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
     return [
         m
         for m in out
-        if m.role in ("user", "tool") or m.text.strip() or m.reasoning or m.tool_calls
+        if m.role in ("user", "tool") or m.text.strip(_JS_SPACE) or m.reasoning or m.tool_calls
     ]
 
 
@@ -380,7 +389,7 @@ def _replayed(message: dict, reasoning: bool) -> bool:
         for p in _model_parts(message)
         if isinstance(p, dict) and p.get("type") in ("image", "tool-call")
     ) or any(
-        m.text.strip() or m.tool_calls or (m.reasoning and (reasoning or m.text))
+        m.text.strip(_JS_SPACE) or m.tool_calls or (m.reasoning and (reasoning or m.text))
         for m in _convert([message], [])
     )
 
@@ -393,7 +402,7 @@ def _abandoned(message: dict) -> bool:
         and (
             p.get("type") == "reasoning"
             or (p.get("type") == "image" and p.get("image"))
-            or (p.get("type") == "text" and str(p.get("text") or "").strip())
+            or (p.get("type") == "text" and str(p.get("text") or "").strip(_JS_SPACE))
         )
         for p in _model_parts(message)
     )
@@ -429,9 +438,40 @@ def _prune(chain: list[dict]) -> list[dict]:
     return kept
 
 
-def _js_float(text: str) -> Union[float, int]:
-    value = float(text)
-    return int(value) if value.is_integer() and abs(value) < 2**53 else value
+def _js_number(value: float) -> str:
+    """Number.prototype.toString for a double, from Python's shortest round-trip digits."""
+    if not math.isfinite(value):
+        return ("-" if value < 0 else "") + "Infinity"  # JSON.parse gives no NaN
+    if value == 0:
+        return "0"
+    mantissa, _, exponent = repr(abs(value)).partition("e")
+    whole, _, fraction = mantissa.partition(".")
+    digits = (whole + fraction.rstrip("0")).lstrip("0")
+    point = len(whole.lstrip("0")) + int(exponent or 0)  # where the decimal point falls
+    if not whole.lstrip("0"):
+        point -= len(fraction) - len(fraction.lstrip("0"))
+    sign, k = "-" if value < 0 else "", len(digits)
+    if k <= point <= 21:
+        return sign + digits + "0" * (point - k)
+    if 0 < point <= 21:
+        return sign + digits[:point] + "." + digits[point:]
+    if -6 < point <= 0:
+        return sign + "0." + "0" * -point + digits
+    e = point - 1
+    tail = f"e{'+' if e > 0 else '-'}{abs(e)}"
+    return sign + digits[0] + ("." + digits[1:] if k > 1 else "") + tail
+
+
+def _js_json(value: object) -> str:
+    """JSON.stringify for a JSON.parse result."""
+    if isinstance(value, dict):
+        items = (f"{json.dumps(k, ensure_ascii = False)}:{_js_json(v)}" for k, v in value.items())
+        return "{" + ",".join(items) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_js_json(v) for v in value) + "]"
+    if isinstance(value, float):
+        return _js_number(value) if math.isfinite(value) else "null"
+    return json.dumps(value, ensure_ascii = False)
 
 
 def _finite_float(text: str) -> float:
@@ -450,11 +490,11 @@ def _fill_variables(prompt: str, raw: object) -> str:
     """Fill custom systemVariables as resolveSystemPromptVariables does; $date, $time and $now
     used the send-time clock, which is not stored, so they stay as written."""
     try:
-        # parseSystemVariablesMap uses JSON.parse, so String() prints integral floats as ints,
-        # and a NaN fills nothing. Numbers below 1e-4 or above 2**53 can still print unlike JS.
+        # parseSystemVariablesMap uses JSON.parse, so every number is a double and a NaN
+        # fills nothing.
         values = (
-            json.loads(raw, parse_float = _js_float, parse_constant = _reject_constant)
-            if isinstance(raw, str) and raw.strip()
+            json.loads(raw, parse_int = float, parse_constant = _reject_constant)
+            if isinstance(raw, str) and raw.strip(_JS_SPACE)
             else {}
         )
     except (ValueError, RecursionError):
@@ -464,7 +504,7 @@ def _fill_variables(prompt: str, raw: object) -> str:
         current = values if isinstance(values, dict) else {}
         if match.group(1) in ("$date", "$time", "$now"):
             return match.group(0)
-        for key in filter(None, (p.strip() for p in match.group(1).split("."))):
+        for key in filter(None, (p.strip(_JS_SPACE) for p in match.group(1).split("."))):
             if not isinstance(current, dict) or key not in current:
                 return match.group(0)
             current = current[key]
@@ -472,8 +512,10 @@ def _fill_variables(prompt: str, raw: object) -> str:
             return ""
         if isinstance(current, str):
             return current
+        if isinstance(current, float):
+            return _js_number(current)  # String(); JSON.stringify would print Infinity as null
         try:
-            return json.dumps(current, separators = (",", ":"), ensure_ascii = False)
+            return _js_json(current)
         except RecursionError:
             return match.group(0)  # too deep to print here; JSON.stringify would manage it
 
@@ -497,13 +539,13 @@ def _system_message(
         warnings.append(TraceWarning("system_prompt_variables", note))
     instructions = ""
     if project and not project.get("archived"):
-        instructions = str(project.get("instructions") or "").strip()
+        instructions = str(project.get("instructions") or "").strip(_JS_SPACE)
     if agents_md_enabled():
         note = "AGENTS.md is read at send time and not stored; it may have come before this text"
         warnings.append(TraceWarning("agents_md_not_stored", note))
     if instructions:
         instructions = f"<project_instructions>\n{instructions}\n</project_instructions>"
-    text = "\n\n".join(part for part in (instructions, prompt.strip()) if part)
+    text = "\n\n".join(part for part in (instructions, prompt.strip(_JS_SPACE)) if part)
     if not text:
         return None
     return TraceMessage(id = f"{thread['id']}:system", role = "system", text = text)

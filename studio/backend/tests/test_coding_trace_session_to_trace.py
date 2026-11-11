@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 
+import core.coding_traces.session_to_trace as session_to_trace_module
 import storage.studio_db as studio_db
 from core.coding_traces.session_to_trace import load_session_trace, session_to_trace
 from core.coding_traces.schema import TRACE_SOURCE, ChatTraceError
@@ -385,6 +386,14 @@ def test_native_builtin_or_image_turn_keeps_its_prompt_and_reasoning(custom, p):
     assert _turn(custom, [part, {"type": "reasoning", "text": "r"}]).messages[1].reasoning == tail
 
 
+def test_stopped_turn_keeps_only_reasoning_before_a_native_call():
+    # The native call closes the first UI group; the stopped group after it has no text.
+    native = _call("x", "code_execution", None, args = {"google": {"native_part": {}}})
+    parts = [{"type": "reasoning", "text": "r1"}, native, {"type": "reasoning", "text": "r2"}]
+    assert _turn(_STOPPED, parts).messages[1].reasoning == "r1"
+    assert _turn({}, parts).messages[1].reasoning == "r1\nr2"
+
+
 @pytest.mark.parametrize(
     "part, text",
     [
@@ -495,6 +504,18 @@ def test_legacy_threads_drop_data_images_with_line_breaks():
     assert _shape(trace) == [("user", "again"), ("assistant", "ok")]
 
 
+@pytest.mark.parametrize("blank, dropped", [("\ufeff \u3000", True), ("\x1c", False)])
+def test_legacy_blank_text_uses_js_trim(blank, dropped):
+    rows = [
+        _row("u1", "user", _text("hi"), None, 1),
+        _row("a1", "assistant", _text(blank), None, 2),
+        _row("u2", "user", _text("again"), None, 3),
+        _row("a2", "assistant", _text("ok"), None, 4),
+    ]
+    shape = _shape(session_to_trace({"id": "t"}, rows))
+    assert (shape == [("user", "again"), ("assistant", "ok")]) == dropped
+
+
 def test_infinite_args_text_falls_back_to_args():
     part = _call("A", args = {"a": 1}, argsText = '{"a":1e400}')
     assert _assistant([part]).messages[1].tool_calls[0].arguments == {"a": 1}
@@ -507,11 +528,19 @@ def test_deeply_nested_system_variables_fill_nothing():
     assert trace.messages[0].text == "{{x}}"
 
 
+def test_system_variable_numbers_print_like_js():
+    variables = '{"a":1e-7,"b":1e21,"c":12345678901234567890,"d":[1e400,0.00001,-0.0],"e":1e400}'
+    thread = {"id": "t", "settings": {"systemPrompt": "{{a}} {{b}} {{c}} {{d}} {{e}}"}}
+    thread["settings"]["systemVariables"] = variables
+    trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
+    assert trace.messages[0].text == "1e-7 1e+21 12345678901234567000 [null,0.00001,0] Infinity"
+
+
 def test_system_variable_too_deep_to_print_stays_as_written():
-    # The depth where json.dumps runs out of stack depends on the Python build.
+    # The depth where printing runs out of stack depends on the Python build.
     variables = '{"a":[1]}'
     thread = {"id": "t", "settings": {"systemPrompt": "x {{a}} y", "systemVariables": variables}}
-    with mock.patch.object(json, "dumps", side_effect = RecursionError):
+    with mock.patch.object(session_to_trace_module, "_js_json", side_effect = RecursionError):
         trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
     assert trace.messages[0].text == "x {{a}} y"
 
