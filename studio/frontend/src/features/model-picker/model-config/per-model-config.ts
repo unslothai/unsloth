@@ -715,12 +715,21 @@ export function savedContextPin(config: {
 }
 
 /** Leaves the pin in exactly one field, since picker and API auto-switch prefer different ones. */
-export function contextPinPatch(value: number, isMlx: boolean): Partial<PerModelConfig> {
+export function contextPinPatch(
+  value: number,
+  isMlx: boolean,
+  npuPrefillChunkLen?: number | null,
+): Partial<PerModelConfig> {
   // Bounded but not rounded to the control's step.
   const pin = boundContextPin(value) ?? MAX_SEQ_LENGTH_MIN;
-  return isMlx
+  const patch: Partial<PerModelConfig> = isMlx
     ? { customContextLength: pin, maxSeqLength: null }
     : { customContextLength: null, maxSeqLength: pin };
+  // The NPU load clamps the chunk to the context; a saved one past it would never match the load.
+  if (npuPrefillChunkLen != null && npuPrefillChunkLen > pin) {
+    patch.npuPrefillChunkLen = pin;
+  }
+  return patch;
 }
 
 function boundContextPin(value: unknown): number | null {
