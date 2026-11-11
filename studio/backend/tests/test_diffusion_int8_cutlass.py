@@ -263,7 +263,8 @@ def test_build_generator_instantiates_every_variant_per_tile():
     b = _load_build()
     for name, fam in b.FAMILIES.items():
         n_var = len(b.variants(fam))
-        assert n_var == len(fam["out"]) * len(fam["xs"]) * len(fam["ws"]) * 2
+        native = len(fam["out"]) if fam.get("native") else 0
+        assert n_var == len(fam["out"]) * len(fam["xs"]) * len(fam["ws"]) * 2 + native
         for i in range(len(fam["tiles"])):
             src = b.tile_tu(name, fam, i)
             assert src.count("return &ui8::FusedGemm<") == n_var
@@ -272,6 +273,9 @@ def test_build_generator_instantiates_every_variant_per_tile():
     for sym in ("ui8_abi_version", "ui8_num_tiles", "ui8_tile_info", "ui8_has_kernel", "ui8_gemm"):
         assert f"UI8_API int {sym}(" in api
     assert f"return {cut.ABI_VERSION};" in api  # loader and library agree on the ABI
+    assert "int epilogue" in api
+    assert b.FAMILIES["sm75"].get("native") and not b.FAMILIES["sm80"].get("native")
+    assert any(e == cut.EPI_NATIVE for *_, e in b.variants(b.FAMILIES["sm75"]))
 
 
 def test_python_kinds_match_the_library_kinds():
@@ -281,6 +285,39 @@ def test_python_kinds_match_the_library_kinds():
     assert cut._kind(torch.float16) == b.KIND["cutlass::half_t"]
     assert set(b.FAMILY_ID) == set(b.FAMILIES) and set(b.FAMILY_ID.values()) == {75, 80}
     assert cut.family((7, 5)) == b.FAMILY_ID["sm75"] and cut.family((8, 9)) == b.FAMILY_ID["sm80"]
+
+
+@pytest.mark.skipif(not _cpu_int_mm_ok(), reason = "torch._int_mm needs CPU support")
+def test_native_reference_is_the_native_linears_epilogue():
+    a, w, _xs, _ws, _ = _operands(40, 32, 64, torch.float32, torch.float32, False)
+    xs = torch.rand(40, 1) * 1e-3 + 1e-6
+    ws = torch.rand(32) * 1e-3 + 1e-6
+    acc = torch._int_mm(a, w.t())
+    want = (
+        torch.mul(acc, xs).mul_(ws).to(torch.float16)
+    )  # NativeWeightOnlyLinear._int_mm_rows, no bias
+    got = cut.reference_native(a, w, xs, ws, torch.float16)
+    assert torch.equal(got.view(torch.int16), want.view(torch.int16))
+
+
+def test_native_plan_needs_fp16_no_bias_and_a_won_race(monkeypatch):
+    w = torch.zeros(64, 64, dtype = torch.int8)
+    cut._NATIVE_PLAN.clear()
+    cut.native_prepare(w, torch.float16, False)  # CPU weight: nothing raced
+    cut.native_prepare(w, torch.bfloat16, False)
+    assert cut._NATIVE_PLAN == {}
+    cut._NATIVE_PLAN[(None, 64, 64)] = {512: None, 4096: 2}
+    monkeypatch.setattr(cut, "eligible", lambda *a: True)
+    xs = torch.ones(2000, 1)
+    assert cut.native_tile(torch.zeros(2000, 64, dtype = torch.int8), w, xs, torch.ones(64)) == 2
+    assert (
+        cut.native_tile(torch.zeros(100, 64, dtype = torch.int8), w, xs[:100], torch.ones(64)) is None
+    )
+    assert (
+        cut.native_tile(torch.zeros(2000, 64, dtype = torch.int8), w, xs.half(), torch.ones(64))
+        is None
+    )
+    cut._NATIVE_PLAN.clear()
 
 
 # ------------------------------------------------------------------------------------------------- GPU (needs the lib)

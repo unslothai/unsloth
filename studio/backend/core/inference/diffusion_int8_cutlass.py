@@ -100,9 +100,9 @@ def _bind(lib: Any) -> Any:
     lib.ui8_tile_info.restype = c.c_int
     lib.ui8_tile_info.argtypes = [c.c_int, c.c_int, c.POINTER(c.c_int)]
     lib.ui8_has_kernel.restype = c.c_int
-    lib.ui8_has_kernel.argtypes = [c.c_int] * 6
+    lib.ui8_has_kernel.argtypes = [c.c_int] * 7
     lib.ui8_gemm.restype = c.c_int
-    lib.ui8_gemm.argtypes = [c.c_int] * 5 + [c.c_void_p] * 6 + [c.c_int64] * 6 + [c.c_void_p]
+    lib.ui8_gemm.argtypes = [c.c_int] * 6 + [c.c_void_p] * 6 + [c.c_int64] * 6 + [c.c_void_p]
     return lib
 
 
@@ -156,14 +156,28 @@ def _kind(dtype: Any) -> Optional[int]:
     return {torch.float32: 0, torch.bfloat16: 1, torch.float16: 2}.get(dtype)
 
 
+# Epilogues: torchao's int8 dynamic Linear, or Studio's native W8A8 Linear (diffusion_native_quant: fp32 scales,
+# ``(c * x_scale) * w_scale`` in fp32, one cast, no bias).
+EPI_TORCHAO = 0
+EPI_NATIVE = 1
+
+
 def has_kernel(
-    fam: int, tile: int, out_dtype: Any, xs_dtype: Any, ws_dtype: Any, bias: bool
+    fam: int,
+    tile: int,
+    out_dtype: Any,
+    xs_dtype: Any,
+    ws_dtype: Any,
+    bias: bool,
+    epilogue: int = EPI_TORCHAO,
 ) -> bool:
     lib = library()
     kinds = (_kind(out_dtype), _kind(xs_dtype), _kind(ws_dtype))
     if lib is None or None in kinds:
         return False
-    return bool(lib.ui8_has_kernel(fam, tile, kinds[0], kinds[1], kinds[2], int(bool(bias))))
+    return bool(
+        lib.ui8_has_kernel(fam, tile, kinds[0], kinds[1], kinds[2], int(bool(bias)), int(epilogue))
+    )
 
 
 def eligible(a: Any, w: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> bool:
@@ -203,7 +217,17 @@ def eligible(a: Any, w: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> boo
         return False
 
 
-def launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, fam: int, tile: int, out_dtype: Any) -> Any:
+def launch(
+    a: Any,
+    w: Any,
+    xs: Any,
+    ws: Any,
+    bias: Any,
+    fam: int,
+    tile: int,
+    out_dtype: Any,
+    epilogue: int = EPI_TORCHAO,
+) -> Any:
     """``out[M, N]`` from the library's ``tile`` kernel on the current stream; raises on any status but ok."""
     import torch
 
@@ -221,6 +245,7 @@ def launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, fam: int, tile: int, out
             _kind(out_dtype),
             _kind(xs.dtype),
             _kind(ws.dtype),
+            int(epilogue),
             a.data_ptr(),
             w.data_ptr(),
             xs.data_ptr(),
@@ -256,6 +281,19 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> An
     if bias is not None:
         y = y + bias
     return y.to(out_dtype)
+
+
+def reference_native(a: Any, w: Any, xs: Any, ws: Any, out_dtype: Any) -> Any:
+    """Studio's native W8A8 Linear after its act quant (``NativeWeightOnlyLinear._int_mm_rows``, no bias): ``_int_mm``,
+    ``* x_scale`` then ``* w_scale`` in fp32, one cast to ``out_dtype``."""
+    import torch
+
+    m = a.shape[0]
+    if m < 17:
+        a = torch.cat([a, a.new_zeros((17 - m, a.shape[1]))])
+    c = torch._int_mm(a, w.t())[:m]
+    out = torch.mul(c, xs.reshape(-1, 1).float())
+    return out.mul_(ws.reshape(-1).float()).to(out_dtype)
 
 
 # (M, N, K, bias, xs dtype tag, ws dtype tag): ragged M and N tails, K below / above one tile, bias, every scale kind.
@@ -317,6 +355,21 @@ def _probe_tile(index: int, fam: int, tile: int, pairs: tuple) -> bool:
                 reference(a, w, xs, ws, None, out_dtype),
             ):
                 return False
+        if has_kernel(fam, tile, out_dtype, torch.float32, torch.float32, False, EPI_NATIVE):
+            for m, n, k, _bias in _PROBE_SHAPES:
+                a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
+                w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
+                xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(dev)
+                ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(dev)
+                got = launch(a, w, xs, ws, None, fam, tile, out_dtype, EPI_NATIVE)
+                if not torch.equal(got, reference_native(a, w, xs, ws, out_dtype)):
+                    return False
+            a, w = tie_operands(dev)
+            xs = torch.full((a.shape[0],), 2.0**-12, device = dev, dtype = torch.float32)
+            ws = torch.ones(w.shape[0], device = dev, dtype = torch.float32)
+            got = launch(a, w, xs, ws, None, fam, tile, out_dtype, EPI_NATIVE)
+            if not torch.equal(got, reference_native(a, w, xs, ws, out_dtype)):
+                return False
         torch.cuda.synchronize(dev)
         return True
     except Exception:  # noqa: BLE001 - out of shared memory, launch failure, ...
@@ -377,7 +430,14 @@ def time_us(
 
 
 def race(
-    index: int, w: Any, ws: Any, bias: Any, xs_dtype: Any, today: Optional[Callable], m: int
+    index: int,
+    w: Any,
+    ws: Any,
+    bias: Any,
+    xs_dtype: Any,
+    today: Optional[Callable],
+    m: int,
+    epilogue: int = EPI_TORCHAO,
 ) -> dict:
     """{"tile": id or None, "us": {...}} for one weight at ``m`` rows: probed tiles screened once, the best three timed
     against ``today(a, w, xs, ws, bias)`` (None = cuBLAS ``_int_mm`` + one read of its output, the stock GEMM with its
@@ -397,13 +457,15 @@ def race(
     if not eligible(a, w, xs, ws, bias, out_dtype):
         return {"tile": None, "us": {}}
     cands = [
-        t for t in tiles_ok if has_kernel(fam, t, out_dtype, xs_dtype, ws.dtype, bias is not None)
+        t
+        for t in tiles_ok
+        if has_kernel(fam, t, out_dtype, xs_dtype, ws.dtype, bias is not None, epilogue)
     ]
     if not cands:
         return {"tile": None, "us": {}}
 
     def cut(t):
-        return lambda: launch(a, w, xs, ws, bias, fam, t, out_dtype)
+        return lambda: launch(a, w, xs, ws, bias, fam, t, out_dtype, epilogue)
 
     if today is None:
         base = lambda: torch._int_mm(a, w.t()).amax()  # noqa: E731
@@ -421,3 +483,82 @@ def race(
     keep = timing[best] < timing[base_name] * (1.0 - _MARGIN)
     us = {str(k_): round(v, 1) for k_, v in timing.items()}
     return {"tile": best if keep else None, "us": us, "m": m}
+
+
+# ------------------------------------------------------------------------------------- native W8A8 Linear (fp16 cards)
+
+# (card, N, K) -> {race M: tile or None} for ``diffusion_native_quant.NativeWeightOnlyLinear`` on the sm75 family.
+_NATIVE_PLAN: dict = {}
+_NATIVE_RACES: dict = {}
+_NATIVE_LARGE_M = 1024
+
+
+def native_prepare(weight_q: Any, x_dtype: Any, has_bias: bool) -> None:
+    """Once per (card, N, K), outside any trace / capture: race the native-epilogue tiles against the eager
+    ``_int_mm`` + fp32 epilogue this Linear runs today, and keep the winners (fp16 out, no bias, sm75 only)."""
+    import torch
+    try:
+        if mode() == "off" or has_bias or x_dtype != torch.float16 or not weight_q.is_cuda:
+            return
+        index = weight_q.device.index
+        key = (index, int(weight_q.shape[0]), int(weight_q.shape[1]))
+        if key in _NATIVE_PLAN:
+            return
+        if torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling():
+            return
+        _NATIVE_PLAN[key] = {}
+        if family(torch.cuda.get_device_capability(index)) != 75 or not probed_tiles(index):
+            return
+        g = torch.Generator(device = "cpu").manual_seed(13)
+        ws = (torch.rand(weight_q.shape[0], generator = g) * 1e-3 + 1e-5).to(weight_q.device)
+        today = lambda a, w_, x_, s_, b_: reference_native(a, w_, x_, s_, torch.float16)  # noqa: E731
+        entry = {}
+        for m in _RACE_M:
+            r = race(index, weight_q, ws, None, torch.float32, today, m, epilogue = EPI_NATIVE)
+            if mode() == "force" and r.get("us"):
+                digits = [t for t in r["us"] if t.isdigit()]
+                r["tile"] = int(min(digits, key = lambda t: r["us"][t])) if digits else None
+            entry[m] = r["tile"]
+            _NATIVE_RACES.setdefault(key, {})[m] = r
+        _NATIVE_PLAN[key] = entry
+    except Exception:  # noqa: BLE001 - today's path stays
+        return
+
+
+def native_tile(xq: Any, weight_q: Any, x_scale: Any, w_scale: Any) -> Optional[int]:
+    """The won tile for this call of a native W8A8 Linear, or None (no plan, lost race, ineligible, inside a trace)."""
+    import torch
+
+    if torch.compiler.is_compiling():
+        return None
+    entry = _NATIVE_PLAN.get(
+        (weight_q.device.index, int(weight_q.shape[0]), int(weight_q.shape[1]))
+    )
+    if not entry:
+        return None
+    tile = entry.get(max(_RACE_M) if xq.shape[0] >= _NATIVE_LARGE_M else min(_RACE_M))
+    if tile is None:
+        return None
+    if x_scale.dtype != torch.float32 or w_scale.dtype != torch.float32:
+        return None
+    return (
+        tile
+        if eligible(xq, weight_q, x_scale.reshape(-1), w_scale.reshape(-1), None, torch.float16)
+        else None
+    )
+
+
+def native_gemm(xq: Any, weight_q: Any, x_scale: Any, w_scale: Any, tile: int) -> Any:
+    """fp16 ``[M, N]``: the native Linear's ``_int_mm`` and fp32 epilogue in one kernel (bit for bit)."""
+    import torch
+    return launch(
+        xq,
+        weight_q,
+        x_scale.reshape(-1),
+        w_scale.reshape(-1),
+        None,
+        75,
+        tile,
+        torch.float16,
+        EPI_NATIVE,
+    )

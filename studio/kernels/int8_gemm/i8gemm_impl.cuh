@@ -103,6 +103,46 @@ struct Dequant {
   };
 };
 
+// Studio's native W8A8 Linear (diffusion_native_quant): fp32 x_scale and w_scale, ``(c * x_scale) * w_scale`` in fp32,
+// one cast to Out at the end, no bias.
+template <class Out>
+struct NativeDequant {
+  template <class T>
+  struct Fn;
+
+  template <int N>
+  struct Fn<cutlass::Array<float, N>> {
+    using Frag = cutlass::Array<float, N>;
+
+    CUTLASS_DEVICE Frag operator()(Frag const& c, Frag const& xs, Frag const& ws) const {
+      Frag y;
+      CUTLASS_PRAGMA_UNROLL
+      for (int i = 0; i < N; ++i) {
+        y[i] = round_to<Out>(__fmul_rn(__fmul_rn(c[i], xs[i]), ws[i]));
+      }
+      return y;
+    }
+  };
+};
+
+// Epilogue kinds over the C ABI.
+enum Epilogue : int { kTorchao = 0, kNative = 1 };
+
+template <class Out, class XsT, class WsT, bool Bias, int Epi>
+struct EpiFn;
+template <class Out, class XsT, class WsT, bool Bias>
+struct EpiFn<Out, XsT, WsT, Bias, kTorchao> {
+  template <class T>
+  using Fn = typename Dequant<Out, XsT, WsT, Bias>::template Fn<T>;
+};
+template <class Out, class XsT, class WsT, bool Bias>
+struct EpiFn<Out, XsT, WsT, Bias, kNative> {
+  static_assert(!Bias && std::is_same<XsT, float>::value && std::is_same<WsT, float>::value,
+                "native epilogue: fp32 scales, no bias");
+  template <class T>
+  using Fn = typename NativeDequant<Out>::template Fn<T>;
+};
+
 template <int TBM_, int TBN_, int TBK_, int WM_, int WN_, int WK_, int Stages_, int Swizzle_ = 1>
 struct Tile {
   static constexpr int TBM = TBM_, TBN = TBN_, TBK = TBK_;
@@ -122,7 +162,7 @@ struct ArchTraits<cutlass::arch::Sm75> {
   using Inst = cutlass::gemm::GemmShape<8, 8, 16>;
 };
 
-template <class ArchTag, class T, class Out, class XsT, class WsT, bool Bias>
+template <class ArchTag, class T, class Out, class XsT, class WsT, bool Bias, int Epi = kTorchao>
 struct FusedGemm {
   using ElementAcc = int32_t;
   using ElementCompute = float;
@@ -139,7 +179,7 @@ struct FusedGemm {
   using XScale = cutlass::epilogue::threadblock::VisitorColBroadcast<ThreadMap, XsT, Stride<_1, _0, int32_t>>;
   using WScale = cutlass::epilogue::threadblock::VisitorRowBroadcast<ThreadMap, WsT, Stride<_0, _1, int32_t>>;
   using BiasRow = cutlass::epilogue::threadblock::VisitorRowBroadcast<ThreadMap, Out, Stride<_0, _1, int32_t>>;
-  using Compute = cutlass::epilogue::threadblock::VisitorCompute<Dequant<Out, XsT, WsT, Bias>::template Fn, float,
+  using Compute = cutlass::epilogue::threadblock::VisitorCompute<EpiFn<Out, XsT, WsT, Bias, Epi>::template Fn, float,
                                                                  float, cutlass::FloatRoundStyle::round_to_nearest>;
   using Body = typename std::conditional<Bias, cutlass::epilogue::threadblock::Sm80EVT<Compute, Acc, XScale, WScale, BiasRow>,
                                          cutlass::epilogue::threadblock::Sm80EVT<Compute, Acc, XScale, WScale>>::type;

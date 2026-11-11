@@ -59,6 +59,8 @@ FAMILIES = {
         "out": ("cutlass::half_t",),
         "xs": ("cutlass::half_t", "float"),
         "ws": ("cutlass::half_t", "cutlass::bfloat16_t", "float"),
+        # Studio's native W8A8 Linear on fp16-only cards: fp32 scales, one rounding, no bias
+        "native": True,
         "tiles": (
             (128, 256, 64, 64, 64, 64, 2, 1),
             (256, 128, 64, 64, 64, 64, 2, 1),
@@ -76,13 +78,17 @@ FAMILY_ID = {"sm80": 80, "sm75": 75}
 
 
 def variants(fam: dict) -> list:
-    return [
-        (o, x, w, b)
+    """(out, xs, ws, bias, epilogue); epilogue 0 = torchao's, 1 = the native W8A8 Linear's."""
+    out = [
+        (o, x, w, b, 0)
         for o in fam["out"]
         for x in fam["xs"]
         for w in fam["ws"]
         for b in (False, True)
     ]
+    if fam.get("native"):
+        out += [(o, "float", "float", False, 1) for o in fam["out"]]
+    return out
 
 
 def tile_tu(name: str, fam: dict, index: int) -> str:
@@ -92,12 +98,12 @@ def tile_tu(name: str, fam: dict, index: int) -> str:
         "namespace {",
         f"using T = ui8::Tile<{', '.join(str(v) for v in t)}>;",
         "}",
-        f'extern "C" ui8::RunFn ui8_{name}_t{index}(int out, int xs, int ws, int bias) {{',
+        f'extern "C" ui8::RunFn ui8_{name}_t{index}(int out, int xs, int ws, int bias, int epi) {{',
     ]
-    for o, x, w, b in variants(fam):
+    for o, x, w, b, e in variants(fam):
         lines.append(
-            f"  if (out == {KIND[o]} && xs == {KIND[x]} && ws == {KIND[w]} && bias == {int(b)}) "
-            f"return &ui8::FusedGemm<{fam['arch_tag']}, T, {o}, {x}, {w}, {str(b).lower()}>::run;"
+            f"  if (out == {KIND[o]} && xs == {KIND[x]} && ws == {KIND[w]} && bias == {int(b)} && epi == {e}) "
+            f"return &ui8::FusedGemm<{fam['arch_tag']}, T, {o}, {x}, {w}, {str(b).lower()}, {e}>::run;"
         )
     lines += ["  return nullptr;", "}", ""]
     return "\n".join(lines)
@@ -108,9 +114,9 @@ def api_tu() -> str:
     for name, fam in FAMILIES.items():
         n = len(fam["tiles"])
         for i in range(n):
-            decls.append(f'extern "C" ui8::RunFn ui8_{name}_t{i}(int, int, int, int);')
+            decls.append(f'extern "C" ui8::RunFn ui8_{name}_t{i}(int, int, int, int, int);')
         tables.append(
-            f"static ui8::RunFn (*const k_{name}[])(int, int, int, int) = {{"
+            f"static ui8::RunFn (*const k_{name}[])(int, int, int, int, int) = {{"
             + ", ".join(f"&ui8_{name}_t{i}" for i in range(n))
             + "};"
         )
@@ -132,7 +138,7 @@ def api_tu() -> str:
 {chr(10).join(decls)}
 {chr(10).join(tables)}
 
-static bool family_table(int family, ui8::RunFn (*const** table)(int, int, int, int), int* count,
+static bool family_table(int family, ui8::RunFn (*const** table)(int, int, int, int, int), int* count,
                          const int (**tiles)[8]) {{
   switch (family) {{
 {fam_cases}
@@ -146,7 +152,7 @@ UI8_API int ui8_abi_version() {{ return {ABI_VERSION}; }}
 
 // Number of tiles for a family (80 or 75), 0 when absent.
 UI8_API int ui8_num_tiles(int family) {{
-  ui8::RunFn (*const* table)(int, int, int, int) = nullptr;
+  ui8::RunFn (*const* table)(int, int, int, int, int) = nullptr;
   int count = 0;
   const int (*tiles)[8] = nullptr;
   return family_table(family, &table, &count, &tiles) ? count : 0;
@@ -154,7 +160,7 @@ UI8_API int ui8_num_tiles(int family) {{
 
 // The 8 tile parameters (TBM, TBN, TBK, WM, WN, WK, stages, swizzle) into out8; 0 on success.
 UI8_API int ui8_tile_info(int family, int tile, int* out8) {{
-  ui8::RunFn (*const* table)(int, int, int, int) = nullptr;
+  ui8::RunFn (*const* table)(int, int, int, int, int) = nullptr;
   int count = 0;
   const int (*tiles)[8] = nullptr;
   if (!family_table(family, &table, &count, &tiles) || tile < 0 || tile >= count || out8 == nullptr) return 1;
@@ -162,27 +168,27 @@ UI8_API int ui8_tile_info(int family, int tile, int* out8) {{
   return 0;
 }}
 
-// 1 when (family, tile, out, xs, ws, bias) is compiled in.
-UI8_API int ui8_has_kernel(int family, int tile, int out_kind, int xs_kind, int ws_kind, int has_bias) {{
-  ui8::RunFn (*const* table)(int, int, int, int) = nullptr;
+// 1 when (family, tile, out, xs, ws, bias, epilogue) is compiled in; epilogue 0 torchao, 1 native W8A8.
+UI8_API int ui8_has_kernel(int family, int tile, int out_kind, int xs_kind, int ws_kind, int has_bias, int epilogue) {{
+  ui8::RunFn (*const* table)(int, int, int, int, int) = nullptr;
   int count = 0;
   const int (*tiles)[8] = nullptr;
   if (!family_table(family, &table, &count, &tiles) || tile < 0 || tile >= count) return 0;
-  return table[tile](out_kind, xs_kind, ws_kind, has_bias ? 1 : 0) != nullptr;
+  return table[tile](out_kind, xs_kind, ws_kind, has_bias ? 1 : 0, epilogue) != nullptr;
 }}
 
 // out[M, N] = dequant(a[M, K] @ w[N, K]^T); kinds: 0 fp32, 1 bf16, 2 fp16. bias may be null. Status code returned.
-UI8_API int ui8_gemm(int family, int tile, int out_kind, int xs_kind, int ws_kind, const void* a, const void* w,
+UI8_API int ui8_gemm(int family, int tile, int out_kind, int xs_kind, int ws_kind, int epilogue, const void* a, const void* w,
                      const void* xs, const void* ws, const void* bias, void* out, int64_t M, int64_t N, int64_t K,
                      int64_t lda, int64_t ldw, int64_t ldc, void* stream) {{
-  ui8::RunFn (*const* table)(int, int, int, int) = nullptr;
+  ui8::RunFn (*const* table)(int, int, int, int, int) = nullptr;
   int count = 0;
   const int (*tiles)[8] = nullptr;
   if (!family_table(family, &table, &count, &tiles) || tile < 0 || tile >= count) return ui8::kNoKernel;
   if (M <= 0 || N <= 0 || K <= 0 || M > 0x7fffffff || N > 0x7fffffff || K > 0x7fffffff) return ui8::kBadArgs;
   if (a == nullptr || w == nullptr || xs == nullptr || ws == nullptr || out == nullptr) return ui8::kBadArgs;
   if (lda < K || ldw < K || ldc < N) return ui8::kBadArgs;
-  ui8::RunFn fn = table[tile](out_kind, xs_kind, ws_kind, bias != nullptr ? 1 : 0);
+  ui8::RunFn fn = table[tile](out_kind, xs_kind, ws_kind, bias != nullptr ? 1 : 0, epilogue);
   if (fn == nullptr) return ui8::kNoKernel;
   return fn(a, w, xs, ws, bias, out, int(M), int(N), int(K), lda, ldw, ldc, static_cast<cudaStream_t>(stream));
 }}
