@@ -518,6 +518,7 @@ SKIPPED = {
         "launches the backend host's default app for the file and is owner-only "
         "(require_installation_owner), so no account other than the installation's own reaches it"
     ),
+    "routes.npu:DELETE:/checkpoints/{checkpoint}": _NPU_INSTALLATION_MODEL,
     "routes.npu:DELETE:/models/{model_id}": _NPU_INSTALLATION_MODEL,
     "routes.npu:POST:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,
     "routes.npu:GET:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,
