@@ -490,3 +490,29 @@ def test_a_chat_that_joins_a_load_keeps_its_content_out_of_the_log(tmp_path, mon
     assert chat.shared
     assert calls == ["debug", "info"]
     assert server.output_since(0, settle = 0) == [loading, failed]
+
+
+def test_content_is_filtered_while_either_level_change_is_in_flight(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    content = _line("Debug", "Server", "Message content: my secret plan for today")
+    chats = []
+
+    def post(url, *, json, **kwargs):
+        # A chat opens its window, and lemond prints at debug, before the call returns.
+        if json["log_level"] == "debug":
+            chats.append(server.open_window())
+        _prints(server, content, "and its second line")
+        return httpx.Response(200, json = {"status": "success"})
+
+    server.port = 4242
+    monkeypatch.setattr(server, "is_alive", lambda: True)
+    monkeypatch.setattr(server, "_client", SimpleNamespace(post = post))
+    with server.backend_output(server.open_window()):
+        pass
+    # Still drained after the load, before lemond says it is back at info.
+    _prints(server, content, "and its second line")
+    assert server.output_since(0, settle = 0) == []
+
+    back = _line("Info", "Server", "Logging configuration updated (level=info, file=disabled)")
+    _prints(server, back, "a line with no tag", content)
+    assert server.output_since(0, settle = 0) == [back, "a line with no tag"]
