@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""NVFP4 weight quantisers (max6 / 4over6 / GPTQ): bit-identity with torchao, layout, round trip, patch."""
+"""NVFP4 weight quantisers (max6 / 4over6): bit-identity with torchao, layout, round trip, patch."""
 
 from __future__ import annotations
 
@@ -122,45 +122,6 @@ def test_chunked_equals_unchunked(monkeypatch):
     assert torch.equal(full.scale.view(torch.uint8), part.scale.view(torch.uint8))
 
 
-def test_gptq_beats_rtn_on_output_error_and_is_deterministic():
-    g = torch.Generator().manual_seed(1)
-    k, n = 256, 128
-    x = torch.randn(2048, k, generator = g) @ (torch.eye(k) + 0.3 * torch.randn(k, k, generator = g))
-    w = torch.randn(n, k, generator = g) * 0.05
-    H = x.t() @ x / x.shape[0]
-    for method in ("max6", "4over6"):
-        q = wq.gptq_nvfp4(w, H, method)
-        q2 = wq.gptq_nvfp4(w, H, method)
-        assert torch.equal(q.qdata, q2.qdata) and torch.equal(
-            q.scale.view(torch.uint8), q2.scale.view(torch.uint8)
-        )
-        rtn = wq.quantize_nvfp4_weight(w, method)
-        out = lambda d: float((((d - w) @ H) * (d - w)).sum())
-        assert out(wq.dequantize_nvfp4_weight(q)) < 0.8 * out(wq.dequantize_nvfp4_weight(rtn))
-        t = wq.to_torchao_tensor(q, torch.bfloat16)
-        assert torch.equal(t.dequantize(torch.float32), wq.dequantize_nvfp4_weight(q))
-
-
-def test_gptq_identity_hessian_with_max6_equals_rtn():
-    w = _weight(64, 128).float()
-    q = wq.gptq_nvfp4(w, torch.eye(128), "max6", damp = 0.0)
-    rtn = wq.quantize_nvfp4_weight(w, "max6")
-    assert torch.equal(q.qdata, rtn.qdata)
-    assert torch.equal(q.scale.view(torch.uint8), rtn.scale.view(torch.uint8))
-
-
-def test_rotate_hessian_matches_explicit():
-    from core.inference.diffusion_convrot import build_convrot_hadamard
-
-    g = torch.Generator().manual_seed(2)
-    x = torch.randn(300, 512, generator = g, dtype = torch.float64)
-    h = build_convrot_hadamard(256, dtype = torch.float64)
-    xr = (x.reshape(-1, 2, 256) @ h).reshape(300, 512)
-    want = xr.t() @ xr
-    got = wq.rotate_hessian(x.t() @ x, 256, h)
-    assert torch.allclose(got, want, atol = 1e-8)
-
-
 def test_resolve_method(monkeypatch):
     monkeypatch.delenv(wq.WEIGHT_QUANT_ENV, raising = False)
     assert wq.resolve_method() == wq.DEFAULT_METHOD
@@ -215,16 +176,6 @@ def test_patch_routes_weights_only(monkeypatch):
     assert NVFP4Tensor.to_nvfp4 is spy
 
 
-def test_replace_payload_keeps_fields():
-    w = _weight(256, 512)
-    rtn = _torchao_weight(w)
-    q = wq.quantize_nvfp4_weight(w, "4over6")
-    t = wq.replace_payload(rtn, q)
-    assert t.act_quant_kwargs is rtn.act_quant_kwargs and t.dtype == rtn.dtype
-    assert t.scale.shape == rtn.scale.shape and t.qdata.shape == rtn.qdata.shape
-    assert torch.equal(t.dequantize(torch.float32), wq.dequantize_nvfp4_weight(q))
-
-
 def test_prequant_safetensors_round_trip(tmp_path):
     pytest.importorskip("safetensors")
     from core.inference.prequant_safetensors import (
@@ -237,10 +188,9 @@ def test_prequant_safetensors_round_trip(tmp_path):
     from core.inference.diffusion_prequant import _load_prequant_checkpoint
 
     w = _weight(256, 512)
-    H = torch.eye(512) + 0.1
     sd = {
         "a.weight": wq.to_torchao_tensor(wq.quantize_nvfp4_weight(w, "4over6"), w.dtype),
-        "b.weight": wq.to_torchao_tensor(wq.gptq_nvfp4(w, H, "4over6"), w.dtype),
+        "b.weight": wq.to_torchao_tensor(wq.quantize_nvfp4_weight(w, "max6"), w.dtype),
     }
     path = tmp_path / "t.safetensors"
     save_prequant_safetensors(str(path), fmt = "nvfp4", state_dict = sd, metadata = {"scheme": "nvfp4"})
@@ -273,81 +223,3 @@ class _Tiny(torch.nn.Module):
 
     def forward(self, x):
         return self.c(torch.relu(self.b(self.a(x))))
-
-
-def test_gptq_build_solves_rotates_and_swaps_payloads():
-    from core.inference import diffusion_nvfp4_gptq_build as gb
-    from core.inference.diffusion_convrot import rotate_linears_
-
-    torch.manual_seed(0)
-    m = _Tiny().to(torch.bfloat16)
-    g = torch.Generator().manual_seed(4)
-    xs = [torch.randn(64, 512, generator = g).to(torch.bfloat16) for _ in range(3)]
-    calls = []
-
-    def render_all():
-        calls.append(1)
-        for x in xs:
-            m(x)
-
-    logs = []
-    # budget for one 512x512 H per pass -> several passes; "a" is solved in the ConvRot basis
-    solved = gb.calibrate_and_solve(
-        m,
-        ["a", "b", "c"],
-        render_all,
-        method = "4over6",
-        rotated = ["a"],
-        group = 256,
-        budget_bytes = 512 * 512 * 4 + 1,
-        log = logs.append,
-    )
-    assert set(solved) == {"a", "b", "c"} and len(calls) == 3
-    # the rotated solve matches a solve on the rotated weight with the rotated-input Hessian
-    from core.inference.diffusion_convrot import build_convrot_hadamard
-
-    h = build_convrot_hadamard(256)
-    x = torch.cat(xs).float()
-    xr = (x.reshape(-1, 2, 256) @ h).reshape(-1, 512)
-    wr = gb._rotated_copy(m.a.weight, 256)
-    want = wq.gptq_nvfp4(wr, xr.t() @ xr / xr.shape[0], "4over6")
-    # R^T H R vs H of the rotated inputs differ only in fp32 summation order; GPTQ amplifies that a little
-    assert (
-        solved["a"].scale.view(torch.uint8) == want.scale.view(torch.uint8)
-    ).float().mean() > 0.97
-    assert (solved["a"].qdata == want.qdata).float().mean() > 0.95
-    plain = gb.calibrate_and_solve(m, ["a"], render_all, method = "4over6", log = logs.append)["a"]
-    assert (
-        plain.scale.view(torch.uint8) == want.scale.view(torch.uint8)
-    ).float().mean() < 0.5  # basis matters
-
-    # quantize_ stand-in: torchao weights exactly as the runtime builds them, after the build's rotation
-    rotate_linears_(m, ["a"], 256)
-    assert torch.equal(m.a.weight.data, wr)
-    kw = QuantizeTensorToNVFP4Kwargs(is_swizzled_scales = True)
-    for name in ("a", "b", "c"):
-        lin = getattr(m, name)
-        w = lin.weight.data
-        t = NVFP4Tensor.to_nvfp4(
-            w,
-            per_tensor_scale = per_tensor_amax_to_scale(torch.max(torch.abs(w))),
-            is_swizzled_scales = True,
-            act_quant_kwargs = kw,
-        )
-        lin.weight = torch.nn.Parameter(t, requires_grad = False)
-    assert gb.apply_gptq_payloads(m, solved) == 3
-    for name in ("a", "b", "c"):
-        t = getattr(m, name).weight
-        assert type(t).__name__ == "NVFP4Tensor" and t.act_quant_kwargs is kw
-        assert torch.equal(t.dequantize(torch.float32), wq.dequantize_nvfp4_weight(solved[name]))
-
-
-def test_gptq_build_refuses_unreached_and_non_nvfp4_layers():
-    from core.inference import diffusion_nvfp4_gptq_build as gb
-
-    m = _Tiny().to(torch.bfloat16)
-    with pytest.raises(RuntimeError, match = "never reached"):
-        gb.calibrate_and_solve(m, ["a"], lambda: None, method = "4over6", log = lambda s: None)
-    q = wq.quantize_nvfp4_weight(m.a.weight, "4over6")
-    with pytest.raises(RuntimeError, match = "not NVFP4Tensor"):
-        gb.apply_gptq_payloads(m, {"a": q})

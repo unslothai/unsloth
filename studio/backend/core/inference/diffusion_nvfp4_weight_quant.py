@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""NVFP4 weight quantisers: per-block max/6 (torchao's), "4over6" and GPTQ. Output is ordinary NVFP4.
+"""NVFP4 weight quantisers: per-block max/6 (torchao's) and "4over6". Output is ordinary NVFP4.
 
 Every method writes the same three tensors torchao's ``NVFP4Tensor`` and FlashInfer ``mm_fp4`` already consume:
 e2m1 codes (two per byte, even element in the low nibble), one E4M3 block scale per 16 inputs and one fp32
@@ -13,8 +13,6 @@ changes, so no kernel changes.
 - ``4over6``: per 16-block, the block max maps to 6 or to 4, whichever reconstructs the block with less (optionally
   activation-weighted) squared error. The per-tensor scale is ``amax / (6 * 256)`` so the ``/4`` candidate of the
   largest block (384) still fits E4M3 (448).
-- ``gptq_nvfp4``: GPTQ error feedback over a calibration Hessian, the block scale of each 16-column group chosen
-  (max6, or 4over6 weighted by the Hessian diagonal) on the error-updated weights when the group is reached.
 
 Torch-only at import; torchao is imported lazily, only to build an ``NVFP4Tensor``.
 """
@@ -264,98 +262,6 @@ def fake_quantize_nvfp4_activation(x: Any) -> Any:
     return out.reshape(sh).to(x.dtype)
 
 
-# ------------------------------------------------------------------------------------------------ GPTQ
-def _hessian_inverse_cholesky(H: Any, damp: float) -> Any:
-    """Upper Cholesky factor of H^-1 after dampening; raises damping on a rank-poor H (a timestep-only input)."""
-    import torch
-
-    mean_d = torch.mean(torch.diag(H))
-    if not torch.isfinite(mean_d) or float(mean_d) <= 0:
-        mean_d = torch.ones((), device = H.device, dtype = H.dtype)
-    H.diagonal().add_(damp * mean_d)
-    for _ in range(6):
-        try:
-            return torch.linalg.cholesky(
-                torch.cholesky_inverse(torch.linalg.cholesky(H)), upper = True
-            )
-        except Exception:  # noqa: BLE001 - torch.linalg.LinAlgError, raised as RuntimeError on old torch
-            H.diagonal().add_(9 * damp * mean_d)
-            damp *= 10
-    raise RuntimeError("GPTQ: the calibration Hessian stayed singular after damping")
-
-
-def gptq_nvfp4(
-    w: Any,
-    H: Any,
-    method: str = METHOD_4OVER6,
-    *,
-    blocksize: int = 128,
-    damp: float = 0.01,
-    per_tensor_scale: Optional[Any] = None,
-) -> NVFP4Weight:
-    """GPTQ (OBS error feedback, Frantar et al.) with NVFP4 16-column groups. ``w`` [N, K], ``H`` [K, K] =
-    E[x x^T] over calibration inputs (fp32, on ``w``'s device). The per-tensor scale is fixed from the original
-    weight; each group's per-row E4M3 scale is chosen (``method``) on the error-updated weights when the group
-    starts, 4over6 weighting the error by diag(H). Deterministic for a fixed H on a fixed device."""
-    import torch
-
-    method = resolve_method(method)
-    n, k = _check_shape(w)
-    if blocksize % BLOCK:
-        raise ValueError(f"blocksize must be a multiple of {BLOCK}")
-    W = w.detach().to(torch.float32).clone()
-    pts = per_tensor_scale_for(W, method) if per_tensor_scale is None else per_tensor_scale
-    pts = pts.to(device = W.device, dtype = torch.float32).reshape(())
-    H = H.detach().to(device = W.device, dtype = torch.float32).clone()
-    hdiag = torch.diag(H).clone()
-    dead = hdiag == 0
-    H[dead, dead] = 1
-    W[:, dead] = 0
-    Hinv = _hessian_inverse_cholesky(H, damp)
-    del H
-    codes = torch.zeros_like(W)
-    S = torch.empty((n, k // BLOCK), dtype = torch.float8_e4m3fn, device = W.device)
-    at4 = torch.zeros((), dtype = torch.int64, device = W.device)  # summed on device: no sync per group
-    ew_all = hdiag.clamp_min(0)
-    for i1 in range(0, k, blocksize):
-        i2 = min(i1 + blocksize, k)
-        W1 = W[:, i1:i2].clone()
-        E1 = torch.zeros_like(W1)
-        Hi = Hinv[i1:i2, i1:i2]
-        scale = None
-        for j in range(i2 - i1):
-            col = i1 + j
-            if col % BLOCK == 0:
-                g = col // BLOCK
-                blk = W1[:, j : j + BLOCK].reshape(n, 1, BLOCK)
-                ew = ew_all[col : col + BLOCK].reshape(1, 1, BLOCK)
-                _, sf8, took = quantize_blocks(blk, pts, method, ew)
-                S[:, g] = sf8[:, 0]
-                at4 += took.sum()
-                sf32 = sf8[:, 0].to(torch.float32)
-                recip = (1.0 / pts) / sf32
-                scale = sf32 * pts
-            wcol = W1[:, j]
-            q = e2m1_round(wcol * recip)
-            codes[:, col] = q
-            err = (wcol - q * scale) / Hi[j, j]
-            W1[:, j:] -= err[:, None] * Hi[j, j:][None, :]
-            E1[:, j] = err
-        W[:, i2:] -= E1 @ Hinv[i1:i2, i2:]
-    at4 = int(at4)
-    _record(n * (k // BLOCK), at4)
-    return NVFP4Weight(pack_e2m1(codes), S, pts, method, at4)
-
-
-def rotate_hessian(H: Any, group_size: int, hadamard: Any) -> Any:
-    """H of the rotated input ``x @ blockdiag(h)``: ``R^T H R`` with ``R = blockdiag(h)`` (h symmetric)."""
-    k = H.shape[0]
-    g = int(group_size)
-    h = hadamard.to(device = H.device, dtype = H.dtype)
-    a = (H.reshape(k, k // g, g) @ h).reshape(k, k)  # H R
-    return (a.t().reshape(k, k // g, g) @ h).reshape(k, k).t()  # ((H R)^T R)^T = R H R
-
-
 # ------------------------------------------------------------------------------------------------ torchao glue
 def to_torchao_tensor(
     q: NVFP4Weight,
@@ -388,18 +294,6 @@ def to_torchao_tensor(
         True,
         use_triton_kernel,
         act_quant_kwargs,
-    )
-
-
-def replace_payload(tensor: Any, q: NVFP4Weight) -> Any:
-    """A new ``NVFP4Tensor`` carrying ``q``'s codes / scales and every other field of ``tensor`` (an RTN-built
-    weight of the same shape): the offline GPTQ builder swaps payloads without touching the layout or flags."""
-    return to_torchao_tensor(
-        q,
-        tensor.dtype,
-        act_per_tensor_scale = getattr(tensor, "act_per_tensor_scale", None),
-        use_triton_kernel = bool(getattr(tensor, "use_triton_kernel", False)),
-        act_quant_kwargs = getattr(tensor, "act_quant_kwargs", None),
     )
 
 

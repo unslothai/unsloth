@@ -364,25 +364,17 @@ def test_int8_and_fp8_keep_their_pickle_upload_names():
     assert build.upload_destination(zimage, "fp8", rotated = False) == "transformer_fp8.pt"
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        ["--scheme", "int8", "--out", "x.pt", "--gptq-prompts", "4"],
-        ["--scheme", "fp8", "--out", "x.pt", "--nvfp4-weight-quant", "4over6"],
-        [
-            "--scheme",
-            "nvfp4",
-            "--out",
-            "x.safetensors",
-            "--gptq-prompts",
-            "4",
-            "--gptq-pipe-kwargs",
-            "[1]",
-        ],
-        ["--scheme", "nvfp4", "--out", "x.safetensors", "--gptq-pipe-kwargs", "not json"],
-    ],
-)
-def test_gptq_and_weight_quant_flags_are_refused_before_any_load(extra, capsys):
+def test_the_weight_quant_flag_is_refused_off_nvfp4_before_any_load(capsys):
     build = _script()
-    assert build.main(["--base", "Tongyi-MAI/Z-Image-Turbo", "--family", "z-image", *extra]) == 2
+    argv = [
+        "--base",
+        "Tongyi-MAI/Z-Image-Turbo",
+        "--family",
+        "z-image",
+        "--scheme",
+        "fp8",
+        "--out",
+        "x.pt",
+    ]
+    assert build.main([*argv, "--nvfp4-weight-quant", "4over6"]) == 2
     assert "error:" in capsys.readouterr().out
