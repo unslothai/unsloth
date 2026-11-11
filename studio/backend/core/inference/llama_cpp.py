@@ -42027,9 +42027,10 @@ class LlamaCppBackend:
             if system_text:
                 template_messages = [{"role": "system", "content": system_text}] + template_messages
             # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
+            # A hit has no text for on_prompt, so a caller that wants the prompt renders it.
             memo_key = (
                 None
-                if prefer_native
+                if prefer_native or on_prompt is not None
                 else _count_memo_key(
                     self,
                     template_messages,
