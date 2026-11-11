@@ -90,3 +90,10 @@ def test_unterminated_noscript_tags_convert_in_linear_time():
     start = time.perf_counter()
     assert html_to_markdown(page, main_content = True) == ""
     assert time.perf_counter() - start < 3
+
+
+@pytest.mark.parametrize("extra", [_TRACKING, ""])
+def test_header_only_shell_with_noscript_stays_empty(extra):
+    nav = "".join(f"<a href='/s{i}'>Documentation section {i}</a> " for i in range(15))
+    page = _SHELL.format(f"<header>{nav}</header>{extra}")
+    assert html_to_markdown(page, main_content = True) == ""

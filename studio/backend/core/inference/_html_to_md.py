@@ -2536,13 +2536,14 @@ def html_to_markdown(
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)
     if not rendered.strip() and _NOSCRIPT_TAG.search(source_html):
         # read whole: scoped, a link card's <article> inside one post would stand in for the thread
-        fallback = _render(
-            _NOSCRIPT_TAG.sub(r"<\1div", source_html),
-            None,
-            site_links = site_links,
-            span_char_limit = span_limit,
-        )
-        visible = site_links.clean(fallback) if site_links is not None else fallback
-        if _visible_chars(visible) >= _MIN_MAIN_CONTENT_CHARS:
+        exposed = _NOSCRIPT_TAG.sub(r"<\1div", source_html)
+        if main_content:
+            visible, fallback = _render_main_document(exposed, site_links, span_limit)
+        else:
+            fallback = _render(exposed, None, site_links = site_links, span_char_limit = span_limit)
+            visible = _visible_chars(
+                site_links.clean(fallback) if site_links is not None else fallback
+            )
+        if visible >= _MIN_MAIN_CONTENT_CHARS:
             rendered = fallback
     return site_links.finish(rendered) if site_links is not None else rendered
