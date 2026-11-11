@@ -513,3 +513,15 @@ test("a self-hosted cap clamps persistently only once this page load listed its 
     /capSettled: maxTokensCapSettled,[\s\S]*?maxTokensMax,\s*maxTokensCapSettled,/,
   );
 });
+
+test("a first listing with no windows still notifies, since it settles the cap", async () => {
+  const { learnServedContextWindows, modelCatalogVersion } = await import(
+    "../src/features/chat/model-catalog.ts"
+  );
+  const before = modelCatalogVersion();
+  learnServedContextWindows("conn-empty", [{ id: "m", display_name: "m" }], "http://e/v1");
+  assert.ok(modelCatalogVersion() > before);
+  const settled = modelCatalogVersion();
+  learnServedContextWindows("conn-empty", [{ id: "m", display_name: "m" }], "http://e/v1");
+  assert.equal(modelCatalogVersion(), settled);
+});

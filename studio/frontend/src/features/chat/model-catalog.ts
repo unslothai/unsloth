@@ -275,7 +275,13 @@ export function learnServedContextWindows(
   }
   const previous = servedWindows.get(connectionId);
   servedWindows.set(connectionId, { endpoint: baseUrl, windows });
-  if (JSON.stringify(windows) !== JSON.stringify(previous?.windows ?? {})) notifyCatalogChange();
+  // A first or moved listing settles the cap even when it reports no windows.
+  if (
+    previous?.endpoint !== baseUrl ||
+    JSON.stringify(windows) !== JSON.stringify(previous.windows)
+  ) {
+    notifyCatalogChange();
+  }
 }
 
 export function forgetServedContextWindows(connectionId: string): void {
