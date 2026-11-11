@@ -177,6 +177,12 @@ test("an install with other accounts neither saves nor restores Full access", as
     assert.equal(second.state().permissionMode, "auto");
     await second.state().hydratePersistedSettings();
     assert.equal(second.state().permissionMode, "auto");
+    assert.equal(browser.store.get(FLAG), "false", "the cached server copy is cleared too");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.ok(
+      settingsHttp.puts.some((put) => put.fullAccess === false),
+      "the server copy is cleared",
+    );
   } finally {
     setLoginMode("single", true);
   }

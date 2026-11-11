@@ -4591,6 +4591,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         if (applied) {
           cacheHydratedSettings(hydratedSettings, hydrationVersions);
           mirroredSettingsHydrated = true;
+          // Other accounts or a restricted install reset Full access; the saved copy goes too, or
+          // it would come back without the dialog once Full access is allowed again.
+          if (fromServer && hydratedSettings.fullAccess === true && !getFullAccessAllowed()) {
+            rememberFullAccess(false);
+          }
           // Only an authoritative read can say a mirrored field is unset; else backfill clobbers.
           if (fromServer) backfillMirroredSettings(hydratedSettings);
           // After the backfill, so a startup edit wins over the stored value.
