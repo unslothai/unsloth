@@ -17999,6 +17999,7 @@ def _check_signal_escape_patterns(code: str):
             self._cyclic = False
             self.collecting = False
             self.loop_depth = 0
+            self._followed: set = set()
 
         def _bind(self, name, value):
             if self.collecting:
@@ -18055,6 +18056,8 @@ def _check_signal_escape_patterns(code: str):
 
         def _memo(self, kind, node, compute, pending):
             key = (kind, node.id if isinstance(node, ast.Name) else id(node))
+            if key in self._final:
+                return self._final[key]
             if key in self._cache:
                 return self._cache[key]
             if key in self._active:
@@ -18070,12 +18073,13 @@ def _check_signal_escape_patterns(code: str):
         def _converged(self, query, node):
             # A self-referential binding (d = d["system"]) reads the previous pass's answer, so repeat
             # until no answer grows (they are finite sets, so this ends); keep only converged answers.
+            # Each pass writes a fresh layer over _final: copying _final per query made scans quadratic.
             previous, self._guess = None, {}
             while True:
-                self._cache, self._cyclic = dict(self._final), False
+                self._cache, self._cyclic = {}, False
                 result = query(node)
                 if not self._cyclic or self._cache == previous:
-                    self._final = self._cache
+                    self._final.update(self._cache)
                     return result
                 previous = self._guess = self._cache
 
@@ -18200,20 +18204,64 @@ def _check_signal_escape_patterns(code: str):
             # Only when no other binding matches: a loop target skips argument zero, which may be the command.
             return loop_method
 
+        def _shell_method_named_by(self, call):
+            if call.args and self._is_builtin(call.func, "methodcaller"):
+                name = _folded_str_literal(call.args[0])
+                for fq in _SHELL_EXEC_FUNCS:
+                    if fq.split(".", 1)[1] == name:
+                        return fq
+            return None
+
+        def _flag_shell_reference(self, query, node):
+            shell_func = self._converged(query, node)
+            if shell_func:
+                shell_escapes.append(
+                    {
+                        "type": "shell_escape_dynamic",
+                        "line": node.lineno,
+                        "description": f"{shell_func} referenced without a direct call (potential shell escape)",
+                    }
+                )
+
+        def _skip_type_hint(self, hint):
+            # A call inside an annotation still runs.
+            if hint is not None and not isinstance(hint, ast.Call):
+                self._followed.add(id(hint))
+                for child in ast.iter_child_nodes(hint):
+                    self._skip_type_hint(child)
+
+        def visit(self, node):
+            self._skip_type_hint(getattr(node, "annotation", None))
+            self._skip_type_hint(getattr(node, "returns", None))
+            # Dispatched here: super().visit() costs a stack frame per nesting level.
+            getattr(self, "visit_" + type(node).__name__, self.generic_visit)(node)
+            # After the children, so a nested a[0][0]... resolves from their memoised lookups.
+            if (
+                not self.collecting
+                and id(node) not in self._followed
+                and isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Call))
+                and not isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del))
+            ):
+                self._flag_shell_reference(self._shell_func_of, node)
+
         def visit_Assign(self, node):
             for tgt in node.targets:
                 if isinstance(tgt, ast.Name):
                     self._bind(tgt.id, node.value)
+            if all(isinstance(tgt, ast.Name) for tgt in node.targets):
+                self._followed.add(id(node.value))
             self.generic_visit(node)
 
         def visit_AnnAssign(self, node):
             if node.value is not None and isinstance(node.target, ast.Name):
                 self._bind(node.target.id, node.value)
+                self._followed.add(id(node.value))
             self.generic_visit(node)
 
         def visit_NamedExpr(self, node):
             if isinstance(node.target, ast.Name):
                 self._bind(node.target.id, node.value)
+                self._followed.add(id(node.value))
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -18279,6 +18327,8 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Shell escape detection: resolve the FQ function name for os.*/subprocess.*
+            self._followed.add(id(func))
+            self._flag_shell_reference(self._shell_method_named_by, node)
             shell_func = self._converged(self._shell_func_of, func)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
