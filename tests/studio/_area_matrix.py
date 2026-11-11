@@ -109,6 +109,10 @@ KNOWN_DEFAULT = ",".join(
     + [f"{m}:thread_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:settings_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:type=6" for m in _GLASS_MODES]
+    # Opening Settings restyles elements across the thread, on main too (fresh pages, default
+    # appearance: 1,975 -> 9,721 elements at 40 -> 200 turns, 4.9x). Reduce motion's blanket
+    # transitions used to add ~3,800 elements to the gate's 40 turn reading, which hid the growth.
+    + ["length:settings=5"]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 
