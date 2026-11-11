@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Reduce motion blocks in index.css (the html.force-reduced-motion class, on by default, and the
-// OS prefers-reduced-motion media block) cover every element with `*`. transition-property defaults
-// to `all`, so a nonzero transition-duration there turns on transitions for every property of every
-// element, including ones no rule ever meant to animate. Chromium then starts a scrollbar-color
-// transition on each `* { scrollbar-color }` element whenever it is restyled, even with the value
-// unchanged: about 2,000 per menu open or scroll step in a 40 turn chat in Liquid Glass, and the
-// thread scroll at 200 turns cost 1.2-1.4 s of main-thread CPU against 0.07-0.09 s with Reduce
-// motion off. The `*` blanket must therefore use 0s, and only elements that declare a transition
-// themselves (a Tailwind transition class) or that native-view.ts follows by their transition
-// events may keep the 0.01ms that still fires transitionend.
+// The Reduce motion `*` blankets in index.css must use transition-duration 0s: transition-property
+// defaults to all, so a nonzero duration transitions every property of every element, and Chromium
+// starts a no-op scrollbar-color transition on each `* { scrollbar-color }` element per restyle
+// (2,550 per body-level restyle at 40 turns in Liquid Glass; thread scroll at 200 turns 0.6-1.2 s
+// of main-thread CPU against 0.17-0.21 s). Only class-declared transitions and the overlays
+// native-view.ts follows keep the 0.01ms that still fires transitionend.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
