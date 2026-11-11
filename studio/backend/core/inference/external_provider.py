@@ -6702,6 +6702,9 @@ class ExternalProviderClient:
                                 ):
                                     raw_item_id = item.get("id")
                                     if isinstance(raw_item_id, str) and raw_item_id:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
                                         arguments = _image_generation_arguments(
                                             "",
                                             raw_item_id,
@@ -6720,6 +6723,9 @@ class ExternalProviderClient:
                                 item = event.get("item", {})
                                 if not isinstance(item, dict):
                                     continue
+                                if reasoning_open and item.get("type") != "reasoning":
+                                    yield _chunk_with_text("</think>")
+                                    reasoning_open = False
                                 if item.get("type") == "reasoning":
                                     last_openai_reasoning_replay_item = (
                                         _record_openai_reasoning_replay_item(item)
