@@ -18847,7 +18847,6 @@ async def _managed_engine_options(request, config, hf_token) -> dict:
 
 def _npu_load_response(resident, status: str, flm_args: Optional[str]) -> LoadResponse:
     from core.inference.npu_flm_args import flm_args_status
-
     model = resident.model
     return LoadResponse(
         status = status,
