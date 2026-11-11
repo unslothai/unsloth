@@ -468,6 +468,15 @@ def compile_flow(doc: dict) -> Plan:
     output_names: dict[str, str] = {}
     for nid in nodes:
         if nid in executable and specs[nid]["type"] == "output.result":
+            if any(inside(nid, fid) for fid in members if nodes[fid]["type"] == FOR_EACH):
+                # Iterations run in parallel, so one output would keep whichever finished last.
+                errors.append(
+                    issue(
+                        "A Flow Output cannot sit inside a For Each; connect to collect and output its results",
+                        node_id = nid,
+                    )
+                )
+                continue
             name = str((nodes[nid].get("params") or {}).get("name") or "result")
             if name in output_names:
                 errors.append(

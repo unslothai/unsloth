@@ -170,6 +170,25 @@ def test_for_each_body_ordering_collect_and_escape_rules():
     assert any("can only feed its group" in i["message"] for i in issues)
 
 
+def test_a_flow_output_inside_a_for_each_is_refused():
+    nodes = [
+        node("items", "input.list", items = ["a", "b"]),
+        node("fe", "logic.for_each"),
+        node("t", "text.template", group = "fe", template = "<{{values}}>"),
+        node("out", "output.result", group = "fe"),
+    ]
+    edges = [
+        edge("items", "items", "fe", "items"),
+        edge("fe", "item", "t", "values"),
+        edge("t", "text", "out", "value"),
+    ]
+    issues = _issues(doc(nodes, edges))
+    assert any(
+        "Flow Output cannot sit inside a For Each" in i["message"] and i["node_id"] == "out"
+        for i in issues
+    ), issues
+
+
 def test_for_each_waits_for_outside_inputs_of_its_body():
     nodes = [
         node("items", "input.list", items = ["a"]),
