@@ -207,7 +207,7 @@ def _convert_row(
     pending: list[TraceMessage] = []
     pending_round = reasoned = imaged = None
     # collectTextParts joins all user text parts, even the "" that _model_parts loads.
-    pieces, texted = 0, None
+    pieces, texted, split = 0, None, False
     for position, part in enumerate(_model_parts(message)):
         kind = part.get("type") if isinstance(part, dict) else None
         if role == "assistant" and kind in ("text", "reasoning", "tool-call"):
@@ -216,9 +216,12 @@ def _convert_row(
                 warnings.append(skipped)
                 if _server_builtin(part)[1]:
                     groups.native(out[-1] if out else None, texted)
+                    split = True
                 continue
             flush_pair, pending_round = _close_call_group(part, kind, pending, pending_round, out)
-            pieces = _open_assistant(message, out, pieces)
+            # A native call stays pending, so the next text or reasoning starts a new message.
+            pieces = _open_assistant(message, out, pieces, split and kind != "tool-call")
+            split = split and kind == "tool-call"
             current = groups.enter(out[-1])
         if kind == "text":
             text = str(part.get("text") or "")
@@ -245,9 +248,9 @@ def _convert_row(
     return groups
 
 
-def _open_assistant(message: dict, out: list[TraceMessage], pieces: int) -> int:
+def _open_assistant(message: dict, out: list[TraceMessage], pieces: int, split: bool) -> int:
     # Importers split one reply into a row per block; merge rows until a tool result.
-    if out and out[-1].role == "assistant":
+    if out and out[-1].role == "assistant" and not split:
         return pieces
     pieces += 1
     piece = message["id"] if pieces == 1 else f"{message['id']}#{pieces}"
@@ -324,7 +327,6 @@ def _tool_message(part: dict, name: str, call_id: str, message: dict) -> TraceMe
         role = "tool",
         text = restore_replayed_tool_results([wire])[0]["content"],
         tool_call_id = call_id,
-        is_error = bool(part.get("isError")),
         created_at = message.get("createdAt"),
     )
 
@@ -381,15 +383,6 @@ def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
         for m in out
         # The UI sends a group whose text is not empty, without trimming it.
         if m.role in ("user", "tool") or m.text or m.reasoning or m.tool_calls
-    ]
-
-
-def _sent(messages: list[TraceMessage]) -> list[TraceMessage]:
-    # _build_external_messages then drops assistant content that Python's strip() empties.
-    return [
-        m
-        for m in messages
-        if m.role != "assistant" or m.text.strip() or m.reasoning or m.tool_calls
     ]
 
 
@@ -619,7 +612,7 @@ def session_to_trace(
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no messages")
     warnings: list[TraceWarning] = []
     chain = _branch(messages, head_id, warnings)
-    trace_messages = _sent(_convert(_prune(chain), warnings))
+    trace_messages = _convert(_prune(chain), warnings)
     if not any(m.role != "user" or m.text for m in trace_messages):
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no usable content on this branch")
     if not any(m.role == "user" for m in trace_messages):

@@ -33,7 +33,6 @@ class TraceMessage:
     tool_calls: list[ToolCall] = field(default_factory = list)
     # Set only on role="tool": the ToolCall.id this message answers.
     tool_call_id: Optional[str] = None
-    is_error: bool = False
     # Epoch milliseconds, as Studio stores them.
     created_at: Optional[int] = None
 

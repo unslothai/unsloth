@@ -172,7 +172,7 @@ def test_rows_from_a_service_need_no_database():
     raw = {"_raw": "{x"}
     parts = [
         {"type": "reasoning", "text": "plan"},
-        _call("k", result = {"text": "ok"}, isError = True, args = raw, argsText = "{x"),
+        _call("k", result = {"text": "ok"}, args = raw, argsText = "{x"),
         _call("k", result = {"text": "again"}, args = raw, argsText = "{y"),
         _call("b", args = {"n": 2**53}, argsText = '{"n":9007199254740993}'),
     ]
@@ -188,7 +188,7 @@ def test_rows_from_a_service_need_no_database():
     assert [(c.id, c.arguments) for c in assistant.tool_calls[:2]] == [("k", {}), ("k#2", raw)]
     assert assistant.tool_calls[2].arguments == {"n": 2**53 + 1}  # exact argsText, as the UI sends
     # Byte-exact JSON.stringify, as the UI replays a non-sandbox tool result.
-    assert (tool.tool_call_id, tool.text, tool.is_error) == ("k", '{"text":"ok"}', True)
+    assert (tool.tool_call_id, tool.text) == ("k", '{"text":"ok"}')
     assert (trace.messages[-1].role, trace.messages[-1].text) == ("assistant", "stray")
     assert _codes(trace) == ["unsupported_part", "duplicate_tool_call_id"]
 
@@ -404,7 +404,8 @@ def test_stopped_turn_decides_reasoning_per_ui_group(parts, kept):
     # A native call ends its UI group, and each group of a stopped turn keeps reasoning alone.
     replayed = {m.id: m.reasoning for m in _turn(_STOPPED, parts).messages}
     assert replayed.get("a") == kept
-    assert _turn({}, [p for p in parts if p is not _IMAGE]).messages[1].reasoning  # completed
+    completed = _turn({}, [p for p in parts if p is not _IMAGE]).messages
+    assert any(m.reasoning for m in completed)
 
 
 def test_stopped_row_merged_into_earlier_text_keeps_its_first_group():
@@ -418,14 +419,22 @@ def test_stopped_row_merged_into_earlier_text_keeps_its_first_group():
 
 
 @pytest.mark.parametrize("custom", [{}, _STOPPED])
-def test_assistant_text_that_python_strips_is_dropped(custom):
-    # _build_external_messages drops it. JS trim() keeps "\x1c", so a stopped
-    # turn gets no stop label.
+def test_assistant_text_that_python_strips_is_kept(custom):
+    # The local path sends it. JS trim() keeps "\x1c", so a stopped turn gets no stop label.
     assert _shape(_turn(custom, _text("\x1c"))) == [
         ("user", "go"),
+        ("assistant", "\x1c"),
         ("user", "again"),
         ("assistant", "fine"),
     ]
+
+
+@pytest.mark.parametrize("between", [[], [_call("k", "Bash", "ok")]])
+def test_text_after_a_native_gemini_call_starts_a_new_message(between):
+    # chat-adapter.ts keeps the native call pending, so the next text part flushes the group.
+    trace = _turn({}, [*_text("before"), _NATIVE, *between, *_text("after")])
+    first = [("assistant", ["k"]), ("tool", "k")] if between else [("assistant", "before")]
+    assert _shape(trace)[: len(first) + 2] == [("user", "go"), *first, ("assistant", "after")]
 
 
 @pytest.mark.parametrize("tool", ["generate_image", "generate_video"])
