@@ -48,6 +48,7 @@ import {
   q4nxArchFit,
   q4nxBaseModel,
   q4nxQuantLabel,
+  q4nxVariantLookup,
   sortQ4nxVariants,
 } from "../lib/q4nx-source";
 
@@ -277,15 +278,11 @@ export function Q4nxConvertCard() {
     : null;
   const localSingleFile = !!localRow && /\.gguf$/i.test(localRow.path.trim());
 
-  const localDirPath = localRow && !localSingleFile ? localRow.path : null;
-  const variantKey =
-    source === "hub"
-      ? repoId
-        ? `hub::${repoId}`
-        : null
-      : localDirPath
-        ? `local::${localDirPath}`
-        : null;
+  const { key: variantKey, localDirPath } = q4nxVariantLookup(
+    source,
+    repoId,
+    localRow && !localSingleFile ? localRow.path : null,
+  );
   useEffect(() => {
     if (!variantKey) return;
     const controller = new AbortController();

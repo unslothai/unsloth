@@ -10,6 +10,7 @@ import {
   q4nxArchFit,
   q4nxBaseModel,
   q4nxQuantLabel,
+  q4nxVariantLookup,
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
 
@@ -144,4 +145,20 @@ test("an HF cache repo folder lists path-qualified variants that still resolve a
     localGgufPath("/data/custom/qwen", { filename: "sub/m-Q4_0.gguf" }),
     "/data/custom/qwen/sub/m-Q4_0.gguf",
   );
+});
+
+test("the file list follows the active source, not a folder left picked on the other tab", () => {
+  assert.deepEqual(q4nxVariantLookup("hub", "unsloth/Qwen3-0.6B-GGUF", "/models/qwen"), {
+    key: "hub::unsloth/Qwen3-0.6B-GGUF",
+    localDirPath: null,
+  });
+  assert.deepEqual(q4nxVariantLookup("hub", "", "/models/qwen"), {
+    key: null,
+    localDirPath: null,
+  });
+  assert.deepEqual(q4nxVariantLookup("local", "unsloth/Qwen3-0.6B-GGUF", "/models/qwen"), {
+    key: "local::/models/qwen",
+    localDirPath: "/models/qwen",
+  });
+  assert.deepEqual(q4nxVariantLookup("local", "x/y", null), { key: null, localDirPath: null });
 });

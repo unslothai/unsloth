@@ -99,6 +99,21 @@ export function q4nxArchFit(
   return { status: "supported", note: Q4NX_ARCHITECTURES[arch] };
 }
 
+/** Which listing the file picker shows. Only the active source counts: a picked local folder survives a switch to the Hub. */
+export function q4nxVariantLookup(
+  source: "hub" | "local",
+  repoId: string,
+  localFolder: string | null,
+): { key: string | null; localDirPath: string | null } {
+  if (source === "hub") {
+    return { key: repoId ? `hub::${repoId}` : null, localDirPath: null };
+  }
+  return {
+    key: localFolder ? `local::${localFolder}` : null,
+    localDirPath: localFolder,
+  };
+}
+
 /** A local row's file: the row itself when it is a .gguf, else the variant inside its folder. */
 export function localGgufPath(
   rowPath: string,
