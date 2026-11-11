@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+/** Edit > Undo / Redo on the macOS desktop menu (src-tauri/src/app_menu.rs `EDIT_HISTORY`). */
+export type EditMenuAction = "edit-undo" | "edit-redo";
+
+type Focused = {
+  tagName?: string;
+  type?: string;
+  readOnly?: boolean;
+  isContentEditable?: boolean;
+} | null;
+
+const TEXT_INPUTS = new Set([
+  "",
+  "text",
+  "search",
+  "url",
+  "tel",
+  "email",
+  "password",
+  "number",
+]);
+
+export function editsText(el: Focused): boolean {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = (el.tagName ?? "").toUpperCase();
+  if (tag === "TEXTAREA") return !el.readOnly;
+  if (tag === "INPUT")
+    return !el.readOnly && TEXT_INPUTS.has((el.type ?? "").toLowerCase());
+  return false;
+}
+
+export function editMenuKey(action: EditMenuAction): KeyboardEventInit {
+  return {
+    key: "z",
+    code: "KeyZ",
+    metaKey: true,
+    shiftKey: action === "edit-redo",
+    bubbles: true,
+    cancelable: true,
+  };
+}
+
+export function runEditMenuAction(
+  action: EditMenuAction,
+  doc: Document,
+  makeKey: (init: KeyboardEventInit) => Event = (init) =>
+    new KeyboardEvent("keydown", init),
+  native: (redo: boolean) => void = () => undefined,
+): void {
+  const focused = doc.activeElement as HTMLElement | null;
+  if ((focused?.tagName ?? "").toUpperCase() === "IFRAME") {
+    let inner: Document | null = null;
+    try {
+      inner = (focused as HTMLIFrameElement).contentDocument;
+    } catch {
+      inner = null;
+    }
+    // A sandboxed frame (artifacts, MCP apps) hides its document: AppKit's undo: reaches its field.
+    if (inner) runEditMenuAction(action, inner, makeKey, native);
+    else native(action === "edit-redo");
+    return;
+  }
+  if (editsText(focused)) {
+    doc.execCommand(action === "edit-redo" ? "redo" : "undo");
+    return;
+  }
+  (focused ?? doc.body).dispatchEvent(makeKey(editMenuKey(action)));
+}
+
+function nativeEditHistory(redo: boolean): void {
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("native_edit_history", { redo }))
+    .catch(() => undefined);
+}
+
+export function listenEditMenu(): () => void {
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
+  void import("@tauri-apps/api/event")
+    .then(({ listen }) =>
+      listen<string>("app-menu-action", ({ payload }) => {
+        if (payload === "edit-undo" || payload === "edit-redo")
+          runEditMenuAction(payload, document, undefined, nativeEditHistory);
+      }),
+    )
+    .then((cleanup) => {
+      if (disposed) cleanup();
+      else unlisten = cleanup;
+    })
+    .catch(() => undefined);
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
+}

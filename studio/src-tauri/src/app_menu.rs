@@ -162,7 +162,44 @@ pub fn setup_app_menus(
             }
         }
     }
+    route_edit_history(app, find("Edit")?)?;
     app.manage(AppMenuActions(std::sync::Mutex::new(actions)));
+    Ok(())
+}
+
+/// (native item label, action, accelerator) for the Edit items the renderer runs itself.
+#[cfg(target_os = "macos")]
+const EDIT_HISTORY: &[(&str, &str, &str)] = &[
+    ("Undo", "edit-undo", "CmdOrCtrl+Z"),
+    ("Redo", "edit-redo", "CmdOrCtrl+Shift+Z"),
+];
+
+/// wry's child webview never sees Cmd+Z (tauri#9426) and native `undo:` is a no-op outside text
+/// fields, so these route to the renderer, which undoes text or replays the key.
+#[cfg(target_os = "macos")]
+fn route_edit_history(
+    app: &tauri::App,
+    edit: Option<(usize, tauri::menu::Submenu<tauri::Wry>)>,
+) -> tauri::Result<()> {
+    use tauri::menu::MenuItemBuilder;
+
+    let Some((_, edit)) = edit else {
+        return Ok(());
+    };
+    for (index, item) in edit.items()?.into_iter().enumerate() {
+        let Some(native) = item.as_predefined_menuitem() else {
+            continue;
+        };
+        let label = native.text()?;
+        let Some((_, action, accelerator)) = EDIT_HISTORY.iter().find(|row| row.0 == label) else {
+            continue;
+        };
+        let routed = MenuItemBuilder::with_id(format!("{ID_PREFIX}{action}"), &label)
+            .accelerator(*accelerator)
+            .build(app)?;
+        edit.remove(&item)?;
+        edit.insert(&routed, index)?;
+    }
     Ok(())
 }
 
@@ -205,15 +242,97 @@ fn append_rows(
 
 #[cfg(target_os = "macos")]
 pub fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
-    use tauri::Emitter;
-
     let Some(action) = id.strip_prefix(ID_PREFIX) else {
         return;
     };
     crate::show_main_window(app);
+    if EDIT_HISTORY.iter().any(|row| row.1 == action) {
+        route_history(app, action);
+        return;
+    }
+    emit_action(app, action);
+}
+
+#[cfg(target_os = "macos")]
+fn emit_action(app: &tauri::AppHandle, action: &str) {
+    use tauri::Emitter;
+
     if let Err(error) = app.emit_to("main", APP_MENU_ACTION_EVENT, action) {
         log::warn!("Could not send menu action {action}: {error}");
     }
+}
+
+/// Studio page gets the renderer action; an embedded browser webview gets AppKit `undo:`/`redo:`.
+#[cfg(target_os = "macos")]
+fn route_history(app: &tauri::AppHandle, action: &str) {
+    let Some(main) = app.get_webview("main") else {
+        emit_action(app, action);
+        return;
+    };
+    let window = main.window();
+    let handle = app.clone();
+    let owned = action.to_string();
+    let sent = main.with_webview(move |platform| {
+        if !native_history(&window, platform.inner(), owned == "edit-redo", true) {
+            emit_action(&handle, &owned);
+        }
+    });
+    if sent.is_err() {
+        emit_action(app, action);
+    }
+}
+
+/// Main thread only. Returns whether the key view took `undo:`/`redo:`.
+#[cfg(target_os = "macos")]
+fn native_history(
+    window: &tauri::Window,
+    main_view: *mut std::ffi::c_void,
+    redo: bool,
+    outside_main_only: bool,
+) -> bool {
+    use objc2::sel;
+    use objc2_app_kit::{NSView, NSWindow};
+
+    let Ok(ns_window) = window.ns_window() else {
+        return false;
+    };
+    if ns_window.is_null() || main_view.is_null() {
+        return false;
+    }
+    // SAFETY: both are live AppKit objects owned by this window, read on the main thread.
+    let (ns_window, main_view) = unsafe {
+        (
+            &*(ns_window as *const NSWindow),
+            &*(main_view as *const NSView),
+        )
+    };
+    let Some(responder) = ns_window.firstResponder() else {
+        return false;
+    };
+    if outside_main_only {
+        if let Some(view) = responder.downcast_ref::<NSView>() {
+            if view.isDescendantOf(main_view) {
+                return false;
+            }
+        }
+    }
+    let action = if redo { sel!(redo:) } else { sel!(undo:) };
+    // SAFETY: a standard responder action with no sender, as a menu item would send it.
+    unsafe { responder.tryToPerform_with(action, None) }
+}
+
+/// For sandboxed iframes the renderer cannot reach: WebKit forwards AppKit `undo:` to the frame.
+#[tauri::command]
+pub fn native_edit_history(app: tauri::AppHandle, redo: bool) {
+    #[cfg(target_os = "macos")]
+    if let Some(main) = app.get_webview("main") {
+        let window = main.window();
+        let _ = main.with_webview(move |platform| {
+            native_history(&window, platform.inner(), redo, false);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, redo);
 }
 
 /// Enable exactly the listed actions and show each one's current chord. No-op without app menus.
