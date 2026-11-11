@@ -3,10 +3,14 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { TranscriptProgress } from "./transcript-stream";
+import { formatClipDuration } from "./audio-workspace-utils";
+import {
+  transcriptProgressPercent,
+  type TranscriptProgress,
+} from "./transcript-stream";
 import "./transcription-progress.css";
 
-// audio.cpp reports no progress numbers, so the server says which step it is on instead.
+// Engines without a processed-audio counter still use the phase label below.
 const PHASE_LABELS: Record<NonNullable<TranscriptProgress["phase"]>, string> = {
   loading: "Loading the model…",
   downloading_aligner: "Downloading the timing aligner…",
@@ -38,6 +42,13 @@ export function TranscriptionProgress({
   );
   const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   const running = finishedAt === null;
+  const progressPercent = transcriptProgressPercent(progress);
+  const progressTiming =
+    progressPercent === null ||
+    progress?.processed_seconds === undefined ||
+    progress.duration === undefined
+      ? null
+      : `${progressPercent}% · ${formatClipDuration(progress.processed_seconds)} / ${formatClipDuration(progress.duration)}`;
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-3 text-ui-13 text-muted-foreground">
@@ -68,6 +79,14 @@ export function TranscriptionProgress({
         <span className="font-mono tabular-nums" aria-label={`Elapsed time ${elapsed}`}>
           {elapsed}
         </span>
+        {progressTiming && (
+          <span
+            className="font-mono tabular-nums"
+            aria-label={`Audio transcribed ${progressTiming}`}
+          >
+            {progressTiming}
+          </span>
+        )}
         {running && (
           <Button
             variant="ghost"

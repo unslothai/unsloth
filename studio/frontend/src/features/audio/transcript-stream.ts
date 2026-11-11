@@ -28,6 +28,25 @@ export interface TranscriptProgress {
   phase?: "loading" | "downloading_aligner" | "transcribing";
 }
 
+/** Return measured audio progress when the transcription engine reports a duration. */
+export function transcriptProgressPercent(
+  progress: TranscriptProgress | null | undefined,
+): number | null {
+  const processed = progress?.processed_seconds;
+  const duration = progress?.duration;
+  if (
+    typeof processed !== "number" ||
+    !Number.isFinite(processed) ||
+    typeof duration !== "number" ||
+    !Number.isFinite(duration) ||
+    duration <= 0 ||
+    processed < 0
+  ) {
+    return null;
+  }
+  return Math.round(Math.min(1, processed / duration) * 100);
+}
+
 export interface TranscriptResult extends TranscriptTiming {
   text: string;
   model: string;
