@@ -661,7 +661,8 @@ function FitBadge({
 const ACTION =
   "relative flex h-[calc(20px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-none text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground dark:hover:bg-transparent before:pointer-events-none before:absolute before:top-1/2 before:left-1/2 before:size-[calc(20px*var(--ui-space-scale,1))] before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:transition-colors before:content-[''] hover:before:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:before:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] data-[state=open]:before:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[state=open]:before:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [&>svg]:relative";
 const ACTION_ROUND = `${ACTION} w-[calc(20px*var(--ui-space-scale,1))]`;
-const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))]`;
+// The ⋮ ink sits 0.875px left of its box's centre (4x measure), so the circle centres on the ink.
+const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))] before:left-[calc(50%-1px)]`;
 
 const FAVORITE_DROP_CUE_BASE =
   "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
@@ -2592,6 +2593,7 @@ export function ComposerModelPicker({
                 del={deleteFor(row)}
                 buttonClassName={cn(ACTION_DOTS, actionClass)}
                 iconClassName="composer-row-dots"
+                contentClassName="composer-row-menu"
               />
               <ModelLoadSettingsAction
                 ariaLabel={`Run settings for ${row.label}`}
@@ -2646,6 +2648,7 @@ export function ComposerModelPicker({
                 ]}
                 buttonClassName={cn(ACTION_DOTS, actionClass)}
                 iconClassName="composer-row-dots"
+                contentClassName="composer-row-menu"
               />
               <ModelLoadSettingsAction
                 ariaLabel={`Settings for ${row.label}`}
@@ -2745,6 +2748,7 @@ export function ComposerModelPicker({
             del={deleteQuantFor(row, variant)}
             buttonClassName={cn(ACTION_DOTS, reveal)}
             iconClassName="composer-row-dots"
+            contentClassName="composer-row-menu"
           />
         ) : null}
         <ModelLoadSettingsAction
@@ -3217,7 +3221,7 @@ export function ComposerModelPicker({
             ? `Run settings for ${configTarget.displayName}`
             : undefined
         }
-        className="unsloth-plus-menu composer-model-picker relative max-h-[min(calc(520px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))] w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2"
+        className="unsloth-plus-menu composer-model-picker relative max-h-[min(calc(600px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))] w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2"
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
             requestAnimationFrame(() => searchRef.current?.focus());
@@ -3499,7 +3503,7 @@ export function ComposerModelPicker({
               role="listbox"
               tabIndex={-1}
               aria-label={viewedTab?.label}
-              className="composer-model-list flex max-h-[min(calc(296px*var(--ui-space-scale,1)),45vh)] min-h-0 flex-col gap-0.5 overflow-y-auto pt-1.5 pb-1.5"
+              className="composer-model-list flex max-h-[min(calc(340px*var(--ui-space-scale,1)),50vh)] min-h-0 flex-col gap-0.5 overflow-y-auto pt-1.5 pb-1.5"
             >
               {renderList()}
               {viewed === RECOMMENDED_TAB && hubSearch.hasMore ? (

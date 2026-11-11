@@ -5155,6 +5155,20 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .composer-run-settings::-webkit-scrollbar {
 	display: none;
 }
+/* The scrollbar at the menu's very edge: the side padding moves inside the scrolling viewport. */
+.composer-row-menu[data-slot] {
+	padding-inline: 0 !important;
+}
+.composer-row-menu > [data-slot="dropdown-menu-viewport"] {
+	padding-inline: var(--spacing);
+}
+/* The composer's Run settings sit in a short panel: tighter section spacing than the header picker's page. */
+.composer-run-settings .space-y-5 > :not(:last-child) {
+	margin-block-end: calc(12px * var(--ui-space-scale, 1));
+}
+.composer-run-settings .space-y-5 > .border-b.pb-5 {
+	padding-bottom: calc(12px * var(--ui-space-scale, 1));
+}
 .composer-model-list[data-fade-top] {
 	mask-image: linear-gradient(to bottom, transparent, #000 14px);
 }

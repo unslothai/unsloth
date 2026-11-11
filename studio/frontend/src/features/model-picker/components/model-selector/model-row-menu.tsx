@@ -101,7 +101,9 @@ export function ModelRowMenu({
   update,
   del,
   details,
+  contentClassName,
 }: {
+  contentClassName?: string;
   details?: ReactNode;
   ariaLabel: string;
   buttonClassName?: string;
@@ -252,6 +254,7 @@ export function ModelRowMenu({
           className={cn(
             "unsloth-plus-menu menu-flat-destructive",
             details ? "w-60" : "w-48",
+            contentClassName,
           )}
         >
           {details ? (
