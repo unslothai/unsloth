@@ -139,6 +139,16 @@ def test_flow_edges_only_between_story_handles():
     assert "no story exit" in issues[0]["message"]
 
 
+def test_one_story_exit_cannot_lead_to_two_steps():
+    issues = _issues(
+        doc(
+            [node("s", "story.start"), node("a", "story.scene"), node("b", "story.scene")],
+            [edge("s", "next", "a", "in", "flow"), edge("s", "next", "b", "in", "flow")],
+        )
+    )
+    assert any("already leads somewhere" in i["message"] for i in issues), issues
+
+
 def test_for_each_body_ordering_collect_and_escape_rules():
     nodes = [
         node("items", "input.list", items = ["a", "b"]),
@@ -158,6 +168,42 @@ def test_for_each_body_ordering_collect_and_escape_rules():
     assert plan.top_level() == ["items", "fe", "out"]
     issues = _issues(doc(nodes, [*edges[:3], edge("t", "text", "out", "value")]))
     assert any("can only feed its group" in i["message"] for i in issues)
+
+
+def test_a_flow_output_inside_a_for_each_is_refused():
+    nodes = [
+        node("items", "input.list", items = ["a", "b"]),
+        node("fe", "logic.for_each"),
+        node("t", "text.template", group = "fe", template = "<{{values}}>"),
+        node("out", "output.result", group = "fe"),
+    ]
+    edges = [
+        edge("items", "items", "fe", "items"),
+        edge("fe", "item", "t", "values"),
+        edge("t", "text", "out", "value"),
+    ]
+    issues = _issues(doc(nodes, edges))
+    assert any(
+        "Flow Output cannot sit inside a For Each" in i["message"] and i["node_id"] == "out"
+        for i in issues
+    ), issues
+
+
+def test_an_outer_for_each_cannot_collect_from_a_nested_loop_body():
+    nodes = [
+        node("items", "input.list", items = ["a", "b"]),
+        node("outer", "logic.for_each"),
+        node("inner", "logic.for_each", group = "outer"),
+        node("t", "text.template", group = "inner", template = "<{{values}}>"),
+    ]
+    edges = [
+        edge("items", "items", "outer", "items"),
+        edge("outer", "item", "inner", "items"),
+        edge("inner", "item", "t", "values"),
+        edge("t", "text", "outer", "collect"),
+    ]
+    issues = _issues(doc(nodes, edges))
+    assert any("not from inside a nested loop" in i["message"] for i in issues), issues
 
 
 def test_for_each_waits_for_outside_inputs_of_its_body():

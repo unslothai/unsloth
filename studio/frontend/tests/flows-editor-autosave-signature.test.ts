@@ -126,3 +126,40 @@ test("switching flows while a save is in flight still saves the last edit", { ti
   api.setFlowsTransport(null);
   assert.deepEqual(saved.map((d) => d.nodes[0]?.params.value), ["two", "three"]);
 });
+
+test("closing the tab sends an unsaved edit as a keepalive save even with no debounce pending", async () => {
+  const puts: RequestInit[] = [];
+  let fail = true;
+  api.setFlowsTransport(async (_url, init) => {
+    puts.push(init ?? {});
+    if (fail) return new Response(JSON.stringify({ detail: "down" }), { status: 500 });
+    const body = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ id: "k", name: "K", doc: body.doc, updatedAt: 2 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  try {
+    const d = doc([node("x", "input.text", [0, 0], { value: "one" })]);
+    d.id = "k";
+    useDocStore.getState().load(d);
+    A.beginSaveSession("k", 1, documentSignature(d));
+    useDocStore.getState().load({ ...d, nodes: [node("x", "input.text", [0, 0], { value: "two" })] });
+    assert.equal(await A.flushSave(), false, "the save failed, so nothing is queued");
+    fail = false;
+    A.saveOnUnload();
+    assert.equal(puts.length, 2, "the unload save goes out at once");
+    assert.equal(puts[1].keepalive, true);
+    assert.equal(JSON.parse(String(puts[1].body)).doc.nodes[0].params.value, "two");
+    await A.flushSave();
+    assert.equal(puts.length, 2, "the edit is saved, so nothing more is sent");
+
+    useDocStore.getState().load({ ...d, nodes: [node("x", "input.text", [0, 0], { value: "y".repeat(70_000) })] });
+    A.saveOnUnload();
+    assert.equal(puts.length, 3, "a flow over the keepalive budget still goes out");
+    assert.notEqual(puts[2].keepalive, true);
+  } finally {
+    await A.flushSave();
+    api.setFlowsTransport(null);
+  }
+});
