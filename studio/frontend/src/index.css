@@ -3833,6 +3833,10 @@ html[data-chat-font] .aui-root {
 	.unsloth-plus-menu.composer-model-picker[data-slot][data-list-last] {
 		padding-bottom: 0;
 	}
+	/* Run settings bring their own padding, which their sticky footer bleeds back through. */
+	.unsloth-plus-menu.composer-model-picker[data-slot][data-run-settings] {
+		padding: 0;
+	}
 
 	.dark .unsloth-plus-menu[data-slot] {
 		background-color: var(--card);
@@ -5143,10 +5147,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 /* Unlayered, so the global scrollbar rule above cannot win. */
-.composer-model-list {
+.composer-model-list,
+.composer-run-settings {
 	scrollbar-width: none;
 }
-.composer-model-list::-webkit-scrollbar {
+.composer-model-list::-webkit-scrollbar,
+.composer-run-settings::-webkit-scrollbar {
 	display: none;
 }
 .composer-model-list[data-fade-top] {

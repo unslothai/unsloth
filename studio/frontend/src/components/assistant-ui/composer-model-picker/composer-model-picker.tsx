@@ -24,6 +24,7 @@ import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   OwnerAvatar,
+  TrainIcon,
   deleteCachedModel,
   formatBytes,
   hfApiToken,
@@ -37,8 +38,11 @@ import {
 } from "@/features/hub";
 import {
   type LoraModelOption,
+  type ModelConfigFocus,
+  ModelConfigPage,
   ModelLoadSettingsAction,
   type ModelOption,
+  type ModelPickTarget,
   ModelRowMenu,
   type ModelSelectorChangeMeta,
   type PickerFitStatus,
@@ -48,6 +52,9 @@ import {
   isMediaCatalogRepo,
   isOverBudget,
   loraOptionLabel,
+  modelConfigInstanceKey,
+  modelConfigTarget,
+  modelConfigTargetIsResident,
   modelDisplayName,
   paramsFromId,
   pinDropAnchor,
@@ -56,6 +63,14 @@ import {
   usePinnedModelsStore,
   usePinnedRowDrag,
 } from "@/features/model-picker";
+import {
+  type NpuModel,
+  NpuSetupNotice,
+  npuDownloadLabel,
+  npuSizeLabel,
+  useNpuCatalog,
+  useNpuStatus,
+} from "@/features/npu";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
@@ -64,12 +79,14 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   CloudIcon,
   DashboardCircleIcon,
   Download01Icon,
+  Flag01Icon,
   FlashIcon,
   InformationCircleIcon,
   LaptopIcon,
@@ -93,21 +110,27 @@ import {
   useState,
 } from "react";
 import { useComposerModelPickerSource } from "./context";
+import { useCustomFolders } from "./custom-folders";
 import { EffortSlider } from "./effort-slider";
 import { ListScrollbar } from "./list-scrollbar";
 import {
   DEVICE_TAB,
   FAVORITES_TAB,
   type FormatTone,
+  type ListSection,
   type PickerRow,
   RECOMMENDED_TAB,
+  SECTION_LABEL,
   chooseQuant,
   dedupeRows,
   downloadedQuants,
   filterRows,
   findChosenRow,
   isChatTask,
+  localSection,
+  orderBySection,
   pinCoversId,
+  repoSection,
 } from "./picker-model";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
@@ -118,6 +141,7 @@ interface Row extends PickerRow {
   cached?: CachedModelRepo;
   lora?: LoraModelOption;
   hub?: ModelOption;
+  npu?: NpuModel;
   loadedQuant?: string | null;
 }
 
@@ -631,6 +655,88 @@ function SwitchRow({
   );
 }
 
+const SECTION_GLYPH = "size-[calc(12px*var(--ui-space-scale,1))]";
+const SECTION_ICON: Partial<Record<ListSection, ReactNode>> = {
+  other: (
+    <HugeiconsIcon
+      icon={Flag01Icon}
+      strokeWidth={1.75}
+      className={SECTION_GLYPH}
+    />
+  ),
+  fineTuned: (
+    <HugeiconsIcon
+      icon={TrainIcon}
+      strokeWidth={1.75}
+      className={SECTION_GLYPH}
+    />
+  ),
+  custom: (
+    <HugeiconsIcon
+      icon={Folder02Icon}
+      strokeWidth={1.75}
+      className={SECTION_GLYPH}
+    />
+  ),
+};
+
+function SectionHeader({
+  label,
+  icon,
+  divider,
+  collapsed,
+  onToggle,
+  actions,
+}: {
+  label: string;
+  icon?: ReactNode;
+  divider: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
+  actions?: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex shrink-0 flex-col",
+        divider && "mt-1 border-t border-border pt-1",
+      )}
+    >
+      <div className="flex h-[calc(28px*var(--ui-space-scale,1))] items-center gap-1 pr-[calc(6px*var(--ui-space-scale,1))] pl-3">
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          className="flex min-w-0 items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {icon}
+          <span className="truncate">{label}</span>
+        </button>
+        {actions ? (
+          <span className="flex shrink-0 items-center">{actions}</span>
+        ) : null}
+        <Hint label={collapsed ? "Expand" : "Collapse"}>
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={`${collapsed ? "Expand" : "Collapse"} ${label}`}
+            className="ml-auto grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+          >
+            <HugeiconsIcon
+              icon={
+                collapsed ? ChevronRightStandardIcon : ChevronDownStandardIcon
+              }
+              strokeWidth={1.75}
+              className="size-3"
+            />
+          </button>
+        </Hint>
+      </div>
+    </div>
+  );
+}
+
 export function ComposerModelPicker({
   side = "top",
 }: { side?: "top" | "bottom" }) {
@@ -649,7 +755,27 @@ export function ComposerModelPicker({
     (s) => s.togglePinnedConnected,
   );
 
-  const [open, setOpen] = useState(false);
+  // The chat page owns open, so its shortcut, tour and the Hub's Run reach this picker.
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = source ? source.open : localOpen;
+  const setOpen = (next: boolean) => {
+    if (source) {
+      source.onOpenChange(next);
+    } else {
+      setLocalOpen(next);
+    }
+  };
+  // Run settings open in place of the list.
+  const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
+    null,
+  );
+  const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
+  const [configStandalone, setConfigStandalone] = useState(false);
+  const openConfig = (target: ModelPickTarget) => {
+    setConfigTarget(target);
+    setConfigFocus(null);
+    setConfigStandalone(false);
+  };
   const [expanded, setExpandedState] = useState(readExpanded);
   const setExpanded = useCallback((next: boolean) => {
     setExpandedState(next);
@@ -691,6 +817,7 @@ export function ComposerModelPicker({
   const [quantsOpen, setQuantsOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const settingsRef = useRef<HTMLDivElement>(null);
   // Too many tabs scroll sideways: each edge fades over the tabs hidden past it.
   const [tabStrip, setTabStrip] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -716,6 +843,14 @@ export function ComposerModelPicker({
   }, [tabStrip]);
 
   const inventory = useChatPickerInventory({ enabled: open });
+  const [npuStatus, setNpuStatus] = useNpuStatus(open);
+  // Null off an AMD NPU host, so nothing below shows there.
+  const npuCatalog = useNpuCatalog(
+    npuStatus?.supported === true
+      ? { status: npuStatus, onStatusChange: setNpuStatus }
+      : undefined,
+  );
+  const npuModels = npuCatalog?.models ?? null;
   const online = useOnlineStatus();
   const hfToken = useHfTokenStore((s) => s.token);
   const quantFormats = useGpuInfo().checkpointQuantFormats;
@@ -799,6 +934,7 @@ export function ComposerModelPicker({
         detail: repo.size_bytes > 0 ? formatBytes(repo.size_bytes) : undefined,
         tab: DEVICE_TAB,
         kind: "gguf",
+        section: repoSection(repo.repo_id),
         format: "gguf",
         aliases: [repo.load_id ?? "", repo.cache_path],
         gguf: repo,
@@ -815,6 +951,7 @@ export function ComposerModelPicker({
         detail: repo.size_bytes > 0 ? formatBytes(repo.size_bytes) : undefined,
         tab: DEVICE_TAB,
         kind: "cached",
+        section: repoSection(repo.repo_id),
         format: isMlxId(repo.repo_id) ? "mlx" : "checkpoint",
         aliases: [repo.load_id ?? "", repo.cache_path ?? ""],
         cached: repo,
@@ -831,8 +968,23 @@ export function ComposerModelPicker({
         detail: loraDetail(lora),
         tab: DEVICE_TAB,
         kind: loraNeedsQuant(lora) ? "localGguf" : "local",
+        section: localSection(lora.source, lora.baseModel),
         format: loraFormat(lora),
         lora,
+      });
+    }
+    for (const model of npuModels ?? []) {
+      if (!model.downloaded) {
+        continue;
+      }
+      device.push({
+        key: `npu:${model.id}`,
+        id: model.model_path,
+        label: model.id,
+        tab: DEVICE_TAB,
+        kind: "npu",
+        section: "npu",
+        npu: model,
       });
     }
     const loaded = new Map(loadedModels.map((m) => [m.id.toLowerCase(), m]));
@@ -866,6 +1018,7 @@ export function ComposerModelPicker({
         label: modelDisplayName(m.id),
         tab: DEVICE_TAB,
         kind: "loaded",
+        section: repoSection(m.id),
         format: m.quant ? "gguf" : "checkpoint",
         aliases: m.checkpoint ? [m.checkpoint] : undefined,
         loaded: true,
@@ -893,6 +1046,7 @@ export function ComposerModelPicker({
         label: modelDisplayName(m.id),
         tab: RECOMMENDED_TAB,
         kind: "hub",
+        section: "recommended",
         format: m.isGguf ? "gguf" : isMlxId(m.id) ? "mlx" : "checkpoint",
         onDevice: onDisk.has(m.id.toLowerCase()),
         loaded: loadedIds.has(m.id.toLowerCase()),
@@ -907,10 +1061,22 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    return [...marked, ...hub, ...external];
+    const npuOffers: Row[] = (npuModels ?? [])
+      .filter((model) => !model.downloaded)
+      .map((model) => ({
+        key: `npu-offer:${model.id}`,
+        id: model.model_path,
+        label: model.id,
+        tab: RECOMMENDED_TAB,
+        kind: "npu",
+        section: "npu",
+        npu: model,
+      }));
+    return [...marked, ...npuOffers, ...hub, ...external];
   }, [
     inventory.cachedGguf,
     inventory.cachedModels,
+    npuModels,
     loraModels,
     loadedModels,
     recommended,
@@ -1083,8 +1249,51 @@ export function ComposerModelPicker({
     },
     [pinned, pinnedConnected],
   );
+  const [collapsedSections, setCollapsedSections] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const sectionKey = (section: ListSection) => `${viewed}:${section}`;
+  const toggleSection = (section: ListSection) => {
+    const key = sectionKey(section);
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+  // On Device and Discover group their rows under headers, in the header picker's order.
+  const listSections = useMemo<ListSection[]>(() => {
+    if (viewed === DEVICE_TAB) {
+      const found = filterRows(rows, viewed, query, isFavorite);
+      const present = new Set(found.map((row) => row.section));
+      // Always there, as in the header picker: where training output and added folders land.
+      present.add("fineTuned");
+      present.add("custom");
+      return orderBySection(
+        [...present]
+          .filter((section): section is ListSection => Boolean(section))
+          .map((section) => ({ section })),
+      ).map(({ section }) => section);
+    }
+    if (viewed === RECOMMENDED_TAB && npuCatalog) {
+      const found = filterRows(rows, viewed, query, isFavorite);
+      const npuShown =
+        found.some((row) => row.section === "npu") ||
+        (!npuCatalog.ready && !query);
+      return npuShown ? ["npu", "recommended"] : [];
+    }
+    return [];
+  }, [rows, viewed, query, isFavorite, npuCatalog]);
   const shownRows = useMemo(() => {
     const found = filterRows(rows, viewed, query, isFavorite);
+    if (listSections.length > 0) {
+      return orderBySection(found).filter(
+        (row) =>
+          !(row.section && collapsedSections.has(`${viewed}:${row.section}`)),
+      );
+    }
     if (viewed !== FAVORITES_TAB) {
       return found;
     }
@@ -1095,7 +1304,21 @@ export function ComposerModelPicker({
         : pinned.indexOf(key ?? "");
     };
     return [...found].sort((a, b) => rank(a) - rank(b));
-  }, [rows, viewed, query, isFavorite, favoriteKeyOf, pinned, pinnedConnected]);
+  }, [
+    rows,
+    viewed,
+    query,
+    isFavorite,
+    favoriteKeyOf,
+    pinned,
+    pinnedConnected,
+    listSections,
+    collapsedSections,
+  ]);
+  const customFolders = useCustomFolders({
+    enabled: open && viewed === DEVICE_TAB,
+    onFoldersChange: source?.onFoldersChange,
+  });
   const favoriteDragOrder = (connected: boolean) =>
     shownRows
       .filter((row) => (row.kind === "external") === connected)
@@ -1172,9 +1395,9 @@ export function ComposerModelPicker({
     source?.eject(row.loadedId ?? row.id);
   };
 
-  const handOff = () => {
-    setOpen(false);
-    source?.openFullPicker();
+  // With no quant to load, the Hub's model card lists them all.
+  const handOff = (row: Row) => {
+    openModelCard(row);
   };
 
   const pickQuantRow = async (row: Row, target: QuantTarget) => {
@@ -1188,7 +1411,7 @@ export function ComposerModelPicker({
       [row.loadedQuant, defaultVariant],
     );
     if (!quant) {
-      handOff();
+      handOff(row);
       return;
     }
     if (row.id !== chosen?.id) {
@@ -1241,8 +1464,39 @@ export function ComposerModelPicker({
     resetView();
   };
 
+  const pickNpu = (row: Row, model: NpuModel) => {
+    if (!(source && npuCatalog) || model.id in npuCatalog.downloads) {
+      return;
+    }
+    const meta = {
+      source: "local",
+      isLora: false,
+      isDownloaded: true,
+    } as const;
+    if (model.downloaded) {
+      if (row.id !== chosen?.id) {
+        setPending(row);
+      }
+      source.onPick(model.model_path, meta);
+      resetView();
+      return;
+    }
+    const before = useChatRuntimeStore.getState().params.checkpoint;
+    void npuCatalog.download(model).then((done) => {
+      const now = useChatRuntimeStore.getState();
+      // A model picked while this downloaded is the user's newer choice; keep it.
+      if (done && now.params.checkpoint === before && !now.loadingModelPick) {
+        source.onPick(model.model_path, meta);
+      }
+    });
+  };
+
   const pick = async (row: Row) => {
     if (!source) {
+      return;
+    }
+    if (row.npu) {
+      pickNpu(row, row.npu);
       return;
     }
     const target = quantTarget(row);
@@ -1265,7 +1519,7 @@ export function ComposerModelPicker({
       try {
         await pickQuantRow(row, target);
       } catch {
-        handOff();
+        handOff(row);
         return;
       } finally {
         setResolving(null);
@@ -1336,14 +1590,51 @@ export function ComposerModelPicker({
     }
   };
 
+  const configResident =
+    configTarget !== null &&
+    modelConfigTargetIsResident({
+      target: configTarget,
+      selectedId: checkpoint,
+      activeGgufVariant: activeVariant,
+      loaded: source?.loaded ?? false,
+    });
+
   const onOpenChange = (next: boolean) => {
     setOpen(next);
-    if (next) {
+  };
+  // Every opening starts on the list, however it was opened. During render, so the first paint is fresh.
+  const [seenOpen, setSeenOpen] = useState(open);
+  if (open !== seenOpen) {
+    setSeenOpen(open);
+    setConfigTarget(null);
+    if (open) {
       resetView();
       setActive(0);
-      setHighlight(false);
+      highlightRef.current = false;
+      setHighlightState(false);
     }
-  };
+  }
+  // After the reset above, so a request that opened the picker lands on its settings.
+  const configRequest = open ? (source?.configRequest ?? null) : null;
+  const [adoptedRequestId, setAdoptedRequestId] = useState<string | null>(null);
+  if (configRequest && adoptedRequestId !== configRequest.requestId) {
+    setAdoptedRequestId(configRequest.requestId);
+    setConfigTarget(
+      modelConfigTarget(
+        configRequest.id,
+        configRequest.meta,
+        configRequest.displayName,
+      ),
+    );
+    setConfigFocus(configRequest.focus ?? null);
+    setConfigStandalone(configRequest.standalone === true);
+  }
+  const onConfigRequestAdopted = source?.onConfigRequestAdopted;
+  useEffect(() => {
+    if (configRequest && adoptedRequestId === configRequest.requestId) {
+      onConfigRequestAdopted?.(configRequest.requestId);
+    }
+  }, [configRequest, adoptedRequestId, onConfigRequestAdopted]);
 
   useEffect(() => {
     if (!isExpanded) {
@@ -1441,6 +1732,14 @@ export function ComposerModelPicker({
     if (row.kind === "local" && row.lora) {
       return loraMeta(row.lora);
     }
+    if (row.npu?.downloaded) {
+      return {
+        source: "local",
+        isLora: false,
+        isDownloaded: true,
+        contextLength: row.npu.max_context_length,
+      };
+    }
     if (row.kind === "cached") {
       return {
         source: "hub",
@@ -1485,14 +1784,23 @@ export function ComposerModelPicker({
   const openSettings = async (row: Row) => {
     const meta = await settingsMeta(row).catch(() => null);
     if (!(source && meta)) {
-      handOff();
+      handOff(row);
       return;
     }
-    setOpen(false);
-    source.openRunSettings(row.id, row.label, meta);
+    openConfig(modelConfigTarget(row.id, meta, row.label));
   };
 
   const deleteFor = (row: Row) => {
+    const npu = row.npu;
+    if (npu?.downloaded && npuCatalog) {
+      return {
+        title: `Delete ${row.label}?`,
+        description: "This removes the model's NPU files from this device.",
+        successMessage: `Deleted ${row.label}`,
+        disabled: row.loaded,
+        onConfirm: () => npuCatalog.remove(npu),
+      };
+    }
     const repo = row.gguf ?? row.cached;
     if (!repo) {
       return undefined;
@@ -1528,8 +1836,16 @@ export function ComposerModelPicker({
   const renderRow = (row: Row, index: number) => {
     const isChosen = row.id === chosen?.id;
     const favorite = isFavorite(row);
-    const quiet = row.kind === "hub" && !row.onDevice;
-    const offering = quiet && Boolean(row.hub?.isGguf);
+    const npuOffer = row.kind === "npu" && !row.npu?.downloaded;
+    const npuProgress =
+      row.npu && npuCatalog && row.npu.id in npuCatalog.downloads
+        ? npuDownloadLabel(
+            npuCatalog.downloads[row.npu.id],
+            row.npu.id in npuCatalog.reconnecting,
+          )
+        : null;
+    const quiet = (row.kind === "hub" && !row.onDevice) || npuOffer;
+    const offering = row.kind === "hub" && quiet && Boolean(row.hub?.isGguf);
     const fit = offering ? hubFit.get(row.id.toLowerCase()) : null;
     // No GPU: every load runs from RAM, so `ram` is no overage.
     const dimmed = isOverBudget(fit) && !(fit === "ram" && noGpu) && !isChosen;
@@ -1571,7 +1887,7 @@ export function ComposerModelPicker({
           highlight && index === active && "bg-sidebar-accent",
         )}
       >
-        {resolving === row.key ? (
+        {resolving === row.key || npuProgress ? (
           <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
         ) : (
           <span className={cn("text-foreground", dimmed && DIM_CLASS)}>
@@ -1600,6 +1916,13 @@ export function ComposerModelPicker({
           ) : null}
         </span>
         {soleQuant ? <QuantPill quant={soleQuant} /> : null}
+        {npuProgress || (npuOffer && row.npu?.size_gb != null) ? (
+          <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
+            {npuProgress ?? npuSizeLabel(row.npu?.size_gb ?? null)}
+          </span>
+        ) : row.kind === "npu" ? (
+          <QuantPill quant="NPU" />
+        ) : null}
         {isChosen && !row.loaded ? (
           <HugeiconsIcon
             icon={Tick02Icon}
@@ -1618,7 +1941,7 @@ export function ComposerModelPicker({
           {offering ? (
             <FitBadge status={fit} revealOnHover={!isChosen} />
           ) : null}
-          {row.kind !== "external" ? (
+          {row.kind !== "external" && !npuOffer ? (
             <>
               <ModelRowMenu
                 ariaLabel={`More options for ${row.label}`}
@@ -1775,14 +2098,12 @@ export function ComposerModelPicker({
           ariaLabel={`Run settings for ${row.label} ${variant.quant}`}
           tooltip="Load settings"
           onConfigure={() => {
-            if (!source) {
-              return;
-            }
-            setOpen(false);
-            source.openRunSettings(
-              row.id,
-              row.label,
-              ggufMeta(row, variant, onDisk),
+            openConfig(
+              modelConfigTarget(
+                row.id,
+                ggufMeta(row, variant, onDisk),
+                row.label,
+              ),
             );
           }}
           className={cn(button, reveal)}
@@ -1936,23 +2257,75 @@ export function ComposerModelPicker({
     );
   };
 
+  const renderEmpty = () => {
+    const copy = emptyCopy();
+    return (
+      <div
+        key="empty"
+        className="flex flex-col items-center gap-1 px-4 py-8 text-center"
+      >
+        <span className="text-ui-14 font-medium text-foreground">
+          {copy.title}
+        </span>
+        {copy.hint ? (
+          <span className="text-ui-12 text-muted-foreground">{copy.hint}</span>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderList = () => {
-    if (shownRows.length === 0) {
-      const copy = emptyCopy();
-      return (
-        <div className="flex flex-col items-center gap-1 px-4 py-8 text-center">
-          <span className="text-ui-14 font-medium text-foreground">
-            {copy.title}
-          </span>
-          {copy.hint ? (
-            <span className="text-ui-12 text-muted-foreground">
-              {copy.hint}
-            </span>
-          ) : null}
-        </div>
-      );
+    if (listSections.length === 0) {
+      return shownRows.length === 0 ? renderEmpty() : shownRows.map(renderRow);
     }
-    return shownRows.map(renderRow);
+    const indexOf = new Map(shownRows.map((row, i) => [row.key, i]));
+    const out: ReactNode[] = [];
+    const anyRows = listSections.some(
+      (section) =>
+        section !== "custom" &&
+        filterRows(rows, viewed, query, isFavorite).some(
+          (row) => row.section === section,
+        ),
+    );
+    if (!anyRows) {
+      out.push(renderEmpty());
+    }
+    listSections.forEach((section, i) => {
+      const collapsed = collapsedSections.has(sectionKey(section));
+      out.push(
+        <SectionHeader
+          key={`section:${section}`}
+          label={SECTION_LABEL[section]}
+          icon={SECTION_ICON[section]}
+          divider={i > 0 || !anyRows}
+          collapsed={collapsed}
+          onToggle={() => toggleSection(section)}
+          actions={section === "custom" ? customFolders.actions : undefined}
+        />,
+      );
+      if (collapsed) {
+        return;
+      }
+      if (section === "custom") {
+        out.push(
+          <Fragment key="custom-folders">{customFolders.body}</Fragment>,
+        );
+      }
+      if (
+        section === "npu" &&
+        viewed === RECOMMENDED_TAB &&
+        npuCatalog &&
+        !npuCatalog.ready
+      ) {
+        out.push(<NpuSetupNotice key="npu-setup" catalog={npuCatalog} />);
+      }
+      for (const row of shownRows) {
+        if (row.section === section) {
+          out.push(renderRow(row, indexOf.get(row.key) ?? 0));
+        }
+      }
+    });
+    return out;
   };
 
   const viewedTab = tabs.find((t) => t.value === viewed);
@@ -1978,6 +2351,7 @@ export function ComposerModelPicker({
               "composer-model-chip-empty",
           )}
           data-pill-label={chipLabel}
+          data-tour="chat-model-selector"
           aria-label={`Model: ${chipLabel}${reasoning.chipLabel ? `, ${reasoning.chipLabel}` : ""}`}
         >
           {modelLoading || pending ? (
@@ -2034,7 +2408,16 @@ export function ComposerModelPicker({
         align="end"
         sideOffset={8}
         data-composer-model-picker=""
-        data-list-last={isExpanded && !hasFoot ? "" : undefined}
+        data-tour="chat-model-selector-popover"
+        data-list-last={
+          isExpanded && !hasFoot && !configTarget ? "" : undefined
+        }
+        data-run-settings={configTarget ? "" : undefined}
+        aria-label={
+          configTarget
+            ? `Run settings for ${configTarget.displayName}`
+            : undefined
+        }
         className="unsloth-plus-menu composer-model-picker relative w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2"
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
@@ -2050,7 +2433,43 @@ export function ComposerModelPicker({
           }
         }}
       >
-        {isExpanded ? (
+        {configTarget ? (
+          <>
+            <div
+              ref={settingsRef}
+              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7"
+            >
+              <ModelConfigPage
+                key={modelConfigInstanceKey(
+                  configTarget.configId ?? configTarget.id,
+                  configTarget.ggufVariant,
+                  configResident ? (source?.activeModelConfig ?? null) : null,
+                )}
+                target={configTarget}
+                onBack={
+                  configStandalone ? undefined : () => setConfigTarget(null)
+                }
+                focusField={configFocus ?? undefined}
+                onRun={(config, isDiffusion) => {
+                  source?.onPick(configTarget.configId ?? configTarget.id, {
+                    ...configTarget.meta,
+                    config,
+                    isDiffusion,
+                    forceReload: true,
+                  });
+                  onOpenChange(false);
+                }}
+                loadedConfig={
+                  configResident ? (source?.activeModelConfig ?? null) : null
+                }
+                loadedContextLength={
+                  configResident ? (source?.loadedContextLength ?? null) : null
+                }
+              />
+            </div>
+            <ListScrollbar target={settingsRef} />
+          </>
+        ) : isExpanded ? (
           <>
             <div className="flex shrink-0 items-center gap-1">
               <div
@@ -2267,7 +2686,7 @@ export function ComposerModelPicker({
             </button>
           </div>
         )}
-        {hasFoot ? (
+        {hasFoot && !configTarget ? (
           <div className="flex shrink-0 flex-col gap-0.5 border-t border-border pt-1">
             {showQuantRow ? (
               <Popover open={quantsOpen} onOpenChange={setQuantsOpen}>

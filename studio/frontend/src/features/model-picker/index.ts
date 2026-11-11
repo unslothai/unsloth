@@ -62,6 +62,7 @@ export {
   modelConfigTargetMatchesSelection,
   requestModelConfigHandoff,
   useModelConfigHandoffStore,
+  type ModelConfigFocus,
   type ModelConfigHandoffRequest,
 } from "./model-config/model-config-handoff";
 export {

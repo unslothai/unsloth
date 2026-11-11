@@ -22,8 +22,6 @@ import {
   SidebarModelConfig,
   useActiveModelConfig,
   useModelConfigHandoffStore,
-  createModelConfigHandoffRequestId,
-  type ModelConfigHandoffRequest,
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
@@ -2863,14 +2861,8 @@ export function ChatPage({
   // A composer that mounts while a handoff's run settings are open, as on a first Chat visit, would
   // take focus and dismiss them.
   const [handoffOwnsPicker, setHandoffOwnsPicker] = useState(false);
-  const [composerConfigRequest, setComposerConfigRequest] =
-    useState<ModelConfigHandoffRequest | null>(null);
-  const pickerConfigRequest = modelConfigRequest ?? composerConfigRequest;
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
-      setComposerConfigRequest((current) =>
-        current?.requestId === requestId ? null : current,
-      );
       setHandoffOwnsPicker(true);
       setSettingsOpen(false);
       setModelSelectorLocked(false);
@@ -2895,17 +2887,10 @@ export function ChatPage({
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
-  const loadedIsMlx = useChatRuntimeStore((state) => state.loadedIsMlx);
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
   const loadedModels = useChatRuntimeStore((state) => state.loadedModels);
-  const loadedCount = loadedModels.length;
-  const loadedNames = useMemo(
-    () =>
-      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
-    [loadedModels],
-  );
   const loadedContextLength = useChatRuntimeStore(
     (state) => state.loadedContextLength,
   );
@@ -3054,7 +3039,6 @@ export function ChatPage({
     selectModel,
     loadNpuModel,
     ejectModel,
-    ejectAllModels,
     cancelLoading,
     loadingModel,
     loadProgress,
@@ -4286,9 +4270,6 @@ export function ChatPage({
     },
     [ejectModel],
   );
-  const handleEjectAll = useCallback(() => {
-    void ejectAllModels();
-  }, [ejectAllModels]);
 
   // Pinned open for tour steps so a stray click cannot dismiss it.
   const openModelSelector = useCallback(() => {
@@ -4566,21 +4547,42 @@ export function ChatPage({
       loraModels,
       externalModels,
       onPick: handleCheckpointChange,
-      openFullPicker: () => {
-        setModelSelectorLocked(false);
-        setModelSelectorOpen(true);
-      },
       eject: handleEject,
-      openRunSettings: (id, displayName, meta) =>
-        setComposerConfigRequest({
-          requestId: createModelConfigHandoffRequestId(),
-          newChatId: null,
-          id,
-          displayName,
-          meta,
-        }),
+      // The header picker is gone from chat; this chip is the one the shortcut, tour and Hub open.
+      open: active && (modelSelectorOpen || modelConfigRequest !== null),
+      onOpenChange: handleModelSelectorOpenChange,
+      configRequest: modelConfigRequest,
+      onConfigRequestAdopted: handleModelConfigRequestAdopted,
+      onFoldersChange: refreshLocalModels,
+      onModelsChange: refreshModelLists,
+      deleteDisabled: modelOperationInProgress,
+      activeModelConfig: activeModelConfig ?? null,
+      loadedContextLength: loadedContextLength ?? null,
+      loaded: chatModelLoaded({
+        checkpoint: inferenceCheckpoint,
+        isExternalModel: isExternalModelId(inferenceCheckpoint),
+        residentCheckpoint,
+      }),
     }),
-    [models, loraModels, externalModels, handleCheckpointChange, handleEject],
+    [
+      models,
+      loraModels,
+      externalModels,
+      handleCheckpointChange,
+      handleEject,
+      active,
+      modelSelectorOpen,
+      modelConfigRequest,
+      handleModelSelectorOpenChange,
+      handleModelConfigRequestAdopted,
+      refreshLocalModels,
+      refreshModelLists,
+      modelOperationInProgress,
+      activeModelConfig,
+      loadedContextLength,
+      inferenceCheckpoint,
+      residentCheckpoint,
+    ],
   );
 
   const selectableModelIds = useMemo(
@@ -4853,47 +4855,6 @@ export function ChatPage({
                   className="size-icon"
                 />
               </Button>
-            )}
-            {view.mode !== "compare" && (
-              <ModelSelector
-                models={models}
-                loraModels={loraModels}
-                externalModels={externalModels}
-                externalConnections={externalConnections}
-                value={inferenceCheckpoint}
-                // Resident, not merely picked: an image or video load evicts the chat model and leaves this
-                // selection behind, so the tick stayed on a released model.
-                loaded={chatModelLoaded({
-                  checkpoint: inferenceCheckpoint,
-                  isExternalModel: isExternalModelId(
-                    inferenceCheckpoint,
-                  ),
-                  residentCheckpoint,
-                })}
-                activeGgufVariant={activeGgufVariant}
-                activeVariantIsMlx={loadedIsMlx === true}
-                activeModelConfig={activeModelConfig}
-                activeLoadedContextLength={loadedContextLength}
-                configRequest={pickerConfigRequest}
-                onConfigRequestAdopted={handleModelConfigRequestAdopted}
-                onValueChange={handleCheckpointChange}
-                onEject={handleEject}
-                onEjectAll={handleEjectAll}
-                loadedCount={loadedCount}
-                loadedNames={loadedNames}
-                onFoldersChange={refreshLocalModels}
-                onModelsChange={refreshModelLists}
-                deleteDisabled={modelOperationInProgress}
-                variant="ghost"
-                open={
-                  active && (modelSelectorOpen || pickerConfigRequest !== null)
-                }
-                onOpenChange={handleModelSelectorOpenChange}
-                triggerDataTour="chat-model-selector"
-                contentDataTour="chat-model-selector-popover"
-                showCloudIndicator={isExternalModel}
-                className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!ml-0 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
-              />
             )}
             {view.mode === "single" && (
               <ChatModelNotice

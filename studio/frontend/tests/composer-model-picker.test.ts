@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -19,7 +18,10 @@ import {
   filterRows,
   findChosenRow,
   isChatTask,
+  localSection,
+  orderBySection,
   pinCoversId,
+  repoSection,
   sliderLevels,
   sliderValue,
 } from "../src/components/assistant-ui/composer-model-picker/picker-model.ts";
@@ -195,32 +197,75 @@ test("thinking without effort levels is a switch, as Preserve thinking is", () =
   assert.match(picker, /<SwitchRow\s+label="Thinking"/);
   assert.match(picker, /<SwitchRow\s+label="Preserve thinking"/);
   assert.match(picker, /<EffortSlider\s+title="Effort"/);
-  const slider = readSrc("components/assistant-ui/composer-model-picker/effort-slider.tsx");
+  const slider = readSrc(
+    "components/assistant-ui/composer-model-picker/effort-slider.tsx",
+  );
   assert.doesNotMatch(slider, /<canvas/);
   const css = readSrc("index.css");
-  assert.match(css, /\.composer-effort-fill \{\s*background-color: var\(--control-accent\);/);
+  assert.match(
+    css,
+    /\.composer-effort-fill \{\s*background-color: var\(--control-accent\);/,
+  );
 });
 
 test("a loaded row ejects from its dot, its menu and the collapsed view", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /<LoadedDot label=\{row\.label\} onEject=\{\(\) => eject\(row\)\} \/>/);
+  assert.match(
+    picker,
+    /<LoadedDot label=\{row\.label\} onEject=\{\(\) => eject\(row\)\} \/>/,
+  );
   assert.match(picker, /key: "eject"/);
   assert.match(picker, /aria-label=\{`Eject \$\{chosenName\}`\}/);
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /eject: handleEject,/);
 });
 
-test("on-device rows carry Run settings and the row menu, as the header picker's do", () => {
+test("Run settings open inside the composer picker, not the header picker", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /<ModelLoadSettingsAction/);
   assert.match(picker, /<ModelRowMenu/);
-  assert.match(picker, /source\.openRunSettings\(row\.id, row\.label, meta\)/);
+  assert.match(
+    picker,
+    /openConfig\(modelConfigTarget\(row\.id, meta, row\.label\)\)/,
+  );
+  assert.match(picker, /<ModelConfigPage/);
+  assert.match(picker, /forceReload: true/);
+  // The Hub's Run lands here too, now that chat has no header picker.
+  assert.match(picker, /source\?\.configRequest/);
+  assert.match(
+    picker,
+    /onConfigRequestAdopted\?\.\(configRequest\.requestId\)/,
+  );
   const page = readSrc("features/chat/chat-page.tsx");
-  assert.match(page, /configRequest=\{pickerConfigRequest\}/);
+  assert.doesNotMatch(page, /openRunSettings/);
+  assert.match(page, /configRequest: modelConfigRequest,/);
+  assert.match(
+    page,
+    /open: active && \(modelSelectorOpen \|\| modelConfigRequest !== null\)/,
+  );
+});
+
+test("On Device groups rows like the header picker, NPU and custom folders included", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /useNpuCatalog\(/);
+  assert.match(picker, /kind: "npu",\s+section: "npu"/);
+  assert.match(picker, /useCustomFolders\(/);
+  assert.match(
+    picker,
+    /section: localSection\(lora\.source, lora\.baseModel\)/,
+  );
+  const folders = readSrc(
+    "components/assistant-ui/composer-model-picker/custom-folders.tsx",
+  );
+  assert.match(folders, /addScanFolderToStore/);
+  assert.match(folders, /removeScanFolderFromStore/);
+  assert.match(folders, /<FolderBrowser/);
 });
 
 test("the composer renders the model chip where the Thinking pill was", () => {
@@ -260,4 +305,26 @@ test("the picker opens with its list unless the user collapsed it", () => {
   assert.match(picker, /localStorage\.getItem\(EXPANDED_KEY\) !== "false"/);
   assert.match(picker, /useState\(readExpanded\)/);
   assert.match(picker, /onClick=\{\(\) => setExpanded\(false\)\}/);
+});
+
+test("On Device sections follow the header picker's buckets and order", () => {
+  assert.equal(repoSection("unsloth/gemma-4-E2B-it-GGUF"), "unsloth");
+  assert.equal(repoSection("Qwen/Qwen3-8B"), "other");
+  assert.equal(localSection("training", undefined), "fineTuned");
+  assert.equal(localSection("exported", undefined), "fineTuned");
+  assert.equal(localSection("local", "LM Studio"), "lmstudio");
+  assert.equal(localSection("local", "Local models"), "modelsDir");
+  assert.equal(localSection("local", "Ollama"), "custom");
+  assert.equal(localSection("local", "Custom Folders"), "custom");
+  const ordered = orderBySection([
+    { id: "a", section: "custom" as const },
+    { id: "b", section: "unsloth" as const },
+    { id: "c", section: "npu" as const },
+    { id: "d", section: "unsloth" as const },
+    { id: "e", section: "recommended" as const },
+  ]);
+  assert.deepEqual(
+    ordered.map((row) => row.id),
+    ["b", "d", "c", "a", "e"],
+  );
 });

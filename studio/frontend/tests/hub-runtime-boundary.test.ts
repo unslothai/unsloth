@@ -305,8 +305,7 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
     chatPage,
     /active,\s*newChatId: search\.new,\s*threadId: search\.thread,\s*compareId: search\.compare,\s*projectId: search\.project,/,
   );
-  assert.match(chatPage, /const pickerConfigRequest = modelConfigRequest \?\? composerConfigRequest;/);
-  assert.match(chatPage, /modelSelectorOpen \|\| pickerConfigRequest !== null/);
+  assert.match(chatPage, /modelSelectorOpen \|\| modelConfigRequest !== null/);
   assert.match(modelSelector, /requestedConfigTarget \?\? configTarget/);
   assert.match(
     modelSelector,

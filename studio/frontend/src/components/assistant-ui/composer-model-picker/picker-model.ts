@@ -16,7 +16,68 @@ export type RowKind =
   | "localGguf"
   | "loaded"
   | "hub"
+  | "npu"
   | "external";
+
+// On Device groups, in the header picker's order.
+export const DEVICE_SECTIONS = [
+  "unsloth",
+  "other",
+  "npu",
+  "fineTuned",
+  "custom",
+  "lmstudio",
+  "modelsDir",
+] as const;
+export type DeviceSection = (typeof DEVICE_SECTIONS)[number];
+/** Discover adds its own group under NPU. */
+export type ListSection = DeviceSection | "recommended";
+export const SECTION_LABEL: Record<ListSection, string> = {
+  recommended: "Recommended",
+  unsloth: "Unsloth",
+  other: "Other models",
+  npu: "NPU",
+  fineTuned: "Fine-tuned",
+  custom: "Custom folders",
+  lmstudio: "LM Studio",
+  modelsDir: "Local models",
+};
+
+export function repoSection(id: string): DeviceSection {
+  return id.trim().toLowerCase().startsWith("unsloth/") ? "unsloth" : "other";
+}
+
+/** Local rows carry their store as `baseModel` ("LM Studio", "Local models", ...). */
+export function localSection(
+  source: string | undefined,
+  baseModel: string | undefined,
+): DeviceSection {
+  if (source === "training" || source === "exported") {
+    return "fineTuned";
+  }
+  if (baseModel === "LM Studio") {
+    return "lmstudio";
+  }
+  if (baseModel === "Local models") {
+    return "modelsDir";
+  }
+  return "custom";
+}
+
+/** Stable: rows keep their order inside a section. */
+export function orderBySection<T extends { section?: ListSection }>(
+  rows: readonly T[],
+): T[] {
+  const order: readonly ListSection[] = DEVICE_SECTIONS;
+  const rank = (row: T) => {
+    const at = row.section ? order.indexOf(row.section) : -1;
+    return at >= 0 ? at : order.length;
+  };
+  return rows
+    .map((row, i) => ({ row, i }))
+    .sort((a, b) => rank(a.row) - rank(b.row) || a.i - b.i)
+    .map(({ row }) => row);
+}
 
 export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter";
 
@@ -34,6 +95,7 @@ export interface PickerRow {
   loaded?: boolean;
   onDevice?: boolean;
   groups?: string[];
+  section?: ListSection;
 }
 
 const norm = (value: string | null | undefined): string =>
