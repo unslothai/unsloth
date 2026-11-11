@@ -426,6 +426,8 @@ class PublishedLlamaArtifact:
     rank: int
     gfx_target: str | None = None
     mapped_targets: list[str] = field(default_factory = list)
+    # The bundle ships cudart/cublas itself, so it needs the NVIDIA driver and nothing else.
+    bundles_cuda_runtime: bool = False
 
 
 @dataclass
@@ -1669,6 +1671,8 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         rank = rank,
         gfx_target = gfx_target,
         mapped_targets = mapped_targets,
+        # Absent on releases cut before the field existed, which carry no runtime.
+        bundles_cuda_runtime = raw.get("bundles_cuda_runtime") is True,
     )
 
 
@@ -2098,7 +2102,29 @@ def linux_cuda_choice_from_release(
         selection_log.append(
             "linux_cuda_selection: compute capability detection unavailable; prefer portable by runtime line"
         )
-    if not runtime_lines:
+    # A chat-only install has no PyTorch, and the NVIDIA driver ships no cudart/cublas, so such a
+    # host detects no runtime line. A bundle that carries its own runtime needs only a driver
+    # that can run it. Only when no detected line is one the driver can run, as the Windows
+    # selector does: a host with a usable runtime on disk keeps the lines and the order it had.
+    bundled_runtime_lines = (
+        []
+        if runtime_lines
+        else [
+            runtime_line
+            for runtime_line in driver_runtime_lines
+            if any(
+                artifact.runtime_line == runtime_line and artifact.bundles_cuda_runtime
+                for artifact in published_artifacts
+            )
+        ]
+    )
+    if bundled_runtime_lines:
+        ordered_runtime_lines = list(bundled_runtime_lines)
+        selection_log.append(
+            "linux_cuda_selection: no usable CUDA runtime on disk; bundled_runtime_lines="
+            + ",".join(bundled_runtime_lines)
+        )
+    if not ordered_runtime_lines:
         selection_log.append(
             "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
         )
@@ -2193,6 +2219,13 @@ def linux_cuda_choice_from_release(
             asset_url = release.assets.get(asset_name)
             if not asset_url:
                 selection_log.append(f"linux_cuda_selection: reject {asset_name} missing asset")
+                continue
+            if bundled_runtime_lines and not artifact.bundles_cuda_runtime:
+                selection_log.append(
+                    "linux_cuda_selection: reject "
+                    f"{asset_name} runtime_line={runtime_line} coverage_class={artifact.coverage_class} "
+                    "reason=no_cuda_runtime_on_host"
+                )
                 continue
             if not host_sms and artifact.coverage_class != "portable":
                 selection_log.append(
@@ -8455,9 +8488,10 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
 
 def _fallback_runtime_line(host: HostInfo) -> "str | None":
     """None if undecidable; mirrors linux_cuda_choice_from_release and windows_cuda_attempts without
-    a release (Linux: detected lines the driver can run, in detection order; Windows:
-    driver-compatible lines narrowed to detected, or all if none); Blackwell routes by its own
-    rule before any preference."""
+    a release (Linux: detected lines the driver can run, in detection order, and undecidable
+    with none, where the pick depends on which bundles carry their own runtime;
+    Windows: driver-compatible lines narrowed to detected, or all if none); Blackwell routes
+    by its own rule before any preference."""
     try:
         if _host_is_blackwell(host):
             return None
@@ -8490,8 +8524,10 @@ def _torch_runtime_preference_for_marker(host: "HostInfo | None") -> "str | None
 
 def _runtime_line_selectable(host: HostInfo, line: str) -> bool:
     """Whether the CUDA selectors could pick *line* here. Linux filters on the runtime being
-    on disk and the driver running it; the Windows selector only orders by detected DLLs (a
-    bundle carries its own runtime), so every driver-compatible line is selectable there."""
+    on disk and the driver running it (a preference comes from torch, which puts its runtime
+    on disk, so the self-contained bundles a host without one takes are never asked about);
+    the Windows selector only orders by detected DLLs (a bundle carries its own runtime), so
+    every driver-compatible line is selectable there."""
     try:
         if host.is_linux:
             detected = detected_linux_runtime_lines()[0]
