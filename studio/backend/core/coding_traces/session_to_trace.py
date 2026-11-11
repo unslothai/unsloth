@@ -151,68 +151,98 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
     out: list[TraceMessage] = []
     call_ids: set[str] = set()
     for message in chain:
-        # toThreadMessage loads every row that is not "user" as an assistant turn.
-        role = "user" if message.get("role") == "user" else "assistant"
-        message_id, start, kept = message["id"], len(out), []
-        if role == "user":
-            current = TraceMessage(id = message_id, role = role, created_at = message.get("createdAt"))
-            out.append(current)
-        # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
-        pending: list[TraceMessage] = []
-        pending_round = reasoned = imaged = None
-        # collectTextParts joins all text parts, even "", and toThreadMessage loads [] as one "".
-        pieces, texted = 0, (current if role == "user" and not message.get("content") else None)
-        for position, part in enumerate(_model_parts(message)):
-            kind = part.get("type") if isinstance(part, dict) else None
-            if role == "assistant" and kind in ("text", "reasoning", "tool-call"):
-                skipped = _skipped_call(part, message_id, position) if kind == "tool-call" else None
-                if skipped:
-                    warnings.append(skipped)
-                    kept += out[start:][-1:] if _server_builtin(part)[1] else []
-                    continue
-                round_id = _local_round_id(part) if kind == "tool-call" else None
-                flush_pair = kind == "tool-call" and round_id is None and _flushes_local_pair(part)
-                if pending and (
-                    kind != "tool-call"
-                    or flush_pair
-                    or (round_id is not None and pending_round not in (None, round_id))
-                ):
-                    out.extend(pending)
-                    pending, pending_round = [], None
-                if round_id is not None:
-                    pending_round = round_id
-                # Importers split one reply into a row per block; merge rows until a tool result.
-                if not out or out[-1].role != "assistant":
-                    pieces += 1
-                    piece = message_id if pieces == 1 else f"{message_id}#{pieces}"
-                    at = message.get("createdAt")
-                    out.append(TraceMessage(piece, "assistant", created_at = at))
-                current = out[-1]
-            if kind == "text":
-                text = str(part.get("text") or "")
-                current.text, texted = _append_text(current.text, text, current is texted), current
-            elif kind == "reasoning" and role == "assistant":
-                reasoning = str(part.get("text") or "")
-                current.reasoning = _append_text(current.reasoning, reasoning, current is reasoned)
-                reasoned = current  # pendingReasoningParts.join("\n") also keeps "" parts
-            elif kind == "tool-call" and role == "assistant":
-                call_id = _unique_call_id(part, message_id, position, call_ids, warnings)
-                name = str(part.get("toolName") or "")
-                current.tool_calls.append(
-                    ToolCall(call_id, name or "unknown", _call_arguments(part))
-                )
-                pending.append(_tool_message(part, name, call_id, message))
-                if flush_pair:
-                    out.extend(pending)
-                    pending, pending_round = [], None
-            else:
-                imaged = imaged or (kind == "image" and part.get("image"))
-                note = f"Dropped a {kind!r} part"
-                warnings.append(TraceWarning("unsupported_part", note, message_id))
-        out.extend(pending)
-        kept += out[start:][:1] if imaged else []  # collectImageParts: the row's first UI group
+        start = len(out)
+        kept = _convert_row(message, out, call_ids, warnings)
         _clear_stopped_reasoning(message, out[start:], kept)
     return _replayable(out)
+
+
+def _convert_row(
+    message: dict, out: list[TraceMessage], call_ids: set[str], warnings: list[TraceWarning]
+) -> list[TraceMessage]:
+    """Append one stored row's trace messages to ``out``; returns the ones whose reasoning a stop
+    label keeps."""
+    # toThreadMessage loads every row that is not "user" as an assistant turn.
+    role = "user" if message.get("role") == "user" else "assistant"
+    message_id, start, kept = message["id"], len(out), []
+    if role == "user":
+        current = TraceMessage(id = message_id, role = role, created_at = message.get("createdAt"))
+        out.append(current)
+    # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
+    pending: list[TraceMessage] = []
+    pending_round = reasoned = imaged = None
+    # collectTextParts joins all text parts, even "", and toThreadMessage loads [] as one "".
+    pieces, texted = 0, (current if role == "user" and not message.get("content") else None)
+    for position, part in enumerate(_model_parts(message)):
+        kind = part.get("type") if isinstance(part, dict) else None
+        if role == "assistant" and kind in ("text", "reasoning", "tool-call"):
+            skipped = _skipped_call(part, message_id, position) if kind == "tool-call" else None
+            if skipped:
+                warnings.append(skipped)
+                kept += out[start:][-1:] if _server_builtin(part)[1] else []
+                continue
+            flush_pair, pending_round = _close_call_group(part, kind, pending, pending_round, out)
+            pieces = _open_assistant(message, out, pieces)
+            current = out[-1]
+        if kind == "text":
+            text = str(part.get("text") or "")
+            current.text, texted = _append_text(current.text, text, current is texted), current
+        elif kind == "reasoning" and role == "assistant":
+            reasoning = str(part.get("text") or "")
+            current.reasoning = _append_text(current.reasoning, reasoning, current is reasoned)
+            reasoned = current  # pendingReasoningParts.join("\n") also keeps "" parts
+        elif kind == "tool-call" and role == "assistant":
+            call_id = _unique_call_id(part, message_id, position, call_ids, warnings)
+            name = str(part.get("toolName") or "")
+            current.tool_calls.append(ToolCall(call_id, name or "unknown", _call_arguments(part)))
+            pending.append(_tool_message(part, name, call_id, message))
+            if flush_pair:
+                _flush(pending, out)
+                pending_round = None
+        else:
+            imaged = imaged or (kind == "image" and part.get("image"))
+            warnings.append(
+                TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
+            )
+    out.extend(pending)
+    kept += out[start:][:1] if imaged else []  # collectImageParts: the row's first UI group
+    return kept
+
+
+def _open_assistant(message: dict, out: list[TraceMessage], pieces: int) -> int:
+    # Importers split one reply into a row per block; merge rows until a tool result.
+    if out and out[-1].role == "assistant":
+        return pieces
+    pieces += 1
+    piece = message["id"] if pieces == 1 else f"{message['id']}#{pieces}"
+    out.append(TraceMessage(piece, "assistant", created_at = message.get("createdAt")))
+    return pieces
+
+
+def _flush(pending: list[TraceMessage], out: list[TraceMessage]) -> None:
+    out.extend(pending)
+    pending.clear()
+
+
+def _close_call_group(
+    part: dict,
+    kind: str,
+    pending: list[TraceMessage],
+    pending_round: Optional[str],
+    out: list[TraceMessage],
+) -> tuple[bool, Optional[str]]:
+    """Flush waiting tool messages when this part ends their call group; returns
+    ``(flush_pair, pending_round)``, where flush_pair means the call's own result flushes next."""
+    round_id = _local_round_id(part) if kind == "tool-call" else None
+    flush_pair = kind == "tool-call" and round_id is None and _flushes_local_pair(part)
+    if pending and (
+        kind != "tool-call"
+        or flush_pair
+        or (round_id is not None and pending_round not in (None, round_id))
+    ):
+        _flush(pending, out)
+        pending_round = None
+    return flush_pair, round_id if round_id is not None else pending_round
 
 
 def _unique_call_id(
