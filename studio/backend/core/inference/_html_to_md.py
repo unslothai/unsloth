@@ -2469,6 +2469,7 @@ _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
 _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 # absent text = no generated span cells, so a pass needs no span-free scoring re-render
 _SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
+_NOSCRIPT_TAG = re.compile(r"</?noscript\b[^>]*>", re.IGNORECASE)
 # html.unescape raises once a decimal reference has more digits, leading zeros included, than
 # int()'s limit, which Python never sets below 640
 _LONG_DECIMAL_REF = re.compile(r"&#([0-9]{641,})")
@@ -2533,4 +2534,15 @@ def html_to_markdown(
             rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)
+    if not rendered.strip() and _NOSCRIPT_TAG.search(source_html):
+        # read whole: scoped, a link card's <article> inside one post would stand in for the thread
+        fallback = _render(
+            _NOSCRIPT_TAG.sub("", source_html),
+            None,
+            site_links = site_links,
+            span_char_limit = span_limit,
+        )
+        visible = site_links.clean(fallback) if site_links is not None else fallback
+        if _visible_chars(visible) >= _MIN_MAIN_CONTENT_CHARS:
+            rendered = fallback
     return site_links.finish(rendered) if site_links is not None else rendered
