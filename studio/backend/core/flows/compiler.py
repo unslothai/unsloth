@@ -322,6 +322,17 @@ def compile_flow(doc: dict) -> Plan:
                 )
             elif not dspec["flow_in"]:
                 errors.append(issue(f"{dspec['title']} cannot be a story step", edge_id = eid))
+            elif any(
+                f["source"] == src and f["source_port"] == edge["source_port"] for f in flow_edges
+            ):
+                # The story follows one link per exit, so a second would never be reached.
+                errors.append(
+                    issue(
+                        f"{sspec['title']} story exit {edge['source_port']} already leads somewhere",
+                        edge_id = eid,
+                        node_id = src,
+                    )
+                )
             else:
                 flow_edges.append(edge)
             continue
@@ -350,6 +361,14 @@ def compile_flow(doc: dict) -> Plan:
             if not inside(src, dst):
                 errors.append(
                     issue("For Each collects only from a node inside its group", edge_id = eid)
+                )
+            elif owner.get(src) != dst:
+                # A nested loop's steps run in that loop's scope, so this loop would collect nothing.
+                errors.append(
+                    issue(
+                        "For Each collects only from its own steps, not from inside a nested loop; collect that loop's results",
+                        edge_id = eid,
+                    )
                 )
             elif dst in collect:
                 errors.append(issue("For Each collects from one node", edge_id = eid))
@@ -457,6 +476,15 @@ def compile_flow(doc: dict) -> Plan:
     output_names: dict[str, str] = {}
     for nid in nodes:
         if nid in executable and specs[nid]["type"] == "output.result":
+            if any(inside(nid, fid) for fid in members if nodes[fid]["type"] == FOR_EACH):
+                # Iterations run in parallel, so one output would keep whichever finished last.
+                errors.append(
+                    issue(
+                        "A Flow Output cannot sit inside a For Each; connect to collect and output its results",
+                        node_id = nid,
+                    )
+                )
+                continue
             name = str((nodes[nid].get("params") or {}).get("name") or "result")
             if name in output_names:
                 errors.append(

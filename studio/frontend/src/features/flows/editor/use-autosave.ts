@@ -19,6 +19,8 @@ interface SaveSession {
   savedSignature: string;
   failedSignature: string | null;
   inflight: Promise<void> | null;
+  // A PUT is on the wire: a second one sent beside it would carry a stale baseUpdatedAt.
+  saving: boolean;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -36,6 +38,7 @@ export function beginSaveSession(
     savedSignature: signature,
     failedSignature: null,
     inflight: null,
+    saving: false,
     timer: null,
   };
   useUiStore.getState().setSaveState("saved");
@@ -65,6 +68,7 @@ async function saveClosing(
   doc: ReturnType<typeof documentFromState>,
 ): Promise<void> {
   if (documentSignature(doc) === current.savedSignature) return;
+  current.saving = true;
   try {
     const record = await saveFlow(current.flowId, doc, current.baseUpdatedAt);
     current.baseUpdatedAt = record.updatedAt;
@@ -72,10 +76,12 @@ async function saveClosing(
     toast.error(
       error instanceof Error ? error.message : "Could not save the flow",
     );
+  } finally {
+    current.saving = false;
   }
 }
 
-async function performSave(force = false): Promise<boolean> {
+async function performSave(force = false, keepalive = false): Promise<boolean> {
   const current = session;
   if (!current) return true;
   const state = useDocStore.getState();
@@ -88,8 +94,15 @@ async function performSave(force = false): Promise<boolean> {
   }
   if (!force && signature === current.failedSignature) return false;
   useUiStore.getState().setSaveState("saving");
+  current.saving = true;
   try {
-    const record = await saveFlow(current.flowId, doc, current.baseUpdatedAt);
+    const record = await saveFlow(
+      current.flowId,
+      doc,
+      current.baseUpdatedAt,
+      keepalive,
+    );
+    current.saving = false;
     current.baseUpdatedAt = record.updatedAt;
     current.savedSignature = signature;
     if (session !== current) return true;
@@ -105,6 +118,7 @@ async function performSave(force = false): Promise<boolean> {
     if (latest !== signature) scheduleSave();
     return true;
   } catch (error) {
+    current.saving = false;
     if (session !== current) return false;
     current.failedSignature = signature;
     if (error instanceof FlowsApiError && error.status === 409) {
@@ -173,6 +187,29 @@ export async function flushSave(): Promise<boolean> {
   return saved;
 }
 
+/** Tab closing: send any unsaved edit now, as a keepalive PUT the browser finishes after the page is gone. */
+export function saveOnUnload(): void {
+  const current = session;
+  if (!current) return;
+  const state = useDocStore.getState();
+  if (state.flowId !== current.flowId) return;
+  if (documentSignature(documentFromState(state)) === current.savedSignature)
+    return;
+  if (current.saving) {
+    void flushSave();
+    return;
+  }
+  if (current.timer) {
+    clearTimeout(current.timer);
+    current.timer = null;
+  }
+  // Started synchronously, not behind `inflight`: a chained save never runs once the page unloads.
+  const saved = performSave(true, true);
+  current.inflight = (current.inflight ?? Promise.resolve()).then(() =>
+    saved.then(() => undefined),
+  );
+}
+
 export function useAutosave(enabled: boolean): void {
   useEffect(() => {
     if (!enabled) return;
@@ -184,9 +221,7 @@ export function useAutosave(enabled: boolean): void {
       useUiStore.getState().setSaveState("dirty");
       scheduleSave();
     });
-    const onBeforeUnload = () => {
-      if (session?.timer) void flushSave();
-    };
+    const onBeforeUnload = () => saveOnUnload();
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       unsubscribe();

@@ -162,6 +162,22 @@ def _is_data_asset(value: Any) -> bool:
     )
 
 
+def _collect(files: dict[str, tuple[bytes, str]], digest: str, data: bytes, mime: str) -> None:
+    """Add an asset, stopping before the package grows past what an import accepts."""
+    if digest in files:
+        return
+    if len(data) > schema.MAX_ASSET_BYTES:
+        raise PackageError(
+            f"An asset is larger than {schema.MAX_ASSET_BYTES // (1024 * 1024)} MB; it cannot be packaged"
+        )
+    total = len(data) + sum(len(d) for d, _ in files.values())
+    if total > schema.MAX_PACKAGE_BYTES:
+        raise PackageError(
+            f"The package would be larger than {schema.MAX_PACKAGE_BYTES // (1024 * 1024)} MB"
+        )
+    files[digest] = (data, mime)
+
+
 async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes, str]]) -> Any:
     if isinstance(value, list):
         return [await _embed(v, read_media, files) for v in value]
@@ -178,7 +194,7 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
             data, mime = await read_media(value)
             mime = asset_store.sniff_mime(data) or mime
             digest = hashlib.sha256(data).hexdigest()
-        files[digest] = (data, mime)
+        _collect(files, digest, data, mime)
         embedded = {k: v for k, v in value.items() if k not in ("url",)}
         embedded["ref"] = f"sha256:{digest}"
         embedded["url"] = asset_store.url_for(digest)
@@ -201,7 +217,7 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
             value = {**value, "ref": f"sha256:{digest}"}
             if "url" in value:
                 value["url"] = asset_store.url_for(digest)
-        files[digest] = (data, mime)
+        _collect(files, digest, data, mime)
         return value
     return {k: await _embed(v, read_media, files) for k, v in value.items()}
 
@@ -234,13 +250,26 @@ def _drop_local_seeds(doc: dict) -> None:
                 group["ui"].pop(key, None)
 
 
+_STORE_REFS = ("sha256:", "flowasset:")
+
+
+def _json_dropped(value: Any) -> bool:
+    # A JSON export ships no assets, so a store ref would point at nothing on another machine.
+    if _is_media(value):
+        return value["ref"].startswith(_LOCAL_REFS + _STORE_REFS)
+    return (
+        isinstance(value, dict)
+        and value.get("kind") in ("table", "heatmap", "tensor")
+        and isinstance(value.get("ref"), str)
+        and value["ref"].startswith(_STORE_REFS)
+    )
+
+
 def _drop_local(value: Any) -> Any:
     if isinstance(value, list):
-        return [
-            _drop_local(v) for v in value if not (_is_media(v) and v["ref"].startswith(_LOCAL_REFS))
-        ]
+        return [_drop_local(v) for v in value if not _json_dropped(v)]
     if isinstance(value, dict):
-        if _is_media(value) and value["ref"].startswith(_LOCAL_REFS):
+        if _json_dropped(value):
             return None
         return {k: _drop_local(v) for k, v in value.items()}
     return value
@@ -284,6 +313,12 @@ async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[byte
             node["params"] = _drop_local(node.get("params") or {})
         if doc.get("params"):
             doc["params"] = _drop_local(doc["params"])
+        if "cover" in meta:
+            cover = _drop_local(meta["cover"])
+            if cover is None or _local_url(cover):
+                meta.pop("cover")
+            else:
+                meta["cover"] = cover
         return json.dumps(doc, indent = 1).encode(), f"{slug}.json", "application/json"
     files: dict[str, tuple[bytes, str]] = {}
     for node in doc.get("nodes", []):
@@ -356,8 +391,11 @@ def _check_entries(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
             raise PackageError(
                 f"{name!r} is larger than {schema.MAX_ASSET_BYTES // (1024 * 1024)} MB"
             )
+        # flow.json is read with a MAX_DOC_BYTES cap, so plain repetitive JSON within it is no bomb.
+        doc_sized = name == "flow.json" and info.file_size <= schema.MAX_DOC_BYTES
         if (
-            info.compress_size
+            not doc_sized
+            and info.compress_size
             and info.file_size > 1024 * 1024
             and info.file_size / info.compress_size > MAX_RATIO
         ):

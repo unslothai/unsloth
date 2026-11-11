@@ -104,6 +104,13 @@ def test_run_with_unsaved_editor_doc_and_compile_errors(flows_client):
     assert broken.json()["detail"]["errors"][0]["node_id"] == "s"
 
 
+def test_a_run_refuses_a_document_of_another_flow(flows_client):
+    flows_client.post("/api/flows", json = {"doc": _simple()})
+    other = flows_client.post("/api/flows/flow1/runs", json = {"doc": _simple("flow2")})
+    assert other.status_code == 400
+    assert other.json()["detail"] == "ID mismatch"
+
+
 def test_flows_and_runs_are_per_account(flows_client):
     alice = {"x-test-account": "alice"}
     bob = {"x-test-account": "bob"}

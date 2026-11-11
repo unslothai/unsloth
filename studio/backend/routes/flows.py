@@ -898,7 +898,11 @@ def _hf_token(request: Request) -> Optional[str]:
 @router.post("/{flow_id}/runs")
 async def start_run(request: Request, flow_id: str, body: RunBody) -> dict:
     record = await asyncio.to_thread(_flow_or_404, flow_id)
-    doc = _doc_or_400(body.doc) if body.doc is not None else record["doc"]
+    doc = record["doc"]
+    if body.doc is not None:
+        doc = _doc_or_400(body.doc)
+        if doc["id"] != flow_id:
+            raise HTTPException(status_code = 400, detail = "ID mismatch")
     options = body.model_dump(exclude = {"doc"})
     try:
         rs = await get_engine().start_run(
@@ -1269,6 +1273,8 @@ async def export_flow(
             }
             doc = {**doc, "baked": {**(doc.get("baked") or {}), **latest}}
         data, filename, media_type = await package.export_flow(doc, mode, read_media)
+    except package.PackageError as exc:
+        raise HTTPException(status_code = 413, detail = str(exc))
     finally:
         if key_id is not None:
             await asyncio.to_thread(flow_caller.revoke_run_key, key_id)

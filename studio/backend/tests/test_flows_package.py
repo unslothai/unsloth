@@ -376,3 +376,76 @@ def test_imported_media_urls_that_leave_studio_are_dropped():
     )
     assert "url" not in clean["a"] and "url" not in clean["c"]
     assert clean["b"]["url"] == "/api/inference/images/gallery/1/file"
+
+
+@run_async
+async def test_export_stops_before_the_package_outgrows_the_import_limit(monkeypatch):
+    blobs = {f"image:{i}": bytes([i]) * 1000 for i in range(3)}
+    d = doc(
+        [
+            node(f"i{i}", "input.image", asset = {"kind": "image", "ref": f"image:{i}", "url": "/x"})
+            for i in range(3)
+        ]
+    )
+
+    async def read_media(media):
+        return blobs[media["ref"]], "image/png"
+
+    monkeypatch.setattr(package.schema, "MAX_PACKAGE_BYTES", 2500)
+    with pytest.raises(PackageError, match = "larger than"):
+        await package.export_flow(d, "package", read_media)
+
+
+@run_async
+async def test_json_export_drops_a_machine_local_cover():
+    async def read_media(media):
+        raise AssertionError("a JSON export reads no media")
+
+    for cover in (
+        {"kind": "image", "ref": "image:abc", "url": "/api/inference/images/gallery/abc/file"},
+        "/api/inference/images/gallery/abc/file",
+    ):
+        d = doc([node("a", "input.text", value = "hi")])
+        d["meta"] = {"cover": cover}
+        data, _, _ = await package.export_flow(d, "json", read_media)
+        assert "cover" not in json.loads(data)["meta"]
+        assert "image:abc" not in data.decode() and "gallery/abc" not in data.decode()
+
+
+@run_async
+async def test_json_export_drops_refs_to_assets_it_does_not_ship():
+    async def read_media(media):
+        raise AssertionError("a JSON export reads no media")
+
+    stored = {"kind": "image", "ref": f"sha256:{PNG_SHA}", "url": "/x"}
+    table = {"kind": "table", "ref": f"flowasset:{PNG_SHA}"}
+    d = doc([node("i", "input.image", asset = stored, extra = [stored, table, "keep"])])
+    d["meta"] = {"cover": stored}
+    data, _, _ = await package.export_flow(d, "json", read_media)
+    exported = json.loads(data)
+    params = exported["nodes"][0]["params"]
+    assert params.get("asset") is None
+    assert params.get("extra") in (None, ["keep"])
+    assert "cover" not in exported["meta"]
+    assert PNG_SHA not in data.decode()
+
+
+@run_async
+async def test_a_highly_repetitive_flow_round_trips_through_a_package():
+    async def read_media(media):
+        raise AssertionError("no media here")
+
+    d = doc([node(f"n{i}", "input.text", value = "a" * 150_000) for i in range(10)])
+    data, _, _ = await package.export_flow(d, "package", read_media)
+    info = zipfile.ZipFile(io.BytesIO(data)).getinfo("flow.json")
+    assert info.file_size > 1024 * 1024 and info.file_size / info.compress_size > package.MAX_RATIO
+    parsed, _, _ = read_package(data)
+    assert [n["params"]["value"] for n in parsed["nodes"]] == ["a" * 150_000] * 10
+
+
+def test_an_oversized_flow_json_still_trips_the_ratio_check():
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("flow.json", " " * (9 * 1024 * 1024))
+    with pytest.raises(PackageError, match = "suspiciously"):
+        read_package(out.getvalue())
