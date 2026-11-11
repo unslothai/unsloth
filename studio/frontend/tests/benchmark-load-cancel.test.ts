@@ -61,6 +61,9 @@ function harness() {
           model_path: st.active_model,
           llama_extra_args: [],
         }),
+        residentLoad: (st: { active_model: string }) => ({
+          model_path: st.active_model,
+        }),
         chatSampling: () => ({ temperature: 0 }),
         chatSettings: () => [],
       },

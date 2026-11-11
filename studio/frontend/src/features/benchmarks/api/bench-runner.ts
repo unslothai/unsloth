@@ -17,6 +17,7 @@ import {
   chatBaseLoad,
   chatSampling,
   chatSettings,
+  residentLoad,
 } from "./chat-base";
 import {
   type BenchConfig,
@@ -293,7 +294,7 @@ export async function runBenchmark(
   await useChatRuntimeStore.getState().hydratePersistedSettings();
   let status = await getInferenceStatus(signal);
   const original = status;
-  const originalLoad = chatBaseLoad(original);
+  const originalLoad = residentLoad(original);
   const prompts = promptsFor(config.promptSet, config.customPrompt);
   if (prompts.length === 0)
     throw new BenchSetupError("The custom prompt is empty.");
@@ -610,7 +611,7 @@ async function cancelLoad(
 
 async function restore(
   before: InferenceStatusResponse,
-  base: ReturnType<typeof chatBaseLoad>,
+  base: ReturnType<typeof residentLoad>,
   leaseHolder?: string,
 ): Promise<void> {
   await loadModel(

@@ -3,6 +3,7 @@
 
 
 import {
+  GPU_LAYERS_AUTO,
   type InferenceStatusResponse,
   type loadModel,
   useChatRuntimeStore,
@@ -217,4 +218,43 @@ export function chatBaseLoad(
   if (s.splitRatio) base.tensor_split = s.splitRatio;
   if (s.selectedGpuIds?.length) base.gpu_ids = s.selectedGpuIds;
   return base;
+}
+
+/** The settings the resident model was loaded with, so a restore never applies pending chat edits. */
+export function residentLoad(
+  status: InferenceStatusResponse,
+): LoadModelRequest {
+  const s = useChatRuntimeStore.getState();
+  const load: LoadModelRequest = {
+    model_path: status.active_model ?? "",
+    gguf_variant: status.gguf_variant ?? s.activeGgufVariant ?? null,
+    hf_token: null,
+    load_in_4bit: true,
+    is_lora: false,
+    max_seq_length: s.loadedCustomContextLength ?? 0,
+    cache_type_kv: s.loadedKvCacheDtype,
+    speculative_type: s.loadedSpeculativeType,
+    spec_draft_n_max: s.loadedSpecDraftNMax,
+    n_parallel: s.loadedNParallel,
+    reasoning_budget: s.loadedReasoningBudgetRequested ?? -1,
+    reasoning_budget_message: s.loadedReasoningBudgetMessageRequested ?? "",
+    llama_extra_args: userExtraArgs(s.loadedLlamaExtraArgs),
+    tensor_parallel: s.loadedTensorParallel ?? false,
+    disable_vision: s.loadedDisableVision ?? false,
+    gpu_memory_mode: s.loadedGpuMemoryMode ?? "auto",
+    gpu_layers: s.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+    n_cpu_moe: s.loadedNCpuMoe ?? 0,
+  };
+  // Unset knobs are omitted: the route treats a null as set.
+  if (s.loadedNBatch != null) load.n_batch = s.loadedNBatch;
+  if (s.loadedNUbatch != null) load.n_ubatch = s.loadedNUbatch;
+  if (s.loadedLoadMode != null) load.load_mode = s.loadedLoadMode;
+  if (s.loadedSpecDraftCacheDtype != null)
+    load.spec_draft_cache_type = s.loadedSpecDraftCacheDtype;
+  if (s.loadedCtxCheckpoints != null)
+    load.ctx_checkpoints = s.loadedCtxCheckpoints;
+  if (s.loadedCacheRam != null) load.cache_ram = s.loadedCacheRam;
+  if (s.loadedSplitRatio) load.tensor_split = s.loadedSplitRatio;
+  if (s.loadedGpuIds?.length) load.gpu_ids = s.loadedGpuIds;
+  return load;
 }
