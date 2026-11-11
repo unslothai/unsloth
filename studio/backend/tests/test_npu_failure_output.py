@@ -265,3 +265,23 @@ def test_a_failed_spawn_closes_the_log_file(tmp_path, monkeypatch):
         server._start_once(5)
     assert opened and opened[0].closed
     assert server._log_file is None
+
+
+def test_overlapping_requests_get_no_reason_pinned_on_them(tmp_path, log):
+    server = _server(tmp_path)
+    first = server.open_window()
+    second = server.open_window()
+    _prints(server, _line("Error", "WrappedServer", "FastFlowLM process has terminated"))
+    for window in (first, second):
+        message = nb._explain(server, window, "boom")
+        assert "terminated" not in message
+    assert log.fields["overlapped_another_request"] is True
+
+
+def test_a_window_alone_still_gets_its_reason(tmp_path, log):
+    server = _server(tmp_path)
+    server.open_window()  # dropped at once, like a finished request
+    window = server.open_window()
+    _prints(server, _line("Error", "WrappedServer", "FastFlowLM process has terminated"))
+    assert "terminated" in nb._explain(server, window, "boom")
+    assert log.fields["overlapped_another_request"] is False

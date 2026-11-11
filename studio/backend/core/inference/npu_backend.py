@@ -24,7 +24,7 @@ from core.inference.flm_files import (
     download_files,
     read_model_files,
 )
-from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
+from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable, OutputWindow
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -214,13 +214,14 @@ def _failed(response) -> bool:
     return isinstance(body, dict) and ("error" in body or body.get("status") == "error")
 
 
-def _explain(server: Optional[LemonadeServer], mark: int, message: str) -> str:
-    """``message`` plus the first error lemond printed after ``mark`` that it does not already
+def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], message: str) -> str:
+    """``message`` plus the first error lemond printed in ``window`` that it does not already
     say. Logs that output at warning, since lemond's lines are otherwise debug-only, and notes the
-    outcome in the Lemonade log."""
-    lines = server.output_since(mark) if server is not None else []
+    outcome in the Lemonade log. A window shared with another request gets no reason pinned on it."""
+    lines = server.output_since(window.start) if server is not None and window is not None else []
+    shared = window is not None and window.shared
     explained = message
-    for line in lines:
+    for line in [] if shared else lines:
         match = _LEMOND_ERROR.search(line)
         reason = match.group(1).strip() if match else ""
         if reason and not reason.endswith(":") and reason not in message and message not in reason:
@@ -236,6 +237,7 @@ def _explain(server: Optional[LemonadeServer], mark: int, message: str) -> str:
         error = message,
         lemonade_log = log_name,
         lemonade_output = lines,
+        overlapped_another_request = shared,
     )
     if explained == message and log_name:
         return f"{message} (Lemonade's output is on the Logs page.)"
@@ -774,7 +776,7 @@ class LemonadeNpuBackend:
                 self._loaded = None
                 self._raise_if_load_cancelled(model_id)
                 server.note(f"Loading {model.id} with a {ctx}-token context")
-                mark = server.output_mark()
+                window = server.open_window()
                 response = server.request(
                     "POST",
                     "/v1/load",
@@ -783,7 +785,7 @@ class LemonadeNpuBackend:
                 )
                 self._raise_if_load_cancelled(model_id)
                 if _failed(response):
-                    reason = _explain(server, mark, _error_message(response))
+                    reason = _explain(server, window, _error_message(response))
                     raise NpuError(f"Loading {model.id} failed: {reason}")
                 resident_ctx = self._resident_context(server, model.id)
                 if resident_ctx is None:
@@ -869,13 +871,13 @@ class LemonadeNpuBackend:
                     server.stop()
             return loaded.model.model_path
 
-    def output_mark(self) -> int:
+    def output_mark(self) -> Optional[OutputWindow]:
         server = self._server
-        return server.output_mark() if server is not None else 0
+        return server.open_window() if server is not None else None
 
-    def explain_failure(self, mark: int, message: str) -> str:
-        """An NPU chat error ``message`` with the reason lemond printed after ``mark``."""
-        return _explain(self._server, mark, message)
+    def explain_failure(self, window: Optional[OutputWindow], message: str) -> str:
+        """An NPU chat error ``message`` with the reason lemond printed in ``window``."""
+        return _explain(self._server, window, message)
 
     def upstream(self) -> ManagedUpstream:
         # Lock-free: a chat must not wait behind an enable() or delete() holding the lock.

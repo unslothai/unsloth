@@ -14,6 +14,7 @@ import socket
 import subprocess
 import threading
 import time
+import weakref
 from collections import deque
 from pathlib import Path
 from typing import Any, Optional
@@ -72,6 +73,14 @@ def _kill_with_the_parent() -> None:
     ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, signal.SIGKILL)
 
 
+class OutputWindow:
+    __slots__ = ("start", "shared", "__weakref__")
+
+    def __init__(self, start: int) -> None:
+        self.start = start
+        self.shared = False
+
+
 class LemonadeServer:
     def __init__(
         self,
@@ -98,6 +107,7 @@ class LemonadeServer:
         # Never reset, so a mark taken before a restart still counts the new lines.
         self._lines_seen = 0
         self._tail_lock = threading.Lock()
+        self._windows: weakref.WeakSet[OutputWindow] = weakref.WeakSet()
         self._drain_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         # stop() sets it without the lock, which start() holds while waiting for readiness.
@@ -121,6 +131,19 @@ class LemonadeServer:
     def output_mark(self) -> int:
         with self._tail_lock:
             return self._lines_seen
+
+    def open_window(self) -> "OutputWindow":
+        """A mark for one request. lemond's lines carry no request id, so a window that overlaps
+        another request's is ``shared`` and its output can't be pinned on either. Released when
+        the caller drops it."""
+        with self._tail_lock:
+            window = OutputWindow(self._lines_seen)
+            others = list(self._windows)
+            for other in others:
+                other.shared = True
+            window.shared = bool(others)
+            self._windows.add(window)
+        return window
 
     def output_since(
         self,

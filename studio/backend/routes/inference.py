@@ -30200,7 +30200,7 @@ def _npu_kv_cache_full(usage: Any) -> bool:
     )
 
 
-def _explain_npu_error_line(npu, mark: int, line: str) -> str:
+def _explain_npu_error_line(npu, mark, line: str) -> str:
     """A Lemonade SSE error line, its message carrying the reason lemond printed for it."""
     try:
         chunk = json.loads(line[len("data:") :].strip())
