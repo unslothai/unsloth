@@ -6004,8 +6004,7 @@ def _roster_scopes(rag_scope: dict) -> list[str]:
     return scopes
 
 
-# The roster SQL calls roster_name per document every RAG turn (three times per row for the count), and
-# the result depends only on the stored filename, so cleaned names are kept; bounded, cleared when full.
+# roster_name runs per document (3x per row) every RAG turn; bounded memo, cleared when full.
 _ROSTER_NAME_MEMO: dict[str, str] = {}
 _ROSTER_NAME_MEMO_MAX = 65536
 

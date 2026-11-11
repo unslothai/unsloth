@@ -39,7 +39,6 @@ def test_memoized_names_match_a_fresh_cleanup(fresh_memo):
         first = inference._roster_name(raw)
         again = inference._roster_name(raw)
         assert first == again == inference._roster_name_uncached(raw)
-    # Only text filenames are kept: 1 and 1.0 hash alike but print differently.
     assert set(inference._ROSTER_NAME_MEMO) == set(NAMES)
 
 
