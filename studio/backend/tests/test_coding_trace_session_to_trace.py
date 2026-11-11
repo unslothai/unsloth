@@ -386,12 +386,45 @@ def test_native_builtin_or_image_turn_keeps_its_prompt_and_reasoning(custom, p):
     assert _turn(custom, [part, {"type": "reasoning", "text": "r"}]).messages[1].reasoning == tail
 
 
-def test_stopped_turn_keeps_only_reasoning_before_a_native_call():
-    # The native call closes the first UI group; the stopped group after it has no text.
-    native = _call("x", "code_execution", None, args = {"google": {"native_part": {}}})
-    parts = [{"type": "reasoning", "text": "r1"}, native, {"type": "reasoning", "text": "r2"}]
-    assert _turn(_STOPPED, parts).messages[1].reasoning == "r1"
-    assert _turn({}, parts).messages[1].reasoning == "r1\nr2"
+_NATIVE = _call("x", "code_execution", None, args = {"google": {"native_part": {}}})
+_R1, _R2 = {"type": "reasoning", "text": "r1"}, {"type": "reasoning", "text": "r2"}
+_IMAGE = {"type": "image", "image": "x"}
+
+
+@pytest.mark.parametrize(
+    "parts, kept",
+    [
+        ([_R1, _NATIVE, _R2], "r1"),
+        ([_R1, *_text("t"), _NATIVE, _R2], "r1"),
+        ([*_text("t"), _NATIVE, _R2], ""),
+        ([_NATIVE, _R1, _IMAGE], None),
+        ([_IMAGE, _R1, _NATIVE, _R2], "r1"),
+    ],
+)
+def test_stopped_turn_decides_reasoning_per_ui_group(parts, kept):
+    # A native call ends its UI group, and each group of a stopped turn keeps reasoning alone.
+    replayed = {m.id: m.reasoning for m in _turn(_STOPPED, parts).messages}
+    assert replayed.get("a") == kept
+    assert _turn({}, [p for p in parts if p is not _IMAGE]).messages[1].reasoning  # completed
+
+
+def test_stopped_row_merged_into_earlier_text_keeps_its_first_group():
+    rows = [
+        _row("u", "user", _text("go"), None, 1),
+        _row("a0", "assistant", _text("hello"), "u", 2),
+        _row("a", "assistant", [_R1, _NATIVE, _R2], "a0", 3, metadata = _STOPPED),
+    ]
+    merged = session_to_trace({"id": "t"}, rows).messages[1]
+    assert (merged.text, merged.reasoning) == ("hello", "r1")
+
+
+def test_assistant_text_that_python_strips_is_dropped():
+    # _build_external_messages drops it, although JS trim() keeps "\x1c".
+    assert _shape(_turn({}, _text("\x1c"))) == [
+        ("user", "go"),
+        ("user", "again"),
+        ("assistant", "fine"),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -534,6 +567,14 @@ def test_system_variable_numbers_print_like_js():
     thread["settings"]["systemVariables"] = variables
     trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
     assert trace.messages[0].text == "1e-7 1e+21 12345678901234567000 [null,0.00001,0] Infinity"
+
+
+def test_system_variable_objects_print_like_js():
+    variables = '{"o":{"b":1,"2":2,"1":3,"01":4,"4294967295":5},"s":{"\\udc00":"\\ud800x"}}'
+    thread = {"id": "t", "settings": {"systemPrompt": "{{o}} {{s}}", "systemVariables": variables}}
+    trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
+    expected = '{"1":3,"2":2,"b":1,"01":4,"4294967295":5} {"\\udc00":"\\ud800x"}'
+    assert trace.messages[0].text == expected
 
 
 def test_system_variable_too_deep_to_print_stays_as_written():

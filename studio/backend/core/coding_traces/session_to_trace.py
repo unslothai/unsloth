@@ -188,19 +188,18 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
     out: list[TraceMessage] = []
     call_ids: set[str] = set()
     for message in chain:
-        start = len(out)
-        kept = _convert_row(message, out, call_ids, warnings)
-        _clear_stopped_reasoning(message, out[start:], kept)
+        groups = _convert_row(message, out, call_ids, warnings)
+        _clear_stopped_reasoning(message, groups)
     return _replayable(out)
 
 
 def _convert_row(
     message: dict, out: list[TraceMessage], call_ids: set[str], warnings: list[TraceWarning]
-) -> dict[int, Optional[int]]:
-    """Append one stored row's trace messages to ``out``; returns the reasoning a stop keeps."""
+) -> _UiGroups:
+    """Append one stored row's trace messages to ``out``; returns the row's UI groups."""
     # toThreadMessage loads every row that is not "user" as an assistant turn.
     role = "user" if message.get("role") == "user" else "assistant"
-    message_id, start, kept = message["id"], len(out), {}
+    message_id, groups = message["id"], _UiGroups()
     if role == "user":
         current = TraceMessage(id = message_id, role = role, created_at = message.get("createdAt"))
         out.append(current)
@@ -215,12 +214,12 @@ def _convert_row(
             skipped = _skipped_call(part, message_id, position) if kind == "tool-call" else None
             if skipped:
                 warnings.append(skipped)
-                ended = {id(m): len(m.reasoning) for m in out[start:][-1:]}
-                kept.update(ended if _server_builtin(part)[1] else {})
+                if _server_builtin(part)[1]:
+                    groups.native(out[-1] if out else None)
                 continue
             flush_pair, pending_round = _close_call_group(part, kind, pending, pending_round, out)
             pieces = _open_assistant(message, out, pieces)
-            current = out[-1]
+            current = groups.enter(out[-1])
         if kind == "text":
             text = str(part.get("text") or "")
             current.text, texted = _append_text(current.text, text, current is texted), current
@@ -242,8 +241,8 @@ def _convert_row(
                 TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
             )
     out.extend(pending)
-    kept.update({id(m): kept.get(id(m)) for m in out[start:][:1] if imaged})  # collectImageParts
-    return kept
+    groups.imaged = bool(imaged)
+    return groups
 
 
 def _open_assistant(message: dict, out: list[TraceMessage], pieces: int) -> int:
@@ -331,17 +330,46 @@ def _tool_message(part: dict, name: str, call_id: str, message: dict) -> TraceMe
     )
 
 
-def _clear_stopped_reasoning(
-    message: dict, turn: list[TraceMessage], kept: dict[int, Optional[int]]
-) -> None:
-    """Drop a stopped turn's reasoning as the UI does. ``kept`` maps id() to the reasoning length
-    to keep: a native call ends its UI group, and an image keeps the row's first group whole."""
+class _UiGroups:
+    """One row's UI message groups (serializeAssistantReplayMessages). The trace can merge several
+    groups into one message, so each mark is ``[message, kept reasoning, text start, call start,
+    first group]``. A stopped turn decides each group's reasoning on its own."""
+
+    def __init__(self) -> None:
+        self.marks: dict[int, list] = {}
+        self.closed = False  # a native call closed a group before the row had a message
+        self.imaged = False
+
+    def enter(self, m: TraceMessage) -> TraceMessage:
+        if id(m) not in self.marks:
+            self._mark(m, not (self.marks or self.closed))
+        return m
+
+    def _mark(self, m: TraceMessage, first: bool) -> None:
+        start = len(m.text) + bool(m.text)  # skip the "\n" that _append_text joins with
+        self.marks[id(m)] = [m, len(m.reasoning), start, len(m.tool_calls), first]
+
+    def native(self, m: Optional[TraceMessage]) -> None:
+        # A native call ends its group, and the call keeps that group's reasoning.
+        if m is not None and id(m) in self.marks:
+            self._mark(m, False)
+        else:
+            self.closed = True
+
+    def stop(self) -> None:
+        for m, kept, text_start, call_start, first in self.marks.values():
+            # shouldReplayAssistantReasoning: the text check is untrimmed; images go to the
+            # first group (collectImageParts).
+            text = _sanitised_assistant_text(m.text[text_start:])
+            if text or len(m.tool_calls) > call_start or (first and self.imaged):
+                kept = len(m.reasoning)
+            m.reasoning = m.reasoning[:kept]
+
+
+def _clear_stopped_reasoning(message: dict, groups: _UiGroups) -> None:
     reason = _as_dict(_as_dict(message.get("metadata")).get("incomplete")).get("reason")
     if isinstance(reason, str) and reason in _STOP_LABELS:
-        for m in turn:
-            if not (_sanitised_assistant_text(m.text) or m.tool_calls):
-                # shouldReplayAssistantReasoning: the text check is untrimmed.
-                m.reasoning = m.reasoning[: kept[id(m)]] if id(m) in kept else ""
+        groups.stop()
 
 
 def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
@@ -352,7 +380,8 @@ def _replayable(out: list[TraceMessage]) -> list[TraceMessage]:
     return [
         m
         for m in out
-        if m.role in ("user", "tool") or m.text.strip(_JS_SPACE) or m.reasoning or m.tool_calls
+        # _build_external_messages drops assistant content that Python's strip() empties.
+        if m.role in ("user", "tool") or m.text.strip() or m.reasoning or m.tool_calls
     ]
 
 
@@ -462,16 +491,28 @@ def _js_number(value: float) -> str:
     return sign + digits[0] + ("." + digits[1:] if k > 1 else "") + tail
 
 
+def _js_string(text: str) -> str:
+    # JSON.stringify escapes a lone surrogate; json.loads already joins the valid pairs.
+    quoted = json.dumps(text, ensure_ascii = False)
+    return re.sub(r"[\ud800-\udfff]", lambda c: f"\\u{ord(c.group()):04x}", quoted)
+
+
+def _array_index(key: str) -> bool:
+    return key.isascii() and key.isdigit() and str(int(key)) == key and int(key) < 2**32 - 1
+
+
 def _js_json(value: object) -> str:
     """JSON.stringify for a JSON.parse result."""
     if isinstance(value, dict):
-        items = (f"{json.dumps(k, ensure_ascii = False)}:{_js_json(v)}" for k, v in value.items())
-        return "{" + ",".join(items) + "}"
+        # Object keys that are array indexes come first, in ascending order.
+        indexes = sorted((k for k in value if _array_index(k)), key = int)
+        keys = indexes + [k for k in value if not _array_index(k)]
+        return "{" + ",".join(f"{_js_string(k)}:{_js_json(value[k])}" for k in keys) + "}"
     if isinstance(value, list):
         return "[" + ",".join(_js_json(v) for v in value) + "]"
     if isinstance(value, float):
         return _js_number(value) if math.isfinite(value) else "null"
-    return json.dumps(value, ensure_ascii = False)
+    return _js_string(value) if isinstance(value, str) else json.dumps(value)
 
 
 def _finite_float(text: str) -> float:
