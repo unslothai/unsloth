@@ -68,6 +68,20 @@ test("a second Run click while the first start request is pending is ignored", a
   assert.equal(starts.length, 2, "a click after the start settles runs again");
 });
 
+test("a start that settles after the editor switched flows is not shown in the new flow", async () => {
+  const { runs, starts } = await runController(async () => ({ models: [], errors: [] }));
+  useRuntimeStore.setState({ runId: null } as never);
+  const first = runs.runFlow({ downloadsConfirmed: true });
+  await Promise.resolve();
+  assert.equal(starts.length, 1);
+  runs.detachRun();
+  useDocStore.getState().load({ ...doc([node("t", "text.template")]), id: "f2" });
+  starts[0].resolve({ run_id: "r_of_f1" });
+  await first;
+  assert.equal(useRuntimeStore.getState().runId, null, "flow f1's run stays out of flow f2's editor");
+  assert.equal(useRuntimeStore.getState().runStatus, "idle");
+});
+
 test("Run asks the plan first and holds the run while models must download", async () => {
   const missing = { kind: "image", repo: "b/image", downloaded: false, loaded: false };
   let plans = 0;

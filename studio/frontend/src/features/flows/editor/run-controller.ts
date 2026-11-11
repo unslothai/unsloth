@@ -143,6 +143,7 @@ export async function runFlow(options: RunOptions = {}): Promise<void> {
     return;
   }
   starting = true;
+  const session = editorSession;
   try {
     if (await heldForDownloads(flowId, options)) return;
     const { run_id } = await startRun(flowId, {
@@ -153,6 +154,9 @@ export async function runFlow(options: RunOptions = {}): Promise<void> {
       bake: options.bake,
       pinned: pinsForRun(docState.graph.nodeOrder),
     });
+    // The editor moved to another flow while the start was pending: that run is not this editor's.
+    if (session !== editorSession || useDocStore.getState().flowId !== flowId)
+      return;
     useRuntimeStore.getState().startRun(run_id);
     attachRun(run_id, 0);
   } catch (error) {
