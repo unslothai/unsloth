@@ -75,6 +75,11 @@ export function packsDirectly(quant: string, architecture?: string | null): bool
 
 const PACKING_ORDER: Q4nxPacking[] = ["direct", "by-architecture", "requantized"];
 
+/** Drops the rows a listing adds for an empty leftover quant folder: there is no file to convert. */
+export function q4nxConvertibleFiles<T extends { cleanable?: boolean }>(variants: T[]): T[] {
+  return variants.filter((v) => !v.cleanable);
+}
+
 /** Directly packed quants first (backend order), then the rest; the first one is the default pick. */
 export function sortQ4nxVariants<T extends Q4nxVariant>(
   variants: T[],

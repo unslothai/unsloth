@@ -60,6 +60,7 @@ import {
   q4nxArchFit,
   q4nxBaseModel,
   q4nxIsExpanded,
+  q4nxConvertibleFiles,
   q4nxMemoryWarning,
   q4nxNpuMemory,
   q4nxPacking,
@@ -201,6 +202,7 @@ export function Q4nxConvertCard({
   const accessToken = hfApiToken(hfToken);
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
   const [npuStatus] = useNpuStatus();
+  // Reported by the backend from #17531 on; without it rows show the need alone.
   const windowGb = npuStatus?.memory_window_gb ?? null;
   const [open, setOpen] = useState(false);
   // The popover's second page, like the chat picker's run settings.
@@ -367,8 +369,11 @@ export function Q4nxConvertCard({
   useEffect(() => {
     // Nothing is listed until the picker opens; a pick made in it stays listed.
     if (!open && !selectedId) return;
+    const lane = `${accessToken ?? ""}\n`;
     for (const row of rows) {
-      if (inFlight.current.size >= LISTING_WORKERS) return;
+      // Per token, so listings still in flight for a replaced token do not hold up the new one.
+      const busy = [...inFlight.current].filter((f) => f.startsWith(lane));
+      if (busy.length >= LISTING_WORKERS) return;
       const key = row.listingKey;
       // Local folders are listed up front so a closed row can show its memory need; Hub rows estimate it from the parameter count until opened or picked.
       if (
@@ -380,8 +385,9 @@ export function Q4nxConvertCard({
       ) {
         continue;
       }
-      if (listings[key] || inFlight.current.has(key)) continue;
-      inFlight.current.add(key);
+      const flight = lane + key;
+      if (listings[key] || inFlight.current.has(flight)) continue;
+      inFlight.current.add(flight);
       const request = row.folder
         ? listGgufVariants(row.folder, accessToken, {
             preferLocalCache: true,
@@ -389,20 +395,21 @@ export function Q4nxConvertCard({
           })
         : listGgufVariants(row.id, accessToken);
       const settle = (listing: Listing) => {
-        inFlight.current.delete(key);
-        if (liveToken.current === null) return;
-        // An answer for a replaced token is dropped; the new state reruns this effect.
-        const stale = liveToken.current !== accessToken;
+        inFlight.current.delete(flight);
+        // An answer for a replaced token is dropped.
+        if (liveToken.current !== accessToken) return;
         setListed((prev) => ({
-          token: stale ? prev.token : accessToken,
+          token: accessToken,
           byKey: {
-            ...(stale || prev.token === accessToken ? prev.byKey : NO_LISTINGS),
-            ...(stale ? null : { [key]: listing }),
+            ...(prev.token === accessToken ? prev.byKey : NO_LISTINGS),
+            [key]: listing,
           },
         }));
       };
       request
-        .then((response) => settle({ list: response.variants, error: null }))
+        .then((response) =>
+          settle({ list: q4nxConvertibleFiles(response.variants), error: null }),
+        )
         .catch((error: unknown) =>
           settle({
             list: [],

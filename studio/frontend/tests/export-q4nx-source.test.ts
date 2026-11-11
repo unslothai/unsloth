@@ -22,6 +22,7 @@ import {
   q4nxToggleExpanded,
   q4nxVariantLookup,
   q4nxWeights,
+  q4nxConvertibleFiles,
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
 
@@ -401,4 +402,16 @@ test("the export summary describes the conversion: source, file and quant, outpu
     archFit: null,
   });
   assert.deepEqual([...new Set(Object.values(empty))], ["\u2014"]);
+});
+
+test("an empty leftover quant folder is not offered as a file to convert", () => {
+  const files = [
+    { filename: "m-Q4_0.gguf", quant: "Q4_0" },
+    { filename: "Q8_0", quant: "Q8_0", cleanable: true },
+    { filename: "m-Q4_1.gguf", quant: "Q4_1", cleanable: false },
+  ];
+  assert.deepEqual(
+    q4nxConvertibleFiles(files).map((v) => v.quant),
+    ["Q4_0", "Q4_1"],
+  );
 });
