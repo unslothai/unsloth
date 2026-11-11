@@ -34,9 +34,9 @@ test("a downloaded NPU row opens run settings with the model's context limit", (
 test("NPU run settings pin customContextLength and offer nothing FastFlowLM ignores", () => {
   assert.match(configPage, /const targetIsNpu = isNpuModelId\(target\.id\);/);
   assert.match(configPage, /const pinsContextLength = targetIsMlx \|\| targetIsNpu;/);
-  assert.match(configPage, /contextPinPatch\(value, pinsContextLength\)/);
+  assert.match(configPage, /contextPinPatch\(value, pinsContextLength[,)]/);
   const writers = configPage.match(/contextPinPatch\(/g) ?? [];
-  const npuAware = configPage.match(/contextPinPatch\(\w+, pinsContextLength\)/g) ?? [];
+  const npuAware = configPage.match(/contextPinPatch\(\w+, pinsContextLength[,)]/g) ?? [];
   assert.ok(writers.length > 0);
   assert.equal(npuAware.length, writers.length);
   assert.match(configPage, /!target\.isGguf && !targetIsMlx && !targetIsNpu && /);
