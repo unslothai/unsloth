@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
+
+import structlog
 
 from core.inference.flm_files import (
     FlmDownloadError,
@@ -35,6 +38,8 @@ from utils.process_lifetime import (
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
+# A JSON record in the server log, like the chat proxy's, for the one warning users go looking for.
+_events = structlog.get_logger(__name__)
 
 MODEL_PREFIX = "lemonade:"
 PROVIDER_TYPE = "lemonade"
@@ -47,6 +52,8 @@ _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 # Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
 # limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
 _FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
+# lemond's console format: "<date> <time> [Error] (Router) <message>".
+_LEMOND_ERROR = re.compile(r"\[(?:Error|Fatal)\]\s*\([^)]*\)\s*(.+)")
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
@@ -205,6 +212,34 @@ def _failed(response) -> bool:
     except ValueError:
         return False
     return isinstance(body, dict) and ("error" in body or body.get("status") == "error")
+
+
+def _explain(server: Optional[LemonadeServer], mark: int, message: str) -> str:
+    """``message`` plus the first error lemond printed after ``mark`` that it does not already
+    say. Logs that output at warning, since lemond's lines are otherwise debug-only, and notes the
+    outcome in the Lemonade log."""
+    lines = server.output_since(mark) if server is not None else []
+    explained = message
+    for line in lines:
+        match = _LEMOND_ERROR.search(line)
+        reason = match.group(1).strip() if match else ""
+        if reason and not reason.endswith(":") and reason not in message and message not in reason:
+            explained = f"{message} ({reason[:300]})"
+            break
+    log_name = server.log_path.name if server is not None and server.log_path else None
+    if server is not None:
+        server.note(f"Request failed: {explained}")
+    if not lines:
+        return message
+    _events.warning(
+        "Lemonade output before the NPU error",
+        error = message,
+        lemonade_log = log_name,
+        lemonade_output = lines,
+    )
+    if explained == message:
+        return f"{message} (Lemonade's output is on the Logs page.)"
+    return explained
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -425,6 +460,8 @@ class LemonadeNpuBackend:
             cache_dir = self.root / "cache",
             config_dir = self.root / "config",
             flm_model_dir = self._flm_model_dir,
+            # The studio home's logs dir, where Settings > Logs looks.
+            log_dir = self.root.parent / "logs" / "lemonade",
         )
 
     def _require_supported(self) -> None:
@@ -736,6 +773,8 @@ class LemonadeNpuBackend:
                 replaced = True
                 self._loaded = None
                 self._raise_if_load_cancelled(model_id)
+                server.note(f"Loading {model.id} with a {ctx}-token context")
+                mark = server.output_mark()
                 response = server.request(
                     "POST",
                     "/v1/load",
@@ -744,7 +783,8 @@ class LemonadeNpuBackend:
                 )
                 self._raise_if_load_cancelled(model_id)
                 if _failed(response):
-                    raise NpuError(f"Loading {model.id} failed: {_error_message(response)}")
+                    reason = _explain(server, mark, _error_message(response))
+                    raise NpuError(f"Loading {model.id} failed: {reason}")
                 resident_ctx = self._resident_context(server, model.id)
                 if resident_ctx is None:
                     raise NpuError(f"Lemonade did not report {model.id} as loaded on the NPU.")
@@ -828,6 +868,14 @@ class LemonadeNpuBackend:
                     )
                     server.stop()
             return loaded.model.model_path
+
+    def output_mark(self) -> int:
+        server = self._server
+        return server.output_mark() if server is not None else 0
+
+    def explain_failure(self, mark: int, message: str) -> str:
+        """An NPU chat error ``message`` with the reason lemond printed after ``mark``."""
+        return _explain(self._server, mark, message)
 
     def upstream(self) -> ManagedUpstream:
         # Lock-free: a chat must not wait behind an enable() or delete() holding the lock.
