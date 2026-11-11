@@ -963,6 +963,26 @@ def test_directory_lease_contract_preserves_path_and_purpose(rag_home, source_na
     }
 
 
+def test_server_folder_contract_uses_the_browse_allowlist(rag_home, monkeypatch):
+    source = rag_home / "server-source"
+    source.mkdir()
+    from routes import models as model_routes
+    from routes.rag import _resolve_server_linked_folder_path
+
+    seen = []
+
+    def resolve(path):
+        seen.append(path)
+        return source
+
+    monkeypatch.setattr(model_routes, "resolve_browseable_directory", resolve)
+    assert _resolve_server_linked_folder_path("/srv/docs") == (
+        str(source),
+        (source.stat().st_dev, source.stat().st_ino),
+    )
+    assert seen == ["/srv/docs"]
+
+
 @requires_sqlite_vec
 def test_registration_rechecks_the_signed_folder_identity(rag_home, monkeypatch):
     source = rag_home / "identity-race"
@@ -1244,7 +1264,27 @@ def test_backend_routes_match_linked_folder_client_contract():
         "/linked-folder-jobs/{job_id}/events",
     } <= paths
     assert "path" not in LinkFolderRequest.model_fields
-    assert LinkFolderRequest.model_fields["native_path_lease"].is_required()
+    assert not LinkFolderRequest.model_fields["native_path_lease"].is_required()
+    assert not LinkFolderRequest.model_fields["server_path"].is_required()
+    assert LinkFolderRequest(serverPath = "/srv/docs").server_path == "/srv/docs"
+
+
+def test_linked_folder_request_requires_one_source():
+    from fastapi import HTTPException
+    from routes import rag as rag_routes
+
+    with pytest.raises(HTTPException, match = "exactly one"):
+        rag_routes._create_linked_folder(
+            "project", "owner", rag_routes.LinkFolderRequest()
+        )
+    with pytest.raises(HTTPException, match = "exactly one"):
+        rag_routes._create_linked_folder(
+            "project",
+            "owner",
+            rag_routes.LinkFolderRequest(
+                nativePathLease = "lease", serverPath = "/srv/docs"
+            ),
+        )
 
 
 @requires_sqlite_vec
