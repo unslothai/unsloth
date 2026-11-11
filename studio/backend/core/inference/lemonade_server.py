@@ -119,7 +119,8 @@ class LemonadeServer:
         return "\n".join(list(self._tail)[-lines:])
 
     def output_mark(self) -> int:
-        return self._lines_seen
+        with self._tail_lock:
+            return self._lines_seen
 
     def output_since(
         self,
