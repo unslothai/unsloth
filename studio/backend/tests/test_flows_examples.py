@@ -38,8 +38,8 @@ def _run_example(name: str, stubs: dict):
 
 
 def test_the_example_count():
-    # 54 hand-built examples plus the 9 Data Recipes learning recipes as Recipe groups.
-    assert len(BUILT) == 63
+    # 56 hand-built examples plus the 9 Data Recipes learning recipes as Recipe groups.
+    assert len(BUILT) == 65
 
 
 @pytest.mark.parametrize("name", IDS)

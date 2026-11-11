@@ -12,8 +12,10 @@ import re
 from typing import Any, Optional
 
 from core.flows import assets as asset_store
+from core.flows.city import normalize_city
 from core.flows.authoring import strict_schema, string_enum
 from core.flows.expr import Prng, seed_from
+from core.flows.rivals import normalize_rivals
 from core.flows.schema import WorldSpec
 from core.flows.story import _unique, input_values, most_downstream, node_value, slug
 
@@ -304,6 +306,14 @@ def normalize_world(
     props = props3d(raw_props, width, height, {i["id"] for i in world["items"]})
     if props:
         world["props3d"] = props
+    rivals = normalize_rivals(raw.get("rivals"), npc_ids, regions, ref, taken)
+    if rivals:
+        world["rivals"] = rivals
+    city = normalize_city(raw.get("city"))
+    if city:
+        # One side panel at a time: Mayor mode wins over Village Rivals (normalised above).
+        world["city"] = city
+        world.pop("rivals", None)
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
 
 
@@ -1757,6 +1767,8 @@ def resolve_world_report(
     level = (reply.get("params") or {}).get("autonomy") if reply is not None else None
     if level in AUTONOMY_LEVELS and level != "off":
         world["autonomy"] = {k: k in AUTONOMY_LEVELS[level] for k in AUTONOMY_FLAGS}
+    if world.get("city") and raw.get("rivals"):
+        warnings.append("This world turns on both city and rivals: only the Mayor panel shows")
     if "npc_reply" not in eps:
         warnings.append("No NPC Reply (live) node: NPCs will only say their greeting")
     sim = world.get("simulation")
