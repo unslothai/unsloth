@@ -247,7 +247,6 @@ import {
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import {
   isNpuModelId,
-  NPU_DEFAULT_CONTEXT_LENGTH,
   useNpuCatalogStore,
 } from "../../npu";
 import {
