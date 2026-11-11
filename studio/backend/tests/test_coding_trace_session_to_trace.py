@@ -429,6 +429,19 @@ def test_assistant_text_that_python_strips_is_dropped(custom):
     ]
 
 
+@pytest.mark.parametrize("tool", ["generate_image", "generate_video"])
+@pytest.mark.parametrize("text, sent", [("Saved cat.png", "Saved cat.png"), ("", '{"result":""}')])
+def test_media_tool_file_wrapper_replays_its_text(tool, text, sent):
+    files = [{"name": "cat.png", "size": 10}]
+    result = {"text": text, "images": [], "sessionId": "s1", "files": files}
+    rows = [
+        _row("u", "user", _text("make cat"), None, 1),
+        _row("a", "assistant", [_call("c1", tool, result = result), *_text("done")], "u", 2),
+    ]
+    tool_turn = session_to_trace({"id": "t"}, rows).messages[2]
+    assert (tool_turn.role, tool_turn.text) == ("tool", sent)
+
+
 def test_untrimmed_text_group_after_a_tool_round_is_sent():
     # JS trim() empties "\ufeff" but Python's strip() keeps it, so the backend sends it.
     rows = [

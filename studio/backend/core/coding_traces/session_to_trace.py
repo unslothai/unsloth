@@ -22,6 +22,7 @@ from core.coding_traces.schema import (
     TraceMessage,
     TraceWarning,
 )
+from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 from core.inference.tool_loop_controller import (
     TOOL_MODEL_SUFFIX_KEY,
     restore_replayed_tool_results,
@@ -30,6 +31,7 @@ from core.rag.conversation_archive import (
     _flushes_local_pair,
     _local_round_id,
     _mcp_image_result,
+    _sandbox_wrapper,
     _sanitised_assistant_text,
     _search_images_result,
     _server_builtin,
@@ -309,6 +311,9 @@ def _call_arguments(part: dict) -> dict:
 def _tool_message(part: dict, name: str, call_id: str, message: dict) -> TraceMessage:
     wire = {"role": "tool", "name": name}
     result = part["result"]  # isMcpUiToolResult, then the gated isMcpImageToolResult
+    # SANDBOX_FILE_TOOLS also holds MEDIA_CHAT_TOOLS, which the archive's name set lacks.
+    if name in MEDIA_CHAT_TOOLS and _sandbox_wrapper(result, "python"):
+        result = result["text"]
     ui = _as_dict(result.get("ui")) if isinstance(result, dict) else {}
     if name.startswith("mcp__") and isinstance(ui.get("resourceUri"), str):
         result = result["text"] if isinstance(result.get("text"), str) else result
