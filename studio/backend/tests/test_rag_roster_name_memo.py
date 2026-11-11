@@ -77,4 +77,4 @@ def test_the_memo_stays_bounded(fresh_memo, monkeypatch):
     monkeypatch.setattr(inference, "_ROSTER_NAME_MEMO_MAX", 8)
     for i in range(50):
         assert inference._roster_name(f"f{i}.pdf") == f"f{i}.pdf"
-        assert len(inference._ROSTER_NAME_MEMO) <= 8
+        assert 0 < len(inference._ROSTER_NAME_MEMO) <= 8
