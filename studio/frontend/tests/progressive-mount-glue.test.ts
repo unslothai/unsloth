@@ -110,7 +110,7 @@ test("a run keeps the window, and the reply being written keeps its row", () => 
   );
   // The streaming row's effects run the stream; scrolling away must not unmount it.
   assert.match(GLUE, /const tail = aui\.thread\(\)\.getState\(\)\.isRunning === true \? total - 1 : null;/);
-  assert.match(GLUE, /if \(index === tail \|\| isPinned\(child, selection\)\) pins\.push\(index\);/);
+  assert.match(GLUE, /if \(dialog \|\| index === tail \|\| isPinned\(child, selection\)\) pins\.push\(index\);/);
 });
 
 test("rows the reader is working in are not unmounted", () => {
@@ -121,7 +121,9 @@ test("rows the reader is working in are not unmounted", () => {
   assert.match(GLUE, /const PINNED_CONTENT = "textarea, \[contenteditable=true\], iframe";/);
   assert.match(pinned, /if \(selection\?\.intersectsNode\(row\)\) return true;/);
   // A selection reaching into the thread, or a held pointer, holds every mounted row.
-  assert.match(GLUE, /trim: \(trim = heldSelection\(viewport\) === null && !inputPointerHeld\(\)\),/);
+  assert.match(GLUE, /trim: \(trim =\s*heldSelection\(viewport\) === null &&\s*!inputPointerHeld\(\) &&\s*document\.querySelector\(OPEN_DIALOG\) === null\),/);
+  // A dialog a row opened is portaled out of it; while one is open every mounted row stays.
+  assert.match(GLUE, /const dialog = document\.querySelector\(OPEN_DIALOG\) !== null;/);
   assert.match(
     section(GLUE, "function heldSelection(", "\n}\n"),
     /selection\.isCollapsed \|\|[\s\S]*?range\.intersectsNode\(viewport\) \? range : null/,
@@ -459,7 +461,8 @@ test("a jump asks for its row instead of for the whole thread", () => {
 test("the viewport comes from a ref, not a document-wide query", () => {
   // The Compare panes each mount their own Thread, so a document-wide query finds whichever
   // viewport comes first rather than the one these rows are in.
-  assert.doesNotMatch(GLUE, /document\.querySelector/);
+  // Open dialogs are the one document-wide read: they are portaled out of every thread.
+  assert.doesNotMatch(GLUE, /document\.querySelector\((?!OPEN_DIALOG\))/);
   assert.match(GLUE, /viewportRef\.current/);
 });
 
@@ -577,4 +580,12 @@ test("a mounted row that shrinks wakes the window, and only a shrink does", () =
   assert.match(GLUE, /rowResize\.unobserve\(node\)/);
   assert.match(GLUE, /rowsChanged\.observe\(viewport, \{ childList: true \}\);/);
   assert.match(GLUE, /rowResize\.disconnect\(\);\s*rowsChanged\.disconnect\(\);/);
+});
+
+test("a reader that stops waiting for a full mount lets the window slide again", () => {
+  const complete = section(GLUE, "const complete = useCallback(", "[hidden, schedule],");
+  assert.match(complete, /if \(signal\?\.aborted\) \{\s*resolve\(\);/);
+  assert.match(complete, /waitersRef\.current = waitersRef\.current\.filter\(\(waiter\) => waiter !== resolve\);/);
+  assert.match(complete, /if \(waitersRef\.current\.length === 0\) releaseAtRef\.current = performance\.now\(\);/);
+  assert.match(GLUE, /await Promise\.all\(pending\.map\(\(entry\) => entry\.complete\(signal\)\)\);/);
 });

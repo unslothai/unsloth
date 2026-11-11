@@ -78,7 +78,7 @@ const PINNED_CONTENT = "textarea, [contenteditable=true], iframe";
 
 /** Module-level: consumers are imperative DOM readers, and a thread can mount twice (Compare). */
 interface ActiveWindow {
-  complete: () => Promise<void>;
+  complete: (signal?: AbortSignal) => Promise<void>;
   reveal: (messageId: string) => boolean;
   withholding: () => boolean;
   filling: () => boolean;
@@ -113,6 +113,8 @@ export const PROGRESSIVE_MOUNT_SEARCH_MS = 400;
 export async function completeProgressiveMounts(
   /** Viewports to force; find-in-page passes one to skip inert off-route workspaces. */
   wants?: (viewport: HTMLElement | null) => boolean,
+  /** A reader that stops waiting (Find closed) lets the window slide again at once. */
+  signal?: AbortSignal,
 ): Promise<void> {
   const wanted = () =>
     [...activeWindows].filter((entry) =>
@@ -122,10 +124,11 @@ export async function completeProgressiveMounts(
   const deadline = Date.now() + PROGRESSIVE_MOUNT_SEARCH_MS;
   let observed = false;
   for (;;) {
+    if (signal?.aborted) return;
     const pending = wanted();
     if (pending.length > 0) {
       observed = true;
-      await Promise.all(pending.map((entry) => entry.complete()));
+      await Promise.all(pending.map((entry) => entry.complete(signal)));
     }
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -349,6 +352,10 @@ function measureRows(viewport: HTMLElement, lookup: Metas, heights: RowHeights):
   return { rows, threadTop: threadTop ?? 0 };
 }
 
+// A dialog opened from a row (an attachment viewer) is portaled out of it, so its focus and
+// media are invisible to isPinned: while one is open, no mounted row is let go.
+const OPEN_DIALOG = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
+
 function heldSelection(viewport: HTMLElement): Range | null {
   const selection = document.getSelection();
   if (selection === null || selection.isCollapsed || selection.rangeCount === 0) return null;
@@ -375,11 +382,12 @@ function keepPinned(
   tail: number | null,
 ): RowWindow {
   const selection = heldSelection(viewport);
+  const dialog = document.querySelector(OPEN_DIALOG) !== null;
   const pins: number[] = [];
   for (const child of viewport.children) {
     const index = rowIndex(child, lookup);
     if (index === undefined || (index >= next.start && index < next.end)) continue;
-    if (index === tail || isPinned(child, selection)) pins.push(index);
+    if (dialog || index === tail || isPinned(child, selection)) pins.push(index);
   }
   return withPins(next, pins, lookup.metas.length);
 }
@@ -647,7 +655,10 @@ function useThreadWindow(
         slack: slackRef.current,
         heightOf,
         maxStep: SLIDE_STEP,
-        trim: (trim = heldSelection(viewport) === null && !inputPointerHeld()),
+        trim: (trim =
+          heldSelection(viewport) === null &&
+          !inputPointerHeld() &&
+          document.querySelector(OPEN_DIALOG) === null),
       });
       next = holdTailTurn(next, total, lookup.tailTurn);
     }
@@ -740,8 +751,12 @@ function useThreadWindow(
   const hidden = useCallback(() => viewportRef.current?.clientHeight === 0, [viewportRef]);
 
   const complete = useCallback(
-    () =>
+    (signal?: AbortSignal) =>
       new Promise<void>((resolve) => {
+        if (signal?.aborted) {
+          resolve();
+          return;
+        }
         // Nothing can read a hidden thread's rows, and a waiter here would never be resolved.
         if (hidden()) {
           resolve();
@@ -754,6 +769,17 @@ function useThreadWindow(
           return;
         }
         waitersRef.current.push(resolve);
+        signal?.addEventListener(
+          "abort",
+          () => {
+            waitersRef.current = waitersRef.current.filter((waiter) => waiter !== resolve);
+            // Nobody else waiting: the release deadline is all that holds the full mount now.
+            if (waitersRef.current.length === 0) releaseAtRef.current = performance.now();
+            resolve();
+            schedule();
+          },
+          { once: true },
+        );
         schedule();
       }),
     [hidden, schedule],

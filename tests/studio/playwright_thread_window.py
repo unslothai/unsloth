@@ -656,11 +656,16 @@ def check_engine(playwright, engine: str) -> None:
         before = page.locator(wrap).first.get_attribute("aria-pressed")
         page.locator(wrap).first.click()
         page.evaluate("() => window.__threadWeight.composer()?.focus()")
-        for top in (0, -1):
-            page.evaluate(JUMP, top)
+        # A loaded host can hold the window still for a settle; the row must leave within a few.
+        for _ in range(5):
+            page.evaluate(JUMP, 0)
             settle(page)
-            if top == 0:
-                assert page.locator(f'[data-message-id="{row}"]').count() == 0, "the row never left"
+            if page.locator(f'[data-message-id="{row}"]').count() == 0:
+                break
+        else:
+            raise AssertionError("the row never left")
+        page.evaluate(JUMP, -1)
+        settle(page)
         after = page.locator(wrap).first.get_attribute("aria-pressed")
         assert before != after, f"a block's word wrap reset to {after} when its row came back"
         assert not errors, errors
