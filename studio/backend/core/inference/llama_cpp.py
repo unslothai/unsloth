@@ -7331,6 +7331,9 @@ _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
 
 # llama-server's --cache-ram default (MiB): the host-RAM prompt cache it grows into.
 _LLAMA_CACHE_RAM_DEFAULT_MIB = 8192
+# Host RAM llama-server takes for itself with every layer on a GPU (0.9 GiB measured on a T4,
+# CUDA pinned buffers included). The fit charges such a load to VRAM alone.
+_LLAMA_SERVER_HOST_MIB = 1024
 
 
 def _prompt_cache_host_bytes(
@@ -16256,6 +16259,34 @@ class LlamaCppBackend:
             return self._FIT_LOAD_MODE
         return None
 
+    def _sized_cache_ram_mib(self, fit_kwargs: Mapping[str, Any]) -> Optional[int]:
+        mib = 1024 * 1024
+        avail = self._available_system_memory_mib()
+
+        def fits(size: int) -> bool:
+            return (
+                self._fit_derived_load_mode(
+                    **{
+                        **fit_kwargs,
+                        "host_only_bytes": fit_kwargs["host_only_bytes"]
+                        + (size + _LLAMA_SERVER_HOST_MIB) * mib,
+                        "avail_mib": avail,
+                        "announce": False,
+                    }
+                )
+                == self._FIT_LOAD_MODE
+            )
+
+        low = _LLAMA_CACHE_RAM_DEFAULT_MIB
+        high = -(-fit_kwargs["kv_cache_bytes"] // mib)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if fits(mid):
+                low = mid
+            else:
+                high = mid - 1
+        return low if low > _LLAMA_CACHE_RAM_DEFAULT_MIB else None
+
     # Chosen by measurement: dio was fastest cold on large models; kept at none because that was
     # requested. dio has no pre-enum spelling, so old builds would emit nothing.
     _FIT_LOAD_MODE = "none"
@@ -24779,6 +24810,7 @@ class LlamaCppBackend:
                 # for llama.cpp's own default. Bound before the try like the verdict
                 # flags above: the except path falls through to the launch, which reads it.
                 _fit_load_mode: Optional[str] = None
+                _planned_cache_ram = cache_ram
                 _managed_lazy_flags: Optional[list[str]] = None
                 _host_input_embd = 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
@@ -28510,9 +28542,25 @@ class LlamaCppBackend:
                             1, _fit_load_mode_kwargs["model_size"] - _resident_inputs
                         )
                         _fit_load_mode_kwargs["host_only_bytes"] += _resident_inputs
+                    if (
+                        cache_ram is None
+                        # Windows full offload (never use_fit) sets --cache-ram 0 itself.
+                        and (sys.platform != "win32" or use_fit)
+                        and server_caps.get("supports_cache_ram")
+                        and not _extra_args_set_any_flag(_fit_extras, _CACHE_RAM_FLAGS)
+                        and not str(_fit_env.get("LLAMA_ARG_CACHE_RAM") or "").strip()
+                    ):
+                        _planned_cache_ram = self._sized_cache_ram_mib(_fit_load_mode_kwargs)
+                        if _planned_cache_ram is not None:
+                            logger.info(
+                                "Prompt cache: --cache-ram %d MiB so a saved conversation "
+                                "of up to %d tokens is kept.",
+                                _planned_cache_ram,
+                                effective_ctx,
+                            )
                     if _managed_lazy_flags is None:
                         _lazy_prompt_cache = _prompt_cache_host_bytes(
-                            cache_ram,
+                            _planned_cache_ram,
                             _fit_extras,
                             _fit_env,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
@@ -28600,7 +28648,7 @@ class LlamaCppBackend:
                         # cache must fit pinned (moved out of model_size, not counted twice).
                         _moe_expert_bytes = (self._gguf_tensor_scan(model_path) or (None, {}, 0))[2]
                         _moe_prompt_cache_bytes = _prompt_cache_host_bytes(
-                            cache_ram,
+                            _planned_cache_ram,
                             _fit_extras,
                             _fit_env,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
@@ -28663,6 +28711,7 @@ class LlamaCppBackend:
                     _placement_verdict_partial = False
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
+                    _planned_cache_ram = cache_ram
                     _managed_lazy_flags = None
                     _moe_cache_candidate = _moe_cache_ram_ok = _moe_cache_lazy_table = False
                     # And a half-built snapshot is not a price either: the throw can
@@ -29026,9 +29075,9 @@ class LlamaCppBackend:
                             "llama-server has no --ctx-checkpoints; skipping the requested %s.",
                             ctx_checkpoints,
                         )
-                if cache_ram is not None:
+                if _planned_cache_ram is not None:
                     if server_caps.get("supports_cache_ram"):
-                        cmd.extend(["--cache-ram", str(int(cache_ram))])
+                        cmd.extend(["--cache-ram", str(int(_planned_cache_ram))])
                     else:
                         logger.info(
                             "llama-server has no --cache-ram; skipping the requested %s MiB.",
