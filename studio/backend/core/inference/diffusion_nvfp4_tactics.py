@@ -185,7 +185,7 @@ class _FileLock:
     def __enter__(self):
         try:
             import fcntl
-            self.fh = open(self.path, "a+")
+            self.fh = open(self.path, "a+", encoding = "utf-8")
             fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
         except Exception:  # noqa: BLE001 - no lock means last writer wins, still atomic per file
             if self.fh is not None:
