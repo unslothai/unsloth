@@ -367,7 +367,7 @@ export function Q4nxConvertCard() {
     source === "hub" && repoId
       ? q4nxArchFit(
           hubResult?.ggufArchitecture ?? looked?.architecture,
-          repoId,
+          `${repoId} ${selectedVariant?.filename ?? ""}`,
         )
       : localRow
         ? q4nxArchFit(null, `${localRow.id} ${ggufPath ?? localRow.path}`)

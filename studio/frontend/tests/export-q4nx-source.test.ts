@@ -79,6 +79,15 @@ test("qwen2vl is Qwen2.5-VL only; a Qwen2-VL name is refused", () => {
     assert.equal(fit.status, "unsupported", name);
     assert.match(fit.note, /Qwen2-VL/);
   }
+  // A generic repo id with a Qwen2-VL file: the card passes "<repo> <filename>".
+  assert.equal(
+    q4nxArchFit("qwen2vl", "acme/vision-GGUF Qwen2-VL-2B-Instruct-Q4_0.gguf").status,
+    "unsupported",
+  );
+  assert.equal(
+    q4nxArchFit("qwen2vl", "acme/vision-GGUF Qwen2.5-VL-3B-Instruct-Q4_0.gguf").status,
+    "supported",
+  );
   // Local files have no architecture before conversion, so the name alone decides.
   for (const name of [
     "/models/Qwen2-VL-2B-Instruct-Q4_0.gguf",
