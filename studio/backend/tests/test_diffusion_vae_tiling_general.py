@@ -217,8 +217,7 @@ def test_kl_vae_takes_the_wide_tiles_for_an_edge_sliver():
     assert vt.stock_layout_ok(vt.stock_tiles(vae), 100, 100) is False
     stock_err, wide_err = _line_error(stock, untiled), _line_error(wide, untiled)
     assert wide_err < stock_err / 3, (stock_err, wide_err)
-    # two 60-latent tiles per side (120 decoded latents, as many as the stock 64 + 52 + 4, in 2 calls instead of 3),
-    # not two 64s with a 28-latent overlap (128)
+    # Two 60-latent tiles per side: 120 latents in 2 calls, beating stock 64+52+4 in 3.
     assert vae._unsloth_last_decode_tile[:2] == (60, 60)
 
 

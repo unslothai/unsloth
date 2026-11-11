@@ -310,7 +310,9 @@ test("every string the banner reaches for exists", () => {
   assert.match(gpu.mismatchCpuBuild, /\{version\}/);
   assert.match(gpu.mismatchUnavailable, /\{version\}/);
   assert.equal(t(NO_GPU), NO_GPU);
-  assert.match(gpu.noGpu, /No visible GPU detected/);
+  assert.match(gpu.noGpu, /No dedicated GPU detected/);
+  // Unified-memory hosts share the RAM shown above with a built-in GPU, so it is not "CPU-only".
+  assert.doesNotMatch(gpu.noGpu, /CPU-only/);
 });
 
 // start_managed_repair rejects external backends only after the shell already swapped screens.

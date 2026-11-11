@@ -177,6 +177,30 @@ export function denseTextEncoderBuildLabel(status: { dtype?: string | null }): s
   return status.dtype === "gguf" ? "As in checkpoint" : denseDtypeLabel(status.dtype);
 }
 
+const DENOISER_PLACEMENTS: Record<string, { label: string; detail: string }> = {
+  resident: {
+    label: "Transformer on GPU",
+    detail:
+      "The transformer stays on the GPU, so every denoise step runs at resident speed. Only components used once per prompt, such as the text encoders, stream from CPU.",
+  },
+  partial: {
+    label: "Transformer partly streamed",
+    detail:
+      "Part of the transformer stays on the GPU and the rest streams from CPU on every denoise step (slower than resident).",
+  },
+  streamed: {
+    label: "Transformer streamed",
+    detail:
+      "Every transformer block streams from CPU on every denoise step (slower than resident).",
+  },
+};
+
+export function denoiserPlacement(
+  denoiserOffload: string | null | undefined,
+): { label: string; detail: string } | null {
+  return (denoiserOffload && DENOISER_PLACEMENTS[denoiserOffload]) || null;
+}
+
 /** sd.cpp never runs the memory planner, so an absent `memory_mode` reports the offload alone. */
 export function memoryRecipeValue(
   memoryMode: string | null | undefined,

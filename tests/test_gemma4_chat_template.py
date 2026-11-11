@@ -275,14 +275,15 @@ def test_object_tool_result_renders_its_fields(name):
     )
 
 
+@pytest.mark.parametrize("name", ["gemma4_template", "gemma4_thinking_template"])
 @pytest.mark.parametrize("key", ["reasoning_content", "reasoning"])
-def test_final_turn_reasoning_becomes_the_thought_channel(key):
+def test_final_turn_reasoning_becomes_the_thought_channel(name, key):
     msgs = [
         {"role": "user", "content": "2+2?"},
         {"role": "assistant", "content": "4", "reasoning_content": "first"},
         {"role": "user", "content": "3+3?"},
         {"role": "assistant", "content": "6", key: "3+3=6"},
     ]
-    out = _render("gemma4_template", msgs)
+    out = _render(name, msgs)
     assert "first" not in out
     assert out.endswith("<|turn>model\n<|channel>thought\n3+3=6\n<channel|>6<turn|>\n")

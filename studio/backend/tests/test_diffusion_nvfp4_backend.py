@@ -429,6 +429,9 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
     import sys
     import types
 
+    # The per-length legacy mode; the bucketed default is covered in test_diffusion_nvfp4_tactics.py.
+    monkeypatch.setenv("UNSLOTH_NVFP4_TACTIC_CACHE", "0")
+
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_linear as nl
 
@@ -492,6 +495,9 @@ def test_the_first_call_tune_runs_before_the_cached_dispatch_plan_is_built(monke
     import contextlib
     import sys
     import types
+
+    # Legacy mode only: the bucketed plan tunes its own bucket (test_diffusion_nvfp4_tactics.py).
+    monkeypatch.setenv("UNSLOTH_NVFP4_TACTIC_CACHE", "0")
 
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_dispatch as dispatch
