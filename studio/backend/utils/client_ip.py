@@ -155,13 +155,11 @@ def _host_header_is_loopback(host_header: str | None) -> bool:
     return host == "localhost" or _is_loopback_ip(host)
 
 
-# Opt-in: public hostnames a reverse proxy on this computer (cloudflared, nginx, Caddy) serves Studio at.
 _PROXY_HOSTS_ENV = "UNSLOTH_STUDIO_PROXY_HOSTS"
 _DNS_NAME = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)*")
 
 
 def _authority_hostname(value: str | None) -> str | None:
-    """Lowercased DNS name of a ``host[:port]`` authority; None for IP literals, ``localhost`` and junk."""
     host = (value or "").strip().lower()
     if "://" in host:  # tolerate a pasted URL in the setting
         host = host.split("://", 1)[1].split("/", 1)[0]
@@ -170,7 +168,7 @@ def _authority_hostname(value: str | None) -> str | None:
         if not port.isdigit():
             return None
     host = host.rstrip(".")
-    # Names only: loopback and IP literals have their own gates, and a wildcard would admit any rebound name.
+    # Names only: a wildcard would admit any rebound name.
     if host == "localhost" or not _DNS_NAME.fullmatch(host):
         return None
     try:
@@ -181,17 +179,14 @@ def _authority_hostname(value: str | None) -> str | None:
 
 
 def trusted_proxy_hosts() -> frozenset[str]:
-    """Hostnames from ``UNSLOTH_STUDIO_PROXY_HOSTS`` (comma or space separated); empty unless opted in."""
     raw = os.environ.get(_PROXY_HOSTS_ENV, "")
     names = (_authority_hostname(entry) for entry in raw.replace(",", " ").split())
     return frozenset(name for name in names if name)
 
 
 def request_via_trusted_proxy(scope) -> bool:
-    """A loopback connection from a local reverse proxy naming an allowlisted public hostname.
-
-    ``Host`` must be loopback or allowlisted and every ``X-Forwarded-Host`` entry allowlisted: a page on a
-    rebound name sends that name as ``Host``, so it cannot borrow the allowlist through a header it sets."""
+    """Local reverse proxy for an allowlisted name. Host must be loopback or allowlisted: a DNS-rebound page
+    sends its own name as Host, so it cannot borrow the allowlist via X-Forwarded-Host."""
     allowed = trusted_proxy_hosts()
     if not allowed or not isinstance(scope, dict):
         return False
