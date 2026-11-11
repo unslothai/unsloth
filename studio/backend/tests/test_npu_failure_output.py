@@ -400,7 +400,7 @@ def test_flm_output_is_kept_only_while_a_load_is_open(tmp_path):
     loading = _flm("Info", "[FLM]  Loading model: Qwen3.6-35B-A3B-NPU2")
     own = _line("Info", "Router", "Model loaded")
 
-    with server.backend_output():
+    with server.backend_output(server.open_window()):
         server._drain(SimpleNamespace(stdout = [loading + "\n"]), None)
     server._drain(SimpleNamespace(stdout = [prompt + "\n", own + "\n"]), handle)
 
@@ -441,3 +441,52 @@ def test_a_restart_never_inherits_debug_from_the_saved_config(tmp_path):
     server._write_config()
     saved = json.loads((server.config_dir / "config.json").read_text(encoding = "utf-8"))
     assert saved["log_level"] == "info"
+
+
+def _level_calls(server, monkeypatch) -> list[str]:
+    calls: list[str] = []
+
+    def post(url, *, json, **kwargs):
+        calls.append(json["log_level"])
+        return httpx.Response(200, json = {"status": "success"})
+
+    server.port = 4242
+    monkeypatch.setattr(server, "is_alive", lambda: True)
+    monkeypatch.setattr(server, "_client", SimpleNamespace(post = post))
+    return calls
+
+
+def test_a_load_that_starts_during_a_chat_leaves_lemond_at_info(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    calls = _level_calls(server, monkeypatch)
+    chat = server.open_window()
+    prompt = _flm("Info", '        "content": "my secret ...lan for today"')
+
+    with server.backend_output(server.open_window()):
+        _prints(server, prompt)
+
+    assert chat.shared
+    assert calls == []
+    assert server.output_since(0, settle = 0) == []
+
+
+def test_a_chat_that_joins_a_load_keeps_its_content_out_of_the_log(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    calls = _level_calls(server, monkeypatch)
+    loading = _flm("Info", "[FLM]  Loading model: Qwen3.6-35B-A3B-NPU2")
+    failed = _line("Error", "Router", "Backend load failed: FastFlowLM failed to start")
+
+    with server.backend_output(server.open_window()):
+        _prints(server, loading)
+        chat = server.open_window()
+        _prints(
+            server,
+            _flm("Info", '        "content": "my secret ...lan for today"'),
+            _line("Debug", "Server", "Message content: my secret plan for today"),
+            "and its second line",
+            failed,
+        )
+
+    assert chat.shared
+    assert calls == ["debug", "info"]
+    assert server.output_since(0, settle = 0) == [loading, failed]

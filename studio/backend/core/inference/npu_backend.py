@@ -808,7 +808,7 @@ class LemonadeNpuBackend:
                 self._raise_if_load_cancelled(model_id)
                 server.note(f"Loading {model.id} with a {ctx}-token context")
                 window = server.open_window()
-                with server.backend_output():
+                with server.backend_output(window):
                     response = server.request(
                         "POST",
                         "/v1/load",

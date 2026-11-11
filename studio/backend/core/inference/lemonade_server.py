@@ -65,8 +65,9 @@ _PORT_TAKEN = re.compile(
 )
 
 
-# How lemond relays a backend's own stdout and stderr: "<date> <time> [Info] (Process) <line>".
-_BACKEND_LINE = re.compile(r"\[\w+\] \(Process\) ")
+# lemond's console format, "<date> <time> [Info] (Router) <message>". It relays a backend's own
+# stdout and stderr under the tag Process.
+_LEMOND_LINE = re.compile(r"\[(\w+)\] \(([^)]*)\) ")
 _ANSI_COLOR = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -117,7 +118,7 @@ class LemonadeServer:
         self._lines_seen = 0
         self._tail_lock = threading.Lock()
         self._windows: weakref.WeakSet[OutputWindow] = weakref.WeakSet()
-        self._keep_backend_output = False
+        self._load_window: Optional[OutputWindow] = None
         self._drain_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         # stop() sets it without the lock, which start() holds while waiting for readiness.
@@ -183,17 +184,32 @@ class LemonadeServer:
         return tail[-count:] if count > 0 else []
 
     @contextmanager
-    def backend_output(self):
+    def backend_output(self, window: OutputWindow):
         """Keep the backend's own output (FastFlowLM's reason for a failed load) while this is open.
         lemond only relays it for a backend started at debug, where lemond also logs chat content,
-        and flm prints part of every prompt, so both stay off outside a load."""
+        and flm prints part of every prompt, so both stay off outside a load, and a load that
+        overlaps a chat (``window`` is shared) goes without."""
+        if window.shared:
+            yield
+            return
         self._set_log_level("debug")
-        self._keep_backend_output = True
+        self._load_window = window
         try:
             yield
         finally:
-            self._keep_backend_output = False
+            self._load_window = None
             self._set_log_level("info")
+
+    def _keeps(self, line: str) -> bool:
+        window = self._load_window
+        if window is not None and not window.shared:
+            return True
+        match = _LEMOND_LINE.search(line)
+        severity, tag = match.groups() if match else ("", "")
+        if window is None:
+            return tag != "Process"
+        # A chat joined the load while lemond is at debug: only lemond's own lines, info and up.
+        return bool(match) and tag != "Process" and severity not in ("Trace", "Debug")
 
     def _set_log_level(self, level: str) -> None:
         if not self.is_alive():
@@ -383,7 +399,7 @@ class LemonadeServer:
             assert proc.stdout is not None
             for raw in proc.stdout:
                 line = _ANSI_COLOR.sub("", raw).rstrip()
-                if line and (self._keep_backend_output or not _BACKEND_LINE.search(line)):
+                if line and self._keeps(line):
                     with self._tail_lock:
                         self._tail.append(line)
                         self._lines_seen += 1
