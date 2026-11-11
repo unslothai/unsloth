@@ -201,6 +201,11 @@ function sampleFill(viewport: HTMLElement): FillSample | null {
   };
 }
 
+/** Scrolled to the top of a scrollable viewport: no native scroll is left to protect. */
+function atMountedTop(viewport: HTMLElement | null): boolean {
+  return viewport != null && viewport.scrollTop <= 1 && viewport.scrollHeight > viewport.clientHeight + 1;
+}
+
 function isAnchorVisible(viewport: HTMLElement, element: Element): boolean {
   const box = element.getBoundingClientRect();
   const fold = viewport.getBoundingClientRect().top;
@@ -343,8 +348,9 @@ function useProgressiveMountWindow(
         setMountWindow(null);
         return;
       }
-      // A prepend's instant anchor correction also interrupts native wheel momentum.
-      if (scrollActivity.current?.blocked(inputPointerHeld())) {
+      // A prepend's instant anchor correction also interrupts native wheel momentum, except for a
+      // reader already stopped at the top of the mounted rows: waiting would only hold them there.
+      if (scrollActivity.current?.blocked(inputPointerHeld(), atMountedTop(viewportRef.current))) {
         frame = requestAnimationFrame(advance);
         return;
       }

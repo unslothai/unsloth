@@ -27,7 +27,8 @@ export function watchProgressiveScroll(
 ) {
   // Let the initial tail paint before starting background work.
   let resumeAt = now() + 300;
-  const pause = () => { resumeAt = now() + 300; };
+  let inputSeen = false;
+  const pause = () => { inputSeen = true; resumeAt = now() + 300; };
   const onScroll = () => { if (now() < resumeAt) pause(); };
   const onKey = (event: Event) => {
     const key = event as KeyboardEvent;
@@ -45,8 +46,15 @@ export function watchProgressiveScroll(
     viewport.addEventListener(type, listener, { capture: true, passive: true });
   }
   return {
-    blocked(pointerHeld: boolean): boolean {
+    /**
+     * `atTop`: the reader is stopped at the top of the mounted rows. Wheel, key and touch input
+     * then has no momentum left to interrupt, and waiting only holds them against the frontier, so
+     * it does not block. Not before the first input (the initial tail still paints first), and
+     * never while a pointer is held: a scrollbar drag maps the pointer to scrollTop.
+     */
+    blocked(pointerHeld: boolean, atTop = false): boolean {
       if (pointerHeld) pause();
+      if (atTop && !pointerHeld && inputSeen) return false;
       return now() < resumeAt;
     },
     dispose() {
