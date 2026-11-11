@@ -97,6 +97,7 @@ class LemonadeServer:
         self._tail: deque[str] = deque(maxlen = 200)
         # Never reset, so a mark taken before a restart still counts the new lines.
         self._lines_seen = 0
+        self._tail_lock = threading.Lock()
         self._drain_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         # stop() sets it without the lock, which start() holds while waiting for readiness.
@@ -141,9 +142,10 @@ class LemonadeServer:
             # Nothing yet means the drain may still be behind: keep waiting to the deadline.
             elif seen > mark and time.monotonic() - changed >= quiet_for:
                 break
-        # Copy before counting: a line drained in between would shift the window past the mark.
-        tail = list(self._tail)
-        count = min(self._lines_seen - mark, lines)
+        # One snapshot: a line drained between the two reads would shift the window.
+        with self._tail_lock:
+            tail = list(self._tail)
+            count = min(self._lines_seen - mark, lines)
         return tail[-count:] if count > 0 else []
 
     def headers(self) -> dict[str, str]:
@@ -222,7 +224,8 @@ class LemonadeServer:
             "disabled",
         ]
         logger.info("Starting Lemonade: %s", " ".join(cmd))
-        self._tail.clear()
+        with self._tail_lock:
+            self._tail.clear()
         log_file = self._open_log_file(port, cmd)
 
         def _spawn() -> subprocess.Popen:
@@ -318,8 +321,9 @@ class LemonadeServer:
             for raw in proc.stdout:
                 line = raw.rstrip()
                 if line:
-                    self._tail.append(line)
-                    self._lines_seen += 1
+                    with self._tail_lock:
+                        self._tail.append(line)
+                        self._lines_seen += 1
                     logger.debug("[lemond] %s", line)
                     if log_file is not None:
                         self._write_log(line, log_file)
