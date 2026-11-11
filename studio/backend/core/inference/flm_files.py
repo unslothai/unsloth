@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, BinaryIO, Iterator, Optional
 
 import httpx
 
@@ -27,8 +27,8 @@ _CHUNK = 1 << 20
 _MAX_STALLED_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 2.0
 _RETRIED_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
-# An empty lock this old is a crash between create and write, not a writer still starting.
-_EMPTY_LOCK_GRACE_SECONDS = 10.0
+# Past the PID text: a Windows byte lock also blocks reads, and a waiter reads who holds it.
+_LOCK_OFFSET = 64
 
 
 class FlmDownloadError(RuntimeError):
@@ -153,41 +153,38 @@ def _matches(path: Path, file: FlmFile, cancel: threading.Event) -> bool:
     return digest.hexdigest() == file.digest
 
 
-def _pid_alive(pid: int) -> bool:
-    import psutil
-    return psutil.pid_exists(pid)
+def _try_lock(handle: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+        handle.seek(_LOCK_OFFSET)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-def _acquire_lock(model: FlmModelFiles) -> Path:
-    """One downloader per model across processes on this home; a dead owner's lock is taken over."""
+def _acquire_lock(model: FlmModelFiles) -> BinaryIO:
+    """One downloader per model across processes on this home. An OS lock, so a process that dies
+    releases it and no stale-lock cleanup can race a live owner."""
     # Beside the folder, not in it: FastFlowLM owns the folder's contents.
-    lock = model.folder.with_name(model.folder.name + ".unsloth-download.lock")
-    for _ in range(3):
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            try:
-                text = lock.read_text(encoding = "utf-8").strip()
-                age = time.time() - lock.stat().st_mtime
-            except OSError:
-                continue  # released between the open and the read
-            pid = int(text) if text.isdigit() else None
-            if pid is None:
-                busy = age < _EMPTY_LOCK_GRACE_SECONDS
-            else:
-                busy = _pid_alive(pid)
-            if busy:
-                owner = f" (PID {pid})" if pid is not None else ""
-                raise FlmDownloadError(
-                    f"This model is already downloading in another Unsloth Studio process{owner}."
-                )
-            logger.info("Removing stale download lock %s left by PID %s", lock, pid)
-            lock.unlink(missing_ok = True)
-            continue
-        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
-            handle.write(str(os.getpid()))
-        return lock
-    raise FlmDownloadError("Could not lock this model's download folder; try again.")
+    # Unbuffered: a buffered read would reach the locked byte.
+    path = model.folder.with_name(model.folder.name + ".unsloth-download.lock")
+    handle = open(path, "a+b", buffering = 0)
+    try:
+        _try_lock(handle)
+    except OSError:
+        handle.seek(0)
+        owner = handle.read(32).decode("ascii", "ignore").strip()
+        handle.close()
+        owner = f" (PID {owner})" if owner.isdigit() else ""
+        raise FlmDownloadError(
+            f"This model is already downloading in another Unsloth Studio process{owner}."
+        ) from None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()).encode("ascii"))
+    handle.flush()
+    return handle
 
 
 def _gb(size: int) -> str:
@@ -282,7 +279,8 @@ def download_files(
     finally:
         if owned and client is not None:
             client.close()
-        lock.unlink(missing_ok = True)
+        # Left in place: unlinking a held lock lets a newcomer lock a fresh file beside it.
+        lock.close()
 
 
 def _resumed_from(response: httpx.Response) -> Optional[int]:

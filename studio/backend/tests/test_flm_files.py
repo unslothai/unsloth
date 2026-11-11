@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -376,35 +378,46 @@ def test_cancel_also_stops_a_rehash(files, tmp_path):
     assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
 
 
-def _lock(tmp_path: Path) -> Path:
-    return tmp_path.with_name(tmp_path.name + ".unsloth-download.lock")
+def _hold_lock_in_another_process(folder: Path) -> subprocess.Popen:
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; from core.inference import flm_files as ff; "
+            "held = ff._acquire_lock(ff.FlmModelFiles(Path(sys.argv[1]), ())); "
+            "print('held', flush=True); sys.stdin.read()",
+            str(folder),
+        ],
+        cwd = Path(ff.__file__).parents[2],
+        stdin = subprocess.PIPE,
+        stdout = subprocess.PIPE,
+        text = True,
+    )
+    assert holder.stdout.readline().strip() == "held"
+    return holder
 
 
-def test_a_second_process_on_the_same_model_is_told_it_is_downloading(files, tmp_path, monkeypatch):
-    monkeypatch.setattr(ff, "_pid_alive", lambda pid: pid == 4242)
-    _lock(tmp_path).write_text("4242")
-    with pytest.raises(ff.FlmDownloadError, match = r"already downloading .*\(PID 4242\)"):
-        list(ff.download_files(files.model(tmp_path)))
-    assert files.ranges == []
-    assert _lock(tmp_path).read_text() == "4242"
-
-
-def test_a_lock_left_by_a_dead_process_is_taken_over_and_released(files, tmp_path, monkeypatch):
-    monkeypatch.setattr(ff, "_pid_alive", lambda pid: False)
-    _lock(tmp_path).write_text("4242")
-    model = files.model(tmp_path)
-    downloading = ff.download_files(model)
-    next(downloading)
-    assert _lock(tmp_path).read_text() == str(os.getpid())
-    list(downloading)
-    assert not _lock(tmp_path).exists()
+def test_a_second_process_is_refused_and_a_dead_ones_lock_does_not_block(files, tmp_path):
+    holder = _hold_lock_in_another_process(tmp_path)
+    try:
+        # not holder.pid: a venv's python.exe on Windows is a launcher for the real one
+        with pytest.raises(ff.FlmDownloadError, match = r"already downloading .*\(PID \d+\)") as busy:
+            list(ff.download_files(files.model(tmp_path)))
+        assert f"(PID {os.getpid()})" not in str(busy.value)
+        assert files.ranges == []
+    finally:
+        holder.kill()
+        holder.wait()
+    # the OS dropped the dead process's lock; its PID is still written in the file
+    list(ff.download_files(files.model(tmp_path)))
     assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
 
 
-def test_a_fresh_empty_lock_counts_as_held(files, tmp_path):
-    _lock(tmp_path).write_text("")
-    with pytest.raises(ff.FlmDownloadError, match = "already downloading"):
-        list(ff.download_files(files.model(tmp_path)))
-    os.utime(_lock(tmp_path), (0, 0))
-    list(ff.download_files(files.model(tmp_path)))
-    assert not _lock(tmp_path).exists()
+def test_one_process_cannot_run_the_same_model_twice(files, tmp_path):
+    model = files.model(tmp_path)
+    first = ff.download_files(model)
+    next(first)
+    with pytest.raises(ff.FlmDownloadError, match = rf"already downloading .*\(PID {os.getpid()}\)"):
+        list(ff.download_files(model))
+    list(first)
+    list(ff.download_files(model))
