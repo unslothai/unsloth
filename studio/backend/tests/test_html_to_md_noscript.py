@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -76,3 +77,16 @@ def test_enable_javascript_notice_alone_is_not_readable_text():
     assert _render_page(("html", "https://app.example/", page), 20000) == (
         "(page returned no readable text)"
     )
+
+
+@pytest.mark.parametrize("attr", ["hidden", 'aria-hidden="true"', 'style="display:none"'])
+def test_hidden_noscript_stays_hidden(attr):
+    page = _SHELL.format(f"<noscript {attr}><p>{_POST}</p></noscript>")
+    assert html_to_markdown(page, main_content = True) == ""
+
+
+def test_unterminated_noscript_tags_convert_in_linear_time():
+    page = "<head>" + "<noscript " * 40000
+    start = time.perf_counter()
+    assert html_to_markdown(page, main_content = True) == ""
+    assert time.perf_counter() - start < 3
