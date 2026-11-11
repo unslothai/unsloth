@@ -16,6 +16,8 @@ import {
   q4nxNpuMemory,
   q4nxParamsFromName,
   q4nxQuantLabel,
+  q4nxQuantName,
+  q4nxSummaryRows,
   q4nxToggleExpanded,
   q4nxVariantLookup,
   q4nxWeights,
@@ -280,4 +282,92 @@ test("without a window from the server the line shows the need alone and never w
     assert.equal(q4nxMemoryWarning(memory, windowGb), null);
   }
   assert.equal(q4nxNpuMemory(null, 16), null);
+});
+
+test("a size the converter has no model for is refused by name, before any download", () => {
+  // Qwen3.8 27B reports the qwen35 architecture, which converts only at 0.8B, 2B, 4B and 9B.
+  const big = q4nxArchFit("qwen35", "unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-Q4_0.gguf");
+  assert.equal(big.status, "unsupported");
+  assert.equal(big.status === "unsupported" && big.sized, true);
+  assert.match(big.note ?? "", /27B model\. Only Qwen3\.5 0\.8B, 2B, 4B, 9B and Omni convert\./);
+  // A size on the list needs no caveat.
+  for (const name of ["unsloth/Qwen3.5-4B-GGUF", "unsloth/Qwen3.5-0.8B-GGUF", "acme/Qwen3.5-Omni-GGUF"]) {
+    assert.deepEqual(q4nxArchFit("qwen35", name), { status: "supported", note: null }, name);
+  }
+  // No size in the name: the caveat stays a note.
+  const unnamed = q4nxArchFit("qwen35", "acme/my-finetune-GGUF");
+  assert.equal(unnamed.status, "supported");
+  assert.match(unnamed.note ?? "", /0\.8B, 2B, 4B, 9B/);
+  assert.deepEqual(q4nxArchFit("qwen35moe", "unsloth/Qwen3.6-35B-A3B-GGUF"), {
+    status: "supported",
+    note: null,
+  });
+  assert.equal(q4nxArchFit("qwen35moe", "acme/Qwen3.5-122B-A10B-GGUF").status, "unsupported");
+  // An architecture with no size list is never refused by size.
+  assert.equal(q4nxArchFit("llama", "meta/Llama-3.3-70B-GGUF").status, "supported");
+  // An unsupported architecture is not a size refusal.
+  const arch = q4nxArchFit("qwen3moe", "acme/x-30B-GGUF");
+  assert.equal(arch.status === "unsupported" && arch.sized, undefined);
+});
+
+test("the quant is named alone, out of a variant key or a file stem", () => {
+  assert.equal(q4nxQuantName("Q4_K_M"), "Q4_K_M");
+  assert.equal(q4nxQuantName("Qwen3-0.6B-Q4_1"), "Q4_1");
+  assert.equal(q4nxQuantName("snapshots/abc/m-UD-Q4_K_XL"), "UD-Q4_K_XL");
+  assert.equal(q4nxQuantName("Qwen3.5-4B-BF16"), "BF16");
+  assert.equal(q4nxQuantName("model"), "model");
+});
+
+test("the export summary describes the conversion: source, file and quant, output, size, memory fit and convertibility", () => {
+  const rows = (input: Parameters<typeof q4nxSummaryRows>[0]) =>
+    Object.fromEntries(q4nxSummaryRows(input).map((row) => [row.label, row.value]));
+  const picked = {
+    model: "unsloth/Qwen3.5-4B-GGUF",
+    file: "Qwen3.5-4B-Q4_K_M.gguf",
+    quant: "Q4_K_M",
+    baseModel: "Qwen/Qwen3.5-4B",
+    saveDirectory: "q4nx",
+    size: "2.7 GB",
+    memory: { fits: true, label: "3.6 of 30.8 GB NPU" },
+    archFit: q4nxArchFit("qwen35", "unsloth/Qwen3.5-4B-GGUF"),
+  };
+  assert.deepEqual(rows(picked), {
+    Model: "unsloth/Qwen3.5-4B-GGUF",
+    "GGUF file": "Qwen3.5-4B-Q4_K_M.gguf",
+    Quant: "Q4_K_M, packs directly",
+    "Original model": "Qwen/Qwen3.5-4B",
+    "Save directory": "q4nx",
+    "Est. Q4NX size": "2.7 GB",
+    "NPU memory": "3.6 of 30.8 GB NPU",
+    Convertible: "Yes",
+  });
+  assert.equal(
+    rows({ ...picked, archFit: q4nxArchFit("phi3", "acme/phi-GGUF") }).Convertible,
+    "Only Phi-4 mini converts.",
+  );
+
+  const over = rows({
+    ...picked,
+    quant: "Q8_0",
+    memory: { fits: false, label: "~16.5 of 16.0 GB NPU" },
+    archFit: q4nxArchFit("qwen35", "unsloth/Qwen3.8-27B-GGUF"),
+  });
+  assert.equal(over.Quant, "Q8_0, re-quantized to 4-bit");
+  assert.equal(over["NPU memory"], "May not fit: ~16.5 of 16.0 GB NPU");
+  assert.equal(over.Convertible, "No");
+
+  assert.equal(rows({ ...picked, archFit: q4nxArchFit("llama") }).Convertible, "Yes");
+  assert.equal(rows({ ...picked, archFit: q4nxArchFit(null) }).Convertible, "Checked during conversion");
+
+  const empty = rows({
+    model: null,
+    file: null,
+    quant: null,
+    baseModel: " ",
+    saveDirectory: "",
+    size: null,
+    memory: null,
+    archFit: null,
+  });
+  assert.deepEqual([...new Set(Object.values(empty))], ["\u2014"]);
 });

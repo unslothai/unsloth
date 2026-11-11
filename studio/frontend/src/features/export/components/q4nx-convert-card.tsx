@@ -54,6 +54,7 @@ import {
   q4nxNpuMemory,
   q4nxParamsFromName,
   q4nxQuantLabel,
+  q4nxSummaryRows,
   q4nxToggleExpanded,
   q4nxVariantLookup,
   q4nxWeights,
@@ -161,7 +162,20 @@ function ModelFiles({
   );
 }
 
-export function Q4nxConvertCard() {
+/** The card's data-tour value, which the export page uses to tell the card is in use. */
+export const Q4NX_CARD_MARK = "export-q4nx";
+
+export interface Q4nxSummary {
+  ready: boolean;
+  rows: ReturnType<typeof q4nxSummaryRows>;
+}
+
+export function Q4nxConvertCard({
+  onSummary,
+}: {
+  /** Feeds the export page's summary panel; pass a stable function. */
+  onSummary?: (summary: Q4nxSummary) => void;
+}) {
   const hfToken = useHfTokenStore((s) => s.token);
   const accessToken = hfApiToken(hfToken);
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
@@ -227,14 +241,15 @@ export function Q4nxConvertCard() {
 
   const hubRows = useMemo(() => {
     const rows: SourceRow[] = hubResults
-      .filter(
-        (r) => q4nxArchFit(r.ggufArchitecture, r.id).status !== "unsupported",
-      )
-      .map((r) => ({
+      .map((r) => ({ r, fit: q4nxArchFit(r.ggufArchitecture, r.id) }))
+      // An unsupported architecture is left out; an unsupported size of a supported one stays, marked.
+      .filter(({ fit }) => fit.status !== "unsupported" || fit.sized)
+      .map(({ r, fit }) => ({
         id: r.id,
         label: r.id,
         listingKey: q4nxVariantLookup("hub", r.id, null).key,
         folder: null,
+        hint: fit.status === "unsupported" ? "Not convertible" : undefined,
         totalParams: r.totalParams ?? q4nxParamsFromName(r.id),
       }));
     // A typed repo id the search does not return is used as is; the pick stays listed.
@@ -322,8 +337,13 @@ export function Q4nxConvertCard() {
     for (const row of rows) {
       if (inFlight.current.size >= LISTING_WORKERS) return;
       const key = row.listingKey;
-      // Local folders are listed up front so a closed row can show its memory need; Hub rows estimate it from the parameter count until opened.
-      if (!key || (source === "hub" && !q4nxIsExpanded(expansion, row.id))) {
+      // Local folders are listed up front so a closed row can show its memory need; Hub rows estimate it from the parameter count until opened or picked.
+      if (
+        !key ||
+        (source === "hub" &&
+          row.id !== repoId &&
+          !q4nxIsExpanded(expansion, row.id))
+      ) {
         continue;
       }
       if (listings[key] || inFlight.current.has(key)) continue;
@@ -358,7 +378,7 @@ export function Q4nxConvertCard() {
           }),
         );
     }
-  }, [source, rows, expansion, listings, accessToken]);
+  }, [source, rows, repoId, expansion, listings, accessToken]);
 
   const selectedRow = rows.find((row) => row.id === selectedId) ?? null;
   const selectedList = selectedRow?.listingKey
@@ -462,6 +482,7 @@ export function Q4nxConvertCard() {
           size_bytes: row.sizeBytes ?? 0,
         },
         [],
+        row.totalParams,
       );
     }
     const list = listings[row.listingKey]?.list ?? [];
@@ -477,6 +498,45 @@ export function Q4nxConvertCard() {
         : rowMemory(selectedRow)
       : null;
   const memoryWarning = q4nxMemoryWarning(selectedMemory, windowGb);
+
+  const selectedFile = sourceReady
+    ? fileName(source === "hub" ? filename : (ggufPath ?? ""))
+    : null;
+  const summaryModel = source === "hub" ? repoId : (localRow?.label ?? "");
+  const summaryQuant = sourceReady
+    ? (selectedVariant?.quant ??
+      fileName(ggufPath ?? "").replace(GGUF_FILE_RE, ""))
+    : null;
+  const selectedWeights =
+    sourceReady && selectedRow
+      ? q4nxWeights(
+          selectedVariant ?? {
+            filename: ggufPath ?? "",
+            quant: summaryQuant ?? "",
+            size_bytes: selectedRow.sizeBytes,
+          },
+          selectedList,
+          selectedRow.totalParams,
+        )
+      : null;
+  const summarySize = selectedWeights
+    ? `${selectedWeights.estimated ? "~" : ""}${formatFootprintBytes(selectedWeights.bytes)}`
+    : null;
+  // Serialized so the page hears about a change of content, not every render.
+  const summaryJson = JSON.stringify({
+    ready: canConvert,
+    rows: q4nxSummaryRows({
+      model: summaryModel,
+      file: selectedFile,
+      quant: summaryQuant,
+      baseModel: effectiveBase,
+      saveDirectory,
+      size: summarySize,
+      memory: selectedMemory,
+      archFit,
+    }),
+  } satisfies Q4nxSummary);
+  useEffect(() => onSummary?.(JSON.parse(summaryJson)), [onSummary, summaryJson]);
 
   async function handleConvert() {
     setRunning(true);
@@ -505,9 +565,6 @@ export function Q4nxConvertCard() {
   }
 
   const loadingRows = source === "hub" ? searchingHub : loadingLocal;
-  const selectedFile = sourceReady
-    ? fileName(source === "hub" ? filename : (ggufPath ?? ""))
-    : null;
 
   const renderVariants = (row: SourceRow) => {
     const listing = row.listingKey ? listings[row.listingKey] : undefined;
@@ -534,7 +591,7 @@ export function Q4nxConvertCard() {
     }
     return listing.list.map((v) => {
       const picked = row.id === selectedId && v.filename === filename;
-      const memory = variantMemory(v, listing.list);
+      const memory = variantMemory(v, listing.list, row.totalParams);
       return (
         <div key={v.filename}>
           <button
@@ -584,6 +641,7 @@ export function Q4nxConvertCard() {
 
   return (
     <SectionBox
+      dataTour={Q4NX_CARD_MARK}
       icon={CpuIcon}
       chipTint="var(--chart-1)"
       title="Convert a GGUF to Q4NX (AMD NPU)"
@@ -668,10 +726,20 @@ export function Q4nxConvertCard() {
                           pick(row.id, "");
                           return;
                         }
-                        setToggled({
-                          key: expansionKey,
-                          ids: q4nxToggleExpanded(expansion, row.id).toggled,
-                        });
+                        const next = q4nxToggleExpanded(expansion, row.id);
+                        setToggled({ key: expansionKey, ids: next.toggled });
+                        // Reopening a model whose files failed to list asks again.
+                        const key = row.listingKey;
+                        if (q4nxIsExpanded(next, row.id) && listings[key]?.error) {
+                          setListed((prev) => ({
+                            ...prev,
+                            byKey: Object.fromEntries(
+                              Object.entries(prev.byKey).filter(
+                                ([k]) => k !== key,
+                              ),
+                            ),
+                          }));
+                        }
                       }}
                     />
                     {!row.listingKey && selected && (

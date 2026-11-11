@@ -23,6 +23,12 @@ const Q4NX_ARCHITECTURES: Record<string, string | null> = {
   nanbeige: null,
 };
 
+// Parameter counts, in billions, behind the size caveats above. Qwen3.5 Omni is matched by name.
+const Q4NX_SIZES: Record<string, readonly number[]> = {
+  qwen35: [0.8, 2, 4, 9],
+  qwen35moe: [35],
+};
+
 // modelInfo fields for a typed repo. "gguf" is outside the SDK's expandable-key type but is forwarded to expand= as is.
 export const Q4NX_INFO_FIELDS = ["tags", "gguf"] as unknown as "tags"[];
 
@@ -68,9 +74,20 @@ export function q4nxBaseModel(
   return (repoId ?? "").trim().replace(/-GGUF$/i, "");
 }
 
+// "Qwen3.5-9B", "Qwen3-0.6B-GGUF"; in "35B-A3B" the first, total count wins.
+const NAME_PARAMS_RE = /(?:^|[^A-Za-z0-9.])(\d+(?:\.\d+)?)B(?![A-Za-z0-9])/i;
+
+/** Parameter count read off a model name, for a row with no count from the Hub. */
+export function q4nxParamsFromName(name: string): number | null {
+  const billions = Number(NAME_PARAMS_RE.exec(name)?.[1]);
+  return billions > 0 ? billions * 1e9 : null;
+}
+
 export type Q4nxArchFit =
   | { status: "supported"; note: string | null }
-  | { status: "unsupported" | "unknown"; note: string };
+  // `sized`: the architecture converts, this model's size does not.
+  | { status: "unsupported"; note: string; sized?: true }
+  | { status: "unknown"; note: string };
 
 // The converter finds no qwen2vl architecture name, so a Qwen2-VL basename falls to the dense qwen2 prefix.
 const QWEN2_VL_NAME = /(^|[\s/\\._-])qwen2[-_]?vl/i;
@@ -99,7 +116,22 @@ export function q4nxArchFit(
       note: `The Q4NX converter does not support the ${arch} architecture.`,
     };
   }
-  return { status: "supported", note: Q4NX_ARCHITECTURES[arch] };
+  const caveat = Q4NX_ARCHITECTURES[arch];
+  const sizes = Q4NX_SIZES[arch];
+  if (!sizes) return { status: "supported", note: caveat };
+  // A size named in the repo or file settles the caveat up front, not after the download.
+  const billions = (q4nxParamsFromName(name ?? "") ?? 0) / 1e9;
+  if (/omni/i.test(name ?? "") || sizes.includes(billions)) {
+    return { status: "supported", note: null };
+  }
+  if (billions) {
+    return {
+      status: "unsupported",
+      note: `The Q4NX converter does not support this ${billions}B model. ${caveat}`,
+      sized: true,
+    };
+  }
+  return { status: "supported", note: caveat };
 }
 
 /** Which listing the file picker shows. Only the active source counts: a picked local folder survives a switch to the Hub. */
@@ -147,15 +179,6 @@ export interface Q4nxWeights {
   bytes: number;
   /** Not the size of a file that packs directly. */
   estimated: boolean;
-}
-
-// "Qwen3.5-9B", "Qwen3-0.6B-GGUF"; in "35B-A3B" the first, total count wins.
-const NAME_PARAMS_RE = /(?:^|[^A-Za-z0-9.])(\d+(?:\.\d+)?)B(?![A-Za-z0-9])/i;
-
-/** Parameter count read off a model name, for a row with no count from the Hub. */
-export function q4nxParamsFromName(name: string): number | null {
-  const billions = Number(NAME_PARAMS_RE.exec(name)?.[1]);
-  return billions > 0 ? billions * 1e9 : null;
 }
 
 type SizedVariant = Q4nxVariant & { size_bytes?: number | null };
@@ -221,6 +244,72 @@ export function q4nxMemoryWarning(
 ): string | null {
   if (memory?.fits !== false || windowGb == null) return null;
   return `Needs about ${memory.neededGb.toFixed(1)} GB of NPU memory; this PC can give the NPU about ${windowGb.toFixed(1)} GB.`;
+}
+
+/** The quant alone ("Q4_K_M") out of a variant key or a file stem such as "Qwen3-0.6B-Q4_K_M". */
+export function q4nxQuantName(quant: string): string {
+  const label = q4nxQuantLabel(quant);
+  const match = /(?:^|[-_.])((?:UD-)?I?Q\d\w*|BF16|F16|F32)$/i.exec(label);
+  return match ? match[1].toUpperCase() : label;
+}
+
+export const Q4NX_GUIDE_STEPS = [
+  "Pick a GGUF model from Hugging Face or from this device",
+  "Choose its GGUF file: Q4_0, Q4_1 and Q4_K_M pack directly",
+  "Check the original model, which supplies the config and tokenizer",
+  "Click Convert to write the Q4NX files to the save directory",
+] as const;
+
+export interface Q4nxSummaryInput {
+  model: string | null;
+  /** The picked GGUF file's name and quant key; null until one is picked. */
+  file: string | null;
+  quant: string | null;
+  baseModel: string;
+  saveDirectory: string;
+  /** Formatted size of the converted weights. */
+  size: string | null;
+  memory: Pick<Q4nxMemory, "fits" | "label"> | null;
+  archFit: Q4nxArchFit | null;
+}
+
+/** The export page's summary rows while the Q4NX card is in use. */
+export function q4nxSummaryRows(
+  input: Q4nxSummaryInput,
+): { label: string; value: string; mono?: boolean }[] {
+  const { archFit, memory, quant } = input;
+  const dash = "\u2014";
+  return [
+    { label: "Model", value: input.model || dash },
+    { label: "GGUF file", value: input.file || dash },
+    {
+      label: "Quant",
+      value: quant
+        ? `${q4nxQuantName(quant)}, ${packsDirectly(quant) ? "packs directly" : "re-quantized to 4-bit"}`
+        : dash,
+    },
+    { label: "Original model", value: input.baseModel.trim() || dash },
+    { label: "Save directory", value: input.saveDirectory.trim() || dash },
+    { label: "Est. Q4NX size", value: input.size ?? dash },
+    {
+      label: "NPU memory",
+      value: memory
+        ? memory.fits === false
+          ? `May not fit: ${memory.label}`
+          : memory.label
+        : dash,
+    },
+    {
+      label: "Convertible",
+      value: !archFit
+        ? dash
+        : archFit.status === "unsupported"
+          ? "No"
+          : archFit.status === "unknown"
+            ? "Checked during conversion"
+            : (archFit.note ?? "Yes"),
+    },
+  ];
 }
 
 /** A local row's file: the row itself when it is a .gguf, else the variant inside its folder. */
