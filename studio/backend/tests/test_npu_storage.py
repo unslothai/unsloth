@@ -21,7 +21,12 @@ def _write(path: Path, size: int) -> Path:
     return path
 
 
-def _model(model_id: str, checkpoint: str, downloaded: bool = True, labels = ("chat",)) -> dict:
+def _model(
+    model_id: str,
+    checkpoint: str,
+    downloaded: bool = True,
+    labels = ("chat",),
+) -> dict:
     return {
         "id": model_id,
         "checkpoint": checkpoint,

@@ -747,7 +747,9 @@ class LemonadeNpuBackend:
         """Settings > Storage lists folders by checkpoint, chat models or not; lemond deletes by id."""
         try:
             model_ids = [
-                str(row.get("id")) for row in self._flm_rows() if row.get("checkpoint") == checkpoint
+                str(row.get("id"))
+                for row in self._flm_rows()
+                if row.get("checkpoint") == checkpoint
             ]
         except LemonadeUnavailable as exc:
             raise NpuError(str(exc)) from exc
