@@ -6348,6 +6348,67 @@ def _unsloth_gkd_dense_head(model):
     return head
 
 
+_UNSLOTH_GKD_TOKENIZER_PROBES = (
+    "Unsloth GKD tokenizer compatibility probe 7F4A.",
+    "The quick brown fox jumps over the lazy dog.",
+    "think reasoning 12345 !@#$%^&*()",
+    "こんにちは世界 Привет мир مرحبا بالعالم",
+)
+
+
+def _unsloth_gkd_tokenizer(processing_class):
+    """Return the text tokenizer from a tokenizer/processor/model reference, if one is available."""
+    if processing_class is None:
+        return None
+    tokenizer = getattr(processing_class, "tokenizer", None)
+    if tokenizer is not None:
+        return tokenizer
+    if callable(processing_class) and (
+        hasattr(processing_class, "get_vocab") or hasattr(processing_class, "encode")
+    ):
+        return processing_class
+    tokenizer = getattr(processing_class, "_saved_temp_tokenizer", None)
+    if tokenizer is not None:
+        return getattr(tokenizer, "tokenizer", tokenizer)
+    tokenizer = getattr(processing_class, "_tokenizer", None)
+    return getattr(tokenizer, "tokenizer", tokenizer) if tokenizer is not None else processing_class
+
+
+def _unsloth_gkd_probe_ids(tokenizer, text):
+    try:
+        encoded = tokenizer(text, add_special_tokens = False)
+        ids = encoded["input_ids"] if isinstance(encoded, dict) else getattr(encoded, "input_ids", encoded)
+        if hasattr(ids, "tolist"):
+            ids = ids.tolist()
+        while ids and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
+        return tuple(int(token_id) for token_id in ids)
+    except Exception:
+        return None
+
+
+def _unsloth_gkd_tokenizers_compatible(trainer, student, teacher):
+    """Return False for a known token-ID mismatch, True for matching probes, or None when unknown."""
+    student_tokenizer = _unsloth_gkd_tokenizer(
+        getattr(trainer, "processing_class", None)
+        or getattr(student, "_saved_temp_tokenizer", None)
+        or getattr(student, "_tokenizer", None)
+    )
+    teacher_tokenizer = _unsloth_gkd_tokenizer(
+        getattr(teacher, "_saved_temp_tokenizer", None) or getattr(teacher, "_tokenizer", None)
+    )
+    if student_tokenizer is None or teacher_tokenizer is None:
+        return None
+    for text in _UNSLOTH_GKD_TOKENIZER_PROBES:
+        student_ids = _unsloth_gkd_probe_ids(student_tokenizer, text)
+        teacher_ids = _unsloth_gkd_probe_ids(teacher_tokenizer, text)
+        if student_ids is None or teacher_ids is None:
+            return None
+        if student_ids != teacher_ids:
+            return False
+    return True
+
+
 def _unsloth_gkd_logit_transforms(model):
     """``(scale, softcap)`` exactly as the model's own forward applies them to its logits."""
     model_config = _unsloth_get_model_config(model)
@@ -6552,6 +6613,8 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
     if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
         return _unsloth_gkd_note_fallback(self, "vocab mismatch")
+    if _unsloth_gkd_tokenizers_compatible(self, unwrapped_student, unwrapped_teacher) is False:
+        return _unsloth_gkd_note_fallback(self, "tokenizer mismatch")
     # The JSD bypasses head calls, so head / global hooks would not fire; accelerate's _hf_hook is fine.
     if _unsloth_global_module_hooks() or any(
         _unsloth_gkd_head_hooks(head) for head in (student_head, teacher_head)
@@ -6740,6 +6803,9 @@ for _gkd_item in (
     _unsloth_gkd_jsd_supported,
     _unsloth_gkd_note_fallback,
     _unsloth_gkd_dense_head,
+    _unsloth_gkd_tokenizer,
+    _unsloth_gkd_probe_ids,
+    _unsloth_gkd_tokenizers_compatible,
     _unsloth_gkd_head_hooks,
     _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
@@ -6750,6 +6816,12 @@ for _gkd_item in (
 ):
     RL_PRE_ITEMS["gkd_trainer"].append(inspect.getsource(_gkd_item))
 RL_PRE_ITEMS["gkd_trainer"].append(
+    "_UNSLOTH_GKD_TOKENIZER_PROBES = (\n"
+    "    'Unsloth GKD tokenizer compatibility probe 7F4A.',\n"
+    "    'The quick brown fox jumps over the lazy dog.',\n"
+    "    'think reasoning 12345 !@#$%^&*()',\n"
+    "    'こんにちは世界 Привет мир مرحبا بالعالم',\n"
+    ")\n"
     "import re\n"
     "import inspect\n"
     "try:\n"
