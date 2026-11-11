@@ -8688,7 +8688,8 @@ def test_download_plan_for_minimax_h3_image_stages_the_encoder_its_loader_opens(
     assert "transformer/model-00001-of-00002.safetensors" in image
     if te_request is None:
         assert by_repo["unsloth/MiniMax-H3-FP8"] == [_H3_TE_INT8]
-        assert "MiniMaxAI/MiniMax-H3" not in by_repo
+        # The int8 encoder is built from the H3 repo's config, so a cache-only load needs it too.
+        assert by_repo["MiniMaxAI/MiniMax-H3"] == ["text_encoder/config.json"]
     else:
         assert "unsloth/MiniMax-H3-FP8" not in by_repo
         assert by_repo["MiniMaxAI/MiniMax-H3"] == [
@@ -8701,7 +8702,15 @@ def test_download_plan_for_minimax_h3_image_stages_the_encoder_its_loader_opens(
     "te_request, encoder_repos",
     [
         # The hosted repo answers but lists no int8 encoder.
-        (None, {"unsloth/MiniMax-H3-FP8": [_FakeSibling("other.gguf", GB)]}),
+        (
+            None,
+            {
+                "unsloth/MiniMax-H3-FP8": [_FakeSibling("other.gguf", GB)],
+                "MiniMaxAI/MiniMax-H3": [_FakeSibling("text_encoder/config.json", 900)],
+            },
+        ),
+        # The int8 file is listed, but the H3 repo holding its config cannot be.
+        (None, {"unsloth/MiniMax-H3-FP8": _H3_ENCODER_REPOS["unsloth/MiniMax-H3-FP8"]}),
         # The H3 repo cannot be listed at all (the fake raises for an unknown repo).
         ("none", {}),
     ],
@@ -8713,8 +8722,9 @@ def test_download_plan_for_minimax_h3_image_flags_an_encoder_it_could_not_list(
     must not read "nothing missing" as the model being fully available."""
     plan = _h3_image_download_plan(monkeypatch, tmp_path, encoder_repos, te_request)
     assert plan["plan_failed"] is True
-    staged = {e["repo_id"] for e in plan["entries"]}
-    assert staged == {"MiniMaxAI/MiniMax-H3-Image"}
+    staged = [f for e in plan["entries"] for f in e["files"]]
+    assert not [f for f in staged if f.startswith("text_encoder/") and f.endswith(".safetensors")]
+    assert _H3_TE_INT8 not in staged or "text_encoder/config.json" not in staged
 
 
 def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):

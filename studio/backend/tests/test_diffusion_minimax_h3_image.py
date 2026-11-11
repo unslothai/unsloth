@@ -1416,20 +1416,26 @@ def test_explicit_dit_schemes_are_honored_or_refused(h3i, monkeypatch):
     assert h3i.explicit_scheme_refusal("fp8", "cuda") is None
 
 
-def test_the_plan_scheme_counts_what_this_process_holds(h3i, monkeypatch):
+def test_the_plan_scheme_plans_the_whole_card(h3i, monkeypatch):
+    """The load evicts chat (another process, invisible to memory_reserved) before it reads free VRAM, so a plan on
+    today's free VRAM would stage int8 for a load that then takes bf16. A VRAM budget still wins."""
     import torch
 
     monkeypatch.delenv(h3i.VRAM_BUDGET_ENV, raising = False)
     seen = []
-    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (30.0, 500.0))
-    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda dev = None: 20e9)
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (20.0, 500.0))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev = None: (20e9, 80e9))
     monkeypatch.setattr(
         h3i,
         "resolve_dit_scheme",
-        lambda req, *, device, vram_gb, **kw: seen.append(vram_gb) or ("int8", "x"),
+        lambda req, *, device, vram_gb, **kw: seen.append(vram_gb) or (None, "x"),
     )
-    assert h3i.planned_dit_scheme(None, "cuda") == "int8"
-    assert seen == [pytest.approx(50.0)]
+    assert h3i.planned_dit_scheme(None, "cuda") is None
+    monkeypatch.setenv(h3i.VRAM_BUDGET_ENV, "24")
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (24.0, 500.0))
+    h3i.planned_dit_scheme(None, "cuda")
+    assert seen == [pytest.approx(80.0), pytest.approx(24.0)]
 
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])

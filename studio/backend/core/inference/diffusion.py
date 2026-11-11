@@ -6341,40 +6341,56 @@ class DiffusionBackend:
         hf_token: Optional[str],
         failures_out: Optional[list] = None,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
-        """The encoder a MiniMax-H3-Image load opens: the hosted int8 file, or the H3 repo's bf16 ``text_encoder/``,
-        never the image repo's bundled copy. An unlistable source stages nothing and is reported in ``failures_out``."""
+        """The encoder a MiniMax-H3-Image load opens: the hosted int8 file plus the H3 repo's
+        ``text_encoder/config.json`` it is built from, or the H3 repo's bf16 ``text_encoder/``; never the image repo's
+        bundled copy. An unlistable source stages nothing and is reported in ``failures_out``."""
+        from huggingface_hub import HfApi
+
         from .diffusion_minimax_h3_image import H3_IMAGE_TEXT_ENCODER_REPO, h3_image_te_scheme
         from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
 
         scheme = h3_image_te_scheme(text_encoder_quant)
-        repo = h3_te_quant_source(scheme) if scheme else H3_IMAGE_TEXT_ENCODER_REPO
-        wanted = (
-            (lambda name: name == h3_te_quant_filename(scheme))
-            if scheme
-            else (lambda name: name.startswith("text_encoder/"))
-        )
-        try:
-            from huggingface_hub import HfApi
-
-            info = hub_reachability.model_info(
-                HfApi(token = hf_token or None),
-                repo,
-                files_metadata = True,
-                skip_when_unreachable = False,
-            )
-            files = [
-                (s.rfilename, int(s.size))
-                for s in getattr(info, "siblings", None) or ()
-                if wanted(s.rfilename) and getattr(s, "size", None) is not None
-            ]
-            if not files:
-                raise FileNotFoundError(f"{repo} lists no MiniMax-H3-Image text encoder")
-        except Exception as exc:  # noqa: BLE001 -- unlisted: the load fetches the encoder inline
-            logger.warning("diffusion.h3_image_te_plan_failed: %s", exc)
-            if failures_out is not None:
-                failures_out.append(exc)
-            files = []
-        return {"text_encoder": (repo, files)}
+        if scheme:
+            wanted = {
+                "text_encoder": (
+                    h3_te_quant_source(scheme),
+                    lambda name: name == h3_te_quant_filename(scheme),
+                ),
+                "text_encoder_config": (
+                    H3_IMAGE_TEXT_ENCODER_REPO,
+                    lambda name: name == "text_encoder/config.json",
+                ),
+            }
+        else:
+            wanted = {
+                "text_encoder": (
+                    H3_IMAGE_TEXT_ENCODER_REPO,
+                    lambda name: name.startswith("text_encoder/"),
+                )
+            }
+        planned: dict[str, tuple[str, list[tuple[str, int]]]] = {}
+        for component, (repo, keep) in wanted.items():
+            try:
+                info = hub_reachability.model_info(
+                    HfApi(token = hf_token or None),
+                    repo,
+                    files_metadata = True,
+                    skip_when_unreachable = False,
+                )
+                files = [
+                    (s.rfilename, int(s.size))
+                    for s in getattr(info, "siblings", None) or ()
+                    if keep(s.rfilename) and getattr(s, "size", None) is not None
+                ]
+                if not files:
+                    raise FileNotFoundError(f"{repo} lists no MiniMax-H3-Image {component}")
+            except Exception as exc:  # noqa: BLE001 -- unlisted: the load fetches it inline
+                logger.warning("diffusion.h3_image_te_plan_failed: %s", exc)
+                if failures_out is not None:
+                    failures_out.append(exc)
+                files = []
+            planned[component] = (repo, files)
+        return planned
 
     def _h3_image_planned_dit_scheme(
         self,

@@ -1957,14 +1957,14 @@ def h3_image_te_scheme(requested: Optional[str]) -> Optional[str]:
 
 
 def planned_dit_scheme(transformer_quant: Optional[str], device: Any) -> Optional[str]:
-    """The DiT scheme a load on ``device`` would resolve, for the download plan: ``resolve_dit_scheme`` on the VRAM that
-    load would see, which includes what this process holds now (the load evicts the resident model first)."""
+    """The DiT scheme a load on ``device`` would resolve, for the download plan. The load evicts chat and the resident
+    model first, so the whole card is planned, as the generic prequant plan does; a VRAM budget still wins."""
     import torch
 
     dev = torch.device(device)
     vram, _host = device_budgets(dev)
-    if vram is not None and not os.environ.get(VRAM_BUDGET_ENV) and dev.type == "cuda":
-        vram += torch.cuda.memory_reserved(dev) / 1e9
+    if not os.environ.get(VRAM_BUDGET_ENV) and dev.type == "cuda" and torch.cuda.is_available():
+        vram = torch.cuda.mem_get_info(dev)[1] / 1e9
     return resolve_dit_scheme(transformer_quant, device = dev, vram_gb = vram)[0]
 
 
