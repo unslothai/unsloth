@@ -117,11 +117,14 @@ export interface CarveOutVramGb {
  * RAM tile already counts. null unless the carve-out is the larger part: a small UMA slice beside a big shared pool
  * keeps the pool as its GPU memory. */
 export function carveOutVramGb(
-  totals: GpuMemoryTotalsGb,
+  devices: MemoryTotalDevice[],
   usedGb: number | null,
   ramAvailableGb: number | null,
 ): CarveOutVramGb | null {
-  if (!(totals.shared > 0 && totals.dedicated >= totals.shared)) return null;
+  // Judged on the shared devices alone: discrete VRAM beside a small UMA slice must not make it a carve-out.
+  const apu = gpuMemoryTotalsGb(devices.filter(sharesHostMemoryDevice));
+  if (!(apu.shared > 0 && apu.dedicated >= apu.shared)) return null;
+  const totals = gpuMemoryTotalsGb(devices);
   const used = usedGb !== null && Number.isFinite(usedGb) ? usedGb : null;
   // Usage past the carve-out already sits in shared RAM.
   const spilled = used === null ? 0 : Math.max(0, used - totals.dedicated);

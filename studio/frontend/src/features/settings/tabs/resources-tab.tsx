@@ -429,7 +429,7 @@ export function ResourcesTab() {
     const vramUsed = resolveGpuVramUsedGb(display.usageGpu);
     const vramUsageKnown = vramUsed !== null;
     const vramCarveOut = carveOutVramGb(
-      gpuMemoryTotals,
+      usageDevices,
       vramUsed,
       systemInfo.memory?.available_gb ?? null,
     );
@@ -1050,7 +1050,7 @@ export function ResourcesTab() {
             // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
             const sharedSplit = deviceSharedMemorySplitGb(device);
             const carveOut = sharedSplit
-              ? carveOutVramGb(sharedSplit, used, null)
+              ? carveOutVramGb([device], used, null)
               : null;
             const total = carveOut?.totalGb ?? device.memory_total_gb ?? null;
             const free = carveOut

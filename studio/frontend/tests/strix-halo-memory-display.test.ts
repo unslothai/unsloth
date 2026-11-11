@@ -7,7 +7,6 @@ import test from "node:test";
 import { vramCards } from "../src/components/monitor-cards.ts";
 import {
   carveOutVramGb,
-  deviceSharedMemorySplitGb,
   gpuMemoryTotalsGb,
 } from "../src/hooks/gpu-vram.ts";
 import type { GpuDevice } from "../src/hooks/use-system.ts";
@@ -32,7 +31,7 @@ const ramAvailableGb = 11.3;
 test("Strix Halo: VRAM is the 95.8 GiB carve-out, and the shared part is RAM it can borrow", () => {
   const totals = gpuMemoryTotalsGb([strixHalo]);
   assert.deepEqual(totals, { dedicated: 95.82, shared: 12.1, total: 107.92 });
-  assert.deepEqual(carveOutVramGb(totals, 1.16, ramAvailableGb), {
+  assert.deepEqual(carveOutVramGb([strixHalo], 1.16, ramAvailableGb), {
     totalGb: 95.82,
     freeGb: 94.66,
     // Capped by free RAM: the 12.1 GiB shared pool comes out of the RAM tile's 31.8 GiB.
@@ -40,7 +39,7 @@ test("Strix Halo: VRAM is the 95.8 GiB carve-out, and the shared part is RAM it 
   });
   // The device row reads the same carve-out.
   assert.equal(
-    carveOutVramGb(deviceSharedMemorySplitGb(strixHalo)!, 1.16, null)?.totalGb,
+    carveOutVramGb([strixHalo], 1.16, null)?.totalGb,
     95.82,
   );
 });
@@ -51,13 +50,12 @@ test("Strix Halo: the floating monitor divides by the carve-out, not carve-out p
 });
 
 test("usage past the carve-out leaves less RAM to borrow, and free stops at zero", () => {
-  const totals = gpuMemoryTotalsGb([strixHalo]);
-  assert.deepEqual(carveOutVramGb(totals, 100, null), {
+  assert.deepEqual(carveOutVramGb([strixHalo], 100, null), {
     totalGb: 95.82,
     freeGb: 0,
     borrowableGb: 7.92,
   });
-  assert.deepEqual(carveOutVramGb(totals, null, 50), {
+  assert.deepEqual(carveOutVramGb([strixHalo], null, 50), {
     totalGb: 95.82,
     freeGb: null,
     borrowableGb: 12.1,
@@ -74,9 +72,18 @@ test("no carve-out reading for discrete cards, unified pools, or a small UMA sli
     shared_memory_host_backed_gb: 34.2,
   } as GpuDevice;
   for (const device of [discrete, unified, umaSlice]) {
-    assert.equal(carveOutVramGb(gpuMemoryTotalsGb([device]), 1, 10), null);
+    assert.equal(carveOutVramGb([device], 1, 10), null);
   }
   assert.equal(vramCards([umaSlice], { devices: [umaSlice] }).totalGb, 36.2);
+  // Two discrete cards beside that slice push the host's dedicated total past its shared pool; still no carve-out.
+  const mixed = [
+    umaSlice,
+    { memory_total_gb: 24, shared_memory: false },
+    { memory_total_gb: 24, shared_memory: false },
+  ] as GpuDevice[];
+  const mixedTotals = gpuMemoryTotalsGb(mixed);
+  assert.ok(mixedTotals.dedicated >= mixedTotals.shared);
+  assert.equal(carveOutVramGb(mixed, 1, 10), null);
 });
 
 test("Strix Halo: the VRAM tile reads used / carve-out, with the borrowable RAM on its own line", () => {

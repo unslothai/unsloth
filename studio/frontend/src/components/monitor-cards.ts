@@ -37,8 +37,10 @@ export interface VramCards {
 
 // A carve-out APU's shared part is system RAM, which the RAM row already shows.
 function vramTotalGb(cards: GpuDevice[]): number {
-  const totals = gpuMemoryTotalsGb(cards);
-  return carveOutVramGb(totals, null, null)?.totalGb ?? totals.total;
+  return (
+    carveOutVramGb(cards, null, null)?.totalGb ??
+    gpuMemoryTotalsGb(cards).total
+  );
 }
 
 /** Dedicated cards only: an iGPU borrows system RAM, and its missing reading would blank the total. */
