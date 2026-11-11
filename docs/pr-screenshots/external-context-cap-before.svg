@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="700" viewBox="0 0 1100 700">
+  <rect width="1100" height="700" fill="#f7f7f5"/>
+  <text x="42" y="60" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#202124">Custom connection · Model settings</text>
+  <rect x="42" y="88" width="820" height="500" rx="16" fill="#fff" stroke="#deded8"/>
+  <text x="66" y="132" font-family="Arial, sans-serif" font-size="14" fill="#77776f">Model</text>
+  <text x="66" y="160" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#202124">local-qwen</text>
+  <text x="66" y="216" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#202124">Server context window</text>
+  <text x="66" y="242" font-family="Arial, sans-serif" font-size="13" fill="#39734b">8,192 tokens advertised by /v1/models</text>
+  <text x="66" y="302" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#202124">Max output tokens</text>
+  <rect x="66" y="320" width="250" height="42" rx="8" fill="#fff" stroke="#deded8"/>
+  <text x="84" y="347" font-family="Arial, sans-serif" font-size="14" fill="#a04b36">32,768</text>
+  <text x="66" y="410" font-family="Arial, sans-serif" font-size="12" fill="#a04b36">The default can exceed this server's context and fail on vLLM.</text>
+</svg>

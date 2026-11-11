@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ModelCatalogResponse, ProviderModelCapabilityInfo } from "./api/providers-api";
+import type {
+  ModelCatalogResponse,
+  ProviderModelCapabilityInfo,
+  ProviderModelInfo,
+} from "./api/providers-api";
 import {
   MODEL_CATALOG_SNAPSHOT,
   type ModelCatalogSnapshotEntry,
@@ -247,6 +251,51 @@ export function setProviderModelCatalog(
     if (id) entries[id] = fromLiveModel(model);
   }
   LIVE_CATALOG.set(providerType, { fetchedAt, models: entries });
+  persistLiveCatalog();
+  notifyCatalogChange();
+}
+
+/** Merge context windows advertised by an OpenAI-compatible /models endpoint into the live catalog. */
+export function learnProviderModelContextLengths(
+  providerType: string,
+  models: readonly ProviderModelInfo[],
+  fetchedAt: number = Date.now(),
+): void {
+  const normalizedProvider = providerType.trim().toLowerCase();
+  if (!normalizedProvider) return;
+  hydrateLiveCatalog();
+  const current = LIVE_CATALOG.get(normalizedProvider);
+  const entries: Record<string, ModelCatalogEntry> = {
+    ...(current?.models ?? {}),
+  };
+  let changed = false;
+  for (const model of models) {
+    const id = model.id?.trim().toLowerCase();
+    const contextLength =
+      typeof model.context_length === "number" &&
+      Number.isFinite(model.context_length) &&
+      model.context_length > 0
+        ? Math.floor(model.context_length)
+        : null;
+    if (!id || contextLength === null) continue;
+    const previous = entries[id];
+    if (previous?.contextLength === contextLength) continue;
+    entries[id] = {
+      reasoning: previous?.reasoning ?? false,
+      efforts: previous?.efforts ?? [],
+      mandatory: previous?.mandatory ?? false,
+      defaultEffort: previous?.defaultEffort ?? null,
+      inputModalities: previous?.inputModalities ?? null,
+      maxOutputTokens: previous?.maxOutputTokens ?? null,
+      contextLength,
+    };
+    changed = true;
+  }
+  if (!changed) return;
+  LIVE_CATALOG.set(normalizedProvider, {
+    fetchedAt: current?.fetchedAt ?? fetchedAt,
+    models: entries,
+  });
   persistLiveCatalog();
   notifyCatalogChange();
 }
