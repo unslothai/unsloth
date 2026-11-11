@@ -69,10 +69,13 @@ def _rl_prompt(row: dict, spec: dict) -> Any:
     """The prompt training's RL formatter gives the row, as Benchmark asked it, or None."""
     from core.flows.nodes.benchmark import rl_format
 
-    own = {k: v for k, v in row.items() if str(k).lower() not in (*OUTPUT_KEYS, *_SCORED)}
-    formatted = rl_format(
-        [own], spec.get("objective"), spec.get("mapping"), spec.get("system_prompt")
-    )
+    mapping = spec.get("mapping")
+    # A column mapped to a role (DPO's chosen in `output`) is the dataset's own, not Benchmark's.
+    roles = {c for c, r in mapping.items() if r != "ignore"} if isinstance(mapping, dict) else set()
+    own = {
+        k: v for k, v in row.items() if k in roles or str(k).lower() not in (*OUTPUT_KEYS, *_SCORED)
+    }
+    formatted = rl_format([own], spec.get("objective"), mapping, spec.get("system_prompt"))
     return formatted[0]["prompt"] if formatted else None
 
 
