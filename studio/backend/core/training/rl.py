@@ -362,8 +362,6 @@ def render_grpo_prompts(
     drop = ["tools"] if "tools" in columns else []
     if not (thinking or nulls or tools or _has_tool_ended_prompts(dataset)):
         return (dataset.remove_columns(drop) if drop else dataset), False
-    from core.training.rewards import PREFILL_COLUMN
-
     kwargs = {"enable_thinking": bool(enable_thinking)} if thinking else {}
     # A text prompt loses TRL's assistant prefill, so keep it for the rewards (make_reward_func).
     prefills = any(

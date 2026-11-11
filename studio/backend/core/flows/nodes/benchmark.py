@@ -168,7 +168,6 @@ def _same_model(loaded: str, ref: str) -> bool:
 async def _require_primary(ctx: NodeContext, ref: str, label: str) -> None:
     """The scoring requests reach Chat's main model. A target already kept in another slot stays
     there when loaded again, so it would not be the model scored: refuse instead."""
-    from hub.utils.host_paths import resolve_host_path_reference
     from studio_mcp import loading
 
     try:
