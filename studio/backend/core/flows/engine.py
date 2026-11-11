@@ -595,6 +595,8 @@ class FlowEngine:
             )
             await self._fire_cancel_hooks(rs)
             await stored
+            # This call stopped it, even if the run already reached "cancelled" while the hooks ran.
+            return "cancelling"
         return rs.status
 
     def subscribe(self, rs: RunState) -> asyncio.Queue:

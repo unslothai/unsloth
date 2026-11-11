@@ -307,6 +307,38 @@ async def test_cancel_mid_run_keeps_finished_outputs_and_fires_hooks():
 
 
 @run_async
+async def test_cancel_says_cancelling_even_if_the_run_ends_while_hooks_run():
+    started, resume = asyncio.Event(), asyncio.Event()
+    held = []
+
+    async def slow(ctx):
+        async def hook():
+            # The run reaches "cancelled" before cancel() answers.
+            resume.set()
+            await asyncio.wait({held[0].task}, timeout = 30)
+
+        ctx.on_cancel(hook)
+        started.set()
+        await resume.wait()
+        ctx.check_cancelled()
+        return {"text": "late"}
+
+    eng = make_engine({**BASE_HANDLERS, "llm.generate": slow})
+    d = doc(
+        [node("a", "input.text", value = "p"), node("g", "llm.generate")],
+        [edge("a", "text", "g", "prompt")],
+    )
+    parsed, _ = parse_document(d)
+    rs = await eng.start_run(app = None, flow_id = "f1", doc = parsed, options = {})
+    held.append(rs)
+    await asyncio.wait_for(started.wait(), 60)
+    assert await eng.cancel(rs.id) == "cancelling"
+    await asyncio.wait_for(rs.task, 60)
+    assert rs.status == "cancelled"
+    assert await eng.cancel(rs.id) == "cancelled"
+
+
+@run_async
 async def test_gpu_nodes_prefer_the_resident_model():
     order = []
 
