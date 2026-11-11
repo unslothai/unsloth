@@ -16,7 +16,7 @@ _PAGE_MARGIN_PT = 54
 
 # MuPDF's HTML engine takes a CSS subset; unknown families fall back to its bundled Noto/Droid fonts.
 _PDF_CSS = """
-body { font-family: sans-serif; font-size: 10.5pt; line-height: 1.45; color: #1f2328; }
+body { font-family: sans-serif; font-size: 10.5pt; line-height: 1.45; color: #1f2328; overflow-wrap: break-word; }
 h1 { font-size: 17pt; margin: 0 0 4pt 0; }
 .meta { color: #6e7781; font-size: 8.5pt; margin: 0 0 14pt 0; }
 .conversation-title { font-size: 13.5pt; margin: 16pt 0 8pt 0; }

@@ -312,7 +312,7 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
             m = int(m)
             if m <= 0:
                 continue
-            key = (m, module.in_features, module.out_features)
+            key = _prewarm_key(m, module.in_features, module.out_features)
             if key in _TUNED_SHAPES:
                 continue
             device = module.wq.device
@@ -330,6 +330,16 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
             _TUNED_SHAPES.add(key)
             tuned_box[0] += 1
         module._tuned = True
+
+
+def _prewarm_key(m: int, k: int, n: int) -> tuple:
+    """Legacy: the exact shape, which also stands in for the forward's claim. Bucketed: the forward
+    claims (or the plan tunes) its own bucket, so this only skips repeating the same warm-up."""
+    from .diffusion_nvfp4_tactics import bucketed_enabled
+
+    if bucketed_enabled():
+        return ("prewarm", int(m), int(k), int(n))
+    return (int(m), int(k), int(n))
 
 
 def _iter_linears(transformer: Any):

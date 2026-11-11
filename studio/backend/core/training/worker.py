@@ -2552,6 +2552,7 @@ def _mlx_audio_rows(
     processor,
     custom_format_mapping = None,
     image_col = _RESOLVE_IMAGE_COLUMN,
+    warn = None,
 ) -> tuple:
     """The CUDA transcription rows, with each clip left decoded so zoo can check its rate, and
     the row's images (a mixed audio + image dataset) beside them. Returns (rows, image column);
@@ -2566,6 +2567,7 @@ def _mlx_audio_rows(
         resolve_audio_columns,
         resolve_audio_vlm_image_column,
     )
+    from utils.datasets.cells import cell_text
 
     if not ensure_audio_decoding():
         raise RuntimeError(
@@ -2577,7 +2579,8 @@ def _mlx_audio_rows(
         raise ValueError(
             f"Audio dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
         )
-    if image_col is _RESOLVE_IMAGE_COLUMN:
+    train_split = image_col is _RESOLVE_IMAGE_COLUMN
+    if train_split:
         image_col = resolve_audio_vlm_image_column(
             dataset, custom_format_mapping, audio_col, text_col, columns["speaker_col"]
         )
@@ -2588,19 +2591,26 @@ def _mlx_audio_rows(
     if image_col:
         dataset = prepare_audio_vlm_image_column(dataset, image_col)
     rows = []
+    blank = 0
     for row in dataset:
+        text = cell_text(row[text_col])
+        if not text.strip():
+            blank += 1
+            continue
         images = row[image_col] if image_col else None
         if not isinstance(images, list):
             images = [] if images is None else [images]
         images = [image for image in images if image is not None]
-        item = {
-            "messages": audio_transcription_messages(
-                row[audio_col], str(row[text_col]), len(images)
-            )
-        }
+        item = {"messages": audio_transcription_messages(row[audio_col], text, len(images))}
         if images:
             item["images"] = images
         rows.append(item)
+    if not rows and train_split:
+        raise ValueError(f"Every transcript in the '{text_col}' column is blank.")
+    if blank:
+        (warn or logger.warning)(
+            f"Skipped {blank:,} of {blank + len(rows):,} audio rows with a blank transcript."
+        )
     return rows, image_col
 
 
@@ -3538,11 +3548,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
         if is_dataset_audio:
             _send("status", status_message = "Formatting audio dataset...")
-            dataset, audio_image_col = _mlx_audio_rows(dataset, tokenizer, custom_format_mapping)
+            _warn = lambda message: _send("warning", message = message)
+            dataset, audio_image_col = _mlx_audio_rows(
+                dataset, tokenizer, custom_format_mapping, warn = _warn
+            )
             if eval_dataset is not None:
                 eval_dataset, _ = _mlx_audio_rows(
-                    eval_dataset, tokenizer, custom_format_mapping, audio_image_col
+                    eval_dataset, tokenizer, custom_format_mapping, audio_image_col, warn = _warn
                 )
+                if not eval_dataset:
+                    _send(
+                        "warning",
+                        message = "The eval dataset is empty after preprocessing, so this run has no evaluation.",
+                    )
+                    eval_dataset = None
+                    eval_enabled = False
             if audio_image_col:
                 image_layout = (
                     _mlx_vlm_resized_image_layout(tokenizer)

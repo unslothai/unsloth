@@ -4445,6 +4445,7 @@ class LanAccessAddressesPayload(BaseModel):
 class LanAccessAddress(BaseModel):
     address: str
     public: bool = False
+    host_only: bool = False
 
 
 class LanAccessResponse(BaseModel):
@@ -5075,7 +5076,7 @@ class PersonalizationCustomization(BaseModel):
     composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
     elementOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
-    reduceMotion: Literal["system", "on", "off"] = "off"
+    reduceMotion: Literal["system", "on", "off"] = "on"
     fontSmoothing: bool = True
     codeLineNumbers: bool = False
     codeWordWrap: bool = False
@@ -5262,6 +5263,7 @@ class BrowserPrefsPayload(BaseModel):
     saveDownloadHistory: Optional[bool] = None
     askWhereToSave: Optional[bool] = None
     askBeforeDownloading: Optional[bool] = None
+    askBeforeProgramDownloads: Optional[bool] = None
     annotationScreenshots: Optional[Literal["always", "never"]] = None
 
 
@@ -5271,6 +5273,7 @@ _DisplayVisibility = Literal["collapsed", "auto", "expanded"]
 class ChatPrefsPayload(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
+    shareComposerDraft: Optional[bool] = None
     plainTextComposer: Optional[bool] = None
     showContextWindowUsage: Optional[bool] = None
     sendShortcut: Optional[Literal["enter", "mod-enter-multiline", "mod-enter"]] = None
