@@ -82,7 +82,7 @@ jobs:
         timeout-minutes: 60
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD:/w" -w /w quay.io/pypa/manylinux_2_28_x86_64 bash -euo pipefail -c '
+          docker run --rm -e CUTLASS_SHA -v "$PWD:/w" -w /w quay.io/pypa/manylinux_2_28_x86_64 bash -euo pipefail -c '
             dnf -y -q install dnf-plugins-core
             dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
             dnf -y -q install cuda-nvcc-12-8 cuda-cudart-devel-12-8 cuda-crt-12-8
@@ -140,7 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m venv smoke
-          py=smoke/bin/python; [ -x "$py" ] || py=smoke/Scripts/python.exe
+          py="$PWD/smoke/bin/python"; [ -x "$py" ] || py="$PWD/smoke/Scripts/python.exe"
           "$py" -m pip install --quiet --no-deps dist/*.whl
           cd "$RUNNER_TEMP"
           "$py" - <<'EOF'
