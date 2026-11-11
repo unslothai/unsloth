@@ -744,7 +744,9 @@ class LemonadeNpuBackend:
         return rows
 
     def delete_checkpoint(
-        self, checkpoint: str, downloading: Callable[[str], bool] = lambda model_id: False
+        self,
+        checkpoint: str,
+        downloading: Callable[[str], bool] = lambda model_id: False,
     ) -> str:
         """Settings > Storage lists folders by checkpoint, chat models or not; lemond deletes by id."""
         try:
