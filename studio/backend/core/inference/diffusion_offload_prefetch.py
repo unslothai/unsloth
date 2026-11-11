@@ -1392,6 +1392,15 @@ def _list_stream_refusal(device: Any) -> Optional[str]:
         return f"{ASYNC_PREFETCH_ENV}=0"
     import torch
 
+    from .diffusion_memory import GROUP_OFFLOAD_PIN_ENV
+
+    if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return f"{GROUP_OFFLOAD_PIN_ENV}=0"
     if torch.device(device).type != "cuda" or not torch.cuda.is_available():
         return "not a CUDA device"
     from .host_pinning import host_pinning_allowed

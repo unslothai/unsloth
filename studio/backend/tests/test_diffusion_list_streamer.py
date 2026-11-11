@@ -266,3 +266,14 @@ def test_a_small_host_streams_pageable_and_still_renders(monkeypatch):
     streamer.remove()
     with torch.no_grad():
         assert torch.equal(out, stack(x))
+
+
+@pytest.mark.parametrize("value", ["0", "off"])
+def test_the_global_pin_opt_out_keeps_the_pageable_streamer(monkeypatch, value):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setenv(dm.GROUP_OFFLOAD_PIN_ENV, value)
+    assert op._list_stream_refusal("cuda") == f"{dm.GROUP_OFFLOAD_PIN_ENV}=0"
+    stack = _Stack()
+    assert op.stream_module_list(stack, stack.layers, "cuda", 2) is None
+    assert not stack.layers[3]._forward_pre_hooks
