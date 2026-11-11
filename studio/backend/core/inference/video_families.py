@@ -488,16 +488,16 @@ _HUNYUAN15_INT8_EXCLUDES = (
 )
 # Measured failing the NVFP4 accuracy gate (LPIPS mean vs bf16 <= 0.25), so nvfp4 is denied outright, as the image
 # families deny an ungated base. HunyuanVideo-1.5: hosted 480p / 720p 0.62 / 0.59 (Studio main, 20 steps); the 50-step
-# campaign put GPTQ NVFP4 at 0.44 and fp8 itself at 0.35 to 0.37, so no NVFP4 rebuild clears the bar.
+# campaign put the best NVFP4 rebuild at 0.44 and fp8 itself at 0.35 to 0.37, so no NVFP4 rebuild clears the bar.
 # Wan2.2-TI2V-5B: hosted 0.29; weight-only 4-bit (bf16 activations) is already 0.29 at the default grid, and the
 # layer keep-sets that come near 0.25 save about 10% of fp8's bytes, where fp8 (0.17) already passes.
 _NVFP4_GATE_FAILED = frozenset({"nvfp4"})
 # What a refused explicit nvfp4 request says for those families: measured and failed, not merely unmeasured.
 NVFP4_GATE_FAILURES: dict[str, str] = {
     "hunyuanvideo-1.5": "the hosted NVFP4 build measured LPIPS 0.62 against bf16 (bar 0.25), and no NVFP4 rebuild "
-    "clears it: GPTQ reached 0.44 and fp8 itself 0.35 to 0.37",
-    "hunyuanvideo-1.5-720p": "the hosted NVFP4 build (RTN) measured LPIPS 0.59 against bf16 (bar 0.25), and no NVFP4 "
-    "rebuild clears it: on the 480p weights GPTQ reached 0.44 and fp8 itself 0.35 to 0.37",
+    "clears it: the best rebuild reached 0.44 and fp8 itself 0.35 to 0.37",
+    "hunyuanvideo-1.5-720p": "the hosted NVFP4 build measured LPIPS 0.59 against bf16 (bar 0.25), and no NVFP4 "
+    "rebuild clears it: on the 480p weights the best rebuild reached 0.44 and fp8 itself 0.35 to 0.37",
     "wan2.2-ti2v-5b": "the hosted NVFP4 build measured LPIPS 0.29 to 0.30 against bf16 (bar 0.25); weight-only 4-bit is "
     "already 0.29, while fp8 passes at 0.17",
 }
@@ -988,7 +988,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
         unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
-        # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
+        # The 720p transformer is separately trained, so it ships its own plain NVFP4 build.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
