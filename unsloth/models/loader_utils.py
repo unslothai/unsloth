@@ -1820,8 +1820,7 @@ def _load_probe_memo_scope(fn):
     return _wrapper
 
 
-# The upstream mapper.py only feeds the "upgrade Unsloth" hint, so one fetch serves every load for a while;
-# a failed fetch is retried after a short pause instead of on every load (a firewall would cost each load the timeout).
+# Failed fetches retry after a short pause, not per load: a firewall would cost each load the timeout.
 _NEW_MAPPER_TTL_S = 3600.0
 _NEW_MAPPER_RETRY_S = 300.0
 _NEW_MAPPER_CACHE = {"tables": None, "at": None}
