@@ -443,6 +443,8 @@ class LemonadeNpuBackend:
             cache_dir = self.root / "cache",
             config_dir = self.root / "config",
             flm_model_dir = self._flm_model_dir,
+            # The studio home's logs dir, where Settings > Logs looks.
+            log_dir = self.root.parent / "logs" / "lemonade",
         )
 
     def _require_supported(self) -> None:

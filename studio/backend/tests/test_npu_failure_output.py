@@ -157,3 +157,33 @@ def test_output_since_a_mark_is_only_what_came_after(tmp_path):
     _prints(server, "one", "two", "three")
     assert server.output_since(mark, settle = 0) == ["one", "two", "three"]
     assert server.output_since(mark, lines = 2, settle = 0) == ["two", "three"]
+
+
+def test_lemond_output_goes_to_a_log_file_settings_lists(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    server = LemonadeServer(
+        tmp_path / "lemond",
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+        log_dir = home / "logs" / "lemonade",
+    )
+    handle = server._open_log_file(4242)
+    failure = _line("Error", "Router", "Failed to load model qwen3.6-moe:35b-a3b")
+    server._drain(SimpleNamespace(stdout = [failure + "\n"]), handle)
+
+    from utils import debug_log_sources
+
+    sources = [s for s in debug_log_sources.list_sources() if s.family == "lemonade"]
+    assert [s.label for s in sources] == [
+        f"lemonade-{sources[0].label.split('-')[1]}-port-4242.log"
+    ]
+    assert failure in (home / "logs" / "lemonade" / sources[0].label).read_text(encoding = "utf-8")
+
+
+def test_no_log_dir_writes_no_file(tmp_path):
+    server = _server(tmp_path)
+    assert server._open_log_file(4242) is None
+    _prints(server, _line("Info", "Server", "ready"))
+    assert not any(tmp_path.rglob("lemonade-*.log"))

@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 import httpx
 
+from utils.log_retention import prune_log_dir
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
     adopt_pid,
@@ -73,9 +74,17 @@ def _kill_with_the_parent() -> None:
 
 class LemonadeServer:
     def __init__(
-        self, binary: Path, *, cache_dir: Path, config_dir: Path, flm_model_dir: Path
+        self,
+        binary: Path,
+        *,
+        cache_dir: Path,
+        config_dir: Path,
+        flm_model_dir: Path,
+        log_dir: Optional[Path] = None,
     ) -> None:
         self.binary = Path(binary)
+        # One file per lemond start, listed in Settings > Logs; None keeps output in memory only.
+        self.log_dir = Path(log_dir) if log_dir is not None else None
         self.cache_dir = Path(cache_dir)
         self.config_dir = Path(config_dir)
         self.flm_model_dir = Path(flm_model_dir)
@@ -203,6 +212,7 @@ class LemonadeServer:
         ]
         logger.info("Starting Lemonade: %s", " ".join(cmd))
         self._tail.clear()
+        log_file = self._open_log_file(port)
 
         def _spawn() -> subprocess.Popen:
             return subprocess.Popen(
@@ -229,7 +239,7 @@ class LemonadeServer:
             self._kill_locked()
             raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
         self._drain_thread = threading.Thread(
-            target = self._drain, args = (proc,), daemon = True, name = "lemond-drain"
+            target = self._drain, args = (proc, log_file), daemon = True, name = "lemond-drain"
         )
         self._drain_thread.start()
         if not self._wait_ready(timeout):
@@ -238,7 +248,26 @@ class LemonadeServer:
             return False
         return True
 
-    def _drain(self, proc: subprocess.Popen) -> None:
+    def _open_log_file(self, port: int):
+        if self.log_dir is None:
+            return None
+        try:
+            self.log_dir.mkdir(parents = True, exist_ok = True)
+            path = self.log_dir / f"lemonade-{int(time.time())}-port-{port}.log"
+            handle = open(path, "w", encoding = "utf-8", buffering = 1)
+        except OSError as exc:
+            logger.warning("Could not open a Lemonade log file: %s", exc)
+            return None
+        # After the open, so the cap counts this file and can never delete it.
+        prune_log_dir(self.log_dir, "lemonade-*.log", protect = path)
+        logger.info("Lemonade output -> %s", path)
+        return handle
+
+    def _drain(
+        self,
+        proc: subprocess.Popen,
+        log_file = None,
+    ) -> None:
         try:
             assert proc.stdout is not None
             for raw in proc.stdout:
@@ -247,8 +276,16 @@ class LemonadeServer:
                     self._tail.append(line)
                     self._lines_seen += 1
                     logger.debug("[lemond] %s", line)
+                    if log_file is not None:
+                        try:
+                            log_file.write(line + "\n")
+                        except (OSError, ValueError):
+                            log_file = None
         except Exception:  # noqa: BLE001 -- the pipe closes at teardown
             pass
+        finally:
+            if log_file is not None:
+                log_file.close()
 
     def _wait_ready(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
