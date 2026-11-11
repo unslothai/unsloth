@@ -1703,7 +1703,7 @@ function NpuAdvancedSettings({
           max={contextLength}
           step={1}
           value={config.npuPrefillChunkLen ?? ""}
-          placeholder="auto"
+          placeholder="default"
           onChange={(event) => {
             const raw = event.target.value;
             if (raw === "") {
@@ -3838,7 +3838,10 @@ export function ModelConfigPage({
       pendingPatch.customContextLength = committedContext;
     }
     if (committedMaxSeqLength != null) {
-      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));
+      Object.assign(
+        pendingPatch,
+        contextPinPatch(committedMaxSeqLength, pinsContextLength, config.npuPrefillChunkLen),
+      );
     }
     if (committedGpuLayers != null) {
       pendingPatch.gpuLayers = committedGpuLayers;
@@ -4478,7 +4481,7 @@ export function ModelConfigPage({
                   : undefined
               }
               onChange={(value) =>
-                update(contextPinPatch(value, pinsContextLength))
+                update(contextPinPatch(value, pinsContextLength, config.npuPrefillChunkLen))
               }
             />
             {targetIsNpu &&

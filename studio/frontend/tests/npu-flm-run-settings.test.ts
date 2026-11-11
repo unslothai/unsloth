@@ -15,6 +15,7 @@ register("./store-settings-resolver.mjs", import.meta.url);
 
 const {
   DEFAULT_PER_MODEL_CONFIG,
+  contextPinPatch,
   isDefaultConfig,
   normalizePerModelConfig,
   npuLoadFields,
@@ -77,10 +78,12 @@ test("the server copy carries the NPU settings and hydrates them back", () => {
     [row.npu_power_mode, row.npu_prefill_chunk_len, row.npu_img_pre_resize],
     ["turbo", 1024, 1],
   );
+  // Sent as null when unset: the server keeps a stored NPU setting the payload omits.
   const empty = toApiOverride(DEFAULT_PER_MODEL_CONFIG);
-  assert.equal("npu_power_mode" in empty, false);
-  assert.equal("npu_prefill_chunk_len" in empty, false);
-  assert.equal("npu_img_pre_resize" in empty, false);
+  assert.deepEqual(
+    [empty.npu_power_mode, empty.npu_prefill_chunk_len, empty.npu_img_pre_resize],
+    [null, null, null],
+  );
   const hydrated = fromApiOverride(row);
   assert.deepEqual(
     [hydrated.npuPowerMode, hydrated.npuPrefillChunkLen, hydrated.npuImgPreResize],
@@ -133,6 +136,25 @@ test("an NPU load's status seeds the resident settings, and a GPU model's clears
   );
   s = useChatRuntimeStore.getState();
   assert.deepEqual([s.npuPowerMode, s.npuPrefillChunkLen, s.npuImgPreResize], [null, null, null]);
+});
+
+test("lowering the context clamps a saved prefill chunk, so the reload matches the load", () => {
+  const saved = { ...DEFAULT_PER_MODEL_CONFIG, maxSeqLength: 16384, npuPrefillChunkLen: 8192 };
+  const lowered = { ...saved, ...contextPinPatch(4096, false, saved.npuPrefillChunkLen) };
+  assert.equal(lowered.npuPrefillChunkLen, 4096);
+  // The backend loads min(chunk, ctx) and the status echoes that back.
+  const loaded = { ...lowered, npuPrefillChunkLen: Math.min(8192, 4096) };
+  assert.equal(perModelConfigsEqual(lowered, loaded), true);
+  // A chunk inside the new context, or none, is left alone.
+  assert.equal("npuPrefillChunkLen" in contextPinPatch(4096, false, 1024), false);
+  assert.equal("npuPrefillChunkLen" in contextPinPatch(4096, false, null), false);
+  assert.equal(contextPinPatch(4096, true, 8192).npuPrefillChunkLen, 4096);
+  const page = readSrc("features/model-picker/components/model-config-page.tsx");
+  assert.equal(
+    (page.match(/contextPinPatch\([^)]*config\.npuPrefillChunkLen\)/g) ?? []).length,
+    2,
+  );
+  assert.match(page, /value=\{config\.npuPrefillChunkLen \?\? ""\}\s*placeholder="default"/);
 });
 
 test("the run settings panel offers Advanced settings for NPU models", () => {

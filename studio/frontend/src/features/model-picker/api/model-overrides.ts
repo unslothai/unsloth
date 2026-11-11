@@ -51,11 +51,11 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_expert_offload?: "off" | number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
-  npu_power_mode?: string;
+  npu_power_mode?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
-  npu_prefill_chunk_len?: number;
+  npu_prefill_chunk_len?: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
-  npu_img_pre_resize?: number;
+  npu_img_pre_resize?: number | null;
   // Stored only when false: absent is the 4-bit default.
   // biome-ignore lint/style/useNamingConvention: API schema
   load_in_4bit?: boolean;
@@ -411,6 +411,11 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     // Sent even at Auto: the server keeps a stored knob the payload omits.
     mlx_ple_offload: config.mlxPleOffload ?? null,
     mlx_expert_offload: config.mlxExpertOffload ?? null,
+    // The row uses the load request's keys.
+    npu_power_mode: null,
+    npu_prefill_chunk_len: null,
+    npu_img_pre_resize: null,
+    ...npuLoadFields(config),
   };
   if (config.maxSeqLength && config.maxSeqLength > 0) {
     payload.max_seq_length = config.maxSeqLength;
@@ -478,8 +483,6 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.mlxFastVerify) {
     payload.mlx_fast_verify = true;
   }
-  // The row uses the load request's keys.
-  Object.assign(payload, npuLoadFields(config));
   if (config.loadIn4bit === false) {
     payload.load_in_4bit = false;
   }
