@@ -259,3 +259,17 @@ def test_tier_version_reads_dist_info(tmp_path):
     (info / "METADATA").write_text("Metadata-Version: 2.1\nName: transformers\nVersion: 5.5.0\n")
     assert tv._tier_transformers_version(str(tmp_path)) == "5.5.0"
     assert tv._tier_transformers_version(str(tmp_path / "missing")) is None
+
+
+def test_cached_tier_whose_sidecar_is_unavailable_walks_on(env, monkeypatch, tmp_path):
+    # A damaged sidecar that cannot be repaired now (offline, rebuild lock held, latest in a
+    # worker) keeps its dist-info; a live probe skips it and settles on the next tier.
+    model = _model(tmp_path)
+    env["results"] = {"default": False, "530": False}
+    assert _probe(model) == "550"
+    _new_process(monkeypatch)
+    venvs = dict(tv._probe_tier_venvs())
+    venvs["550"] = (venvs["550"][0], lambda: False)
+    monkeypatch.setattr(tv, "_probe_tier_venvs", lambda: venvs)
+    assert _probe(model) == "510"
+    assert env["calls"] == ["default", "530", "550", "default", "530", "510"]

@@ -1720,6 +1720,14 @@ def _probe_disk_store(disk_key: str, tier: str, walked: list) -> None:
                 os.unlink(tmp)
 
 
+def _cached_tier_available(venvs: dict, tier: str) -> bool:
+    """A live probe runs the chosen tier's ensure_fn and walks past it when unavailable; a disk hit must too."""
+    try:
+        return bool(venvs[tier][1]())
+    except Exception:
+        return False
+
+
 def _probe_tier(
     model_name: str,
     hf_token: str | None,
@@ -1758,7 +1766,11 @@ def _probe_tier(
     if config_sha is not None:
         disk_key = f"{config_sha}:floor={floor}:def={int(include_default)}:order={','.join(order)}"
         disk_tier = _probe_disk_lookup(disk_key, venvs)
-        if disk_tier is not None and (disk_tier != "latest" or not _latest_unusable()):
+        if (
+            disk_tier is not None
+            and (disk_tier != "latest" or not _latest_unusable())
+            and _cached_tier_available(venvs, disk_tier)
+        ):
             _probe_tier_cache[key] = disk_tier
             logger.info(
                 "Transformers tier %s selected for %s (cached AutoConfig probe; %s)",
