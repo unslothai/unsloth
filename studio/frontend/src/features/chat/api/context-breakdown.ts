@@ -7,6 +7,9 @@ import {
   buildLocalTokenCountExtras,
   buildLocalTokenCountHistory,
   buildLocalTokenCountReasoning,
+  findLatestUserAudioBase64,
+  findLatestUserVideoBase64,
+  messagesContainImage,
 } from "./chat-adapter";
 import { type ChatCountTokensResponse, countChatInputTokens } from "./chat-api";
 
@@ -20,6 +23,8 @@ export async function countContext(
   readBranch: () => readonly ThreadMessage[],
 ): Promise<ChatCountTokensResponse | null> {
   const start = useChatRuntimeStore.getState();
+  const refusal = uncountable(branch, start.loadedIsGguf);
+  if (refusal) throw new Error(refusal);
   const checkpoint = start.params.checkpoint;
   const history = await buildLocalTokenCountHistory(branch, threadId);
   const extras = await buildLocalTokenCountExtras(threadId, history.messages);
@@ -51,6 +56,31 @@ export async function countContext(
     });
   }
   return counted;
+}
+
+/** Chats whose count would be wrong, which the header recount (refreshContextUsage) declines too:
+ *  it would leave out the media, or price a non-GGUF chat as if it were never compacted. */
+function uncountable(
+  branch: readonly ThreadMessage[],
+  loadedIsGguf: boolean | null,
+): string | null {
+  if (messagesContainImage(branch)) {
+    return "Cannot count tokens for messages containing images.";
+  }
+  // A clip still in the composer is not part of the chat being counted.
+  if (findLatestUserAudioBase64(branch, false)) {
+    return "Cannot count tokens for messages containing audio.";
+  }
+  if (findLatestUserVideoBase64(branch)) {
+    return "Cannot count tokens for messages containing video.";
+  }
+  if (
+    !loadedIsGguf &&
+    branch.some((message) => message.metadata?.custom?.contextTruncation)
+  ) {
+    return "Cannot count tokens for a compacted chat on this model.";
+  }
+  return null;
 }
 
 function sameMessageIds(

@@ -144,6 +144,7 @@ type CountModule = {
 function loadCount(
   state: Record<string, unknown>,
   counted: Record<string, unknown>,
+  media: Record<string, unknown> = {},
 ) {
   const sent: Record<string, unknown>[] = [];
   const module = loadWithStubs<CountModule>(
@@ -161,6 +162,10 @@ function loadCount(
           thread_id: "t1",
         }),
         buildLocalTokenCountReasoning: () => ({}),
+        messagesContainImage: () => false,
+        findLatestUserAudioBase64: () => undefined,
+        findLatestUserVideoBase64: () => undefined,
+        ...media,
       },
       "./chat-api": {
         countChatInputTokens: async (payload: Record<string, unknown>) => {
@@ -259,6 +264,50 @@ test("the ring takes the count when the branch is the one counted", async () => 
   const { state, published } = runtimeState();
   const { module } = loadCount(state, { input_tokens: 348 });
   await module.countContext([{ id: "m1" }], "t1", () => [{ id: "m1" }]);
+  assert.equal(published.length, 1);
+});
+
+const compacted = [
+  {
+    id: "m1",
+    metadata: { custom: { contextTruncation: { boundary_messages: 2 } } },
+  },
+];
+
+// The header recount declines these too: the count would miss the media or the compaction.
+for (const [name, media, loadedIsGguf, branch] of [
+  ["an image", { messagesContainImage: () => true }, true, []],
+  ["audio", { findLatestUserAudioBase64: () => "UklGRg==" }, true, []],
+  ["video", { findLatestUserVideoBase64: () => "AAAAIGZ0eXA=" }, true, []],
+  ["a compacted chat off GGUF", {}, false, compacted],
+] as const) {
+  test(`/context counts nothing for ${name}`, async () => {
+    const { state, published } = runtimeState({ loadedIsGguf });
+    const { module, sent } = loadCount(state, { input_tokens: 348 }, media);
+    await assert.rejects(module.countContext(branch, "t1", () => branch));
+    assert.deepEqual(sent, []);
+    assert.deepEqual(published, []);
+  });
+}
+
+test("/context counts a chat whose only audio is a clip still in the composer", async () => {
+  const { state, published } = runtimeState({ loadedIsGguf: true });
+  const { module } = loadCount(
+    state,
+    { input_tokens: 348 },
+    {
+      findLatestUserAudioBase64: (_branch: unknown, pending = true) =>
+        pending ? "UklGRg==" : undefined,
+    },
+  );
+  await module.countContext([], "t1", () => []);
+  assert.equal(published.length, 1);
+});
+
+test("/context counts a compacted GGUF chat, whose count is of the fitted prompt", async () => {
+  const { state, published } = runtimeState({ loadedIsGguf: true });
+  const { module } = loadCount(state, { input_tokens: 348 });
+  await module.countContext(compacted, "t1", () => compacted);
   assert.equal(published.length, 1);
 });
 
