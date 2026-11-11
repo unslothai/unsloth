@@ -9,6 +9,10 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 type Call = { url: string; body: Record<string, unknown> | null };
 
 function harness() {
+  // As on a LAN address, which is not a secure context.
+  mock.method(globalThis.crypto, "randomUUID", () => {
+    throw new TypeError("crypto.randomUUID is not a function");
+  });
   const fetches: Call[] = [];
   const loads: Record<string, unknown>[] = [];
   const authFetch = async (url: string, init?: { body?: string }) => {
@@ -98,7 +102,10 @@ function cancelsOf(fetches: Call[]) {
 test("a variant load that hits the time limit is cancelled on the backend", async (t) => {
   (globalThis as { window?: unknown }).window = globalThis;
   mock.timers.enable({ apis: ["setTimeout"] });
-  t.after(() => mock.timers.reset());
+  t.after(() => {
+    mock.timers.reset();
+    mock.restoreAll();
+  });
   const { runner, config, events, fetches, loads } = harness();
   const running = runner.runBenchmark(
     config,
@@ -123,7 +130,10 @@ test("a variant load that hits the time limit is cancelled on the backend", asyn
 test("stopping the sweep mid-load cancels that load on the backend", async (t) => {
   (globalThis as { window?: unknown }).window = globalThis;
   mock.timers.enable({ apis: ["setTimeout"] });
-  t.after(() => mock.timers.reset());
+  t.after(() => {
+    mock.timers.reset();
+    mock.restoreAll();
+  });
   const { runner, config, events, fetches, loads } = harness();
   const ctl = new AbortController();
   const running = runner.runBenchmark(config, events, ctl.signal);

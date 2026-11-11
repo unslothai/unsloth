@@ -385,7 +385,7 @@ export async function runBenchmark(
       const loadStarted = performance.now();
       const payload = {
         ...variantLoad(base, variant),
-        load_request_id: crypto.randomUUID(),
+        load_request_id: loadRequestId(),
       };
       let modelId: string;
       try {
@@ -569,6 +569,13 @@ export async function runBenchmark(
   }
   if (!run) throw abortError();
   return run;
+}
+
+// Not randomUUID: Studio on a LAN address is not a secure context.
+function loadRequestId(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 async function cancelLoad(
