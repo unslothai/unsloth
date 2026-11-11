@@ -18,7 +18,7 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
     fullscreenChanges: [],
   };
   Object.assign(globalThis, { __TAURI_WINDOW_STUB__: control });
-  const { watchDesktopFullscreen } =
+  const { getDesktopFullscreen, setDesktopFullscreen, watchDesktopFullscreen } =
     await import("../src/lib/desktop-fullscreen.ts");
   const target = new EventTarget();
   let keyTaken = false;
@@ -52,6 +52,8 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
   assert.equal(press("F11").defaultPrevented, true);
   await waitForChanges(1);
   assert.deepEqual(control.fullscreenChanges, [true]);
+  // The titlebar reads this to hide itself while fullscreen.
+  assert.equal(getDesktopFullscreen(), true);
   assert.equal(press("F11", { repeat: true }).defaultPrevented, false);
   assert.equal(press("F11", { ctrlKey: true }).defaultPrevented, false);
   assert.equal(press("F10").defaultPrevented, false);
@@ -59,6 +61,7 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
   press("F11");
   await waitForChanges(2);
   assert.deepEqual(control.fullscreenChanges, [true, false]);
+  assert.equal(getDesktopFullscreen(), false);
 
   let releaseGate: (() => void) | undefined;
   control.fullscreenGate = new Promise<void>((resolve) => {
@@ -71,10 +74,15 @@ test("F11 enters and leaves the desktop window's fullscreen mode", async () => {
   await waitForChanges(3);
   assert.deepEqual(control.fullscreenChanges, [true, false, true]);
 
+  // The fullscreen titlebar's restore button leaves fullscreen directly.
+  await setDesktopFullscreen(false);
+  assert.deepEqual(control.fullscreenChanges, [true, false, true, false]);
+  assert.equal(getDesktopFullscreen(), false);
+
   keyTaken = true;
   assert.equal(press("F11").defaultPrevented, false);
   await delay(50);
-  assert.deepEqual(control.fullscreenChanges, [true, false, true]);
+  assert.deepEqual(control.fullscreenChanges, [true, false, true, false]);
 });
 
 test("a bare F11 bound in Settings has an owner the watcher can defer to", async () => {
