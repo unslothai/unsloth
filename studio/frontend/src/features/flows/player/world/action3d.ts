@@ -129,6 +129,62 @@ export function capsuleOverlapsProp(
   return b !== null && circleHitsBox(b, x, y, RADIUS);
 }
 
+// Ids of solid props the standing capsule at (x, y, z) is inside, optionally only among `among`.
+export function overlappedProps(
+  props: readonly WorldProp3d[],
+  ground: (x: number, y: number) => number,
+  x: number,
+  y: number,
+  z: number,
+  among?: ReadonlySet<string>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const p of props) {
+    if (among && !among.has(p.id)) continue;
+    const b = propBox(p, ground);
+    if (
+      b &&
+      b.top > z + 1e-3 &&
+      b.bottom < z + STAND_H &&
+      circleHitsBox(b, x, y, RADIUS)
+    )
+      out.add(p.id);
+  }
+  return out;
+}
+
+// Props placed over the player are left out of collisions so they cannot trap them; once the
+// player clears one it must collide again. Returns the smaller exempt set, or null if unchanged.
+export function releaseExempt(
+  exempt: ReadonlySet<string>,
+  props: readonly WorldProp3d[],
+  ground: (x: number, y: number) => number,
+  x: number,
+  y: number,
+  z: number,
+): Set<string> | null {
+  if (!exempt.size) return null;
+  const still = overlappedProps(props, ground, x, y, z, exempt);
+  return still.size < exempt.size ? still : null;
+}
+
+export function buildExemptWorld(
+  width: number,
+  height: number,
+  ground: (x: number, y: number) => number,
+  solidTile: (x: number, y: number) => boolean,
+  props: readonly WorldProp3d[],
+  exempt: ReadonlySet<string>,
+): ActionWorld {
+  return buildActionWorld(
+    width,
+    height,
+    ground,
+    solidTile,
+    exempt.size ? props.filter((p) => !exempt.has(p.id)) : props,
+  );
+}
+
 export function circleHitsBox(
   b: Box,
   x: number,
