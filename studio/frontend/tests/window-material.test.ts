@@ -77,6 +77,14 @@ test("turning the wallpaper fade off drops the band behind the composer", () => 
 	);
 });
 
+test("the thread fades out under the see-through header of a background or macOS glass", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(
+		css,
+		/\[data-wallpaper-ready\]\[data-wallpaper-ready\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\),\nhtml\[data-glass="macos"\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\n  mask-image:\n    linear-gradient\(to bottom, transparent var\(--thread-header-offset, -1\.5rem\), #000 calc\(var\(--thread-header-offset, -1\.5rem\) \+ 1\.5rem\)\),/,
+	);
+});
+
 test("glass strength repairs malformed persisted data", () => {
 	assert.equal(sanitizeStrength(undefined), 50);
 	assert.equal(sanitizeStrength(Number.NaN), 50);
