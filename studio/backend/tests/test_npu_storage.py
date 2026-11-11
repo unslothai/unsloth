@@ -263,15 +263,19 @@ def test_a_pull_asked_for_during_a_storage_delete_is_refused_without_waiting(npu
     npu_home.delete = watched
     asyncio.run(npu_routes.delete_npu_checkpoint("qwen3:4b"))
     # Only the model being deleted is held back.
-    assert seen == [("qwen3-4b-FLM is being deleted. Download it again once that finishes.", "started")]
+    assert seen == [
+        ("qwen3-4b-FLM is being deleted. Download it again once that finishes.", "started")
+    ]
     assert npu_routes._deleting == []
 
     npu_routes._downloads.clear()
     seen.clear()
     purge_cache("npu_models")
     # Clear holds back every model.
-    assert seen and all(pair[0].endswith("is being deleted. Download it again once that finishes.")
-                        and pair[1].endswith("is being deleted. Download it again once that finishes.")
-                        for pair in seen)
+    assert seen and all(
+        pair[0].endswith("is being deleted. Download it again once that finishes.")
+        and pair[1].endswith("is being deleted. Download it again once that finishes.")
+        for pair in seen
+    )
     assert npu_routes._deleting == []
     assert start("qwen3-4b-FLM") == "started"
