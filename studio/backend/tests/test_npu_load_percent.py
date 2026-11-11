@@ -104,9 +104,18 @@ def test_polls_inside_the_window_share_one_sample(host):
     assert len(host["calls"]) == spawned + 1
 
 
+def test_an_idle_npu_missing_from_the_counters_keeps_its_luid(host):
+    # No model loaded: Windows lists no engine instances for the NPU, which is not a failure.
+    host["counters"] = "__NONE__\n"
+    assert hw.npu_load_percent() is None
+    host["clock"].now += 30.0
+    assert hw.npu_load_percent() is None
+    assert sum("Get-PnpDeviceProperty" in ps for ps in host["calls"]) == 1
+
+
 def test_a_luid_that_left_the_counters_is_looked_up_again(host):
     assert hw.npu_load_percent() == 42.5
-    host["counters"] = ""
+    host["counters"] = None
     host["clock"].now += 30.0
     assert hw.npu_load_percent() is None
     host["counters"] = _COUNTERS

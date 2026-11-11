@@ -3808,9 +3808,11 @@ def _npu_engine_load(luid: int) -> Optional[float]:
     ps = (
         f"$s=(Get-Counter '\\GPU Engine(*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}*)"
         "\\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples;"
-        "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
+        "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}else{'__NONE__'}"
     )
-    stdout = _rocm_windows_counter_stdout_uncached(ps) or ""
+    stdout = _rocm_windows_counter_stdout_uncached(ps)
+    if stdout is None:
+        raise RuntimeError("GPU Engine counters unreadable")
     by_engine: dict[str, float] = {}
     for line in stdout.splitlines():
         instance, sep, raw = line.strip().rpartition("|")
@@ -3850,10 +3852,8 @@ def npu_load_percent() -> Optional[float]:
                     _npu_luid = int(raw) if raw.isdigit() and int(raw) else None
                 load = _npu_engine_load(_npu_luid) if _npu_luid is not None else None
             except Exception:  # a hung PowerShell is cached as unknown, not retried every poll
-                load = None
-            if load is None:
                 # Windows reassigns LUIDs on a driver restart: look it up again next time.
-                _npu_luid = None
+                load = _npu_luid = None
             done = time.monotonic()
             _npu_load_cache = (done, done - now, load)
             return load
