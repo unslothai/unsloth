@@ -708,15 +708,7 @@ def lease_held() -> bool:
         return _live_lease() is not None
 
 
-@contextmanager
-def operation_lease(
-    kind: str,
-    holder: str,
-    ttl: float,
-    label: Optional[str] = None,
-) -> Iterator[None]:
-    """Hold the GPU against other residency changes for ``ttl`` seconds at most; raises
-    GpuLeaseHeldError if another holder has it."""
+def _install_lease(kind: str, holder: str, ttl: float, label: Optional[str]) -> None:
     global _lease
     import time
 
@@ -736,6 +728,54 @@ def operation_lease(
             }
     finally:
         _lock.release()
+
+
+def hold_lease(
+    kind: str,
+    holder: str,
+    ttl: float,
+    label: Optional[str] = None,
+) -> None:
+    """Take or renew a lease that outlives one call (a browser-driven sweep); its own requests run
+    under ``holding(holder)``. Renewing never waits on a model change the holder itself started."""
+    import time
+
+    with _lease_lock:
+        lease = _live_lease()
+        if lease is not None and lease["holder"] == holder:
+            lease["expires"] = time.monotonic() + max(1.0, ttl)
+            return
+    _install_lease(kind, holder, ttl, label)
+
+
+def drop_lease(holder: str) -> None:
+    global _lease
+    with _lease_lock:
+        if _lease is not None and _lease["holder"] == holder:
+            _lease = None
+
+
+@contextmanager
+def holding(holder: str) -> Iterator[None]:
+    """Run as ``holder``: residency changes in this context pass that holder's lease."""
+    token = _lease_holder.set(holder)
+    try:
+        yield
+    finally:
+        _lease_holder.reset(token)
+
+
+@contextmanager
+def operation_lease(
+    kind: str,
+    holder: str,
+    ttl: float,
+    label: Optional[str] = None,
+) -> Iterator[None]:
+    """Hold the GPU against other residency changes for ``ttl`` seconds at most; raises
+    GpuLeaseHeldError if another holder has it."""
+    global _lease
+    _install_lease(kind, holder, ttl, label)
     token = _lease_holder.set(holder)
     try:
         yield

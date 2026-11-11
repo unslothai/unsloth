@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import contextvars
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -8,6 +11,12 @@ from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.benchmark import hold
 from routes import benchmarks as benchmarks_routes
 from storage import benchmark_runs_db as db
+
+
+@pytest.fixture(autouse = True)
+def _no_arbiter_lease(monkeypatch):
+    from core.inference import gpu_arbiter
+    monkeypatch.setattr(gpu_arbiter, "_lease", None)
 
 
 def _result(
@@ -380,3 +389,42 @@ def test_the_scoring_workers_check_the_model_they_were_given(monkeypatch):
             }
         )
     assert not hold.scoring_active()
+
+
+def test_a_sweep_holds_the_gpu_lease_against_image_and_other_residency_changes(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    app.post("/api/inference/load")(lambda: {"leased": gpu_arbiter.lease_refusal() is not None})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+    elsewhere = lambda: contextvars.Context().run(gpu_arbiter.lease_refusal)
+
+    assert client.post("/api/benchmarks/lease", json = mine).status_code == 200
+    # An image load from another tab goes through acquire_for_request, which checks this lease.
+    assert elsewhere() is not None and "Config sweep" in str(elsewhere())
+    own = client.post("/api/inference/load", headers = {"X-Unsloth-Bench-Lease": mine["holder"]})
+    assert own.json() == {"leased": False}
+    assert client.post("/api/benchmarks/lease", json = mine).status_code == 200  # renewal
+    taken = client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb"})
+    assert taken.status_code == 409
+    client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
+    assert elsewhere() is None and not gpu_arbiter.lease_held()
+
+
+def test_a_sweep_cannot_start_under_another_operations_gpu_lease(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    client = TestClient(app)
+    with gpu_arbiter.operation_lease("flow", "flow:x", 60, label = "A flow step"):
+        refused = client.post("/api/benchmarks/lease", json = {"holder": "tab-aaaaaaaa"})
+    assert refused.status_code == 409 and refused.json()["detail"]["error"] == "gpu_leased"
+    assert benchmarks_routes._lease is None

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.benchmark import hold
 from core.benchmark.hold import LOAD_PATHS
+from core.inference import gpu_arbiter
 from hub.utils.host_paths import host_paths_visible, redact_host_paths
 from storage.benchmark_runs_db import delete_run, get_run, list_runs, upsert_run
 
@@ -135,6 +136,21 @@ class BenchmarkLease(BaseModel):
 def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current_subject)):
     """One benchmark at a time across tabs and devices: each reloads the one llama-server, so a
     second runner would swap settings under the first and credit its rows to the wrong row."""
+    for attempt in range(40):
+        try:
+            return _take_lease(lease)
+        except gpu_arbiter.GpuLeaseHeldError as exc:
+            # The arbiter mid-change reads as busy for a moment; another operation's lease stays held.
+            if exc.label != "A model change" or attempt == 39:
+                raise exc.as_http_exception() from exc
+            time.sleep(0.25)
+
+
+def _arbiter_holder(holder: str) -> str:
+    return f"benchmark-sweep:{holder}"
+
+
+def _take_lease(lease: BenchmarkLease) -> dict[str, Any]:
     global _lease
     now = time.monotonic()
     with _lease_lock:
@@ -158,6 +174,19 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
                 },
             )
         outside = _lease["outside"] if _lease and _lease["holder"] == lease.holder else 0
+        if _lease and _lease["holder"] != lease.holder:
+            gpu_arbiter.drop_lease(_arbiter_holder(_lease["holder"]))
+        # Image, video, audio and training loads go through the arbiter, not the chat load routes,
+        # so the sweep holds its lease too; its own reloads pass under BenchmarkTrafficMiddleware.
+        if lease.kind == "sweep":
+            gpu_arbiter.hold_lease(
+                "benchmark",
+                _arbiter_holder(lease.holder),
+                LEASE_TTL_SECONDS,
+                label = "A Config sweep",
+            )
+        else:
+            gpu_arbiter.drop_lease(_arbiter_holder(lease.holder))
         _lease = {
             "holder": lease.holder,
             "kind": lease.kind,
@@ -175,6 +204,7 @@ def release_lease(
     with _lease_lock:
         if _lease and _lease["holder"] == holder:
             _lease = None
+            gpu_arbiter.drop_lease(_arbiter_holder(holder))
 
 
 LEASE_HEADER = b"x-unsloth-bench-lease"
@@ -269,6 +299,11 @@ class BenchmarkTrafficMiddleware:
                 return
             if _is_inference_path(path):
                 note_inference_request(holder)
+            if holder and not _sweep_holds_against(holder) and _sweep_holds_against(None):
+                # The sweep's own reloads and unloads pass its GPU lease.
+                with gpu_arbiter.holding(_arbiter_holder(holder)):
+                    await self.app(scope, receive, send)
+                return
         await self.app(scope, receive, send)
 
 
