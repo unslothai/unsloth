@@ -6281,7 +6281,6 @@ def test_x_unsloth_effort_still_outranks_thinking_when_sent_explicitly():
     assert args["reasoning_effort"] == "high"
 
 
-# Claude Code 2.1.322 on an unknown model id: thinking on sends adaptive, every off control omits it.
 _CLAUDE_CODE_UA = {"user-agent": "claude-cli/2.1.322 (external, sdk-cli)"}
 _CLAUDE_CODE_BETA = {"anthropic-beta": "interleaved-thinking-2025-05-14, claude-code-20250219"}
 
@@ -6372,7 +6371,6 @@ def test_claude_code_thinking_off_reaches_generation_and_counting(monkeypatch, h
     [(_path, kwargs)] = backend.calls
     assert kwargs["enable_thinking"] is expected
     assert kwargs["reasoning_effort"] is None
-    # The /messages admission count and /count_tokens both price what generation renders.
     template_kwargs = None if expected is None else {"enable_thinking": False}
     assert counted and all(kwargs == template_kwargs for kwargs in counted)
 

@@ -4983,8 +4983,7 @@ def _reject_confirm_gate_without_channel(
 
 
 def _mark_claude_code_thinking(payload, request) -> None:
-    """On a model id it does not know, Claude Code sends `thinking` whenever thinking is on and omits
-    it when thinking is off (MAX_THINKING_TOKENS=0 or alwaysThinkingEnabled false)."""
+    """Claude Code omits `thinking` when thinking is off on a model id it does not know."""
     headers = getattr(request, "headers", None)
     if headers is None:
         return
