@@ -3851,7 +3851,8 @@ def npu_load_percent() -> Optional[float]:
             if cached is not None and now - cached[0] < max(_NPU_LOAD_TTL_S, 4 * cached[1]):
                 return cached[2]
             try:
-                if _npu_luid is None:
+                # Once a minute: a host whose NPU reports no LUID would otherwise ask every sample.
+                if _npu_luid is None and now - _npu_luid_at >= _NPU_LUID_TTL_S:
                     raw = (_rocm_windows_counter_stdout_uncached(_NPU_LUID_PS) or "").strip()
                     _npu_luid = int(raw) if raw.isdigit() and int(raw) else None
                     _npu_luid_at = now
@@ -3859,6 +3860,7 @@ def npu_load_percent() -> Optional[float]:
             except Exception:  # a hung PowerShell is cached as unknown, not retried every poll
                 # Windows reassigns LUIDs on a driver restart: look it up again next time.
                 load = _npu_luid = None
+                _npu_luid_at = 0.0
             # An idle NPU lists no counters either, so a stale LUID is only rechecked now and then.
             if load is None and now - _npu_luid_at >= _NPU_LUID_TTL_S:
                 _npu_luid = None
