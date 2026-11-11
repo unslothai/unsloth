@@ -361,17 +361,22 @@ function measureRows(viewport: HTMLElement, lookup: Metas, heights: RowHeights):
 // media are invisible to isPinned: while one is open, no mounted row is let go.
 const OPEN_DIALOG = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
 
-function heldSelection(viewport: HTMLElement): Range | null {
+/** Every range: Firefox selects several at once with Ctrl-drag. */
+function heldSelection(viewport: HTMLElement): Range[] | null {
   const selection = document.getSelection();
-  if (selection === null || selection.isCollapsed || selection.rangeCount === 0) return null;
-  const range = selection.getRangeAt(0);
-  return range.intersectsNode(viewport) ? range : null;
+  if (selection === null || selection.isCollapsed) return null;
+  const ranges: Range[] = [];
+  for (let at = 0; at < selection.rangeCount; at += 1) {
+    const range = selection.getRangeAt(at);
+    if (range.intersectsNode(viewport)) ranges.push(range);
+  }
+  return ranges.length > 0 ? ranges : null;
 }
 
-function isPinned(row: Element, selection: Range | null): boolean {
+function isPinned(row: Element, selection: Range[] | null): boolean {
   if (row.contains(document.activeElement)) return true;
   if (row.querySelector(PINNED_CONTENT) !== null) return true;
-  if (selection?.intersectsNode(row)) return true;
+  if (selection?.some((range) => range.intersectsNode(row))) return true;
   for (const media of row.querySelectorAll<HTMLMediaElement>("video, audio")) {
     if (!media.paused) return true;
   }

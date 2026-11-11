@@ -119,14 +119,15 @@ test("rows the reader is working in are not unmounted", () => {
   assert.match(pinned, /row\.querySelector\(PINNED_CONTENT\)/);
   assert.match(pinned, /if \(!media\.paused\) return true;/);
   assert.match(GLUE, /const PINNED_CONTENT = "textarea, \[contenteditable=true\], iframe";/);
-  assert.match(pinned, /if \(selection\?\.intersectsNode\(row\)\) return true;/);
+  assert.match(pinned, /if \(selection\?\.some\(\(range\) => range\.intersectsNode\(row\)\)\) return true;/);
   // A selection reaching into the thread, or a held pointer, holds every mounted row.
   assert.match(GLUE, /trim: \(trim =\s*heldSelection\(viewport\) === null &&\s*!inputPointerHeld\(\) &&\s*document\.querySelector\(OPEN_DIALOG\) === null\),/);
   // A dialog a row opened is portaled out of it; while one is open every mounted row stays.
   assert.match(GLUE, /const dialog = document\.querySelector\(OPEN_DIALOG\) !== null;/);
   assert.match(
     section(GLUE, "function heldSelection(", "\n}\n"),
-    /selection\.isCollapsed \|\|[\s\S]*?range\.intersectsNode\(viewport\) \? range : null/,
+    // Every range, not the first: Firefox's Ctrl-drag selects several messages apart.
+    /for \(let at = 0; at < selection\.rangeCount; at \+= 1\) \{\s*const range = selection\.getRangeAt\(at\);\s*if \(range\.intersectsNode\(viewport\)\) ranges\.push\(range\);/,
   );
 });
 
