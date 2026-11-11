@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -95,6 +96,9 @@ def _script(prompt: str) -> str:
             + _chunk({}, "tool_calls", _USAGE)
             + "data: [DONE]\n\n"
         )
+    if "LOADFAIL" in prompt:
+        error = {"code": 500, "message": "Failed to load qwen3:0.6b model!", "type": "server_error"}
+        return "data: " + json.dumps({"error": error}) + "\n\n"
     if "FAULT" in prompt:
         return (
             _chunk({"content": "par"})
@@ -139,6 +143,10 @@ def _script(prompt: str) -> str:
     )
 
 
+# What lemond prints while a LOADFAIL request fails; set by the test that needs it.
+_on_load_failure = None
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -153,6 +161,8 @@ class _Handler(BaseHTTPRequestHandler):
         prompt = json.dumps(body.get("messages"))
         if "SLOW" in prompt:
             time.sleep(20)
+        if "LOADFAIL" in prompt and _on_load_failure is not None:
+            _on_load_failure()
         data = _script(prompt).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -168,6 +178,12 @@ class _FakeNpu:
 
     def upstream(self):
         return self._upstream
+
+    def output_mark(self) -> int:
+        return 0
+
+    def explain_failure(self, mark: int, message: str) -> str:
+        return message
 
 
 @pytest.fixture
@@ -538,6 +554,57 @@ def test_a_bare_error_line_becomes_an_error(flm):
     status, lines = _call(stream = True, messages = [{"role": "user", "content": "FAULT"}])
     errors = [chunk for chunk in _data(lines) if "error" in chunk]
     assert errors and "qds_device" in errors[0]["error"]["message"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_failed_npu_chat_names_the_reason_lemonade_printed(flm, monkeypatch, tmp_path, stream):
+    from core.inference.lemonade_server import LemonadeServer
+
+    flm()
+    upstream = nb.get_npu_backend().upstream()
+    server = LemonadeServer(
+        tmp_path / "lemond",
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+    )
+    server._drain(
+        SimpleNamespace(stdout = ["2026-11-11 04:19:00.000 [Info] (Server) started on port 1\n"])
+    )
+    backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    backend._server = server
+    monkeypatch.setattr(backend, "upstream", lambda: upstream)
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: backend)
+    reason = "FLM NPU validation failed: insufficient NPU memory for ctx_size=32768"
+    lines = [
+        "2026-11-11 04:20:01.100 [Info] (FastFlowLM) Loading model: qwen3-0.6b-FLM",
+        f"2026-11-11 04:20:01.123 [Error] (Router) Backend load failed: {reason}",
+    ]
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_on_load_failure",
+        lambda: server._drain(SimpleNamespace(stdout = [line + "\n" for line in lines])),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        nb,
+        "logger",
+        SimpleNamespace(warning = lambda message, *args: warnings.append(message % args)),
+    )
+
+    status, body = _call(stream = stream, messages = [{"role": "user", "content": "LOADFAIL"}])
+
+    if stream:
+        message = next(chunk for chunk in _data(body) if "error" in chunk)["error"]["message"]
+    else:
+        assert status == 500
+        message = body["error"]["message"]
+    assert message.startswith("Failed to load qwen3:0.6b model!")
+    assert reason in message
+    logged = "\n".join(warnings)
+    assert f"Backend load failed: {reason}" in logged
+    assert "started on port" not in logged
+    assert "LOADFAIL" not in logged
 
 
 @pytest.mark.parametrize(

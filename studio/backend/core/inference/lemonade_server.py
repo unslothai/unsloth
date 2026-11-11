@@ -83,6 +83,8 @@ class LemonadeServer:
         self.api_key: Optional[str] = None
         self._process: Optional[subprocess.Popen] = None
         self._tail: deque[str] = deque(maxlen = 200)
+        # Never reset, so a mark taken before a restart still counts the new lines.
+        self._lines_seen = 0
         self._drain_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         # stop() sets it without the lock, which start() holds while waiting for readiness.
@@ -102,6 +104,27 @@ class LemonadeServer:
 
     def log_tail(self, lines: int = 30) -> str:
         return "\n".join(list(self._tail)[-lines:])
+
+    def output_mark(self) -> int:
+        return self._lines_seen
+
+    def output_since(
+        self,
+        mark: int,
+        lines: int = 40,
+        settle: float = 0.5,
+    ) -> list[str]:
+        """What lemond printed after ``mark``, at most ``lines``. It logs a failure just before
+        answering, so this waits up to ``settle`` seconds for the drain to go quiet."""
+        deadline = time.monotonic() + settle
+        seen = self._lines_seen
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            if self._lines_seen == seen:
+                break
+            seen = self._lines_seen
+        count = min(self._lines_seen - mark, lines)
+        return list(self._tail)[-count:] if count > 0 else []
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -222,6 +245,7 @@ class LemonadeServer:
                 line = raw.rstrip()
                 if line:
                     self._tail.append(line)
+                    self._lines_seen += 1
                     logger.debug("[lemond] %s", line)
         except Exception:  # noqa: BLE001 -- the pipe closes at teardown
             pass
