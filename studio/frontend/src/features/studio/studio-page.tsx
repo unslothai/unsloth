@@ -20,16 +20,9 @@ import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
 // eslint-disable-next-line no-restricted-imports -- the Images barrel would pull ImagesPage out of its lazy chunk.
 import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
-import {
-  ImageIcon,
-  LibrariesIcon,
-} from "@hugeicons/core-free-icons";
+import { ImageIcon, LibrariesIcon } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
-import {
-  type ReactElement,
-  useEffect,
-  useRef,
-} from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { HistoricalTrainingView } from "./historical-training-view";
 import { HistoryCardGrid } from "./history-card-grid";
@@ -52,12 +45,33 @@ import { RunPreviewCard } from "./wizard/run-preview-card";
 import { StartTrainingCta } from "./wizard/start-training-cta";
 import { useParamMode } from "./wizard/training-param-mode";
 import { TrainingWizard } from "./wizard/training-wizard";
+import {
+  type TrainingStep,
+  trainingStepForTourTarget,
+} from "./wizard/training-steps";
 
 export function StudioPage(): ReactElement {
   const signalReady = useAppShellReadySignal();
   const t = useT();
   const setImagesPageMode = useImageWorkflowStore((s) => s.setPageMode);
   const [paramMode, setParamMode] = useParamMode();
+  const [trainingStep, setTrainingStep] = useState<TrainingStep>("model");
+  const configTourSteps = useMemo(
+    () =>
+      studioTourSteps.map((tourStep) => {
+        const step = trainingStepForTourTarget(tourStep.target);
+        return step
+          ? {
+              ...tourStep,
+              onEnter: async () => {
+                setTrainingStep(step);
+                await tourStep.onEnter?.();
+              },
+            }
+          : tourStep;
+      }),
+    [],
+  );
   useTrainingRuntimeLifecycle();
   useTrainingCacheReconciliation();
   const runtimeMessage = useTrainingRuntimeStore((state) => state.message);
@@ -125,7 +139,7 @@ export function StudioPage(): ReactElement {
       ? studioTrainingTourSteps
       : activeTab === "history"
         ? studioHistoryTourSteps
-        : studioTourSteps;
+        : configTourSteps;
   const tour = useGuidedTourController({
     id: "studio",
     steps: tourSteps,
@@ -172,7 +186,12 @@ export function StudioPage(): ReactElement {
     }
     reloadReadySent.current = true;
     signalReady();
-  }, [capabilitiesUnknown, hasHydratedRuntime, isHydratingRuntime, signalReady]);
+  }, [
+    capabilitiesUnknown,
+    hasHydratedRuntime,
+    isHydratingRuntime,
+    signalReady,
+  ]);
   // Hardware detection is a cold `import torch` that can take minutes, so it gets its own wording.
   const hydratingMessage = capabilitiesUnknown
     ? t("studio.checkingSupport")
@@ -180,7 +199,10 @@ export function StudioPage(): ReactElement {
   const showHistoryBack = activeTab === "history" && !!selectedHistoryRunId;
 
   return (
-    <div data-wallpaper-page-canvas="" className="flex h-full min-h-0 flex-col bg-background">
+    <div
+      data-wallpaper-page-canvas=""
+      className="flex h-full min-h-0 flex-col bg-background"
+    >
       <Tabs
         value={activeTab}
         onValueChange={(value) => handleTabChange(value as TrainSubTab)}
@@ -204,7 +226,10 @@ export function StudioPage(): ReactElement {
                     onClick={clearHistorySelection}
                     aria-label={t("studio.backToHistory")}
                   >
-                    <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
+                    <HugeiconsIcon
+                      icon={ChevronLeftStandardIcon}
+                      className="size-4"
+                    />
                   </Button>
                 )}
                 <TrainSubNav
@@ -260,6 +285,8 @@ export function StudioPage(): ReactElement {
                         <TrainingWizard
                           paramMode={paramMode}
                           onParamModeChange={setParamMode}
+                          step={trainingStep}
+                          onStepChange={setTrainingStep}
                         />
                       </div>
                       <div className="@4xl/train-configure:sticky @4xl/train-configure:top-6 @4xl/train-configure:self-start">

@@ -29,26 +29,35 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  type RewardPreviewGroup,
+  type RewardPreviewScore,
   type RewardRecord,
   type RuleType,
+  canEditReward,
   deleteReward,
   exportReward,
+  formatScore,
   importReward,
+  importRewardZip,
   previewCell,
-  previewRewards,
   readRewardHead,
   summarizeRule,
+  useRewardPreview,
   useRlWorkspaceStore,
   useTrainingConfigStore,
 } from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { cn } from "@/lib/utils";
 import {
+  Add01Icon,
   Calculator01Icon,
   Cancel01Icon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
+  Download01Icon,
+  Edit02Icon,
   EqualSignIcon,
   FileImportIcon,
   InformationCircleIcon,
@@ -62,12 +71,21 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type ReactElement,
-  useCallback,
+  Suspense,
+  lazy,
   useEffect,
   useRef,
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { RewardExplanationHint } from "./reward-explanation";
+
+// The editor (and js-yaml with it) loads on first open, not with the Train page.
+const RewardEditorDialog = lazy(() =>
+  import("./reward-editor-dialog").then((m) => ({
+    default: m.RewardEditorDialog,
+  })),
+);
 
 const SAMPLE_COMPLETION =
   "<reasoning>\n48 + 24 = 72\n</reasoning>\n<answer>\n72\n</answer>";
@@ -118,6 +136,7 @@ function ScoreChip({ value }: { value: number | undefined }): ReactElement {
   }
   return (
     <span
+      dir="ltr"
       className={cn(
         "w-14 rounded-md px-1.5 py-0.5 text-center font-mono text-ui-11",
         value > 0
@@ -140,24 +159,30 @@ function ImportRewardDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onImported: (record: RewardRecord) => void;
+  onImported: (records: RewardRecord[]) => void;
 }): ReactElement {
   const t = useT();
   const [markdown, setMarkdown] = useState("");
+  const [zip, setZip] = useState<File | null>(null);
   const [overwrite, setOverwrite] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const head = readRewardHead(markdown);
+  const head = zip ? null : readRewardHead(markdown);
   const isPython = head?.kind === "python";
 
   const submit = async () => {
-    if (!markdown.trim()) {
+    if (!zip && !markdown.trim()) {
       setError(t("rl.rewards.importEmpty"));
       return;
     }
     try {
-      onImported(await importReward(markdown, overwrite));
+      onImported(
+        zip
+          ? await importRewardZip(zip, overwrite)
+          : [await importReward(markdown, overwrite)],
+      );
       setMarkdown("");
+      setZip(null);
       setError(null);
       onOpenChange(false);
     } catch (err) {
@@ -190,12 +215,14 @@ function ImportRewardDialog({
           <input
             ref={fileInput}
             type="file"
-            accept=".md,text/markdown,text/plain"
+            accept=".md,.zip,text/markdown,text/plain,application/zip"
             className="hidden"
             onChange={async (e) => {
               const file = e.target.files?.[0];
               if (file) {
-                setMarkdown(await file.text());
+                const isZip = file.name.toLowerCase().endsWith(".zip");
+                setZip(isZip ? file : null);
+                setMarkdown(isZip ? "" : await file.text());
                 setError(null);
               }
               e.target.value = "";
@@ -205,7 +232,8 @@ function ImportRewardDialog({
         <Textarea
           rows={9}
           className="font-mono text-xs"
-          value={markdown}
+          value={zip ? zip.name : markdown}
+          readOnly={zip !== null}
           placeholder={
             "---\nname: my-reward\nkind: rule\ndescription: ...\n---\ntype: regex\n..."
           }
@@ -291,12 +319,11 @@ export function RewardsSection(): ReactElement {
     );
   const [actionError, setActionError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  // null: closed; undefined record: a new reward.
+  const [editor, setEditor] = useState<{ record?: RewardRecord } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [completion, setCompletion] = useState(SAMPLE_COMPLETION);
   const [referenceEdit, setReferenceEdit] = useState<string | null>(null);
-  const [preview, setPreview] = useState<Record<string, number> | null>(null);
-  const [previewTotal, setPreviewTotal] = useState<number | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
 
   useEffect(() => {
     refreshLibrary();
@@ -320,50 +347,58 @@ export function RewardsSection(): ReactElement {
   const setWeight = (name: string, weight: number) =>
     setRewards(rewards.map((r) => (r.name === name ? { ...r, weight } : r)));
 
-  // An overwrite keeps the selection but changes the rule, so the scores must rerun.
-  const selectedRules = JSON.stringify(
-    rewards.map((r) => active.find((a) => a.name === r.name)?.rule ?? null),
+  // Each reward compares against its own compare_to column, as in training.
+  const referenceFor = (column: string) =>
+    column === "answer" ? reference : previewCell(previewRow?.[column]);
+  const groups = new Map<string, RewardPreviewGroup>();
+  for (const reward of rewards) {
+    const column = byName.get(reward.name)?.rule?.compare_to;
+    const ref = typeof column === "string" ? referenceFor(column) : reference;
+    const group = groups.get(ref) ?? { rewards: [], reference: ref || null };
+    group.rewards.push(reward);
+    groups.set(ref, group);
+  }
+  // An edit or overwrite keeps the selection but changes the rule, so the scores must rerun.
+  const preview = useRewardPreview(
+    [...groups.values()],
+    completion,
+    JSON.stringify(rewards.map((r) => byName.get(r.name)?.rule ?? null)),
   );
-  const previewRequest = useRef(0);
-  const runPreview = useCallback(async () => {
-    const request = ++previewRequest.current;
-    if (rewards.length === 0) {
-      setPreview(null);
-      setPreviewTotal(null);
-      return;
-    }
-    const groups = new Map<string, typeof rewards>();
-    for (const reward of rewards) {
-      const column = byName.get(reward.name)?.rule?.compare_to;
-      const key =
-        typeof column === "string" && column !== "answer"
-          ? previewCell(previewRow?.[column])
-          : reference;
-      groups.set(key, [...(groups.get(key) ?? []), reward]);
-    }
+  const scoreOf = new Map<string, RewardPreviewScore>(
+    preview.result?.scores.map((score) => [score.name, score]),
+  );
+
+  const addToRun = (names: string[]) => {
+    // Read now, not when the request started: edits made meanwhile must survive.
+    const current = useTrainingConfigStore.getState().grpoRewards;
+    const added = names
+      .filter((name) => !current.some((r) => r.name === name))
+      .map((name) => ({ name, weight: 1 }));
+    setRewards([...current, ...added].slice(0, 16));
+  };
+
+  const exportSelected = async () => {
     try {
-      const parts = await Promise.all(
-        [...groups].map(([ref, group]) =>
-          previewRewards(group, completion, ref || null),
+      const files = await Promise.all(
+        rewards.map(async (r) => [r.name, await exportReward(r.name)] as const),
+      );
+      if (files.length === 1) {
+        await downloadFile(files[0][1], "REWARD.md", "text/markdown");
+        return;
+      }
+      const { strToU8, zipSync } = await import("fflate");
+      const zip = zipSync(
+        Object.fromEntries(
+          files.map(([name, md]) => [`${name}/REWARD.md`, strToU8(md)]),
         ),
       );
-      if (request !== previewRequest.current) return;
-      const scores = parts.flatMap((part) => part.scores);
-      setPreview(Object.fromEntries(scores.map((s) => [s.name, s.weighted])));
-      setPreviewTotal(parts.reduce((sum, part) => sum + part.total, 0));
-      setPreviewError(null);
+      await downloadFile(zip, "rewards.zip", "application/zip");
     } catch (err) {
-      if (request !== previewRequest.current) return;
-      setPreviewError(err instanceof Error ? err.message : String(err));
+      if (!isDownloadCancelled(err)) {
+        setActionError(err instanceof Error ? err.message : String(err));
+      }
     }
-    // selectedRules stands in for the library entries (byName is rebuilt every render).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rewards, completion, reference, previewRow, selectedRules]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(runPreview, 350);
-    return () => window.clearTimeout(timer);
-  }, [runPreview]);
+  };
 
   const copyReward = async (name: string) => {
     try {
@@ -409,6 +444,7 @@ export function RewardsSection(): ReactElement {
         {rewards.map((selection) => {
           const record = byName.get(selection.name);
           const type = summarizeRule(record?.rule).type;
+          const scored = scoreOf.get(selection.name);
           return (
             <div
               key={selection.name}
@@ -458,7 +494,14 @@ export function RewardsSection(): ReactElement {
                   }}
                 />
               </div>
-              <ScoreChip value={preview?.[selection.name]} />
+              <span className="flex items-center gap-1">
+                <ScoreChip value={scored?.weighted} />
+                {scored?.explanation ? (
+                  <RewardExplanationHint explanation={scored.explanation} />
+                ) : (
+                  <span className="w-3.5" />
+                )}
+              </span>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild={true}>
                   <Button
@@ -474,6 +517,14 @@ export function RewardsSection(): ReactElement {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  {canEditReward(record) && (
+                    <DropdownMenuItem onSelect={() => setEditor({ record })}>
+                      <HugeiconsIcon icon={Edit02Icon} className="size-3.5" />
+                      {record?.source === "user"
+                        ? t("rl.rewards.edit")
+                        : t("rl.rewardEditor.copyTitle")}
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuItem onSelect={() => copyReward(selection.name)}>
                     <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
                     {copied === selection.name
@@ -543,10 +594,29 @@ export function RewardsSection(): ReactElement {
           type="button"
           size="sm"
           variant="outline"
+          onClick={() => setEditor({})}
+        >
+          <HugeiconsIcon icon={Add01Icon} className="size-3.5" />
+          {t("rl.rewardEditor.newTitle")}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
           onClick={() => setImportOpen(true)}
         >
           <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
           {t("rl.rewards.import")}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={rewards.length === 0}
+          onClick={exportSelected}
+        >
+          <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+          {t("rl.rewards.exportSelected")}
         </Button>
         <span className="text-ui-11p5 text-muted-foreground/85">
           {t("rl.rewards.pythonLocked")}
@@ -565,10 +635,10 @@ export function RewardsSection(): ReactElement {
           <span className="text-ui-11p5 text-muted-foreground">
             {t("rl.rewards.tryHint")}
           </span>
-          {previewTotal !== null && (
+          {preview.result && (
             <span className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
               {t("rl.rewards.tryTotalLabel")}
-              <ScoreChip value={previewTotal} />
+              <ScoreChip value={preview.result.total} />
             </span>
           )}
         </div>
@@ -595,25 +665,60 @@ export function RewardsSection(): ReactElement {
             />
           </div>
         </div>
-        {previewError && (
-          <p className="text-ui-11p5 text-destructive">{previewError}</p>
+        {preview.result && preview.result.scores.length > 1 && (
+          <table className="text-ui-11p5 text-muted-foreground">
+            <caption className="sr-only">{t("rl.rewards.breakdown")}</caption>
+            <tbody className="font-mono">
+              {[...preview.result.scores]
+                .sort((a, b) => b.weighted - a.weighted)
+                .map((s) => (
+                  <tr key={s.name}>
+                    <th
+                      scope="row"
+                      className="py-0.5 pe-3 text-start font-sans font-normal text-foreground/80"
+                    >
+                      {s.name}
+                    </th>
+                    <td dir="ltr" className="pe-3 text-end">
+                      {formatScore(s.score)} ×{" "}
+                      {rewards.find((r) => r.name === s.name)?.weight ?? 1}
+                    </td>
+                    <td dir="ltr" className="text-end text-foreground">
+                      {formatScore(s.weighted)}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        )}
+        {preview.error && (
+          <p className="text-ui-11p5 text-destructive">{preview.error}</p>
         )}
       </div>
 
       <ImportRewardDialog
         open={importOpen}
         onOpenChange={setImportOpen}
-        onImported={(record) => {
+        onImported={(records) => {
           refreshLibrary();
-          // Read now, not at submit: edits made while the import was pending must survive.
-          const current = useTrainingConfigStore.getState().grpoRewards;
-          if (!current.some((r) => r.name === record.name)) {
-            setRewards(
-              [...current, { name: record.name, weight: 1 }].slice(0, 16),
-            );
-          }
+          addToRun(records.map((r) => r.name));
         }}
       />
+      {editor && (
+        <Suspense fallback={null}>
+          <RewardEditorDialog
+            record={editor.record}
+            library={library}
+            completion={completion}
+            referenceFor={referenceFor}
+            onClose={() => setEditor(null)}
+            onSaved={(record) => {
+              refreshLibrary();
+              addToRun([record.name]);
+            }}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

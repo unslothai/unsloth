@@ -9,6 +9,28 @@ export type RuleType =
   | "json_schema"
   | "length";
 
+export const RULE_TYPES: RuleType[] = [
+  "exact_match",
+  "numeric",
+  "regex",
+  "json_schema",
+  "length",
+];
+
+/** Rule rewards the editor can open: valid, active and of a known type. */
+export function canEditReward(
+  record:
+    | { valid: boolean; shadowed: boolean; kind: string; rule: Rule | null }
+    | undefined,
+): boolean {
+  return Boolean(
+    record?.valid &&
+      !record.shadowed &&
+      record.kind === "rule" &&
+      RULE_TYPES.includes(record.rule?.type as RuleType),
+  );
+}
+
 export interface RewardSummary {
   type: RuleType | null;
   key: string;

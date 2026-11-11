@@ -74,10 +74,16 @@ export {
   deleteReward,
   exportReward,
   importReward,
+  importRewardZip,
   listRewards,
-  previewRewards,
 } from "./api/rewards-api";
-export type { RewardRecord } from "./api/rewards-api";
+export type {
+  RewardExplanation,
+  RewardPreviewScore,
+  RewardRecord,
+} from "./api/rewards-api";
+export { useRewardPreview } from "./hooks/use-reward-preview";
+export type { RewardPreviewGroup } from "./hooks/use-reward-preview";
 export { effectiveSystemPrompt } from "./lib/rl-system-prompt";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
 export { rlChartKeys } from "./lib/rl-chart-keys";
@@ -93,6 +99,8 @@ export {
 } from "./lib/rl-roles";
 export type { RlObjective, RlRole } from "./lib/rl-roles";
 export {
+  RULE_TYPES,
+  canEditReward,
   formatScore,
   readRewardHead,
   ruleTags,

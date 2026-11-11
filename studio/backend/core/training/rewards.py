@@ -8,14 +8,17 @@ Rule rewards are pure data, so an imported one runs no user code; ``kind: python
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
 import re
 import shutil
+import stat
 import threading
 import unicodedata
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Optional
 
 import yaml
@@ -34,6 +37,7 @@ except ImportError:  # pragma: no cover
 
 MAX_REWARD_MD_BYTES = 64 * 1024
 MAX_REWARDS_PER_ROOT = 500
+MAX_REWARD_ZIP_BYTES = MAX_REWARD_MD_BYTES * MAX_REWARDS_PER_ROOT
 MAX_PATTERN_CHARS = 2_000
 # regex compiles {n} repeats by unrolling them, nested counts multiplying.
 MAX_PATTERN_EXPANSION = 10_000
@@ -175,6 +179,7 @@ def _match(
     pattern: str,
     text: str,
     fullmatch: bool = False,
+    explanation: Optional[dict] = None,
 ):
     if _rx is None:
         raise RewardError(_NO_REGEX_MODULE)
@@ -185,6 +190,8 @@ def _match(
             return compiled.fullmatch(text, timeout = MATCH_TIMEOUT_S)
         return compiled.search(text, timeout = MATCH_TIMEOUT_S)
     except TimeoutError:
+        if explanation is not None:
+            explanation["reason"] = "regex_timeout"
         return None
 
 
@@ -432,6 +439,97 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
     return {**spec, "source": "user", "valid": True, "error": None, "shadowed": False}
 
 
+def _zip_markdowns(data: bytes) -> list[str]:
+    """Every REWARD.md in a ZIP, bounded in count and inflated size."""
+    if len(data) > MAX_REWARD_ZIP_BYTES:
+        raise RewardError(f"The ZIP is larger than {MAX_REWARD_ZIP_BYTES // (1024 * 1024)} MB.")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+        entries = archive.infolist()
+    except (zipfile.BadZipFile, ValueError) as exc:
+        raise RewardError("The file is not a valid ZIP archive.") from exc
+    out: list[str] = []
+    total = 0
+    with archive:
+        for info in entries:
+            path = PurePosixPath(info.filename.replace("\\", "/"))
+            if path.is_absolute() or ".." in path.parts or ":" in info.filename:
+                raise RewardError(f"'{info.filename}' points outside the archive.")
+            if stat.S_ISLNK(info.external_attr >> 16):
+                raise RewardError(f"'{info.filename}' is a link; links cannot be imported.")
+            if info.is_dir() or path.name != "REWARD.md" or path.parts[0] == "__MACOSX":
+                continue
+            if len(out) >= MAX_REWARDS_PER_ROOT:
+                raise RewardError(f"The ZIP holds more than {MAX_REWARDS_PER_ROOT} rewards.")
+            try:
+                # The header's size can lie, so cap the bytes actually inflated.
+                with archive.open(info) as handle:
+                    raw = handle.read(MAX_REWARD_MD_BYTES + 1)
+                text = raw.decode("utf-8")
+            except (zipfile.BadZipFile, NotImplementedError, RuntimeError, OSError) as exc:
+                raise RewardError(f"'{info.filename}' could not be read from the ZIP.") from exc
+            except UnicodeDecodeError as exc:
+                raise RewardError(f"'{info.filename}' is not UTF-8 text.") from exc
+            total += len(raw)
+            if len(raw) > MAX_REWARD_MD_BYTES or total > MAX_REWARD_ZIP_BYTES:
+                raise RewardError(f"'{info.filename}' exceeds the 64 KB limit.")
+            out.append(text)
+    if not out:
+        raise RewardError("The ZIP contains no REWARD.md files.")
+    return out
+
+
+def import_reward_zip(data: bytes, *, overwrite: bool = False) -> list[dict]:
+    """Import every reward in a ZIP, or none: each one is parsed and checked before any write."""
+    specs = []
+    for text in _zip_markdowns(data):
+        spec = parse_reward_markdown(text)
+        if any(s["name"] == spec["name"] for s in specs):
+            raise RewardError(f"The ZIP holds '{spec['name']}' twice.")
+        specs.append(spec)
+    with _LOCK:
+        root = _user_root()
+        clashes = [s["name"] for s in specs if (root / s["name"] / "REWARD.md").exists()]
+        if clashes and not overwrite:
+            raise RewardExistsError(f"Already in your library: {', '.join(clashes)}.")
+        added = sum(1 for s in specs if not (root / s["name"]).exists())
+        existing = sum(1 for _ in root.iterdir()) if root.is_dir() else 0
+        if existing + added > MAX_REWARDS_PER_ROOT:
+            raise RewardError(f"The reward library is full ({MAX_REWARDS_PER_ROOT} rewards).")
+        texts = []
+        for spec in specs:
+            target = root / spec["name"]
+            if target.is_symlink() or (target / "REWARD.md").is_symlink():
+                raise RewardError(f"'{spec['name']}' is a link; remove it before importing.")
+            texts.append(render_reward_markdown(spec))
+            if len(texts[-1].encode("utf-8")) > MAX_REWARD_MD_BYTES:
+                raise RewardError(f"'{spec['name']}' is larger than 64 KB once saved.")
+        # Each write is atomic, but the batch is not: a later failure restores the earlier ones.
+        before = []
+        for spec in specs:
+            target = root / spec["name"]
+            saved = target / "REWARD.md"
+            before.append(
+                (target, target.exists(), saved.read_bytes() if saved.is_file() else None)
+            )
+        imported = []
+        try:
+            for text in texts:
+                imported.append(import_reward(text, overwrite = True))
+        except BaseException:
+            for target, existed, old in before[: len(imported)]:
+                if not existed:
+                    shutil.rmtree(target, ignore_errors = True)
+                elif old is None:
+                    (target / "REWARD.md").unlink(missing_ok = True)
+                else:
+                    tmp = target / f".REWARD.md.{os.getpid()}.restore"
+                    tmp.write_bytes(old)
+                    os.replace(tmp, target / "REWARD.md")
+            raise
+        return imported
+
+
 def delete_reward(name: str) -> None:
     name = normalize_reward_name(name)
     target = _user_root() / name
@@ -463,7 +561,11 @@ def completion_text(completion: Any) -> str:
     return ""
 
 
-def _extract(text: str, extract: Optional[dict]) -> Optional[str]:
+def _extract(
+    text: str,
+    extract: Optional[dict],
+    explanation: Optional[dict] = None,
+) -> Optional[str]:
     if extract is None:
         return text
     if "between" in extract:
@@ -473,7 +575,7 @@ def _extract(text: str, extract: Optional[dict]) -> Optional[str]:
             return None
         j = text.find(end, i + len(start))
         return text[i + len(start) : j] if j >= 0 else None
-    match = _match(extract["regex"], text)
+    match = _match(extract["regex"], text, explanation = explanation)
     if not match:
         return None
     return match.group(1) if match.groups() else match.group(0)
@@ -508,67 +610,121 @@ def _reject_constant(name: str):
 _JSON_TYPES = {"object": dict, "array": list, "string": str, "number": (int, float)}
 
 
-def _json_matches(text: str, schema: dict) -> bool:
+def _json_matches(
+    text: str,
+    schema: dict,
+    explanation: Optional[dict] = None,
+) -> bool:
     # No \s* before the body: with .*? it backtracks quadratically on an unclosed fence.
     fenced = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
     try:
         value = json.loads(fenced.group(1) if fenced else text, parse_constant = _reject_constant)
     except (ValueError, TypeError, RecursionError):
+        _explain(explanation, reason = "invalid_json")
         return False
     expected = _JSON_TYPES[schema["type"]]
     if not isinstance(value, expected) or (schema["type"] == "number" and isinstance(value, bool)):
+        _explain(explanation, reason = "wrong_json_type")
         return False
-    return (
-        all(key in value for key in schema["required"])
-        if isinstance(value, dict)
-        else not schema["required"]
-    )
+    missing = [key for key in schema["required"] if not isinstance(value, dict) or key not in value]
+    if missing:
+        _explain(explanation, reason = "missing_json_keys", missing_keys = missing)
+    return not missing
+
+
+def _explain(explanation: Optional[dict], **values: Any) -> None:
+    if explanation is not None:
+        explanation.update(values)
 
 
 def score_rule(
     rule: dict,
     text: str,
     reference: Any = None,
+    *,
+    explanation: Optional[dict] = None,
 ) -> float:
+    """Score one reply; ``explanation`` (if given) collects the values this evaluation used."""
+
+    def done(score: float, reason: str, **values: Any) -> float:
+        if explanation is not None:
+            # A deeper cause (regex_timeout, missing_json_keys) set during the evaluation wins.
+            explanation.setdefault("reason", reason)
+            explanation.update(values)
+        return score
+
     kind = rule["type"]
     if kind == "regex":
         if rule.get("extract"):
-            text = _extract(text, rule["extract"])
+            text = _extract(text, rule["extract"], explanation)
             if text is None:
-                return rule["score"]["miss"]
+                return done(rule["score"]["miss"], "missing_response", response = None)
         if rule["mode"] == "fullmatch":
             # Stripped as a fallback only: a pattern may require boundary whitespace itself.
-            hit = _match(rule["pattern"], text, fullmatch = True) or (
-                text != text.strip() and _match(rule["pattern"], text.strip(), fullmatch = True)
+            hit = _match(rule["pattern"], text, fullmatch = True, explanation = explanation) or (
+                text != text.strip()
+                and _match(rule["pattern"], text.strip(), fullmatch = True, explanation = explanation)
             )
         else:
-            hit = _match(rule["pattern"], text)
-        return rule["score"]["match" if hit else "miss"]
+            hit = _match(rule["pattern"], text, explanation = explanation)
+        return done(
+            rule["score"]["match" if hit else "miss"],
+            "matched" if hit else "not_matched",
+            response = text,
+            pattern = rule["pattern"],
+            mode = rule["mode"],
+        )
     if kind == "length":
-        return rule["score"]["over" if len(text) > rule["max_chars"] else "under"]
+        over = len(text) > rule["max_chars"]
+        return done(
+            rule["score"]["over" if over else "under"],
+            "over_limit" if over else "within_limit",
+            characters = len(text),
+            limit = rule["max_chars"],
+        )
     if kind == "json_schema":
-        part = _extract(text, rule["extract"])
-        return rule["score"][
-            "match" if part is not None and _json_matches(part, rule["schema"]) else "miss"
-        ]
-    part = _extract(text, rule["extract"])
+        part = _extract(text, rule["extract"], explanation)
+        hit = part is not None and _json_matches(part, rule["schema"], explanation)
+        return done(
+            rule["score"]["match" if hit else "miss"],
+            "missing_response" if part is None else "matched" if hit else "not_matched",
+            response = part,
+            json_type = rule["schema"]["type"],
+            required_keys = rule["schema"]["required"],
+        )
+    part = _extract(text, rule["extract"], explanation)
+    _explain(explanation, response = part, comparison_column = rule["compare_to"])
     if part is None or reference is None:
-        return rule["missing"]
+        return done(rule["missing"], "missing_response" if part is None else "missing_reference")
     reference = str(reference)
     if rule.get("reference_extract"):
-        extracted = _extract(reference, rule["reference_extract"])
+        extracted = _extract(reference, rule["reference_extract"], explanation)
+        _explain(explanation, reference_fallback = extracted is None)
         reference = reference if extracted is None else extracted
+    _explain(explanation, reference = reference)
     if kind == "exact_match":
-        same = _normalize(part, rule["normalize"]) == _normalize(str(reference), rule["normalize"])
-        return rule["score"]["match" if same else "miss"]
+        answer = _normalize(part, rule["normalize"])
+        expected = _normalize(reference, rule["normalize"])
+        return done(
+            rule["score"]["match" if answer == expected else "miss"],
+            "matched" if answer == expected else "not_matched",
+            normalized_response = answer,
+            normalized_reference = expected,
+            normalizers = rule["normalize"],
+        )
     guess, truth = _to_float(part), _to_float(reference)
     if guess is None or truth is None:
-        return rule["missing"]
+        return done(
+            rule["missing"],
+            "invalid_response_number" if guess is None else "invalid_reference_number",
+        )
     error = abs(guess - truth) if truth == 0 else abs(guess / truth - 1.0)
+    # Two finite numbers can still overflow their relative error; a string stays JSON-safe.
+    _explain(explanation, error = str(error), error_kind = "absolute" if truth == 0 else "relative")
     for band in rule["bands"]:
         if error <= band["within"] + 1e-12:
-            return band["score"]
-    return rule["else"]
+            return done(band["score"], "within_tolerance", tolerance = band["within"])
+    return done(rule["else"], "outside_tolerance")
 
 
 # A rendered prompt's assistant prefill, under a name no dataset column (reward reference) takes.
@@ -608,5 +764,17 @@ def preview_scores(
     specs: list[dict],
     text: str,
     reference: Any = None,
+    *,
+    explain: bool = False,
 ) -> list[dict]:
-    return [{"name": s["name"], "score": score_rule(s["rule"], text, reference)} for s in specs]
+    results = []
+    for spec in specs:
+        explanation = {} if explain else None
+        result = {
+            "name": spec["name"],
+            "score": score_rule(spec["rule"], text, reference, explanation = explanation),
+        }
+        if explain:
+            result["explanation"] = explanation
+        results.append(result)
+    return results
