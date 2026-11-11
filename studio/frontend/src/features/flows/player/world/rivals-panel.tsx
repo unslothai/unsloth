@@ -35,6 +35,7 @@ import {
   plotsOf,
   relationOf,
   scoreOf,
+  talkLock,
 } from "./rivals";
 
 function linked(a: AbortSignal, b: AbortSignal): AbortSignal {
@@ -110,8 +111,17 @@ export function RivalsPanel({
   );
   const run = useRef<AbortController | null>(null);
   const from = useRef<RivalsState | null>(null);
+  const talking = useRef(onTalking);
+  talking.current = onTalking;
+  const lock = useRef(talkLock((on) => talking.current?.(on))).current;
 
-  useEffect(() => () => run.current?.abort(), []);
+  useEffect(
+    () => () => {
+      run.current?.abort();
+      lock.end();
+    },
+    [lock],
+  );
   useEffect(() => {
     // Worlds without a simulation have no tick to pump the queue once its minute budget frees up.
     if (!busy) return;
@@ -192,11 +202,15 @@ export function RivalsPanel({
       [envoy]: [...history, { role: "player", text }],
     }));
     setBusy(true);
-    onTalking?.(true);
+    const t = lock.take();
     try {
-      const res = await api.invoke(flowId, entry, {
-        state: diplomacyRequest(spec, board, s, envoy, text, history),
-      });
+      const res = await api.invoke(
+        flowId,
+        entry,
+        { state: diplomacyRequest(spec, board, s, envoy, text, history) },
+        { signal: t.signal },
+      );
+      if (t.signal.aborted) return;
       const reply = res.outputs.reply as
         | { text?: string; offer?: DiplomacyOffer }
         | undefined;
@@ -210,10 +224,9 @@ export function RivalsPanel({
       }));
       if (action) setDeal({ fid: envoy, action });
     } catch {
-      setNote("The envoy did not come back.");
+      if (!t.signal.aborted) setNote("The envoy did not come back.");
     } finally {
-      setBusy(false);
-      onTalking?.(false);
+      if (lock.release(t.id)) setBusy(false);
     }
   };
 

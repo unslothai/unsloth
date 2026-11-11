@@ -596,3 +596,22 @@ test("a cancelled turn's queued job makes no call and gives its slot back", asyn
   assert.equal(fresh, "plan");
   assert.equal(calls, 1);
 });
+
+test("talk lock: unmount releases and aborts, a stale finally keeps the newer lock", () => {
+  const seen: boolean[] = [];
+  const lock = R.talkLock((on) => seen.push(on));
+  const a = lock.take();
+  lock.end();
+  assert.equal(a.signal.aborted, true);
+  assert.deepEqual(seen, [true, false]);
+
+  const lock2 = R.talkLock((on) => seen.push(on));
+  const b = lock2.take();
+  assert.equal(lock.release(a.id), false);
+  const c = lock2.take();
+  assert.equal(b.signal.aborted, true);
+  assert.equal(lock2.release(b.id), false);
+  assert.deepEqual(seen, [true, false, true, true]);
+  assert.equal(lock2.release(c.id), true);
+  assert.deepEqual(seen, [true, false, true, true, false]);
+});
