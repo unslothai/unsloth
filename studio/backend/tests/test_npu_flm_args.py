@@ -11,7 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from core.inference import npu_backend as nb
-from core.inference.npu_flm_args import build_flm_args, flm_args_status
+from core.inference.npu_flm_args import build_flm_args, clamp_prefill_chunk, flm_args_status
 
 _TEXT = nb.NpuModel(
     id = "qwen3-0.6b-FLM",
@@ -36,7 +36,6 @@ def _flm(**fields):
         power_mode = fields.get("power_mode"),
         prefill_chunk_len = fields.get("prefill_chunk_len"),
         img_pre_resize = fields.get("img_pre_resize"),
-        ctx_size = fields.get("ctx_size", 8192),
     )
 
 
@@ -54,7 +53,11 @@ def test_flags_use_the_canonical_form_lemonade_accepts():
 
 
 def test_a_prefill_chunk_past_the_context_is_clamped_to_it():
-    assert _flm(prefill_chunk_len = 16384, ctx_size = 4096) == "--prefill-chunk-len 4096"
+    flm = "--pmode turbo --prefill-chunk-len 16384"
+    assert clamp_prefill_chunk(flm, 4096) == "--pmode turbo --prefill-chunk-len 4096"
+    assert clamp_prefill_chunk(flm, 65536) == flm
+    assert clamp_prefill_chunk(flm, None) == flm
+    assert clamp_prefill_chunk(None, 4096) is None
 
 
 @pytest.mark.parametrize(
@@ -167,6 +170,14 @@ def test_the_load_body_carries_flm_args_only_when_set(backend):
     assert npu._loaded.flm_args == "--pmode turbo"
 
 
+def test_the_load_holds_the_prefill_chunk_to_the_context_it_resolves(backend):
+    npu, server = backend
+    npu.load(_VISION.id, 4096, flm_args = "--prefill-chunk-len 100000")
+    assert server.bodies[-1]["flm_args"] == "--prefill-chunk-len 4096"
+    # Status reports what Lemonade runs with.
+    assert npu._loaded.flm_args == "--prefill-chunk-len 4096"
+
+
 def _route_npu(
     model,
     *,
@@ -262,14 +273,21 @@ def test_a_changed_flm_setting_is_a_different_load(monkeypatch, resident, fields
             power_mode = fields.get("npu_power_mode"),
             prefill_chunk_len = fields.get("npu_prefill_chunk_len"),
             img_pre_resize = None,
-            ctx_size = 8192,
         )
 
 
-def test_the_prefill_chunk_is_clamped_to_the_context_the_load_uses(monkeypatch):
+def test_the_route_leaves_the_prefill_chunk_to_the_load(monkeypatch):
+    # Auto can resolve past 8192, so the route cannot know the context the chunk is held to.
     npu = _route_npu(_TEXT, resident_ctx = 2048)
-    _load(monkeypatch, npu, max_seq_length = 4096, npu_prefill_chunk_len = 100_000)
-    assert npu.loads[-1] == (4096, "--prefill-chunk-len 4096")
+    _load(monkeypatch, npu, npu_prefill_chunk_len = 16384)
+    assert npu.loads[-1] == (None, "--prefill-chunk-len 16384")
+
+
+def test_a_chunk_the_resident_holds_to_its_context_is_already_loaded(monkeypatch):
+    # The resident runs at 8192, so asking for 16384 again is the load it already is.
+    npu = _route_npu(_TEXT, resident_flm_args = "--prefill-chunk-len 8192")
+    assert _load(monkeypatch, npu, npu_prefill_chunk_len = 16384).status == "already_loaded"
+    assert _load(monkeypatch, npu, npu_prefill_chunk_len = 4096).status == "loaded"
 
 
 def test_image_pre_resize_reaches_vision_models_only(monkeypatch):
