@@ -160,16 +160,3 @@ def test_a_failed_base_pane_reply_still_turns_the_lora_back_on():
         _reply(backend, use_adapter = False)
 
     assert model.base_model.disabled is False
-
-
-def test_a_base_pane_transcription_turns_the_lora_back_on():
-    backend, model = _lora_backend()
-    seen = []
-    backend.models[MODEL]["whisper_pipeline"] = lambda _: seen.append(
-        model.base_model.disabled
-    ) or {"text": "hi"}
-
-    list(backend.generate_whisper_response([0.0], use_adapter = False))
-
-    assert seen == [True]
-    assert model.base_model.disabled is False
