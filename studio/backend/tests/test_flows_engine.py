@@ -307,6 +307,38 @@ async def test_cancel_mid_run_keeps_finished_outputs_and_fires_hooks():
 
 
 @run_async
+async def test_cancel_says_cancelling_even_if_the_run_ends_while_hooks_run():
+    started, resume = asyncio.Event(), asyncio.Event()
+    held = []
+
+    async def slow(ctx):
+        async def hook():
+            # The run reaches "cancelled" before cancel() answers.
+            resume.set()
+            await asyncio.wait({held[0].task}, timeout = 30)
+
+        ctx.on_cancel(hook)
+        started.set()
+        await resume.wait()
+        ctx.check_cancelled()
+        return {"text": "late"}
+
+    eng = make_engine({**BASE_HANDLERS, "llm.generate": slow})
+    d = doc(
+        [node("a", "input.text", value = "p"), node("g", "llm.generate")],
+        [edge("a", "text", "g", "prompt")],
+    )
+    parsed, _ = parse_document(d)
+    rs = await eng.start_run(app = None, flow_id = "f1", doc = parsed, options = {})
+    held.append(rs)
+    await asyncio.wait_for(started.wait(), 60)
+    assert await eng.cancel(rs.id) == "cancelling"
+    await asyncio.wait_for(rs.task, 60)
+    assert rs.status == "cancelled"
+    assert await eng.cancel(rs.id) == "cancelled"
+
+
+@run_async
 async def test_gpu_nodes_prefer_the_resident_model():
     order = []
 
@@ -832,6 +864,54 @@ async def test_parallel_for_each_keeps_the_cpu_limit():
     limit = engine_mod.CPU_CONCURRENCY
     await wait_until(lambda: live >= limit, timeout = 30, what = "the iterations to fill the CPU limit")
     # Proving that nothing more starts needs a window: give an over-limit iteration time to show.
+    with contextlib.suppress(AssertionError):
+        await wait_until(lambda: live > limit, timeout = 0.5)
+    release.set()
+    await asyncio.wait_for(rs.task, 20)
+    assert rs.status == "completed", rs.error
+    assert peak == limit
+
+
+@run_async
+async def test_parallel_for_each_shares_one_cpu_limit_across_iterations():
+    live = 0
+    peak = 0
+    release = asyncio.Event()
+
+    async def slow(ctx):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        await release.wait()
+        live -= 1
+        return {"text": "ok"}
+
+    eng = make_engine(
+        {
+            **BASE_HANDLERS,
+            "input.list": lambda ctx: ret({"items": list(range(12))}),
+            "text.template": slow,
+        }
+    )
+    # Two independent steps per iteration: a per-iteration limit would let 4 x 2 run at once.
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("fe", "logic.for_each", parallel = True),
+            node("t", "text.template", group = "fe"),
+            node("u", "text.template", group = "fe"),
+        ],
+        [
+            edge("l", "items", "fe", "items"),
+            edge("fe", "item", "t", "values"),
+            edge("fe", "item", "u", "values"),
+        ],
+    )
+    parsed, errors = parse_document(d)
+    assert not errors, errors
+    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = {})
+    limit = engine_mod.CPU_CONCURRENCY
+    await wait_until(lambda: live >= limit, timeout = 30, what = "the steps to fill the CPU limit")
     with contextlib.suppress(AssertionError):
         await wait_until(lambda: live > limit, timeout = 0.5)
     release.set()
