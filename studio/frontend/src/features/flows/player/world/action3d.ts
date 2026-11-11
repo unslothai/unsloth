@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import type { WorldProp3d, WorldPropKind } from "../../types";
 
 export const STEP_S = 1 / 60;
@@ -185,6 +184,42 @@ function blocked(
   return false;
 }
 
+// Strict (no step-up allowance): a restored capsule must not start inside any prop.
+export function capsuleFree(
+  w: ActionWorld,
+  x: number,
+  y: number,
+  z: number,
+  h = STAND_H,
+): boolean {
+  if (!Number.isFinite(z) || z < w.ground(x, y) - 1e-3) return false;
+  if (tileBlocked(w, x, y, RADIUS)) return false;
+  for (const b of nearBoxes(w, x, y, RADIUS))
+    if (b.top > z + 1e-3 && b.bottom < z + h && circleHitsBox(b, x, y, RADIUS))
+      return false;
+  return true;
+}
+
+// Saved tile + feet height to restore. The prop tile mask is ground level, so an action save standing
+// on a prop is checked against the capsule instead. z null = ground: a saved z never moves to spawn.
+export function restoreSpot(
+  start: { x: number; y: number } | null,
+  spawn: { x: number; y: number },
+  z: number | null,
+  tileFree: (x: number, y: number) => boolean,
+  w: ActionWorld | null,
+): { at: { x: number; y: number }; z: number | null } {
+  if (start && tileFree(start.x, start.y)) return { at: start, z };
+  if (
+    start &&
+    w &&
+    z !== null &&
+    capsuleFree(w, start.x + 0.5, start.y + 0.5, z)
+  )
+    return { at: start, z };
+  return { at: spawn, z: null };
+}
+
 export interface Body {
   x: number;
   y: number;
@@ -317,7 +352,6 @@ export function advance(
   if (jump) b.jumpQueued = true;
   return n;
 }
-
 
 export const MAX_HEALTH = 100;
 export const START_AMMO = 24;
