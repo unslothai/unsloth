@@ -2186,13 +2186,39 @@ export function ComposerModelPicker({
       : undefined;
 
   const deleteQuantFor = (row: Row, variant: GgufVariantDetail) => {
+    const inMemory =
+      Boolean(row.loaded) &&
+      variant.quant.toLowerCase() === row.loadedQuant?.toLowerCase();
+    if (row.lora?.source === "exported" && row.lora.exportType === "gguf") {
+      return {
+        title: "Delete exported GGUF variant?",
+        description: (
+          <>
+            This will remove{" "}
+            <span className="font-medium text-foreground">
+              {row.label} ({variant.quant})
+            </span>{" "}
+            from disk. This cannot be undone.
+          </>
+        ),
+        successMessage: `Deleted ${row.label} ${variant.quant}`,
+        disabled: inMemory || source?.deleteDisabled,
+        onConfirm: async () => {
+          await deleteFineTunedModel({
+            modelPath: row.id,
+            source: "exported",
+            exportType: "gguf",
+            ggufVariant: variant.quant,
+          });
+        },
+        onDeleted: () =>
+          source?.onModelsChange({ id: row.id, ggufVariant: variant.quant }),
+      };
+    }
     const repo = row.gguf;
     if (!repo) {
       return undefined;
     }
-    const inMemory =
-      Boolean(row.loaded) &&
-      variant.quant.toLowerCase() === row.loadedQuant?.toLowerCase();
     return {
       title: "Delete cached model?",
       impact: {
@@ -2679,7 +2705,11 @@ export function ComposerModelPicker({
     row: Row,
     variant: GgufVariantDetail,
     onDisk: boolean,
+    isGguf = true,
   ) => {
+    // A fine-tuned GGUF export deletes per quant too, through the fine-tune endpoint.
+    const exportedGguf =
+      row.lora?.source === "exported" && row.lora.exportType === "gguf";
     const key = `${row.id}::${variant.quant}`;
     const starred = pinned.includes(key);
     const button = ACTION_ROUND;
@@ -2687,10 +2717,12 @@ export function ComposerModelPicker({
       "opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100";
     return (
       <span className="flex shrink-0 items-center">
-        {onDisk && row.gguf ? (
+        {onDisk && (row.gguf || exportedGguf) ? (
           <ModelRowMenu
             ariaLabel={`More options for ${row.label} ${variant.quant}`}
-            cachePath={{ repoId: row.id, variant: variant.quant }}
+            cachePath={
+              row.gguf ? { repoId: row.id, variant: variant.quant } : undefined
+            }
             update={updateFor(row, variant)}
             del={deleteQuantFor(row, variant)}
             buttonClassName={cn(ACTION_DOTS, reveal)}
@@ -2704,7 +2736,7 @@ export function ComposerModelPicker({
             openConfig(
               modelConfigTarget(
                 row.id,
-                ggufMeta(row, variant, onDisk),
+                ggufMeta(row, variant, onDisk, isGguf),
                 row.label,
               ),
             );
@@ -2859,7 +2891,12 @@ export function ComposerModelPicker({
                   {formatBytes(quantBytes(variant))}
                 </span>
               </button>
-              {renderQuantActions(row, variant, variant.downloaded === true)}
+              {renderQuantActions(
+                row,
+                variant,
+                variant.downloaded === true,
+                !offer.mlx,
+              )}
             </div>
           );
         })}

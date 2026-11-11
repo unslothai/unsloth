@@ -493,3 +493,16 @@ test("the details menu shows modalities with the Model Hub's coloured icons", ()
   assert.match(picker, /<CapabilityGlyph capability=\{c\} \/>/);
   assert.match(picker, /detectHubCapabilities\(undefined, task, id\)/);
 });
+
+test("an MLX variant's gear keeps its format, and exported GGUFs delete per quant", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /ggufMeta\(row, variant, onDisk, isGguf\)/);
+  assert.match(picker, /variant\.downloaded === true,\s+!offer\.mlx,/);
+  assert.match(picker, /onDisk && \(row\.gguf \|\| exportedGguf\)/);
+  assert.match(
+    picker,
+    /source: "exported",\s+exportType: "gguf",\s+ggufVariant: variant\.quant,/,
+  );
+});
