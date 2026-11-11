@@ -9358,7 +9358,7 @@ const UserMessage: FC = () => {
           {hasContent ? (
             <div
               dir="auto"
-              className="aui-user-message-content wrap-break-word min-w-0 leading-relaxed text-[#0f1114] dark:text-foreground"
+              className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! min-w-0 leading-relaxed text-[#0f1114] dark:text-foreground"
             >
               <MessagePrimitive.Parts components={roleplayParts} />
             </div>
