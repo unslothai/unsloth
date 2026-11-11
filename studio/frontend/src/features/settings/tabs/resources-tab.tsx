@@ -645,11 +645,18 @@ export function ResourcesTab() {
     },
   ];
   const unifiedPool = metrics.vramShared > 0 && metrics.vramDedicated === 0;
-  const vramCapacityLabel = formatGiB(
-    unifiedPool
-      ? metrics.vramShared
-      : (metrics.vramCarveOut?.totalGb ?? metrics.vramTotal),
-  );
+  // A carve-out the shared pool outgrows keeps the split, so the pool never reads as dedicated VRAM.
+  const vramCapacityLabel =
+    !metrics.vramCarveOut && metrics.vramShared > 0 && !unifiedPool
+      ? t("settings.resources.environment.vramWithShared", {
+          vram: formatGiB(metrics.vramDedicated),
+          shared: formatGiB(metrics.vramShared),
+        })
+      : formatGiB(
+          unifiedPool
+            ? metrics.vramShared
+            : (metrics.vramCarveOut?.totalGb ?? metrics.vramTotal),
+        );
   const vram = vramCards(memoryDisplay.usageDevices, memoryDisplay.usageGpu);
   const discreteVram =
     hasGpu &&

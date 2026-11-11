@@ -82,9 +82,10 @@ test("no carve-out reading for discrete cards, unified pools, or a small UMA sli
 test("Strix Halo: the VRAM tile reads used / carve-out, with the borrowable RAM on its own line", () => {
   const tab = readSrc("features/settings/tabs/resources-tab.tsx");
   // Was "1.16 GiB / 95.8 GiB VRAM + 12.1 GiB shared", truncated in the tile.
-  assert.ok(
-    !/const vramCapacityLabel =[\s\S]{0,120}environment\.vramWithShared/.test(tab),
-    "the VRAM tile still prints the carve-out plus shared total",
+  // Only a carve-out the shared pool outgrows (a UMA slice) keeps the "VRAM + shared" split.
+  assert.match(
+    tab,
+    /const vramCapacityLabel =\s*!metrics\.vramCarveOut && metrics\.vramShared > 0 && !unifiedPool\s*\? t\("settings\.resources\.environment\.vramWithShared"/,
   );
   assert.match(tab, /metrics\.vramCarveOut\?\.totalGb \?\? metrics\.vramTotal/);
   assert.match(
