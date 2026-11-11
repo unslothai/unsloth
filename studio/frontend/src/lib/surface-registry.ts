@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type Ref, type RefCallback, useCallback } from "react";
+import { type Ref, type RefCallback, useCallback, useMemo } from "react";
 
 // Shortcut checks read the elements that register here plus whatever is outside the app root
 // (third-party portals), instead of walking a long chat's whole document on every press.
@@ -132,21 +132,39 @@ export function useMergedRefs<T>(
   }, refs);
 }
 
+/** The ref behind useSurfaceRef. A ref composer that predates ref cleanups (use-composed-ref, inside
+ * react-textarea-autosize) drops the returned cleanup and detaches with `ref(null)`, which left the
+ * element registered and its thread retained after every chat switch; both paths now undo, once. */
+export function surfaceRef<T extends Element>(
+  key: string,
+  forwarded?: Ref<T>,
+): RefCallback<T> {
+  let held: (() => void) | null = null;
+  return (element: T | null) => {
+    held?.();
+    held = null;
+    if (element === null) return;
+    const unregister = registerSurface(key, element);
+    const detach = attachRef(forwarded, element);
+    let undone = false;
+    const undo = () => {
+      if (undone) return;
+      undone = true;
+      unregister();
+      detach();
+    };
+    held = undo;
+    return () => {
+      undo();
+      if (held === undo) held = null;
+    };
+  };
+}
+
 /** A ref that registers the element under `key` while mounted and still reaches `forwarded`. */
 export function useSurfaceRef<T extends Element>(
   key: string,
   forwarded?: Ref<T>,
 ): RefCallback<T> {
-  return useCallback(
-    (element: T | null) => {
-      if (element === null) return;
-      const unregister = registerSurface(key, element);
-      const detach = attachRef(forwarded, element);
-      return () => {
-        unregister();
-        detach();
-      };
-    },
-    [key, forwarded],
-  );
+  return useMemo(() => surfaceRef(key, forwarded), [key, forwarded]);
 }
