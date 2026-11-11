@@ -44,6 +44,8 @@ export interface NpuStatus {
   loading_model: string | null;
   /** Installed runtime versions; absent from servers that predate them. */
   versions?: { lemonade: string | null; fastflowlm: string | null };
+  /** This PC's GPU outruns its NPU (Strix Halo); absent from servers that predate it. */
+  gpu_recommended?: boolean;
 }
 
 export interface NpuModel {
@@ -58,6 +60,8 @@ export interface NpuModel {
   supports_tools: boolean;
   max_context_length: number | null;
   resume_percent: number | null;
+  /** Upstream FastFlowLM issue for this model on this PC, when one is known. */
+  known_issue_url?: string | null;
 }
 
 export function npuRowsFor(
@@ -91,6 +95,17 @@ export function npuRuntimeLabel(
     if (version) parts.push(`${name} v${version.replace(/^v/, "")}`);
   }
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** The note for a PC whose GPU is the faster place for these models; the NPU stays usable. */
+export function npuGpuHint(status: NpuStatus | null): string | null {
+  return status?.gpu_recommended
+    ? "The GPU in this PC runs the same models several times faster. The NPU is still available."
+    : null;
+}
+
+export function npuKnownIssueLabel(model: NpuModel): string | null {
+  return model.known_issue_url ? "Known FastFlowLM issue on this PC" : null;
 }
 
 export function npuSizeLabel(sizeGb: number | null): string | null {

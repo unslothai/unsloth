@@ -6,9 +6,11 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   type NpuModel,
   type NpuPickerSource,
+  NpuGpuHint,
   NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
+  npuKnownIssueLabel,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -51,18 +53,23 @@ export function NpuCatalogList({
         </p>
       );
     }
-    return rows.map((model) => (
-      <NpuCatalogRow
-        key={model.id}
-        model={model}
-        progress={catalog.downloads[model.id]}
-        downloading={model.id in catalog.downloads}
-        reconnecting={model.id in catalog.reconnecting}
-        onDownload={() => void catalog.download(model)}
-        onRun={() => onRun(model)}
-        onRemove={() => catalog.remove(model)}
-      />
-    ));
+    return (
+      <>
+        <NpuGpuHint catalog={catalog} className="px-3 pb-1.5" />
+        {rows.map((model) => (
+          <NpuCatalogRow
+            key={model.id}
+            model={model}
+            progress={catalog.downloads[model.id]}
+            downloading={model.id in catalog.downloads}
+            reconnecting={model.id in catalog.reconnecting}
+            onDownload={() => void catalog.download(model)}
+            onRun={() => onRun(model)}
+            onRemove={() => catalog.remove(model)}
+          />
+        ))}
+      </>
+    );
   };
 
   return (
@@ -102,6 +109,7 @@ function NpuCatalogRow({
     model.supports_reasoning ? "Reasoning" : null,
     model.supports_tools ? "Tools" : null,
     downloading ? null : npuResumeLabel(model),
+    npuKnownIssueLabel(model),
   ].filter(Boolean);
 
   const remove = async () => {

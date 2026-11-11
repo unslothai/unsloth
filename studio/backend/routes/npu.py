@@ -26,6 +26,7 @@ logger = get_logger(__name__)
 _MANAGED_ACCOUNT_STATUS = {
     "supported": False,
     "hardware": {"present": False, "supported": False},
+    "gpu_recommended": False,
     "runtime_installed": False,
     "runtime_running": False,
     "state": "idle",

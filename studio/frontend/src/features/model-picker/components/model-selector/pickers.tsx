@@ -94,9 +94,11 @@ import {
   type NpuCatalog,
   type NpuModel,
   type NpuPickerSource,
+  NpuGpuHint,
   NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
+  npuKnownIssueLabel,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -7781,6 +7783,7 @@ export function HubModelPicker({
       "NPU",
       npuSizeLabel(model.size_gb),
       npuResumeLabel(model),
+      npuKnownIssueLabel(model),
     ].filter(Boolean);
     const meta = {
       source: "local",
@@ -8640,7 +8643,12 @@ export function HubModelPicker({
                 {showNpuBrowse && npuCatalog ? (
                   <>
                     <ListLabel>NPU</ListLabel>
-                    {showHfSection && npuCatalog.ready ? null : (
+                    {showHfSection && npuCatalog.ready ? (
+                      <NpuGpuHint
+                        catalog={npuCatalog}
+                        className="px-2.5 pb-2"
+                      />
+                    ) : (
                       <NpuSetupNotice catalog={npuCatalog} />
                     )}
                     {npuBrowseRows.map((model) => renderNpuRow(model, false))}

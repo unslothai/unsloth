@@ -167,6 +167,33 @@ test("an interrupted NPU download says how much it kept", () => {
   assert.equal(api.npuResumeLabel(model(null)), null);
 });
 
+test("a PC whose GPU outruns its NPU gets one note, and the NPU stays offered", () => {
+  const { api } = client(() => new Response(null));
+  const status = (gpu_recommended?: boolean) =>
+    ({ gpu_recommended }) as Parameters<typeof api.npuGpuHint>[0];
+  const hint = api.npuGpuHint(status(true));
+  assert.match(hint ?? "", /GPU .* several times faster/);
+  assert.match(hint ?? "", /NPU is still available/);
+  assert.equal(api.npuGpuHint(status(false)), null);
+  // An older server sends no flag.
+  assert.equal(api.npuGpuHint(status()), null);
+  assert.equal(api.npuGpuHint(null), null);
+});
+
+test("a model with a known FastFlowLM issue on this PC is tagged", () => {
+  const { api } = client(() => new Response(null));
+  const model = (known_issue_url?: string | null) =>
+    ({ known_issue_url }) as Parameters<typeof api.npuKnownIssueLabel>[0];
+  assert.equal(
+    api.npuKnownIssueLabel(
+      model("https://github.com/ROCm/FastFlowLM/issues/705"),
+    ),
+    "Known FastFlowLM issue on this PC",
+  );
+  assert.equal(api.npuKnownIssueLabel(model(null)), null);
+  assert.equal(api.npuKnownIssueLabel(model()), null);
+});
+
 test("a download waiting for the backend says it is reconnecting", () => {
   const { api } = client(() => new Response(null));
   assert.equal(api.npuDownloadLabel(40), "Downloading 40%");
