@@ -103,6 +103,7 @@ export { PillTabs } from "./components/model-selector/pill-tabs";
 export { usePinnedConnectedModelsStore } from "./components/model-selector/pinned-connected-models";
 export { isMediaCatalogRepo } from "./components/model-selector/model-catalog";
 export { ModelLoadSettingsAction } from "./components/model-selector/model-load-settings-action";
+export { ConnectedModelSettingsDialog } from "./components/model-selector/connected-model-settings-dialog";
 export {
   chatGgufFit,
   estimateQuantBytes,

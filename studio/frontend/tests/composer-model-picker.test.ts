@@ -364,3 +364,20 @@ test("on-disk quant lists are re-read when the picker opens or inventory changes
     /quantsReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
   );
 });
+
+test("resident rows key, pick and eject by their serving checkpoint", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /const servedAs = .*=> m\.checkpoint \?\? m\.id;/);
+  assert.match(picker, /key: `loaded:\$\{checkpoint\}`,\s+id: checkpoint,/);
+  assert.match(picker, /loadedId: servedAs\(hit\)/);
+});
+
+test("connected models keep their Model settings dialog", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /<ConnectedModelSettingsDialog/);
+  assert.match(picker, /onConfigure=\{\(\) => openConnectedSettings\(row\)\}/);
+});

@@ -20,9 +20,13 @@ import type {
   GgufVariantDetail,
 } from "@/features/chat";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
-import { isExternalModelId } from "@/features/chat/external-providers";
+import {
+  isExternalModelId,
+  parseExternalModelId,
+} from "@/features/chat/external-providers";
 import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
   OwnerAvatar,
   TrainIcon,
@@ -38,6 +42,7 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import {
+  ConnectedModelSettingsDialog,
   type LoraModelOption,
   type ModelConfigFocus,
   ModelConfigPage,
@@ -232,6 +237,19 @@ function loraMeta(lora: LoraModelOption): ModelSelectorChangeMeta {
       !isLocal && lora.exportType !== "merged" && lora.exportType !== "gguf",
     isDownloaded: true,
     isGguf: lora.isDirectGguf === true,
+  };
+}
+
+const LOCAL_PATH = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/;
+
+/** A resident with no on-disk row: a path load stays local, as the header picker sends it. */
+function residentMeta(row: Row): ModelSelectorChangeMeta {
+  return {
+    source: LOCAL_PATH.test(row.id) ? "local" : "hub",
+    isLora: false,
+    isDownloaded: true,
+    isGguf: Boolean(row.loadedQuant),
+    ...(row.loadedQuant ? { ggufVariant: row.loadedQuant } : {}),
   };
 }
 
@@ -773,6 +791,9 @@ export function ComposerModelPicker({
   );
   const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
   const [configStandalone, setConfigStandalone] = useState(false);
+  // A connected model's own settings (prompt, output cap, effort pin), as the header picker offered.
+  const [connectedSettings, setConnectedSettings] = useState<Row | null>(null);
+  const providers = useExternalProvidersStore((s) => s.providers);
   const openConfig = (target: ModelPickTarget) => {
     setConfigTarget(target);
     setConfigFocus(null);
@@ -999,7 +1020,15 @@ export function ComposerModelPicker({
         npu: model,
       });
     }
-    const loaded = new Map(loadedModels.map((m) => [m.id.toLowerCase(), m]));
+    // Local models load by path and two files can share a name, so the checkpoint is the identity.
+    const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
+    const loaded = new Map<string, (typeof loadedModels)[number]>();
+    for (const m of loadedModels) {
+      loaded.set(m.id.toLowerCase(), m);
+    }
+    for (const m of loadedModels) {
+      loaded.set(servedAs(m).toLowerCase(), m);
+    }
     const marked = dedupeRows(device).map((row) => {
       const hit =
         loaded.get(row.id.toLowerCase()) ??
@@ -1011,31 +1040,27 @@ export function ComposerModelPicker({
             ...row,
             loaded: true,
             loadedQuant: hit.quant ?? null,
-            loadedId: hit.id,
+            loadedId: servedAs(hit),
           }
         : row;
     });
     for (const m of loadedModels) {
-      if (
-        marked.some(
-          (row) =>
-            row.loaded && (row.id === m.id || row.aliases?.includes(m.id)),
-        )
-      ) {
+      const checkpoint = servedAs(m);
+      if (marked.some((row) => row.loaded && row.loadedId === checkpoint)) {
         continue;
       }
       marked.push({
-        key: `loaded:${m.id}`,
-        id: m.id,
+        key: `loaded:${checkpoint}`,
+        id: checkpoint,
         label: modelDisplayName(m.id),
         tab: DEVICE_TAB,
         kind: "loaded",
         section: repoSection(m.id),
         format: m.quant ? "gguf" : "checkpoint",
-        aliases: m.checkpoint ? [m.checkpoint] : undefined,
+        aliases: checkpoint === m.id ? undefined : [m.id],
         loaded: true,
         loadedQuant: m.quant ?? null,
-        loadedId: m.id,
+        loadedId: checkpoint,
       });
     }
     marked.sort((a, b) => Number(!!b.loaded) - Number(!!a.loaded));
@@ -1590,13 +1615,7 @@ export function ComposerModelPicker({
         pipelineTag: row.cached?.task ?? null,
       });
     } else if (row.kind === "loaded") {
-      source.onPick(row.id, {
-        source: "hub",
-        isLora: false,
-        isDownloaded: true,
-        isGguf: Boolean(row.loadedQuant),
-        ...(row.loadedQuant ? { ggufVariant: row.loadedQuant } : {}),
-      });
+      source.onPick(row.id, residentMeta(row));
     } else if (row.kind === "hub") {
       source.onPick(row.id, { source: "hub", isLora: false, isGguf: false });
     }
@@ -1798,13 +1817,7 @@ export function ComposerModelPicker({
       };
     }
     if (row.kind === "loaded") {
-      return {
-        source: "hub",
-        isLora: false,
-        isDownloaded: true,
-        isGguf: Boolean(row.loadedQuant),
-        ...(row.loadedQuant ? { ggufVariant: row.loadedQuant } : {}),
-      };
+      return residentMeta(row);
     }
     if (row.kind === "hub") {
       return {
@@ -1835,6 +1848,12 @@ export function ComposerModelPicker({
       return;
     }
     openConfig(modelConfigTarget(row.id, meta, row.label));
+  };
+
+  const openConnectedSettings = (row: Row) => {
+    // The dialog sits outside the panel, which would take its clicks as a dismiss.
+    setOpen(false);
+    setConnectedSettings(row);
   };
 
   const deleteFor = (row: Row) => {
@@ -2060,6 +2079,36 @@ export function ComposerModelPicker({
                 ariaLabel={`Run settings for ${row.label}`}
                 tooltip="Load settings"
                 onConfigure={() => openSettings(row)}
+                className={cn(ACTION_ROUND, actionClass)}
+                iconClassName="composer-row-icon"
+              />
+            </>
+          ) : null}
+          {row.kind === "external" ? (
+            <>
+              <ModelRowMenu
+                ariaLabel={`More options for ${row.label}`}
+                items={[
+                  {
+                    key: "model-settings",
+                    label: "Model settings",
+                    icon: (
+                      <HugeiconsIcon
+                        icon={Settings02Icon}
+                        strokeWidth={1.75}
+                        className="size-icon"
+                      />
+                    ),
+                    onSelect: () => openConnectedSettings(row),
+                  },
+                ]}
+                buttonClassName={cn(ACTION_DOTS, actionClass)}
+                iconClassName="composer-row-dots"
+              />
+              <ModelLoadSettingsAction
+                ariaLabel={`Settings for ${row.label}`}
+                tooltip="Model settings"
+                onConfigure={() => openConnectedSettings(row)}
                 className={cn(ACTION_ROUND, actionClass)}
                 iconClassName="composer-row-icon"
               />
@@ -2302,6 +2351,34 @@ export function ComposerModelPicker({
           );
         })}
       </div>
+    );
+  };
+
+  const renderConnectedSettings = (row: Row) => {
+    const parsed = parseExternalModelId(row.id);
+    const provider = providers.find((p) => p.id === parsed?.providerId);
+    return (
+      <ConnectedModelSettingsDialog
+        open={true}
+        onOpenChange={(next) => {
+          if (!next) {
+            setConnectedSettings(null);
+          }
+        }}
+        checkpointId={row.id}
+        displayName={row.label}
+        modelId={parsed?.modelId ?? row.label}
+        providerType={row.providerType ?? provider?.providerType ?? ""}
+        apiType={provider?.apiType}
+        baseUrl={provider?.baseUrl ?? null}
+        isReasoningProvider={provider?.isReasoningModel === true}
+        reasoningConfig={
+          provider?.backendProviderType === "custom" && !provider.decisionsOnly
+            ? provider.reasoningConfig
+            : undefined
+        }
+        connectionMaxOutputTokens={provider?.maxOutputTokens ?? null}
+      />
     );
   };
 
@@ -2845,6 +2922,7 @@ export function ComposerModelPicker({
           </div>
         ) : null}
       </PopoverContent>
+      {connectedSettings ? renderConnectedSettings(connectedSettings) : null}
     </Popover>
   );
 }
