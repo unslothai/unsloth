@@ -240,6 +240,9 @@ def shrink_video_for_llama(
             # Keeping the decoded copy alive just to log its length costs up to the upload cap.
             del raw
             shrunk = Path(tmp) / "shrunk.mkv"
+            # A size-only re-encode has no filter, and ffmpeg refuses an empty -vf.
+            chain = _filter_chain(max_pixels, rate, duration, oversized, sampled_fps)
+            filters = ["-vf", chain] if chain else []
             result = _run(
                 [
                     ffmpeg,
@@ -256,8 +259,7 @@ def shrink_video_for_llama(
                     "-an",
                     "-sn",
                     "-dn",
-                    "-vf",
-                    _filter_chain(max_pixels, rate, duration, oversized, sampled_fps),
+                    *filters,
                     "-c:v",
                     "mpeg4",
                     # mpeg4 is widely supported but can outgrow low-bitrate sources; -fs caps output at the upload limit.
