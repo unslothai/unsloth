@@ -104,6 +104,19 @@ def test_only_the_loopback_listener_honours_the_allowlist(allow_studio, client, 
     assert not request_via_trusted_proxy(_scope([("host", "studio.example.com")], client, server))
 
 
+def test_trust_forwarded_keeps_the_allowlist_working(allow_studio, monkeypatch):
+    # uvicorn's proxy_headers rewrites the loopback peer to the X-Forwarded-For visitor
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
+    proxied = _scope([("host", "studio.example.com")], client = "203.0.113.7")
+    assert not request_via_trusted_proxy(proxied)
+    monkeypatch.setenv("UNSLOTH_STUDIO_TRUST_FORWARDED", "1")
+    assert request_via_trusted_proxy(proxied)
+    assert not request_via_trusted_proxy(_scope([("host", "evil.example")], client = "203.0.113.7"))
+    assert not request_via_trusted_proxy(
+        _scope([("host", "studio.example.com")], client = "203.0.113.7", server = "192.168.1.5")
+    )
+
+
 def _desktop_frontend(tmp_path):
     import main
 

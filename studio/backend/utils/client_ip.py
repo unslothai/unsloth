@@ -197,7 +197,10 @@ def request_via_trusted_proxy(scope) -> bool:
         return False
     server = scope.get("server")
     client = scope.get("client")
-    if not server or not client or not _is_loopback_ip(server[0]) or not _is_loopback_ip(client[0]):
+    if not server or not client or not _is_loopback_ip(server[0]):
+        return False
+    # UNSLOTH_STUDIO_TRUST_FORWARDED makes uvicorn replace the loopback peer with X-Forwarded-For.
+    if not _is_loopback_ip(client[0]) and not trust_forwarded_headers():
         return False
     host_values = []
     forwarded_hosts = []
