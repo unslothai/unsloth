@@ -96,8 +96,14 @@ def test_kv_counts_only_full_attention_layers_in_bf16(tmp_path, config, expected
 def test_kv_reads_the_interval_or_every_layer_when_types_are_absent(tmp_path):
     hybrid = {k: v for k, v in _QWEN36_35B.items() if k != "layer_types"}
     assert nc.kv_bytes_per_token(_files(tmp_path, hybrid).folder / "config.json") == 20480
-    dense = {"text_config": {"num_hidden_layers": 28, "num_attention_heads": 16,
-                             "num_key_value_heads": 8, "hidden_size": 2048}}
+    dense = {
+        "text_config": {
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+            "hidden_size": 2048,
+        }
+    }
     path = tmp_path / "dense.json"
     path.write_text(json.dumps(dense), encoding = "utf-8")
     assert nc.kv_bytes_per_token(path) == 28 * 2 * 8 * 128 * 2
@@ -204,7 +210,11 @@ def test_the_resident_models_weights_count_as_free(tmp_path, free_ram):
 
 
 class _Response:
-    def __init__(self, body, status_code = 200):
+    def __init__(
+        self,
+        body,
+        status_code = 200,
+    ):
         self._body, self.status_code = body, status_code
 
     def json(self):
@@ -216,13 +226,24 @@ class _Server:
         self.loads: list[dict] = []
         self.ctx = None
 
-    def request(self, method, path, json_body = None, timeout = None):
+    def request(
+        self,
+        method,
+        path,
+        json_body = None,
+        timeout = None,
+    ):
         if path == "/v1/load":
             self.loads.append(json_body)
             self.ctx = json_body["ctx_size"]
             return _Response({"status": "success"})
-        rows = [{"model_name": self.loads[-1]["model_name"], "device": "npu",
-                 "recipe_options": {"ctx_size": self.ctx}}]
+        rows = [
+            {
+                "model_name": self.loads[-1]["model_name"],
+                "device": "npu",
+                "recipe_options": {"ctx_size": self.ctx},
+            }
+        ]
         return _Response({"all_models_loaded": rows})
 
     def stop(self):
