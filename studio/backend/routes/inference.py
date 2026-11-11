@@ -22577,7 +22577,7 @@ async def get_status(current_subject: str, model: Optional[str] = None):
         response.resident_mib, response.resident_on_gpu = _llama_resident()
     elif isinstance(response, InferenceStatusResponse) and response.is_npu:
         # Off Linux psutil finds lemond's children by reading every process: not on the loop.
-        response.resident_mib, response.resident_on_gpu = await asyncio.to_thread(_npu_resident)
+        response.resident_mib, response.resident_on_gpu = await asyncio.to_thread(_npu_resident_mib)
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
@@ -22622,7 +22622,7 @@ def _llama_resident() -> "tuple[Optional[int], Optional[bool]]":
         return None, None
 
 
-def _npu_resident() -> "tuple[Optional[int], Optional[bool]]":
+def _npu_resident_mib() -> "tuple[Optional[int], Optional[bool]]":
     """The NPU model's footprint in system RAM: the RSS of lemond and the FastFlowLM process under it,
     floored at the catalog size in case the NPU's buffers miss the working set."""
     try:
