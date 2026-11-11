@@ -33,6 +33,7 @@ import {
   type BenchmarkRunSummary,
   generateBenchmarkGraph,
 } from "../api/benchmark-api";
+import { formatMetricWithUnit } from "../lib/compare-metrics";
 
 function isDisplayMetric(m: { name: string }): boolean {
   const lower = m.name.toLowerCase().trim();
@@ -51,19 +52,11 @@ function isDisplayMetric(m: { name: string }): boolean {
   return true;
 }
 
-function getDefaultMetric(run: BenchmarkRunSummary): BenchmarkRunMetric | undefined {
+function getDefaultMetric(
+  run: BenchmarkRunSummary,
+): BenchmarkRunMetric | undefined {
   if (!run.default_metric) return undefined;
   return run.metrics.find((m) => m.name === run.default_metric);
-}
-
-function formatMetricValue(m: BenchmarkRunMetric): string {
-  if (m.score >= 0 && m.score <= 1) {
-    return (m.score * 100).toFixed(1);
-  }
-  if (Number.isInteger(m.score)) {
-    return String(m.score);
-  }
-  return m.score.toFixed(m.score < 1 ? 4 : 1);
 }
 
 function runLabel(run: BenchmarkRunSummary): string {
@@ -78,19 +71,13 @@ interface GraphDialogProps {
   selectedRuns: BenchmarkRunSummary[];
 }
 
-
 function RunScore({
   metric,
 }: {
   metric: ReturnType<typeof getDefaultMetric>;
 }): ReactElement {
   if (!metric) return <>n/a</>;
-  return (
-    <>
-      {formatMetricValue(metric)}
-      {metric.score >= 0 && metric.score <= 1 ? "%" : ""}
-    </>
-  );
+  return <>{formatMetricWithUnit(metric)}</>;
 }
 
 export function GraphDialog({

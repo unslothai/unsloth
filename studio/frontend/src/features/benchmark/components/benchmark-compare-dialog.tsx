@@ -20,25 +20,18 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import {
   type BenchmarkRunDetail,
-  type BenchmarkRunMetric,
   type BenchmarkRunSummary,
   getBenchmarkRunDetail,
 } from "../api/benchmark-api";
-import { ACCURACY_LIKE_RE, isDisplayMetric, pickPrimaryMetric } from "../lib/compare-metrics";
-
-function isRatioScore(m: { name: string; score: number }): boolean {
-  return ACCURACY_LIKE_RE.test(m.name) && m.score >= 0 && m.score <= 1;
-}
-
-function formatMetricValue(m: BenchmarkRunMetric): string {
-  if (isRatioScore(m)) {
-    return (m.score * 100).toFixed(1);
-  }
-  if (Number.isInteger(m.score)) {
-    return String(m.score);
-  }
-  return m.score.toFixed(m.score < 1 ? 4 : 1);
-}
+import {
+  bestMetricScore,
+  formatMetricValue,
+  formatMetricWithUnit,
+  isDisplayMetric,
+  isLowerBetter,
+  isRatioScore,
+  pickPrimaryMetric,
+} from "../lib/compare-metrics";
 
 function scoreColor(score: number): string {
   if (score >= 0.8) {
@@ -105,8 +98,7 @@ export function CompareDialog({
             map.set(run.id, detail);
             setLoadingProgress({ loaded: i + 1, total: selectedRuns.length });
           }
-        } catch {
-        }
+        } catch {}
       }
 
       if (!cancelled) {
@@ -305,9 +297,7 @@ export function CompareDialog({
                           );
                           return m?.score ?? null;
                         });
-                        const maxScore = Math.max(
-                          ...scores.filter((s): s is number => s != null),
-                        );
+                        const best = bestMetricScore(metricName, scores);
 
                         return (
                           <tr
@@ -320,8 +310,8 @@ export function CompareDialog({
                             {scores.map((score, i) => {
                               const isBest =
                                 score != null &&
-                                score === maxScore &&
-                                maxScore > 0;
+                                score === best &&
+                                (isLowerBetter(metricName) || best > 0);
                               return (
                                 <td
                                   key={loadedDetails[i].id}
@@ -330,7 +320,10 @@ export function CompareDialog({
                                   }`}
                                 >
                                   {score != null
-                                    ? `${(score * 100).toFixed(1)}%`
+                                    ? formatMetricWithUnit({
+                                        name: metricName,
+                                        score,
+                                      })
                                     : "—"}
                                 </td>
                               );
