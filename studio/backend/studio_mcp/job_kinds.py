@@ -551,11 +551,7 @@ register(
     Kind(
         "flow",
         read = _read_flow,
-        cancel = _route_cancel(
-            "/api/flows/runs/{id}/cancel",
-            None,
-            lambda answer: answer.get("status") in ("cancelling", "cancelled"),
-        ),
+        cancel = _route_cancel("/api/flows/runs/{id}/cancel", None, _recipe_cancelling),
         poll_after_s = 10,
         needs_id = "the run id run_flow returned",
     )

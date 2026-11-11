@@ -67,8 +67,12 @@ def node_value(doc: dict, node_outputs: dict, node_id: str, port: str) -> Any:
 
 
 def input_values(doc: dict, node_outputs: dict, node_id: str, port: str) -> list[Any]:
+    # A disabled source is skipped like the engine skips it, even if an older run stored output.
+    disabled = {n["id"] for n in doc.get("nodes") or [] if n.get("disabled")}
     vals = []
     for e in doc.get("edges") or []:
+        if e["source"] in disabled:
+            continue
         if e.get("kind", "data") == "data" and e["target"] == node_id and e["target_port"] == port:
             v = node_value(doc, node_outputs, e["source"], e["source_port"])
             if v is not None:
