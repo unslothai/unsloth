@@ -428,3 +428,24 @@ async def test_json_export_drops_refs_to_assets_it_does_not_ship():
     assert params.get("extra") in (None, ["keep"])
     assert "cover" not in exported["meta"]
     assert PNG_SHA not in data.decode()
+
+
+@run_async
+async def test_a_highly_repetitive_flow_round_trips_through_a_package():
+    async def read_media(media):
+        raise AssertionError("no media here")
+
+    d = doc([node(f"n{i}", "input.text", value = "a" * 150_000) for i in range(10)])
+    data, _, _ = await package.export_flow(d, "package", read_media)
+    info = zipfile.ZipFile(io.BytesIO(data)).getinfo("flow.json")
+    assert info.file_size > 1024 * 1024 and info.file_size / info.compress_size > package.MAX_RATIO
+    parsed, _, _ = read_package(data)
+    assert [n["params"]["value"] for n in parsed["nodes"]] == ["a" * 150_000] * 10
+
+
+def test_an_oversized_flow_json_still_trips_the_ratio_check():
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("flow.json", " " * (9 * 1024 * 1024))
+    with pytest.raises(PackageError, match = "suspiciously"):
+        read_package(out.getvalue())

@@ -391,8 +391,11 @@ def _check_entries(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
             raise PackageError(
                 f"{name!r} is larger than {schema.MAX_ASSET_BYTES // (1024 * 1024)} MB"
             )
+        # flow.json is read with a MAX_DOC_BYTES cap, so plain repetitive JSON within it is no bomb.
+        doc_sized = name == "flow.json" and info.file_size <= schema.MAX_DOC_BYTES
         if (
-            info.compress_size
+            not doc_sized
+            and info.compress_size
             and info.file_size > 1024 * 1024
             and info.file_size / info.compress_size > MAX_RATIO
         ):
