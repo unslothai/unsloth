@@ -2370,6 +2370,20 @@ def load_h3_image_text_encoder(
     return encoder, None
 
 
+def _place_streamed_dit(
+    transformer: Any, vae: Any, device: Any, plan: H3ImagePlan
+) -> ModuleListStreamer:
+    vae.to(device)
+    for name, child in transformer.named_children():
+        if name != "transformer_blocks":
+            child.to(device)
+    resident = int(plan.dit_resident_blocks or 0)
+    streamer = ModuleListStreamer(transformer.transformer_blocks, device, resident)
+    streamer._unsloth_role = "transformer"
+    streamer._unsloth_resident = resident
+    return streamer
+
+
 def _place_text_encoder(pipe: Any, encoder: Any, plan: H3ImagePlan, device: Any) -> Any:
     if encoder is None:
         return None
@@ -2518,6 +2532,11 @@ def load_minimax_h3_image_pipeline(
     check()
     vae = load_h3_image_vae(root)
     check()
+    early_streamer = None
+    if plan.placement == PLACE_STREAM:
+        # Place the streamed tier before any encoder is materialised: the host-memory plan counts only the DiT
+        # blocks left on the host, not the whole DiT + VAE the loaders park there.
+        early_streamer = _place_streamed_dit(transformer, vae, device, plan)
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(str(root / "tokenizer"))
@@ -2619,14 +2638,16 @@ def load_minimax_h3_image_pipeline(
         # A replan can land here after the DiT was loaded onto the card for a resident tier.
         transformer.to("cpu")
     elif plan.placement == PLACE_STREAM:
-        for name, child in transformer.named_children():
-            if name != "transformer_blocks":
-                child.to(device)
-        streamer = ModuleListStreamer(
-            transformer.transformer_blocks, device, int(plan.dit_resident_blocks or 0)
-        )
-        streamer._unsloth_role = "transformer"
-        pipe._unsloth_h3_streamers.append(streamer)
+        resident = int(plan.dit_resident_blocks or 0)
+        if early_streamer is None or early_streamer._unsloth_resident != resident:
+            if early_streamer is not None:
+                early_streamer.remove()
+            early_streamer = _place_streamed_dit(transformer, vae, device, plan)
+        pipe._unsloth_h3_streamers.append(early_streamer)
+        early_streamer = None
+    if early_streamer is not None:
+        # A replan left the streamed tier: the code above placed the DiT for the new one.
+        early_streamer.remove()
     report = H3ImageLoadReport(
         scheme = scheme,
         scheme_reason = scheme_reason,

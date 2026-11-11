@@ -1058,6 +1058,46 @@ def test_the_per_prompt_encoder_refuses_the_bf16_fallback_before_it_allocates(h3
     assert calls == []
 
 
+def test_a_streamed_dit_is_placed_before_the_encoder_is_materialised(
+    h3i, release, tmp_path, monkeypatch
+):
+    import copy
+
+    root, _ref, te = release
+    rel = _release_copy(root, tmp_path / "rel", with_encoder = False)
+    real_plan = h3i.plan_placement
+
+    def stream(**kw):
+        plan = real_plan(**kw)
+        plan.placement, plan.dit_resident_blocks = h3i.PLACE_STREAM, 1
+        return plan
+
+    seen = []
+
+    def load_te(scheme, **kw):
+        # The streamer's hooks exist on the non-resident blocks by the time the encoder loads.
+        blocks = pipe_blocks[0]
+        seen.append([bool(b._forward_pre_hooks) for b in blocks])
+        return copy.deepcopy(te), "int8"
+
+    pipe_blocks = []
+    real_place = h3i._place_streamed_dit
+
+    def place(transformer, *a, **k):
+        pipe_blocks.append(transformer.transformer_blocks)
+        return real_place(transformer, *a, **k)
+
+    monkeypatch.setattr(h3i, "plan_placement", stream)
+    monkeypatch.setattr(h3i, "_place_streamed_dit", place)
+    monkeypatch.setattr(h3i, "load_h3_image_text_encoder", load_te)
+    pipe = h3i.load_minimax_h3_image_pipeline(str(rel), device = "cpu", text_encoder_quant = "int8")
+    assert len(pipe_blocks) == 1 and seen and seen[0][0] is False and all(seen[0][1:])
+    assert [getattr(x, "_unsloth_role", None) for x in pipe._unsloth_h3_streamers].count(
+        "transformer"
+    ) == 1
+    pipe.release()
+
+
 def test_the_plan_is_redone_for_a_local_text_encoder_folder(h3i, release, tmp_path, monkeypatch):
     import transformers
 
