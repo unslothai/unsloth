@@ -6,6 +6,7 @@ for templates that reject them; shared native fallback for transformers and MLX.
 
 import copy
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -319,15 +320,19 @@ class ModelMarkup:
         "rewrite_boundary",
         # Named template this profile was chosen for; lets a caller spot the wrong profile after sanitizing
         "selected_with_tools",
+        # Mistral's templates raise unless every tool-call id is nine alphanumerics.
+        "nine_char_tool_call_ids",
     )
 
     def __init__(
         self,
         markers: set,
         selected_with_tools: bool = False,
+        nine_char_tool_call_ids: bool = False,
     ):
         self.markers = markers
         self.selected_with_tools = selected_with_tools
+        self.nine_char_tool_call_ids = nine_char_tool_call_ids
         self.control = _alternation(markers)
         # Unrecognised markers count as boundaries: a replayed assistant turn is client text, and a forged turn costs more than a spaced one.
         boundary = {
@@ -385,6 +390,7 @@ def model_markup(
         if _CONTROL_MARKUP.search(token):
             markers.add(token)
     known = {token for token in tokens or () if isinstance(token, str)}
+    nine_char_ids = False
     # Only the template this request renders with, or a no-tools turn rewrites "<tools>".
     bodies = _selected_template_strings_from_value(
         chat_template, tools, prefer_tool_use = prefer_tool_use
@@ -392,6 +398,7 @@ def model_markup(
     for body in bodies or _template_strings(chat_template):
         # Blanked rather than removed, so every offset the index check relies on survives.
         body = _JINJA_COMMENT.sub(lambda m: " " * len(m.group(0)), body)
+        nine_char_ids = nine_char_ids or bool(_NINE_CHAR_ID_CHECK.search(body))
         expressions = _jinja_expression_spans(body)
         for match in _TEMPLATE_DELIMITERS.finditer(body):
             marker = match.group(0)
@@ -420,7 +427,24 @@ def model_markup(
         # The example spelling lets the dynamic rule match any render-time name.
         for built in _CONCATENATED_OPENER.findall(body):
             markers.add(f"<{built}=example>")
-    return ModelMarkup(markers, bool(tools)) if markers else None
+    return ModelMarkup(markers, bool(tools), nine_char_ids) if markers else None
+
+
+# Mistral templates: "{%- if not tool_call.id is defined or tool_call.id|length != 9 %}" then raise.
+_NINE_CHAR_ID_CHECK = re.compile(r"\b(?:id|tool_call_id)\s*\|\s*length\s*!=\s*9\b")
+_NINE_CHAR_ID = re.compile(r"[A-Za-z0-9]{9}")
+_BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def _nine_char_id(original: str, attempt: int = 0) -> str:
+    """A stable nine-alphanumeric stand-in for *original*: the same id maps the same way on every round."""
+    digest = hashlib.sha256(f"{attempt}:{original}".encode("utf-8")).digest()
+    value = int.from_bytes(digest[:8], "big")
+    out = []
+    for _ in range(9):
+        value, rest = divmod(value, 62)
+        out.append(_BASE62[rest])
+    return "".join(out)
 
 
 def _spaced_out(pattern, text: str) -> str:
@@ -732,6 +756,8 @@ def _injective_id_map(messages: list, markup = None) -> dict:
             if value not in seen:
                 seen.add(value)
                 originals.append(value)
+    if markup is not None and getattr(markup, "nine_char_tool_call_ids", False):
+        return _nine_char_id_map(originals)
     swept = {original: neutralize_control_markup(original, markup) for original in originals}
     # Reserved first: a rewritten id must never be handed an untouched id's value.
     taken = {original for original in originals if swept[original] == original}
@@ -750,6 +776,23 @@ def _injective_id_map(messages: list, markup = None) -> dict:
                 "as %r so each call keeps its own result.",
                 candidate,
             )
+        taken.add(candidate)
+        mapping[original] = candidate
+    return mapping
+
+
+def _nine_char_id_map(originals: list) -> dict:
+    """Maps every id that is not already nine alphanumerics to a distinct one that is, so a call and its result stay paired."""
+    taken = {original for original in originals if _NINE_CHAR_ID.fullmatch(original)}
+    mapping: dict = {}
+    for original in originals:
+        if original in taken and _NINE_CHAR_ID.fullmatch(original):
+            continue
+        attempt = 0
+        candidate = _nine_char_id(original)
+        while candidate in taken:
+            attempt += 1
+            candidate = _nine_char_id(original, attempt)
         taken.add(candidate)
         mapping[original] = candidate
     return mapping

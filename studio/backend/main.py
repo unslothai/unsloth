@@ -488,6 +488,7 @@ from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
 from routes.scheduled_tasks import router as scheduled_tasks_router
+from routes.characters import router as characters_router
 from routes.library import router as library_router
 from routes.profile_stats import router as profile_stats_router
 from auth import policy as auth_policy, storage
@@ -2180,6 +2181,7 @@ app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(scheduled_tasks_router, prefix = "/api/scheduled-tasks", tags = ["scheduled-tasks"])
+app.include_router(characters_router, prefix = "/api/characters", tags = ["characters"])
 app.include_router(library_router, prefix = "/api/library", tags = ["library"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])

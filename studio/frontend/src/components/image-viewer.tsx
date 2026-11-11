@@ -278,9 +278,12 @@ function ViewerBody() {
                 height: event.currentTarget.naturalHeight || 1,
               })
             }
+            // At fit size a click on the picture closes it, as most viewers do; zoomed in, it stays.
+            onClick={() => fitted && close()}
             className={cn(
               "m-auto max-w-none rounded-lg shadow-2xl",
               scale === null && "invisible",
+              fitted && "cursor-zoom-out",
             )}
             style={
               size && scale !== null

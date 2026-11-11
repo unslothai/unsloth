@@ -82,6 +82,8 @@ studio = [
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
+    # Starter characters every account receives once.
+    "backend/assets/characters/*",
     # Served locally instead of from a CDN; without them /docs and /redoc render blank.
     "backend/assets/docs_ui/*",
     # Gate verdicts the auto ladder reads: if missing from the wheel, nvfp4 silently drops out.

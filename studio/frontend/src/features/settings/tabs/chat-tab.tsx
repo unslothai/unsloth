@@ -37,6 +37,7 @@ import {
   McpServerIcon,
   Scroll01Icon,
   Telescope02Icon,
+  WinkingIcon,
 } from "@hugeicons/core-free-icons";
 import { BookmarkIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -175,6 +176,11 @@ const PLUS_MENU_SETTINGS: {
         className={PLUS_MENU_ICON_CLASS}
       />
     ),
+  },
+  {
+    id: "characters",
+    labelKey: "characters.plusMenu",
+    icon: <HugeiconsIcon icon={WinkingIcon} strokeWidth={2} className={PLUS_MENU_ICON_CLASS} />,
   },
 ];
 

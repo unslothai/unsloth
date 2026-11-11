@@ -47,7 +47,11 @@ test("llama.cpp and vLLM send the selected value and replay reasoning only when 
     }
   }
   assert.match(source, /pruneOutboundHistory\(messages, replayReasoning\)/);
-  assert.match(source, /toOpenAIMessages\(\s*message,\s*replayReasoning,/);
+  // A character chat's messages are shaped first; reasoning replay is the same argument either way.
+  assert.match(
+    source,
+    /toOpenAIMessages\(\s*(?:\/\/[^\n]*\n\s*)?(?:characterRun \? characterRun\.shape\(message\) : )?message,\s*replayReasoning,/,
+  );
 });
 
 test("switching providers never leaks a retained enabled preference", () => {

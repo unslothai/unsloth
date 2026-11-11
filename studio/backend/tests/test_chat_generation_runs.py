@@ -988,3 +988,47 @@ def test_an_ordinary_text_thread_is_still_admitted():
     legacy stream and the whole feature would quietly stop working while these tests stayed green."""
     messages = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
     assert _sanitize_request(_model(messages = messages))["stream"] is True
+
+
+def test_a_character_reply_keeps_its_speaker_through_a_cancel(chat_home):
+    speaker = {
+        "roleplay": {
+            "kind": "reply",
+            "speakerId": "mira",
+            "speakerName": "Mira",
+            "plan": ["mira", "bo"],
+        }
+    }
+    runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "user-1",
+        assistant_message_id = "assistant-1",
+        request_payload = _request(),
+        reply_metadata = speaker,
+    )
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert stored["metadata"]["roleplay"] == speaker["roleplay"]
+    assert stored["metadata"]["generationRunId"] == "run-1"
+    runs_db.request_cancel("run-1", "alice")
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert stored["metadata"]["roleplay"] == speaker["roleplay"]
+
+
+def test_a_speaker_record_is_validated():
+    fields = dict(
+        runId = "run-1",
+        threadId = "thread-1",
+        userMessageId = "user-1",
+        assistantMessageId = "assistant-1",
+        requestPayload = _request(),
+    )
+    with pytest.raises(ValueError):
+        CreateChatGenerationRun(
+            **fields, assistantRoleplay = {"kind": "reply", "speakerId": "", "speakerName": "x"}
+        )
+    model = CreateChatGenerationRun(
+        **fields, assistantRoleplay = {"kind": "reply", "speakerId": "mira", "speakerName": "Mira"}
+    )
+    assert model.assistantRoleplay.speakerId == "mira"

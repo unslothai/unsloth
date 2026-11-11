@@ -26,6 +26,13 @@ SOURCES = (ADAPTER, CODEX, CONTINUATION)
 
 HARNESS = """
 // @ts-nocheck
+// An ordinary chat: no character run, as for every chat these cases build.
+async function prepareCharacterRun(_args: any): Promise<any> {
+  return null;
+}
+function isKnownCharacterChat(_threadId: any): boolean {
+  return false;
+}
 function readCodexReasoning(_metadata: any): any {
   return undefined;
 }
@@ -78,8 +85,10 @@ def _send_path_slice() -> str:
         "if (selectedImageEditReference) {",
     )
     return (
-        "export function buildSendPathOutbound(messages: any, isExternalRequest: boolean) {\n"
+        "export async function buildSendPathOutbound(messages: any, isExternalRequest: boolean) {\n"
         "  const supportsStudioToolsForThisTurn = false, studioLocalCodeTools: string[] = [];\n"
+        # An ordinary chat: prepareCharacterRun (stubbed in HARNESS) answers null.
+        "  const resolvedThreadId = undefined, runConfig = undefined;\n"
         # No test here carries provider compaction, so its replay target stays unset.
         "  const externalProvider = undefined, externalSelection = undefined;\n"
         "  const providerCompactionTargetConnectionKey = null;\n"
@@ -389,7 +398,7 @@ def _send_script(history: str, is_external: str) -> str:
         f"""
         // @ts-nocheck
         import {{ buildSendPathOutbound }} from "./harness.ts";
-        const outbound = buildSendPathOutbound({history}, {is_external});
+        const outbound = await buildSendPathOutbound({history}, {is_external});
         console.log(JSON.stringify({{
           roles: outbound.map((m) => m.role),
           contents: outbound.map((m) => m.content),

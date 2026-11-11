@@ -7541,6 +7541,149 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
   display: none;
 }
 
+/* Character chats, visual novel view: figures fade into the dialogue panel and breathe while speaking. */
+.novel-figure {
+  /* Tailwind's scale utility sets the scale property, so it is listed alongside transform. */
+  transition: scale 650ms cubic-bezier(.2,.8,.2,1), transform 650ms cubic-bezier(.2,.8,.2,1), opacity 450ms ease, filter 650ms ease;
+  filter: drop-shadow(0 26px 34px rgb(0 0 0 / .32));
+}
+.novel-figure-picture {
+  -webkit-mask-image: linear-gradient(to bottom, #000 58%, transparent 97%), linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to bottom, #000 58%, transparent 97%), linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+  mask-composite: intersect;
+}
+/* A lone character stands larger, its lower half behind the dialogue panel: about 1.85 times the scene
+   showing above the panel (which keeps the face clear of it), never smaller than a group's figures and
+   never below the window's bottom. The 440px and 3.5rem are the panel's minimum height and the strip's top. */
+@media (min-width: 768px) {
+  .novel-figures-solo {
+    bottom: clamp(4%, calc(100% - 3.5rem - 1.85 * (100% - max(52%, calc(440px * var(--ui-space-scale, 1))) - 3.5rem)), 34%);
+  }
+  .novel-figures-solo .novel-figure {
+    max-width: 60%;
+  }
+}
+/* Waiting characters stand a step back, shaded rather than see-through. */
+.novel-figure-waiting {
+  filter: drop-shadow(0 20px 26px rgb(0 0 0 / .28)) brightness(.78) saturate(.75);
+}
+.novel-figure-waiting:hover {
+  filter: drop-shadow(0 20px 26px rgb(0 0 0 / .28)) brightness(.95) saturate(1);
+}
+/* The dialogue panel: messages fade in under its top edge, and the composer sits on the panel itself. */
+.novel-dialogue .aui-thread-viewport {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.25rem);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 1.25rem);
+}
+.novel-dialogue .thread-bottom-fade {
+  display: none;
+}
+/* The panel is short, so the last reply ends just above the speaker bar: the composer gap and the
+   scroll-to-bottom row (hidden at the bottom) give their room back. The button still sticks above
+   the composer when scrolled up. */
+.novel-dialogue .aui-thread-bottom-spacer {
+  margin-top: -24px;
+  pointer-events: none;
+}
+.novel-dialogue .aui-thread-viewport-footer {
+  margin-top: calc(-28px * var(--ui-space-scale, 1));
+}
+/* A short window (a phone in landscape) has less room than the panel's minimum, which would push the
+   composer out of view: the panel then keeps its share of the height instead. */
+@media (max-height: 560px) {
+  .novel-dialogue {
+    min-height: 0;
+  }
+}
+/* A cut-out picture (transparent around the figure) stands in the scene: no rounded card, no side
+   fades, so the figure's own outline casts the shadow; its lower half still fades behind the panel. */
+.novel-figure-picture[data-cutout] {
+  border-radius: 0;
+  -webkit-mask-image: linear-gradient(to bottom, #000 62%, transparent 97%);
+  mask-image: linear-gradient(to bottom, #000 62%, transparent 97%);
+}
+/* In stage view it stands beside the conversation instead of filling a tile. */
+.stage-figure[data-cutout] {
+  overflow: visible;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.stage-figure[data-cutout] img {
+  filter: drop-shadow(0 22px 28px rgb(0 0 0 / .3));
+}
+.stage-figure[data-cutout] figcaption {
+  background: none;
+  color: var(--foreground);
+}
+/* The name can fall over the figure, so it carries a halo in the page color instead of the tile's scrim. */
+.stage-figure[data-cutout] figcaption * {
+  color: inherit;
+  text-shadow: 0 0 3px var(--background), 0 0 8px var(--background), 0 0 14px var(--background);
+}
+.stage-figure[data-cutout] figcaption .animate-bounce {
+  background-color: var(--muted-foreground);
+}
+.novel-figure:focus-visible .novel-figure-picture {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.novel-figure-speaking {
+  animation: novel-figure-breathe 3.2s ease-in-out infinite;
+}
+@keyframes novel-figure-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-5px) scale(1.006); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .novel-figure { transition: none; }
+  .novel-figure-speaking { animation: none; }
+}
+
+/* A character reply shows the response model in its name line instead of floating over it. */
+.roleplay-reply .aui-response-model-badge:not(.roleplay-model-badge) {
+  display: none;
+}
+
+/* After a character chat's message frame, the 0x0 keyboard stop would sit on a line of its own and
+   add that line's height between messages. */
+.roleplay-reply + .aui-assistant-reveal-sentinel,
+.roleplay-user + .aui-user-reveal-sentinel {
+  display: block;
+}
+
+/* The composer's bottom fade turns clear just where the speaker bar sits, so the bar brings its own
+   backdrop: messages scrolled up behind it stay out of the chips' way. */
+.roleplay-speaker-bar::before {
+  content: "";
+  position: absolute;
+  inset: -0.75rem -0.5rem -0.5rem;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(to top, var(--background) 72%, transparent);
+}
+.novel-dialogue .roleplay-speaker-bar::before {
+  background: linear-gradient(to top, color-mix(in oklab, var(--background) 80%, transparent) 72%, transparent);
+}
+
+/* Stage view: the docked picture takes the left of the chat area. Where the window has room, the
+   conversation stays centered on the whole area, as it was without the picture; on narrower windows
+   it gives way only as far as it must. 100cqw is the chat area, the picture is clamp(240px, 30%, 440px). */
+@media (min-width: 768px) {
+  .character-stage-layout .aui-thread-viewport,
+  .character-stage-layout .aui-thread-composer-dock {
+    --stage-picture: clamp(240px, 30cqw, 440px);
+    --stage-recenter: min(var(--stage-picture), max(0px, 100cqw - var(--stage-picture) - var(--thread-max-width, 48rem) - 2.5rem));
+  }
+  .character-stage-layout .aui-thread-viewport {
+    padding-right: calc(1.25rem + var(--stage-recenter));
+  }
+  .character-stage-layout .aui-thread-composer-dock {
+    right: calc(var(--thread-scrollbar-gutter, 10px) + var(--stage-recenter));
+  }
+}
+
 /* MessagePrimitive's slack helper clears inline flex-shrink on viewport updates.
    Keep measured placeholders and reconnected display:contents bodies at natural height. */
 .aui-thread-viewport [data-message-windowed] {

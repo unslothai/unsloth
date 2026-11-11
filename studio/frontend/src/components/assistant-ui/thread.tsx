@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  RoleplayUserFrame,
+  RoleplayReplyFrame,
+  useHiddenRoleplayTurn,
+  useIsRoleplayThread,
+  useRoleplayUserParts,
+} from "@/features/characters/chat/message-parts";
+import { roundAdvancing } from "@/features/characters/chat/roleplay-controller";
+import {
+  RoleplaySpeakerBar,
+  useRoleplayComposerPlaceholder,
+} from "@/features/characters/chat/speaker-bar";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { AiSpeechIcon, BookmarkIcon, FileSearchIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
@@ -59,7 +71,7 @@ import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messa
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
 import { LiveGenerationLine } from "@/components/assistant-ui/live-generation-line";
-import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
+import { UserMessageActionBar, UserMessageFooter, UserMessageTimeShownContext } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
   composerColumnInset,
@@ -484,6 +496,7 @@ import {
   MoreHorizontalIcon,
   PlusSignIcon,
   Cancel01Icon,
+  WinkingIcon,
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon, FolderAttachmentIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -572,6 +585,8 @@ type PromptQueueTarget = {
   /** Forget the captured local model so a held prompt resolves the one loaded when it is sent. */
   releaseModel: () => void;
   isIndexing: () => boolean;
+  /** A character chat's group round is about to start its next speaker; the queue waits for it. */
+  roundPending?: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
   usesDeepResearch: boolean;
@@ -956,9 +971,11 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  // recheck loading after the document probe.
+  // recheck loading after the document probe; a group's next speaker can also start during it.
   if (
     hasIndexingDocuments ||
+    item.target.roundPending?.() ||
+    isPromptQueueTargetRunning(item.target, useChatRuntimeStore.getState().runningByThreadId) ||
     (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
   ) {
     promptQueueActiveRunIds.delete(run.id);
@@ -1877,6 +1894,12 @@ const RUN_SHRINK_WINDOW_MS = 1000;
 const ThreadMessage: FC = () => {
   const role = useAuiState(({ message }) => message.role);
   const isEditing = useAuiState(({ message }) => message.composer.isEditing);
+  // A character chat's opening and turn markers are for the model, not the screen. The opening
+  // keeps the room a first user message would take, so the greeting clears the header's fade.
+  const hiddenTurn = useHiddenRoleplayTurn();
+  // shrink-0: in a short window the thread's flex column would squeeze it to nothing.
+  if (hiddenTurn === "opening") return <div aria-hidden={true} className="h-[calc(1.75rem*var(--ui-space-scale,1))] shrink-0" />;
+  if (hiddenTurn) return null;
   let body: ReactNode = null;
   switch (threadMessageKind(role, isEditing)) {
     case "edit":
@@ -2120,6 +2143,8 @@ export const Thread: FC<{
   );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
+  // Turn ticks would count a character chat's hidden turns, and roleplay reads as one scene.
+  const roleplayThread = useIsRoleplayThread(threadId);
   const aui = useAui();
   useThreadForkCounts();
   useTrackForkBoundaryAnchor(threadId);
@@ -2350,7 +2375,7 @@ export const Thread: FC<{
             </AuiIf>
           )}
 
-          <TurnNavigator viewportRef={viewportElRef} />
+          {roleplayThread ? null : <TurnNavigator viewportRef={viewportElRef} />}
 
           {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
           the tail and mounts the rest over the following frames. Nothing unmounts and the
@@ -2372,6 +2397,8 @@ export const Thread: FC<{
               ref={spacerRef}
               className={cn(
                 "shrink-0",
+                // Only a character chat's visual novel view styles it; ordinary chats render as before.
+                roleplayThread && "aui-thread-bottom-spacer",
                 hideComposer
                   ? "h-16"
                   : composerHeight == null
@@ -3014,6 +3041,7 @@ const Composer: FC<{
   const pageDragging = useContext(PageDragContext);
   const nativeDragging = useContext(NativeAttachmentDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
+  const roleplayPlaceholder = useRoleplayComposerPlaceholder();
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
@@ -4819,6 +4847,10 @@ const Composer: FC<{
         promptQueueTargetMountedRef.current &&
         isTargetCurrentThread() &&
         indexingActiveRef.current,
+      roundPending: () => {
+        const state = getThreadListItemState();
+        return roundAdvancing(state?.remoteId ?? referenceThreadId ?? initialDocumentThreadId);
+      },
       getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
       usesLocalModel:
@@ -6015,7 +6047,9 @@ const Composer: FC<{
                 id={inputId}
                 submitMode="none"
                 placeholder={
-                  overlay ? "Type your edits for your image" : "Ask anything"
+                  overlay
+                    ? "Type your edits for your image"
+                    : (roleplayPlaceholder ?? "Ask anything")
                 }
                 ref={composerSurfaceRef}
                 data-type-to-activate="composer"
@@ -6160,6 +6194,7 @@ const Composer: FC<{
       onSubmit={handleSubmit}
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
+      <RoleplaySpeakerBar />
       {/* Chat with files card. Stays mounted while dictating to keep indexing state. */}
       <div className={isDictating ? "hidden" : "contents"}>
         <ThreadDocumentsBar
@@ -7023,6 +7058,12 @@ function usePickComposerAttachment(): () => void {
   }, [aui, audioAttachmentsEnabled]);
 }
 
+const LazyCharacterChatPicker = lazy(() =>
+  import("@/features/characters/chat/start-picker").then((module) => ({
+    default: module.CharacterChatPicker,
+  })),
+);
+
 const LazyLibraryAttachmentPicker = lazy(() =>
   import("@/components/assistant-ui/library-attachment-picker").then((module) => ({
     default: module.LibraryAttachmentPicker,
@@ -7125,6 +7166,7 @@ const ComposerToolsMenu: FC<{
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [characterPickerOpen, setCharacterPickerOpen] = useState(false);
   const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
   const libraryPickerRequested = useRef(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
@@ -7421,6 +7463,12 @@ const ComposerToolsMenu: FC<{
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
+    characters: (
+      <DropdownMenuItem onSelect={() => setCharacterPickerOpen(true)}>
+        <HugeiconsIcon icon={WinkingIcon} strokeWidth={2} />
+        {t("characters.plusMenu")}
+      </DropdownMenuItem>
+    ),
   };
   const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
     splitPlusMenuItems(plusOrder, plusPins);
@@ -7431,6 +7479,11 @@ const ComposerToolsMenu: FC<{
     {libraryPickerOpen ? (
       <Suspense fallback={null}>
         <LazyLibraryAttachmentPicker onClose={() => setLibraryPickerOpen(false)} />
+      </Suspense>
+    ) : null}
+    {characterPickerOpen ? (
+      <Suspense fallback={null}>
+        <LazyCharacterChatPicker onClose={() => setCharacterPickerOpen(false)} />
       </Suspense>
     ) : null}
     <PromptStorageDialog
@@ -8551,6 +8604,7 @@ const AssistantMessage: FC = () => {
       onFocus={focusReveal.onFocus}
       onBlur={focusReveal.onBlur}
     >
+      <RoleplayReplyFrame>
       <WindowedMessageBody enabled={!isEditing && messageContent !== null && !researchRunId}>
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0f1114] dark:text-foreground leading-relaxed">
         {isEditing ? (
@@ -8612,6 +8666,7 @@ const AssistantMessage: FC = () => {
         <AssistantActionBar />
       </div>
       </WindowedMessageBody>
+      </RoleplayReplyFrame>
       {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
@@ -9212,7 +9267,7 @@ const AssistantActionBar: FC = () => {
   );
 };
 
-const UserMessageAudio: FC = () => {
+const UserMessageAudio: FC<{ align?: "start" | "end" }> = ({ align = "end" }) => {
   const audioName = useAuiState(({ message }) =>
     sentAudioNames.get(message.id),
   );
@@ -9220,7 +9275,7 @@ const UserMessageAudio: FC = () => {
     return null;
   }
   return (
-    <div className="col-start-2 flex justify-end">
+    <div className={cn("col-start-2 flex", align === "end" ? "justify-end" : "justify-start")}>
       <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
         <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
@@ -9280,32 +9335,64 @@ const UserMessage: FC = () => {
   const hasContent = useAuiState(({ message }) =>
     message.content.some((part) => part.type !== "text" || part.text.trim() !== ""),
   );
+  const roleplayParts = useRoleplayUserParts();
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
+      className={cn(
+        "aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150",
+        // A character chat lays the user's message out like a reply: no bubble, on the left, under the persona.
+        roleplayParts && "relative block min-w-0 pt-0.5",
+      )}
       data-role="user"
       tabIndex={0}
       {...focusReveal}
     >
-      <WindowedMessageBody>
-      <ScheduledTaskSource />
-      <UserMessageAttachments />
-      <UserMessageAudio />
-
-      <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
-        {hasContent ? (
-          <div
-            dir="auto"
-            className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
-            <MessagePrimitive.Parts />
+      {roleplayParts ? (
+        <RoleplayUserFrame>
+          <WindowedMessageBody>
+          <div className="mb-2 flex flex-col items-start gap-2 empty:hidden">
+            <ScheduledTaskSource />
+            <UserMessageAttachments align="start" />
+            <UserMessageAudio align="start" />
           </div>
-        ) : null}
-        <UserMessageFooter>
-          <UserActionBar />
-          <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
-        </UserMessageFooter>
-      </div>
-      </WindowedMessageBody>
+          {hasContent ? (
+            <div
+              dir="auto"
+              className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! min-w-0 leading-relaxed text-[#0f1114] dark:text-foreground"
+            >
+              <MessagePrimitive.Parts components={roleplayParts} />
+            </div>
+          ) : null}
+          <div className="aui-user-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
+            <BranchPicker className="mr-0.5 h-8" />
+            {/* The time is already in the name line. */}
+            <UserMessageTimeShownContext.Provider value={false}>
+              <UserActionBar />
+            </UserMessageTimeShownContext.Provider>
+          </div>
+          </WindowedMessageBody>
+        </RoleplayUserFrame>
+      ) : (
+        <WindowedMessageBody>
+          <ScheduledTaskSource />
+          <UserMessageAttachments />
+          <UserMessageAudio />
+
+          <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
+            {hasContent ? (
+              <div
+                dir="auto"
+                className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+                <MessagePrimitive.Parts />
+              </div>
+            ) : null}
+            <UserMessageFooter>
+              <UserActionBar />
+              <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
+            </UserMessageFooter>
+          </div>
+        </WindowedMessageBody>
+      )}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
       </MessagePrimitive.If>
@@ -9395,6 +9482,7 @@ const EditComposer: FC = () => {
   const researchActive = useThreadResearchActive();
   // send() drops an empty composer, e.g. a paste-only message whose chip was removed.
   const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
+  const roleplay = useRoleplayUserParts() !== undefined;
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -9416,8 +9504,15 @@ const EditComposer: FC = () => {
   }, [aui, isComposingRef]);
 
   return (
-    // Top gap and type match UserMessage, so the text stays near the prompt's line.
-    <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]">
+    // Top gap and type match UserMessage, so the text stays near the prompt's line. A character chat
+    // keeps the persona's picture and name beside the box, as it does for an edited reply.
+    <MessagePrimitive.Root
+      className={cn(
+        "aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]",
+        roleplay && "pt-0.5",
+      )}
+    >
+      <RoleplayUserFrame>
       <ComposerPrimitive.Root
         className="aui-edit-composer-root flex w-full flex-col rounded-xl bg-muted"
         onSubmit={(event) => {
@@ -9453,6 +9548,7 @@ const EditComposer: FC = () => {
           </Button>
         </div>
       </ComposerPrimitive.Root>
+      </RoleplayUserFrame>
     </MessagePrimitive.Root>
   );
 };

@@ -1161,6 +1161,11 @@ export async function buildFineTuneJsonl(
       listStoredChatMessages(id),
       chatInstructionsTurn(id),
     ]);
+    // A character chat's turns only make sense with its cards and hidden turns, which this format lacks.
+    if (raw.some((m) => (m as { metadata?: { roleplay?: unknown } }).metadata?.roleplay)) {
+      skipped += 1;
+      continue;
+    }
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );

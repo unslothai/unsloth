@@ -1224,6 +1224,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         END
         """
     )
+    _ensure_character_schema(conn)
     inventory_state = conn.execute(
         """
         SELECT inventory_version, dirty
@@ -1240,6 +1241,89 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         _rebuild_chat_attachment_inventory(conn)
         _mark_chat_attachment_inventory_clean(conn)
     conn.commit()
+
+
+def _ensure_character_schema(conn: sqlite3.Connection) -> None:
+    """Characters, personas, and which characters take part in which chat (storage/characters_db.py)."""
+    # card_json keeps the imported card as it came, so an export round-trips fields Studio does not edit.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS characters (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            personality TEXT NOT NULL DEFAULT '',
+            scenario TEXT NOT NULL DEFAULT '',
+            first_mes TEXT NOT NULL DEFAULT '',
+            alternate_greetings_json TEXT NOT NULL DEFAULT '[]',
+            mes_example TEXT NOT NULL DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            post_history_instructions TEXT NOT NULL DEFAULT '',
+            creator_notes TEXT NOT NULL DEFAULT '',
+            creator TEXT NOT NULL DEFAULT '',
+            character_version TEXT NOT NULL DEFAULT '',
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            talkativeness REAL NOT NULL DEFAULT 0.5,
+            favorite INTEGER NOT NULL DEFAULT 0,
+            depth_prompt_json TEXT,
+            character_book_json TEXT,
+            extensions_json TEXT NOT NULL DEFAULT '{}',
+            card_json TEXT,
+            avatar_type TEXT,
+            avatar_rev INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            last_chat_at INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS personas (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            avatar_type TEXT,
+            avatar_rev INTEGER NOT NULL DEFAULT 0,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_cast (
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL DEFAULT 0,
+            muted INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (thread_id, character_id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_cast_character ON chat_cast(character_id)")
+    # One row per character chat; it outlives its cast, so a chat whose characters were deleted stays one.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_scene (
+            thread_id TEXT NOT NULL PRIMARY KEY REFERENCES chat_threads(id) ON DELETE CASCADE,
+            persona_id TEXT REFERENCES personas(id) ON DELETE SET NULL,
+            settings_json TEXT NOT NULL DEFAULT '{}',
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_scene_persona ON chat_scene(persona_id)")
+    # Which bundled starter characters an account has received, so a deleted one stays deleted.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS character_starters (
+            starter_id TEXT NOT NULL PRIMARY KEY,
+            seeded_at INTEGER NOT NULL
+        )
+        """
+    )
 
 
 def _prompt_entry_from_row(row: sqlite3.Row) -> dict:
@@ -4903,6 +4987,18 @@ def fork_chat_thread(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             fork_messages,
+        )
+        # A character chat's fork keeps its cast and scene, or its hidden turns would reach the
+        # model as plain text with no cards.
+        conn.execute(
+            "INSERT INTO chat_cast (thread_id, character_id, position, muted)"
+            " SELECT ?, character_id, position, muted FROM chat_cast WHERE thread_id = ?",
+            (new_thread_id, source_thread_id),
+        )
+        conn.execute(
+            "INSERT INTO chat_scene (thread_id, persona_id, settings_json, updated_at)"
+            " SELECT ?, persona_id, settings_json, ? FROM chat_scene WHERE thread_id = ?",
+            (new_thread_id, int(created_at), source_thread_id),
         )
         for row in ancestry:
             _replace_chat_attachment_inventory(
