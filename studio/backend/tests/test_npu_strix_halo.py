@@ -29,7 +29,12 @@ def _pin_inventory(
     system = "Windows",
     kfd = None,
 ):
-    monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda **_kwargs: inventory)
+    def _read(*, block = True):
+        # A blocking read would put nvidia-smi's 10 s timeout on the NPU status route.
+        assert block is False
+        return inventory
+
+    monkeypatch.setattr(hw, "get_physical_gpu_inventory", _read)
     monkeypatch.setattr(hw.platform, "system", lambda: system)
     monkeypatch.setattr(amd, "amd_kfd_gpu_gfx_targets", lambda *_args: kfd)
 
@@ -77,6 +82,11 @@ def test_an_unanswered_amd_probe_is_unknown_not_no(monkeypatch):
     # A timed-out nvidia-smi says nothing about the AMD half.
     _pin_inventory(monkeypatch, _inventory(unanswered = ["nvidia"]))
     assert hw.strix_halo_gpu_present() is False
+
+
+def test_a_cold_inventory_is_unknown_and_never_waited_on(monkeypatch):
+    _pin_inventory(monkeypatch, dict(hw._UNKNOWN_PHYSICAL_GPU_INVENTORY))
+    assert hw.strix_halo_gpu_present() is None
 
 
 class _Installer:
