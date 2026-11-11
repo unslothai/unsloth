@@ -4559,6 +4559,8 @@ class AnthropicMessagesRequest(BaseModel):
     )
     model_config = {"extra": "allow"}
     _message_ordinals: Optional[list[int]] = PrivateAttr(default = None)
+    # Set by the routes for a client that always sends `thinking` when thinking is on.
+    _omitted_thinking_is_off: bool = PrivateAttr(default = False)
 
     @model_validator(mode = "after")
     def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
@@ -4578,7 +4580,8 @@ class AnthropicMessagesRequest(BaseModel):
             return self.enable_thinking
         if self.thinking is not None:
             return self.thinking.type != "disabled"
-        return None
+        # Omitted means the model default, as on Anthropic's API, unless the client marks it as off.
+        return False if self._omitted_thinking_is_off else None
 
     @model_validator(mode = "before")
     @classmethod

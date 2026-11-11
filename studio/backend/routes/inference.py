@@ -4982,6 +4982,19 @@ def _reject_confirm_gate_without_channel(
     )
 
 
+def _mark_claude_code_thinking(payload, request) -> None:
+    """On a model id it does not know, Claude Code sends `thinking` whenever thinking is on and omits
+    it when thinking is off (MAX_THINKING_TOKENS=0 or alwaysThinkingEnabled false)."""
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return
+    betas = (beta.strip() for beta in headers.get("anthropic-beta", "").split(","))
+    if headers.get("user-agent", "").startswith("claude-cli/") or any(
+        beta.startswith("claude-code-") for beta in betas
+    ):
+        payload._omitted_thinking_is_off = True
+
+
 def _anthropic_reasoning_args(payload) -> dict:
     """Forwards /v1/messages thinking and x-unsloth reasoning fields; else the load-time default sticks."""
     # x-unsloth controls outrank `thinking`; consult reasoning_effort before the native block.
@@ -43715,6 +43728,7 @@ async def anthropic_count_tokens(
     tokenizer, or a resident MLX model's through the chat count route, and returns
     ``{"input_tokens": int}`` only. Unlike /messages, max_tokens is NOT required here.
     """
+    _mark_claude_code_thinking(payload, request)
     if _connection_model_ref(payload.model) is not None:
         raise HTTPException(
             status_code = 400,
@@ -44375,6 +44389,7 @@ async def anthropic_messages(
     responses in Anthropic Messages API format (streaming SSE or non-streaming
     JSON).
     """
+    _mark_claude_code_thinking(payload, request)
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
     if connection is not None:
