@@ -137,6 +137,8 @@ if HAS_TRITON:
         ADD: tl.constexpr,  # accumulate into OUT, per call site
         SCALE: tl.constexpr,  # per-adapter scales given
         IEEE: tl.constexpr,  # fp32 inputs: ieee dot
+        UPCAST: tl.constexpr,  # mixed input dtypes: upcast both tiles to fp32
+        ROUND: tl.constexpr,  # 16-bit inputs, fp32 OUT: keep fp16's 11 significant bits, round to nearest
         BLOCK_M: tl.constexpr,  # token tile, fixed 64
         BLOCK_N: tl.constexpr,  # from N (rank or out_features)
         BLOCK_K: tl.constexpr,  # from K (in_features or rank)
@@ -183,12 +185,19 @@ if HAS_TRITON:
                 mask = mask_k[:, None] & mask_n[None, :],
                 other = 0.0,
             )
+            if UPCAST:
+                a, b = a.to(tl.float32), b.to(tl.float32)
             if IEEE:
                 acc += tl.dot(a, b, input_precision = "ieee")
             else:
                 acc += tl.dot(a, b)
         if SCALE:
             acc *= tl.load(SCALES + u).to(tl.float32)
+        if ROUND:
+            # tf32 dots read the top 11 significant bits and drop the rest (round toward zero). Rounding to
+            # nearest here makes them exact, so dH carries fp16's precision with fp32's range.
+            bits = acc.to(tl.int32, bitcast = True)
+            acc = ((bits + 0x1000) & -8192).to(tl.float32, bitcast = True)
         ptrs = OUT + out_rows[:, None] * stride_out + offs_n[None, :]
         mask = mask_m[:, None] & mask_n[None, :]
         if ADD:
@@ -214,6 +223,7 @@ if HAS_TRITON:
         Q_SORTED: tl.constexpr,  # Q rows in adapter order, per call site
         SCALE: tl.constexpr,  # per-adapter scales given
         IEEE: tl.constexpr,  # fp32 inputs: ieee dot
+        UPCAST: tl.constexpr,  # mixed input dtypes: upcast both tiles to fp32
         BLOCK_T: tl.constexpr,  # token tile, fixed 64
         BLOCK_I: tl.constexpr,  # from I (weight dim)
         BLOCK_J: tl.constexpr,  # from J (weight dim)
@@ -254,6 +264,8 @@ if HAS_TRITON:
                 mask = mask_t[:, None] & mask_j[None, :],
                 other = 0.0,
             )
+            if UPCAST:
+                p, q = p.to(tl.float32), q.to(tl.float32)
             if IEEE:
                 acc += tl.dot(p, q, input_precision = "ieee")
             else:
@@ -311,7 +323,9 @@ def _launch_seg_mm(
         OUT_SORTED = out_sorted,
         ADD = add,
         SCALE = scales is not None,
-        IEEE = inp.dtype == torch.float32,
+        IEEE = inp.dtype == torch.float32 and W.dtype == torch.float32,
+        UPCAST = inp.dtype != W.dtype,
+        ROUND = out.dtype == torch.float32 and inp.dtype != torch.float32,
         BLOCK_M = BLOCK_M,
         BLOCK_N = BLOCK_N,
         BLOCK_K = BLOCK_K,
@@ -351,7 +365,8 @@ def _launch_seg_wgrad(
         P_SORTED = p_sorted,
         Q_SORTED = q_sorted,
         SCALE = scales is not None,
-        IEEE = P.dtype == torch.float32,
+        IEEE = P.dtype == torch.float32 and Q.dtype == torch.float32,
+        UPCAST = P.dtype != Q.dtype,
         BLOCK_T = 64,
         BLOCK_I = BLOCK_I,
         BLOCK_J = BLOCK_J,
@@ -507,7 +522,10 @@ class MultiLoRA_W(torch.autograd.Function):
         if dY.dtype != dtype:
             dY = dY.to(dtype)
         U, R, _ = A.shape
-        dH = torch.empty(X.shape[0], R, dtype = dtype, device = X.device)
+        # fp16 dH = scale * dY @ B can overflow while every true gradient is finite: keep it fp32 there.
+        # bf16 / fp32 have fp32 range, so they keep their dtype and kernels.
+        dH_dtype = torch.float32 if dtype == torch.float16 else dtype
+        dH = torch.empty(X.shape[0], R, dtype = dH_dtype, device = X.device)
         _seg_mm(
             dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, scales, False, True, False
         )
