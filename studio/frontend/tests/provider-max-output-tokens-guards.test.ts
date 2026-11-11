@@ -376,3 +376,17 @@ test("the run settings learner lists a saved vLLM connection once and learns its
     globalThis.fetch = realFetch;
   }
 });
+
+test("a fresh listing replaces a connection's windows, so a restarted server is not held to old ones", async () => {
+  const { learnServedContextWindows } = await import("../src/features/chat/model-catalog.ts");
+  learnServedContextWindows("conn-r", [
+    { id: "m", display_name: "m", served_context_window: 8192 },
+    { id: "gone", display_name: "gone", served_context_window: 8192 },
+  ]);
+  assert.equal(getExternalMaxOutputTokens("vllm", "m", 65536, "conn-r"), 8192);
+  learnServedContextWindows("conn-r", [{ id: "m", display_name: "m", served_context_window: 131072 }]);
+  assert.equal(getExternalMaxOutputTokens("vllm", "m", 65536, "conn-r"), 65536);
+  assert.equal(getExternalMaxOutputTokens("vllm", "gone", null, "conn-r"), EXTERNAL_MAX_OUTPUT_TOKENS);
+  learnServedContextWindows("conn-r", [{ id: "m", display_name: "m" }]);
+  assert.equal(getExternalMaxOutputTokens("vllm", "m", null, "conn-r"), EXTERNAL_MAX_OUTPUT_TOKENS);
+});

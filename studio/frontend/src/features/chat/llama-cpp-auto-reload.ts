@@ -58,7 +58,10 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
         baseUrl: provider.baseUrl || null,
         apiKey: provider.hasApiKey ? "" : getExternalProviderApiKey(provider.id),
       });
-      learnServedContextWindows(provider.id, listed);
+      const live = autoReloadConnections().find((p) => p.id === provider.id);
+      if (!stopped && live && endpoint(live) === endpoint(provider)) {
+        learnServedContextWindows(provider.id, listed);
+      }
       const catalog = [...new Set(listed.map((m) => m.id.trim()).filter(Boolean))];
       const key = `${endpoint(provider)}|${catalog.join("\n")}`;
       // A server still starting can list nothing: keep the last good selection.

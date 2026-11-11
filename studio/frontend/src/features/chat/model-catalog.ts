@@ -274,25 +274,23 @@ function loadServedWindows(): Record<string, Record<string, number>> {
   return loaded;
 }
 
-/** Remembers, per connection, the window a self-hosted server reports in its model listing. */
+/** Replaces a connection's windows with what its server lists now; a restarted server drops stale ones. */
 export function learnServedContextWindows(
   connectionId: string | null | undefined,
   models: readonly ProviderModelInfo[],
 ): void {
   if (!connectionId) return;
   const all = loadServedWindows();
-  const windows = { ...(all[connectionId] ?? {}) };
-  let changed = false;
+  const windows: Record<string, number> = {};
   for (const model of models) {
     const id = model.id?.trim().toLowerCase();
     const served = model.served_context_window;
     if (!id || typeof served !== "number" || !Number.isFinite(served) || served <= 0) continue;
-    if (windows[id] === Math.floor(served)) continue;
     windows[id] = Math.floor(served);
-    changed = true;
   }
-  if (!changed) return;
-  all[connectionId] = windows;
+  if (JSON.stringify(windows) === JSON.stringify(all[connectionId] ?? {})) return;
+  if (Object.keys(windows).length > 0) all[connectionId] = windows;
+  else delete all[connectionId];
   if (canUseStorage()) {
     try {
       localStorage.setItem(SERVED_WINDOWS_KEY, JSON.stringify(all));
