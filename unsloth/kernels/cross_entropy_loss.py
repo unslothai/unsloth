@@ -96,6 +96,10 @@ def _cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
+    if label_idx == -100:
+        tl.store(loss_ptr, 0.0)
+        tl.store(logsumexp_ptr, 0.0)
+        return
     logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Cohere logit scaling t * x; Gemma 2 softcapping t * tanh(1/t * x).
@@ -239,6 +243,11 @@ def _chunked_cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
+    if label_idx == -100:
+        if chunk_idx == 0:
+            tl.store(loss_ptr, 0.0)
+        tl.store(logsumexp_ptr, 0.0)
+        return
     logits = tl.load(
         logits_ptr + col_offsets, mask = mask, other = -float("inf"), eviction_policy = EVICT
     ).to(tl.float32)
@@ -339,11 +348,10 @@ def _cross_entropy_backward(
     col_offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
     label_idx = tl.load(labels_ptr + row_idx).to(tl.int32)
-
-    if label_idx != -100:
-        dloss = tl.load(dloss_ptr)
-    else:
-        dloss = 0.0
+    if label_idx == -100:
+        tl.store(dlogits_ptr + col_offsets, 0.0, mask = mask)
+        return
+    dloss = tl.load(dloss_ptr)
 
     x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
