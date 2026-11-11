@@ -265,6 +265,9 @@ def _write_gguf(tmp_path):
 
 
 def test_the_gguf_conditioner_loads_as_gguf_linears(monkeypatch, tmp_path):
+    pytest.importorskip(
+        "diffusers.quantizers.gguf.utils"
+    )  # the GGUF projections are diffusers' GGUFLinear
     path, ref, quantized = _write_gguf(tmp_path)
     enc = _load(monkeypatch, tmp_path, "q4_k_m", path)
     assert enc is not None
