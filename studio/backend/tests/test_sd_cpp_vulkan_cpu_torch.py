@@ -28,6 +28,7 @@ _ENVS = (
     "UNSLOTH_DIFFUSION_ENGINE",
     "UNSLOTH_DIFFUSION_SD_CPP",
     "UNSLOTH_DIFFUSION_SD_CPP_DEVICE",
+    "UNSLOTH_FORCE_VULKAN",
     "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK",
     "ROCR_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -40,6 +41,7 @@ _VEGA = {"vendor": "amd", "index": 0, "name": None, "source": "sysfs-drm"}
 _ARC_LINUX = {"vendor": "intel", "index": 0, "name": None, "xpu_class": True}
 _UHD_LINUX = {"vendor": "intel", "index": 0, "name": None, "xpu_class": False}
 _ARC_WINDOWS = {"vendor": "intel", "index": 0, "name": "Intel(R) Arc(TM) A770 Graphics"}
+_IRIS_WINDOWS = {"vendor": "intel", "index": 0, "name": "Intel(R) Iris(R) Xe Graphics"}
 _UHD_WINDOWS = {"vendor": "intel", "index": 0, "name": "Intel(R) UHD Graphics 770"}
 _RTX = {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060"}
 
@@ -96,10 +98,29 @@ def test_cpu_torch_vulkan_follows_the_cards(monkeypatch, devices, expected):
     assert r.image_install_accelerator("cpu") == expected
 
 
-@pytest.mark.parametrize("device,expected", [(_ARC_WINDOWS, "vulkan"), (_UHD_WINDOWS, "auto")])
+@pytest.mark.parametrize(
+    "device,expected", [(_ARC_WINDOWS, "vulkan"), (_UHD_WINDOWS, "auto"), (_IRIS_WINDOWS, "auto")]
+)
 def test_windows_intel_is_read_by_name(monkeypatch, device, expected):
     _platform(monkeypatch, "win32", "AMD64")
     monkeypatch.setattr(r, "_physical_inventory", lambda: _host(device))
+    assert r.image_install_accelerator("cpu") == expected
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({}, "vulkan"),
+        ({"ZE_AFFINITY_MASK": "0"}, "auto"),
+        ({"UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK": "0"}, "auto"),
+    ],
+)
+def test_windows_iris_xe_force_vulkan(monkeypatch, env, expected):
+    _platform(monkeypatch, "win32", "AMD64")
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_IRIS_WINDOWS))
+    monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     assert r.image_install_accelerator("cpu") == expected
 
 
