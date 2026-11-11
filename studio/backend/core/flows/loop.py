@@ -65,6 +65,15 @@ def _text(
 _SCORED = ("reason", "origin", "scored_reference", "scored_prompt")
 
 
+def _rl_prompt(row: dict, spec: dict) -> Any:
+    """The prompt training's RL formatter gives the row, as Benchmark asked it, or None."""
+    from core.flows.nodes.benchmark import rl_format
+
+    own = {k: v for k, v in row.items() if str(k).lower() not in (*OUTPUT_KEYS, *_SCORED)}
+    formatted = rl_format([own], spec.get("objective"), spec.get("mapping"))
+    return formatted[0]["prompt"] if formatted else None
+
+
 def failure_row(
     failure: Any,
     prompt_column: Any = "",
@@ -101,12 +110,8 @@ def failure_row(
     reference = pick(reference_column, REFERENCE_KEYS, prompt)
     if mapped and mapped.get("kind") == "rl":
         from core.benchmark.recipe_heldout import prompt_text
-        from core.flows.nodes.benchmark import rl_format
-
-        # The prompt training's RL formatter gives the row, as Benchmark asked it.
-        own = {k: v for k, v in failure.items() if str(k).lower() not in (*OUTPUT_KEYS, *_SCORED)}
-        formatted = rl_format([own], mapped.get("objective"), mapped.get("mapping"))
-        question = prompt_text(formatted[0]["prompt"], False) if formatted else ""
+        formatted = _rl_prompt(failure, mapped)
+        question = prompt_text(formatted, False) if formatted is not None else ""
     elif mapped:
         from core.benchmark.recipe_heldout import prompt_text
         from core.flows.nodes.benchmark import mapped_question
@@ -162,6 +167,10 @@ def _system_of(row: dict, prompt_column: Any, system_column: Any) -> str:
     own = system_message(row, system_column) if system_column else ""
     if own:
         return own
+    if isinstance(prompt_column, dict) and prompt_column.get("kind") == "rl":
+        # Benchmark clears the system column for RL rows: the formatted prompt carries the system.
+        turns = cell_messages(_rl_prompt(row, prompt_column)) or []
+        return "\n\n".join(cell_text(t["content"]) for t in turns if t["role"] == "system").strip()
     if isinstance(prompt_column, str) and prompt_column.strip():
         turns = cell_messages(row.get(prompt_column.strip())) or []
         return "\n\n".join(cell_text(t["content"]) for t in turns if t["role"] == "system").strip()
