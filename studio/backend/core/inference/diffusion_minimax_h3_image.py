@@ -948,6 +948,16 @@ def plan_placement(
         }[choice]
         need = dit_host + te_gb + 4.0
         plan.te_kept_on_host = host_gb >= need
+        # Loading per prompt only frees the encoder between prompts: each load still holds it whole beside the
+        # host-side DiT blocks, so a host below that peak would be OOM-killed on the first prompt.
+        peak = dit_host + te_gb + 1.0
+        if host_gb < peak:
+            raise RuntimeError(
+                f"MiniMax-H3-Image needs about {peak:.0f} GB of free system memory on this GPU "
+                f"({choice} placement: {dit_host:.1f} GB of DiT blocks on the host plus the {te_gb:.1f} GB "
+                f"text encoder while it loads), and {host_gb:.1f} GB is available. Close other applications or "
+                f"use a machine with more memory."
+            )
         if not plan.te_kept_on_host:
             reasons.append(
                 f"host {host_gb:.1f} GB < {need:.1f} GB for the host-side DiT + encoder: the encoder loads per prompt"

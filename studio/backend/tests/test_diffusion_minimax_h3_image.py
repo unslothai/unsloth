@@ -528,7 +528,7 @@ def test_int8_quantizes_only_the_block_linears(h3i, release):
         (95.0, 177.0, 27.2, "resident", True),  # G4: everything resident
         (39.5, 83.5, 27.2, "dit_resident", True),  # A100 40 GB: DiT resident, encoder streams
         (22.0, 50.0, 27.2, "stream", True),  # L4: blocks stream, the host holds the rest
-        (22.0, 30.0, 27.2, "stream", False),  # small host: the encoder loads per prompt
+        (22.0, 39.0, 27.2, "stream", False),  # small host: the encoder loads per prompt
         (79.0, 167.0, 66.7, "dit_resident", True),  # A100 80 GB with the bf16 encoder
     ],
 )
@@ -542,6 +542,15 @@ def test_planner_tiers(h3i, vram, host, te, placement, te_kept):
         assert 10 <= plan.dit_resident_blocks < 50 and plan.te_resident_layers == 0
     if placement == "dit_resident":
         assert 0 <= plan.te_resident_layers <= 50
+
+
+@pytest.mark.parametrize("vram, host", [(22.0, 30.0), (23.5, 32.0), (11.0, 40.0)])
+def test_a_host_below_the_per_prompt_encoder_peak_is_refused_at_plan_time(h3i, vram, host):
+    # Per-prompt loading still holds the whole encoder beside the host-side DiT blocks while it loads.
+    with pytest.raises(RuntimeError, match = "free system memory"):
+        h3i.plan_placement(
+            vram_gb = vram, host_gb = host, dit_gb = h3i.H3_IMAGE_DIT_TABLE_INT8_GB, te_gb = 27.2
+        )
 
 
 def test_a_quantized_dit_without_the_adaln_table_budgets_the_dense_adaln(h3i):
