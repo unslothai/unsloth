@@ -62,11 +62,11 @@ def require_converter_deps() -> None:
 
 def _gguf_header(gguf_path: str) -> dict:
     import gguf
+
     fields = gguf.GGUFReader(gguf_path).fields
     arch = fields["general.architecture"].contents() if "general.architecture" in fields else ""
-    keys = ("general.basename", "general.name")
-    keys += tuple(f"{arch}.{k}" for k in ("block_count", "embedding_length", "expert_count"))
-    keys += (f"{arch}.nextn_predict_layers",)
+    geometry = ("block_count", "embedding_length", "expert_count", "nextn_predict_layers")
+    keys = ("general.basename", "general.name", *(f"{arch}.{k}" for k in geometry))
     return {"general.architecture": arch, **{k: fields[k].contents() for k in keys if k in fields}}
 
 
