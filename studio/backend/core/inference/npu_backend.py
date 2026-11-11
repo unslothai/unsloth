@@ -13,7 +13,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from core.inference.flm_files import (
     FlmDownloadError,
@@ -743,7 +743,9 @@ class LemonadeNpuBackend:
             logger.debug("Could not list %s: %s", base, exc)
         return rows
 
-    def delete_checkpoint(self, checkpoint: str) -> str:
+    def delete_checkpoint(
+        self, checkpoint: str, downloading: Callable[[str], bool] = lambda model_id: False
+    ) -> str:
         """Settings > Storage lists folders by checkpoint, chat models or not; lemond deletes by id."""
         try:
             model_ids = [
@@ -755,6 +757,10 @@ class LemonadeNpuBackend:
             raise NpuError(str(exc)) from exc
         if not model_ids:
             raise NpuError(f"Lemonade has no FastFlowLM model for {checkpoint}.")
+        # A pull writes into the same folder, and delete does not wait for it.
+        busy = [model_id for model_id in model_ids if downloading(model_id)]
+        if busy:
+            raise NpuError(f"Cancel the download of {busy[0]} before deleting it.")
         for model_id in model_ids:
             self.delete(model_id)
         return model_ids[0]

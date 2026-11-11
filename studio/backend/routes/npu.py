@@ -87,6 +87,12 @@ def downloads_running() -> bool:
         return any(not job.finished for job in _downloads.values())
 
 
+def _downloading(model_id: str) -> bool:
+    with _downloads_lock:
+        job = _downloads.get(model_id)
+        return job is not None and not job.finished
+
+
 def _forget_storage_size() -> None:
     """Settings > Storage remembers folder sizes for a minute; a pull or delete changes this one."""
     from utils.cache_inventory import invalidate_cache_size
@@ -214,7 +220,9 @@ async def delete_npu_model(model_id: str):
 async def delete_npu_checkpoint(checkpoint: str):
     """Settings > Storage's delete: its folders know their FastFlowLM checkpoint, not lemond's id."""
     try:
-        model_id = await asyncio.to_thread(get_npu_backend().delete_checkpoint, checkpoint)
+        model_id = await asyncio.to_thread(
+            get_npu_backend().delete_checkpoint, checkpoint, _downloading
+        )
     except NpuError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
     finally:

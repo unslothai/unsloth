@@ -201,3 +201,19 @@ def test_the_storage_delete_route_resolves_the_checkpoint(npu_home, monkeypatch)
     result = asyncio.run(npu_routes.delete_npu_checkpoint("qwen3:0.6b"))
     assert result == {"status": "deleted", "model": "qwen3-0.6b-FLM"}
     assert "npu_models" not in cache_inventory._size_cache
+
+
+def test_a_folder_still_downloading_is_not_deleted(npu_home, monkeypatch):
+    import asyncio
+
+    import routes.npu as npu_routes
+
+    monkeypatch.setattr(npu_routes, "get_npu_backend", lambda: npu_home)
+    job = npu_routes._Download()
+    monkeypatch.setitem(npu_routes._downloads, "qwen3-4b-FLM", job)
+    with pytest.raises(npu_routes.HTTPException, match = "Cancel the download of qwen3-4b-FLM"):
+        asyncio.run(npu_routes.delete_npu_checkpoint("qwen3:4b"))
+    assert npu_home.deleted == []
+    job.finished = True
+    asyncio.run(npu_routes.delete_npu_checkpoint("qwen3:4b"))
+    assert npu_home.deleted == ["qwen3-4b-FLM"]
