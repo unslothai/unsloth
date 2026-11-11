@@ -410,3 +410,21 @@ async def test_json_export_drops_a_machine_local_cover():
         data, _, _ = await package.export_flow(d, "json", read_media)
         assert "cover" not in json.loads(data)["meta"]
         assert "image:abc" not in data.decode() and "gallery/abc" not in data.decode()
+
+
+@run_async
+async def test_json_export_drops_refs_to_assets_it_does_not_ship():
+    async def read_media(media):
+        raise AssertionError("a JSON export reads no media")
+
+    stored = {"kind": "image", "ref": f"sha256:{PNG_SHA}", "url": "/x"}
+    table = {"kind": "table", "ref": f"flowasset:{PNG_SHA}"}
+    d = doc([node("i", "input.image", asset = stored, extra = [stored, table, "keep"])])
+    d["meta"] = {"cover": stored}
+    data, _, _ = await package.export_flow(d, "json", read_media)
+    exported = json.loads(data)
+    params = exported["nodes"][0]["params"]
+    assert params.get("asset") is None
+    assert params.get("extra") in (None, ["keep"])
+    assert "cover" not in exported["meta"]
+    assert PNG_SHA not in data.decode()

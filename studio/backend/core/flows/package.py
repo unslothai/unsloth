@@ -250,13 +250,26 @@ def _drop_local_seeds(doc: dict) -> None:
                 group["ui"].pop(key, None)
 
 
+_STORE_REFS = ("sha256:", "flowasset:")
+
+
+def _json_dropped(value: Any) -> bool:
+    # A JSON export ships no assets, so a store ref would point at nothing on another machine.
+    if _is_media(value):
+        return value["ref"].startswith(_LOCAL_REFS + _STORE_REFS)
+    return (
+        isinstance(value, dict)
+        and value.get("kind") in ("table", "heatmap", "tensor")
+        and isinstance(value.get("ref"), str)
+        and value["ref"].startswith(_STORE_REFS)
+    )
+
+
 def _drop_local(value: Any) -> Any:
     if isinstance(value, list):
-        return [
-            _drop_local(v) for v in value if not (_is_media(v) and v["ref"].startswith(_LOCAL_REFS))
-        ]
+        return [_drop_local(v) for v in value if not _json_dropped(v)]
     if isinstance(value, dict):
-        if _is_media(value) and value["ref"].startswith(_LOCAL_REFS):
+        if _json_dropped(value):
             return None
         return {k: _drop_local(v) for k, v in value.items()}
     return value
