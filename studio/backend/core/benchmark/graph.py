@@ -4,6 +4,7 @@
 """Generate benchmark comparison charts using matplotlib."""
 
 import io
+import re
 from typing import Any, Optional
 
 import matplotlib
@@ -111,21 +112,45 @@ def _make_label(run: dict[str, Any]) -> str:
     return f"{task}\n{short_model}\n{date_str}"
 
 
+# Mirrors isRatioScore in frontend features/benchmark/lib/compare-metrics.ts so the
+# PNG agrees with the results table: perplexity / bits_per_byte keep their own units.
+_ACCURACY_LIKE_RE = re.compile(r"(em|exact|strict|flexible|acc|f1|match|score)", re.IGNORECASE)
+
+
+def _is_ratio_score(name: str, score: float) -> bool:
+    return bool(_ACCURACY_LIKE_RE.search(name)) and 0.0 <= score <= 1.0
+
+
+def _is_number(raw: Any) -> bool:
+    return isinstance(raw, (int, float)) and not isinstance(raw, bool)
+
+
 def _as_percent(raw: Any) -> Optional[float]:
-    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+    if not _is_number(raw):
         return None
     return raw * 100.0 if 0.0 <= raw <= 1.0 else float(raw)
 
 
-def _get_metric_score(metrics: list[dict], metric_name: str) -> Optional[float]:
-    """Find the score for a given metric name.
+# A chart point: (value, is_percent); value None when the run lacks the metric.
+_Point = tuple[Optional[float], bool]
 
-    Returns the score as a value suitable for display on a percentage axis.
-    If the raw score is in ratio form (0–1), it is scaled to 0–100.
-    If it is already in percentage form (>1), it is returned as-is.
-    None when the run does not report the metric: charting it as 0% would read as measured.
+
+def _metric_point(name: str, raw: Any) -> _Point:
+    if not _is_number(raw):
+        return None, False
+    if _is_ratio_score(name, raw):
+        return raw * 100.0, True
+    return float(raw), False
+
+
+def _get_metric_point(metrics: list[dict], metric_name: str) -> _Point:
+    """Find the score for a metric name (exact, else substring match).
+
+    Ratio metrics (accuracy-like names scored 0-1) are scaled to percent; anything
+    else keeps its own unit. None when the run does not report the metric:
+    charting it as 0 would read as measured.
     """
-    raw = None
+    name, raw = metric_name, None
     lower = metric_name.lower()
     for m in metrics:
         if m.get("name") == metric_name:
@@ -134,9 +159,9 @@ def _get_metric_score(metrics: list[dict], metric_name: str) -> Optional[float]:
     if raw is None:
         for m in metrics:
             if lower in m.get("name", "").lower():
-                raw = m.get("score")
+                name, raw = m.get("name", ""), m.get("score")
                 break
-    return _as_percent(raw)
+    return _metric_point(name, raw)
 
 
 def _resolve_accuracy(run: dict[str, Any]) -> Optional[float]:
@@ -158,11 +183,51 @@ def _plotted(scores: list[Optional[float]]) -> list[float]:
     return [np.nan if s is None else s for s in scores]
 
 
-def _get_score_for_metric(run: dict[str, Any], metric_name: str) -> Optional[float]:
-    """Get the score for a run, handling the special __accuracy__ metric."""
+def _get_point_for_metric(run: dict[str, Any], metric_name: str) -> _Point:
+    """Get (score, is_percent) for a run, handling the special __accuracy__ metric."""
     if metric_name == "__accuracy__":
-        return _resolve_accuracy(run)
-    return _get_metric_score(run.get("metrics", []), metric_name)
+        return _resolve_accuracy(run), True
+    return _get_metric_point(run.get("metrics", []), metric_name)
+
+
+def _get_score_for_metric(run: dict[str, Any], metric_name: str) -> Optional[float]:
+    return _get_point_for_metric(run, metric_name)[0]
+
+
+def _format_point(score: Optional[float], is_percent: bool) -> str:
+    """Point label, matching formatMetricWithUnit in the frontend."""
+    if score is None:
+        return "n/a"
+    if is_percent:
+        return f"{score:.1f}%"
+    if float(score).is_integer():
+        return str(int(score))
+    return f"{score:.4f}" if score < 1 else f"{score:.1f}"
+
+
+def _percent_axis(points: list[_Point]) -> bool:
+    """A % axis only when every measured value is a percent."""
+    measured = [p for p in points if p[0] is not None]
+    return not measured or all(is_pct for _, is_pct in measured)
+
+
+def _apply_score_axis(
+    ax,
+    percent: bool,
+    label: bool = True,
+) -> None:
+    if label:
+        ax.set_ylabel("Score (%)" if percent else "Score", fontsize = 10)
+    if percent:
+        ax.yaxis.set_major_formatter(mticker.PercentFormatter())
+
+
+def _upper_limit(measured: list[float], percent: bool) -> float:
+    if not measured:
+        return 10 if percent else 1
+    top = max(measured) * 1.15
+    # Percent keeps a 10% floor; raw units (perplexity, bits_per_byte) scale to the data.
+    return max(top, 10) if percent else (top if top > 0 else 1)
 
 
 def _resolve_theme_context(theme: str):
@@ -195,17 +260,19 @@ def _bar_chart_inner(
     fig, ax = plt.subplots(figsize = (width, height))
 
     labels = [_make_label(r) for r in runs]
-    scores = [_get_score_for_metric(r, metric_name) for r in runs]
+    points = [_get_point_for_metric(r, metric_name) for r in runs]
+    scores = [p[0] for p in points]
+    percent = _percent_axis(points)
     colors = _resolve_palette(theme, len(runs))
 
     x = np.arange(len(labels))
     bars = ax.bar(x, _plotted(scores), color = colors, width = 0.6, edgecolor = "none", zorder = 3)
 
-    for bar, score in zip(bars, scores):
+    for bar, (score, is_pct) in zip(bars, points):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
-            (score or 0.0) + 0.5,
-            "n/a" if score is None else f"{score:.1f}%",
+            (score or 0.0) + (0.5 if percent else 0.0),
+            _format_point(score, is_pct),
             ha = "center",
             va = "bottom",
             fontsize = 9,
@@ -214,12 +281,10 @@ def _bar_chart_inner(
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize = 8, ha = "center")
-    ax.set_ylabel("Score (%)", fontsize = 10)
+    _apply_score_axis(ax, percent)
     title = "Accuracy" if metric_name == "__accuracy__" else metric_name
     ax.set_title(f"Benchmark Comparison — {title}", fontsize = 12, fontweight = "bold", pad = 12)
-    measured = _measured(scores)
-    ax.set_ylim(0, max(max(measured) * 1.15, 10) if measured else 10)
-    ax.yaxis.set_major_formatter(mticker.PercentFormatter())
+    ax.set_ylim(0, _upper_limit(_measured(scores), percent))
     fig.tight_layout()
     return fig, ax
 
@@ -237,15 +302,17 @@ def _line_chart_inner(
     fig, ax = plt.subplots(figsize = (width, height))
 
     labels = [_make_label(r) for r in runs]
-    scores = [_get_score_for_metric(r, metric_name) for r in runs]
+    points = [_get_point_for_metric(r, metric_name) for r in runs]
+    scores = [p[0] for p in points]
+    percent = _percent_axis(points)
     colors = _resolve_palette(theme, len(runs))
 
     x = np.arange(len(labels))
     ax.plot(x, _plotted(scores), marker = "o", color = colors[0], linewidth = 2, markersize = 8, zorder = 3)
 
-    for i, score in enumerate(scores):
+    for i, (score, is_pct) in enumerate(points):
         ax.annotate(
-            "n/a" if score is None else f"{score:.1f}%",
+            _format_point(score, is_pct),
             (x[i], score or 0.0),
             textcoords = "offset points",
             xytext = (0, 10),
@@ -256,15 +323,14 @@ def _line_chart_inner(
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize = 8, ha = "center")
-    ax.set_ylabel("Score (%)", fontsize = 10)
+    _apply_score_axis(ax, percent)
     title = "Accuracy" if metric_name == "__accuracy__" else metric_name
     ax.set_title(f"Benchmark Trend — {title}", fontsize = 12, fontweight = "bold", pad = 12)
     measured = _measured(scores)
     ax.set_ylim(
         min(min(measured) * 0.9, 0) if measured else 0,
-        max(max(measured) * 1.15, 10) if measured else 10,
+        _upper_limit(measured, percent),
     )
-    ax.yaxis.set_major_formatter(mticker.PercentFormatter())
     fig.tight_layout()
     return fig, ax
 
@@ -306,11 +372,13 @@ def _grouped_bar_chart_inner(
     fig, ax = plt.subplots(figsize = (width, height))
 
     task_model: dict[str, dict[str, Optional[float]]] = {}
+    points: list[_Point] = []
     for r in runs:
         task = r.get("task", "???")
         model = str(r.get("model", "???"))
-        score = _get_score_for_metric(r, metric_name)
-        task_model.setdefault(task, {})[model] = score
+        point = _get_point_for_metric(r, metric_name)
+        points.append(point)
+        task_model.setdefault(task, {})[model] = point[0]
 
     tasks = list(task_model.keys())
     models = list(dict.fromkeys(m for d in task_model.values() for m in d))
@@ -340,9 +408,8 @@ def _grouped_bar_chart_inner(
 
     ax.set_xticks(x)
     ax.set_xticklabels(tasks, fontsize = 8, ha = "center")
-    ax.set_ylabel("Score (%)", fontsize = 10)
+    _apply_score_axis(ax, _percent_axis(points))
     ax.set_title("Benchmark Comparison — All Metrics", fontsize = 12, fontweight = "bold", pad = 12)
-    ax.yaxis.set_major_formatter(mticker.PercentFormatter())
     ax.legend(fontsize = 7, loc = "upper right", framealpha = 0.8)
     fig.tight_layout()
     return fig, ax
@@ -360,11 +427,13 @@ def _radar_chart_inner(
 ) -> tuple[Any, Any]:
     """Radar: tasks as axes, each model as its own ring."""
     task_model: dict[str, dict[str, Optional[float]]] = {}
+    points: list[_Point] = []
     for r in runs:
         task = r.get("task", "???")
         model = str(r.get("model", "???"))
-        score = _get_score_for_metric(r, metric_name)
-        task_model.setdefault(task, {})[model] = score
+        point = _get_point_for_metric(r, metric_name)
+        points.append(point)
+        task_model.setdefault(task, {})[model] = point[0]
 
     tasks = list(task_model.keys())
     models = list(dict.fromkeys(m for d in task_model.values() for m in d))
@@ -394,7 +463,7 @@ def _radar_chart_inner(
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(tasks, fontsize = 7)
     ax.set_title("Benchmark Radar Comparison", fontsize = 12, fontweight = "bold", pad = 20)
-    ax.yaxis.set_major_formatter(mticker.PercentFormatter())
+    _apply_score_axis(ax, _percent_axis(points), label = False)
     ax.legend(fontsize = 7, loc = "upper right", bbox_to_anchor = (1.3, 1.1), framealpha = 0.8)
     fig.tight_layout()
     return fig, ax

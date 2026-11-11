@@ -737,3 +737,52 @@ def test_chart_marks_a_missing_metric_instead_of_scoring_it_zero():
         fig, ax = inner([with_acc, exact_only], "acc,none", 6, 4, "dark")
         texts = [t.get_text() for t in ax.texts]
         assert "50.0%" in texts and "n/a" in texts and "0.0%" not in texts
+
+
+def test_chart_keeps_units_of_non_ratio_metrics():
+    from core.benchmark.graph import (
+        _bar_chart_inner,
+        _get_score_for_metric,
+        _grouped_bar_chart_inner,
+        _line_chart_inner,
+        _radar_chart_inner,
+    )
+    from matplotlib.ticker import PercentFormatter
+
+    def run(task, name, score):
+        return {
+            "task": task,
+            "model": "m",
+            "default_metric": name,
+            "metrics": [{"name": name, "score": score}],
+        }
+
+    bpb = [run("wikitext", "bits_per_byte,none", 0.8), run("wikitext", "bits_per_byte,none", 0.6)]
+    ppl = [run("wikitext", "word_perplexity,none", 12.3)]
+    acc = [run("arc", "acc,none", 0.8)]
+    assert _get_score_for_metric(bpb[0], "bits_per_byte,none") == 0.8
+    assert _get_score_for_metric(bpb[0], "bits_per_byte") == 0.8
+    assert _get_score_for_metric(ppl[0], "word_perplexity,none") == 12.3
+    assert _get_score_for_metric(acc[0], "acc,none") == 80.0
+    # The synthetic primary metric stays a percent.
+    assert _get_score_for_metric(acc[0], "__accuracy__") == 80.0
+
+    for inner in (_bar_chart_inner, _line_chart_inner):
+        _, ax = inner(bpb, "bits_per_byte,none", 6, 4, "dark")
+        texts = [t.get_text() for t in ax.texts]
+        assert "0.8000" in texts and not any("%" in t for t in texts)
+        assert "%" not in ax.get_ylabel()
+        assert not isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
+        assert ax.get_ylim()[1] < 2
+        _, ax = inner(ppl, "word_perplexity,none", 6, 4, "dark")
+        assert [t.get_text() for t in ax.texts] == ["12.3"]
+        _, ax = inner(acc, "acc,none", 6, 4, "dark")
+        assert [t.get_text() for t in ax.texts] == ["80.0%"]
+        assert isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
+
+    tasks = [run(t, "bits_per_byte,none", 0.8) for t in ("a", "b", "c")]
+    for inner in (_grouped_bar_chart_inner, _radar_chart_inner):
+        _, ax = inner(tasks, "bits_per_byte,none", 6, 4, "dark")
+        assert not isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
+        _, ax = inner([run(t, "acc,none", 0.8) for t in ("a", "b", "c")], "acc,none", 6, 4, "dark")
+        assert isinstance(ax.yaxis.get_major_formatter(), PercentFormatter)
