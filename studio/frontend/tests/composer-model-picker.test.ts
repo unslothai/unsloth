@@ -381,3 +381,14 @@ test("connected models keep their Model settings dialog", () => {
   assert.match(picker, /<ConnectedModelSettingsDialog/);
   assert.match(picker, /onConfigure=\{\(\) => openConnectedSettings\(row\)\}/);
 });
+
+test("quant lookups send the HF token and keep partial quants in download offers", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const token = useHfTokenStore\.getState\(\)\.token \|\| undefined;\s+const res = await listGgufVariants\(target\.id, token,/,
+  );
+  assert.match(picker, /\(v\) => target\.remote \|\| v\.partial !== true/);
+});

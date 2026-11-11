@@ -312,14 +312,17 @@ async function rowQuants(target: QuantTarget): Promise<{
   quants: GgufVariantDetail[];
   defaultVariant: string | null;
 }> {
-  const res = await listGgufVariants(target.id, undefined, {
+  // The user's token, as search sends it: a gated or private repo lists nothing anonymously.
+  const token = useHfTokenStore.getState().token || undefined;
+  const res = await listGgufVariants(target.id, token, {
     localOnly: !target.remote,
     preferLocalCache: target.remote,
     localPath: target.localPath,
     includeCacheLocations: true,
   });
+  // A partial quant cannot load, but a download offer must keep it so the download resumes.
   const variants = (Array.isArray(res?.variants) ? res.variants : []).filter(
-    (v) => v.partial !== true,
+    (v) => target.remote || v.partial !== true,
   );
   return {
     quants:
