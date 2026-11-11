@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -438,6 +439,14 @@ def test_image_only_user_turn_stays_and_string_content_warns_once():
     assert _codes(trace) == ["string_content_dropped", "unsupported_part"]
 
 
+@pytest.mark.parametrize("content", ["hello", {"type": "text", "text": "hello"}, None])
+def test_user_content_that_is_not_a_list_sends_only_attachments(content):
+    row = _row("u", "user", content, None, 1, attachments = [{"content": _text("ATT")}])
+    trace = session_to_trace({"id": "t"}, [row])
+    assert [m.text for m in trace.messages] == ["\nATT"]
+    assert _codes(trace) == (["string_content_dropped"] if content == "hello" else [])
+
+
 def test_infinite_args_text_falls_back_to_args():
     part = _call("A", args = {"a": 1}, argsText = '{"a":1e400}')
     assert _assistant([part]).messages[1].tool_calls[0].arguments == {"a": 1}
@@ -448,6 +457,15 @@ def test_deeply_nested_system_variables_fill_nothing():
     thread = {"id": "t", "settings": {"systemPrompt": "{{x}}", "systemVariables": deep}}
     trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
     assert trace.messages[0].text == "{{x}}"
+
+
+def test_system_variable_too_deep_to_print_stays_as_written():
+    # The depth where json.dumps runs out of stack depends on the Python build.
+    variables = '{"a":[1]}'
+    thread = {"id": "t", "settings": {"systemPrompt": "x {{a}} y", "systemVariables": variables}}
+    with mock.patch.object(json, "dumps", side_effect = RecursionError):
+        trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
+    assert trace.messages[0].text == "x {{a}} y"
 
 
 @pytest.mark.parametrize(

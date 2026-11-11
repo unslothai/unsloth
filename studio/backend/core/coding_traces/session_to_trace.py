@@ -107,9 +107,13 @@ def _newest_leaf(head_id: str, ordered: list[dict], parents: dict[str, Optional[
 
 def _model_parts(message: dict) -> list:
     """Parts minus mcpToolOnly ones (modelVisibleMessage); only user rows keep attachments."""
-    parts = _with_attachments(message) if message.get("role") == "user" else message.get("content")
+    parts = message.get("content")
+    if message.get("role") == "user":
+        # toThreadMessage loads content that is not a non-empty list as one empty text part.
+        loaded = parts if isinstance(parts, list) and parts else [{"type": "text", "text": ""}]
+        parts = _with_attachments({**message, "content": loaded})
     if not isinstance(parts, list):
-        return []  # toThreadMessage loads string content as one empty text part
+        return []  # an assistant's lone empty text part sends nothing
     return [p for p in parts if not (isinstance(p, dict) and p.get("mcpToolOnly") is True)]
 
 
@@ -177,8 +181,8 @@ def _convert_row(
     # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
     pending: list[TraceMessage] = []
     pending_round = reasoned = imaged = None
-    # collectTextParts joins all text parts, even "", and toThreadMessage loads [] as one "".
-    pieces, texted = 0, (current if role == "user" and not message.get("content") else None)
+    # collectTextParts joins all user text parts, even the "" that _model_parts loads.
+    pieces, texted = 0, None
     for position, part in enumerate(_model_parts(message)):
         kind = part.get("type") if isinstance(part, dict) else None
         if role == "assistant" and kind in ("text", "reasoning", "tool-call"):
@@ -451,7 +455,10 @@ def _fill_variables(prompt: str, raw: object) -> str:
             return ""
         if isinstance(current, str):
             return current
-        return json.dumps(current, separators = (",", ":"), ensure_ascii = False)
+        try:
+            return json.dumps(current, separators = (",", ":"), ensure_ascii = False)
+        except RecursionError:
+            return match.group(0)  # too deep to print here; JSON.stringify would manage it
 
     return _PROMPT_VARIABLE.sub(fill, prompt)
 
@@ -506,7 +513,7 @@ def session_to_trace(
     chain = _branch(messages, head_id, warnings)
     for message in chain:
         content = message.get("content")
-        if isinstance(content, str) and content and not _model_parts(message):
+        if isinstance(content, str) and content:
             note = "Dropped string content; the UI loads it as an empty text part"
             warnings.append(TraceWarning("string_content_dropped", note, message["id"]))
     trace_messages = _convert(_prune(chain), warnings)
