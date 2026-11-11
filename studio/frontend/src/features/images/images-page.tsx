@@ -167,6 +167,7 @@ import {
   CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
+  imageWorkflowTabs,
   recipeWorkflowLabel,
   type WorkflowId,
 } from "./workflows";
@@ -1895,6 +1896,7 @@ export function ImagesPage({
   const setWorkflow = useImageWorkflowStore((s) => s.setWorkflow);
   const supported = useImageWorkflowStore((s) => s.supported);
   const setSupported = useImageWorkflowStore((s) => s.setSupported);
+  const setUnifiedEdit = useImageWorkflowStore((s) => s.setUnifiedEdit);
   const [initImage, setInitImage] = useState<string | null>(null);
   const [strength, setStrength] = useState(0.6);
   const [maskImage, setMaskImage] = useState<string | null>(null);
@@ -5907,6 +5909,10 @@ export function ImagesPage({
   }, [active, busy, handleGenerate, status, workflow]);
 
   useEffect(() => {
+    setUnifiedEdit(unifiedEdit);
+  }, [setUnifiedEdit, unifiedEdit]);
+
+  useEffect(() => {
     if (external) {
       setSupported([...CONNECTION_WORKFLOWS]);
       return;
@@ -5917,21 +5923,21 @@ export function ImagesPage({
     }
     const wf = status.workflows ?? [];
     setSupported(
-      WORKFLOW_TABS.filter((t) =>
+      imageWorkflowTabs(unifiedEdit).filter((t) =>
         wf.includes(t.requires === null ? "txt2img" : t.requires),
       ).map((t) => t.id),
     );
-  }, [external, status?.loaded, status?.workflows, setSupported]);
+  }, [external, status?.loaded, status?.workflows, setSupported, unifiedEdit]);
 
   useEffect(() => {
     if (supported === null || pageMode !== "create") return;
     if (!supported.includes(workflow) && supported[0]) {
-      setWorkflow(supported[0]);
+      setWorkflow(unifiedEdit && supported.includes("edit") ? "edit" : supported[0]);
     }
-  }, [supported, workflow, setWorkflow, pageMode]);
+  }, [supported, workflow, setWorkflow, pageMode, unifiedEdit]);
 
   const activeWorkflowTab =
-    WORKFLOW_TABS.find((t) => t.id === workflow) ?? WORKFLOW_TABS[0];
+    imageWorkflowTabs(unifiedEdit).find((t) => t.id === workflow) ?? WORKFLOW_TABS[0];
 
   const advancedControls = (
     <>

@@ -89,7 +89,7 @@ import {
   isWorkflowEnabled,
   useImageWorkflowStore,
 } from "@/features/images/stores/image-workflow-store";
-import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
+import { imageWorkflowTabs, type WorkflowId } from "@/features/images/workflows";
 import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-store";
 import {
   AUDIO_WORKFLOWS,
@@ -931,12 +931,13 @@ function ImagesWorkflowList({
 }) {
   const workflow = useImageWorkflowStore((s) => s.workflow);
   const supported = useImageWorkflowStore((s) => s.supported);
+  const unifiedEdit = useImageWorkflowStore((s) => s.unifiedEdit);
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const expanded = useImageWorkflowStore((s) => s.navExpanded);
   const current = active && pageMode === "create" ? workflow : null;
   return (
     <MediaWorkflowList
-      tabs={WORKFLOW_TABS}
+      tabs={imageWorkflowTabs(unifiedEdit)}
       current={current}
       enabled={(id) => isWorkflowEnabled(id, supported)}
       listed={!collapsed && (active ? pageMode !== "train" : expanded)}
@@ -1130,12 +1131,13 @@ function MediaMoreSubmenu<Id extends string>({
 function ImagesMoreSubmenu(props: MediaMoreSubmenuProps<WorkflowId>) {
   const workflow = useImageWorkflowStore((s) => s.workflow);
   const supported = useImageWorkflowStore((s) => s.supported);
+  const unifiedEdit = useImageWorkflowStore((s) => s.unifiedEdit);
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const current = props.active && pageMode === "create" ? workflow : null;
   return (
     <MediaMoreSubmenu
       {...props}
-      tabs={WORKFLOW_TABS}
+      tabs={imageWorkflowTabs(unifiedEdit)}
       current={current}
       enabled={(id) => isWorkflowEnabled(id, supported)}
     />
@@ -1279,12 +1281,13 @@ type RailFlyoutProps<Id extends string> = {
 function ImagesRailFlyout(props: RailFlyoutProps<WorkflowId>) {
   const workflow = useImageWorkflowStore((s) => s.workflow);
   const supported = useImageWorkflowStore((s) => s.supported);
+  const unifiedEdit = useImageWorkflowStore((s) => s.unifiedEdit);
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const current = props.active && pageMode === "create" ? workflow : null;
   return (
     <MediaRailFlyout
       {...props}
-      tabs={WORKFLOW_TABS}
+      tabs={imageWorkflowTabs(unifiedEdit)}
       current={current}
       enabled={(id) => isWorkflowEnabled(id, supported)}
     />
