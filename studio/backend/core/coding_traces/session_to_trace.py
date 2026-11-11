@@ -30,13 +30,10 @@ from core.inference.tool_loop_controller import (
 from core.rag.conversation_archive import (
     _flushes_local_pair,
     _local_round_id,
-    _mcp_image_result,
     _sandbox_wrapper,
     _sanitised_assistant_text,
-    _search_images_result,
     _server_builtin,
     _tool_result_content,
-    _unwrapped,
     _with_attachments,
 )
 from storage import studio_db
@@ -311,20 +308,14 @@ def _call_arguments(part: dict) -> dict:
 
 def _tool_message(part: dict, name: str, call_id: str, message: dict) -> TraceMessage:
     wire = {"role": "tool", "name": name}
-    result = part["result"]  # isMcpUiToolResult, then the gated isMcpImageToolResult
+    result = part["result"]  # isMcpUiToolResult
     # SANDBOX_FILE_TOOLS also holds MEDIA_CHAT_TOOLS, which the archive's name set lacks.
     if name in MEDIA_CHAT_TOOLS and _sandbox_wrapper(result, "python"):
         result = result["text"]
     ui = _as_dict(result.get("ui")) if isinstance(result, dict) else {}
     if name.startswith("mcp__") and isinstance(ui.get("resourceUri"), str):
         result = result["text"] if isinstance(result.get("text"), str) else result
-    elif _mcp_image_result(result) and not _search_images_result(result):
-        image_tool = name == "view_image" or name.startswith("mcp__")  # isImageToolName
-        if "ui" in result or not (image_tool or set(result) <= {"text", "images"}):
-            result = _js_json(result)
     wire["content"] = _tool_result_content(result, name)
-    if not isinstance(result, str) and _unwrapped(result, name) is None:
-        wire["content"] = _js_json(result)  # the UI sends JSON.stringify(result)
     suffix = _as_dict(part.get("provenance")).get("model_suffix")
     if isinstance(suffix, str) and suffix:
         wire["extra_content"] = {TOOL_MODEL_SUFFIX_KEY: suffix}
@@ -527,11 +518,6 @@ def _js_json(value: object) -> str:
         return "{" + ",".join(f"{_js_string(k)}:{_js_json(value[k])}" for k in keys) + "}"
     if isinstance(value, list):
         return "[" + ",".join(_js_json(v) for v in value) + "]"
-    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > 2**53:
-        try:  # JSON.parse rounds it to a double
-            value = float(value)
-        except OverflowError:
-            return "null"
     if isinstance(value, float):
         return _js_number(value) if math.isfinite(value) else "null"
     return _js_string(value) if isinstance(value, str) else json.dumps(value)
@@ -633,11 +619,6 @@ def session_to_trace(
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no messages")
     warnings: list[TraceWarning] = []
     chain = _branch(messages, head_id, warnings)
-    for message in chain:
-        content = message.get("content")
-        if content and not isinstance(content, list):
-            note = "Dropped content that is not a list; the UI loads it as an empty text part"
-            warnings.append(TraceWarning("non_list_content_dropped", note, message["id"]))
     trace_messages = _sent(_convert(_prune(chain), warnings))
     if not any(m.role != "user" or m.text for m in trace_messages):
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no usable content on this branch")

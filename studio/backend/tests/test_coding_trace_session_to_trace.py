@@ -335,7 +335,6 @@ def _turn(custom, content):
 
 
 _STOPPED = {"incomplete": {"reason": "cancelled"}}
-_IMG = [{"data": "d", "mimeType": "m"}]
 
 
 # `before` is what the trace keeps ahead of the next turn ("again", "fine").
@@ -429,28 +428,6 @@ def test_assistant_text_that_python_strips_is_dropped(custom):
     ]
 
 
-@pytest.mark.parametrize(
-    "tool, result, sent",
-    [
-        ("run", {"loss": 1.5e-7, "v": 100.0, "x": 1e21}, '{"loss":1.5e-7,"v":100,"x":1e+21}'),
-        ("run", {"b": 1, "1": 2}, '{"1":2,"b":1}'),
-        ("run", {"n": 12345678901234567890, "m": 10**400}, '{"n":12345678901234567000,"m":null}'),
-        ("run", [0.1, 2.5e-9], "[0.1,2.5e-9]"),
-        (
-            "mcp__s__img",
-            {"text": "t", "images": [], "n": 2e-9},
-            '{"text":"t","images":[],"n":2e-9}',
-        ),
-    ],
-)
-def test_object_tool_results_print_like_json_stringify(tool, result, sent):
-    rows = [
-        _row("u", "user", _text("go"), None, 1),
-        _row("a", "assistant", [_call("c1", tool, result = result), *_text("done")], "u", 2),
-    ]
-    assert session_to_trace({"id": "t"}, rows).messages[2].text == sent
-
-
 @pytest.mark.parametrize("tool", ["generate_image", "generate_video"])
 @pytest.mark.parametrize("text, sent", [("Saved cat.png", "Saved cat.png"), ("", '{"result":""}')])
 def test_media_tool_file_wrapper_replays_its_text(tool, text, sent):
@@ -482,9 +459,6 @@ def test_stopped_group_with_only_empty_text_drops_its_reasoning():
     "part, text",
     [
         (_call("A", "python", {"text": "ok", "sessionId": "s", "images": []}), "ok"),
-        (_call("A", "mcp__s__x", {"text": "t", "images": _IMG, "x": 1}), "t"),
-        (_call("A", "mcp__s__x", {"text": "t", "images": _IMG, "ui": {}}), None),
-        (_call("A", "run", {"text": "t", "images": _IMG, "x": 1}), None),
         (_call("A", "mcp__s__ui", {"text": "", "ui": {"resourceUri": "u"}}), '{"result":""}'),
         (_call("A", "search_knowledge_base", "Hit\n__RAG_SOURCES__:[1]"), "Hit"),
         (_call("A", "python", "Error: boom"), "Error: boom" + TOOL_ERROR_NUDGE),
@@ -514,13 +488,12 @@ def test_user_attachments_are_model_input():
     assert _codes(trace).count("unsupported_part") == 1
 
 
-def test_empty_user_turns_stay_and_string_content_warns_once():
+def test_image_only_user_turn_stays_empty():
     rows = [
         _row("u1", "user", _text("hi"), None, 1),
         _row("a1", "assistant", _text("ok"), "u1", 2),
         _row("u2", "user", [{"type": "image", "image": "x"}], "a1", 3),
         _row("a2", "assistant", _text("a cat"), "u2", 4),
-        _row("u3", "user", "hello", "a2", 5),
     ]
     trace = session_to_trace({"id": "t"}, rows)
     assert _shape(trace) == [
@@ -528,17 +501,8 @@ def test_empty_user_turns_stay_and_string_content_warns_once():
         ("assistant", "ok"),
         ("user", ""),
         ("assistant", "a cat"),
-        ("user", ""),
     ]
-    assert _codes(trace) == ["non_list_content_dropped", "unsupported_part"]
-
-
-@pytest.mark.parametrize("content", ["hello", {"type": "text", "text": "hello"}, None])
-def test_user_content_that_is_not_a_list_sends_only_attachments(content):
-    row = _row("u", "user", content, None, 1, attachments = [{"content": _text("ATT")}])
-    trace = session_to_trace({"id": "t"}, [row])
-    assert [m.text for m in trace.messages] == ["\nATT"]
-    assert _codes(trace) == (["non_list_content_dropped"] if content else [])
+    assert _codes(trace) == ["unsupported_part"]
 
 
 def test_audio_only_user_turn_stays_between_replies():
