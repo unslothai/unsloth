@@ -432,6 +432,25 @@ class TestBuildShRocm:
         assert "needs.prepare.outputs.stable == 'true'" in body
         assert "org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only" in body
 
+    def test_release_aliases_do_not_move_on_scheduled_nightly_builds(self):
+        """The mutable release aliases must not be retagged by the scheduled main build."""
+        import yaml
+
+        workflow = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+
+        def tag_lines(job):
+            meta = next(s for s in workflow["jobs"][job]["steps"] if s.get("id") == "meta")
+            return [line.strip() for line in meta["with"]["tags"].splitlines() if line.strip()]
+
+        base = tag_lines("tag")
+        studio = tag_lines("tag-studio")
+        for lines, stable_alias in ((base, "latest"), (studio, "studio")):
+            stable = next(line for line in lines if f"type=raw,value={stable_alias}," in line)
+            assert "startsWith(github.ref, 'refs/tags/v')" in stable
+            scheduled = next(line for line in lines if "type=schedule" in line)
+            assert "nightly" in scheduled
+            assert f"type=raw,value={stable_alias}," not in scheduled
+
 
 class TestTheUserFacingDocsCoverWsl:
     """docker/DOCKERHUB-ROCM.md is synced to the Docker Hub page and README.md is the

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620">
+  <rect width="1200" height="620" fill="#0f172a"/>
+  <text x="60" y="72" fill="#f8fafc" font-family="Arial, sans-serif" font-size="34" font-weight="700">Before · ROCm image channels</text>
+  <text x="60" y="116" fill="#cbd5e1" font-family="Arial, sans-serif" font-size="22">A scheduled main build moved release aliases too.</text>
+  <rect x="60" y="170" width="1080" height="150" rx="16" fill="#7f1d1d"/>
+  <text x="92" y="220" fill="#fecaca" font-family="Arial, sans-serif" font-size="24" font-weight="700">Scheduled build</text>
+  <text x="92" y="266" fill="#fee2e2" font-family="Arial, sans-serif" font-size="24">latest  ·  studio  ·  nightly</text>
+  <text x="92" y="300" fill="#fecaca" font-family="Arial, sans-serif" font-size="19">all resolve to the same nightly-labelled digest</text>
+  <path d="M600 350v46" stroke="#94a3b8" stroke-width="4" marker-end="url(#arrow)"/>
+  <rect x="60" y="430" width="1080" height="112" rx="16" fill="#1e293b"/>
+  <text x="92" y="478" fill="#cbd5e1" font-family="Arial, sans-serif" font-size="23">docker inspect :studio</text>
+  <text x="92" y="515" fill="#fca5a5" font-family="monospace" font-size="22">org.opencontainers.image.version = nightly</text>
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/></marker></defs>
+</svg>
