@@ -1559,10 +1559,10 @@ def test_shell_function_passed_by_reference_is_high_risk(code, refused):
     assert (_check_code_safety(code) is not None) is refused
 
 
-def test_long_expression_chain_is_classified():
+@pytest.mark.parametrize("code", ["value = " + "+".join(["1"] * 400), "value = data" + "[0]" * 400])
+def test_long_expression_chain_is_classified(code):
     import threading
 
-    code = "value = " + "+".join(["1"] * 400)
     errors = []
 
     def classify():

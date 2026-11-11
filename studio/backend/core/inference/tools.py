@@ -18056,6 +18056,8 @@ def _check_signal_escape_patterns(code: str):
 
         def _memo(self, kind, node, compute, pending):
             key = (kind, node.id if isinstance(node, ast.Name) else id(node))
+            if key in self._final:
+                return self._final[key]
             if key in self._cache:
                 return self._cache[key]
             if key in self._active:
@@ -18071,12 +18073,13 @@ def _check_signal_escape_patterns(code: str):
         def _converged(self, query, node):
             # A self-referential binding (d = d["system"]) reads the previous pass's answer, so repeat
             # until no answer grows (they are finite sets, so this ends); keep only converged answers.
+            # Each pass writes a fresh layer over _final: copying _final per query made scans quadratic.
             previous, self._guess = None, {}
             while True:
-                self._cache, self._cyclic = dict(self._final), False
+                self._cache, self._cyclic = {}, False
                 result = query(node)
                 if not self._cyclic or self._cache == previous:
-                    self._final = self._cache
+                    self._final.update(self._cache)
                     return result
                 previous = self._guess = self._cache
 
@@ -18230,6 +18233,9 @@ def _check_signal_escape_patterns(code: str):
         def visit(self, node):
             self._skip_type_hint(getattr(node, "annotation", None))
             self._skip_type_hint(getattr(node, "returns", None))
+            # Dispatched here: super().visit() costs a stack frame per nesting level.
+            getattr(self, "visit_" + type(node).__name__, self.generic_visit)(node)
+            # After the children, so a nested a[0][0]... resolves from their memoised lookups.
             if (
                 not self.collecting
                 and id(node) not in self._followed
@@ -18237,8 +18243,6 @@ def _check_signal_escape_patterns(code: str):
                 and not isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del))
             ):
                 self._flag_shell_reference(self._shell_func_of, node)
-            # Dispatched here: super().visit() costs a stack frame per nesting level.
-            return getattr(self, "visit_" + type(node).__name__, self.generic_visit)(node)
 
         def visit_Assign(self, node):
             for tgt in node.targets:
