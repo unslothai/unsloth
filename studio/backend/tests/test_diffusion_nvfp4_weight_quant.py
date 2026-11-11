@@ -218,3 +218,12 @@ class _Tiny(torch.nn.Module):
 
     def forward(self, x):
         return self.c(torch.relu(self.b(self.a(x))))
+
+
+@pytest.mark.parametrize("method", ["max6", "4over6"])
+def test_an_all_zero_weight_round_trips_to_zeros(method):
+    w = torch.zeros(64, 128, dtype = torch.bfloat16)
+    q = wq.quantize_nvfp4_weight(w, method)
+    assert float(q.per_tensor_scale) > 0
+    out = wq.dequantize_nvfp4_weight(q)
+    assert torch.isfinite(out).all() and not out.any()

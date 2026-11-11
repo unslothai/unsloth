@@ -68,7 +68,8 @@ def e4m3_top(method: str) -> float:
 def per_tensor_scale_for(w: Any, method: str = METHOD_4OVER6) -> Any:
     import torch
     amax = torch.max(torch.abs(w)).to(torch.float32)
-    return amax / (e4m3_top(method) * E2M1_MAX)
+    # An all-zero weight would give 0 and 0/0 block scales; any positive scale encodes it as zeros.
+    return (amax / (e4m3_top(method) * E2M1_MAX)).clamp_min(torch.finfo(torch.float32).tiny)
 
 
 def e2m1_round(x: Any) -> Any:
