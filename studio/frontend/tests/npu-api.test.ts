@@ -243,3 +243,28 @@ test("NPU capability tags and context label", () => {
   assert.equal(api.npuContextLabel(null), null);
   assert.equal(api.npuContextLabel(0), null);
 });
+
+// model_info.json's oids are per-file blob hashes, not a commit, so a branch-pinned card can drift.
+test("an NPU card read from a branch says it may be newer than the installed files", () => {
+  const { api } = client(() => new Response(null));
+  const model = (hf_repo: string | null, hf_revision: string | null) =>
+    ({ hf_repo, hf_revision }) as Parameters<typeof api.npuReadmeNote>[0];
+  assert.equal(
+    api.npuReadmeNote(model("FastFlowLM/Qwen3-0.6B-NPU2", null)),
+    "Latest on Hugging Face (may be newer than the installed files)",
+  );
+  // A pinned branch moves too; only a commit revision is the card the files came from.
+  assert.equal(
+    api.npuReadmeNote(
+      model("FastFlowLM/Qwen3.5-9B-NPU2", "flm_q4k_high_precision"),
+    ),
+    "Latest on Hugging Face (may be newer than the installed files)",
+  );
+  assert.equal(
+    api.npuReadmeNote(
+      model("FastFlowLM/Qwen3.5-9B-NPU2", "0123456789abcdef0123456789abcdef01234567"),
+    ),
+    null,
+  );
+  assert.equal(api.npuReadmeNote(model(null, null)), null);
+});

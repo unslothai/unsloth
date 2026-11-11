@@ -6,6 +6,7 @@ import {
   type NpuModel,
   npuCapabilities,
   npuContextLabel,
+  npuReadmeNote,
   npuResumeLabel,
   npuSizeLabel,
 } from "@/features/npu";
@@ -55,6 +56,7 @@ export function NpuModelDetail({
   const [owner, repoName] = repo ? repo.split("/") : ["FastFlowLM", model.id];
   const sizeLabel = npuSizeLabel(model.size_gb);
   const contextLabel = npuContextLabel(model.max_context_length);
+  const readmeNote = npuReadmeNote(model);
   const resumeLabel =
     model.id in catalog.downloads ? null : npuResumeLabel(model);
 
@@ -149,7 +151,17 @@ export function NpuModelDetail({
 
       <div className="max-w-[var(--hub-readme-measure)] space-y-4 pt-4">
         {repo ? (
-          <ModelReadme repoId={repo} revision={model.hf_revision ?? null} />
+          <>
+            {readmeNote && (
+              <p
+                data-testid="hub-npu-readme-note"
+                className="text-ui-12 text-muted-foreground"
+              >
+                {readmeNote}
+              </p>
+            )}
+            <ModelReadme repoId={repo} revision={model.hf_revision ?? null} />
+          </>
         ) : (
           <p className="text-ui-13 text-muted-foreground">
             No model card for this model.
