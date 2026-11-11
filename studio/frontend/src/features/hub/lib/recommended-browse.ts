@@ -12,7 +12,6 @@ import { resolveOwnerProviderLogo } from "./provider-logos";
 // Under Recommended, iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
 const MIN_ICONLESS_MODEL_LIKES = 30;
 
-/** Model Hub's Recommended browse rule, shared with the composer picker. */
 export function matchesRecommendedBrowse(
   result: HfModelResult,
   quantFormats: readonly string[],

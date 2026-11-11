@@ -14,7 +14,6 @@ export function ListScrollbar({
   edge = false,
 }: {
   target: RefObject<HTMLDivElement | null>;
-  /** Hug the panel edge, for a pane with no rounded rows to clear. */
   edge?: boolean;
 }) {
   const [thumb, setThumb] = useState<{ top: number; height: number } | null>(

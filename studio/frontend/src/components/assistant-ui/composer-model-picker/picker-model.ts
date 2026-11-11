@@ -19,7 +19,6 @@ export type RowKind =
   | "npu"
   | "external";
 
-// On Device groups, in the header picker's order.
 export const DEVICE_SECTIONS = [
   "unsloth",
   "other",
@@ -30,7 +29,6 @@ export const DEVICE_SECTIONS = [
   "modelsDir",
 ] as const;
 export type DeviceSection = (typeof DEVICE_SECTIONS)[number];
-/** Discover adds its own group under NPU. */
 export type ListSection = DeviceSection | "recommended";
 export const SECTION_LABEL: Record<ListSection, string> = {
   recommended: "Recommended",
@@ -64,7 +62,6 @@ export function localSection(
   return "custom";
 }
 
-/** Stable: rows keep their order inside a section. */
 export function orderBySection<T extends { section?: ListSection }>(
   rows: readonly T[],
 ): T[] {
@@ -97,7 +94,7 @@ export interface PickerRow {
   groups?: string[];
   section?: ListSection;
   sizeBytes?: number;
-  /** When it landed on disk, in the listing's own units. */
+  /** In the listing's own units. */
   updatedAt?: number;
 }
 
@@ -135,7 +132,6 @@ export function matchesFormat(
   }
 }
 
-/** The header picker's On Device sort: last load, size, name, or download date. */
 export function sortDeviceRows<T extends PickerRow>(
   rows: readonly T[],
   key: DeviceSort,

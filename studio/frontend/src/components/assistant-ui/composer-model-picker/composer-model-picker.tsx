@@ -187,12 +187,10 @@ interface Row extends PickerRow {
   hub?: ModelOption;
   npu?: NpuModel;
   loadedQuant?: string | null;
-  /** An interrupted download: picking it downloads again, resuming where it can. */
   partial?: boolean;
   resumable?: boolean;
 }
 
-/** A cached repo, or a partial one, as the pick that loads or resumes it. */
 function cachedMeta(row: Row): ModelSelectorChangeMeta {
   return {
     source: "hub",
@@ -295,7 +293,7 @@ function loraMeta(lora: LoraModelOption): ModelSelectorChangeMeta {
 
 const LOCAL_PATH = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/;
 
-/** A resident with no on-disk row: a path load stays local, as the header picker sends it. */
+/** A resident with no on-disk row; a path load picks as local. */
 function residentMeta(row: Row): ModelSelectorChangeMeta {
   return {
     source: LOCAL_PATH.test(row.id) ? "local" : "hub",
@@ -332,7 +330,6 @@ function ggufMeta(
     ggufFilename: variant.filename,
     isDownloaded: onDisk,
     expectedBytes: quantBytes(variant),
-    // An MLX repo's variants pick the same way, as checkpoints.
     isGguf,
     pipelineTag: row.gguf?.task ?? null,
   };
@@ -358,7 +355,6 @@ function quantTarget(row: Row): QuantTarget | null {
   if (row.kind === "localGguf") {
     return { id: row.id, localPath: null, local: true, remote: false };
   }
-  // An MLX repo (listed on a Mac only) may ship several variants, as a GGUF ships quants.
   if (
     row.kind === "hub" &&
     (row.hub?.isGguf || (row.format === "mlx" && !row.onDevice))
@@ -481,8 +477,7 @@ function useLogoFit(src: string): string | undefined {
   return fit || undefined;
 }
 
-// Every mark fills its box (useLogoFit), but a spiky one still reads small: these scale to the
-// ink coverage of the solid marks (Google, OpenAI), measured at 4x on the tab strip.
+// Fitted marks still differ in weight: spiky ones scale to the solid marks' ink coverage (4x measure).
 const OPTICAL_SCALE: Readonly<Record<string, number>> = {
   qwen: 1.05,
   anthropic: 1.06,
@@ -703,7 +698,6 @@ const PARTIAL_HINT = {
 const UPDATE_HINT =
   "A newer upload is on Hugging Face. Update it from the menu.";
 
-/** The Studio tooltip, in place of the browser's own `title`. */
 function Hint({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Tooltip delayDuration={0}>
@@ -774,12 +768,10 @@ function SwitchRow({
   );
 }
 
-// The sort menu, sized to the picker's own rows rather than the app's full menus.
 const MENU_ITEM =
   "min-h-0 gap-2 py-[calc(5px*var(--ui-space-scale,1))] pr-8 pl-2.5 text-ui-12 [&_[data-slot=dropdown-menu-radio-item-indicator]]:right-2.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5";
 const MENU_LABEL =
   "px-2.5 pt-[calc(6px*var(--ui-space-scale,1))] pb-[calc(3px*var(--ui-space-scale,1))] text-ui-10";
-// The header picker's format colours.
 const FORMAT_DOT: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
@@ -805,7 +797,6 @@ const FORMAT_NAME: Record<FormatTone, string> = {
   adapter: "LoRA adapter",
 };
 
-/** What the ⋮ menu says about an on-device model, above its actions. */
 function ModelFacts({ facts }: { facts: readonly [string, ReactNode][] }) {
   return (
     <dl className="flex flex-col gap-1 px-2.5 pt-1.5 pb-2 text-ui-12">
@@ -850,7 +841,6 @@ function modelFacts(
   }
   const task = row.gguf?.task ?? row.cached?.task ?? undefined;
   const id = row.lora?.baseModel ? `${row.lora.baseModel} ${row.id}` : row.id;
-  // The Model Hub's capability pills, kept to what a chat model takes in or does.
   // A GGUF's projector or the NPU listing knows vision for sure; the name only guesses.
   const vision = row.npu?.supports_vision ?? row.gguf?.has_vision;
   const found = detectHubCapabilities(undefined, task, id).filter(
@@ -937,7 +927,6 @@ function SectionHeader({
     <div
       className={cn(
         "flex shrink-0 flex-col",
-        // Space, not a rule, sets each group off from the rows above it.
         divider && "mt-[calc(10px*var(--ui-space-scale,1))]",
       )}
     >
@@ -1004,19 +993,16 @@ export function ComposerModelPicker({
       setLocalOpen(next);
     }
   };
-  // Run settings open in place of the list.
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
   );
   const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
   const [configStandalone, setConfigStandalone] = useState(false);
-  // A connected model's own settings (prompt, output cap, effort pin), as the header picker offered.
   const [connectedSettings, setConnectedSettings] = useState<{
     row: Row;
     view: "settings" | "info";
   } | null>(null);
   const providers = useExternalProvidersStore((s) => s.providers);
-  // A GGUF update goes through the download manager, which may ask to keep or switch transport.
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
   );
@@ -1073,7 +1059,6 @@ export function ComposerModelPicker({
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
-  // Too many tabs scroll sideways: each edge fades over the tabs hidden past it.
   const [tabStrip, setTabStrip] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!tabStrip) {
@@ -1099,7 +1084,6 @@ export function ComposerModelPicker({
 
   const inventory = useChatPickerInventory({ enabled: open });
   const [npuStatus, setNpuStatus] = useNpuStatus(open);
-  // Null off an AMD NPU host, so nothing below shows there.
   const npuCatalog = useNpuCatalog(
     npuStatus?.supported === true
       ? { status: npuStatus, onStatusChange: setNpuStatus }
@@ -1168,8 +1152,7 @@ export function ComposerModelPicker({
       .filter(
         (r) =>
           (matchesRecommendedBrowse(r, quantFormats, !hubQuery) ||
-            // A Mac runs MLX and plain safetensors too, as the header picker lists them; the browse
-            // gates (maker logo or likes) still apply, read as for a GGUF.
+            // A Mac also runs MLX and plain safetensors; the browse gates still apply.
             (isMac &&
               isRecommendableFormat(r.id, r.isGguf, true, r.quantMethod) &&
               matchesRecommendedBrowse(
@@ -1317,7 +1300,7 @@ export function ComposerModelPicker({
     const loadedIds = new Set(
       marked.filter((row) => row.loaded).map((row) => row.id.toLowerCase()),
     );
-    // A partial copy is not on the device yet, so its Discover row still offers the download.
+    // A partial copy still offers its download in Discover.
     const onDisk = new Set(
       marked.filter((row) => !row.partial).map((row) => row.id.toLowerCase()),
     );
@@ -1366,8 +1349,7 @@ export function ComposerModelPicker({
     externalModels,
   ]);
 
-  // Re-read on every opening and inventory change, so a newly downloaded quant shows; until then
-  // the last list stays, and a failed read keeps it rather than caching an empty one.
+  // Re-read per opening and inventory change; a failed read keeps the last list.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new inventory is the trigger, not an input.
   const quantsEpoch = useMemo(
     () => ({ open }),
@@ -1512,7 +1494,6 @@ export function ComposerModelPicker({
     return () => clearTimeout(timer);
   }, [pending, chosen?.id, modelLoading]);
   const shown = pending ?? chosen;
-  // A connected model whose connection is gone keeps its own name, as the header picker showed it.
   const chosenName =
     shown?.label ??
     (checkpoint
@@ -1558,7 +1539,6 @@ export function ComposerModelPicker({
     },
     [pinned, pinnedConnected],
   );
-  // On Device's sort and format filter, as the header picker offered them.
   const [deviceSort, setDeviceSort] = useState<DeviceSort>("recent");
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
@@ -1588,11 +1568,10 @@ export function ComposerModelPicker({
       return next;
     });
   };
-  // On Device and Discover group their rows under headers, in the header picker's order.
   const listSections = useMemo<ListSection[]>(() => {
     if (viewed === DEVICE_TAB) {
       const present = new Set(foundRows.map((row) => row.section));
-      // Always there, as in the header picker: where training output and added folders land.
+      // Always shown: where training output and added folders land.
       present.add("fineTuned");
       present.add("custom");
       return orderBySection(
@@ -1716,12 +1695,11 @@ export function ComposerModelPicker({
     source?.eject(row.loadedId ?? row.id);
   };
 
-  // With no quant to load, the Hub's model card lists them all.
   const handOff = (row: Row) => {
     openModelCard(row);
   };
 
-  // Each pick supersedes any still resolving its quant, so a slow lookup never overrides a newer choice.
+  // A pick supersedes any still resolving its quant.
   const pickSeq = useRef(0);
   const supersede = () => {
     pickSeq.current += 1;
@@ -1766,7 +1744,7 @@ export function ComposerModelPicker({
       failed: false,
     });
     const mlxRepo = row.kind === "hub" && !row.hub?.isGguf;
-    // An MLX repo with no variant listing is one checkpoint, as the header picker loads it.
+    // An MLX repo with no variant listing loads as one checkpoint.
     const pickWhole = () => {
       if (pickSeq.current !== seq || !source) {
         return;
@@ -1958,7 +1936,7 @@ export function ComposerModelPicker({
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
-  // Every opening starts on the list, however it was opened. During render, so the first paint is fresh.
+  // During render, so an opening paints fresh however it was opened.
   const [seenOpen, setSeenOpen] = useState(open);
   if (open !== seenOpen) {
     setSeenOpen(open);
@@ -2069,13 +2047,11 @@ export function ComposerModelPicker({
   };
 
   const chipLabel = chosenName ?? "Select model";
-  // The header showed the loaded format and quant; the chip keeps them on hover.
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const chipDetail =
     activeVariant && chosenLoaded && !pending
       ? `${loadedIsMlx ? "MLX" : "GGUF"} · ${activeVariant}`
       : null;
-  // Several resident models (Keep models loaded): one press frees them all, as the header picker did.
   const ejectsAll = loadedModels.length > 1;
 
   const settingsMeta = async (
@@ -2707,7 +2683,6 @@ export function ComposerModelPicker({
     onDisk: boolean,
     isGguf = true,
   ) => {
-    // A fine-tuned GGUF export deletes per quant too, through the fine-tune endpoint.
     const exportedGguf =
       row.lora?.source === "exported" && row.lora.exportType === "gguf";
     const key = `${row.id}::${variant.quant}`;
@@ -2970,7 +2945,6 @@ export function ComposerModelPicker({
   };
 
   const renderList = () => {
-    // Discover with no Hub listing: say why, as the header picker did.
     const hubHint =
       viewed === RECOMMENDED_TAB &&
       hubResults.length === 0 &&
@@ -3219,7 +3193,7 @@ export function ComposerModelPicker({
           <>
             <div
               ref={settingsRef}
-              // Tighter sides than the header picker's; the footer bleeds by the same variables.
+              // The footer bleeds by the same variables.
               className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto pt-4.5 pr-[var(--run-settings-pad-r)] pb-4.5 pl-[var(--run-settings-pad-l)] [--run-settings-pad-l:calc(16px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(16px*var(--ui-space-scale,1))]"
             >
               <ModelConfigPage
@@ -3440,7 +3414,6 @@ export function ComposerModelPicker({
                   </button>
                 </Hint>
               ) : source && viewed !== DEVICE_TAB ? (
-                // On Device puts its sort here instead.
                 <Hint label="Model hub">
                   <button
                     type="button"
@@ -3525,7 +3498,7 @@ export function ComposerModelPicker({
                     ? eject(chosen)
                     : source?.eject(checkpoint ?? undefined)
                 }
-                // The tab row's Eject pill, on a wash since this bar is already the muted tone.
+                  // A wash, since this bar is already the muted tone.
                 className="flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
@@ -3555,7 +3528,6 @@ export function ComposerModelPicker({
           <div
             className={cn(
               "flex shrink-0 flex-col gap-0.5",
-              // Collapsed, the chosen-model bar already sets the controls off.
               isExpanded ? "border-t border-border pt-1" : "pt-1",
             )}
           >

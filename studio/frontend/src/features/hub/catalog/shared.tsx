@@ -143,7 +143,6 @@ export function AccessGlyphs({
   );
 }
 
-/** The pill's icon in its colour, with no chip, for a line of text that names the capability. */
 export function CapabilityGlyph({
   capability,
   className,

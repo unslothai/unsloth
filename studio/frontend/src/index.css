@@ -3829,7 +3829,7 @@ html[data-chat-font] .aui-root {
 	.unsloth-plus-menu.composer-model-picker[data-slot] {
 		padding-top: calc(6px * var(--ui-space-scale, 1));
 	}
-	/* With nothing under it, the list runs to the card's edge and fades there, as in the header picker. */
+	/* With nothing under it, the list runs to the card's edge. */
 	.unsloth-plus-menu.composer-model-picker[data-slot][data-list-last] {
 		padding-bottom: 0;
 	}

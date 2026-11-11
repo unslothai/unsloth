@@ -4551,7 +4551,7 @@ export function ChatPage({
       eject: handleEject,
       ejectAll: () => void ejectAllModels(),
       externalConnections,
-      // The header picker is gone from chat; this chip is the one the shortcut, tour and Hub open.
+      // Chat has no header picker: the shortcut, tour and Hub's Run open this one.
       open: active && (modelSelectorOpen || modelConfigRequest !== null),
       onOpenChange: handleModelSelectorOpenChange,
       configRequest: modelConfigRequest,

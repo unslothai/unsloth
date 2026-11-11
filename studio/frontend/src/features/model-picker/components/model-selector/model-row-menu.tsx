@@ -102,7 +102,6 @@ export function ModelRowMenu({
   del,
   details,
 }: {
-  /** A read-only block about the model, above the actions. */
   details?: ReactNode;
   ariaLabel: string;
   buttonClassName?: string;
