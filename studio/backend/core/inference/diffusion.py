@@ -6337,11 +6337,14 @@ class DiffusionBackend:
 
     @staticmethod
     def _h3_image_te_plan_files(
-        text_encoder_quant: Optional[str], hf_token: Optional[str]
+        text_encoder_quant: Optional[str],
+        hf_token: Optional[str],
+        failures_out: Optional[list] = None,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
         """The encoder a MiniMax-H3-Image load opens for this raw request: the hosted int8 file, or the H3 repo's bf16
-        ``text_encoder/``. Always keyed ``text_encoder``, so the image repo's bundled bf16 copy is never staged; an
-        unlistable source stages nothing and the load fetches it inline."""
+        ``text_encoder/``. Always keyed ``text_encoder``, so the image repo's bundled bf16 copy is never staged. A
+        source that cannot be listed, or lists no encoder, stages nothing and is reported in ``failures_out``: the
+        plan is then partial, and the load fetches the encoder inline."""
         from .diffusion_minimax_h3_image import H3_IMAGE_TEXT_ENCODER_REPO, h3_image_te_scheme
         from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
 
@@ -6354,6 +6357,7 @@ class DiffusionBackend:
         )
         try:
             from huggingface_hub import HfApi
+
             info = hub_reachability.model_info(
                 HfApi(token = hf_token or None),
                 repo,
@@ -6365,15 +6369,25 @@ class DiffusionBackend:
                 for s in getattr(info, "siblings", None) or ()
                 if wanted(s.rfilename) and getattr(s, "size", None) is not None
             ]
+            if not files:
+                raise FileNotFoundError(f"{repo} lists no MiniMax-H3-Image text encoder")
         except Exception as exc:  # noqa: BLE001 -- unlisted: the load fetches the encoder inline
             logger.warning("diffusion.h3_image_te_plan_failed: %s", exc)
+            if failures_out is not None:
+                failures_out.append(exc)
             files = []
         return {"text_encoder": (repo, files)}
 
     def _h3_image_planned_dit_scheme(
-        self, fam: Any, transformer_quant: Optional[str], gpu_ordinal: Optional[int]
+        self,
+        fam: Any,
+        transformer_quant: Optional[str],
+        gpu_ordinal: Optional[int],
+        failures_out: Optional[list] = None,
     ) -> Optional[str]:
-        """The hosted DiT scheme a MiniMax-H3-Image load would take on the selected card, or None for the bf16 shards."""
+        """The hosted DiT scheme a MiniMax-H3-Image load would take on the selected card, or None for the bf16 shards.
+        A scheme it cannot settle stages the bf16 shards and is reported in ``failures_out``, since the load may pick
+        the hosted file instead."""
         try:
             from .diffusion_minimax_h3_image import QUANT_SCHEMES, planned_dit_scheme
             with diffusion_device_scope(gpu_ordinal):
@@ -6382,6 +6396,8 @@ class DiffusionBackend:
             return scheme if scheme in QUANT_SCHEMES else None
         except Exception as exc:  # noqa: BLE001 -- unplannable: stage the bf16 shards, as before
             logger.warning("diffusion.h3_image_dit_plan_failed: %s", exc)
+            if failures_out is not None:
+                failures_out.append(exc)
             return None
 
     @staticmethod
@@ -7294,8 +7310,10 @@ class DiffusionBackend:
             and getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME
             and not Path(repo_id).expanduser().exists()
         )
+        # Declared before the encoder and prequant lookups so a source either one cannot list marks the plan partial.
+        plan_failures: list = []
         te_files = (
-            self._h3_image_te_plan_files(text_encoder_quant, hf_token)
+            self._h3_image_te_plan_files(text_encoder_quant, hf_token, plan_failures)
             if h3_image
             else {
                 c: v
@@ -7321,7 +7339,10 @@ class DiffusionBackend:
         # Settled before the listing: only a checkpoint that resolves on the Hub may drop the released shards.
         pipeline_planned = (
             self._h3_image_planned_dit_scheme(
-                fam, load_kwargs.get("transformer_quant"), load_kwargs.get("gpu_ordinal")
+                fam,
+                load_kwargs.get("transformer_quant"),
+                load_kwargs.get("gpu_ordinal"),
+                plan_failures,
             )
             if h3_image and allow_device_probe
             else self._pipeline_planned_denoiser_scheme(
@@ -7342,8 +7363,6 @@ class DiffusionBackend:
             if allow_device_probe
             else None
         )
-        # Declared before the prequant lookup so a repo missing both artifacts marks the plan partial; the dense shards are already dropped.
-        plan_failures: list = []
         dit_prequant = (
             self._dit_prequant_plan_source(
                 fam,

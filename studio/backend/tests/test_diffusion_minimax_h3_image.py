@@ -1401,6 +1401,9 @@ def test_the_encoder_scheme_follows_the_raw_request(h3i, request_value, scheme):
 def test_explicit_dit_schemes_are_honored_or_refused(h3i, monkeypatch):
     import torch
 
+    from core.inference import diffusion_precision
+
+    monkeypatch.setattr(diffusion_precision, "torchao_quantize_importable", lambda: True)
     assert h3i.explicit_scheme_refusal("int8", "cpu") is None
     assert h3i.explicit_scheme_refusal("fp8", "cpu") is None
     assert "not nvfp4" in h3i.explicit_scheme_refusal("nvfp4", "cpu")
@@ -1437,8 +1440,11 @@ def test_the_preflight_passes_explicit_h3_schemes_without_a_compile(h3i, monkeyp
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.diffusion_families import detect_family_for_pick
 
+    from core.inference import diffusion_precision
+
     fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
     monkeypatch.setattr(dmod, "compile_eligible", lambda target, **kw: False)
+    monkeypatch.setattr(diffusion_precision, "torchao_quantize_importable", lambda: True)
     backend = dmod.DiffusionBackend()
     import dataclasses
 
@@ -1448,6 +1454,52 @@ def test_the_preflight_passes_explicit_h3_schemes_without_a_compile(h3i, monkeyp
     backend._assert_precision_for_target(fam, target, pinned = scheme, **kwargs)
     with pytest.raises(RuntimeError, match = "MiniMax-H3-Image runs int8 or fp8"):
         backend._assert_precision_for_target(fam, target, pinned = "mxfp8", **kwargs)
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_an_explicit_scheme_without_torchao_is_refused_not_run_as_bf16(h3i, monkeypatch, scheme):
+    """Without torchao, resolve_dit_scheme loads the bf16 DiT whatever was asked, so an explicit int8 / fp8 would
+    pass the preflight, stage the dense shards and run bf16. It is refused before the eviction instead."""
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_precision
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(diffusion_precision, "torchao_quantize_importable", lambda: False)
+    assert "torchao is not importable" in h3i.explicit_scheme_refusal(scheme, "cpu")
+    fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
+    target = dataclasses.replace(resolve_diffusion_device_target(), device = "cpu")
+    with pytest.raises(RuntimeError, match = "torchao is not importable"):
+        dmod.DiffusionBackend()._assert_precision_for_target(
+            fam,
+            target,
+            model_kind = "pipeline",
+            pinned = scheme,
+            te_mode = None,
+            memory_mode = None,
+            cpu_offload = False,
+        )
+
+
+def test_a_dit_scheme_the_plan_cannot_settle_marks_the_plan_partial(h3i, monkeypatch):
+    """The plan then stages the bf16 shards while the load may take the hosted file, so it reports the miss."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    def _broken(*a, **k):
+        raise RuntimeError("no device answer")
+
+    monkeypatch.setattr(h3i, "planned_dit_scheme", _broken)
+    fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
+    failures = []
+    assert dmod.DiffusionBackend()._h3_image_planned_dit_scheme(fam, None, None, failures) is None
+    assert [str(e) for e in failures] == ["no device answer"]
+    monkeypatch.setattr(h3i, "planned_dit_scheme", lambda *a, **k: "int8")
+    failures.clear()
+    assert dmod.DiffusionBackend()._h3_image_planned_dit_scheme(fam, None, None, failures) == "int8"
+    assert failures == []
 
 
 def test_the_request_ceiling_admits_every_family_side(h3i):

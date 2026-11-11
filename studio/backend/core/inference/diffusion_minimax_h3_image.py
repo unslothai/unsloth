@@ -1924,12 +1924,20 @@ def device_budgets(device: Any) -> tuple[Optional[float], Optional[float]]:
 
 def explicit_scheme_refusal(scheme: str, device: Any) -> Optional[str]:
     """Why an explicit DiT ``scheme`` cannot run as asked on ``device``, or None. ``resolve_dit_scheme`` would read an
-    unknown scheme as auto and an fp8 ask below SM 8.9 as int8; an explicit request is refused instead."""
+    unknown scheme as auto, an fp8 ask below SM 8.9 as int8 and any ask without torchao as bf16; an explicit request
+    is refused instead."""
     import torch
+
+    from .diffusion_precision import torchao_quantize_importable
 
     if scheme not in QUANT_SCHEMES:
         return (
             f"MiniMax-H3-Image runs {' or '.join(QUANT_SCHEMES)} transformer weights, not {scheme}"
+        )
+    if not torchao_quantize_importable():
+        return (
+            "torchao is not importable on this install, and MiniMax-H3-Image's int8 and fp8 weights "
+            "need it"
         )
     dev = torch.device(device)
     if scheme == "fp8" and dev.type == "cuda" and torch.cuda.is_available():

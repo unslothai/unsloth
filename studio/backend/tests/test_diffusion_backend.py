@@ -8623,12 +8623,21 @@ _H3_IMAGE_SIBLINGS = [
 _H3_TE_INT8 = "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
 
 
-@pytest.mark.parametrize("te_request", [None, "none"])
-def test_download_plan_for_minimax_h3_image_stages_the_encoder_its_loader_opens(
-    monkeypatch, tmp_path, te_request
-):
-    """The image repo bundles a bf16 text_encoder/ (66.7 GB) and a converted *_diffusers/ copy that its in-tree loader
-    never opens. The plan stages the hosted int8 encoder (or, asked for bf16, the H3 repo's) and never the bundle."""
+_H3_ENCODER_REPOS = {
+    "unsloth/MiniMax-H3-FP8": [
+        _FakeSibling(_H3_TE_INT8, 27 * GB),
+        _FakeSibling("other.gguf", GB),
+    ],
+    "MiniMaxAI/MiniMax-H3": [
+        _FakeSibling("text_encoder/config.json", 900),
+        _FakeSibling("text_encoder/model-00001-of-00002.safetensors", 33 * GB),
+        _FakeSibling("transformer/model.safetensors", 70 * GB),
+    ],
+}
+
+
+def _h3_image_download_plan(monkeypatch, tmp_path, encoder_repos, te_request):
+    """download_plan for MiniMax-H3-Image against canned listings and the release's own model_index.json."""
     index = tmp_path / "model_index.json"
     # The release's own index: it names the bundled encoder (pointing at the H3 repo) beside the four folders.
     index.write_text(
@@ -8652,30 +8661,26 @@ def test_download_plan_for_minimax_h3_image_stages_the_encoder_its_loader_opens(
         )
     )
     monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *a, **k: str(index))
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "MiniMaxAI/MiniMax-H3-Image": _H3_IMAGE_SIBLINGS,
-            "unsloth/MiniMax-H3-FP8": [
-                _FakeSibling(_H3_TE_INT8, 27 * GB),
-                _FakeSibling("other.gguf", GB),
-            ],
-            "MiniMaxAI/MiniMax-H3": [
-                _FakeSibling("text_encoder/config.json", 900),
-                _FakeSibling("text_encoder/model-00001-of-00002.safetensors", 33 * GB),
-                _FakeSibling("transformer/model.safetensors", 70 * GB),
-            ],
-        },
-    )
+    _fake_hf_api(monkeypatch, {"MiniMaxAI/MiniMax-H3-Image": _H3_IMAGE_SIBLINGS, **encoder_repos})
     monkeypatch.setattr(
         DiffusionBackend,
         "_h3_image_planned_dit_scheme",
         lambda self, *a, **k: None,
         raising = False,
     )
-    plan = DiffusionBackend().download_plan(
+    return DiffusionBackend().download_plan(
         "MiniMaxAI/MiniMax-H3-Image", model_kind = "pipeline", text_encoder_quant = te_request
     )
+
+
+@pytest.mark.parametrize("te_request", [None, "none"])
+def test_download_plan_for_minimax_h3_image_stages_the_encoder_its_loader_opens(
+    monkeypatch, tmp_path, te_request
+):
+    """The image repo bundles a bf16 text_encoder/ (66.7 GB) and a converted *_diffusers/ copy that its in-tree loader
+    never opens. The plan stages the hosted int8 encoder (or, asked for bf16, the H3 repo's) and never the bundle."""
+    plan = _h3_image_download_plan(monkeypatch, tmp_path, _H3_ENCODER_REPOS, te_request)
+    assert plan["plan_failed"] is False
     by_repo = {e["repo_id"]: e["files"] for e in plan["entries"]}
     image = by_repo["MiniMaxAI/MiniMax-H3-Image"]
     assert not [f for f in image if f.startswith("text_encoder/") and f.endswith(".safetensors")]
@@ -8690,6 +8695,26 @@ def test_download_plan_for_minimax_h3_image_stages_the_encoder_its_loader_opens(
             "text_encoder/config.json",
             "text_encoder/model-00001-of-00002.safetensors",
         ]
+
+
+@pytest.mark.parametrize(
+    "te_request, encoder_repos",
+    [
+        # The hosted repo answers but lists no int8 encoder.
+        (None, {"unsloth/MiniMax-H3-FP8": [_FakeSibling("other.gguf", GB)]}),
+        # The H3 repo cannot be listed at all (the fake raises for an unknown repo).
+        ("none", {}),
+    ],
+)
+def test_download_plan_for_minimax_h3_image_flags_an_encoder_it_could_not_list(
+    monkeypatch, tmp_path, te_request, encoder_repos
+):
+    """An encoder the plan could not find is not staged, so the plan is partial: plan_failed tells the caller, which
+    must not read "nothing missing" as the model being fully available."""
+    plan = _h3_image_download_plan(monkeypatch, tmp_path, encoder_repos, te_request)
+    assert plan["plan_failed"] is True
+    staged = {e["repo_id"] for e in plan["entries"]}
+    assert staged == {"MiniMaxAI/MiniMax-H3-Image"}
 
 
 def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):
