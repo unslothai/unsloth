@@ -16,6 +16,7 @@ import threading
 import time
 import weakref
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -46,6 +47,9 @@ _CONFIG_OVERRIDES: dict[str, Any] = {
     "auto_check_model_updates": False,
     "auto_update_models": False,
     "log_file": "disabled",
+    # backend_output() raises it over /internal/set, which saves it; a crash mid-load must not
+    # leave it there.
+    "log_level": "info",
     "host": "127.0.0.1",
     "max_loaded_models": 1,
 }
@@ -59,6 +63,15 @@ _PORT_TAKEN = re.compile(
     r"|(?:winerror|errno|error)\s*:?\s*10048\b",
     re.IGNORECASE,
 )
+
+
+# lemond's console format, "<date> <time> [Info] (Router) <message>". It relays a backend's own
+# stdout and stderr under the tag Process.
+# Matched from the start of the line: chat content can carry the same text further in.
+_LEMOND_LINE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\] \(([^)]*)\) ")
+# lemond's own line once /internal/set has taken effect.
+_BACK_AT_INFO = re.compile(r"Logging configuration updated \(level=info\b")
+_ANSI_COLOR = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class LemonadeUnavailable(RuntimeError):
@@ -108,6 +121,9 @@ class LemonadeServer:
         self._lines_seen = 0
         self._tail_lock = threading.Lock()
         self._windows: weakref.WeakSet[OutputWindow] = weakref.WeakSet()
+        self._load_window: Optional[OutputWindow] = None
+        # Set once a load is over, until lemond is seen back at info.
+        self._filter_until: Optional[float] = None
         self._drain_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         # stop() sets it without the lock, which start() holds while waiting for readiness.
@@ -171,6 +187,66 @@ class LemonadeServer:
             tail = list(self._tail)
             count = min(self._lines_seen - mark, lines)
         return tail[-count:] if count > 0 else []
+
+    @contextmanager
+    def backend_output(self, window: OutputWindow):
+        """Keep the backend's own output (FastFlowLM's reason for a failed load) while this is open.
+        lemond only relays it for a backend started at debug, where lemond also logs chat content,
+        and flm prints part of every prompt, so both stay off outside a load, and a load that
+        overlaps a chat (``window`` is shared) goes without."""
+        if window.shared:
+            yield
+            return
+        # The window goes up before debug and comes down after it: a chat that opens one while
+        # either level change is in flight must already be filtered.
+        self._filter_until = None
+        self._load_window = window
+        self._set_log_level("debug")
+        try:
+            yield
+        finally:
+            # A lemond that died prints no chat and its pipe may still hold flm's reason, so the
+            # capture stays up until the next start.
+            if self.is_alive():
+                # No deadline until the request is back: it can outlast one, with lemond at debug.
+                self._filter_until = float("inf")
+                self._load_window = None
+                if self._set_log_level("info") or not self.is_alive():
+                    self._filter_until = time.monotonic() + 5.0
+
+    def _keeps(self, line: str) -> bool:
+        window = self._load_window
+        if window is not None and not window.shared:
+            return True
+        match = _LEMOND_LINE.match(line)
+        severity, tag = match.groups() if match else ("", "")
+        own = tag != "Process" and severity not in ("Trace", "Debug")
+        until = self._filter_until
+        if window is None and until is None:
+            return own
+        # A chat joined the load, or the load is over and lemond may still be at debug: only
+        # lemond's own lines at info and up, since debug content can run onto untagged lines.
+        back = bool(match) and own and _BACK_AT_INFO.search(line)
+        if until is not None and (back or time.monotonic() > until):
+            self._filter_until = None
+        return bool(match) and own
+
+    def _set_log_level(self, level: str) -> bool:
+        if not self.is_alive():
+            return False
+        try:
+            response = self._client.post(
+                f"{self.base_url}/internal/set",
+                json = {"log_level": level},
+                headers = self.headers(),
+                timeout = 10.0,
+            )
+            failure = None if response.status_code == 200 else f"HTTP {response.status_code}"
+        except Exception as exc:  # noqa: BLE001 -- the load goes ahead either way
+            failure = str(exc)
+        if failure:
+            logger.warning("Could not set Lemonade's log level to %s: %s", level, failure)
+        return failure is None
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -250,6 +326,8 @@ class LemonadeServer:
         logger.info("Starting Lemonade: %s", " ".join(cmd))
         with self._tail_lock:
             self._tail.clear()
+        # A new lemond starts at info.
+        self._load_window = self._filter_until = None
         log_file = self._open_log_file(port, cmd)
 
         def _spawn() -> subprocess.Popen:
@@ -343,8 +421,8 @@ class LemonadeServer:
         try:
             assert proc.stdout is not None
             for raw in proc.stdout:
-                line = raw.rstrip()
-                if line:
+                line = _ANSI_COLOR.sub("", raw).rstrip()
+                if line and self._keeps(line):
                     with self._tail_lock:
                         self._tail.append(line)
                         self._lines_seen += 1

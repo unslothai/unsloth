@@ -107,6 +107,11 @@ class _Server:
     def open_window(self):
         return None
 
+    def backend_output(self, window):
+        import contextlib
+
+        return contextlib.nullcontext()
+
     def output_mark(self):
         return 0
 

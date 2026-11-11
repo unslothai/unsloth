@@ -285,3 +285,305 @@ def test_a_window_alone_still_gets_its_reason(tmp_path, log):
     _prints(server, _line("Error", "WrappedServer", "FastFlowLM process has terminated"))
     assert "terminated" in nb._explain(server, window, "boom")
     assert log.fields["overlapped_another_request"] is False
+
+
+def _flm(severity: str, text: str) -> str:
+    # How lemond relays a line flm printed.
+    return _line(severity, "Process", text)
+
+
+_GENERIC = f"Failed to load {_MODEL} model!"
+_TERMINATED = _line("Error", "WrappedServer", "FastFlowLM process has terminated")
+
+
+@pytest.mark.parametrize(
+    "printed, summary, raw, advice",
+    [
+        (
+            [
+                _flm(
+                    "Error",
+                    "[ERROR]  Failed to load model: Could not create allocation for hw context "
+                    "instruction buffers.",
+                ),
+                _TERMINATED,
+            ],
+            _GENERIC,
+            "Could not create allocation for hw context instruction buffers.",
+            "ran out of memory",
+        ),
+        (
+            [_flm("Error", "Error: Failed to allocate flm_rt::ext::bo: bad allocation")],
+            _GENERIC,
+            "Failed to allocate flm_rt::ext::bo: bad allocation",
+            "ran out of memory",
+        ),
+        (
+            [
+                _flm(
+                    "Error",
+                    "\x1b[31m[ERROR]  Failed to load model: DRM_IOCTL_AMDXDNA_CREATE_HWCTX IOCTL "
+                    "failed\x1b[0m",
+                )
+            ],
+            _GENERIC,
+            "[ERROR]  Failed to load model: DRM_IOCTL_AMDXDNA_CREATE_HWCTX IOCTL failed)",
+            "hardware context",
+        ),
+        (
+            [
+                _flm("Info", "[WARNING]  Local model qwen3.6-moe:35b-a3b version: 0.9.45 < 1.0.2"),
+                _TERMINATED,
+            ],
+            _GENERIC,
+            "FastFlowLM process has terminated",
+            "Delete the model and download it again",
+        ),
+        (
+            [],
+            "FLM NPU validation failed: flm validate failed with exit code -1058471934",
+            "exit code -1058471934",
+            "Smart App Control",
+        ),
+    ],
+)
+def test_a_known_fastflowlm_failure_gets_advice_after_the_raw_line(
+    tmp_path, monkeypatch, log, printed, summary, raw, advice
+):
+    server = _server(tmp_path)
+    backend = _backend(
+        tmp_path,
+        monkeypatch,
+        server,
+        lambda path: (printed, httpx.Response(500, json = {"error": {"message": summary}})),
+    )
+    with pytest.raises(nb.NpuError) as raised:
+        backend.load(_MODEL, 32768)
+
+    message = str(raised.value)
+    assert raw in message
+    assert advice in message
+    assert message.index(raw) < message.index(advice)
+    assert "\x1b" not in message
+
+
+def test_an_unknown_failure_gets_no_advice(tmp_path, monkeypatch, log):
+    server = _server(tmp_path)
+    backend = _backend(
+        tmp_path,
+        monkeypatch,
+        server,
+        lambda path: (
+            [_flm("Error", "[ERROR]  Failed to load model: something new"), _TERMINATED],
+            httpx.Response(500, json = {"error": {"message": _GENERIC}}),
+        ),
+    )
+    with pytest.raises(nb.NpuError) as raised:
+        backend.load(_MODEL, 32768)
+
+    assert str(raised.value) == (
+        f"Loading {_MODEL} failed: {_GENERIC} ([ERROR]  Failed to load model: something new)"
+    )
+
+
+def test_flm_output_is_kept_only_while_a_load_is_open(tmp_path, monkeypatch):
+    server = LemonadeServer(
+        tmp_path / "lemond",
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+        log_dir = tmp_path / "logs" / "lemonade",
+    )
+    handle = server._open_log_file(4242)
+    _level_calls(server, monkeypatch)
+    # flm prints part of every chat request; lemond relays it for a backend started at debug.
+    prompt = _flm("Info", '        "content": "my secret ...lan for today"')
+    loading = _flm("Info", "[FLM]  Loading model: Qwen3.6-35B-A3B-NPU2")
+    own = _line("Info", "Router", "Model loaded")
+
+    with server.backend_output(server.open_window()):
+        server._drain(SimpleNamespace(stdout = [loading + "\n"]), None)
+    server._drain(SimpleNamespace(stdout = [prompt + "\n", own + "\n"]), handle)
+
+    assert server.output_since(0, settle = 0) == [loading, own]
+    assert "my secret" not in server.log_path.read_text(encoding = "utf-8")
+
+
+def test_lemond_is_at_debug_for_the_load_and_back_at_info_after(tmp_path, monkeypatch, log):
+    server = _server(tmp_path)
+    server.port = 4242
+    calls: list[str] = []
+
+    def post(url, *, json, **kwargs):
+        assert url == "http://127.0.0.1:4242/internal/set"
+        calls.append(json["log_level"])
+        return httpx.Response(200, json = {"status": "success"})
+
+    def answer(path):
+        calls.append(path)
+        return ([], httpx.Response(500, json = {"error": {"message": "boom"}}))
+
+    monkeypatch.setattr(server, "is_alive", lambda: True)
+    monkeypatch.setattr(server, "_client", SimpleNamespace(post = post))
+    backend = _backend(tmp_path, monkeypatch, server, answer)
+    with pytest.raises(nb.NpuError):
+        backend.load(_MODEL, 32768)
+
+    assert calls == ["debug", "/v1/load", "info"]
+
+
+def test_a_restart_never_inherits_debug_from_the_saved_config(tmp_path):
+    import json
+
+    server = _server(tmp_path)
+    server.config_dir.mkdir(parents = True)
+    # /internal/set saves what it is given, so a crash mid-load leaves this behind.
+    (server.config_dir / "config.json").write_text('{"log_level": "debug"}', encoding = "utf-8")
+    server._write_config()
+    saved = json.loads((server.config_dir / "config.json").read_text(encoding = "utf-8"))
+    assert saved["log_level"] == "info"
+
+
+def _level_calls(server, monkeypatch) -> list[str]:
+    calls: list[str] = []
+
+    def post(url, *, json, **kwargs):
+        calls.append(json["log_level"])
+        return httpx.Response(200, json = {"status": "success"})
+
+    server.port = 4242
+    monkeypatch.setattr(server, "is_alive", lambda: True)
+    monkeypatch.setattr(server, "_client", SimpleNamespace(post = post))
+    return calls
+
+
+def test_a_load_that_starts_during_a_chat_leaves_lemond_at_info(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    calls = _level_calls(server, monkeypatch)
+    chat = server.open_window()
+    prompt = _flm("Info", '        "content": "my secret ...lan for today"')
+
+    with server.backend_output(server.open_window()):
+        _prints(server, prompt)
+
+    assert chat.shared
+    assert calls == []
+    assert server.output_since(0, settle = 0) == []
+
+
+def test_a_chat_that_joins_a_load_keeps_its_content_out_of_the_log(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    calls = _level_calls(server, monkeypatch)
+    loading = _flm("Info", "[FLM]  Loading model: Qwen3.6-35B-A3B-NPU2")
+    failed = _line("Error", "Router", "Backend load failed: FastFlowLM failed to start")
+
+    with server.backend_output(server.open_window()):
+        _prints(server, loading)
+        chat = server.open_window()
+        _prints(
+            server,
+            _flm("Info", '        "content": "my secret ...lan for today"'),
+            _line("Debug", "Server", "Message content: my secret plan for today"),
+            "and its second line",
+            failed,
+        )
+
+    assert chat.shared
+    assert calls == ["debug", "info"]
+    assert server.output_since(0, settle = 0) == [loading, failed]
+
+
+def test_content_is_filtered_while_either_level_change_is_in_flight(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    content = _line("Debug", "Server", "Message content: my secret plan for today")
+    chats = []
+
+    def post(url, *, json, **kwargs):
+        # A chat opens its window, and lemond prints at debug, before the call returns.
+        if json["log_level"] == "debug":
+            chats.append(server.open_window())
+        _prints(server, content, "and its second line")
+        return httpx.Response(200, json = {"status": "success"})
+
+    server.port = 4242
+    monkeypatch.setattr(server, "is_alive", lambda: True)
+    monkeypatch.setattr(server, "_client", SimpleNamespace(post = post))
+    with server.backend_output(server.open_window()):
+        pass
+    # Still drained after the load, before lemond says it is back at info.
+    _prints(server, content, "and its second line")
+    assert server.output_since(0, settle = 0) == []
+
+    back = _line("Info", "Server", "Logging configuration updated (level=info, file=disabled)")
+    _prints(server, back, "a line with no tag", content)
+    assert server.output_since(0, settle = 0) == [back, "a line with no tag"]
+
+
+def test_flm_output_drained_after_lemond_died_mid_load_is_kept(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    alive = [True]
+    _level_calls(server, monkeypatch)
+    monkeypatch.setattr(server, "is_alive", lambda: alive[0])
+    reason = _flm("Error", "[ERROR]  Failed to load model: bad allocation")
+
+    with server.backend_output(server.open_window()):
+        alive[0] = False
+    _prints(server, reason)
+
+    assert server.output_since(0, settle = 0) == [reason]
+
+
+def test_a_slow_or_failed_switch_back_to_info_never_lets_the_filter_lapse(tmp_path, monkeypatch):
+    from core.inference import lemonade_server as ls
+
+    server = _server(tmp_path)
+    clock = [100.0]
+    monkeypatch.setattr(ls.time, "monotonic", lambda: clock[0])
+    content = _line("Debug", "Server", "Message content: my secret plan for today")
+
+    def post(url, *, json, **kwargs):
+        if json["log_level"] == "info":
+            # Longer than the deadline a finished switch gets, and lemond is still at debug.
+            clock[0] += 9.0
+            _prints(server, content, "and its second line")
+            return httpx.Response(500)
+        return httpx.Response(200, json = {"status": "success"})
+
+    server.port = 4242
+    monkeypatch.setattr(server, "is_alive", lambda: True)
+    monkeypatch.setattr(server, "_client", SimpleNamespace(post = post))
+    with server.backend_output(server.open_window()):
+        pass
+    clock[0] += 60.0
+    _prints(server, content, "and its second line")
+
+    assert server.output_since(0, settle = 0) == []
+
+
+def test_chat_content_that_looks_like_a_lemonade_line_is_not_kept(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    _level_calls(server, monkeypatch)
+
+    with server.backend_output(server.open_window()):
+        chat = server.open_window()
+        _prints(
+            server,
+            _line("Debug", "Server", "Message content: my secret plan for today"),
+            "then [Info] (Router) the rest of my secret plan",
+        )
+
+    assert chat.shared
+    assert server.output_since(0, settle = 0) == []
+
+
+def test_only_lemonds_own_line_ends_the_filter_after_a_load(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    _level_calls(server, monkeypatch)
+    with server.backend_output(server.open_window()):
+        pass
+    _prints(
+        server,
+        _line("Debug", "Server", "Message content: Logging configuration updated (level=info)"),
+        "the rest of my secret plan",
+    )
+    assert server.output_since(0, settle = 0) == []
