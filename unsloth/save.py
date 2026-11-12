@@ -5899,13 +5899,18 @@ def unsloth_push_to_hub_gguf(
         datasets_yaml = "".join(f"- {json.dumps(d)}\n" for d in datasets or [])
         if datasets_yaml:
             datasets_yaml = "datasets:\n" + datasets_yaml
+        if isinstance(tags, str):
+            tags = [tags]
+        # HfApi has no add_tags: tags reach the Hub only through the card.
+        card_tags = ["gguf", "llama.cpp", "llama-cpp", "unsloth"]
+        if is_vlm:
+            card_tags.append("vision-language-model")
+        tags_yaml = "".join(
+            f"- {json.dumps(t)}\n" for t in dict.fromkeys(card_tags + list(tags or []))
+        )
         readme_content = f"""---
 tags:
-- gguf
-- llama.cpp
-- unsloth
-{"- vision-language-model" if is_vlm else ""}
-{datasets_yaml}---
+{tags_yaml}{datasets_yaml}---
 
 # {repo_id.split("/")[-1]} : GGUF
 
@@ -5975,21 +5980,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                     else f"/tree/{quote(revision, safe = '')}"
                 )
         print(f"Unsloth: Successfully uploaded GGUF to {destination}")
-
-        if tags is None:
-            tags = []
-        tags.extend(["gguf", "llama-cpp", "unsloth"])
-        if is_vlm:
-            tags.append("vision-language-model")
-
-        try:
-            api.add_tags(
-                repo_id = full_repo_id,
-                tags = tags,
-                repo_type = "model",
-            )
-        except:
-            pass
 
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e

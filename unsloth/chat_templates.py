@@ -778,7 +778,7 @@ qwen25_template = \
     {%- if messages[0][\'role\'] == \'system\' %}
         {{- messages[0][\'content\'] }}
     {%- else %}
-        {{- \'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.\' }}
+        {{- \'{system_message}\' }}
     {%- endif %}
     {{- "\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>" }}
     {%- for tool in tools %}
@@ -962,7 +962,7 @@ qwen3_template = \
 {%- for forward_message in messages %}
     {%- set index = (messages|length - 1) - loop.index0 %}
     {%- set message = messages[index] %}
-    {%- set current_content = message.content if message.content is not none else '' %}
+    {%- set current_content = message.content if message.content is string else '' %}
     {%- set tool_start = '<tool_response>' %}
     {%- set tool_start_length = tool_start|length %}
     {%- set start_of_message = current_content[:tool_start_length] %}
@@ -982,12 +982,12 @@ qwen3_template = \
     {%- if (message.role == "user") or (message.role == "system" and not loop.first) %}
         {{- '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>' + '\n' }}
     {%- elif message.role == "assistant" %}
-        {%- set content = message.content %}
+        {%- set content = message.content if message.content is string else '' %}
         {%- set reasoning_content = '' %}
         {%- if message.reasoning_content is defined and message.reasoning_content is not none %}
             {%- set reasoning_content = message.reasoning_content %}
         {%- else %}
-            {%- if '</think>' in message.content %}
+            {%- if '</think>' in content %}
                 {%- set content = (message.content.split('</think>')|last).lstrip('\n') %}
                 {%- set reasoning_content = (message.content.split('</think>')|first).rstrip('\n') %}
                 {%- set reasoning_content = (reasoning_content.split('<think>')|last).lstrip('\n') %}

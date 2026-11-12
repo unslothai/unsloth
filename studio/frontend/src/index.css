@@ -4529,6 +4529,17 @@ html[data-chat-font] .aui-root {
 		margin-top: 0;
 	}
 
+	/* thread.tsx PartsWithRoundTail is display:contents: the two rules above and the trailing reset, one level down. */
+	:where(.aui-assistant-message-content > [data-slot="round-tail"] > *) {
+		margin-top: calc(1rem * var(--ui-space-scale, 1));
+	}
+	:where(.aui-assistant-message-content > .h-0 + [data-slot="round-tail"] > *) {
+		margin-top: 0;
+	}
+	.aui-assistant-message-content > [data-slot="round-tail"]:last-child > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child {
+		margin-bottom: 0 !important;
+	}
+
 	/* Margin collapsing keeps the gap before a following block, so this only affects a trailing code
 	   block, matching a text-trailing message. */
 	.aui-assistant-message-content [data-streamdown="code-block"] {
@@ -6486,7 +6497,8 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
 }
 .wallpaper-preview-prose { background: var(--background); }
 
-.chat-wallpaper::after {
+/* Plain glass already uses the page colour; only image wallpapers need the header contrast fade. */
+.chat-wallpaper:not([data-glass-backdrop])::after {
   content: "";
   position: absolute;
   inset: 0 0 auto;
@@ -7126,6 +7138,10 @@ html[data-glass="macos"] body {
 }
 html[data-glass="macos"] :is([data-slot="sidebar-inset"], [data-slot="window-titlebar"]) {
   background-color: color-mix(in srgb, var(--background) 52%, transparent);
+}
+/* In fullscreen the revealed titlebar covers page controls, so it needs an opaque surface. */
+html [data-slot="window-titlebar"][data-fullscreen] {
+  background: var(--sidebar-base);
 }
 html[data-glass="macos"] [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
   background: color-mix(in srgb, var(--sidebar) min(96%, calc(var(--glass-tint) * var(--glass-opacity, 1))), transparent);

@@ -3762,6 +3762,7 @@ from core.inference.sse_control_frames import (
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
     ToolLoopRun,
+    _delta_text,
     stream_with_studio_tools,
 )
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -6004,6 +6005,8 @@ def _roster_scopes(rag_scope: dict) -> list[str]:
     return scopes
 
 
+# Runs per document, 3x per row, every RAG turn. typed: 1 and 1.0 hash alike but str() differently.
+@functools.lru_cache(maxsize = 65536, typed = True)
 def _roster_name(raw: object) -> str:
     """Linked-folder names are raw disk paths; newlines, quotes and direction overrides are neutralized."""
     name = _re.sub(r"\s+", " ", str(raw or "").translate(_ROSTER_STRIP)).strip()
@@ -7568,7 +7571,19 @@ def _monitor_openai_chunk(
             choice_index = idx
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
-        if isinstance(delta, dict) and delta.get("reasoning_content"):
+        raw_content = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(delta, dict) and (
+            delta.get("reasoning_content")
+            or (
+                isinstance(raw_content, list)
+                and any(
+                    isinstance(part, dict)
+                    and part.get("type") == "thinking"
+                    and _delta_text(part.get("thinking"))
+                    for part in raw_content
+                )
+            )
+        ):
             api_monitor.mark_first_token(monitor_id)
 
         streamed_tool_delta = False
@@ -7584,7 +7599,7 @@ def _monitor_openai_chunk(
                     choice_index,
                     delta.get("function_call"),
                 )
-        content = delta.get("content") if isinstance(delta, dict) else None
+        content = _delta_text(raw_content)
         if content:
             if streaming:
                 _flush_monitor_stream_tool_calls(
@@ -7684,7 +7699,10 @@ def _monitor_openai_sse_data(
         if error_message:
             api_monitor.fail(monitor_id, error_message)
             return "error"
-        _monitor_openai_chunk(monitor_id, data, context_length, streaming = True)
+        try:
+            _monitor_openai_chunk(monitor_id, data, context_length, streaming = True)
+        except Exception as exc:
+            logger.warning("api_monitor.chunk_failed", error = str(exc))
     return None
 
 
@@ -29667,6 +29685,27 @@ async def _proxy_to_external_provider(
     _supports_vision = (
         managed.supports_vision if managed is not None else _pinfo.get("supports_vision", False)
     )
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        api_type = api_type,
+        **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
+        **({"extra_headers": extra_headers} if extra_headers else {}),
+        **({"managed_loopback": True} if managed is not None else {}),
+    )
+    # Metadata preflights (served context window, template) run before streaming starts.
+    if extra_headers:
+        client.set_header_context(payload.thread_id, model)
+    _takes_tool_images = _external_takes_mcp_images(provider_type, _supports_vision, model, _pinfo)
+    if (
+        _takes_tool_images
+        and provider_type in ("ollama", "llama_cpp")
+        and (studio_tool_loop or _messages_mention_mcp_images(payload.messages))
+    ):
+        # An unread flag keeps the image: a vision model must not lose it to a silent server.
+        _takes_tool_images = await client.served_model_reads_images(model) is not False
     _external_promoted_parts: list = []
     chat_messages = await _build_external_messages_async(
         payload.messages,
@@ -29676,9 +29715,7 @@ async def _proxy_to_external_provider(
         base_url = base_url,
         api_type = api_type,
         promoted_out = _external_promoted_parts,
-        promote_mcp_images = _external_takes_mcp_images(
-            provider_type, _supports_vision, model, _pinfo
-        ),
+        promote_mcp_images = _takes_tool_images,
         model = model,
         preserve_thinking = payload.preserve_thinking,
     )
@@ -29696,19 +29733,6 @@ async def _proxy_to_external_provider(
             subject = current_subject,
         )
 
-    client = await asyncio.to_thread(
-        ExternalProviderClient,
-        provider_type = provider_type,
-        base_url = base_url,
-        api_key = api_key,
-        api_type = api_type,
-        **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
-        **({"extra_headers": extra_headers} if extra_headers else {}),
-        **({"managed_loopback": True} if managed is not None else {}),
-    )
-    # Metadata preflights (served context window, template) run before streaming starts.
-    if extra_headers:
-        client.set_header_context(payload.thread_id, model)
     _non_stream_custom_responses = (
         provider_type == "custom" and api_type == "responses" and payload.stream is False
     )
@@ -29729,9 +29753,7 @@ async def _proxy_to_external_provider(
     if studio_tool_loop:
         external_studio_tools = await _select_request_tools(
             payload,
-            supports_vision = _external_takes_mcp_images(
-                provider_type, _supports_vision, model, _pinfo
-            ),
+            supports_vision = _takes_tool_images,
             tools_on = _effective_enable_tools(payload) is True,
             mcp_allowed = bool(payload.mcp_enabled),
             ui_events = _ui_events,
@@ -29813,6 +29835,11 @@ async def _proxy_to_external_provider(
                     ),
                 }
             )
+
+    async def _tool_result_window() -> Optional[int]:
+        served = await client.served_context_window(model)
+        return min(served, payload.context_window or served) if served else None
+
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
     _external_context_fitter = None
@@ -29937,10 +29964,10 @@ async def _proxy_to_external_provider(
                     model = model,
                     tool_choice = payload.tool_choice,
                     continue_final_message = _continue_final_message(payload),
-                    supports_vision = _external_takes_mcp_images(
-                        provider_type, _supports_vision, model, _pinfo
-                    ),
+                    supports_vision = _takes_tool_images,
                     promoted_image_parts = tuple(_external_promoted_parts),
+                    served_window = _tool_result_window if managed is None else None,
+                    max_tokens = _external_max_tokens,
                 ),
                 policy = ToolLoopPolicy(
                     tools = external_studio_tools,
