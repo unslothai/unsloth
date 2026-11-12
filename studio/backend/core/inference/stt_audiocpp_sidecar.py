@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import subprocess
 import tempfile
 import threading
@@ -94,6 +95,44 @@ _TIMESTAMP_OPTIONS = {
     "audio_chunk_mode": "fixed",
     "qwen3_asr.preserve_punctuation": "true",
 }
+
+# MOSS-Transcribe-Diarize fails at max_tokens (no partial text) and defaults to the checkpoint's 5120,
+# which a ~14 minute conversation outruns (~6.3 tokens/s measured on dense two-speaker speech).
+# audio.cpp sizes the KV cache to prompt + max_tokens and refuses a total past the 131,072-token
+# context; the prompt is 12.5 audio tokens/s plus a time marker of at most 5 digits every 5 s.
+_MOSS_FAMILY = "moss_transcribe_diarize"
+_MOSS_DEFAULT_MAX_TOKENS = 5120
+_MOSS_TOKENS_PER_SECOND = 12
+_MOSS_CONTEXT_TOKENS = 131_072
+_MOSS_PROMPT_TOKENS_PER_SECOND = 13.5
+_MOSS_PROMPT_OVERHEAD_TOKENS = 512
+
+
+def _moss_max_tokens(duration: Optional[float]) -> Optional[int]:
+    """The output budget for a ``duration`` s clip, or None to keep the runtime's default."""
+    if not duration or duration <= 0:
+        return None
+    budget = max(_MOSS_DEFAULT_MAX_TOKENS, math.ceil(duration * _MOSS_TOKENS_PER_SECOND))
+    room = (
+        _MOSS_CONTEXT_TOKENS
+        - math.ceil(duration * _MOSS_PROMPT_TOKENS_PER_SECOND)
+        - _MOSS_PROMPT_OVERHEAD_TOKENS
+    )
+    budget = min(budget, room)
+    # No room left: the runtime's own "exceeds context" error says why.
+    if budget <= 0 or budget == _MOSS_DEFAULT_MAX_TOKENS:
+        return None
+    return budget
+
+
+def _request_options(entry: AudioCppModel, aligned: bool, duration: Optional[float]) -> dict:
+    options = dict(_TIMESTAMP_OPTIONS) if aligned else {}
+    keys = entry.request_keys
+    if entry.family == _MOSS_FAMILY and (keys is None or "max_tokens" in keys):
+        max_tokens = _moss_max_tokens(duration)
+        if max_tokens is not None:
+            options["max_tokens"] = max_tokens
+    return options
 
 # model_specs/nemotron_asr.json "languages"; the prompt dictionary also keys en/es/fr/pt/no.
 _NEMOTRON_ASR_LOCALES = (
@@ -1044,7 +1083,7 @@ class AudioCppSttSidecar:
                     path,
                     sent,
                     cancel_event,
-                    dict(_TIMESTAMP_OPTIONS) if aligned else {},
+                    _request_options(entry, aligned, duration),
                     timeout = _transcribe_timeout(duration),
                 )
                 if cancel_event is not None and cancel_event.is_set():
