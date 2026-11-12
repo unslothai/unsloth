@@ -24,7 +24,7 @@ import {
 } from "./monitor-memory";
 import { inferenceGpuDisjoint, poolSplit } from "./monitor-share";
 import type { LoadedModelEntry } from "@/features/loaded-models";
-import { useNpuStatus } from "@/features/npu/use-npu-status";
+import { useNpuStatus } from "@/features/npu";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
