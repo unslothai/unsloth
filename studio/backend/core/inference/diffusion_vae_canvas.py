@@ -527,9 +527,18 @@ def _stats(vae: Any) -> dict:
     return vae.__dict__.setdefault("_unsloth_canvas_stats", {})
 
 
+def _global_graphs_off() -> bool:
+    from .diffusion_cuda_graph import cuda_graph_disabled
+    return cuda_graph_disabled()
+
+
 def _graph_arms(vae: Any, device: Any) -> tuple:
+    from .diffusion_cuda_graph import cuda_graph_disabled
+
     forced = tile_graphs_setting()
     if forced == 0 or device.type != "cuda" or not vae.__dict__.get("_unsloth_canvas_graphs"):
+        return ()
+    if cuda_graph_disabled():  # the global CUDA graph kill switches cover tile graphs too
         return ()
     if forced is not None:
         return (1,) if _is_rocm() else (forced,)
@@ -819,7 +828,7 @@ def install(
             levers.append(LEVER_CANVAS)
         if speed and cuda and tile_batch_setting() != 1:
             levers.append(LEVER_TILE_BATCH)
-        if vae._unsloth_canvas_graphs and tile_graphs_setting() != 0:
+        if vae._unsloth_canvas_graphs and tile_graphs_setting() != 0 and not _global_graphs_off():
             levers.append(LEVER_TILE_GRAPHS)
         want_half = half and speed and cuda and half_enabled() and half_decoder_ok(vae)
         if want_half and not vae.__dict__.get("_unsloth_canvas_half"):

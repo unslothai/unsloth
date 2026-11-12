@@ -421,6 +421,22 @@ def test_graph_arms_off_cpu_and_by_switch(monkeypatch):
     assert C._graph_arms(vae, cuda) == (3,)
 
 
+@pytest.mark.parametrize(
+    "env, value", [("UNSLOTH_DIFFUSION_CUDA_GRAPHS", "0"), ("UNSLOTH_DISABLE_CUDA_GRAPH", "1")]
+)
+def test_global_cuda_graph_kill_switches_turn_tile_graphs_off(monkeypatch, env, value):
+    vae = _tiny_image_vae()
+    vae._unsloth_canvas_graphs = True
+    monkeypatch.setattr(C, "_is_rocm", lambda: False)
+    monkeypatch.delenv(C.TILE_GRAPHS_ENV, raising = False)
+    cuda = torch.device("cuda")
+    assert C._graph_arms(vae, cuda) == C.GRAPH_REPLICAS
+    monkeypatch.setenv(env, value)
+    assert C._graph_arms(vae, cuda) == ()
+    monkeypatch.setenv(C.TILE_GRAPHS_ENV, "2")
+    assert C._graph_arms(vae, cuda) == (), "the global switch wins over a forced tile setting"
+
+
 # ---- H3 video: the clip loop composites into the canvas ---------------------------------------------------------
 
 
