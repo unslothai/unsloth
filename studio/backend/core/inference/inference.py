@@ -3779,13 +3779,8 @@ class InferenceBackend:
                     continue
 
                 if role == "user":
-                    import re
-                    clean_content = re.sub(r"<[^>]+>", "", content).strip()
-                    if clean_content:
-                        chat_messages.append(
-                            named_turn({"role": role, "content": clean_content}, msg)
-                        )
-                        last_role = role
+                    chat_messages.append(named_turn({"role": role, "content": content}, msg))
+                    last_role = role
                 elif role == "assistant":
                     assistant_message = named_turn({"role": role, "content": content}, msg)
                     if has_reasoning_content:

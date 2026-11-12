@@ -23,6 +23,7 @@ import contextlib
 import contextvars
 import copy
 import threading as _threading
+from time import monotonic as _time_monotonic
 import functools
 import inspect
 from typing import Union
@@ -1819,11 +1820,27 @@ def _load_probe_memo_scope(fn):
     return _wrapper
 
 
+# Failed fetches retry after a short pause, not per load: a firewall would cost each load the timeout.
+_NEW_MAPPER_TTL_S = 3600.0
+_NEW_MAPPER_RETRY_S = 300.0
+_NEW_MAPPER_CACHE = {"entry": None}  # (tables, fetched_at): one slot, never a torn pair
+
+
 def _new_mapper_tables():
     memo = _LOAD_PROBE_MEMO.get()
     if memo is not None and "new_mapper" in memo:
         return tuple(dict(table) for table in memo["new_mapper"])
-    tables = _get_new_mapper()
+    entry = _NEW_MAPPER_CACHE["entry"]
+    tables = None
+    if entry is not None:
+        cached, at = entry
+        age = _time_monotonic() - at
+        if 0 <= age < (_NEW_MAPPER_TTL_S if any(cached) else _NEW_MAPPER_RETRY_S):
+            tables = tuple(dict(table) for table in cached)
+    if tables is None:
+        # No lock around the fetch: a fork while another thread is fetching must not leave the child waiting.
+        tables = _get_new_mapper()
+        _NEW_MAPPER_CACHE["entry"] = (tuple(dict(table) for table in tables), _time_monotonic())
     if memo is not None and any(tables):
         memo["new_mapper"] = tuple(dict(table) for table in tables)
     return tables

@@ -8479,7 +8479,9 @@ def _python_is_high_risk(code: str) -> bool:
                     if isinstance(tgt, ast.Name):
                         destructive_fs_aliases.add(tgt.id)
         elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
-            if _is_destructive_attr(node.value.attr, node.value.value):
+            if _is_destructive_attr(node.value.attr, node.value.value) or _is_process_kill(
+                node.value
+            ):
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name):
                         destructive_fs_aliases.add(tgt.id)
@@ -8489,7 +8491,9 @@ def _python_is_high_risk(code: str) -> bool:
             and isinstance(node.target, ast.Name)
         ):
             # An annotated binding (f: object = os.remove) is the same alias.
-            if _is_destructive_attr(node.value.attr, node.value.value):
+            if _is_destructive_attr(node.value.attr, node.value.value) or _is_process_kill(
+                node.value
+            ):
                 destructive_fs_aliases.add(node.target.id)
     for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
@@ -8526,6 +8530,40 @@ def _python_is_high_risk(code: str) -> bool:
                 if _is_fs_module_ref(func.args[0]):
                     return True
             elif _is_destructive_attr(attr_name, func.args[0]):
+                return True
+    # Handed to map, partial or a thread, the function runs with no call node naming it.
+    bound = {
+        id(node.value)
+        for node in _tree_nodes(tree)
+        if (isinstance(node, ast.Assign) and all(isinstance(tgt, ast.Name) for tgt in node.targets))
+        or (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and isinstance(node.value, ast.Attribute)
+        )
+    }
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Load) and node.id in destructive_fs_aliases:
+                return True
+        elif id(node) in bound:
+            continue
+        elif isinstance(node, ast.Attribute):
+            if isinstance(node.ctx, ast.Load) and (
+                _is_destructive_attr(node.attr, node.value) or _is_process_kill(node)
+            ):
+                return True
+        elif isinstance(node, ast.Subscript):
+            if _folded_str_literal(node.slice) is not None and _is_module_dict_lookup(node):
+                return True
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+        ):
+            attr_name = _folded_str_literal(node.args[1])
+            if attr_name is not None and _is_destructive_attr(attr_name, node.args[0]):
                 return True
     # Fold split paths through variables; unresolved fragments use a sentinel so partial folds
     # never false-positive.
@@ -8831,6 +8869,7 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONUNBUFFERED": "1",
         # A GUI backend opens a native window and blocks plt.show() until closed.
         "MPLBACKEND": "Agg",
         # Remaps ChatGPT code-interpreter paths (/mnt/data) onto the sandbox cwd.
@@ -9019,6 +9058,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
         if var in os.environ:
             env[var] = workdir
     env.setdefault("MPLBACKEND", "Agg")
+    env["PYTHONUNBUFFERED"] = "1"
     return env
 
 
@@ -14921,6 +14961,8 @@ _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 _MAX_FETCH_BYTES = 512 * 1024
 # news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
 _MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
+# docs sites put over 1 MB of menus before the page text, so a window without one of these reads on.
+_HTML_CONTENT_START_RE = re.compile(rb"<(?:main|article|h1)[\s>]", re.IGNORECASE)
 # keep % safe to avoid encoding existing escapes as %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
@@ -15908,11 +15950,17 @@ def _read_capped_body(
         read = lambda size: decoder.read(read_wire, size)
     chunks = []
     remaining = max_bytes
+    got = 0
     body_at = None
+    window_end = None
+    fallback_end = None
     body_locator = _HTMLBodyLocator(charset) if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
+            if fallback_end is not None:
+                window_end = fallback_end
+                break
             try:
                 resp.close()
             except Exception:
@@ -15925,8 +15973,11 @@ def _read_capped_body(
                 pass
         try:
             chunk = read(min(65536, remaining))
-        except (ValueError, zlib.error) as exc:
-            if decoder is None:
+        except Exception as exc:
+            if fallback_end is not None:
+                window_end = fallback_end
+                break
+            if decoder is None or not isinstance(exc, (ValueError, zlib.error)):
                 raise
             if decoder.wire > decoder.wire_limit:
                 return f"(compressed content exceeds the {decoder.wire_limit} byte limit)", b""
@@ -15938,8 +15989,8 @@ def _read_capped_body(
             break
         chunks.append(chunk)
         remaining -= len(chunk)
+        got += len(chunk)
         if body_locator is not None and body_at is None:
-            got = max_bytes - remaining
             try:
                 body_locator.feed_bytes(chunk)
             except Exception:
@@ -15947,14 +15998,29 @@ def _read_capped_body(
             if body_locator is not None and body_locator.body_at is not None:
                 body_at = body_locator.body_at
                 remaining = max(0, min(remaining, body_at + body_window - got))
-    budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+        elif window_end is not None and _HTML_CONTENT_START_RE.search(chunks[-2][-8:] + chunk):
+            window_end = None
+            remaining = min(remaining, body_window)
+        if (
+            not remaining
+            and got < max_bytes
+            and body_at is not None
+            and body_locator._codec == "latin-1"
+            and not _has_pdf_magic(so_far := b"".join(chunks))
+            and not _HTML_CONTENT_START_RE.search(so_far, body_at)
+        ):
+            window_end = fallback_end = got
+            remaining = max_bytes - got
+    budget_error = _fetch_budget_exceeded(
+        None if fallback_end is not None else deadline, cancel_event
+    )
     if budget_error is not None:
         try:
             resp.close()
         except Exception:
             pass
         return budget_error, b""
-    return None, b"".join(chunks)
+    return None, b"".join(chunks)[:window_end]
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")

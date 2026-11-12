@@ -1262,7 +1262,7 @@ export function ExportPage() {
                         >
                           <label className={FIELD_LABEL}>
                             Checkpoint
-                            <Tooltip>
+                            <Tooltip disableHoverableContent={false}>
                               <TooltipTrigger asChild={true}>
                                 <button
                                   type="button"
