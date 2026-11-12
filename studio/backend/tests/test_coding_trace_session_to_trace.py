@@ -661,6 +661,7 @@ def test_deeply_nested_system_variables_fill_nothing():
     thread = {"id": "t", "settings": {"systemPrompt": "{{x}}", "systemVariables": deep}}
     trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
     assert trace.messages[0].text == "{{x}}"
+    assert "system_prompt_variables" in [w.code for w in trace.warnings]
 
 
 def test_system_variable_numbers_print_like_js():
@@ -689,6 +690,7 @@ def test_system_variable_too_deep_to_print_stays_as_written(monkeypatch):
     thread = {"id": "t", "settings": {"systemPrompt": "x {{a}} y", "systemVariables": variables}}
     trace = session_to_trace(thread, [_row("u", "user", _text("hi"), None, 1)])
     assert trace.messages[0].text == "x {{a}} y"
+    assert "system_prompt_variables" in [w.code for w in trace.warnings]
 
 
 @pytest.mark.parametrize(

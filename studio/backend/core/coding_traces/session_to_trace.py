@@ -557,10 +557,10 @@ def _fill_variables(prompt: str, raw: object) -> tuple[str, bool]:
     except (ValueError, RecursionError):
         values = {}
 
-    kept: list[str] = []
+    kept: list[bool] = []
 
     def keep(match: re.Match) -> str:
-        kept.append(match.group(0))
+        kept.append(True)
         return match.group(0)
 
     def fill(match: re.Match) -> str:
@@ -598,7 +598,7 @@ def _system_message(
         prompt = ""
     prompt, kept = _fill_variables(prompt, settings.get("systemVariables"))
     if kept:
-        note = "Send-time or unknown system prompt variables are left as stored"
+        note = "Send-time, unknown or unprintable system prompt variables are left as stored"
         warnings.append(TraceWarning("system_prompt_variables", note))
     instructions = ""
     if project and not project.get("archived"):
