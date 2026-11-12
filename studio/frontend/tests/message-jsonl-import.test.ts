@@ -821,3 +821,41 @@ test("Responses shell calls: hosted ones render their command, client ones and M
   assert.equal(calls[1].result, "local.txt");
   assert.equal(calls[2].result, "Authentication failed");
 });
+
+test("images in Responses tool outputs and code interpreter outputs stay images", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [
+        { role: "user", content: "Plot" },
+        { type: "function_call", call_id: "f1", name: "snap", arguments: "{}" },
+        {
+          type: "function_call_output",
+          call_id: "f1",
+          output: [
+            { type: "input_text", text: "shot" },
+            { type: "input_image", image_url: "data:image/png;base64,QUJD" },
+          ],
+        },
+      ],
+      output: [
+        {
+          type: "code_interpreter_call",
+          id: "ci1",
+          code: "plot()",
+          outputs: [{ type: "logs", logs: "ok" }, { type: "image", url: "https://example.com/p.png" }],
+        },
+      ],
+    }),
+    "response.json",
+  );
+
+  const results = conversation.messages
+    .flatMap((m) => m.content as ReadonlyArray<{ type?: string; result?: unknown }>)
+    .filter((p) => p.type === "tool-call")
+    .map((p) => p.result);
+  assert.deepEqual(results, [
+    { text: "shot", images: [{ mimeType: "image/png", data: "QUJD" }] },
+    "ok\nhttps://example.com/p.png",
+  ]);
+});

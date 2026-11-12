@@ -148,8 +148,8 @@ function oaiMessagesToRecords(
   threadId: string,
   baseTs: number,
 ): MessageRecord[] {
-  const toolResults = new Map<string, string>();
-  const pending: Array<{ turn: number; part: { toolCallId: string; result?: string } }> = [];
+  const toolResults = new Map<string, unknown>();
+  const pending: Array<{ turn: number; part: { toolCallId: string; result?: unknown } }> = [];
 
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
@@ -161,7 +161,9 @@ function oaiMessagesToRecords(
     const role = msg.role as string;
     if (role === "tool") {
       if (typeof msg.tool_call_id !== "string") continue;
-      const result = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? "");
+      const result =
+        (msg as { [STRUCTURED_RESULT]?: unknown })[STRUCTURED_RESULT] ??
+        (typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
       let at = pending.length - 1;
       while (at >= 0 && pending[at].part.toolCallId !== msg.tool_call_id) at--;
       if (at === -1) {
@@ -368,7 +370,39 @@ function pairToTurns(obj: Record<string, unknown>): unknown[] {
   ];
 }
 
-// Responses tool outputs may be content-part arrays; text-only ones keep their text.
+// A Responses tool turn's {text, images} result: the live parser's wrapper, which replay unwraps
+// into text plus image input. Symbol-keyed so imported JSON cannot set it.
+const STRUCTURED_RESULT = Symbol("structuredResult");
+
+// Responses tool outputs may be content-part arrays (text, logs, images).
+function toolTurn(callId: string, output: unknown): Record<string | symbol, unknown> {
+  if (typeof output === "string") return { role: "tool", tool_call_id: callId, content: output };
+  const parts = Array.isArray(output) ? (output as Array<Record<string, unknown> | null>) : [];
+  const texts: string[] = [];
+  const images: { data: string; mimeType: string }[] = [];
+  const known = parts.length > 0 && parts.every((part) => {
+    const source = part?.image_url ?? part?.url;
+    const url =
+      typeof source === "string" ? source : (source as { url?: unknown } | undefined)?.url;
+    const value = typeof part?.text === "string" ? part.text : part?.logs;
+    if (typeof value === "string") texts.push(value);
+    else if (typeof url !== "string") return false;
+    else {
+      const inline = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+      if (inline) images.push({ mimeType: inline[1], data: inline[2] });
+      else texts.push(url);
+    }
+    return true;
+  });
+  const text = known ? texts.join("\n") : JSON.stringify(output ?? "");
+  return {
+    role: "tool",
+    tool_call_id: callId,
+    content: text,
+    ...(images.length > 0 ? { [STRUCTURED_RESULT]: { text, images } } : {}),
+  };
+}
+
 // Studio's names for provider-run Responses tools (chat-adapter SERVER_SIDE_BUILTIN_TOOL_NAMES).
 const BUILTIN_TOOL_NAMES: Record<string, string> = {
   web_search_call: "web_search",
@@ -377,18 +411,6 @@ const BUILTIN_TOOL_NAMES: Record<string, string> = {
 };
 // Executed by the client, so neither hosted nor answered on its own.
 const CLIENT_RUN_CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call", "computer_call"]);
-
-function toolOutputText(output: unknown): string {
-  if (typeof output === "string") return output;
-  if (
-    Array.isArray(output) &&
-    output.length > 0 &&
-    output.every((p) => typeof p?.text === "string")
-  ) {
-    return output.map((p) => p.text).join("\n");
-  }
-  return JSON.stringify(output ?? "");
-}
 
 // Saved Responses API object: adjacent assistant items share one turn, as in the
 // backend's _normalise_responses_input, so parallel calls precede their outputs.
@@ -477,23 +499,16 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
         },
       });
       // Provider-run calls already finished: answer them with their own output, else their status.
-      const logs = Array.isArray(entry.outputs)
-        ? entry.outputs.flatMap((o) => (typeof o?.logs === "string" ? [o.logs] : [])).join("\n")
-        : "";
       const done =
         entry.output ??
-        (logs || undefined) ??
+        (Array.isArray(entry.outputs) && entry.outputs.length > 0 ? entry.outputs : undefined) ??
         entry.error ??
         (builtin && !answered.has(id) ? (text(entry.status) ?? "completed") : undefined);
       if (done != null) {
-        turns.push({ role: "tool", tool_call_id: id, content: toolOutputText(done) });
+        turns.push(toolTurn(id, done));
       }
     } else if (type.endsWith("_call_output") && typeof entry.call_id === "string") {
-      turns.push({
-        role: "tool",
-        tool_call_id: entry.call_id,
-        content: toolOutputText(entry.output),
-      });
+      turns.push(toolTurn(entry.call_id, entry.output));
     }
   }
   const output = text(obj.output);
