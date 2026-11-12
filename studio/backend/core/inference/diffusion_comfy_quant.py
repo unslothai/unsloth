@@ -1918,9 +1918,20 @@ def load_comfy_quant_transformer(
             setattr(parent, leaf, layer)
             for buffer_name, buffer in layer.named_buffers(recurse = False):
                 converted[f"{fqn}.{buffer_name}"] = buffer
+        tuned_index = None
         if grouped_keep:
+            from .diffusion_grouped_int8 import _tuned_on as tuned_on
             from .diffusion_grouped_int8 import grouped_linear_class
+
             grouped_cls = grouped_linear_class()
+            place = (
+                getattr(target, "torch_device", None) or getattr(target, "device", None) or "cpu"
+            )
+            device = torch.device(place)
+            if device.type == "cuda" and torch.cuda.is_available():
+                tuned_index = (
+                    device.index if device.index is not None else torch.cuda.current_device()
+                )
         for fqn, (
             qdata,
             s_rel,
@@ -1947,6 +1958,9 @@ def load_comfy_quant_transformer(
                 bias = bias,
                 compute_dtype = dtype,
             )
+            if tuned_index is not None:
+                # decided now, in eager: an offloaded / streamed load may never move the layer with ``.to()``
+                layer._tuned = tuned_on(tuned_index)
             setattr(parent, leaf, layer)
             for buffer_name, buffer in layer.named_buffers(recurse = False):
                 if buffer_name != "rot_h":
