@@ -503,8 +503,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         checkpoint_variants = ("flux1-schnell", "flux1-krea-dev", "flux1-dev"),
-        # The base is schnell, whose config has no guidance embedder: without these a dev / Krea-dev file not resolved
-        # to its own base (a local pick) loses its guidance_in weights and ignores Guidance.
+        # The schnell base config has no guidance embedder; a dev / Krea-dev file on it would drop guidance_in.
         transformer_config_variants = tuple(
             (f"{prefix}-{model}", overrides)
             for model, overrides in (

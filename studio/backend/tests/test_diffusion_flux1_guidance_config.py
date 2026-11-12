@@ -47,8 +47,6 @@ def test_flux1_variant_mismatch_detection_is_unchanged():
     assert not transformer_variant_differs_from_base(fam, None, "flux1-dev-Q4_K_M.gguf")
 
 
-# ------------------------------------------------------------------ a real single-file load on the schnell config
-
 _TINY = dict(
     patch_size = 1,
     in_channels = 64,  # what the header classifier reads as plain FLUX.1 (not Fill / Depth)
@@ -82,7 +80,6 @@ def test_a_dev_file_on_the_schnell_config_keeps_guidance(tmp_path):
     diffusers = pytest.importorskip("diffusers")
     save_file = pytest.importorskip("safetensors.torch").save_file
 
-    # The base the loader falls back to: schnell's transformer config, no guidance embedder.
     base = tmp_path / "schnell"
     (base / "transformer").mkdir(parents = True)
     (base / "transformer" / "config.json").write_text(
@@ -90,7 +87,7 @@ def test_a_dev_file_on_the_schnell_config_keeps_guidance(tmp_path):
     )
     torch.manual_seed(0)
     dev = diffusers.FluxTransformer2DModel(guidance_embeds = True, **_TINY)
-    path = tmp_path / "renamed.safetensors"  # the name says nothing; the header must decide
+    path = tmp_path / "renamed.safetensors"
     save_file({k: v.contiguous() for k, v in dev.state_dict().items()}, str(path))
 
     variant = inspect_checkpoint(str(path)).variant
