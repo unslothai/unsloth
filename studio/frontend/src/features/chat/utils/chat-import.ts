@@ -170,9 +170,6 @@ function oaiMessagesToRecords(
     const msg = m as Record<string, unknown>;
     const role = msg.role as string;
     if (role === "tool" || role === "function") {
-      // role:"function" is the pre-tool_calls shape; it names its call instead of
-      // carrying tool_call_id. An id always wins; the name only binds when the
-      // result carries no id, otherwise it stays a hint in the stash.
       const result =
         typeof msg.content === "string"
           ? msg.content
@@ -180,8 +177,7 @@ function oaiMessagesToRecords(
       const idKey =
         typeof msg.tool_call_id === "string" ? msg.tool_call_id : undefined;
       const nameKey = typeof msg.name === "string" ? msg.name : undefined;
-      // An unnamed result goes to the newest turn's first unanswered call, so
-      // parallel calls answered in order keep their own results.
+      // An id always wins over a name; unnamed results bind in call order within the newest turn.
       const bound =
         idKey !== undefined
           ? bindResult((entry) => entry.part.toolCallId === idKey, result)
@@ -199,7 +195,6 @@ function oaiMessagesToRecords(
     if (role === "assistant") {
       const parts = oaiContentToParts(msg.content);
       if (parts.length === 0) parts.push(...oaiContentToParts(msg.refusal));
-      // Arguments can arrive already parsed; stringify keeps them.
       const argumentsText = (fn: Record<string, unknown>) =>
         typeof fn.arguments === "string"
           ? fn.arguments
@@ -220,7 +215,7 @@ function oaiMessagesToRecords(
         parts.push(part);
         pending.push({ turn: idx, part, hasExplicitId: typeof callId === "string" });
       };
-      // LangChain-style exports nest both call shapes under additional_kwargs.
+      // LangChain nests both call shapes under additional_kwargs.
       const additional =
         typeof msg.additional_kwargs === "object" && msg.additional_kwargs !== null
           ? (msg.additional_kwargs as Record<string, unknown>)
@@ -241,7 +236,6 @@ function oaiMessagesToRecords(
           );
         }
       }
-      // The pre-tool_calls Chat Completions shape carries its single call here.
       const legacyCall =
         (typeof msg.function_call === "object" && msg.function_call) ||
         additional?.function_call;
@@ -290,8 +284,7 @@ function oaiMessagesToRecords(
     );
     if (at !== -1) part.result = stashedResults.splice(at, 1)[0].result;
   }
-  // Anonymous results land on the earliest calls still waiting; keyed leftovers
-  // belong to calls that never showed up, so they drop rather than lie.
+  // Keyed leftovers belong to calls that never appeared, so they drop rather than mislabel.
   const anonymous = stashedResults.filter(
     ({ id, name }) => id === undefined && name === undefined,
   );
