@@ -172,6 +172,8 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+// Browser-local like the memory bar: the server does not mirror it, so it never rides a settings patch.
+export const CHAT_SUBAGENTS_ENABLED_KEY = "unsloth_chat_subagents_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
@@ -2424,6 +2426,8 @@ type ChatRuntimeStore = {
   // backend reads per call: web_search returns images for inline model output.
   searchImages: boolean;
   mcpEnabledForChat: boolean;
+  /** Sends spawn_subagent in enabled_tools on external-provider tool turns. */
+  subagentsEnabled: boolean;
   ragEnabled: boolean;
   /** The files panel's X: hides the panel while retrieval stays on; turning RAG on or picking a source shows it again. */
   ragPanelHidden: boolean;
@@ -2764,6 +2768,7 @@ type ChatRuntimeStore = {
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setShowMemoryBar: (value: boolean) => void;
+  setSubagentsEnabled: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
@@ -4352,6 +4357,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
   showMemoryBar: loadBool(CHAT_SHOW_MEMORY_BAR_KEY, false),
+  subagentsEnabled: loadBool(CHAT_SUBAGENTS_ENABLED_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -6149,6 +6155,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setShowMemoryBar: (showMemoryBar) => {
     saveBool(CHAT_SHOW_MEMORY_BAR_KEY, showMemoryBar);
     set({ showMemoryBar });
+  },
+  setSubagentsEnabled: (subagentsEnabled) => {
+    saveBool(CHAT_SUBAGENTS_ENABLED_KEY, subagentsEnabled);
+    set({ subagentsEnabled });
   },
   setFitOnDeviceOnly: (fitOnDeviceOnly) => {
     saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);

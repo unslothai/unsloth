@@ -112,6 +112,7 @@ test("Thinking and tools groups the visibility rows out of Display", () => {
       "settings.chat.tools.visibility",
       "settings.chat.tools.foldIntoThinking",
       "settings.chat.webSearch.images",
+      "subagents.setting.label",
     ],
   );
   assert.deepEqual(labels(section("settings.chat.groups.display.title")), [

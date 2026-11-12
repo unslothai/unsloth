@@ -101,6 +101,7 @@ import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
+import { SubagentToolUI } from "@/components/assistant-ui/tool-ui-subagent";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
@@ -8423,6 +8424,7 @@ const VideoGenerationToolUIConfirmable = withToolConfirmation(
   VideoGenerationToolUI,
 );
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
+const SubagentToolUIConfirmable = withToolConfirmation(SubagentToolUI);
 // Read at render time, not module scope: the skill modules reach the chat barrel.
 const ReadSkillToolUIConfirmable = withToolConfirmation((props) => (
   <ReadSkillToolUI {...props} />
@@ -8452,6 +8454,7 @@ const ASSISTANT_PART_COMPONENTS = {
       generate_image: ImageGenerationToolUIConfirmable,
       generate_video: VideoGenerationToolUIConfirmable,
       render_html: RenderHtmlToolUIConfirmable,
+      spawn_subagent: SubagentToolUIConfirmable,
     },
     Fallback: ToolFallbackConfirmable,
   },

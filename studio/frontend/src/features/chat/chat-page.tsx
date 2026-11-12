@@ -297,6 +297,9 @@ import {
 import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
+import { useSubagentsStore } from "./stores/subagents-store";
+import { SubagentsHeaderControls } from "./components/subagents-header-controls";
+import { SubagentsPanel, SubagentsSheet } from "./components/subagents-panel";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
@@ -720,15 +723,40 @@ const SingleContent = memo(function SingleContent({
       openResearchThreadId === (threadId ?? activeThreadId),
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
+  // The subagent panel shares the side pane with research and the browser; research outranks it.
+  const subagentOpenThreadId = useSubagentsStore((state) => state.openThreadId);
+  const closeSubagentPanel = useSubagentsStore((state) => state.closePanel);
+  const subagentPanelThread = threadId ?? activeThreadId ?? null;
+  const subagentsMatchThread =
+    chatActive &&
+    subagentPanelThread !== null &&
+    subagentOpenThreadId === subagentPanelThread;
+  const showSubagentPanel =
+    subagentsMatchThread && !researchMatchesThread && !isMobile;
+  const showSidePanel = showResearchPanel || showSubagentPanel;
   const browserOverlaid = useContext(BrowserOverlaidContext);
-  const showBrowserPanel = !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;
+  const showBrowserPanel =
+    !showSidePanel && !isMobile && !browserOverlaid && browserOpen;
   // Research outranks the browser in the side pane, so a new browser open (a card, a link) closes it.
   const handledBrowserOpenRef = useRef(browserOpenSequence);
   useEffect(() => {
     if (handledBrowserOpenRef.current === browserOpenSequence) return;
     handledBrowserOpenRef.current = browserOpenSequence;
     if (showResearchPanel && browserOpen && !browserOverlaid) closeResearchPanel();
-  }, [browserOpenSequence, browserOpen, browserOverlaid, showResearchPanel, closeResearchPanel]);
+    if (showSubagentPanel && browserOpen && !browserOverlaid) closeSubagentPanel();
+  }, [
+    browserOpenSequence,
+    browserOpen,
+    browserOverlaid,
+    showResearchPanel,
+    showSubagentPanel,
+    closeResearchPanel,
+    closeSubagentPanel,
+  ]);
+  // Opening research takes the side pane from the subagent panel instead of hiding it behind.
+  useEffect(() => {
+    if (researchMatchesThread && subagentsMatchThread) closeSubagentPanel();
+  }, [researchMatchesThread, subagentsMatchThread, closeSubagentPanel]);
   const browserFullView =
     useBrowserStore((state) => state.fullView) && showBrowserPanel;
   // Floating stays mounted here, so switching layouts never reloads the page.
@@ -746,7 +774,7 @@ const SingleContent = memo(function SingleContent({
       ? browserPanelDefaultSize(contextSurfaceRef.current?.closest<HTMLElement>(".chat-artifact-split"))
       : ARTIFACT_PANEL_DEFAULT_SIZE;
   });
-  const showContextPanel = showResearchPanel || browserDocked;
+  const showContextPanel = showSidePanel || browserDocked;
 
   const artifactLayoutActive =
     showContextPanel || (!IMMEDIATE_CONTEXT_PANEL && isArtifactPanelLayoutActive);
@@ -836,6 +864,12 @@ const SingleContent = memo(function SingleContent({
     closeBrowser();
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
   }, [researchMatchesThread, closeBrowser]);
+
+  useEffect(() => {
+    if (!subagentsMatchThread) return;
+    closeBrowser();
+    useChatRuntimeStore.getState().setSettingsPanelOpen(false);
+  }, [subagentsMatchThread, closeBrowser]);
 
   // Leaving Chat closes this chat's browser. Compare keeps this view mounted but hidden, and by
   // then the panel on screen is the compare chat's: that one stays as it is.
@@ -977,7 +1011,7 @@ const SingleContent = memo(function SingleContent({
               : chatOnRight
                 ? "28%"
                 : IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive
-                  ? showResearchPanel
+                  ? showSidePanel
                     ? "42%"
                     : "30%"
                   : "100%"
@@ -1044,7 +1078,7 @@ const SingleContent = memo(function SingleContent({
           id="chat-artifact"
           defaultSize="0%"
           minSize={
-            showResearchPanel
+            showSidePanel
               ? "30%"
               : (IMMEDIATE_CONTEXT_PANEL || artifactPanelSettledOpen)
                 ? "30%"
@@ -1053,13 +1087,13 @@ const SingleContent = memo(function SingleContent({
           maxSize={
             chatOnRight
               ? "72%"
-              : showResearchPanel
+              : showSidePanel
               ? "58%"
               : IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive
                 ? "70%"
                 : "0%"
           }
-          collapsible={IMMEDIATE_CONTEXT_PANEL ? !showResearchPanel : showBrowserPanel}
+          collapsible={IMMEDIATE_CONTEXT_PANEL ? !showSidePanel : showBrowserPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -1076,9 +1110,9 @@ const SingleContent = memo(function SingleContent({
             {...{ "data-browser-floating": browserFloating ? "" : undefined }}
             className={cn(
               "chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible",
-              (showResearchPanel || browserDocked) &&
+              (showSidePanel || browserDocked) &&
                 (chatOnRight ? "border-r" : "border-l"),
-              (showResearchPanel || browserDocked) && "border-border/70",
+              (showSidePanel || browserDocked) && "border-border/70",
               browserFloating && "chat-browser-floating",
             )}
             style={showBrowserPanel ? { transform: "none" } : undefined}
@@ -1088,6 +1122,12 @@ const SingleContent = memo(function SingleContent({
                  key={openResearchRunId}
                  runId={openResearchRunId}
                  onClose={closeResearchPanel}
+               />
+             ) : showSubagentPanel && subagentPanelThread ? (
+               <SubagentsPanel
+                 key={subagentPanelThread}
+                 threadId={subagentPanelThread}
+                 onClose={closeSubagentPanel}
                />
              ) : showBrowserPanel ? (
               <Suspense fallback={null}>
@@ -1104,6 +1144,15 @@ const SingleContent = memo(function SingleContent({
           open={chatActive && isMobile}
           onOpenChange={(open) => {
             if (!open) closeResearchPanel();
+          }}
+        />
+      ) : null}
+      {subagentsMatchThread && !researchMatchesThread && subagentPanelThread ? (
+        <SubagentsSheet
+          threadId={subagentPanelThread}
+          open={isMobile}
+          onOpenChange={(open) => {
+            if (!open) closeSubagentPanel();
           }}
         />
       ) : null}
@@ -4982,6 +5031,9 @@ export function ChatPage({
                 floatable={view.mode === "single"}
               />
             ) : null}
+            {view.mode === "single" ? (
+              <SubagentsHeaderControls threadId={activeThreadId} active={active} />
+            ) : null}
             {view.mode === "single" &&
             latestResearchRunId &&
             latestResearchRunStatus ? (
@@ -5023,6 +5075,7 @@ export function ChatPage({
                     type="button"
                     onClick={() => {
                       useResearchRunStore.getState().closePanel();
+                      useSubagentsStore.getState().closePanel();
                       setSettingsOpen(true);
                     }}
                     className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

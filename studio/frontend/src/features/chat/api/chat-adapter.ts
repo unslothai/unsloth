@@ -283,6 +283,7 @@ import {
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
 import { skillToolNames } from "./skill-tools";
+import { SUBAGENT_TOOL_NAME } from "../utils/subagents";
 import { useSkillsSwitchStore } from "../stores/skills-switch-store";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
@@ -5072,6 +5073,7 @@ export function createOpenAIStreamAdapter(
         toolsEnabled,
         imageToolsEnabled,
         mcpEnabledForChat,
+        subagentsEnabled,
         confirmToolCalls,
         bypassPermissions,
         permissionMode,
@@ -6789,6 +6791,8 @@ export function createOpenAIStreamAdapter(
                       ...studioLocalCodeTools,
                       ...browserTools,
                       ...localMediaTools,
+                      // Only this loop can run children; they use a subset of the tools above.
+                      ...(subagentsEnabled ? [SUBAGENT_TOOL_NAME] : []),
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.

@@ -52,6 +52,7 @@ from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
 from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate, nudge_enabled
 from core.inference.sse_control_frames import sanitize_provider_sse_line
+from core.inference.subagents import SUBAGENT_TOOL_NAME
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
     is_reprompt_repeat,
@@ -414,6 +415,10 @@ class ToolLoopPolicy:
     deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
     website_policy: dict[str, Any] | None = None
+    # core.inference.subagents.SubagentSpawner; None keeps spawn_subagent unrunnable (children get None).
+    subagent_spawner: Any = None
+    # A subagent's loop shares its parent's LiveToolPermissions: a Full access grant in either reaches both.
+    shared_live_permissions: Any = None
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -1496,7 +1501,9 @@ async def _stream_with_studio_tools(
     )
     from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
 
-    live_permissions = LiveToolPermissions(session_id, cancel_event)
+    live_permissions = policy.shared_live_permissions or LiveToolPermissions(
+        session_id, cancel_event
+    )
     scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
@@ -1879,6 +1886,8 @@ async def _stream_with_studio_tools(
         turn_executed_real_tool = False
 
         started_fetches.clear()
+        # Subagents of this batch started ahead of their turn, so independent ones run in parallel.
+        started_subagents: dict[int, Any] = {}
         for call_index, call in enumerate(calls):
             if cancel_event.is_set():
                 break
@@ -2141,6 +2150,63 @@ async def _stream_with_studio_tools(
                 # Not expected; its answer is not used.
                 await _settle_started_stream(tool_stream, cancel_event)
                 tool_stream = None
+            spawner = policy.subagent_spawner
+            if tool_stream is None and spawner is not None and name == SUBAGENT_TOOL_NAME:
+                handle = started_subagents.pop(call_index, None)
+                if handle is not None and not handle.serves(arguments):
+                    handle.cancel()
+                    handle = None
+                if handle is None:
+                    handle = spawner.start(
+                        arguments,
+                        parent_run = run,
+                        parent_policy = policy,
+                        parent_cancel = cancel_event,
+                        parent_permissions = live_permissions,
+                    )
+                # Start this batch's later spawn_subagent calls now; results still return in call order.
+                for next_index in range(call_index + 1, len(calls)):
+                    if not (unlimited or remaining - (next_index - call_index) >= 1):
+                        break
+                    if next_index in started_subagents:
+                        continue
+                    follower_function = calls[next_index].get("function")
+                    follower_name = (
+                        follower_function.get("name")
+                        if isinstance(follower_function, dict)
+                        else None
+                    )
+                    if (
+                        not isinstance(follower_name, str)
+                        or follower_name.strip() != SUBAGENT_TOOL_NAME
+                    ):
+                        continue
+                    spec = controller.prepare_call(calls[next_index])
+                    if not spec.should_execute or spec.tool_name != SUBAGENT_TOOL_NAME:
+                        continue
+                    follower_mode, follower_bypass = live_permissions.apply(
+                        permission_mode, bypass_permissions
+                    )
+                    if needs_tool_confirmation(
+                        confirm_tool_calls = confirm_tool_calls,
+                        bypass_permissions = follower_bypass,
+                        permission_mode = follower_mode,
+                        name = spec.tool_name,
+                        arguments = spec.arguments,
+                        is_high_risk = is_high_risk_tool_call,
+                        never_needs = never_needs_approval,
+                        sandbox_level = sandbox_level,
+                        session_id = session_id,
+                    ):
+                        continue
+                    started_subagents[next_index] = spawner.start(
+                        spec.arguments,
+                        parent_run = run,
+                        parent_policy = policy,
+                        parent_cancel = cancel_event,
+                        parent_permissions = live_permissions,
+                    )
+                tool_stream = handle.tool_stream()
             if tool_stream is None:
                 # Same wrapper as local loops: live stdout for the card and a heartbeat keeping long calls alive.
                 tool_stream = scoped_tool_stream(
@@ -2271,6 +2337,10 @@ async def _stream_with_studio_tools(
         for started in started_fetches.values():
             await _settle_started_stream(started, cancel_event)
         started_fetches.clear()
+        # A subagent started ahead whose call never ran (cancelled batch, spent budget) is stopped.
+        for handle in started_subagents.values():
+            handle.cancel()
+        started_subagents.clear()
 
         yield _status_sse("")
 

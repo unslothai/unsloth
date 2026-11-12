@@ -332,6 +332,12 @@ export function ChatTab() {
   );
   const searchImages = useChatRuntimeStore((state) => state.searchImages);
   const setSearchImages = useChatRuntimeStore((state) => state.setSearchImages);
+  const subagentsEnabled = useChatRuntimeStore(
+    (state) => state.subagentsEnabled,
+  );
+  const setSubagentsEnabled = useChatRuntimeStore(
+    (state) => state.setSubagentsEnabled,
+  );
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
@@ -774,6 +780,16 @@ export function ChatTab() {
           description={t("settings.chat.webSearch.imagesDescription")}
         >
           <Switch checked={searchImages} onCheckedChange={setSearchImages} />
+        </SettingsRow>
+        <SettingsRow
+          label={t("subagents.setting.label")}
+          description={t("subagents.setting.description")}
+        >
+          <Switch
+            aria-label={t("subagents.setting.label")}
+            checked={subagentsEnabled}
+            onCheckedChange={setSubagentsEnabled}
+          />
         </SettingsRow>
       </SettingsSection>
 
