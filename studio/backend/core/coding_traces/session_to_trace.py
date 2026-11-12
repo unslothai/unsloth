@@ -306,7 +306,7 @@ def _unique_call_id(
 
 def _call_arguments(part: dict) -> dict:
     args, raw = part.get("args"), part.get("argsText")
-    try:  # toolCallReplayArguments sends argsText as is when it is one JSON object
+    try:  # toolCallReplayArguments sends argsText when it is one JSON object; keep its values
         exact = json.loads(raw, parse_float = _finite_float, parse_constant = _reject_constant)
     except (TypeError, ValueError, RecursionError):
         exact = None
@@ -543,9 +543,9 @@ def _reject_constant(text: str) -> None:
     raise ValueError(f"{text} is not JSON")
 
 
-def _fill_variables(prompt: str, raw: object) -> str:
-    """Fill custom systemVariables as resolveSystemPromptVariables does; $date, $time and $now
-    used the send-time clock, which is not stored, so they stay as written."""
+def _fill_variables(prompt: str, raw: object) -> tuple[str, bool]:
+    """Fill custom systemVariables as resolveSystemPromptVariables does, and say if any placeholder
+    stays as written: $date, $time and $now used the send-time clock, which is not stored."""
     try:
         # parseSystemVariablesMap uses JSON.parse, so every number is a double and a NaN
         # fills nothing.
@@ -557,13 +557,19 @@ def _fill_variables(prompt: str, raw: object) -> str:
     except (ValueError, RecursionError):
         values = {}
 
+    kept: list[str] = []
+
+    def keep(match: re.Match) -> str:
+        kept.append(match.group(0))
+        return match.group(0)
+
     def fill(match: re.Match) -> str:
         current = values if isinstance(values, dict) else {}
         if match.group(1) in ("$date", "$time", "$now"):
-            return match.group(0)
+            return keep(match)
         for key in filter(None, (p.strip(_JS_SPACE) for p in match.group(1).split("."))):
             if not isinstance(current, dict) or key not in current:
-                return match.group(0)
+                return keep(match)
             current = current[key]
         if current is None:
             return ""
@@ -574,9 +580,9 @@ def _fill_variables(prompt: str, raw: object) -> str:
         try:
             return _js_json(current)
         except RecursionError:
-            return match.group(0)  # too deep to print here; JSON.stringify would manage it
+            return keep(match)  # JSON.stringify would manage it
 
-    return _PROMPT_VARIABLE.sub(fill, prompt)
+    return _PROMPT_VARIABLE.sub(fill, prompt), bool(kept)  # one pass: a value is not filled again
 
 
 def _system_message(
@@ -590,8 +596,8 @@ def _system_message(
         note = "The thread stores no system prompt; the trace may lack the one the model saw"
         warnings.append(TraceWarning("system_prompt_not_stored", note))
         prompt = ""
-    prompt = _fill_variables(prompt, settings.get("systemVariables"))
-    if _PROMPT_VARIABLE.search(prompt):
+    prompt, kept = _fill_variables(prompt, settings.get("systemVariables"))
+    if kept:
         note = "Send-time or unknown system prompt variables are left as stored"
         warnings.append(TraceWarning("system_prompt_variables", note))
     instructions = ""

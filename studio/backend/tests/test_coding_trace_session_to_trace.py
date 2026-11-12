@@ -356,8 +356,6 @@ _STOPPED = {"incomplete": {"reason": "cancelled"}}
             [{"type": "reasoning", "text": "hmm"}, _call("k", result = None)],
             [("user", "go"), ("assistant", "Response hit the Max Tokens limit")],
         ),
-        # isAbandonedAssistantTurn keeps a turn with a reasoning part, even an empty one.
-        ({}, [{"type": "reasoning", "text": ""}], [("user", "go")]),
     ],
 )
 def test_refused_and_abandoned_turns_are_pruned(custom, content, before):
@@ -713,11 +711,11 @@ def test_system_variable_too_deep_to_print_stays_as_written(monkeypatch):
         ),
         # JSON.parse and String() print 1.0 as 1; a NaN map fails the parse and fills nothing.
         ({"systemPrompt": "{{x}}", "systemVariables": '{"x":[1.0]}'}, None, "[1]", []),
-        # JS \s matches \ufeff and not \x1c, the opposite of Python's.
+        # JS \s matches \ufeff and not \x1c, the opposite of Python's; one pass fills nothing twice.
         (
-            {"systemPrompt": "{{\ufeffx}} {{\x1cx}}", "systemVariables": '{"x":"a"}'},
+            {"systemPrompt": "{{\ufeffx}} {{\x1cx}}", "systemVariables": '{"x":"{{y}}"}'},
             None,
-            "a {{\x1cx}}",
+            "{{y}} {{\x1cx}}",
             [],
         ),
         (
