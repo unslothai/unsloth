@@ -337,11 +337,11 @@ def train(
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
 
-    # Studio refuses the same pair; here it would train 0 steps on CUDA and 1 on MLX.
+    # Otherwise it trains 0 steps, saves an untrained adapter and exits 0 (Studio refuses this too).
     if cfg.training.num_epochs <= 0 and cfg.training.max_steps <= 0:
         typer.echo(
-            "Error: Either num_epochs (--num-epochs) or max_steps (--max-steps) must be > 0; "
-            "both cannot be 0.",
+            "Error: num_epochs (--num-epochs) or max_steps (--max-steps) must be > 0; "
+            f"got num_epochs={cfg.training.num_epochs}, max_steps={cfg.training.max_steps}.",
             err = True,
         )
         raise typer.Exit(code = 2)
