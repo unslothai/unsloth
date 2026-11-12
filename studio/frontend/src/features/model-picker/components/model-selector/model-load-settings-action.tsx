@@ -30,7 +30,7 @@ export function ModelLoadSettingsAction({
 }) {
   const saved = useHasRememberedRunSettings(savedFor ?? null);
   return (
-    <Tooltip delayDuration={0}>
+    <Tooltip delayDuration={0} disableHoverableContent={true}>
       <TooltipTrigger asChild={true}>
         <button
           type="button"

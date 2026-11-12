@@ -4161,12 +4161,6 @@ export function ModelConfigPage({
             <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
-            <div
-              className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground"
-              aria-live="polite"
-            >
-              {saveStatus || "\u00a0"}
-            </div>
           </div>
         </div>
       )}
@@ -4453,6 +4447,8 @@ export function ModelConfigPage({
             variant="dark"
             type="button"
             size="sm"
+            // The theme's accent, as the Images page's Generate and the Effort slider use.
+            className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/85"
             disabled={
               sharedVariantUnresolved ||
               ((config.engine ?? "auto") !== "auto" && !engineReady) ||

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -13,7 +14,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -80,9 +80,8 @@ import {
   VRAM_VERDICT,
   chatGgufFit,
   describeVariantListingError,
-  ggufVariantPickerLabel,
-  pickerOrderedGgufVariants,
   estimateQuantBytes,
+  ggufVariantPickerLabel,
   isMediaCatalogRepo,
   isOverBudget,
   isRecommendableFormat,
@@ -95,6 +94,7 @@ import {
   modelConfigTargetIsResident,
   modelDisplayName,
   paramsFromId,
+  pickerOrderedGgufVariants,
   pinDropAnchor,
   useChatPickerInventory,
   useModelLoadTimes,
@@ -121,9 +121,9 @@ import {
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Folder02Icon } from "@/lib/folder-icons";
-import { Tick02Icon } from "@/lib/tick-icon";
 import { classifyVariantFitOnCard } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -144,8 +144,8 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
-  Fragment,
   type CSSProperties,
+  Fragment,
   type InputHTMLAttributes,
   type ReactNode,
   type Ref,
@@ -182,9 +182,9 @@ import {
   localSection,
   matchesFormat,
   orderBySection,
-  sectionsHaveRows,
   pinCoversId,
   repoSection,
+  sectionsHaveRows,
   sortDeviceRows,
 } from "./picker-model";
 import { useComposerReasoning } from "./use-composer-reasoning";
@@ -579,14 +579,17 @@ function RowMark({
     return <MakerMark provider={provider} className={size} />;
   }
   if (parts) {
+    // A block box: an inline one sat on the text baseline, about 2px above centre.
     return (
-      <OwnerAvatar
-        owner={parts.owner}
-        repoName={parts.name}
-        size="xs"
-        remote={false}
-        className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 rounded-[3px]"
-      />
+      <span className="flex shrink-0">
+        <OwnerAvatar
+          owner={parts.owner}
+          repoName={parts.name}
+          size="xs"
+          remote={false}
+          className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 rounded-[3px]"
+        />
+      </span>
     );
   }
   if (row?.kind === "external") {
@@ -662,7 +665,7 @@ function FitBadge({
     return null;
   }
   return (
-    <Tooltip delayDuration={0}>
+    <Tooltip delayDuration={0} disableHoverableContent={true}>
       <TooltipTrigger asChild={true}>
         <span
           role="img"
@@ -670,7 +673,7 @@ function FitBadge({
           className={cn(
             "grid shrink-0 place-items-center",
             compact
-              ? "size-[calc(14px*var(--ui-space-scale,1))]"
+              ? "size-[calc(12px*var(--ui-space-scale,1))]"
               : "size-[calc(20px*var(--ui-space-scale,1))]",
             verdict.tone,
             revealOnHover &&
@@ -680,7 +683,7 @@ function FitBadge({
           <HugeiconsIcon
             icon={InformationCircleIcon}
             strokeWidth={1.8}
-            className="size-[calc(14px*var(--ui-space-scale,1))]"
+            className="size-[calc(12px*var(--ui-space-scale,1))]"
           />
         </span>
       </TooltipTrigger>
@@ -725,7 +728,7 @@ function ParamChip({ label }: { label: string }) {
   return (
     <span
       className={cn(
-        "inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-border px-1.5 text-ui-10 font-medium text-muted-foreground",
+        "inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-[rgb(0_0_0_/_0.16)] px-1.5 text-ui-10 dark:border-[rgb(255_255_255_/_0.2)] font-medium text-muted-foreground",
         label.includes(".") ? "tracking-[-0.02em]" : "tracking-[0.02em]",
       )}
     >
@@ -751,6 +754,9 @@ function AmberTag({ label, hint }: { label: string; hint: string }) {
 }
 
 const STATUS_TONE = {
+  // The loaded dot's own green, so the tag and the dot read as one state.
+  loaded:
+    "bg-[color-mix(in_srgb,var(--status-success)_16%,transparent)] text-status-success",
   green:
     "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300",
   amber:
@@ -772,7 +778,7 @@ function StatusTag({
   const tag = (
     <span
       className={cn(
-        "inline-flex h-[calc(16px*var(--ui-space-scale,1))] shrink-0 items-center gap-1 rounded-[calc(5px*var(--ui-space-scale,1))] px-1.5 font-sans text-ui-10 font-medium leading-none",
+        "inline-flex h-[calc(16px*var(--ui-space-scale,1))] shrink-0 items-center gap-1 rounded-full px-2 font-sans text-ui-10 font-medium leading-none",
         STATUS_TONE[tone],
       )}
     >
@@ -797,7 +803,7 @@ function QuantStatus({
     tags.push(
       <StatusTag
         key="loaded"
-        tone="green"
+        tone="loaded"
         label="Loaded"
         lead={
           <span className="size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-current" />
@@ -851,7 +857,7 @@ const UPDATE_HINT =
 
 function Hint({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <Tooltip delayDuration={0}>
+    <Tooltip delayDuration={0} disableHoverableContent={true}>
       <TooltipTrigger asChild={true}>{children}</TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
         {label}
@@ -2948,7 +2954,12 @@ export function ComposerModelPicker({
             {resolving === row.key || npuProgress ? (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
             ) : (
-              <span className={cn("text-foreground", dimmed && DIM_CLASS)}>
+              <span
+                className={cn(
+                  "flex shrink-0 text-foreground",
+                  dimmed && DIM_CLASS,
+                )}
+              >
                 <RowMark row={row} />
               </span>
             )}
@@ -2956,15 +2967,6 @@ export function ComposerModelPicker({
               <span className={cn("truncate", dimmed && DIM_CLASS)}>
                 {row.label}
               </span>
-              {offering ? (
-                <span className="-ml-0.5 flex shrink-0">
-                  <FitBadge
-                    status={fit}
-                    revealOnHover={!isChosen}
-                    compact={true}
-                  />
-                </span>
-              ) : null}
               {manyQuants ? (
                 <HugeiconsIcon
                   icon={ChevronRightStandardIcon}
@@ -2977,6 +2979,17 @@ export function ComposerModelPicker({
               ) : null}
               {row.loaded ? (
                 <LoadedDot label={row.label} onEject={() => eject(row)} />
+              ) : row.kind === "hub" && row.onDevice ? (
+                // The header picker's and the Hub's on-device mark.
+                <Hint label="On device">
+                  <span
+                    role="img"
+                    aria-label="On device"
+                    className="grid size-[calc(14px*var(--ui-space-scale,1))] shrink-0 place-items-center"
+                  >
+                    <span className="size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-success" />
+                  </span>
+                </Hint>
               ) : null}
             </span>
             {row.partial ? (
@@ -2990,9 +3003,21 @@ export function ComposerModelPicker({
               <AmberTag label="Update" hint={UPDATE_HINT} />
             ) : null}
             {soleQuant ? <QuantPill quant={soleQuant} /> : null}
-            {paramLabel ? (
-              <span className={cn("flex shrink-0", dimmed && DIM_CLASS)}>
-                <ParamChip label={paramLabel} />
+            {row.kind === "hub" ? (
+              // The warning hugs its chip, about 6px of ink apart.
+              <span className="flex shrink-0 items-center gap-[calc(5px*var(--ui-space-scale,1))]">
+                {offering ? (
+                  <FitBadge
+                    status={fit}
+                    revealOnHover={!isChosen}
+                    compact={true}
+                  />
+                ) : null}
+                {paramLabel ? (
+                  <span className={cn("flex", dimmed && DIM_CLASS)}>
+                    <ParamChip label={paramLabel} />
+                  </span>
+                ) : null}
               </span>
             ) : null}
             {npuProgress || (npuOffer && row.npu?.size_gb != null) ? (
@@ -3012,7 +3037,8 @@ export function ComposerModelPicker({
             <span
               role="toolbar"
               aria-label={`${row.label} actions`}
-              className="flex shrink-0 items-center"
+              // Pulled in so a pill or chip sits as far from the dots as the dots from the gear.
+              className="-ml-[calc(3px*var(--ui-space-scale,1))] flex shrink-0 items-center"
               // Menus portal out but bubble through React: keep their clicks off the row.
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => event.stopPropagation()}
@@ -3250,7 +3276,11 @@ export function ComposerModelPicker({
       <Fragment key={row.key}>
         {rowEl}
         {memoryBar}
-        {offerOpen ? renderOffer(row) : renderDeviceQuants(row, onDisk)}
+        {offerOpen
+          ? renderOffer(row)
+          : quantsOpen
+            ? renderDeviceQuants(row, onDisk)
+            : null}
       </Fragment>
     );
   };
@@ -3450,7 +3480,11 @@ export function ComposerModelPicker({
       offer.defaultVariant,
       quantBudget,
     );
-    const loadedQuant = row.loaded ? row.loadedQuant?.toLowerCase() : null;
+    const loadedQuant = row.loaded
+      ? (
+          row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null)
+        )?.toLowerCase()
+      : null;
     return (
       <div className="flex shrink-0 flex-col">
         {ordered.map((variant) =>
