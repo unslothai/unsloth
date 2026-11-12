@@ -230,15 +230,14 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
     log_name = server.log_path.name if server is not None and server.log_path else None
     if server is not None:
         server.note(f"Request failed: {explained}")
-    if not lines:
-        return message
-    _events.warning(
-        "Lemonade output before the NPU error",
-        error = message,
-        lemonade_log = log_name,
-        lemonade_output = lines,
-        overlapped_another_request = shared,
-    )
+    if lines:
+        _events.warning(
+            "Lemonade output before the NPU error",
+            error = message,
+            lemonade_log = log_name,
+            lemonade_output = lines,
+            overlapped_another_request = shared,
+        )
     if explained == message and log_name:
         return f"{message} (Lemonade's output is on the Logs page.)"
     return explained
@@ -760,6 +759,7 @@ class LemonadeNpuBackend:
             with self._commit_lock:
                 self._load_cancelled.clear()
                 self._loading = model_id
+            window = None
             replaced = False
             loaded = False
             try:
@@ -806,7 +806,8 @@ class LemonadeNpuBackend:
                 return model
             except LemonadeUnavailable as exc:
                 self._raise_if_load_cancelled(model_id)
-                raise NpuError(f"Loading {model_id} failed: {exc}") from exc
+                reason = self.explain_failure(window, str(exc))
+                raise NpuError(f"Loading {model_id} failed: {reason}") from exc
             finally:
                 self._loading = None
                 if replaced and not loaded and self._server is not None:
@@ -871,13 +872,16 @@ class LemonadeNpuBackend:
                     server.stop()
             return loaded.model.model_path
 
-    def output_mark(self) -> Optional[OutputWindow]:
+    def output_mark(self, upstream: ManagedUpstream) -> Optional[OutputWindow]:
         server = self._server
-        return server.open_window() if server is not None else None
+        # Each daemon start gets a fresh key. A restart after routing must not claim this chat.
+        if server is None or server.api_key != upstream.api_key:
+            return None
+        return server.open_window()
 
     def explain_failure(self, window: Optional[OutputWindow], message: str) -> str:
         """An NPU chat error ``message`` with the reason lemond printed in ``window``."""
-        return _explain(self._server, window, message)
+        return _explain(window.server, window, message) if window is not None else message
 
     def upstream(self) -> ManagedUpstream:
         # Lock-free: a chat must not wait behind an enable() or delete() holding the lock.

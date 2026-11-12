@@ -30453,7 +30453,6 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         upstream = await asyncio.to_thread(npu.upstream)
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
-    output_mark = npu.output_mark()
     _refuse_npu_chat_request(
         payload,
         supports_vision = upstream.supports_vision,
@@ -30484,6 +30483,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             for message in _openai_messages_for_passthrough(payload, vision = True)
         ]
     upstream_payload = payload.model_copy(update = update)
+    output_mark = npu.output_mark(upstream)
     response = await _proxy_to_external_provider(
         upstream_payload,
         request,

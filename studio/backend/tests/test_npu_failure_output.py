@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -239,6 +240,118 @@ def test_the_lemonade_log_says_what_was_asked_and_how_it_ended(tmp_path, monkeyp
     assert "(Unsloth Studio) Request failed: " + summary in current
     assert "exit code 1" in current
     assert log.fields["lemonade_log"] == server.log_path.name
+
+
+def test_debug_configuration_cannot_persist_chat_previews(tmp_path):
+    server = _server(tmp_path)
+    server.config_dir.mkdir()
+    config = server.config_dir / "config.json"
+    config.write_text('{"log_level":"debug"}', encoding = "utf-8")
+    server._write_config()
+    assert json.loads(config.read_text(encoding = "utf-8"))["log_level"] == "info"
+
+    server.log_dir = tmp_path / "logs"
+    lines = [
+        _line("Debug", "Server", "chat preview"),
+        "continuation of chat preview",
+        _line("Info", "Process", "backend request body"),
+        _line("Error", "Router", "model allocation failed"),
+    ]
+    server._drain(SimpleNamespace(stdout = lines), server._open_log_file(4242))
+    for output in (server.log_tail(), server.log_path.read_text(encoding = "utf-8")):
+        assert "chat preview" not in output
+        assert "backend request body" not in output
+        assert "model allocation failed" in output
+
+
+def test_daemon_spawn_does_not_inherit_forced_debug(tmp_path, monkeypatch):
+    from core.inference import lemonade_server as ls
+
+    server = _server(tmp_path)
+    monkeypatch.setenv("LEMONADE_CI_MODE", "1")
+    monkeypatch.setattr(ls, "spawn_on_lifetime_thread", lambda spawn: spawn())
+
+    def capture(command, **kwargs):
+        assert "LEMONADE_CI_MODE" not in kwargs["env"]
+        raise OSError("test stopped before spawn")
+
+    monkeypatch.setattr(ls.subprocess, "Popen", capture)
+    with pytest.raises(OSError, match = "test stopped before spawn"):
+        server._start_once(5)
+
+
+def test_silent_load_failure_points_to_the_existing_log(tmp_path, monkeypatch, log):
+    server = _server(tmp_path)
+    server.log_dir = tmp_path / "logs"
+    handle = server._open_log_file(4242)
+    try:
+        backend = _backend(
+            tmp_path,
+            monkeypatch,
+            server,
+            lambda path: ([], httpx.Response(500, json = {"error": "load refused"})),
+        )
+        with pytest.raises(nb.NpuError, match = "Logs page"):
+            backend.load(_MODEL)
+        assert "Request failed: load refused" in server.log_path.read_text(encoding = "utf-8")
+    finally:
+        server._close_log_file(handle)
+
+
+def test_pending_chat_keeps_its_original_daemon(tmp_path, log):
+    original = _server(tmp_path)
+    original.api_key = "first-key"
+    upstream = SimpleNamespace(api_key = original.api_key)
+    backend = nb.LemonadeNpuBackend(root = tmp_path)
+    backend._server = original
+    window = backend.output_mark(upstream)
+    _prints(original, _line("Error", "Router", "original failure"))
+
+    replacement = _server(tmp_path)
+    replacement.api_key = "second-key"
+    backend._server = replacement
+    _prints(replacement, _line("Error", "Router", "unrelated failure"))
+    assert backend.output_mark(upstream) is None
+    assert backend.explain_failure(window, "chat failed") == "chat failed (original failure)"
+
+
+@pytest.mark.parametrize("path", ["/v1/pull", "/v1/delete"])
+def test_chat_cannot_claim_a_background_model_operation(tmp_path, monkeypatch, log, path):
+    server = _server(tmp_path)
+    server.port = 4242
+    monkeypatch.setattr(server, "is_alive", lambda: True)
+    chat = server.open_window()
+
+    def handler(request):
+        _prints(server, _line("Error", "DownloadManager", "unrelated model failed"))
+        assert chat.shared
+        return httpx.Response(500)
+
+    with httpx.Client(transport = httpx.MockTransport(handler)) as client:
+        monkeypatch.setattr(server, "_client", client)
+        if path == "/v1/pull":
+            with server.stream("POST", path, json_body = {}) as response:
+                assert response.status_code == 500
+        else:
+            assert server.request("POST", path).status_code == 500
+
+    assert nb._explain(server, chat, "chat failed") == "chat failed"
+    del chat
+    assert not server.open_window().shared
+
+
+def test_load_disconnect_uses_the_request_output(tmp_path, monkeypatch, log):
+    server = _server(tmp_path)
+
+    def disconnect(path):
+        assert path == "/v1/load"
+        _prints(server, _line("Error", "Router", "model allocation failed"))
+        raise nb.LemonadeUnavailable("connection closed")
+
+    backend = _backend(tmp_path, monkeypatch, server, disconnect)
+    with pytest.raises(nb.NpuError, match = r"connection closed \(model allocation failed\)"):
+        backend.load(_MODEL, 8192)
+    assert log.fields["lemonade_output"] == [_line("Error", "Router", "model allocation failed")]
 
 
 def test_a_failed_spawn_closes_the_log_file(tmp_path, monkeypatch):
