@@ -1280,13 +1280,6 @@ function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   return false;
 }
 
-/** The gates resolveReasoningEnabledOnLoad forces Think on with. */
-function modelForcesThinking(
-  state: Pick<ChatRuntimeStore, "reasoningAlwaysOn" | "supportsReasoning" | "supportsReasoningOff">,
-): boolean {
-  return state.reasoningAlwaysOn || (state.supportsReasoning && !state.supportsReasoningOff);
-}
-
 /** Puts the chat's own values back where the store shows the loaded model's or a provider's. */
 function restoreChatOwnedValues(
   threadId: string,
@@ -1299,7 +1292,7 @@ function restoreChatOwnedValues(
     !explicitlyEditedThreadFields.has("reasoningEnabled") &&
     activeThreadScopedSettings?.reasoningEnabled === false &&
     settings.reasoningEnabled !== false &&
-    modelForcesThinking(useChatRuntimeStore.getState())
+    useChatRuntimeStore.getState().reasoningAlwaysOn
   ) {
     settings.reasoningEnabled = false;
   }
@@ -2010,14 +2003,15 @@ export function withChatOwnedSettings<T extends ChatRuntimeStore>(state: T): T {
   return { ...state, ...owned };
 }
 
-/** `run`, which carries `live`'s model, with what that model forces (pill clamps, effort pin, Think), as a load applies. */
+/** `run`, which carries the model `live` just loaded, with what that load sets: pill clamps, its effort pin, Think. */
 export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, live: T): T {
   const next: Record<string, unknown> = { ...run };
   for (const key of CLAMPED_PILL_KEYS) {
     next[key] = run[key] === true && !isPillClampedOff(run, key);
   }
   if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
-  if (modelForcesThinking(run)) next.reasoningEnabled = true;
+  // Every load writes Think from the model (pin, forced gates, default), not from the chat.
+  next.reasoningEnabled = live.reasoningEnabled;
   return next as T;
 }
 

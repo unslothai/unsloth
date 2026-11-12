@@ -4960,7 +4960,8 @@ export function createOpenAIStreamAdapter(
         }
       };
       // The waits below let the user open another chat, whose settings then fill the store.
-      const runtimeAtSend = withChatOwnedSettings(runtime);
+      const runtimeAtSend = runtime;
+      const chatOwnedAtSend = withChatOwnedSettings(runtime);
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
         try {
@@ -5070,10 +5071,14 @@ export function createOpenAIStreamAdapter(
             }
         : runChatSettingsLive
           ? liveRuntime
-          : withLoadedModelOverrides(
-              withRunThreadScopedSettings(liveRuntime, runtimeAtSend),
-              liveRuntime,
-            );
+          : // The same model keeps the chat's effective values; a new one re-derives what its load sets.
+            liveRuntime.params.checkpoint === runtimeAtSend.params.checkpoint &&
+              (liveRuntime.activeGgufVariant ?? null) === (runtimeAtSend.activeGgufVariant ?? null)
+            ? withRunThreadScopedSettings(liveRuntime, runtimeAtSend)
+            : withLoadedModelOverrides(
+                withRunThreadScopedSettings(liveRuntime, chatOwnedAtSend),
+                liveRuntime,
+              );
       runtime = withChatFullAccess(runtime, liveRuntime.chatFullAccessGrants, resolvedThreadId);
       const { params } = runtime;
       const sandboxSessionId = await resolveSandboxSessionId(

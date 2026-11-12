@@ -192,6 +192,7 @@ const selectRunRuntime = new Function(
   "queuedRunSettings",
   "queuedEmptyModelRuntime",
   "runtimeAtSend",
+  "chatOwnedAtSend",
   "resolvedThreadId",
   "withRunThreadScopedSettings",
   "withLoadedModelOverrides",
@@ -206,12 +207,14 @@ function runAfterWait(
   atSend: ReturnType<typeof chatState>,
   resolvedThreadId: string | undefined,
   overrides: (run: never, live: never) => unknown = (run) => run,
+  chatOwned: unknown = atSend,
 ) {
   return selectRunRuntime(
     { getState: () => live },
     null,
     null,
     atSend,
+    chatOwned,
     resolvedThreadId,
     withRunThreadScopedSettings,
     overrides,
@@ -255,7 +258,9 @@ test("the adapter keeps the sent chat's settings while the shown chat's settings
 });
 
 test("the adapter takes its send-time settings before the model wait", () => {
-  const capture = ADAPTER.indexOf("      const runtimeAtSend = withChatOwnedSettings(runtime);");
+  const capture = ADAPTER.indexOf(
+    "      const runtimeAtSend = runtime;\n      const chatOwnedAtSend = withChatOwnedSettings(runtime);",
+  );
   const wait = ADAPTER.indexOf("await waitForModelReady(abortSignal);", capture);
   assert.ok(capture >= 0, "runtimeAtSend is captured");
   assert.ok(wait - capture < 400 && wait < selectionStart, "captured just before the wait");
@@ -304,7 +309,9 @@ test("chat A runs at its own effort, not the outgoing model's pin", () => {
   (store.getState().applyThreadScopedSettings as (id: string, s: object) => void)("chat-a", {
     reasoningEffort: "low",
   });
-  useModelReasoningEffortStore.setState({ effortByModel: { "pinned-model": "high" } });
+  useModelReasoningEffortStore.setState({
+    effortByModel: { "pinned-model": "high", "other-pinned-model": "medium" },
+  });
   const reasoning = {
     supportsReasoning: true,
     reasoningStyle: "reasoning_effort",
@@ -316,8 +323,9 @@ test("chat A runs at its own effort, not the outgoing model's pin", () => {
     reasoningEffort: "high",
     modelLoading: true,
   });
-  const atSend = withChatOwnedSettings(store.getState());
-  assert.equal(atSend.reasoningEffort, "low");
+  const atSend = store.getState();
+  const chatOwned = withChatOwnedSettings(atSend);
+  assert.equal(chatOwned.reasoningEffort, "low");
 
   const loaded = (checkpoint: string, reasoningEffort: string) =>
     ({
@@ -329,62 +337,43 @@ test("chat A runs at its own effort, not the outgoing model's pin", () => {
       params: { ...store.getState().params, checkpoint },
     }) as unknown as ReturnType<typeof chatState>;
   const run = (live: ReturnType<typeof chatState>) =>
-    runAfterWait(live, atSend as never, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState;
-  assert.equal(run(loaded("unsloth/local-model", "medium")).reasoningEffort, "low");
+    runAfterWait(live, atSend as never, "chat-a", withLoadedModelOverrides as never, chatOwned) as unknown as StoreState;
+  assert.equal(run(loaded("unsloth/local-model", "high")).reasoningEffort, "low");
   // A pin on the model that loaded still outranks the chat, as it would on screen.
-  assert.equal(run(loaded("pinned-model", "high")).reasoningEffort, "high");
+  assert.equal(run(loaded("other-pinned-model", "medium")).reasoningEffort, "medium");
+  // The same model is still pinned.
+  assert.equal(run(loaded("pinned-model", "low")).reasoningEffort, "high");
   store.setState({ modelLoading: false });
 });
 
-test("chat A's Think-off yields to a loaded model that cannot stop thinking", () => {
-  const atSend = chatState({ reasoningEnabled: false }, {}) as unknown as StoreState;
-  const loaded = (fields: Record<string, unknown>) =>
-    ({
-      ...useChatRuntimeStore.getState(),
-      activeThreadId: "chat-b",
-      modelLoading: false,
-      supportsReasoning: true,
-      reasoningEnabled: true,
-      params: { ...useChatRuntimeStore.getState().params, checkpoint: "unsloth/new-model-GGUF" },
-      ...fields,
-    }) as unknown as ReturnType<typeof chatState>;
-  const think = (fields: Record<string, unknown>) =>
-    (runAfterWait(loaded(fields), atSend as never, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState)
+test("chat A's Think on a new model is what that model's load set", () => {
+  const atSend = chatState({ reasoningEnabled: true }, {});
+  const loaded = (reasoningEnabled: boolean) =>
+    loadedB({ activeGgufVariant: "Q4_K_M", supportsReasoning: true, reasoningEnabled });
+  const think = (reasoningEnabled: boolean) =>
+    (runAfterWait(loaded(reasoningEnabled), atSend, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState)
       .reasoningEnabled;
-  assert.equal(think({ reasoningStyle: "reasoning_effort", supportsReasoningOff: false }), true);
-  assert.equal(think({ reasoningAlwaysOn: true, supportsReasoningOff: true }), true);
-  assert.equal(think({ reasoningStyle: "enable_thinking", supportsReasoningOff: true, reasoningAlwaysOn: false }), false);
+  // A Think pin, a model that cannot stop thinking, or a Think-off default: the load decided.
+  assert.equal(think(true), true);
+  assert.equal(think(false), false);
 });
 
-test("chat A's stored Think-off survives an outgoing model that forced it on", () => {
-  const store = useChatRuntimeStore;
-  store.setState({ settingsHydrated: true, modelLoading: false });
-  (store.getState().applyThreadScopedSettings as (id: string, s: object) => void)("chat-a", {
-    reasoningEnabled: false,
-  });
-  // The outgoing model cannot stop thinking, so its load forced Think on.
-  store.setState({
-    params: { ...store.getState().params, checkpoint: "unsloth/gpt-oss-20b-GGUF" },
-    supportsReasoning: true,
-    reasoningStyle: "reasoning_effort",
-    supportsReasoningOff: false,
-    reasoningAlwaysOn: false,
-    reasoningEnabled: true,
-    modelLoading: true,
-  });
-  const atSend = withChatOwnedSettings(store.getState());
-  assert.equal(atSend.reasoningEnabled, false);
-
-  const loaded = {
-    ...store.getState(),
-    activeThreadId: "chat-b",
-    modelLoading: false,
-    reasoningStyle: "enable_thinking",
-    supportsReasoningOff: true,
-    reasoningEnabled: true,
-    params: { ...store.getState().params, checkpoint: "unsloth/Qwen3.5-4B-GGUF" },
-  } as unknown as ReturnType<typeof chatState>;
-  const run = runAfterWait(loaded, atSend as never, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState;
-  assert.equal(run.reasoningEnabled, false);
-  store.setState({ modelLoading: false });
+test("a load that leaves the model in place keeps chat A's effective values", () => {
+  // Kimi: Think on suppressed Search without persisting it; the chat's record still has Search on.
+  const model = { params: { checkpoint: "kimi::kimi-k2.6" }, activeGgufVariant: null };
+  // A rolled-back load restores the variant as null where the send may have had none at all.
+  const atSend = chatState(
+    { reasoningEnabled: true, toolsEnabled: false, ...model, activeGgufVariant: undefined },
+    model.params,
+  );
+  const chatOwned = chatState({ reasoningEnabled: true, toolsEnabled: true, ...model }, model.params);
+  const live = chatState(
+    { activeThreadId: "chat-b", reasoningEnabled: false, toolsEnabled: true, permissionMode: "auto", ...model },
+    { ...model.params, systemPrompt: "chat B prompt" },
+  );
+  const run = runAfterWait(live, atSend, "chat-a", withLoadedModelOverrides as never, chatOwned) as unknown as StoreState;
+  assert.equal(run.toolsEnabled, false);
+  assert.equal(run.reasoningEnabled, true);
+  assert.equal(run.permissionMode, "ask");
+  assert.equal((run.params as unknown as { systemPrompt: string }).systemPrompt, "chat A prompt");
 });
