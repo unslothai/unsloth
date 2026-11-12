@@ -257,3 +257,28 @@ def test_tool_schemas_found_by_search_count_against_the_result_room(monkeypatch)
     rest = [message for message in messages if message.get("content") != result]
     prompt = estimate_messages_tokens_conservative(rest + transport.tools)
     assert len(result) + prompt < 8192
+
+
+def test_a_local_model_at_the_same_window_does_not_price_the_connection(monkeypatch):
+    import sys
+    import types
+
+    class _LocalGguf:
+        is_loaded = True
+        context_length = 8192
+
+        def count_chat_tokens(self, messages, *args, **kwargs):
+            # A tokenizer that packs digits several to a token, unlike the served model's.
+            return max(1, len(json.dumps(messages)) // 8)
+
+    stub = sys.modules.get("routes.inference") or types.ModuleType("routes.inference")
+    monkeypatch.setitem(sys.modules, "routes.inference", stub)
+    monkeypatch.setattr(stub, "get_llama_cpp_backend", lambda: _LocalGguf(), raising = False)
+    digits = str(list(range(4000)))
+    monkeypatch.setattr(tools, "_web_search", lambda *a, **k: digits)
+
+    messages = _forwarded([_call_turn("c1"), _ANSWER_TURN], served_window = _serves(8192))
+
+    (result,) = _results(messages)
+    rest = [message for message in messages if message.get("role") != "tool"]
+    assert len(result) + estimate_messages_tokens_conservative(rest) < 8192

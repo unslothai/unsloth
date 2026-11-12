@@ -2165,9 +2165,9 @@ async def _stream_with_studio_tools(
                     kwargs["conversation_branch"] = extend_live_branch()
                 if approved and accepts_kwarg(execute_tool, "host_access_approved"):
                     kwargs["host_access_approved"] = True
-                # No served window: 0 keeps the default page cap; unmeasurable budget means one recall, since 8 chunks is ~4K tokens replayed each later call.
+                # 0 even with a served window: tools would count with a local GGUF loaded at that window; also keeps one recall (8 chunks is ~4K tokens replayed each later call).
                 if accepts_kwarg(execute_tool, "context_tokens"):
-                    kwargs["context_tokens"] = window or 0
+                    kwargs["context_tokens"] = 0
                 if window and accepts_kwarg(execute_tool, "result_budget_tokens"):
                     kwargs["result_budget_tokens"] = _result_budget_tokens(
                         window,
