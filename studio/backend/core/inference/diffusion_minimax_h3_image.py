@@ -680,7 +680,17 @@ def row_timestep_plan(timesteps: Any, seq_len: int, reference_rows: Any) -> list
     return plan
 
 
+def _close_diffusers_import_window() -> None:
+    """The download plan and load preflight import this module before any load closes the window."""
+    try:
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(logger)
+    except Exception:  # noqa: BLE001 - ordering only; the import still runs
+        pass
+
+
 def _scheduler_bases() -> tuple:
+    _close_diffusers_import_window()
     try:
         from diffusers.configuration_utils import ConfigMixin, register_to_config
         from diffusers.schedulers.scheduling_utils import SchedulerMixin
@@ -1037,6 +1047,7 @@ def torch_no_grad(fn: Callable) -> Callable:
 
 
 def _pipeline_base() -> Any:
+    _close_diffusers_import_window()
     try:
         from diffusers import DiffusionPipeline
     except (
