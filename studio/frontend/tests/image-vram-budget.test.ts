@@ -131,12 +131,28 @@ test("a Hub download plan waits for the staged budget save", async () => {
   ]);
 });
 
+test("a failed budget save surfaces as VramBudgetSaveError, not a plan failure", async () => {
+  const { budget, images, sent, release } = setup();
+  budget.stageVramBudgetSave(0.9);
+  const planning = images.withSettledVramBudget(() =>
+    images.getDiffusionDownloadPlan({ model_path: "example/image" }),
+  );
+  release(Response.json({ detail: "Budget save failed" }, { status: 500 }));
+  await assert.rejects(planning, (error: unknown) => error instanceof images.VramBudgetSaveError);
+  assert.deepEqual(sent, ["PUT /api/settings/vram-budget"]);
+});
+
 test("the staged Hub plan settles the budget first", async () => {
   const { readFileSync } = await import("node:fs");
   const read = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
   assert.match(
     read("features/images/images-page.tsx"),
     /const plan = await withSettledVramBudget\(\(\) =>\s*retiredSnapshot/,
+  );
+  assert.match(
+    read("features/images/images-page.tsx"),
+    /if \(error instanceof VramBudgetSaveError\) \{[\s\S]{0,400}?return true;/,
+    "a failed budget save must not fall through to the fallback load",
   );
 });
 

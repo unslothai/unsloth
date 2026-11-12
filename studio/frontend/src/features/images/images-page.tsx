@@ -330,6 +330,7 @@ import {
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
   withSettledVramBudget,
+  VramBudgetSaveError,
   loadDiffusionModel,
   moveDiffusionQueueJob,
   type ImageQueueJob,
@@ -4479,6 +4480,16 @@ export function ImagesPage({
           return true;
         }
       } catch (error) {
+        // Not a plan failure: the fallback load below would run on the budget the user replaced.
+        if (error instanceof VramBudgetSaveError) {
+          pickToast.dismiss(pickToastId);
+          if (ownRevert && quantRevert.current === ownRevert) {
+            revertPick(ownRevert);
+            quantRevert.current = null;
+          }
+          toast.error(error.message);
+          return true;
+        }
         if (downloadOnly) {
           toast.error("Could not plan the download", {
             description: error instanceof Error ? error.message : "Try selecting the model again.",

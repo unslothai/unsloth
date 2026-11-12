@@ -447,6 +447,14 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
   return parseJson(await authFetch("/api/inference/images/generate-progress"));
 }
 
+/** The budget edit never reached the server, so nothing may load on the old one. */
+export class VramBudgetSaveError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Failed to save VRAM budget");
+    this.name = "VramBudgetSaveError";
+  }
+}
+
 /** Settles a slider edit first: the backend snapshots the budget for a load and its download plan. */
 export async function withSettledVramBudget<T>(run: () => Promise<T>): Promise<T> {
   const budgetSave = settleVramBudgetSave();
@@ -456,7 +464,7 @@ export async function withSettledVramBudget<T>(run: () => Promise<T>): Promise<T
     // A refused load repaints the stored budget, so a re-staged retry would load a hidden value.
     await budgetSave.catch((error: unknown) => {
       dropVramBudgetRetry();
-      throw error;
+      throw new VramBudgetSaveError(error);
     });
     return await run();
   } finally {
