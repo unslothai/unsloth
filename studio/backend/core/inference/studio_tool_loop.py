@@ -397,7 +397,6 @@ class ToolLoopRun:
     supports_vision: bool = False
     # Counted toward the loop's image cap so resumed chats cannot exceed it.
     promoted_image_parts: tuple = ()
-    # Reads the window the server reports; None when unknown, which keeps the fixed result caps.
     served_window: Callable[[], Awaitable[int | None]] | None = None
     max_tokens: int | None = None
 
@@ -2165,7 +2164,7 @@ async def _stream_with_studio_tools(
                     kwargs["conversation_branch"] = extend_live_branch()
                 if approved and accepts_kwarg(execute_tool, "host_access_approved"):
                     kwargs["host_access_approved"] = True
-                # 0 even with a served window: tools would count with a local GGUF loaded at that window; also keeps one recall (8 chunks is ~4K tokens replayed each later call).
+                # 0, not the served window: tools would count with a local GGUF loaded at that window.
                 if accepts_kwarg(execute_tool, "context_tokens"):
                     kwargs["context_tokens"] = 0
                 if window and accepts_kwarg(execute_tool, "result_budget_tokens"):
