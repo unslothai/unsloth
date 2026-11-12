@@ -101,7 +101,7 @@ def _build_custom_folder_listing(path: Path, recursive: bool) -> LocationListing
     if not path.is_dir():
         return LocationListing({}, {})
     walked = [path, *(nested_scan_roots(path) if recursive else ())]
-    walked_set = set(walked)
+    noted = set(walked)
 
     def note_files(directory: Path, entries: list[os.DirEntry]) -> None:
         for entry in entries:
@@ -113,8 +113,26 @@ def _build_custom_folder_listing(path: Path, recursive: bool) -> LocationListing
             if entry.name.lower().startswith("models--") and _entry_is(entry, "dir"):
                 hub_caches.setdefault(entry.name.lower(), []).append(directory)
 
+    def subdirs(entries: list[os.DirEntry]) -> list[Path]:
+        return [
+            Path(entry.path)
+            for entry in entries
+            if not entry.name.startswith(".")
+            and not entry.name.lower().startswith("models--")
+            and _entry_is(entry, "dir")
+        ]
+
+    def note_subdir_files(directories: list[Path]) -> None:
+        for child in directories:
+            if child not in noted:
+                noted.add(child)
+                note_files(child, _list_entries(child, _MAX_CUSTOM_FOLDER_ENTRIES))
+
+    root_entries: list[os.DirEntry] = []
     for directory in walked:
         entries = _list_entries(directory, _MAX_CUSTOM_FOLDER_ENTRIES)
+        if directory == path:
+            root_entries = entries
         note_files(directory, entries)
         for hub_cache in scan_folder_hf_caches(directory):
             note_caches(
@@ -124,17 +142,16 @@ def _build_custom_folder_listing(path: Path, recursive: bool) -> LocationListing
                 else _list_entries(hub_cache, _MAX_CUSTOM_FOLDER_ENTRIES),
             )
         # Loose files one level down: the Model Hub lists a sub-folder holding a GGUF as a model.
-        for entry in entries:
-            name = entry.name
-            if (
-                name.startswith(".")
-                or name.lower().startswith("models--")
-                or not _entry_is(entry, "dir")
-            ):
-                continue
-            child = Path(entry.path)
-            if child not in walked_set:
-                note_files(child, _list_entries(child, _MAX_CUSTOM_FOLDER_ENTRIES))
+        note_subdir_files(subdirs(entries))
+    # <publisher>/<model>/ under the folder itself, which the Model Hub's LM Studio scan lists even when not recursive;
+    # bounded like that scan, by one entry budget over the folder and its publisher folders.
+    budget = _MAX_CUSTOM_FOLDER_ENTRIES - len(root_entries)
+    for publisher in subdirs(root_entries):
+        if budget <= 0:
+            break
+        entries = _list_entries(publisher, budget)
+        budget -= len(entries)
+        note_subdir_files(subdirs(entries))
     return LocationListing(
         {name: tuple(dirs) for name, dirs in hub_caches.items()},
         {name: tuple(dirs) for name, dirs in file_dirs.items()},

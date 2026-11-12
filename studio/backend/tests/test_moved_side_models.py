@@ -116,7 +116,10 @@ def test_other_known_caches_are_searched_like_chat_loads(caches, tmp_path, root)
         ("", False, True),
         ("asr", False, True),
         ("audio/asr", True, True),
-        ("audio/asr", False, False),
+        # <publisher>/<model>/: the Model Hub's LM Studio scan lists it in any custom folder.
+        ("audio/asr", False, True),
+        ("a/b/asr", True, True),
+        ("a/b/asr", False, False),
     ],
 )
 def test_loose_pair_is_found_where_the_model_hub_lists_loose_ggufs(
