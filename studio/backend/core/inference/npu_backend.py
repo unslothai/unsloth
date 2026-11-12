@@ -786,11 +786,16 @@ class LemonadeNpuBackend:
             if staged.is_dir() and not staged.is_symlink():
                 shutil.rmtree(staged, ignore_errors = True)
         if local.stamp:
-            # Hidden by the weights' stamp: a new conversion into the folder lists it again.
-            hidden = [stamp for stamp in self._hidden_local() if stamp != local.stamp]
+            # Hidden by the weights' stamp: a new conversion into the folder lists it again, and
+            # only stamps whose weights are gone or replaced are dropped.
+            hidden = [
+                stamp
+                for stamp in self._hidden_local()
+                if stamp != local.stamp and local_q4nx.stamp_is_current(stamp)
+            ]
             self._local_dir.mkdir(parents = True, exist_ok = True)
             (self._local_dir / "hidden.json").write_text(
-                json.dumps([*hidden[-199:], local.stamp], indent = 2) + "\n", encoding = "utf-8"
+                json.dumps([*hidden, local.stamp], indent = 2) + "\n", encoding = "utf-8"
             )
 
     def _model_files(self, checkpoint: str, flm_binary: Optional[Path]) -> Optional[FlmModelFiles]:

@@ -99,11 +99,21 @@ class LocalQ4nx:
     @property
     def stamp(self) -> str:
         """Changes when the folder is converted again, so a hidden row comes back with new weights."""
-        try:
-            info = (self.folder / "model.q4nx").stat()
-        except OSError:
-            return ""
-        return f"{os.path.normcase(str(self.folder))}|{info.st_mtime_ns}|{info.st_size}"
+        return weights_stamp(self.folder)
+
+
+def weights_stamp(folder: Path) -> str:
+    try:
+        info = (folder / "model.q4nx").stat()
+    except OSError:
+        return ""
+    return f"{os.path.normcase(str(folder))}|{info.st_mtime_ns}|{info.st_size}"
+
+
+def stamp_is_current(stamp: str) -> bool:
+    """Whether the weights a stamp names are still the ones in its folder."""
+    folder = stamp.split("|", 1)[0]
+    return bool(folder) and weights_stamp(Path(folder)) == stamp
 
 
 def is_local_checkpoint(checkpoint: str) -> bool:

@@ -121,6 +121,15 @@ def test_the_registered_entry_runs_on_the_base_kernels_and_cannot_be_pulled():
     assert folder.is_dir()
 
 
+def test_a_hidden_stamp_lasts_until_its_weights_change():
+    folder = _converted()
+    stamp = nlm.weights_stamp(folder)
+    assert nlm.stamp_is_current(stamp)
+    os.utime(folder / "model.q4nx", ns = (1, 1))
+    assert not nlm.stamp_is_current(stamp)
+    assert not nlm.stamp_is_current("")
+
+
 def test_a_text_only_conversion_drops_the_vision_tower():
     _converted()
     [local] = nlm.account_local_models()
