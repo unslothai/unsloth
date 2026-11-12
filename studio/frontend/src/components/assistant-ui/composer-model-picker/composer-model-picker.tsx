@@ -1269,7 +1269,6 @@ export function ComposerModelPicker({
   const activeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
-  // The backend's per-model capability flags, for the details menu.
   const chatModels = useChatRuntimeStore((s) => s.models);
   const pinned = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
@@ -2996,7 +2995,6 @@ export function ComposerModelPicker({
               {row.loaded ? (
                 <LoadedDot label={row.label} onEject={() => eject(row)} />
               ) : row.kind === "hub" && row.onDevice ? (
-                // The header picker's and the Hub's on-device mark.
                 <Hint label="On device">
                   <span
                     role="img"
