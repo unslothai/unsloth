@@ -128,3 +128,20 @@ test("the picker offers only confirmed checkpoints from a mixed SDXL repo", asyn
   assert.deepEqual(calls.sort(), [...names].sort());
   assert.equal(fetch.mock.callCount(), 3);
 });
+
+test("confirmed SDXL checkpoints survive a reload for offline reopening", async () => {
+  const { rememberSdxlCheckpoints, rememberedSdxlCheckpoints } = await import(
+    "../src/features/hub/lib/sdxl-checkpoints.ts"
+  );
+  const { installLocalStorageFake } = await import("./helpers/kit.ts");
+  installLocalStorageFake();
+  assert.equal(rememberedSdxlCheckpoints("acme/sdxl"), undefined);
+  const files = [{ filename: "edition.safetensors", bytes: 7 }];
+  rememberSdxlCheckpoints("Acme/SDXL", files);
+  assert.deepEqual(rememberedSdxlCheckpoints("acme/sdxl"), files);
+  for (let i = 0; i < 60; i++) rememberSdxlCheckpoints(`acme/r${i}`, files);
+  assert.equal(rememberedSdxlCheckpoints("acme/sdxl"), undefined);
+  assert.deepEqual(rememberedSdxlCheckpoints("acme/r59"), files);
+  window.localStorage.setItem("unsloth.hub.sdxlCheckpoints", JSON.stringify({ "acme/x": [{ filename: "../a.safetensors" }] }));
+  assert.deepEqual(rememberedSdxlCheckpoints("acme/x"), []);
+});

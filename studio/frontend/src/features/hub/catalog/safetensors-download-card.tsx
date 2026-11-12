@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { confirmedSdxlCheckpoints } from "../lib/sdxl-checkpoints";
+import {
+  confirmedSdxlCheckpoints,
+  rememberedSdxlCheckpoints,
+  rememberSdxlCheckpoints,
+} from "../lib/sdxl-checkpoints";
 import { imageCheckpointSelection, type ImageCheckpointFile } from "../download-manager/required-assets";
 import { useHubDownloadPlan, useHubQueue } from "../download-manager/use-hub-download-queue";
 import { HubPlanProgress } from "../download-manager/hub-plan-progress";
@@ -12,7 +16,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { deleteCachedModel } from "../inventory";
@@ -100,7 +104,15 @@ export function SafetensorsDownloadCard({
   const sizeKey = `${hfEndpoint}::${repoId}::${fingerprintToken(hfToken)}`;
   const [metadata, setMetadata] = useState<{ key: string; info: ModelSizeInfo | null; choices?: ImageCheckpointFile[] }>();
   const info = metadata?.key === sizeKey ? metadata.info : undefined;
-  const choices = discoverCheckpoints && metadata?.key === sizeKey ? metadata.choices : undefined;
+  const remembered = useMemo(
+    () => (discoverCheckpoints && !online ? rememberedSdxlCheckpoints(repoId) : undefined),
+    [discoverCheckpoints, online, repoId],
+  );
+  const choices = !discoverCheckpoints
+    ? undefined
+    : metadata?.key === sizeKey
+      ? metadata.choices
+      : remembered;
   const job = useRepoDownload({
     kind: "model",
     repoId,
@@ -168,6 +180,7 @@ export function SafetensorsDownloadCard({
           ? await confirmedSdxlCheckpoints(repoId, info, hfToken || undefined, signal)
           : undefined;
         if (signal.aborted) return;
+        if (choices?.length) rememberSdxlCheckpoints(repoId, choices);
         setMetadata({ key: sizeKey, info, choices });
         const upstream = info?.weightsBytes ?? info?.totalBytes;
         if (!knownBytes && upstream) setJobExpectedBytes(upstream);
