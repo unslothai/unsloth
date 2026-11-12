@@ -554,3 +554,17 @@ test("the composer picker follows Settings > Chat > Model selection", () => {
     );
   }
 });
+
+test("a downloaded MLX repo still resolves its precision folder", () => {
+  const src = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // Discover rows list MLX variants whether or not they are on disk.
+  assert.match(
+    src,
+    /row\.kind === "hub" && \(row\.hub\?\.isGguf \|\| row\.format === "mlx"\)/,
+  );
+  // On Device rows resolve one too, and a plain snapshot falls back to loading whole.
+  assert.match(src, /row\.kind === "cached" && row\.format === "mlx"/);
+  assert.match(src, /row\.kind === "cached" && !\(mlx && quant\)/);
+});

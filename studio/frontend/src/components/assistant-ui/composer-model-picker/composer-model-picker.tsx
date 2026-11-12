@@ -371,11 +371,18 @@ function quantTarget(row: Row): QuantTarget | null {
   if (row.kind === "localGguf") {
     return { id: row.id, localPath: null, local: true, remote: false };
   }
-  if (
-    row.kind === "hub" &&
-    (row.hub?.isGguf || (row.format === "mlx" && !row.onDevice))
-  ) {
+  // MLX precision folders load only with their variant named, downloaded or not.
+  if (row.kind === "hub" && (row.hub?.isGguf || row.format === "mlx")) {
     return { id: row.id, localPath: null, local: false, remote: true };
+  }
+  if (row.kind === "cached" && row.format === "mlx") {
+    return {
+      id: row.id,
+      localPath: null,
+      local: false,
+      remote: true,
+      everyQuant: true,
+    };
   }
   return null;
 }
@@ -2030,7 +2037,10 @@ export function ComposerModelPicker({
   const isExpanded = expanded || !chosenName;
 
   const chosenTarget =
-    chosen && chosen.kind !== "hub" ? quantTarget(chosen) : null;
+    // The Quantization row switches GGUF quants; an MLX precision is picked from its row.
+    chosen && chosen.kind !== "hub" && chosen.kind !== "cached"
+      ? quantTarget(chosen)
+      : null;
   const chosenTargetRef = useRef(chosenTarget);
   chosenTargetRef.current = chosenTarget;
   const chosenQuantKey = chosenTarget ? chosen?.key : undefined;
@@ -2106,6 +2116,14 @@ export function ComposerModelPicker({
       target.remote && fetched.length > 0 ? fetched : list,
       [row.loadedQuant, defaultVariant],
     );
+    // A plain MLX snapshot has no precision folders: it loads as one checkpoint.
+    if (row.kind === "cached" && !(mlx && quant)) {
+      if (row.id !== chosen?.id) {
+        setPending(row);
+      }
+      source.onPick(row.id, cachedMeta(row));
+      return;
+    }
     if (!quant) {
       handOff(row);
       return;
@@ -2318,7 +2336,13 @@ export function ComposerModelPicker({
       try {
         await pickQuantRow(row, target, seq);
       } catch {
-        handOff(row);
+        // Offline, a downloaded MLX snapshot still loads as one checkpoint.
+        if (row.kind === "cached" && pickSeq.current === seq) {
+          source.onPick(row.id, cachedMeta(row));
+          resetView();
+        } else {
+          handOff(row);
+        }
         return;
       } finally {
         setResolving(null);
@@ -2536,9 +2560,17 @@ export function ComposerModelPicker({
         row.id === chosen?.id ? activeVariant : null,
         defaultVariant,
       ]);
-      return quant
-        ? ggufMeta(row, quant, target.local || quant.downloaded === true, !mlx)
-        : null;
+      if (quant && (mlx || row.kind !== "cached")) {
+        return ggufMeta(
+          row,
+          quant,
+          target.local || quant.downloaded === true,
+          !mlx,
+        );
+      }
+      if (row.kind !== "cached") {
+        return null;
+      }
     }
     if (row.kind === "local" && row.lora) {
       return loraMeta(row.lora);
