@@ -17,7 +17,9 @@ import {
   DEFAULT_TOOL_VISIBILITY,
   type PlusMenuItemId,
   normaliseDisplayVisibility,
+  readAutoLoadModelPreference,
   requestReplyFinishedPermission,
+  saveAutoLoadModelPreference,
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
@@ -317,6 +319,9 @@ export function ChatTab() {
   );
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
+  );
+  const [autoLoadModel, setAutoLoadModel] = useState(
+    readAutoLoadModelPreference,
   );
   const keepRunningWhenTabClosed = useChatRuntimeStore(
     (state) => state.keepRunningWhenTabClosed,
@@ -653,6 +658,19 @@ export function ChatTab() {
             aria-label={t("settings.chat.autoCompact")}
             checked={autoCompactEnabled}
             onCheckedChange={setAutoCompactEnabled}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.autoLoadModel")}
+          description={t("settings.chat.autoLoadModelDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.autoLoadModel")}
+            checked={autoLoadModel}
+            onCheckedChange={(enabled) => {
+              saveAutoLoadModelPreference(enabled);
+              setAutoLoadModel(enabled);
+            }}
           />
         </SettingsRow>
       </SettingsSection>

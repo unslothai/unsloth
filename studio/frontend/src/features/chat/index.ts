@@ -688,3 +688,9 @@ export { chatLocalModelOptions } from "./local-model-options";
 export { readLastLocalModelLoad } from "./utils/last-local-model-load";
 export { decideAutoRead } from "./utils/auto-read-aloud";
 export { wantsDownloadManagerStaging } from "./utils/model-download-staging";
+export {
+  CHAT_AUTO_LOAD_MODEL_KEY,
+  DEFAULT_CHAT_AUTO_LOAD_MODEL,
+  readAutoLoadModelPreference,
+  saveAutoLoadModelPreference,
+} from "./utils/auto-load-preference";

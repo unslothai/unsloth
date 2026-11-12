@@ -164,6 +164,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
+    "settings.chat.autoLoadModel",
     "settings.chat.keepRunningWhenTabClosed",
     "settings.chat.toolResultLimit",
     "settings.chat.firstTokenLabel",

@@ -20,7 +20,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useChatRuntimeStore } from "@/features/chat";
+import {
+  CHAT_AUTO_LOAD_MODEL_KEY,
+  useChatRuntimeStore,
+} from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
 // so the key was still in its temporal dead zone when the module-scope list below read it, killing
 // the module graph. The keys module imports nothing, so it is always evaluated first.
@@ -161,6 +164,7 @@ const PREFS_KEYS: string[] = [
   DOWNLOAD_DIR_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
+  CHAT_AUTO_LOAD_MODEL_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
   "unsloth_chat_sandbox_level",
