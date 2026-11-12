@@ -26,12 +26,11 @@ _location_lock = threading.Lock()
 # (row key, path, recursive, kind): kind "cache" is a Hub cache root, "folder" a custom folder.
 _Row = tuple[str, Path, bool, str]
 _location_rows_memo: dict[str, tuple[float, tuple[_Row, ...]]] = {}
-_location_listings_memo: dict[tuple[str, str], tuple[float, "LocationListing"]] = {}
+# Keyed by kind too: a known cache that is also a custom folder is listed both ways (repos only, and loose files).
+_location_listings_memo: dict[tuple[str, str, str], tuple[float, "LocationListing"]] = {}
 _LOCATION_MEMO_MAX = 256
 # Entries read from one custom-folder directory, as the Model Hub's custom-folder scan (_MAX_CUSTOM_FOLDER_ENTRIES).
 _CUSTOM_FOLDER_ENTRY_LIMIT = 2000
-# Bounded-run key for listing the known caches, which resolves every stored Models folder path.
-_KNOWN_CACHES_KEY = "\x00known Hugging Face caches"
 _T = TypeVar("_T")
 _C = TypeVar("_C")
 
@@ -178,12 +177,17 @@ def _norm_key(path: Path | str) -> str:
 
 def _known_cache_rows() -> list[_Row]:
     """The Hub caches chat model loads also search, besides the active one: previous Models folders, download
-    folders, then the legacy and default caches. Paths only; nothing under them is touched here."""
+    folders, then the legacy and default caches. Stored paths are taken as written, not resolved: each is touched only
+    inside its own bounded listing, so one dead mount cannot hide the others."""
     from core.inference.stt_sidecar import _active_hf_hub_cache
     from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
-    from utils.hf_cache_settings import known_hf_hub_caches
+    from utils.hf_cache_settings import known_hf_hub_cache_candidates
 
-    known = _bounded(_KNOWN_CACHES_KEY, lambda: list(known_hf_hub_caches())) or []
+    try:
+        known = known_hf_hub_cache_candidates()
+    except Exception as exc:  # noqa: BLE001 - the legacy and default caches still count
+        logger.debug("Could not list known Hub caches: %s", exc)
+        known = []
     seen = {_norm_key(_active_hf_hub_cache())}
     rows: list[_Row] = []
     for root in (*known, legacy_hf_cache_dir(), hf_default_cache_dir()):
@@ -225,7 +229,7 @@ def search_other_locations(
         rows = (*_known_cache_rows(), *_custom_folder_rows())
         _memo_put(_location_rows_memo, scope, rows)
     for raw, path, recursive, kind in rows:
-        listing = _memo_get(_location_listings_memo, (scope, raw))
+        listing = _memo_get(_location_listings_memo, (scope, kind, raw))
         if listing is not None and not any(True for _ in candidates(listing)):
             continue
 
@@ -243,7 +247,7 @@ def search_other_locations(
                     )
                 else:
                     listing = _build_custom_folder_listing(path, recursive)
-                _memo_put(_location_listings_memo, (scope, raw), listing)
+                _memo_put(_location_listings_memo, (scope, kind, raw), listing)
             for candidate in candidates(listing):
                 found = probe(candidate)
                 if found is not None:

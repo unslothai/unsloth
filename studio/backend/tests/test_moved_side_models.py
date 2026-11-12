@@ -20,7 +20,10 @@ from core.inference import (
     stt_sidecar,
 )
 from core.inference import flux3_prompt_upsampler as pup
-from utils import hidden_models
+from utils import hf_cache_settings, hidden_models
+
+# Taken before any fixture replaces it.
+_KNOWN_CACHE_CANDIDATES = hf_cache_settings.known_hf_hub_cache_candidates
 
 _SHA = "a" * 40
 _MODEL_ID = "qwen3-asr-1.7b"
@@ -42,7 +45,9 @@ def caches(monkeypatch, tmp_path):
     folders: list[dict] = []
     roots = {"legacy": tmp_path / "legacy" / "hub", "default": tmp_path / "default" / "hub"}
     monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: active)
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: list(known))
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_cache_candidates", lambda: list(known)
+    )
     monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: roots["legacy"])
     monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: roots["default"])
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: list(folders))
@@ -314,41 +319,38 @@ def test_a_hung_custom_folder_is_skipped_within_the_hub_budget(
         local_inventory._custom_folder_scans[str(hung)][1].result(timeout = 5)
 
 
-@pytest.mark.parametrize(
-    "stall", ["listing the known caches", "previous cache listing", "previous cache probe"]
-)
-def test_a_hung_previous_models_folder_does_not_block_a_custom_folder(
-    caches, monkeypatch, tmp_path, stall
+@pytest.mark.parametrize("stall", ["listing", "probe"])
+@pytest.mark.parametrize("model_in", ["another previous Models folder", "a custom folder"])
+def test_a_hung_previous_models_folder_does_not_hide_other_locations(
+    caches, monkeypatch, tmp_path, stall, model_in
 ):
+    """One previous Models folder hangs while being listed or probed: it is given up within its own budget and marked
+    slow, every other location is still searched, and the next lookup does not wait on it again."""
     from hub.services.models import local_inventory
     from utils.paths.scan_folder_health import STATUS_SLOW, scan_folder_status
 
     monkeypatch.setattr(local_inventory, "_CUSTOM_FOLDER_SCAN_TIMEOUT_S", 0.2)
-    previous, good = tmp_path / "previous" / "hub", tmp_path / "good"
-    _hub_tree(previous, _SPEC.repo, {})  # incomplete, so a lookup probes its files
-    caches["known"].append(previous)
-    _asr_pair(good)
-    _register(caches, good)
+    hung = tmp_path / "hung" / "hub"
+    _hub_tree(hung, _SPEC.repo, {})  # incomplete, so a lookup probes its files
+    caches["known"].append(hung)
+    if model_in == "a custom folder":
+        _asr_pair(tmp_path / "good")
+        _register(caches, tmp_path / "good")
+        expected = str(tmp_path / "good" / _SPEC.model_file)
+    else:
+        healthy = tmp_path / "healthy" / "hub"
+        expected = str(_asr_tree(healthy) / _SPEC.model_file)
+        caches["known"].append(healthy)
     release = threading.Event()
-    if stall == "listing the known caches":
-        known = list(caches["known"])
-
-        def known_hf_hub_caches():
-            release.wait(10)
-            return known
-
-        monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", known_hf_hub_caches)
-        key = model_cache_search._KNOWN_CACHES_KEY
-    elif stall == "previous cache listing":
+    if stall == "listing":
         real = model_cache_search._build_cache_listing
 
         def build_cache_listing(root):
-            if root == previous:
+            if root == hung:
                 release.wait(10)
             return real(root)
 
         monkeypatch.setattr(model_cache_search, "_build_cache_listing", build_cache_listing)
-        key = str(previous)
     else:
         real_file = stt_mtmd_sidecar._cached_file
 
@@ -359,24 +361,97 @@ def test_a_hung_previous_models_folder_does_not_block_a_custom_folder(
             hub_cache = None,
             revision = None,
         ):
-            if hub_cache == previous:
+            if hub_cache == hung:
                 release.wait(10)
             return real_file(model_id, filename, hub_cache = hub_cache, revision = revision)
 
         monkeypatch.setattr(stt_mtmd_sidecar, "_cached_file", cached_file)
-        key = str(previous)
     try:
         started = time.monotonic()
-        assert _paths()[0] == str(good / _SPEC.model_file)
+        assert _paths()[0] == expected
         assert time.monotonic() - started < 2
-        assert scan_folder_status(key) == STATUS_SLOW
+        assert scan_folder_status(str(hung)) == STATUS_SLOW
         _forget_custom_folder_memos(monkeypatch)
         started = time.monotonic()
-        assert _paths()[0] == str(good / _SPEC.model_file)
+        assert _paths()[0] == expected
         assert time.monotonic() - started < 0.15
     finally:
         release.set()
-        local_inventory._custom_folder_scans[key][1].result(timeout = 5)
+        local_inventory._custom_folder_scans[str(hung)][1].result(timeout = 5)
+
+
+def test_a_dead_stored_models_folder_does_not_hide_a_healthy_one(caches, monkeypatch, tmp_path):
+    """Two previous Models folders are stored; resolving or reading the first hangs (a dead mount). The healthy one
+    still answers within the budget."""
+    from hub.services.models import local_inventory
+
+    monkeypatch.setattr(local_inventory, "_CUSTOM_FOLDER_SCAN_TIMEOUT_S", 0.2)
+    dead, healthy = tmp_path / "dead", tmp_path / "healthy"
+    snapshot = _asr_tree(healthy / "hub")
+    stored = {hf_cache_settings.CACHE_HISTORY_SETTING_KEY: [str(dead), str(healthy)]}
+    monkeypatch.setattr(
+        "storage.studio_db.get_app_setting", lambda key, default = None: stored.get(key, default)
+    )
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_cache_candidates", _KNOWN_CACHE_CANDIDATES
+    )
+    release = threading.Event()
+    real_canonical, real_listing = (
+        hf_cache_settings._canonical,
+        model_cache_search._build_cache_listing,
+    )
+
+    def canonical(path):
+        if str(path).startswith(str(dead)):
+            release.wait(10)
+        return real_canonical(path)
+
+    def build_cache_listing(root):
+        if str(root).startswith(str(dead)):
+            release.wait(10)
+        return real_listing(root)
+
+    monkeypatch.setattr(hf_cache_settings, "_canonical", canonical)
+    monkeypatch.setattr(model_cache_search, "_build_cache_listing", build_cache_listing)
+    try:
+        started = time.monotonic()
+        assert _paths()[0] == str(snapshot / _SPEC.model_file)
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()
+        for key, (_, future) in list(local_inventory._custom_folder_scans.items()):
+            if str(dead) in key:
+                future.result(timeout = 5)
+
+
+def test_known_caches_are_listed_without_resolving_them(monkeypatch):
+    """Resolving a stored Models folder on a dead mount hangs, so the location list takes the paths as written."""
+    from utils import hf_cache_settings
+
+    monkeypatch.setattr(hf_cache_settings, "_stored_cache_home_value", lambda: "/mnt/dead/models")
+    monkeypatch.setattr(hf_cache_settings, "_stored_path_values", lambda key: ["/mnt/dead/old"])
+    real = hf_cache_settings._canonical
+
+    def canonical(path):
+        assert "/mnt/dead" not in str(path), f"resolved {path}"
+        return real(path)
+
+    monkeypatch.setattr(hf_cache_settings, "_canonical", canonical)
+    candidates = [str(p) for p in hf_cache_settings.known_hf_hub_cache_candidates()]
+    assert "/mnt/dead/models/hub" in candidates and "/mnt/dead/old/hub" in candidates
+
+
+def test_a_known_cache_registered_as_a_custom_folder_is_listed_both_ways(caches, tmp_path):
+    """Its repos-only listing as a known cache must not stand in for its listing as a custom folder."""
+    previous = tmp_path / "previous" / "hub"
+    previous.mkdir(parents = True)
+    _asr_pair(previous / "asr")
+    caches["known"].append(previous)
+    _register(caches, previous)
+    assert _paths() == (
+        str(previous / "asr" / _SPEC.model_file),
+        str(previous / "asr" / _SPEC.mmproj_file),
+    )
 
 
 def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
@@ -389,7 +464,7 @@ def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
     active = tmp_path / "active"
     active.mkdir()
     monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: active)
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active])
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_cache_candidates", lambda: [active])
     monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
     _forget_custom_folder_memos(monkeypatch)
