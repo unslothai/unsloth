@@ -154,7 +154,13 @@ test("lowering the context clamps a saved prefill chunk, so the reload matches t
     (page.match(/contextPinPatch\([^)]*config\.npuPrefillChunkLen\)/g) ?? []).length,
     2,
   );
-  assert.match(page, /value=\{config\.npuPrefillChunkLen \?\? ""\}\s*placeholder="default"/);
+  // Same label as the Power Mode and Image Pre-resize dropdowns beside it.
+  assert.match(page, /const NPU_DEFAULT_LABEL = "Default";/);
+  assert.match(page, /value=\{config\.npuPrefillChunkLen \?\? ""\}\s*placeholder=\{NPU_DEFAULT_LABEL\}/);
+  assert.equal(
+    (page.match(/<SelectItem value=\{NPU_DEFAULT_CHOICE\}>\{NPU_DEFAULT_LABEL\}<\/SelectItem>/g) ?? []).length,
+    2,
+  );
 });
 
 test("the run settings panel offers Advanced settings for NPU models", () => {

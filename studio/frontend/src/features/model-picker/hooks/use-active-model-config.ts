@@ -132,7 +132,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       npuPowerMode,
       npuPrefillChunkLen,
       npuImgPreResize,
-      speculativeType: speculativeType ?? "auto",
+      // FastFlowLM has no speculative decoding; "auto" here reads as an edit right after an NPU load.
+      speculativeType: isNpuModelId(checkpoint) ? null : (speculativeType ?? "auto"),
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
       reasoningBudget: isGguf ? reasoningBudget : -1,

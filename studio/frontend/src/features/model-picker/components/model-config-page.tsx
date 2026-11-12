@@ -1633,6 +1633,7 @@ function MlxSpeculativeRows({
 }
 
 const NPU_DEFAULT_CHOICE = "default";
+const NPU_DEFAULT_LABEL = "Default";
 const NPU_POWER_MODE_LABELS: Record<NpuPowerMode, string> = {
   powersaver: "Power saver",
   balanced: "Balanced",
@@ -1680,7 +1681,7 @@ function NpuAdvancedSettings({
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value={NPU_DEFAULT_CHOICE}>Default</SelectItem>
+            <SelectItem value={NPU_DEFAULT_CHOICE}>{NPU_DEFAULT_LABEL}</SelectItem>
             {NPU_POWER_MODES.map((mode) => (
               <SelectItem key={mode} value={mode}>
                 {NPU_POWER_MODE_LABELS[mode]}
@@ -1703,7 +1704,7 @@ function NpuAdvancedSettings({
           max={contextLength}
           step={1}
           value={config.npuPrefillChunkLen ?? ""}
-          placeholder="default"
+          placeholder={NPU_DEFAULT_LABEL}
           onChange={(event) => {
             const raw = event.target.value;
             if (raw === "") {
@@ -1750,7 +1751,7 @@ function NpuAdvancedSettings({
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-              <SelectItem value={NPU_DEFAULT_CHOICE}>Default</SelectItem>
+              <SelectItem value={NPU_DEFAULT_CHOICE}>{NPU_DEFAULT_LABEL}</SelectItem>
               {NPU_IMG_PRE_RESIZE_LABELS.map((label, level) => (
                 <SelectItem key={label} value={String(level)}>
                   {label}
