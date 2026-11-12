@@ -97,7 +97,6 @@ def test_ollama_eos_tokens_keep_short_tokens_whole():
 
 
 def test_ollama_eos_tokens_keep_unrelated_characters():
-    # Stripping the shared "e" left a stop of "e".
     for seed in range(8):
         assert _run(seed, ["<pad>", "eop", "ezz", "abc", "def"], "<pad>") == [
             "abc",
@@ -113,7 +112,6 @@ def test_ollama_eos_tokens_still_collapse_real_families():
 
 
 def test_ollama_eos_tokens_drop_whitespace_only_stops():
-    # Gemma's tab-run tokens made "\t" a stop, ending generation at the first indent.
     for seed in range(4):
         tokens = ["<pad>", "\t", "\t\t", "\t\t\t", "\n\n", "<end_of_turn>"]
         assert _run(seed, tokens, "<pad>") == ["<end_of_turn>"]
