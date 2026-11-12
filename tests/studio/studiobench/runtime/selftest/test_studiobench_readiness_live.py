@@ -258,6 +258,16 @@ def test_a_virtualised_thread_covers_every_ordinal_when_the_sweep_is_continuous(
     assert out["ordinals_missing"] == []
 
 
+def test_a_scroll_anchor_jump_does_not_leave_coverage_unmeasured(browser):
+    """A re-anchoring jump can carry one step past a row even below the step cap; the traversal
+    steps back until that row mounts, so coverage stays measured and complete."""
+    out, _ = _completeness(browser, "windowed_anchor_jump")
+    assert out["head_reached"] is True, out
+    assert out["sweep_continuous"] is True, out
+    assert out["ordinal_coverage_state"] == COVERAGE_COMPLETE, out
+    assert out["ordinals_missing"] == []
+
+
 def test_a_thread_that_lost_the_middle_passes_the_head_marker_and_fails_coverage(browser):
     """A store with only its first and last page passes the head marker; ordinal coverage catches it."""
     out, got = _completeness(browser, "windowed_lost_middle")
