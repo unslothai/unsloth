@@ -683,3 +683,31 @@ test("a Responses object keeps parallel calls in one turn, namespaces and genera
     { type: "image", image: "data:image/webp;base64,QUJD" },
   ]);
 });
+
+test("alpaca system, text-part tool outputs and bundled call outputs survive import", () => {
+  const [alpaca] = parseImportText(
+    JSON.stringify({ system: "Be brief.", instruction: "Name a prime", input: "", output: "7" }),
+    "alpaca.jsonl",
+  );
+  assert.deepEqual(alpaca.messages.map((m) => m.role), ["system", "user", "assistant"]);
+
+  const [response] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [
+        { role: "user", content: "Run it" },
+        { type: "function_call", call_id: "f1", name: "read", arguments: "{}" },
+        { type: "function_call_output", call_id: "f1", output: [{ type: "input_text", text: "file body" }] },
+        { type: "shell_call", call_id: "s1", action: { commands: ["ls"] }, output: "a.txt" },
+      ],
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] }],
+    }),
+    "response.json",
+  );
+  const calls = response.messages.flatMap(
+    (m) => m.content as ReadonlyArray<{ type?: string; result?: unknown }>,
+  ).filter((p) => p.type === "tool-call");
+  assert.deepEqual(calls.map((p) => p.result), ["file body", "a.txt"]);
+  assert.equal(response.messages.at(-1)?.role, "assistant");
+  assert.deepEqual(response.messages.at(-1)?.content, [{ type: "text", text: "Done." }]);
+});

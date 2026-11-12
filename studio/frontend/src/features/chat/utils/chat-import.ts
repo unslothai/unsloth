@@ -348,11 +348,7 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
 }
 
 // Alpaca input follows the instruction, as in the backend's dataset formatter.
-function pairToRecords(
-  obj: Record<string, unknown>,
-  threadId: string,
-  baseTs: number,
-): MessageRecord[] {
+function pairToTurns(obj: Record<string, unknown>): unknown[] {
   const isAlpaca =
     typeof obj.instruction === "string" && typeof obj.output === "string";
   const isPair =
@@ -363,33 +359,26 @@ function pairToRecords(
       ? `${obj.instruction}\n\n${typeof obj.input === "string" ? obj.input : ""}`
       : (obj.prompt as string)
   ).trim();
-  const assistantText = (
-    isAlpaca ? obj.output : obj.completion
-  ) as string;
+  const assistantText = (isAlpaca ? obj.output : obj.completion) as string;
   if (!userText || !assistantText.trim()) return [];
-  const userId = crypto.randomUUID();
   return [
-    {
-      id: userId,
-      threadId,
-      parentId: null,
-      role: "user",
-      content: [{ type: "text", text: userText }] as MessageRecord["content"],
-      createdAt: baseTs,
-      metadata: { createdAtEstimated: true },
-    },
-    {
-      id: crypto.randomUUID(),
-      threadId,
-      parentId: userId,
-      role: "assistant",
-      content: [
-        { type: "text", text: assistantText },
-      ] as MessageRecord["content"],
-      createdAt: baseTs + 1,
-      metadata: { createdAtEstimated: true },
-    },
+    ...(typeof obj.system === "string" ? [{ role: "system", content: obj.system }] : []),
+    { role: "user", content: userText },
+    { role: "assistant", content: assistantText },
   ];
+}
+
+// Responses tool outputs may be content-part arrays; text-only ones keep their text.
+function toolOutputText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (
+    Array.isArray(output) &&
+    output.length > 0 &&
+    output.every((p) => typeof p?.text === "string")
+  ) {
+    return output.map((p) => p.text).join("\n");
+  }
+  return JSON.stringify(output ?? "");
 }
 
 // Saved Responses API object: adjacent assistant items share one turn, as in the
@@ -439,8 +428,9 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
         }
       } else if (type.endsWith("_call")) {
         const name = text(entry.name) ?? type.replace(/_call$/, "");
+        const id = text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID();
         assistantTurn().tool_calls.push({
-          id: text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID(),
+          id,
           type: "function",
           function: {
             // namespace__name and {input} wrapping match the backend.
@@ -455,14 +445,15 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
                   ),
           },
         });
+        // Completed builtin calls (shell_call, ...) can carry their own output.
+        if (entry.output != null) {
+          turns.push({ role: "tool", tool_call_id: id, content: toolOutputText(entry.output) });
+        }
       } else if (type.endsWith("_call_output") && typeof entry.call_id === "string") {
         turns.push({
           role: "tool",
           tool_call_id: entry.call_id,
-          content:
-            typeof entry.output === "string"
-              ? entry.output
-              : JSON.stringify(entry.output ?? ""),
+          content: toolOutputText(entry.output),
         });
       }
     }
@@ -506,7 +497,7 @@ export function recordToConversation(
     messages = sharegptToRecords(obj.conversations, threadId, baseTs);
   }
   if (messages.length === 0) {
-    messages = pairToRecords(obj, threadId, baseTs);
+    messages = oaiMessagesToRecords(pairToTurns(obj), threadId, baseTs);
   }
   if (messages.length === 0) {
     messages = oaiMessagesToRecords(responsesToTurns(obj), threadId, baseTs);
