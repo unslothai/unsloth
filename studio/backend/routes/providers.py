@@ -39,6 +39,7 @@ from core.inference.providers import (
     get_connectable_provider_info,
     get_provider_info,
     list_available_providers,
+    provider_default_models,
     validate_provider_base_url,
 )
 from core.inference.pricing import pricing_snapshot
@@ -48,6 +49,7 @@ from core.inference import openai_codex_auth, openai_codex_client
 from core.inference.provider_model_capabilities import (
     MODEL_CAPABILITY_PROVIDERS,
     MODELS_DEV_URL,
+    models_dev_chat_models,
     provider_model_capabilities,
     trim_models_dev_catalog,
 )
@@ -307,7 +309,11 @@ async def list_registry(
     it saw before and cannot render them as duplicate dropdown options.
     OAuth rows need ``include_hidden`` or ``include_oauth``.
     """
-    return list_available_providers(include_hidden = include_hidden, include_oauth = include_oauth)
+    return list_available_providers(
+        include_hidden = include_hidden,
+        include_oauth = include_oauth,
+        catalog_models = cached_catalog_models(),
+    )
 
 
 @router.get("/pricing")
@@ -1115,6 +1121,13 @@ def _write_model_catalog_file(data: dict) -> None:
         logger.warning("providers.model_catalog_cache_write_failed", error = str(exc))
 
 
+def cached_catalog_models() -> dict[str, list[str]]:
+    global _model_catalog_cache
+    if _model_catalog_cache is None:
+        _model_catalog_cache = _read_model_catalog_file()
+    return (_model_catalog_cache or {}).get("models") or {}
+
+
 def cached_catalog_model_inputs(namespace: str, model: str) -> list[str] | None:
     global _model_catalog_cache
     if _model_catalog_cache is None:
@@ -1130,14 +1143,23 @@ async def _fetch_models_dev_catalog() -> dict:
 
     response = await _client().get(MODELS_DEV_URL, timeout = 20.0)
     response.raise_for_status()
-    return {"fetched_at": time.time(), "providers": trim_models_dev_catalog(response.json())}
+    raw = response.json()
+    return {
+        "fetched_at": time.time(),
+        "providers": trim_models_dev_catalog(raw),
+        "models": models_dev_chat_models(raw),
+    }
 
 
 @router.get("/model-catalog", response_model = ModelCatalogResponse)
 async def get_model_catalog(_current_subject: str = Depends(get_current_subject)):
     global _model_catalog_cache
     cached = _model_catalog_cache or _read_model_catalog_file()
-    if cached is not None and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS:
+    if (
+        cached is not None
+        and "models" in cached
+        and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS
+    ):
         _model_catalog_cache = cached
         return cached
     try:
@@ -1358,12 +1380,14 @@ async def list_provider_models(
             denylist = info.get("model_id_denylist")
             if denylist is not None:
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
-        # Optional cap after filtering to keep large catalogs picker-sized. Unsorted, so "first N matches"; pair with
-        # default_models for flagships.
+        # Optional cap after filtering to keep large catalogs picker-sized. The server does not sort, so catalog
+        # models go first.
         if shared_models is not None:
             models = [m for m in models if m.get("id", "") in shared_models]
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
+            newest = provider_default_models(payload.provider_type, cached_catalog_models())
+            models.sort(key = lambda m: m.get("id", "") not in newest)
             models = models[:limit]
         return [
             ProviderModelInfo(

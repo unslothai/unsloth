@@ -112,6 +112,7 @@ import {
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
+  refreshModelsDevCatalog,
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
@@ -144,6 +145,16 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
 
 function hasPublicModelCatalog(providerType: string | null | undefined): boolean {
   return providerType === "openrouter";
+}
+
+/** Once a provider has listed its models, the registry's suggestions only order that list. */
+export function liveModelSeeds(
+  providerType: string,
+  seeds: string[],
+  live: string[],
+): string[] {
+  if (hasPublicModelCatalog(providerType) || live.length === 0) return seeds;
+  return seeds.filter((id) => live.includes(id));
 }
 
 export function withSavedModelIds(catalog: string[], saved: string[]): string[] {
@@ -286,6 +297,7 @@ export function ChatProvidersSettings({
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
+  const seededModelsRef = useRef<string[]>([]);
   // One object per automatic load: a reopened form reuses the key, never the request.
   const autoLoadedCatalogRef = useRef<{ key: string } | null>(null);
   // One-shot latch; user navigation sets it too so a slow first sync cannot pull them into the form.
@@ -530,6 +542,26 @@ export function ChatProvidersSettings({
   }, [autoLoadCatalogKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    let active = true;
+    void refreshModelsDevCatalog()
+      .then(async (refreshed) => {
+        if (!refreshed) return;
+        const registryRows = await listProviderRegistry();
+        if (active) setRegistry(registryRows.filter((entry) => !entry.hidden));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const entry = registryByType.get(providerType);
+    // A refreshed registry replaces only a list still showing its suggestions.
+    if (entry && availableModels === seededModelsRef.current) seedModels(entry);
+  }, [registryByType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
@@ -546,10 +578,7 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed defaults for curated providers and OpenRouter; others stay empty until "Load available models".
-    const seedDefaults =
-      entry.model_list_mode === "curated" || hasPublicModelCatalog(providerType);
-    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
+    seedModels(entry);
     setSelectedModelIds(
       isDecisionConnection({ providerType })
         ? entry.default_models.slice(0, 1)
@@ -639,6 +668,11 @@ export function ChatProvidersSettings({
     };
   }, [onProvidersChange]);
 
+  function seedModels(entry: ProviderRegistryEntry) {
+    seededModelsRef.current = [...entry.default_models];
+    setAvailableModels(seededModelsRef.current);
+  }
+
   function resetForm() {
     // Every form transition retires the in-flight Codex request; its shared spinner blocks the next form.
     codexCatalogRequestRef.current += 1;
@@ -668,13 +702,7 @@ export function ChatProvidersSettings({
   function openAddProvider() {
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
-    if (
-      entry &&
-      (entry.model_list_mode === "curated" ||
-        hasPublicModelCatalog(providerType))
-    ) {
-      setAvailableModels([...entry.default_models]);
-    }
+    if (entry) seedModels(entry);
     if (entry && isDecisionConnection({ providerType: entry.provider_type })) {
       setSelectedModelIds(entry.default_models.slice(0, 1));
     }
@@ -833,8 +861,11 @@ export function ChatProvidersSettings({
       learnCatalogModelCapabilities(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
-        : (registryByType.get(providerType)?.default_models ?? []);
-      // Defaults first so curated picks show when /models omits them.
+        : liveModelSeeds(
+            providerType,
+            registryByType.get(providerType)?.default_models ?? [],
+            models.map((model) => model.id.trim()),
+          );
       const modelIds = pruneProviderModelIds(providerType, [
         ...new Set(
           [
@@ -1427,8 +1458,12 @@ export function ChatProvidersSettings({
       setSelectedModelIds(inDefaults);
       setManualModelIds(custom.join("\n"));
     } else {
-      const shortlist = entry?.default_models ?? [];
       const cachedCatalog = provider.availableModels ?? [];
+      const shortlist = liveModelSeeds(
+        provider.providerType,
+        entry?.default_models ?? [],
+        cachedCatalog,
+      );
       const mergedModels = pruneProviderModelIds(provider.providerType, [
         ...new Set(
           [...shortlist, ...cachedCatalog, ...provider.models]

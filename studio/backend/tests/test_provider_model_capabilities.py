@@ -7,6 +7,7 @@ import asyncio
 import importlib.util
 import json
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -417,3 +418,115 @@ def test_model_catalog_route_answers_503_offline_with_nothing_cached(catalog_rou
     with pytest.raises(Exception) as excinfo:
         catalog_route()
     assert getattr(excinfo.value, "status_code", None) == 503
+
+
+def _chat(released, **extra):
+    return {
+        "release_date": released,
+        "modalities": {"input": ["text"], "output": ["text"]},
+        **extra,
+    }
+
+
+_RAW_MODEL_LISTS = {
+    "openai": {
+        "models": {
+            "gpt-8": _chat("2026-01-10"),
+            "gpt-9": _chat("2026-05-01"),
+            "gpt-9-2026-05-01": _chat("2026-05-01"),
+            "gpt-7": _chat("2025-03-01", status = "deprecated"),
+            "gpt-9-image": {
+                "release_date": "2026-06-01",
+                "modalities": {"input": ["text"], "output": ["image"]},
+            },
+            "text-embedding-9": _chat("2026-06-02"),
+        }
+    },
+    "huggingface": {
+        "models": {
+            "openai/fresh-a": _chat("2026-04-01"),
+            "openai/fresh-b": _chat("2026-04-02"),
+            "community/fine-tune": _chat("2026-04-03"),
+        }
+    },
+}
+
+
+def _registry_models(provider_type):
+    rows = asyncio.run(providers_route.list_registry(include_hidden = True, current_subject = "tester"))
+    return next(r for r in rows if r["provider_type"] == provider_type)["default_models"]
+
+
+@pytest.fixture
+def listed_catalog(catalog_route, monkeypatch):
+    for source, provider in _RAW_MODEL_LISTS.items():
+        monkeypatch.setitem(_RAW_MODELS_DEV, source, provider)
+    return catalog_route
+
+
+def test_the_registry_lists_the_catalog_chat_models_newest_first(listed_catalog):
+    listed_catalog()
+    assert _registry_models("openai") == ["gpt-9", "gpt-8"]
+    assert _registry_models("huggingface") == ["openai/fresh-b", "openai/fresh-a"]
+
+
+def test_the_registry_never_fetches_and_is_never_empty_before_a_catalog_exists(listed_catalog):
+    rows = asyncio.run(providers_route.list_registry(current_subject = "tester"))
+    assert all(row["default_models"] for row in rows)
+    assert _FakeCatalogClient.calls == 0
+
+
+def test_hand_kept_lists_are_not_replaced_by_the_catalog(listed_catalog, monkeypatch):
+    before = {name: _registry_models(name) for name in ("openai_codex", "openrouter", "qwencloud")}
+    monkeypatch.setitem(_RAW_MODELS_DEV, "openrouter", _RAW_MODEL_LISTS["openai"])
+    listed_catalog()
+    assert {name: _registry_models(name) for name in before} == before
+
+
+def test_a_catalog_cached_before_model_lists_existed_is_refetched(listed_catalog, tmp_path):
+    (tmp_path / "model_catalog.json").write_text(
+        json.dumps({"fetched_at": time.time(), "providers": {}})
+    )
+    assert _registry_models("openai")
+    assert _FakeCatalogClient.calls == 0
+    listed_catalog()
+    assert _FakeCatalogClient.calls == 1
+    assert _registry_models("openai") == ["gpt-9", "gpt-8"]
+
+
+def test_the_last_listed_models_survive_a_models_dev_outage(listed_catalog, tmp_path):
+    first = listed_catalog()
+    providers_route._model_catalog_cache = None
+    stale = dict(
+        json.loads((tmp_path / "model_catalog.json").read_text()),
+        fetched_at = first["fetched_at"] - 10 * 24 * 3600,
+    )
+    (tmp_path / "model_catalog.json").write_text(json.dumps(stale))
+    _FakeCatalogClient.fail = True
+    listed_catalog()
+    assert _registry_models("openai") == ["gpt-9", "gpt-8"]
+
+
+def test_a_capped_live_list_keeps_the_catalog_models(listed_catalog, monkeypatch):
+    live = [f"openai/older-{n}" for n in range(20)] + ["openai/fresh-a", "openai/fresh-b"]
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def list_models(self):
+            return [{"id": model_id} for model_id in live]
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
+    monkeypatch.setattr(
+        providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "hf-test"
+    )
+    listed_catalog()
+    payload = ProviderModelsRequest(provider_type = "huggingface")
+    listed = asyncio.run(providers_route.list_provider_models(payload, "tester", False))
+    ids = [model.id for model in listed]
+    assert ids[:2] == ["openai/fresh-a", "openai/fresh-b"]
+    assert ids[2:] == live[:13]
