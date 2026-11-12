@@ -46,6 +46,10 @@ import { usePlatformStore } from "@/config/env";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { hfApiToken, useHfTokenStore, useHubModelSearch } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import {
+  loadQ4nxExportSettings,
+  useQ4nxExportStore,
+} from "@/features/settings";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
@@ -296,9 +300,14 @@ export function ExportPage() {
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
   // The converter writes beside the GGUFs, so a Hub-only export has nowhere to put it.
-  // Conversion runs on the CPU, so a machine with no NPU can still build Q4NX for one that has it.
+  // Conversion runs on the CPU: an NPU machine always gets it, any other once opted in (Settings).
+  const q4nxSettings = useQ4nxExportStore((s) => s.settings);
+  useEffect(() => {
+    void loadQ4nxExportSettings().catch(() => {});
+  }, []);
+  const showQ4nx = !!q4nxSettings?.npuSupported || !!q4nxSettings?.enabled;
   const effectiveNpuQ4nx =
-    npuQ4nx && q4nxSourceSelected && destination === "local";
+    showQ4nx && npuQ4nx && q4nxSourceSelected && destination === "local";
   const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
     null,
   );
@@ -1171,7 +1180,7 @@ export function ExportPage() {
         {(loadingCheckpoints || !!checkpointError) && (
           <>
             <ImageLoraExportCard preselect={preselectImageLora} />
-            <Q4nxConvertCard />
+            {showQ4nx && <Q4nxConvertCard />}
           </>
         )}
 
@@ -2069,30 +2078,32 @@ export function ExportPage() {
                                   </p>
                                 </div>
                               )}
-                              <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
-                                <div className="space-y-0.5">
-                                  <div className="text-sm font-medium">
-                                    Also convert to Q4NX (AMD NPU)
+                              {showQ4nx && (
+                                <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
+                                  <div className="space-y-0.5">
+                                    <div className="text-sm font-medium">
+                                      Also convert to Q4NX (AMD NPU)
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {destination !== "local"
+                                        ? "Local destination only."
+                                        : q4nxSourceSelected
+                                          ? "Adds a Q4NX copy next to the GGUFs. Runs on AMD Ryzen AI NPUs; converting works on any machine."
+                                          : "Needs Q4_0, Q4_1 or Q4_K_M."}
+                                    </div>
                                   </div>
-                                  <div className="text-xs text-muted-foreground">
-                                    {destination !== "local"
-                                      ? "Local destination only."
-                                      : q4nxSourceSelected
-                                        ? "Adds a Q4NX copy next to the GGUFs. Runs on AMD Ryzen AI NPUs; converting works on any machine."
-                                        : "Needs Q4_0, Q4_1 or Q4_K_M."}
-                                  </div>
+                                  <Switch
+                                    className="mt-[var(--ui-title-cap-inset)]"
+                                    aria-label="Also convert to Q4NX (AMD NPU)"
+                                    checked={effectiveNpuQ4nx}
+                                    onCheckedChange={setNpuQ4nx}
+                                    disabled={
+                                      !q4nxSourceSelected ||
+                                      destination !== "local"
+                                    }
+                                  />
                                 </div>
-                                <Switch
-                                  className="mt-[var(--ui-title-cap-inset)]"
-                                  aria-label="Also convert to Q4NX (AMD NPU)"
-                                  checked={effectiveNpuQ4nx}
-                                  onCheckedChange={setNpuQ4nx}
-                                  disabled={
-                                    !q4nxSourceSelected ||
-                                    destination !== "local"
-                                  }
-                                />
-                              </div>
+                              )}
                             </>
                           )}
                         </div>
@@ -2225,7 +2236,7 @@ export function ExportPage() {
                   </button>
                 )}
                 <ImageLoraExportCard preselect={preselectImageLora} />
-                <Q4nxConvertCard />
+                {showQ4nx && <Q4nxConvertCard />}
               </div>
               <div className="@4xl/export-configure:sticky @4xl/export-configure:top-6 @4xl/export-configure:self-start">
                 <ExportSummaryCard

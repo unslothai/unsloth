@@ -1954,6 +1954,10 @@ export const en = {
       developerMode: {
         sectionTitle: "Developer mode",
         videoCpu: "Allow video generation on CPU (experimental)",
+        q4nxExport: "Q4NX export for AMD NPUs",
+        q4nxExportDescription:
+          "Shows Q4NX conversion on the Export page on a machine without an AMD Ryzen AI NPU, to build models for one that has it. Off by default; the converter is downloaded on first use.",
+        q4nxExportNpuPresent: "This machine has an AMD NPU, so Q4NX export is always on.",
         videoCpuDescription:
           "Lets the Video page run on a host with no supported GPU. Off by default; unsupported and very slow.",
         notApplicable:

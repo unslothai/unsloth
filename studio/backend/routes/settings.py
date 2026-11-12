@@ -110,6 +110,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils import q4nx_export_settings
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils import video_cpu_settings
 from utils.download_speed_limit import (
@@ -903,6 +904,17 @@ class DeveloperModeResponse(BaseModel):
     video_cpu_applicable: bool
     host_ram_bytes: Optional[int] = None
     min_ram_bytes: int = video_cpu_settings.VIDEO_CPU_MIN_RAM_GB * 1024**3
+
+
+class Q4nxExportPayload(BaseModel):
+    enabled: StrictBool
+
+
+class Q4nxExportResponse(BaseModel):
+    enabled: bool
+    # A supported NPU shows Q4NX export whatever the setting says.
+    npu_supported: bool
+    default_enabled: bool = q4nx_export_settings.DEFAULT_Q4NX_EXPORT_ENABLED
 
 
 class DownloadTransportPayload(BaseModel):
@@ -1807,6 +1819,29 @@ def update_developer_mode(
         ) from exc
     logger.info("settings.developer_mode_updated subject=%s video_cpu=%s", current_subject, enabled)
     return _developer_mode_response()
+
+
+def _q4nx_export_response() -> Q4nxExportResponse:
+    return Q4nxExportResponse(
+        enabled = q4nx_export_settings.get_q4nx_export_setting(),
+        npu_supported = q4nx_export_settings.npu_supported(),
+    )
+
+
+@_shared_settings_router.get("/q4nx-export", response_model = Q4nxExportResponse)
+def get_q4nx_export(
+    current_subject: str = Depends(get_current_subject),
+) -> Q4nxExportResponse:
+    return _q4nx_export_response()
+
+
+@_owner_settings_router.put("/q4nx-export", response_model = Q4nxExportResponse)
+def update_q4nx_export(
+    payload: Q4nxExportPayload, current_subject: str = Depends(get_current_subject)
+) -> Q4nxExportResponse:
+    enabled = q4nx_export_settings.set_q4nx_export_setting(payload.enabled)
+    logger.info("settings.q4nx_export_updated subject=%s enabled=%s", current_subject, enabled)
+    return _q4nx_export_response()
 
 
 def _decision_description(checkpoint, mlx: bool) -> str:
