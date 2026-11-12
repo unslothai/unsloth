@@ -21,7 +21,10 @@ export function useNpuDisplayNames(
     // Listing starts lemond, so only on a validated runtime.
     if (!wantsListing || status?.ready !== true) return;
     listed = true;
-    void refreshNpuModels();
+    void refreshNpuModels().then((ok) => {
+      // A failed listing may retry on a later render, spaced out so a down server is not hammered.
+      if (!ok) setTimeout(() => (listed = false), 30_000);
+    });
   }, [wantsListing, status?.ready]);
   return useCallback(
     (idOrPath: string | null | undefined) => npuDisplayNameOf(models, idOrPath),
