@@ -367,3 +367,15 @@ export function pickerSide(
   }
   return above < PICKER_MIN_ROOM && below > above ? "bottom" : "top";
 }
+
+/**
+ * Whether Discover falls back to the chat model list: only for the browse (no query) or a search still
+ * waiting on its first results. A finished search whose results the filters all reject stays empty, or
+ * the Hub-answered rows (kept without a text match) would show unrelated models.
+ */
+export function discoverUsesFallback(
+  hubQuery: string,
+  hubResultCount: number,
+): boolean {
+  return hubQuery === "" || hubResultCount === 0;
+}

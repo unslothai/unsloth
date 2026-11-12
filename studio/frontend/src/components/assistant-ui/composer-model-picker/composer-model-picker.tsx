@@ -65,6 +65,7 @@ import {
   useHubModelSearch,
   useOnlineStatus,
 } from "@/features/hub";
+import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
 import {
   ConnectedModelInfoDialog,
   ConnectedModelSettingsDialog,
@@ -180,6 +181,7 @@ import {
   SECTION_LABEL,
   chooseQuant,
   dedupeRows,
+  discoverUsesFallback,
   downloadedQuants,
   filterRows,
   findChosenRow,
@@ -258,9 +260,9 @@ function writeTab(tab: string): void {
 }
 
 const HUB_ID = /^([\w.-]+)\/([\w.-]+)$/;
-const MLX_ID = /(^|[-_/])mlx([-_/]|$)/i;
 const LOOKS_GGUF = /gguf/i;
-const isMlxId = (id: string) => MLX_ID.test(id);
+// Local paths: an `mlx` folder anywhere on the path counts, besides the shared leaf-name rule.
+const MLX_PATH_SEGMENT = /(^|[-_/])mlx([-_/]|$)/i;
 
 function loraFormat(lora: LoraModelOption): FormatTone {
   if (
@@ -273,7 +275,9 @@ function loraFormat(lora: LoraModelOption): FormatTone {
   if (lora.source !== "local" && lora.exportType !== "merged") {
     return "adapter";
   }
-  return isMlxId(lora.id) ? "mlx" : "checkpoint";
+  return MLX_PATH_SEGMENT.test(lora.id) || isMlxId(lora.id)
+    ? "mlx"
+    : "checkpoint";
 }
 
 function loraDetail(lora: LoraModelOption): string {
@@ -1521,10 +1525,24 @@ export function ComposerModelPicker({
           !isHiddenModelId(r.id),
       )
       .map((r) => ({ id: r.id, name: r.id, isGguf: r.isGguf }));
-    return fromHub.length > 0
-      ? fromHub
-      : (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
+    if (
+      fromHub.length > 0 ||
+      !discoverUsesFallback(hubQuery, hubResults.length)
+    ) {
+      return fromHub;
+    }
+    return (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
   }, [hubResults, quantFormats, hubQuery, isMac, source?.models]);
+  // Hub results marked MLX only by their card, which the ModelOption rows drop.
+  const mlxTaggedHub = useMemo(
+    () =>
+      new Set(
+        hubResults
+          .filter((r) => hasMlxCardTag(r))
+          .map((r) => r.id.toLowerCase()),
+      ),
+    [hubResults],
+  );
   const loraModels = source?.loraModels;
   const externalModels = source?.externalModels;
 
@@ -1563,7 +1581,13 @@ export function ComposerModelPicker({
         tab: DEVICE_TAB,
         kind: "cached",
         section: repoSection(repo.repo_id),
-        format: isMlxId(repo.repo_id) ? "mlx" : "checkpoint",
+        // The card's mlx tag or library counts too, as in the header picker: many MLX uploads lack it in the name.
+        format: isMlxId(
+          repo.repo_id,
+          hasMlxCardTag({ tags: repo.tags, libraryName: repo.library_name }),
+        )
+          ? "mlx"
+          : "checkpoint",
         aliases: [repo.load_id ?? "", repo.cache_path ?? ""],
         cached: repo,
         sizeBytes: repo.size_bytes,
@@ -1672,7 +1696,11 @@ export function ComposerModelPicker({
         tab: RECOMMENDED_TAB,
         kind: "hub",
         section: "recommended",
-        format: m.isGguf ? "gguf" : isMlxId(m.id) ? "mlx" : "checkpoint",
+        format: m.isGguf
+          ? "gguf"
+          : isMlxId(m.id, mlxTaggedHub.has(m.id.toLowerCase()))
+            ? "mlx"
+            : "checkpoint",
         onDevice: onDisk.has(m.id.toLowerCase()),
         loaded: loadedIds.has(m.id.toLowerCase()),
         hub: m,
@@ -1705,6 +1733,7 @@ export function ComposerModelPicker({
     loraModels,
     loadedModels,
     recommended,
+    mlxTaggedHub,
     externalModels,
   ]);
 

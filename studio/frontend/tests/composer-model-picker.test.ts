@@ -678,3 +678,46 @@ test("the composer's Run settings folds Always load and the save status into the
   assert.match(row, /role="menuitemcheckbox"/);
   assert.match(row, /Always load with these settings/);
 });
+
+test("a finished Discover search with no eligible results stays empty", async () => {
+  const { discoverUsesFallback } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  // Browsing, or a search still waiting on results, shows the chat model list.
+  assert.equal(discoverUsesFallback("", 0), true);
+  assert.equal(discoverUsesFallback("", 12), true);
+  assert.equal(discoverUsesFallback("whisper", 0), true);
+  // Results came back but the filters rejected them all: no fallback, so "No models found".
+  assert.equal(discoverUsesFallback("whisper", 7), false);
+});
+
+test("MLX repos marked only by their card resolve as MLX, on device and on Discover", async () => {
+  const { hasMlxCardTag, isMlxId } = await import(
+    "../src/features/hub/lib/format-filters.ts"
+  );
+  assert.equal(
+    isMlxId("someone/Llama-4bit", hasMlxCardTag({ tags: ["mlx"] })),
+    true,
+  );
+  assert.equal(
+    isMlxId("someone/Llama-4bit", hasMlxCardTag({ libraryName: "mlx" })),
+    true,
+  );
+  assert.equal(
+    isMlxId("someone/Llama-4bit", hasMlxCardTag({ tags: [] })),
+    false,
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /hasMlxCardTag\(\{ tags: repo\.tags, libraryName: repo\.library_name \}\)/,
+  );
+  assert.match(
+    picker,
+    /isMlxId\(m\.id, mlxTaggedHub\.has\(m\.id\.toLowerCase\(\)\)\)/,
+  );
+  // The composer's own name-only rule is gone.
+  assert.doesNotMatch(picker, /const isMlxId = /);
+});
