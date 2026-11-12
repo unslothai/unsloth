@@ -542,6 +542,36 @@ export const sameWindow = (a: RowWindow | null, b: RowWindow | null): boolean =>
   a === b ||
   (a != null && b != null && a.start === b.start && a.end === b.end && samePins(a.pins, b.pins));
 
+/** A slow local model writes a token a second: anything faster is one stream, not a pause. */
+export const STREAM_QUIET_MS = 1000;
+
+/**
+ * Whether the reply is being written right now. Every chunk is a synchronous store update, and
+ * React restarts a transition render from the root on each one, so a transition commit issued
+ * while chunks arrive renders for as long as the reply runs and lands only after it.
+ */
+export class TailPulse {
+  private revision: unknown;
+  private changedAt = Number.NEGATIVE_INFINITY;
+  /** Content changes seen: two since a commit was issued is a stream, one may be a late edit. */
+  changes = 0;
+
+  constructor(revision?: unknown) {
+    this.revision = revision;
+  }
+
+  note(revision: unknown, now: number): void {
+    if (revision === this.revision) return;
+    this.revision = revision;
+    this.changedAt = now;
+    this.changes += 1;
+  }
+
+  streaming(now: number, quietMs = STREAM_QUIET_MS): boolean {
+    return now - this.changedAt < quietMs;
+  }
+}
+
 /** The leading spacer takes an anchor shift; only what it cannot take is left for scrollTop. */
 export function absorbShift(
   spacerPx: number,
