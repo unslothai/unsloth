@@ -2859,11 +2859,19 @@ export function ChatPage({
     }),
   );
   // A composer that mounts while a handoff's run settings are open, as on a first Chat visit, would
-  // take focus and dismiss them.
-  const [handoffOwnsPicker, setHandoffOwnsPicker] = useState(false);
+  // take focus and dismiss them. Kept until the picker closes: a new chat can remount the composer
+  // (dock to centre) after adoption, and the new picker must land on the same settings.
+  const [ownedConfigRequest, setOwnedConfigRequest] =
+    useState<typeof modelConfigRequest>(null);
+  const handoffOwnsPicker = ownedConfigRequest !== null;
+  const latestConfigRequestRef = useRef(modelConfigRequest);
+  latestConfigRequestRef.current = modelConfigRequest;
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
-      setHandoffOwnsPicker(true);
+      const request = latestConfigRequestRef.current;
+      setOwnedConfigRequest((owned) =>
+        request?.requestId === requestId ? request : owned,
+      );
       setSettingsOpen(false);
       setModelSelectorLocked(false);
       setModelSelectorOpen(true);
@@ -2872,7 +2880,7 @@ export function ChatPage({
     [setSettingsOpen],
   );
   // During render, so the composer is focusable again in the commit that closes the picker.
-  if (handoffOwnsPicker && !modelSelectorOpen) setHandoffOwnsPicker(false);
+  if (handoffOwnsPicker && !modelSelectorOpen) setOwnedConfigRequest(null);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Fallback for compare opened from a path that does not set viewBeforeCompareRef.
   const lastNonCompareViewRef = useRef<ChatSearch | null>(null);
@@ -4554,7 +4562,7 @@ export function ChatPage({
       // Chat has no header picker: the shortcut, tour and Hub's Run open this one.
       open: active && (modelSelectorOpen || modelConfigRequest !== null),
       onOpenChange: handleModelSelectorOpenChange,
-      configRequest: modelConfigRequest,
+      configRequest: modelConfigRequest ?? ownedConfigRequest,
       onConfigRequestAdopted: handleModelConfigRequestAdopted,
       onFoldersChange: refreshLocalModels,
       onModelsChange: refreshModelLists,
@@ -4578,6 +4586,7 @@ export function ChatPage({
       active,
       modelSelectorOpen,
       modelConfigRequest,
+      ownedConfigRequest,
       handleModelSelectorOpenChange,
       handleModelConfigRequestAdopted,
       refreshLocalModels,

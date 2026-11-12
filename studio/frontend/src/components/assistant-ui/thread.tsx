@@ -2081,21 +2081,10 @@ const startGrammarPrewarm = (): void => {
 const renderThreadMessage = proplessSlot(ThreadMessage);
 
 // Memoized: chat-page renders this inside a store-subscribing component.
-// T3 Code's cut-off: under 34rem a centred composer leaves no room for the greeting above it.
-const SHORT_WINDOW_QUERY = "(max-height: 34rem)";
-const subscribeShortWindow = (notify: () => void) => {
-  const query = window.matchMedia?.(SHORT_WINDOW_QUERY);
-  query?.addEventListener("change", notify);
-  return () => query?.removeEventListener("change", notify);
-};
-const isShortWindow = () => window.matchMedia?.(SHORT_WINDOW_QUERY).matches ?? false;
-
 function useNewChatComposerDocked(): boolean {
-  const atBottom = useChatPreferencesStore(
+  return useChatPreferencesStore(
     (s) => s.newChatComposerPosition >= COMPOSER_POSITION_BOTTOM,
   );
-  const short = useSyncExternalStore(subscribeShortWindow, isShortWindow, () => false);
-  return atBottom || short;
 }
 
 export const Thread: FC<{

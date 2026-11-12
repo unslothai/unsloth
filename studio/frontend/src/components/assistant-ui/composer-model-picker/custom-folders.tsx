@@ -51,7 +51,7 @@ export function useCustomFolders({
   enabled: boolean;
   onFoldersChange?: () => void;
 }): { actions: ReactNode; body: ReactNode } {
-  const { folders } = useScanFolders();
+  const { folders } = useScanFolders(enabled);
   const [recommended, setRecommended] = useState<string[]>([]);
   const [typing, setTyping] = useState(false);
   const [path, setPath] = useState("");

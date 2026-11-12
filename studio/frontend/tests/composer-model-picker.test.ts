@@ -244,7 +244,7 @@ test("Run settings open inside the composer picker, not the header picker", () =
   );
   const page = readSrc("features/chat/chat-page.tsx");
   assert.doesNotMatch(page, /openRunSettings/);
-  assert.match(page, /configRequest: modelConfigRequest,/);
+  assert.match(page, /configRequest: modelConfigRequest \?\? ownedConfigRequest,/);
   assert.match(
     page,
     /open: active && \(modelSelectorOpen \|\| modelConfigRequest !== null\)/,
@@ -737,4 +737,23 @@ test("a per-quant delete reconciles quant favorites and settings keep the vision
     /!offer\.mlx,\s*offer\.hasVision \?\? row\.gguf\?\.has_vision,\s*\)/,
   );
   assert.match(picker, /!mlx,\s*hasVision \?\? row\.gguf\?\.has_vision,\s*\)/);
+});
+
+test("the search ignores IME confirmation keys, and Chat keeps an adopted handoff until the picker closes", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /event\.nativeEvent\.isComposing \|\| event\.keyCode === 229/,
+  );
+  const chat = readSrc("features/chat/chat-page.tsx");
+  assert.match(
+    chat,
+    /configRequest: modelConfigRequest \?\? ownedConfigRequest,/,
+  );
+  assert.match(
+    chat,
+    /if \(handoffOwnsPicker && !modelSelectorOpen\) setOwnedConfigRequest\(null\);/,
+  );
 });

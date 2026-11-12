@@ -1259,6 +1259,9 @@ function SearchField({
       onChange={(event) => setDraft(event.target.value)}
       onKeyDown={(event) => {
         const key = event.key;
+        if (event.nativeEvent.isComposing || event.keyCode === 229) {
+          return;
+        }
         if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Enter") {
           return;
         }
@@ -1408,7 +1411,7 @@ export function ComposerModelPicker({
   const npuModels = npuCatalog?.models ?? null;
   const online = useOnlineStatus();
   const hfToken = useHfTokenStore((s) => s.token);
-  const quantFormats = useGpuInfo().checkpointQuantFormats;
+  const quantFormats = useGpuInfo(open).checkpointQuantFormats;
   const isMac = usePlatformStore((s) => s.deviceType === "mac");
   // The field already waits SEARCH_DEBOUNCE_MS; together they keep the Hub's 300 ms.
   const hubQuery = useDebouncedValue(
@@ -1426,7 +1429,7 @@ export function ComposerModelPicker({
     enabled: open && online && onRecommended,
   });
   const hubResults = hubSearch.results;
-  const inferenceGpu = useInferenceGpuInfo();
+  const inferenceGpu = useInferenceGpuInfo(open);
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);

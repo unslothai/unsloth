@@ -329,7 +329,7 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
   );
   assert.match(
     chatPage,
-    /setHandoffOwnsPicker\(true\);\s*setSettingsOpen\(false\);\s*setModelSelectorLocked\(false\);\s*setModelSelectorOpen\(true\);\s*clearModelConfigHandoff\(requestId\)/,
+    /setOwnedConfigRequest\(\(owned\) =>\s*request\?\.requestId === requestId \? request : owned,\s*\);\s*setSettingsOpen\(false\);\s*setModelSelectorLocked\(false\);\s*setModelSelectorOpen\(true\);\s*clearModelConfigHandoff\(requestId\)/,
   );
   assert.match(
     chatPage,
@@ -347,7 +347,7 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
   // Released when the picker closes, or the composer would never autofocus again.
   assert.match(
     chatPage,
-    /if \(handoffOwnsPicker && !modelSelectorOpen\)\s*\{?\s*setHandoffOwnsPicker\(false\)/,
+    /if \(handoffOwnsPicker && !modelSelectorOpen\)\s*\{?\s*setOwnedConfigRequest\(null\)/,
   );
   assert.match(
     thread,
