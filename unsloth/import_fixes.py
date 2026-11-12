@@ -8211,6 +8211,133 @@ def fix_rocm_windows_fused_sdpa():
     )
 
 
+def _sdpa_flash_backward(q, k, v):
+    import torch
+
+    aten = torch.ops.aten
+    out, lse, cum_q, cum_k, max_q, max_k, seed, offset, _ = aten._scaled_dot_product_flash_attention(
+        q, k, v, 0.0, True
+    )
+    return aten._scaled_dot_product_flash_attention_backward(
+        torch.ones_like(out), q, k, v, out, lse, cum_q, cum_k, max_q, max_k, 0.0, True, seed, offset
+    )[:3]
+
+
+def _sdpa_efficient_backward(q, k, v):
+    import torch
+
+    aten = torch.ops.aten
+    out, lse, seed, offset = aten._scaled_dot_product_efficient_attention(
+        q, k, v, None, True, 0.0, True
+    )
+    return aten._scaled_dot_product_efficient_attention_backward(
+        torch.ones_like(out), q, k, v, None, out, lse, seed, offset, 0.0, [True, True, True, False], True
+    )[:3]
+
+
+_SDPA_BACKWARD_PROBES = {
+    "flash": _sdpa_flash_backward,
+    "mem_efficient": _sdpa_efficient_backward,
+}
+
+
+def _sdpa_backward_layout_mismatches(device, dtype, probes = None):
+    """SDPA backends whose real backward returns gradient strides other than PyTorch's fake kernel.
+
+    Inductor asserts the fake strides on the real outputs, so a compiled backward through such a
+    backend fails ("expected size 4==4, stride 23808==256 ... _scaled_dot_product_flash_attention_
+    backward", torch 2.12+rocm7.14.1 on gfx942) while eager runs fine. Each backend runs one tiny
+    backward for a query in HF's transposed (B, S, H, D) layout and one for a contiguous query. A
+    backend the build lacks, or one that errors, is left out.
+    """
+    import torch
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    if probes is None:
+        probes = _SDPA_BACKWARD_PROBES
+    g = torch.Generator(device = device).manual_seed(0)
+
+    def inputs(transposed):
+        shape = (1, 16, 2, 64) if transposed else (1, 2, 16, 64)
+        qkv = [torch.randn(shape, device = device, dtype = dtype, generator = g) for _ in range(3)]
+        return [t.transpose(1, 2) for t in qkv] if transposed else qkv
+
+    mismatched = []
+    # An import under inference_mode would hand fake mode inference tensors.
+    with torch.inference_mode(False):
+        for name, probe in probes.items():
+            try:
+                for transposed in (True, False):
+                    qkv = inputs(transposed)
+                    real = probe(*qkv)
+                    mode = FakeTensorMode()
+                    fakes = [mode.from_tensor(t) for t in qkv]
+                    with mode:
+                        fake = probe(*fakes)
+                    if any(r.stride() != f.stride() for r, f in zip(real, fake)):
+                        mismatched.append(name)
+                        break
+            except Exception:
+                continue
+    return mismatched
+
+
+def _rocm_sdpa_backward_layout_mismatches():
+    """``_sdpa_backward_layout_mismatches`` for this process's ROCm GPU; [] elsewhere, and when
+    torch.compile is off (eager backward never checks the fake strides)."""
+    if any(
+        os.environ.get(key, "0") == "1"
+        for key in ("TORCHDYNAMO_DISABLE", "TORCH_COMPILE_DISABLE", "UNSLOTH_COMPILE_DISABLE")
+    ):
+        return []
+    try:
+        import torch
+
+        is_rocm = bool(getattr(torch.version, "hip", None)) or _is_rocm_torch_build()
+        if not is_rocm or not torch.cuda.is_available():
+            return []
+        device = torch.device("cuda", torch.cuda.current_device())
+        from .device_type import arch_lacks_bf16
+        arch = torch.cuda.get_device_properties(device).gcnArchName
+    except Exception:
+        return []
+    dtype = torch.float16 if arch_lacks_bf16(arch) else torch.bfloat16
+    # A backend already off (fix_rocm_windows_fused_sdpa) is not launched: its failure surfaces late.
+    probes = {
+        name: probe
+        for name, probe in _SDPA_BACKWARD_PROBES.items()
+        if getattr(torch.backends.cuda, f"{name}_sdp_enabled")()
+    }
+    return _sdpa_backward_layout_mismatches(device, dtype, probes)
+
+
+def fix_rocm_sdpa_backward_layout():
+    """Turn off the fused SDPA backends whose ROCm backward gives gradients in a layout
+    torch.compile does not expect, so compiled training falls back to a working one.
+
+    Probe-gated, so it is a no-op once ROCm and the fake kernels agree.
+    UNSLOTH_ALLOW_ROCM_SDPA_BACKWARD_LAYOUT=1 opts out.
+    """
+    if os.environ.get("UNSLOTH_ALLOW_ROCM_SDPA_BACKWARD_LAYOUT", "0") == "1":
+        return
+    mismatched = _rocm_sdpa_backward_layout_mismatches()
+    if not mismatched:
+        return
+    try:
+        import torch
+        for name in mismatched:
+            getattr(torch.backends.cuda, f"enable_{name}_sdp")(False)
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the ROCm SDPA backward layout fix ({e})")
+        return
+    names = " or ".join("flash" if b == "flash" else "memory-efficient" for b in mismatched)
+    logger.warning(
+        f"Unsloth: this ROCm torch's {names} attention backward returns gradients in a layout "
+        "torch.compile does not expect, so it is turned off for training "
+        "(set UNSLOTH_ALLOW_ROCM_SDPA_BACKWARD_LAYOUT=1 to keep it)."
+    )
+
+
 def patch_openspiel_env_async():
     """Apply nest_asyncio for OpenEnv EnvClient async compatibility.
 
