@@ -1,0 +1,445 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Packed W4A8 / W6A8 (grouped-scale 4 / 6-bit codes, fp8 steps, channel scale, ConvRot): codec, writer, loader."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+torch = pytest.importorskip("torch")
+safetensors_torch = pytest.importorskip("safetensors.torch")
+nn = torch.nn
+
+import core.inference.diffusion_comfy_quant as cq  # noqa: E402
+import core.inference.diffusion_grouped_int8 as gi  # noqa: E402
+from core.inference.diffusion_convrot import build_convrot_hadamard  # noqa: E402
+
+from .test_diffusion_comfy_quant import DIM, GROUP, _conf, _convert, _save, _sfm, _Tiny  # noqa: E402
+
+# A 16-level table of the kind 4-bit files carry (sorted, inside [-1, 1]).
+BOOK = torch.tensor(
+    [
+        -0.98,
+        -0.79,
+        -0.64,
+        -0.5,
+        -0.38,
+        -0.26,
+        -0.16,
+        -0.05,
+        0.05,
+        0.16,
+        0.27,
+        0.38,
+        0.5,
+        0.64,
+        0.79,
+        0.98,
+    ]
+)
+
+
+def _reference_int8(qdata, s_rel, codebook, group, bits):
+    """Straight from the format description, one column at a time (independent of the vectorised decode)."""
+    raw = qdata.view(torch.uint8).to(torch.int64)
+    rows, groups = s_rel.shape
+    k = groups * group
+    out = torch.empty(rows, k, dtype = torch.int8)
+    steps = s_rel.view(torch.uint8).view(torch.float8_e4m3fn).to(torch.float32)
+    for c in range(k):
+        byte = raw[:, c // 2]
+        code = (byte >> 4) & 0xF if c % 2 else byte & 0xF
+        if bits == 6:
+            code = code | (((raw[:, k // 2 + c // 4] >> (2 * (c % 4))) & 0x3) << 4)
+        level = (
+            codebook[code]
+            if codebook is not None
+            else code.to(torch.float32) - float(1 << (bits - 1))
+        )
+        out[:, c] = (
+            (level.to(torch.float32) * steps[:, c // group]).round().clamp(-127, 127).to(torch.int8)
+        )
+    return out
+
+
+@pytest.mark.parametrize("bits", [4, 6])
+def test_pack_unpack_round_trip(bits):
+    torch.manual_seed(0)
+    codes = torch.randint(0, 1 << bits, (5, 64), dtype = torch.int32)
+    packed = gi.pack_codes(codes, bits)
+    assert packed.dtype == torch.int8 and tuple(packed.shape) == (5, 64 * bits // 8)
+    assert torch.equal(gi.unpack_codes(packed, 64, bits), codes)
+
+
+def test_bit_order_is_low_nibble_first_then_the_two_bit_plane():
+    # column 0 = code 0x2A (low nibble 0xA, top bits 2), column 1 = 0x15, columns 2..31 = 0
+    codes = torch.zeros(1, 32, dtype = torch.int32)
+    codes[0, 0], codes[0, 1], codes[0, 5] = 0x2A, 0x15, 0x3F
+    packed = gi.pack_codes(codes, 6).view(torch.uint8)[0]
+    assert packed[0] == 0x5A  # col 1 low nibble (5) high, col 0 low nibble (A) low
+    assert packed[2] == 0xF0  # col 5 is the high nibble of byte 2
+    assert packed[16] == 0x2 | (0x1 << 2)  # top bits of cols 0..3 at bits 0, 2, 4, 6
+    assert packed[17] == 0x3 << 2  # col 5 = byte 17 (5 // 4), bit 2 * (5 % 4)
+
+
+@pytest.mark.parametrize(
+    "bits, group, book", [(6, 16, None), (6, 32, None), (4, 16, BOOK), (4, 16, None)]
+)
+def test_decode_matches_the_format_reference_bit_for_bit(bits, group, book):
+    torch.manual_seed(1)
+    rows, k = 7, 512
+    codes = torch.randint(0, 1 << bits, (rows, k), dtype = torch.int32)
+    raw_steps = torch.randint(
+        0, 0x7F, (rows, k // group), dtype = torch.uint8
+    )  # every finite e4m3, subnormals too
+    raw_steps[0, 0] = 0
+    packed = gi.pack_codes(codes, bits)
+    got = gi.decode_int8_torch(packed, raw_steps.view(torch.float8_e4m3fn), book, group, bits)
+    assert torch.equal(got, _reference_int8(packed, raw_steps, book, group, bits))
+    # raw step bytes (a ``U8`` file entry) decode the same
+    assert torch.equal(got, gi.decode_int8_torch(packed, raw_steps, book, group, bits))
+
+
+def test_decode_rounds_ties_to_even():
+    # level 1 (code 33) times steps 0.5 / 1.5 / 2.5: 0.5 -> 0, 1.5 -> 2, 2.5 -> 2
+    steps = torch.tensor([[0.5, 1.5, 2.5, 1.0]]).to(torch.float8_e4m3fn)
+    codes = torch.full((1, 64), 33, dtype = torch.int32)
+    got = gi.decode_int8_torch(gi.pack_codes(codes, 6), steps, None, 16, 6)
+    assert got[0, ::16].tolist() == [0, 2, 2, 1]
+
+
+@pytest.mark.parametrize(
+    "fmt, group, book", [(gi.W6A8, 16, None), (gi.W6A8, 32, None), (gi.ASYM_W4A8, 16, BOOK)]
+)
+def test_writer_is_round_to_nearest_on_the_decoded_grid(fmt, group, book):
+    torch.manual_seed(2)
+    weight = torch.randn(24, 512)
+    weight[3] *= 40.0  # an outlier row: its own channel scale
+    t = gi.quantize_grouped(weight, fmt, group_size = group, codebook = book)
+    bits = gi.GROUPED_BITS[fmt]
+    assert t[""].dtype == torch.int8 and tuple(t[""].shape) == (24, 512 * bits // 8)
+    assert t[".weight_s_rel"].dtype == torch.float8_e4m3fn and tuple(t[".weight_s_rel"].shape) == (
+        24,
+        512 // group,
+    )
+    assert t[".weight_s_channel"].dtype == torch.float32 and tuple(
+        t[".weight_s_channel"].shape
+    ) == (24,)
+    q8 = gi.decode_int8_torch(t[""], t[".weight_s_rel"], t.get(".weight_codebook"), group, bits)
+    # every code is the nearest decoded level to the rotated weight / channel scale
+    h = build_convrot_hadamard(GROUP)
+    target = (weight.reshape(24, -1, GROUP) @ h).reshape(24, 512) / t[".weight_s_channel"][:, None]
+    steps = t[".weight_s_rel"].float().repeat_interleave(group, dim = 1)
+    table = gi.level_table(bits, t.get(".weight_codebook"))
+    if bits == 6:
+        table = table[1:]  # the writer is symmetric: code 0 (-32) is never written
+    levels = (table.view(1, 1, -1) * steps.unsqueeze(-1)).round().clamp(-127, 127)
+    best = (levels - target.unsqueeze(-1)).abs().min(dim = -1).values
+    assert torch.allclose((q8.float() - target).abs(), best, atol = 1e-4)
+    w = gi.dequant_grouped(
+        t[""],
+        t[".weight_s_rel"],
+        t[".weight_s_channel"],
+        t.get(".weight_codebook"),
+        group,
+        bits,
+        GROUP,
+        torch.float32,
+    )
+    rel = float((w - weight).norm() / weight.norm())
+    assert rel < (0.04 if bits == 6 else 0.12), rel
+    if bits == 6:
+        codes = gi.unpack_codes(t[""], 512, 6)
+        assert int(codes.min()) >= 1 and int(codes.max()) <= 63  # symmetric -31..31, code 0 unused
+
+
+def test_dequant_equals_the_int8_convrot_dequant_of_the_decoded_grid():
+    torch.manual_seed(3)
+    weight = torch.randn(8, 512)
+    t = gi.quantize_grouped(weight, gi.W6A8)
+    q8 = gi.decode_int8_torch(t[""], t[".weight_s_rel"], None, 16, 6)
+    a = gi.dequant_grouped(
+        t[""], t[".weight_s_rel"], t[".weight_s_channel"], None, 16, 6, GROUP, torch.float32
+    )
+    b = cq._dequant(q8, t[".weight_s_channel"], GROUP, torch.float32)
+    assert torch.equal(a, b)
+
+
+# ------------------------------------------------------------------------------------- header scan
+def _grouped_file(
+    tmp_path,
+    fmt,
+    *,
+    group = 16,
+    book = None,
+    meta_table = False,
+    name = "g.safetensors",
+    **extra,
+):
+    torch.manual_seed(4)
+    weight = torch.randn(16, 512)
+    t = gi.quantize_grouped(weight, fmt, group_size = group, codebook = book)
+    conf = gi.grouped_declaration(fmt, group)
+    tensors = {f"a{k or '.weight'}": v for k, v in t.items()}
+    tensors.update(extra)
+    meta = None
+    if meta_table:
+        meta = {cq.QUANT_METADATA_KEY: json.dumps({"layers": {"a": conf}})}
+    else:
+        tensors["a.comfy_quant"] = gi.declaration_tensor(conf)
+    return _save(tmp_path / name, tensors, meta), weight, t
+
+
+@pytest.mark.parametrize(
+    "fmt, group, book, table",
+    [
+        (gi.W6A8, 32, None, False),
+        (gi.ASYM_W4A8, 16, BOOK, True),
+        (gi.ASYM_W4A8, 16, None, False),
+    ],
+)
+def test_scan_accepts_grouped_layers_as_int8_convrot(tmp_path, fmt, group, book, table):
+    path, _w, _t = _grouped_file(tmp_path, fmt, group = group, book = book, meta_table = table)
+    scan = cq.refuse_comfy_quant(path)
+    layer = scan.layers["a"]
+    assert (layer.format, layer.convrot, layer.group) == ("int8_tensorwise", True, 256)
+    assert (layer.packed_bits, layer.group_size, layer.packed_format) == (
+        gi.GROUPED_BITS[fmt],
+        group,
+        fmt,
+    )
+    assert scan.counts() == {fmt: 1}
+    assert cq.comfy_prequant_scheme(scan) is None  # never mistaken for a hosted int8 prequant
+
+
+def test_scan_fills_the_format_defaults(tmp_path):
+    # {"format": "asym_w4a8_int8"} alone (as some files declare it): group 16, ConvRot group 256
+    path, _w, t = _grouped_file(tmp_path, gi.ASYM_W4A8, book = BOOK)
+    raw = safetensors_torch.load_file(path)
+    raw["a.comfy_quant"] = _conf(format = gi.ASYM_W4A8)
+    path = _save(tmp_path / "bare.safetensors", raw)
+    layer = cq.refuse_comfy_quant(path).layers["a"]
+    assert (layer.group_size, layer.group, layer.packed_bits) == (16, 256, 4)
+
+
+@pytest.mark.parametrize(
+    "mutate, match",
+    [
+        (
+            lambda t: t.update({"a.weight_s_rel": t["a.weight_s_rel"][:, :-1].contiguous()}),
+            "weight_s_rel of shape",
+        ),
+        (lambda t: t.pop("a.weight_s_channel"), "weight_s_channel"),
+        (
+            lambda t: t.update({"a.weight_scale": torch.ones(16)}),
+            "weight_scale, which this format does not use",
+        ),
+        (lambda t: t.update({"a.weight": t["a.weight"][:, :-12].contiguous()}), "in_features 496"),
+        (lambda t: t.update({"a.weight_codebook": torch.zeros(16)}), "codebook"),
+    ],
+)
+def test_scan_refuses_a_malformed_grouped_layer(tmp_path, mutate, match):
+    path, _w, _t = _grouped_file(tmp_path, gi.W6A8)
+    raw = safetensors_torch.load_file(path)
+    mutate(raw)
+    path = _save(tmp_path / "bad.safetensors", raw)
+    with pytest.raises(ValueError, match = match):
+        cq.refuse_comfy_quant(path)
+
+
+# ------------------------------------------------------------------------------------- loading
+@pytest.fixture
+def grouped_file(tmp_path, monkeypatch):
+    """``_Tiny`` as a W6A8 file (fused qkv, as the vendor layout stores it) plus the dense model it came from."""
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    torch.manual_seed(5)
+    dense = _Tiny()
+    tensors = {}
+    for b, block in enumerate(dense.blocks):
+        qkv = torch.cat([block.to_q.weight, block.to_k.weight, block.to_v.weight]).detach()
+        layers = {
+            f"blocks.{b}.qkv": (
+                qkv,
+                torch.cat([block.to_q.bias, block.to_k.bias, block.to_v.bias]),
+            ),
+            f"blocks.{b}.out": (block.to_out.weight.detach(), block.to_out.bias),
+            f"blocks.{b}.adaLN_modulation.0": (
+                block.adaLN_modulation[0].weight.detach(),
+                block.adaLN_modulation[0].bias,
+            ),
+        }
+        for name, (weight, bias) in layers.items():
+            for suffix, value in gi.quantize_grouped(weight, gi.W6A8).items():
+                tensors[f"{name}{suffix or '.weight'}"] = value
+            tensors[f"{name}.bias"] = bias.detach().clone()
+            tensors[f"{name}.comfy_quant"] = gi.declaration_tensor(gi.grouped_declaration(gi.W6A8))
+    tensors["norm.weight"] = dense.norm.weight.detach().clone()
+    tensors["norm.bias"] = dense.norm.bias.detach().clone()
+    return _save(tmp_path / "tiny_w6a8.safetensors", tensors), dense, tensors
+
+
+def _load(path, **kwargs):
+    kwargs.setdefault("int8_backend", None)
+    return cq.load_comfy_quant_transformer(
+        _Tiny,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.float32, "config": "base/repo", "subfolder": "transformer"},
+        family = "z-image",
+        **kwargs,
+    )
+
+
+def _expected_dense(
+    tensors,
+    name,
+    rows = None,
+):
+    w = gi.dequant_grouped(
+        tensors[f"{name}.weight"],
+        tensors[f"{name}.weight_s_rel"],
+        tensors[f"{name}.weight_s_channel"],
+        None,
+        16,
+        6,
+        GROUP,
+        torch.float32,
+    )
+    return w if rows is None else w[rows]
+
+
+def test_dequant_fallback_loads_the_exact_reference_weights(grouped_file):
+    path, dense, tensors = grouped_file
+    model = _load(path, grouped_packed = False)
+    info = model._unsloth_comfy_quant
+    assert info["dequantized"] == 6 and info["packed_formats"] == [gi.W6A8]
+    for b, block in enumerate(model.blocks):
+        qkv = _expected_dense(tensors, f"blocks.{b}.qkv")
+        assert torch.equal(block.to_q.weight, qkv[:DIM])
+        assert torch.equal(block.to_k.weight, qkv[DIM : 2 * DIM])
+        assert torch.equal(block.to_v.weight, qkv[2 * DIM :])
+        assert torch.equal(block.to_out.weight, _expected_dense(tensors, f"blocks.{b}.out"))
+        assert torch.equal(block.to_q.bias, dense.blocks[b].to_q.bias)
+        rel = (block.to_out.weight - dense.blocks[b].to_out.weight).norm() / dense.blocks[
+            b
+        ].to_out.weight.norm()
+        assert rel < 0.04
+
+
+def test_packed_keep_holds_the_file_bytes_and_matches_the_dense_layer(grouped_file):
+    path, dense, tensors = grouped_file
+    model = _load(path, int8_backend = "native", grouped_packed = True)
+    info = model._unsloth_comfy_quant
+    # q / k / v / out of both blocks stay packed; the z-image int8 filter leaves adaLN dense, as for int8 files
+    assert info["grouped_packed"] == 8 and info["dequantized"] == 2
+    block = model.blocks[1]
+    assert gi.is_grouped_linear(block.to_k)
+    qkv = tensors["blocks.1.qkv.weight"]
+    assert torch.equal(
+        block.to_k.weight_packed, qkv[DIM : 2 * DIM]
+    )  # the file's own bytes, row-split
+    assert torch.equal(
+        block.to_k.weight_s_rel,
+        tensors["blocks.1.qkv.weight_s_rel"][DIM : 2 * DIM].view(torch.uint8),
+    )
+    assert torch.equal(block.to_k.weight, _expected_dense(tensors, "blocks.1.qkv")[DIM : 2 * DIM])
+    x = torch.randn(3, DIM)
+    want = torch.nn.functional.linear(
+        x, _expected_dense(tensors, "blocks.1.qkv")[DIM : 2 * DIM], block.to_k.bias
+    )
+    assert torch.allclose(block.to_k(x), want, atol = 1e-4, rtol = 1e-4)  # CPU: the dense widen route
+    assert gi.grouped_packed_layers(model) == info["grouped_packed"]
+
+
+def test_packed_keep_survives_a_module_wide_dtype_cast(grouped_file):
+    path, _dense, tensors = grouped_file
+    model = _load(path, int8_backend = "native", grouped_packed = True)
+    layer = model.blocks[0].to_out
+    before = layer.weight_s_channel.clone()
+    model.to(torch.bfloat16)
+    assert layer.weight_s_channel.dtype == torch.int32 and torch.equal(
+        layer.weight_s_channel, before
+    )
+    assert layer.compute_dtype == torch.bfloat16 and layer.rot_h.dtype == torch.bfloat16
+    out = layer(torch.randn(2, DIM, dtype = torch.bfloat16))
+    assert out.dtype == torch.bfloat16 and torch.isfinite(out).all()
+
+
+def test_packed_wanted_rule(monkeypatch):
+    cuda = type("T", (), {"device": "cuda"})()
+    cpu = type("T", (), {"device": "cpu"})()
+    monkeypatch.delenv(gi.GROUPED_PACKED_ENV, raising = False)
+    assert gi.grouped_packed_wanted(cuda, "torchao") is True
+    assert gi.grouped_packed_wanted(cuda, None) is False  # no int8 runtime: decode at load
+    assert gi.grouped_packed_wanted(cpu, "native") is False
+    assert gi.grouped_packed_wanted(cuda, "torchao", lora = True) is False
+    monkeypatch.setenv(gi.GROUPED_PACKED_ENV, "0")
+    assert gi.grouped_packed_wanted(cuda, "torchao") is False
+    monkeypatch.setenv(gi.GROUPED_PACKED_ENV, "1")
+    assert gi.grouped_packed_wanted(cpu, None) is True
+    assert gi.grouped_packed_wanted(cpu, None, lora = True) is False
+
+
+def test_resident_estimate_prices_packed_int8_and_dense(tmp_path):
+    path, _w, _t = _grouped_file(tmp_path, gi.W6A8, group = 32)
+    path = str(path)
+    # 16 x 512 weights: packed 6144 B, int8 8192 B, fp32 dense 32768 B (+ scales), rounded up to MiB
+    packed = cq.comfy_resident_mib(path, keep_int8 = True, keep_fp8 = False, grouped_packed = True)
+    unpacked = cq.comfy_resident_mib(path, keep_int8 = True, keep_fp8 = False)
+    dense = cq.comfy_resident_mib(path, keep_int8 = False, keep_fp8 = False, compute_bytes = 4)
+    assert (
+        packed == unpacked == dense == 1
+    )  # all under a MiB; the byte-level split is checked below
+    scan = cq.scan_comfy_quant(path)
+    assert scan.layers["a"].packed_bits == 6
+
+
+def test_text_encoder_loader_decodes_grouped_layers(tmp_path):
+    transformers = pytest.importorskip("transformers")
+    import core.inference.diffusion_comfy_components as C
+
+    cfg = transformers.Qwen3Config(
+        vocab_size = 64,
+        hidden_size = 256,
+        intermediate_size = 512,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 128,
+    )
+    torch.manual_seed(6)
+    ref = transformers.Qwen3Model(cfg).eval()
+    out = {}
+    for k, v in ref.state_dict().items():
+        key = "model." + k
+        if k.endswith("mlp.down_proj.weight"):  # K = 512
+            stem = key[: -len(".weight")]
+            t = gi.quantize_grouped(v, gi.ASYM_W4A8, codebook = BOOK)
+            out.update({f"{stem}{s or '.weight'}": x for s, x in t.items()})
+            out[f"{stem}.comfy_quant"] = gi.declaration_tensor(gi.grouped_declaration(gi.ASYM_W4A8))
+            expected = gi.dequant_grouped(
+                t[""],
+                t[".weight_s_rel"],
+                t[".weight_s_channel"],
+                t[".weight_codebook"],
+                16,
+                4,
+                GROUP,
+                torch.float32,
+            )
+        else:
+            out[key] = v
+    path = _save(tmp_path / "qwen_3_w4a8.safetensors", out)
+    enc = C.build_text_encoder(
+        path, encoder_cls = transformers.Qwen3Model, config = cfg, dtype = torch.float32
+    )
+    down = enc.layers[0].mlp.down_proj
+    assert getattr(enc, "_unsloth_te_prequant_scheme", None) in ("int8", None)
+    x = torch.randn(3, 512)
+    want = torch.nn.functional.linear(x, expected)
+    got = down(x)
+    assert torch.nn.functional.cosine_similarity(got.flatten(), want.flatten(), dim = 0) > 0.9999
+    assert C.resident_bytes(path) > 0

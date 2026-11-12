@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
 from .diffusion_fp8_dequant import chunk_rows, dequant_rows, fused_dequant_enabled
+from .diffusion_grouped_int8 import GROUPED_BITS, grouped_conf, grouped_layer_problem
 from .diffusion_init_buffers import is_fp32_init_table
 from .diffusion_single_file_converters import host_ram_budget_scope
 from .diffusion_small_host import FP8_STORAGE_HOST_RESERVE_MIB
@@ -75,6 +76,11 @@ class ComfyQuantLayer:
     group: int = 0
     # ``.weight`` holds packed int4 (K / 2 columns), unpacked on load.
     packed_int4: bool = False
+    # Grouped-scale packed codes (``diffusion_grouped_int8``): their width (4 / 6), group and file format. Decoded
+    # to the int8 grid an int8 ConvRot layer with the channel scale, unless kept packed (``grouped_packed_wanted``).
+    packed_bits: int = 0
+    group_size: int = 0
+    packed_format: str = ""
 
 
 @dataclass
@@ -88,7 +94,7 @@ class ComfyQuantScan:
     def counts(self) -> dict:
         out: dict = {}
         for layer in self.layers.values():
-            key = layer.format + ("+convrot" if layer.convrot else "")
+            key = layer.packed_format or (layer.format + ("+convrot" if layer.convrot else ""))
             out[key] = out.get(key, 0) + 1
         return out
 
@@ -265,6 +271,22 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
         fmt, convrot, group = _layer_conf(raw)
         weight = header.get(name + ".weight")
         why = None
+        if fmt in GROUPED_BITS:
+            why = grouped_layer_problem(name, raw, header, _SCALE_SUFFIXES)
+            if why:
+                scan.problems.append(f"{name}: {why}")
+            else:
+                bits, group, rotation = grouped_conf(raw)
+                scan.layers[name] = ComfyQuantLayer(
+                    name,
+                    INT8_TENSORWISE,
+                    True,
+                    int(rotation),
+                    packed_bits = int(bits),
+                    group_size = int(group),
+                    packed_format = fmt,
+                )
+            continue
         if fmt == CONVROT_W4A4:
             why = _w4a4_layer_problem(name, raw, weight, header, keys)
             if why:
@@ -417,6 +439,7 @@ def comfy_resident_mib(
     keep_fp32: Any = (),
     keep_fp32_bytes: Optional[int] = None,
     target: Any = None,
+    grouped_packed: bool = False,
 ) -> Optional[int]:
     """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
     weight a runtime keeps costs its stored bytes, one that is dequantized costs ``numel * compute_bytes``
@@ -428,8 +451,9 @@ def comfy_resident_mib(
     not multiples of ``fp8_divisible``). ``key_map`` names layers as the loader's filter sees them (an original-layout
     file). ``keep_fp32``: the transformer's ``_keep_in_fp32_modules``; those layers are never fp8-stored and, widened,
     cost ``keep_fp32_bytes`` per element (4 on an fp16 load, default ``compute_bytes``). Under ``fp8_stored`` an
-    nvfp4 / mxfp8 layer no native runtime keeps is priced packed where it can widen on ``target``. None when the
-    header cannot be read. Torch-free."""
+    nvfp4 / mxfp8 layer no native runtime keeps is priced packed where it can widen on ``target``. A W4A8 / W6A8 layer
+    the int8 runtime keeps costs its stored bytes under ``grouped_packed`` (resident packed), else the int8 grid it
+    decodes to. None when the header cannot be read. Torch-free."""
     fp32_bytes = compute_bytes if keep_fp32_bytes is None else int(keep_fp32_bytes)
     try:
         scan = scan if scan is not None else scan_comfy_quant(path)
@@ -473,6 +497,8 @@ def comfy_resident_mib(
     kept = {}
     for name, layer in scan.layers.items():
         shape = (header.get(name + ".weight") or {}).get("shape")
+        if layer.packed_bits and len(shape or ()) == 2:
+            shape = (int(shape[0]), int(shape[1]) * 8 // layer.packed_bits)
         kept[name + ".weight"] = (
             layer.format == INT8_TENSORWISE
             and keep_int8
@@ -505,6 +531,12 @@ def comfy_resident_mib(
     packed = {name + ".weight" for name, layer in scan.layers.items() if layer.format == NVFP4}
     # Packed int4 is half the int8 the loader unpacks it to, kept or dequantized.
     packed_int4 = {name + ".weight" for name, layer in scan.layers.items() if layer.packed_int4}
+    # W4A8 / W6A8: 8 / bits int8 elements per stored byte, unless kept packed
+    grouped = {
+        name + ".weight": 8 / layer.packed_bits
+        for name, layer in scan.layers.items()
+        if layer.packed_bits
+    }
     total = 0
     for key, entry in header.items():
         if keep_key is not None and not keep_key(key):
@@ -515,7 +547,12 @@ def comfy_resident_mib(
             numel *= int(d)
         dtype = str(entry.get("dtype", ""))
         stored = numel * _DTYPE_BYTES.get(dtype, 2)
-        if key in kept:
+        if key in grouped:
+            if kept[key]:
+                total += stored if grouped_packed else int(stored * grouped[key])
+            else:
+                total += int(numel * grouped[key]) * _bytes(key, shape)
+        elif key in kept:
             if kept[key]:
                 total += stored * (2 if key in packed_int4 else 1)
             else:
@@ -594,7 +631,7 @@ def comfy_quant_error(scan: Optional[ComfyQuantScan], filename: str = "") -> Opt
     return (
         f"{filename or 'This checkpoint'} is a ComfyUI-quantized checkpoint Unsloth cannot run "
         f"faithfully: {shown}{more}. Supported ComfyUI formats are int8_tensorwise (with or "
-        "without ConvRot), float8_e4m3fn, float8_e5m2, nvfp4 and mxfp8; use the bf16 file, a GGUF, "
+        "without ConvRot), convrot_w4a4, asym_w4a8_int8, w6a8_int8, float8_e4m3fn, float8_e5m2, nvfp4 and mxfp8; use the bf16 file, a GGUF, "
         "or Unsloth's own int8 / fp8 transformer quantization instead."
     )
 
@@ -913,16 +950,24 @@ def original_layout(transformer_cls: Any, path: str) -> Optional[dict]:
     return comfy_layout(path)
 
 
-def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
+def _apply_key_map(
+    state: dict,
+    kept: list,
+    key_map: Any,
+    grouped_src: Optional[dict] = None,
+    grouped_conv: Optional[dict] = None,
+) -> dict:
     """``state`` (file keys) renamed and row-split by ``key_map``; kept layers become ``(codes, scale, group, format)``.
-
-    Row selections are views where they are one contiguous run, so no layer is copied except a reordered one."""
+    A packed W4A8 / W6A8 source (``grouped_src``, by index into ``kept``) also lands in ``grouped_conv`` row-split
+    the same way. Row selections are views where they are one contiguous run, so no layer is copied except a
+    reordered one."""
     import torch
 
     sources = {
         layer.name + ".weight": (codes, scale, layer.group, layer.format)
         for layer, codes, scale, *_extra in kept
     }
+    index_of = {layer.name + ".weight": i for i, (layer, *_rest) in enumerate(kept)}
 
     def take(value: Any, rows: Any) -> Any:
         if rows is None:
@@ -954,7 +999,50 @@ def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
             if rows is not None and any(r < 0 or n <= 0 or r + n > rows_total for r, n in rows):
                 raise ValueError(f"{key}: row selection {rows} outside its {rows_total} rows")
             converted[new_key] = take(value, rows)
+            index = index_of.get(key)
+            if grouped_conv is not None and grouped_src and index in grouped_src:
+                selection = (
+                    [slice(0, rows_total)]
+                    if rows is None
+                    else [slice(int(r), int(r) + int(n)) for r, n in rows]
+                )
+                rows_packed = _grouped_rows([(index, sl) for sl in selection], kept, grouped_src)
+                if rows_packed is not None:
+                    grouped_conv[new_key] = rows_packed
     return converted
+
+
+def _grouped_rows(selection: list, sources: list, grouped_src: dict) -> Optional[tuple]:
+    """``(packed, steps, codebook, bits, group)`` holding the source rows ``selection`` (``[(index, slice)]``) of
+    packed W4A8 / W6A8 sources exactly, or None (a non-packed source, or segments of different widths / groups /
+    codebooks, which one packed weight cannot hold)."""
+    import torch
+
+    if not selection or any(i not in grouped_src for i, _sl in selection):
+        return None
+    kinds = {(sources[i][0].packed_bits, sources[i][0].group_size) for i, _sl in selection}
+    if len(kinds) != 1:
+        return None
+    books = [grouped_src[i][2] for i, _sl in selection]
+    first = books[0]
+    for other in books[1:]:
+        if (first is None) != (other is None) or (
+            first is not None and not torch.equal(first, other)
+        ):
+            return None
+    bits, group = kinds.pop()
+    qdata = [grouped_src[i][0][sl] for i, sl in selection]
+    steps = [grouped_src[i][1][sl] for i, sl in selection]
+    if len(selection) > 1:
+        from .diffusion_single_file_converters import charge_host_ram
+        charge_host_ram(_nbytes(qdata) + _nbytes(steps))
+    return (
+        qdata[0] if len(qdata) == 1 else torch.cat(qdata),
+        steps[0] if len(steps) == 1 else torch.cat(steps),
+        first,
+        bits,
+        group,
+    )
 
 
 def comfy_torchao_quantized(model: Any) -> bool:
@@ -1139,7 +1227,7 @@ def comfy_prequant_scheme(scan: Optional[ComfyQuantScan]) -> Optional[str]:
     """The Studio prequant scheme a ComfyUI file's quantized layers all share, else None."""
     if scan is None or scan.problems or not scan.layers:
         return None
-    formats = {layer.format for layer in scan.layers.values()}
+    formats = {layer.packed_format or layer.format for layer in scan.layers.values()}
     for scheme, allowed in PREQUANT_SCHEME_FORMATS.items():
         if formats <= set(allowed):
             return scheme
@@ -1241,29 +1329,32 @@ def load_comfy_quant_transformer(
     keep_dtype: Any = None,
     fp8_storage: Optional[bool] = None,
     fp8_widen_chosen: bool = False,
+    grouped_packed: Optional[bool] = None,
 ) -> Any:
     """Build ``transformer_cls`` from the ComfyUI-quantized ``path``.
 
-    ``sf_kwargs`` are the ``from_single_file`` kwargs the caller would have used (``config``,
-    ``subfolder``, ``torch_dtype``, ``token``, ``cache_dir``, ``local_files_only``). With an
-    ``int8_backend`` (``comfy_int8_backend``) the int8 layers Studio's own int8 filter selects keep
-    their codes and scales, as torchao ``Int8Tensor`` weights under ConvRot-rotating Linears
-    (``"torchao"``) or as native int8 twins (``"native"``); with an ``fp8_backend``
-    (``comfy_fp8_backend``) the ``float8_e4m3fn`` layers Studio's own fp8 filter selects do the same,
-    as per-row ``Float8Tensor`` weights or native fp8 twins; with an ``nvfp4_backend`` / ``mxfp8_backend``
-    (``diffusion_comfy_block.comfy_block_backend``) the nvfp4 / mxfp8 layers the matching Studio filter selects
-    keep their codes on Studio's FlashInfer NVFP4 Linear / the ``torch._scaled_mm`` MXFP8 Linear. Everything
-    else is dequantized to the compute dtype, except fp8 Linears under ``fp8_storage`` (None = env opt-in
-    only), which widen per layer in the forward. ``finalize`` applies the small-M padding here (the single-file path); the hosted
-    prequant loader passes False and pads after placement, as for its own checkpoints.
+        ``sf_kwargs`` are the ``from_single_file`` kwargs the caller would have used (``config``,
+        ``subfolder``, ``torch_dtype``, ``token``, ``cache_dir``, ``local_files_only``). With an
+        ``int8_backend`` (``comfy_int8_backend``) the int8 layers Studio's own int8 filter selects keep
+        their codes and scales, as torchao ``Int8Tensor`` weights under ConvRot-rotating Linears
+        (``"torchao"``) or as native int8 twins (``"native"``); with an ``fp8_backend``
+        (``comfy_fp8_backend``) the ``float8_e4m3fn`` layers Studio's own fp8 filter selects do the same,
+        as per-row ``Float8Tensor`` weights or native fp8 twins; with an ``nvfp4_backend`` / ``mxfp8_backend``
+        (``diffusion_comfy_block.comfy_block_backend``) the nvfp4 / mxfp8 layers the matching Studio filter selects
+        keep their codes on Studio's FlashInfer NVFP4 Linear / the ``torch._scaled_mm`` MXFP8 Linear. Everything
+        else is dequantized to the compute dtype, except fp8 Linears under ``fp8_storage`` (None = env opt-in
+        only), which widen per layer in the forward. W4A8 / W6A8 layers decode to the int8 grid and take the int8 path
+    (they are int8 ConvRot layers with the channel scale), or with ``grouped_packed`` (None: ``grouped_packed_wanted``)
+    stay packed on the device as ``GroupedInt8Linear`` where the int8 runtime would keep them. ``finalize`` applies the small-M padding here (the single-file path); the hosted
+        prequant loader passes False and pads after placement, as for its own checkpoints.
 
-    ``keep_key(key)`` limits the read to the DiT's keys of a file that bundles other components;
-    ``pre_convert(state)`` renames keys (never values) before the family converter runs. A family with no
-    diffusers single-file converter passes ``key_map(key, shape)`` (or registers it in ``original_layout``):
-    ``[(diffusers key, rows)]`` per file key, ``rows`` None (the whole tensor) or ``[(first row, n rows), ...]``;
-    ``prepare_model(model)`` reshapes the freshly built model before the weights load, and ``keep_dtype(key)``
-    names a dtype a file tensor keeps instead of the compute dtype. Raises ``ValueError`` for a checkpoint it
-    must refuse."""
+        ``keep_key(key)`` limits the read to the DiT's keys of a file that bundles other components;
+        ``pre_convert(state)`` renames keys (never values) before the family converter runs. A family with no
+        diffusers single-file converter passes ``key_map(key, shape)`` (or registers it in ``original_layout``):
+        ``[(diffusers key, rows)]`` per file key, ``rows`` None (the whole tensor) or ``[(first row, n rows), ...]``;
+        ``prepare_model(model)`` reshapes the freshly built model before the weights load, and ``keep_dtype(key)``
+        names a dtype a file tensor keeps instead of the compute dtype. Raises ``ValueError`` for a checkpoint it
+        must refuse."""
     import torch
     from safetensors.torch import load_file
 
@@ -1302,6 +1393,10 @@ def load_comfy_quant_transformer(
         mxfp8_backend = None
     if fp8_storage is None:
         fp8_storage = fp8_storage_forced() and comfy_fp8_storage(target)
+    if grouped_packed is None:
+        from .diffusion_grouped_int8 import grouped_packed_wanted
+        grouped_packed = grouped_packed_wanted(target, int8_backend)
+    grouped_packed = bool(grouped_packed) and any(l.packed_bits for l in scan.layers.values())
     from .diffusion_packed_block import (
         PACKED_BLOCK_ATTR,
         packed_block_args,
@@ -1391,7 +1486,13 @@ def load_comfy_quant_transformer(
 
     _widened = {
         layer.name + ".weight": (
-            (2 if layer.format == NVFP4 or layer.packed_int4 else 1)
+            (
+                2
+                if layer.format == NVFP4 or layer.packed_int4
+                else 8 / layer.packed_bits
+                if layer.packed_bits
+                else 1
+            )
             if not (backends.get(layer.format) or _stored(layer) or _packed(layer))
             or (layer.format in BLOCK_SIZES and key_map is not None)
             else 0
@@ -1429,10 +1530,26 @@ def load_comfy_quant_transformer(
     )
     budget.activate()
     sources: list = []  # (layer, codes, scale, block extras or None) kept for a runtime
+    # source index -> (packed codes, fp8 step bytes, codebook) of a W4A8 / W6A8 source a packed keep can hold
+    grouped_src: dict = {}
     dequantized = 0
     for layer in scan.layers.values():
         codes = state.pop(layer.name + ".weight")
-        scale = state.pop(layer.name + ".weight_scale")
+        packed_parts = None
+        if layer.packed_bits:
+            from .diffusion_grouped_int8 import decode_int8_torch
+
+            s_rel = state.pop(layer.name + ".weight_s_rel")
+            scale = state.pop(layer.name + ".weight_s_channel").to(torch.float32)
+            codebook = state.pop(layer.name + ".weight_codebook", None)
+            if codebook is not None:
+                codebook = codebook.to(torch.float32)
+            packed_parts = (codes, s_rel.view(torch.uint8), codebook)
+            # the int8 grid: 1 byte per weight plus the decode's float32 row chunk
+            charge_host_ram(int(codes.shape[0]) * int(s_rel.shape[1]) * layer.group_size)
+            codes = decode_int8_torch(codes, s_rel, codebook, layer.group_size, layer.packed_bits)
+        else:
+            scale = state.pop(layer.name + ".weight_scale")
         if layer.packed_int4:
             codes = unpack_int4_rows(codes)
         # int8 / fp8 / mxfp8 activations are quantized per call; only nvfp4 uses its static input_scale.
@@ -1459,6 +1576,8 @@ def load_comfy_quant_transformer(
             or (fp8_storage and layer.format in FP8_FORMATS)
             or (packed and extra is not None and packed_block_runs_on(layer.format, target))
         ) and not (extra is not None and key_map is not None):
+            if packed_parts is not None and grouped_packed:
+                grouped_src[len(sources)] = packed_parts
             sources.append((layer, codes, scale, extra))
             state[layer.name + ".weight"] = None  # placeholder, tagged below
         elif extra is not None:
@@ -1559,11 +1678,17 @@ def load_comfy_quant_transformer(
                     f"{name}: rebuilt as {tuple(codes.shape)}, the model expects {tuple(wanted[name].shape)}"
                 )
             out[name] = (codes, scale, group, fmt)
+            rows_packed = _grouped_rows(
+                [(i, slice(r, r + n)) for i, r, n in segments], sources, grouped_src
+            )
+            if rows_packed is not None:
+                grouped_conv[name] = rows_packed
         return out
 
+    grouped_conv: dict = {}  # converted weight name -> GroupedInt8Linear buffers for a packed keep
     if key_map is not None:
         # Rows move whole (no float64 tags: a 21 GB file would need ~5x that in tags)
-        converted = _apply_key_map(state, sources, key_map)
+        converted = _apply_key_map(state, sources, key_map, grouped_src, grouped_conv)
         for name, value in converted.items():
             if isinstance(value, tuple) and name in wanted:
                 if tuple(wanted[name].shape) != tuple(value[0].shape):
@@ -1580,6 +1705,7 @@ def load_comfy_quant_transformer(
             # Full-width float64 tags are views, but a converter that joins or splits rows materializes them
             # (8 bytes per weight element) before any checked helper runs: check that before retrying.
             charge_host_ram(8 * sum(int(codes.numel()) for _layer, codes, *_rest in sources))
+            grouped_conv.clear()
             converted = _convert_tagged(None)
     del state
     if fp16_keep:
@@ -1604,6 +1730,7 @@ def load_comfy_quant_transformer(
     stored: dict = {}  # fqn -> (codes, scale)
     block_native: dict = {}  # fqn -> (fmt, codes, scale, tensor_scale, input_scale, bias)
     block_packed: dict = {}  # fqn -> (fmt, codes, scale, row_scale, pre_quant, bias)
+    grouped_keep: dict = {}  # fqn -> (packed, steps, channel scale, codebook, bits, group, rotation, bias)
     built = {TQ_INT8: 0, TQ_FP8: 0, TQ_NVFP4: 0, TQ_MXFP8: 0}
     for name, value in list(converted.items()):
         if isinstance(value, _BlockWeight):
@@ -1663,6 +1790,15 @@ def load_comfy_quant_transformer(
             # Studio's fp8 quant leaves the Linears a DiT keeps in fp32 (require_bf16) at full precision.
             and not (scheme == TQ_FP8 and any(m in fqn.split(".") for m in keep_fp32))
         )
+        if keep and name in grouped_conv and isinstance(module, torch.nn.Linear):
+            qdata, s_rel, codebook, bits, group_size = grouped_conv[name]
+            bias = converted.get(fqn + ".bias")
+            if torch.is_tensor(bias):
+                bias = bias.to(dtype)
+            grouped_keep[fqn] = (qdata, s_rel, scale, codebook, bits, group_size, group, bias)
+            del converted[name]
+            built[scheme] += 1
+            continue
         if keep:
             if backend == "native":
                 native[fqn] = (codes, scale, group, scheme)
@@ -1744,6 +1880,39 @@ def load_comfy_quant_transformer(
             setattr(parent, leaf, layer)
             for buffer_name, buffer in layer.named_buffers(recurse = False):
                 converted[f"{fqn}.{buffer_name}"] = buffer
+        if grouped_keep:
+            from .diffusion_grouped_int8 import grouped_linear_class
+            grouped_cls = grouped_linear_class()
+        for fqn, (
+            qdata,
+            s_rel,
+            scale,
+            codebook,
+            bits,
+            group_size,
+            rotation,
+            bias,
+        ) in grouped_keep.items():
+            parent_name, _, leaf = fqn.rpartition(".")
+            parent = model.get_submodule(parent_name) if parent_name else model
+            linear = getattr(parent, leaf)
+            layer = grouped_cls(
+                linear.in_features,
+                linear.out_features,
+                qdata = qdata,
+                s_rel = s_rel,
+                s_channel = scale.reshape(-1),
+                codebook = codebook,
+                bits = bits,
+                group_size = group_size,
+                rotation = rotation,
+                bias = bias,
+                compute_dtype = dtype,
+            )
+            setattr(parent, leaf, layer)
+            for buffer_name, buffer in layer.named_buffers(recurse = False):
+                if buffer_name != "rot_h":
+                    converted[f"{fqn}.{buffer_name}"] = buffer
         if block_packed:
             packed_cls = packed_block_linear_class()
         for fqn, (fmt, codes, scale, row_scale, pre_quant, bias) in block_packed.items():
@@ -1789,7 +1958,11 @@ def load_comfy_quant_transformer(
     del converted
     # __init__ buffers follow the compute dtype except fp32 tables; checkpoint buffers keep theirs (H3 curve)
     for module_name, module in model.named_modules():
-        if module_name in block_native or module_name in block_packed:
+        if (
+            module_name in block_native
+            or module_name in block_packed
+            or module_name in grouped_keep
+        ):
             continue  # fp32 scales / alpha the block kernels need; codes are not floating
         for buffer_name, buffer in list(module._buffers.items()):
             if (f"{module_name}.{buffer_name}" if module_name else buffer_name) in loaded:
@@ -1845,13 +2018,14 @@ def load_comfy_quant_transformer(
         from .diffusion_nvfp4_protect import attach_own_controller
         attach_own_controller(model)
     model.eval()
-    convrot = len(rotated) + sum(1 for v in native.values() if v[2])
+    convrot = len(rotated) + sum(1 for v in native.values() if v[2]) + len(grouped_keep)
     if logger is not None:
         logger.info(
             "diffusion.comfy_quant: %s loaded from a ComfyUI checkpoint (%s): %d int8 layers kept as "
             "int8 (%s, %d ConvRot), %d fp8 layers kept as fp8 (%s), %d nvfp4 layers kept as nvfp4 (%s), "
             "%d mxfp8 layers kept as mxfp8 (%s), %d fp8 layers stored as fp8 and widened per layer to %s, "
-            "%d nvfp4 / mxfp8 layers kept packed and widened per layer, %d layers dequantized to %s",
+            "%d nvfp4 / mxfp8 layers kept packed and widened per layer, %d W4A8 / W6A8 layers kept packed, "
+            "%d layers dequantized to %s",
             transformer_cls.__name__,
             ", ".join(f"{k} x{v}" for k, v in sorted(scan.counts().items())),
             built[TQ_INT8],
@@ -1866,6 +2040,7 @@ def load_comfy_quant_transformer(
             len(stored),
             str(dtype).replace("torch.", ""),
             len(block_packed),
+            len(grouped_keep),
             dequantized,
             str(dtype).replace("torch.", ""),
         )
@@ -1881,6 +2056,13 @@ def load_comfy_quant_transformer(
         if stored:
             info["fp8_stored"] = len(stored)
             setattr(model, FP8_STORED_ATTR, len(stored))
+        if grouped_keep:
+            from .diffusion_grouped_int8 import GROUPED_PACKED_ATTR
+            info["grouped_packed"] = len(grouped_keep)
+            setattr(model, GROUPED_PACKED_ATTR, len(grouped_keep))
+        packed_formats = sorted({l.packed_format for l in scan.layers.values() if l.packed_format})
+        if packed_formats:
+            info["packed_formats"] = packed_formats
         if block_packed:
             for fmt in (NVFP4, MXFP8):
                 count = sum(1 for v in block_packed.values() if v[0] == fmt)

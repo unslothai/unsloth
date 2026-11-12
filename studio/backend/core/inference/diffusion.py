@@ -10256,17 +10256,24 @@ class DiffusionBackend:
                                 _comfy_fp8_plan = (
                                     self._comfy_fp8_stream_plan(plan) if _comfy_offload else None
                                 )
+                                _comfy_int8 = comfy_int8_backend(
+                                    target,
+                                    fam.name,
+                                    base,
+                                    offload = _comfy_offload,
+                                    lora = _has_active_lora(loras),
+                                )
+                                from .diffusion_grouped_int8 import grouped_packed_wanted
+
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
                                     comfy_scan,
                                     sf_kwargs,
-                                    int8_backend = comfy_int8_backend(
-                                        target,
-                                        fam.name,
-                                        base,
-                                        offload = _comfy_offload,
-                                        lora = _has_active_lora(loras),
+                                    int8_backend = _comfy_int8,
+                                    # W4A8 / W6A8 codes stay packed where the int8 runtime runs (not under a LoRA)
+                                    grouped_packed = grouped_packed_wanted(
+                                        target, _comfy_int8, lora = _has_active_lora(loras)
                                     ),
                                     fp8_backend = comfy_fp8_backend(
                                         target,
@@ -12099,11 +12106,14 @@ class DiffusionBackend:
             if scan is None or scan.problems:
                 return None
             name = getattr(fam, "name", None)
+            from .diffusion_grouped_int8 import grouped_packed_wanted
+
+            int8_backend = comfy_int8_backend(target, name, base, offload = offload, lora = lora)
             return comfy_resident_mib(
                 single_file_path,
                 scan,
-                keep_int8 = comfy_int8_backend(target, name, base, offload = offload, lora = lora)
-                is not None,
+                keep_int8 = int8_backend is not None,
+                grouped_packed = grouped_packed_wanted(target, int8_backend, lora = lora),
                 keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
                 target = target,
