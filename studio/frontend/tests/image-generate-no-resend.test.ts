@@ -39,6 +39,7 @@ function loadApis(): ImagesApi {
       "@/lib/model-lifecycle-events": { withBackgroundLoadNotice: (f: unknown) => f },
       "@/features/settings/api/vram-budget": {
         dropVramBudgetRetry: () => {},
+        loadVramBudgetSettings: async () => null,
         settleVramBudgetSave: () => null,
         setVramBudgetLocked: () => {},
       },

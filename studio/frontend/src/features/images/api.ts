@@ -3,7 +3,7 @@
 
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 // eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
-import { dropVramBudgetRetry, settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
+import { dropVramBudgetRetry, loadVramBudgetSettings, settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
@@ -461,9 +461,10 @@ export async function withSettledVramBudget<T>(run: () => Promise<T>): Promise<T
   if (!budgetSave) return run();
   setVramBudgetLocked(true);
   try {
-    // A refused load repaints the stored budget, so a re-staged retry would load a hidden value.
     await budgetSave.catch((error: unknown) => {
+      // Dropped and repainted together, so the slider never shows a value no load will use.
       dropVramBudgetRetry();
+      void loadVramBudgetSettings({ force: true });
       throw new VramBudgetSaveError(error);
     });
     return await run();

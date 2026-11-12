@@ -12,8 +12,17 @@ function setup() {
   const reply = new Promise<Response>((resolve) => {
     release = resolve;
   });
+  const stored = {
+    fraction: 0.97,
+    is_stored: false,
+    default_fraction: 0.97,
+    min_fraction: 0.1,
+    max_fraction: 1,
+    reload_required: false,
+  };
   const authFetch = async (path: string, init?: RequestInit) => {
-    sent.push(`${init?.method} ${path}`);
+    sent.push(`${init?.method ?? "GET"} ${path}`);
+    if (path === "/api/settings/vram-budget" && !init?.method) return Response.json(stored);
     if (path === "/api/settings/vram-budget") return reply;
     return Response.json({ loaded: false });
   };
@@ -86,7 +95,7 @@ test("a rejected budget save prevents image loading and unlocks the slider", asy
   const loading = images.loadDiffusionModel({ model_path: "example/image" });
   release(Response.json({ detail: "Budget save failed" }, { status: 500 }));
   await assert.rejects(loading, /Budget save failed/);
-  assert.deepEqual(sent, ["PUT /api/settings/vram-budget"]);
+  assert.deepEqual(sent, ["PUT /api/settings/vram-budget", "GET /api/settings/vram-budget"]);
   assert.equal(budget.isVramBudgetLocked(), false);
 });
 
@@ -98,7 +107,7 @@ test("a failed in-flight budget save is not retried by the next image load", asy
   await assert.rejects(saving, /Budget save failed/);
   await assert.rejects(loading, /Budget save failed/);
   assert.equal(budget.flushVramBudgetSave(), null);
-  assert.deepEqual(sent, ["PUT /api/settings/vram-budget"]);
+  assert.deepEqual(sent, ["PUT /api/settings/vram-budget", "GET /api/settings/vram-budget"]);
 });
 
 test("image loading also waits for an in-flight reset", async () => {
@@ -131,15 +140,19 @@ test("a Hub download plan waits for the staged budget save", async () => {
   ]);
 });
 
-test("a failed budget save surfaces as VramBudgetSaveError, not a plan failure", async () => {
+test("a failed budget save surfaces as VramBudgetSaveError and repaints the stored budget", async () => {
   const { budget, images, sent, release } = setup();
+  const published: number[] = [];
+  budget.subscribeVramBudgetSettings((next) => published.push(next.fraction));
   budget.stageVramBudgetSave(0.9);
   const planning = images.withSettledVramBudget(() =>
     images.getDiffusionDownloadPlan({ model_path: "example/image" }),
   );
   release(Response.json({ detail: "Budget save failed" }, { status: 500 }));
   await assert.rejects(planning, (error: unknown) => error instanceof images.VramBudgetSaveError);
-  assert.deepEqual(sent, ["PUT /api/settings/vram-budget"]);
+  assert.deepEqual(sent, ["PUT /api/settings/vram-budget", "GET /api/settings/vram-budget"]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(published, [0.97]);
 });
 
 test("the staged Hub plan settles the budget first", async () => {
