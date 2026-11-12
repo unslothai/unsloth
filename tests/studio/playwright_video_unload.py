@@ -60,7 +60,7 @@ def main():
         picker = page.locator('[data-tour="video-model"]')
         shortcut = picker.locator("[data-eject-hit]")
         menu_eject = page.get_by_role("button", name = "Eject model", exact = True)
-        unloading = page.get_by_role("status").filter(has_text = "Unloading model")
+        unloading = page.get_by_text("Unloading model", exact = True)
         expect(shortcut).to_be_visible(timeout = 30_000)
 
         # Two clicks in one event turn also exercise the guard before React updates the DOM.

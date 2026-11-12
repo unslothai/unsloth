@@ -84,6 +84,7 @@ _GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?
 _served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
+_served_vision: dict[tuple[str, str, str, str], tuple[float, Optional[bool]]] = {}
 # outlives the TTL: Ollama unloads an idle model after keep_alive and reloads it at the same window.
 _ollama_last_windows: dict[tuple[str, str, str, str], int] = {}
 
@@ -7733,6 +7734,51 @@ class ExternalProviderClient:
             del _served_templates[stale]
         _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)
         return template
+
+    async def _read_served_vision(self, model: str) -> Optional[bool]:
+        if self.provider_type == "ollama":
+            response = await _client().post(
+                _native_server_path(self.base_url, "/api/show"),
+                json = {"model": model},
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            body = response.json()
+            names = body.get("capabilities") if isinstance(body, dict) else None
+            return "vision" in names if isinstance(names, list) else None
+        response = await _client().get(
+            f"{self.base_url.removesuffix('/v1')}/props",
+            params = {"model": model},
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        body = response.json()
+        modalities = body.get("modalities") if isinstance(body, dict) else None
+        vision = modalities.get("vision") if isinstance(modalities, dict) else None
+        return vision if isinstance(vision, bool) else None
+
+    async def served_model_reads_images(self, model: str) -> Optional[bool]:
+        if self.provider_type not in ("ollama", "llama_cpp"):
+            return None
+        now = time.monotonic()
+        key = (self.provider_type, self.base_url, self._credential_digest(), model)
+        cached = _served_vision.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        vision = None
+        try:
+            vision = await self._read_served_vision(model)
+        except httpx.ConnectError as exc:
+            logger.info("No served vision flag from %s: %s", self.provider_type, type(exc).__name__)
+            return None
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("No served vision flag from %s: %s", self.provider_type, type(exc).__name__)
+        for stale in [k for k, (expiry, _) in _served_vision.items() if expiry <= now]:
+            del _served_vision[stale]
+        _served_vision[key] = (now + _SERVED_WINDOW_TTL_S, vision)
+        return vision
 
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:

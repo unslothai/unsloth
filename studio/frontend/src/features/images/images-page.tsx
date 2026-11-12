@@ -229,6 +229,7 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -5031,6 +5032,9 @@ export function ImagesPage({
     return pendingUnload.current;
   }, [refreshStatus, dropResidentState, setStatusIfNewest]);
 
+  const ejecting = useRef(false);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
+
   // The unload cancels the load; it leaves only cache, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
     const wasLoading = busy === "loading";
@@ -6270,7 +6274,7 @@ export function ImagesPage({
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 loaded={busy === "unloading" ? false : undefined}
-                onEject={status?.loaded && busy !== "unloading" ? handleUnload : undefined}
+                onEject={status?.loaded && busy !== "unloading" ? handleEject : undefined}
                 variant="ghost"
                 className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
@@ -6281,12 +6285,6 @@ export function ImagesPage({
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}
               />
-            )}
-            {pageMode !== "train" && busy === "unloading" && (
-              <span role="status" className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-                <span aria-hidden="true"><Spinner className="size-3.5" /></span>
-                Unloading model…
-              </span>
             )}
             {pageMode !== "train" && busy === "loading" && (
               <Tooltip>

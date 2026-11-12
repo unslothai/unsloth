@@ -230,6 +230,7 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -3634,6 +3635,9 @@ function VideoGenerator({
     return pendingUnload.current;
   }, [refreshStatus, dropResidentState, setStatusIfNewest]);
 
+  const ejecting = useRef(false);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
+
   // Cancelling a load IS the unload; only cache remains, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
     const wasLoading = busy === "loading";
@@ -4101,7 +4105,7 @@ function VideoGenerator({
               onValueChange={handleModelSelect}
               resolveDownloadFootprint={resolveDownloadFootprint}
               loaded={busy === "unloading" ? false : undefined}
-              onEject={status?.loaded && busy !== "unloading" ? handleUnload : undefined}
+              onEject={status?.loaded && busy !== "unloading" ? handleEject : undefined}
               variant="ghost"
               className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
               task={VIDEO_GEN_TASKS}
@@ -4112,12 +4116,6 @@ function VideoGenerator({
               open={active && selectorOpen}
               onOpenChange={(o) => setSelectorOpen(active && o)}
             />
-            )}
-            {pageMode !== "train" && busy === "unloading" && (
-              <span role="status" className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-                <span aria-hidden="true"><Spinner className="size-3.5" /></span>
-                Unloading model…
-              </span>
             )}
             {/* The load's own cancel, beside the selector rather than inside it: the selector's eject needs
                 a resident model, so it is hidden for exactly the span a first load runs. A real button,

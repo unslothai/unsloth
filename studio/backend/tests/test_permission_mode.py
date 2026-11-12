@@ -1559,6 +1559,69 @@ def test_shell_function_passed_by_reference_is_high_risk(code, refused):
     assert (_check_code_safety(code) is not None) is refused
 
 
+@pytest.mark.parametrize(
+    "code, high_risk",
+    [
+        ("import os\nlist(map(os.remove, ['/srv/data/x']))", True),
+        ("import shutil\nlist(map(shutil.rmtree, ['build']))", True),
+        ("import functools, os\nfunctools.partial(os.remove, 'x')()", True),
+        (
+            "import shutil, threading\nthreading.Thread(target=shutil.rmtree, args=('build',)).start()",
+            True,
+        ),
+        (
+            "import os\nfrom concurrent.futures import ThreadPoolExecutor\n"
+            "ThreadPoolExecutor().submit(os.remove, 'x')",
+            True,
+        ),
+        ("import atexit, shutil\natexit.register(shutil.rmtree, 'build')", True),
+        ("from pathlib import Path\nlist(map(Path.unlink, Path('.').glob('*.bin')))", True),
+        ("import os\ndef go(f=os.remove):\n    f('x')\ngo()", True),
+        ("import os\nfor f in [os.unlink]:\n    f('x')", True),
+        ("import os\nrm, n = os.remove, 1\nrm('x')", True),
+        ("import os\nrms = {'rm': os.remove}\nrms['rm']('x')", True),
+        ("import os\ndef pick():\n    return os.remove\npick()('x')", True),
+        ("import os\nclass Box: ...\nrm = Box.rm = os.remove\nBox.rm('x')", True),
+        ("import os\nrm = os.remove\nlist(map(rm, ['x']))", True),
+        ("import os\nrm = os.remove\ngo = rm\ngo('x')", True),
+        ("from shutil import rmtree\nlist(map(rmtree, ['build']))", True),
+        ("from os import remove as rm\nlist(map(rm, ['x']))", True),
+        ("import os as fs\nlist(map(fs.remove, ['x']))", True),
+        ("import os\nlist(map(getattr(os, 'remove'), ['x']))", True),
+        ("import os\nlist(map(vars(os)['remove'], ['x']))", True),
+        ("import os\nlist(map(os.kill, [1234], [9]))", True),
+        ("import psutil\nlist(map(psutil.Process.kill, psutil.process_iter()))", True),
+        ("import psutil\nk = psutil.Process.kill\nlist(map(k, psutil.process_iter()))", True),
+        ("import psutil\nk = psutil.Process(5).kill\nk()", True),
+        ("import os\nprint(hasattr(os, 'remove'))", False),
+        ("import os\nprint('use os.remove or shutil.rmtree to delete')", False),
+        ("import os\nrm = os.remove\nprint('ready')", False),
+        ("from shutil import rmtree, copy\ncopy('a', 'b')", False),
+        ("import os\nlist(map(os.path.basename, ['a/b']))", False),
+        ("import os\nprint(getattr(os, 'sep'))", False),
+        ("import shutil\nfor name in dir(shutil):\n    print(name, getattr(shutil, name))", False),
+        ("import os\nfor name in vars(os):\n    print(name, vars(os)[name])", False),
+        ("items = [3, 1]\nlist(map(items.remove, [1]))", False),
+        ("def remove(p): ...\nlist(map(remove, ['x']))", False),
+    ],
+)
+def test_file_delete_function_passed_by_reference_is_high_risk(code, high_risk):
+    assert is_high_risk_tool_call("python", {"code": code}) is high_risk
+
+
+@pytest.mark.parametrize(
+    "command, high_risk",
+    [
+        ("python3 -c 'import shutil; list(map(shutil.rmtree, [\"build\"]))'", True),
+        ("python3 -c 'import os, functools; functools.partial(os.remove, \"x\")()'", True),
+        ("python3 - <<'PY'\nimport os\nlist(map(os.remove, ['x']))\nPY", True),
+        ("python3 -c 'import os; print(hasattr(os, \"remove\"))'", False),
+    ],
+)
+def test_terminal_python_file_delete_by_reference_is_high_risk(command, high_risk):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is high_risk
+
+
 @pytest.mark.parametrize("code", ["value = " + "+".join(["1"] * 400), "value = data" + "[0]" * 400])
 def test_long_expression_chain_is_classified(code):
     import threading

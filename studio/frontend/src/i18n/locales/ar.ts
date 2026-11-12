@@ -928,7 +928,7 @@ export const ar = {
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",
-      api: "API",
+      api: "مراقبة API",
       lightMode: "الوضع الفاتح",
       darkMode: "الوضع الداكن",
       guidedTour: "جولة إرشادية",
