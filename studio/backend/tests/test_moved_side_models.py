@@ -12,7 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from core.inference import diffusion_segment, stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+from core.inference import (
+    diffusion_segment,
+    model_cache_search,
+    stt_ggml_sidecar,
+    stt_mtmd_sidecar,
+    stt_sidecar,
+)
 from core.inference import flux3_prompt_upsampler as pup
 from utils import hidden_models
 
@@ -22,7 +28,6 @@ _SPEC = stt_mtmd_sidecar.MTMD_STT_MODELS[_MODEL_ID]
 
 
 def _forget_custom_folder_memos(monkeypatch):
-    from core.inference import model_cache_search
     for name in ("_custom_folder_rows_memo", "_custom_folder_listings_memo"):
         monkeypatch.setattr(model_cache_search, name, {})
 
@@ -35,23 +40,25 @@ def caches(monkeypatch, tmp_path):
     active.mkdir()
     known: list[Path] = [active]
     folders: list[dict] = []
+    roots = {"legacy": tmp_path / "legacy" / "hub", "default": tmp_path / "default" / "hub"}
     monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: active)
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: list(known))
-    legacy, default = tmp_path / "legacy" / "hub", tmp_path / "default" / "hub"
-    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: legacy)
-    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: default)
+    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: roots["legacy"])
+    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: roots["default"])
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: list(folders))
     # Every test registers its folders before the first lookup, so only a memo from an earlier test can be stale.
     _forget_custom_folder_memos(monkeypatch)
     stt_mtmd_sidecar._forget_downloaded_probe()
-    yield {
-        "active": active,
-        "known": known,
-        "folders": folders,
-        "legacy": legacy,
-        "default": default,
-    }
+    yield {"active": active, "known": known, "folders": folders, **roots}
     stt_mtmd_sidecar._forget_downloaded_probe()
+
+
+def _register(
+    caches,
+    folder: Path,
+    recursive: bool = False,
+) -> None:
+    caches["folders"].append({"path": str(folder), "recursive": recursive})
 
 
 def _hub_tree(hub: Path, repo: str, files: dict[str, bytes]) -> Path:
@@ -80,69 +87,71 @@ def _paths():
     return stt_mtmd_sidecar._cached_model_paths(_MODEL_ID)
 
 
-def test_cache_tree_moved_into_a_custom_folder_is_found(caches, tmp_path):
+# ── dictation: where the files are found ────────────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("layout", ["folder", "registered HF_HOME"])
+def test_cache_tree_moved_into_a_custom_folder_is_found(caches, tmp_path, layout):
     folder = tmp_path / "custom"
-    snapshot = _asr_tree(folder)
-    caches["folders"].append({"path": str(folder), "recursive": False})
+    snapshot = _asr_tree(folder if layout == "folder" else folder / "hub")
+    _register(caches, folder)
     assert _paths() == (str(snapshot / _SPEC.model_file), str(snapshot / _SPEC.mmproj_file))
     assert stt_mtmd_sidecar.is_model_downloaded(_MODEL_ID) is True
 
 
-def test_cache_tree_under_a_registered_hf_home_is_found(caches, tmp_path):
-    folder = tmp_path / "hf_home"
-    snapshot = _asr_tree(folder / "hub")
-    caches["folders"].append({"path": str(folder), "recursive": False})
+@pytest.mark.parametrize("root", ["previous Models folder", "legacy", "default"])
+def test_other_known_caches_are_searched_like_chat_loads(caches, tmp_path, root):
+    hub = tmp_path / "previous" / "hub" if root == "previous Models folder" else caches[root]
+    snapshot = _asr_tree(hub)
+    if root == "previous Models folder":
+        caches["known"].append(hub)
     assert _paths()[0] == str(snapshot / _SPEC.model_file)
 
 
-def test_previous_models_folder_still_answers(caches, tmp_path):
-    previous = tmp_path / "previous" / "hub"
-    snapshot = _asr_tree(previous)
-    caches["known"].append(previous)
-    assert _paths()[0] == str(snapshot / _SPEC.model_file)
-
-
-def test_active_cache_wins_over_a_custom_folder_copy(caches, tmp_path):
-    active_snapshot = _asr_tree(caches["active"])
-    _asr_tree(tmp_path / "custom")
-    caches["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
-    assert _paths()[0] == str(active_snapshot / _SPEC.model_file)
-
-
-@pytest.mark.parametrize("layout", ["root", "sub-folder"])
-def test_loose_pair_in_a_custom_folder_is_found(caches, tmp_path, layout):
+@pytest.mark.parametrize(
+    "where, recursive, found",
+    [
+        ("", False, True),
+        ("asr", False, True),
+        ("audio/asr", True, True),
+        ("audio/asr", False, False),
+    ],
+)
+def test_loose_pair_is_found_where_the_model_hub_lists_loose_ggufs(
+    caches, tmp_path, where, recursive, found
+):
     folder = tmp_path / "custom"
-    directory = folder if layout == "root" else folder / "asr"
-    _asr_pair(directory)
-    caches["folders"].append({"path": str(folder), "recursive": False})
-    assert _paths() == (str(directory / _SPEC.model_file), str(directory / _SPEC.mmproj_file))
+    _asr_pair(folder / where)
+    _register(caches, folder, recursive)
+    expected = (str(folder / where / _SPEC.model_file), str(folder / where / _SPEC.mmproj_file))
+    assert _paths() == (expected if found else None)
 
 
 def test_loose_model_without_its_mmproj_is_not_downloaded(caches, tmp_path):
     _asr_pair(tmp_path / "custom", mmproj = False)
-    caches["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
+    _register(caches, tmp_path / "custom")
     assert _paths() is None
     assert stt_mtmd_sidecar.is_model_downloaded(_MODEL_ID) is False
 
 
-@pytest.mark.parametrize("recursive", [True, False])
-def test_deeper_loose_pair_follows_the_folder_recursive_setting(caches, tmp_path, recursive):
-    folder = tmp_path / "custom"
-    _asr_pair(folder / "audio" / "asr")
-    caches["folders"].append({"path": str(folder), "recursive": recursive})
-    assert (_paths() is not None) is recursive
+def test_active_cache_wins_and_a_hit_there_reads_no_custom_folder(caches, monkeypatch, tmp_path):
+    active_snapshot = _asr_tree(caches["active"])
+    _asr_tree(tmp_path / "custom")
+    reads = []
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders",
+        lambda: reads.append(1) or [{"path": str(tmp_path / "custom"), "recursive": False}],
+    )
+    assert _paths()[0] == str(active_snapshot / _SPEC.model_file)
+    assert reads == []
+    assert stt_sidecar._find_complete_cached_snapshot("tiny") is None
+    assert reads == [1]
 
 
 def test_explicit_cache_keeps_the_single_root_download_check(caches, tmp_path):
     """The download worker verifies the files landed in the cache it wrote, not a copy elsewhere."""
     _asr_tree(tmp_path / "custom")
     _asr_pair(tmp_path / "loose")
-    caches["folders"].extend(
-        [
-            {"path": str(tmp_path / "custom"), "recursive": False},
-            {"path": str(tmp_path / "loose"), "recursive": False},
-        ]
-    )
+    _register(caches, tmp_path / "custom")
+    _register(caches, tmp_path / "loose")
     assert _paths() is not None
     assert (
         stt_mtmd_sidecar._cached_model_paths(_MODEL_ID, hub_cache = caches["active"], revision = _SHA)
@@ -153,23 +162,23 @@ def test_explicit_cache_keeps_the_single_root_download_check(caches, tmp_path):
 
 def test_load_uses_the_moved_files(caches, tmp_path):
     _asr_pair(tmp_path / "custom")
-    caches["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
-    sidecar = stt_mtmd_sidecar.MtmdSttSidecar(keep_alive_seconds = 0)
-    model, mmproj = sidecar._ensure_model_downloaded(_MODEL_ID)
-    assert Path(model).parent == tmp_path / "custom"
-    assert Path(mmproj).name == _SPEC.mmproj_file
+    _register(caches, tmp_path / "custom")
+    model, mmproj = stt_mtmd_sidecar.MtmdSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded(
+        _MODEL_ID
+    )
+    assert Path(model).parent == tmp_path / "custom" and Path(mmproj).name == _SPEC.mmproj_file
 
 
-def test_ggml_cache_tree_in_a_custom_folder_is_found(caches, tmp_path):
-    repo = stt_ggml_sidecar.GGML_STT_REPOS["tiny"]
-    filename = stt_ggml_sidecar.GGML_STT_MODELS["tiny"]
-    snapshot = _hub_tree(tmp_path / "custom", repo, {filename: b"ggml"})
-    caches["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
-    assert stt_ggml_sidecar._cached_model_path("tiny") == str(snapshot / filename)
+def test_whisper_engines_find_moved_cache_trees(caches, tmp_path):
+    repo, filename = (
+        stt_ggml_sidecar.GGML_STT_REPOS["tiny"],
+        stt_ggml_sidecar.GGML_STT_MODELS["tiny"],
+    )
+    ggml = _hub_tree(tmp_path / "custom", repo, {filename: b"ggml"})
+    _register(caches, tmp_path / "custom")
+    assert stt_ggml_sidecar._cached_model_path("tiny") == str(ggml / filename)
     assert stt_ggml_sidecar._cached_model_path("tiny", hub_cache = caches["active"]) is None
 
-
-def test_transformers_whisper_in_a_previous_models_folder_is_found(caches, tmp_path):
     previous = tmp_path / "previous" / "hub"
     snapshot = _hub_tree(
         previous,
@@ -186,13 +195,17 @@ def test_transformers_whisper_in_a_previous_models_folder_is_found(caches, tmp_p
     assert stt_sidecar._find_complete_cached_snapshot("tiny") == snapshot.resolve()
 
 
-def test_hidden_filenames_match_the_curated_mtmd_catalogue():
+# ── dictation: hidden from chat ─────────────────────────────────────────────────────────────────────────────────
+def test_hidden_names_match_the_catalogue_and_the_model_hub_scan():
+    from hub.services.models import local_inventory
+
     expected = {
         name.lower()
         for spec in stt_mtmd_sidecar.MTMD_STT_MODELS.values()
         for name in (spec.model_file, spec.mmproj_file)
     }
     assert hidden_models._HIDDEN_STT_FILENAMES_LOWER == expected
+    assert set(hidden_models._MODEL_PAYLOAD_SUFFIXES) == set(local_inventory._PAYLOAD_SUFFIXES)
 
 
 def test_loose_asr_files_and_their_folder_are_hidden_from_chat(tmp_path):
@@ -201,139 +214,60 @@ def test_loose_asr_files_and_their_folder_are_hidden_from_chat(tmp_path):
     assert hidden_models.is_hidden_model(str(folder / _SPEC.model_file)) is True
     assert hidden_models.is_hidden_model("C:\\Models\\" + _SPEC.model_file) is True
     assert hidden_models.is_hidden_model(str(folder)) is True
+    (tmp_path / "empty").mkdir()
+    assert hidden_models.is_hidden_model(str(tmp_path / "empty")) is False
 
 
-def test_custom_folder_walk_is_memoised_across_one_poll(caches, monkeypatch, tmp_path):
-    calls = []
-    caches["folders"].append({"path": str(tmp_path), "recursive": True})
-    monkeypatch.setattr(
-        "hub.services.models.local_inventory.nested_scan_roots",
-        lambda path: calls.append(path) or [],
-    )
-    for _ in range(3):
-        assert stt_sidecar._find_complete_cached_snapshot("tiny") is None
-    assert calls == [tmp_path]
-
-
-def test_folder_with_another_gguf_stays_visible(tmp_path):
+@pytest.mark.parametrize("other", [("Qwen3-8B-Q4_K_M.gguf",), ("config.json", "model.safetensors")])
+def test_a_folder_holding_another_model_beside_the_pair_stays_visible(tmp_path, other):
     folder = tmp_path / "mixed"
     _asr_pair(folder)
-    (folder / "Qwen3-8B-Q4_K_M.gguf").write_bytes(b"GGUF")
+    for name in other:
+        (folder / name).write_bytes(b"{}")
     assert hidden_models.is_hidden_model(str(folder)) is False
-    assert hidden_models.is_hidden_model(str(folder / "Qwen3-8B-Q4_K_M.gguf")) is False
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    assert hidden_models.is_hidden_model(str(empty)) is False
+    assert hidden_models.is_hidden_model(str(folder / other[-1])) is False
 
 
-def test_folder_with_a_safetensors_model_beside_the_pair_stays_visible(tmp_path):
-    folder = tmp_path / "chat-model"
-    _asr_pair(folder)
-    (folder / "config.json").write_text("{}")
-    (folder / "model.safetensors").write_bytes(b"weights")
-    assert hidden_models.is_hidden_model(str(folder)) is False
-
-
-def test_payload_suffixes_match_the_model_hub_scan():
-    from hub.services.models import local_inventory
-    assert set(hidden_models._MODEL_PAYLOAD_SUFFIXES) == set(local_inventory._PAYLOAD_SUFFIXES)
-
-
-def test_a_model_in_the_active_cache_never_reads_custom_folders(caches, monkeypatch):
-    _asr_tree(caches["active"])
-    reads = []
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: reads.append(1) or [])
-    assert _paths() is not None
-    assert reads == [], "a hit in the active cache read the custom folders"
-    assert stt_sidecar._find_complete_cached_snapshot("tiny") is None
-    assert reads == [1], "a miss reads them once"
-
-
-def test_a_hung_custom_folder_is_skipped_within_the_hub_budget(caches, monkeypatch, tmp_path):
+# ── dictation: cost, slow folders, accounts, event loop ─────────────────────────────────────────────────────────
+def test_a_status_poll_lists_a_custom_folder_once_and_probes_only_candidates(
+    caches, monkeypatch, tmp_path
+):
+    """Every curated model missing, a recursive folder holding other things: one bounded listing per poll window,
+    then no thread and no file probe for the remaining lookups."""
     from hub.services.models import local_inventory
 
-    monkeypatch.setattr(local_inventory, "_CUSTOM_FOLDER_SCAN_TIMEOUT_S", 0.2)
-    hung, good = tmp_path / "hung", tmp_path / "good"
-    hung.mkdir()
-    _asr_pair(good)
-    caches["folders"].extend(
-        [{"path": str(hung), "recursive": True}, {"path": str(good), "recursive": False}]
+    folder = tmp_path / "custom"
+    for index in range(30):
+        (folder / f"group{index // 10}" / f"model{index}").mkdir(parents = True)
+    (folder / "group0" / "model0" / _SPEC.model_file).write_bytes(b"GGUF")  # no mmproj beside it
+    _register(caches, folder, recursive = True)
+    bounded, probes = [], []
+    real_bounded = local_inventory.run_custom_folder_bounded_sync
+    monkeypatch.setattr(
+        local_inventory,
+        "run_custom_folder_bounded_sync",
+        lambda raw, work: bounded.append(raw) or real_bounded(raw, work),
     )
-    release = threading.Event()
-
-    def nested(path):
-        if path == hung:
-            release.wait(10)
-        return []
-
-    monkeypatch.setattr(local_inventory, "nested_scan_roots", nested)
-    try:
-        started = time.monotonic()
-        assert _paths()[0] == str(good / _SPEC.model_file)
-        assert time.monotonic() - started < 2
-        # Still stuck: the next lookup skips the folder without waiting again.
-        _forget_custom_folder_memos(monkeypatch)
-        started = time.monotonic()
-        assert _paths()[0] == str(good / _SPEC.model_file)
-        assert time.monotonic() - started < 0.15
-    finally:
-        release.set()
-        local_inventory._custom_folder_scans[str(hung)][1].result(timeout = 5)
-
-
-def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
-    from storage import studio_db
-    from utils.account_context import AccountContext, run_as
-
-    alice = AccountContext("a" * 32, "alice")
-    bob = AccountContext("b" * 32, "bob")
-    active = tmp_path / "active"
-    active.mkdir()
-    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: active)
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active])
-    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
-    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
-    _forget_custom_folder_memos(monkeypatch)
-    stt_mtmd_sidecar._forget_downloaded_probe()
-    from utils.paths.storage_roots import workspace_root
-
-    # A member may register only folders inside their own workspace.
-    folder = run_as(alice, workspace_root) / "models"
-    _asr_pair(folder)
-    run_as(alice, studio_db.add_scan_folder, str(folder))
-    try:
-        assert run_as(alice, stt_mtmd_sidecar.is_model_downloaded, _MODEL_ID) is True
-        # Both memos are warm for alice now; bob must not read them.
-        assert run_as(bob, stt_mtmd_sidecar.is_model_downloaded, _MODEL_ID) is False
-        assert run_as(bob, stt_mtmd_sidecar._cached_model_paths, _MODEL_ID) is None
-    finally:
+    monkeypatch.setattr(stt_mtmd_sidecar, "_pair_in", lambda *args: probes.append(args))
+    for _ in range(2):
         stt_mtmd_sidecar._forget_downloaded_probe()
+        assert not any(stt_sidecar.is_model_downloaded(m) for m in stt_sidecar.STT_MODELS)
+        assert not any(
+            stt_mtmd_sidecar.is_model_downloaded(m) for m in stt_mtmd_sidecar.MTMD_STT_MODELS
+        )
+        assert all(
+            stt_ggml_sidecar._cached_model_path(m) is None for m in stt_ggml_sidecar.GGML_STT_MODELS
+        )
+    assert bounded == [str(folder)]
+    assert probes == []
 
 
-def test_stt_status_looks_up_downloads_off_the_event_loop(monkeypatch):
-    import routes.inference as inference
-
-    on_loop = []
-
-    def probe(*_args):
-        on_loop.append(threading.current_thread() is threading.main_thread())
-        return False
-
-    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", probe)
-    monkeypatch.setattr(stt_mtmd_sidecar, "is_model_downloaded", probe)
-    monkeypatch.setattr(stt_ggml_sidecar, "_cached_model_path", lambda model_id: probe() or None)
-    monkeypatch.setattr(inference, "_audio_cpp_runtime_status", lambda: {"available": False})
-    monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
-    response = asyncio.run(inference.stt_status(model = None, current_subject = "owner"))
-    body = json.loads(response.body)
-    assert body["mtmd"]["downloaded_models"] == [] and body["gguf"]["downloaded_models"] == []
-    assert on_loop and not any(on_loop)
-
-
-@pytest.mark.parametrize("stall", ["loose file check", "Hub cache probe"])
-def test_a_file_probe_that_hangs_after_the_walk_is_bounded(caches, monkeypatch, tmp_path, stall):
-    """The walk answers, then one file probe in the folder blocks: the folder must be given up within the budget,
-    marked slow, and the next folder still searched."""
+@pytest.mark.parametrize("stall", ["folder walk", "loose file check", "Hub cache probe"])
+def test_a_hung_custom_folder_is_skipped_within_the_hub_budget(
+    caches, monkeypatch, tmp_path, stall
+):
+    """One folder blocks in its walk or in a file probe after it: it is given up within the budget, marked slow, the
+    next folder is still searched, and the next lookup does not wait on it again."""
     from hub.services.models import local_inventory
     from utils.paths.scan_folder_health import STATUS_SLOW, scan_folder_status
 
@@ -341,37 +275,28 @@ def test_a_file_probe_that_hangs_after_the_walk_is_bounded(caches, monkeypatch, 
     hung, good = tmp_path / "hung", tmp_path / "good"
     hung.mkdir()
     _asr_pair(good)
-    caches["folders"].extend(
-        [{"path": str(hung), "recursive": False}, {"path": str(good), "recursive": False}]
-    )
+    _register(caches, hung, recursive = stall == "folder walk")
+    _register(caches, good)
     release = threading.Event()
-    if stall == "loose file check":
+
+    def stall_on_hung(real):
+        def wrapper(first, *args, **kwargs):
+            if first == hung or kwargs.get("hub_cache") == hung:
+                release.wait(10)
+            return real(first, *args, **kwargs)
+
+        return wrapper
+
+    if stall == "folder walk":
+        monkeypatch.setattr(local_inventory, "nested_scan_roots", stall_on_hung(lambda path: []))
+    elif stall == "loose file check":
         _asr_pair(hung)
-        real_pair_in = stt_mtmd_sidecar._pair_in
-
-        def pair_in(directory, spec):
-            if directory == hung:
-                release.wait(10)
-            return real_pair_in(directory, spec)
-
-        monkeypatch.setattr(stt_mtmd_sidecar, "_pair_in", pair_in)
+        monkeypatch.setattr(stt_mtmd_sidecar, "_pair_in", stall_on_hung(stt_mtmd_sidecar._pair_in))
     else:
-        # An incomplete cache tree, so the lookup probes its files.
-        _hub_tree(hung, _SPEC.repo, {})
-        real_cached_file = stt_mtmd_sidecar._cached_file
-
-        def cached_file(
-            model_id,
-            filename,
-            *,
-            hub_cache = None,
-            revision = None,
-        ):
-            if hub_cache == hung:
-                release.wait(10)
-            return real_cached_file(model_id, filename, hub_cache = hub_cache, revision = revision)
-
-        monkeypatch.setattr(stt_mtmd_sidecar, "_cached_file", cached_file)
+        _hub_tree(hung, _SPEC.repo, {})  # incomplete, so the lookup probes its files
+        monkeypatch.setattr(
+            stt_mtmd_sidecar, "_cached_file", stall_on_hung(stt_mtmd_sidecar._cached_file)
+        )
     try:
         started = time.monotonic()
         assert _paths()[0] == str(good / _SPEC.model_file)
@@ -386,43 +311,54 @@ def test_a_file_probe_that_hangs_after_the_walk_is_bounded(caches, monkeypatch, 
         local_inventory._custom_folder_scans[str(hung)][1].result(timeout = 5)
 
 
-@pytest.mark.parametrize("root", ["legacy", "default"])
-def test_legacy_and_default_hub_caches_are_searched_like_chat_loads(caches, root):
-    snapshot = _asr_tree(caches[root])
-    assert _paths()[0] == str(snapshot / _SPEC.model_file)
+def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
+    """Uses the real per-account folder list, so not the ``caches`` fixture."""
+    from storage import studio_db
+    from utils.account_context import AccountContext, run_as
+    from utils.paths.storage_roots import workspace_root
 
-
-def test_a_status_poll_lists_a_custom_folder_once_and_probes_only_candidates(
-    caches, monkeypatch, tmp_path
-):
-    """Every curated model missing, a recursive folder holding other things: one bounded listing per poll window,
-    then no thread and no file probe for the remaining lookups."""
-    from hub.services.models import local_inventory
-
-    folder = tmp_path / "custom"
-    for index in range(30):
-        (folder / f"group{index // 10}" / f"model{index}").mkdir(parents = True)
-    (folder / "group0" / "model0" / _SPEC.model_file).write_bytes(b"GGUF")  # no mmproj beside it
-    caches["folders"].append({"path": str(folder), "recursive": True})
-    bounded, probes = [], []
-    real_bounded = local_inventory.run_custom_folder_bounded_sync
-    monkeypatch.setattr(
-        local_inventory,
-        "run_custom_folder_bounded_sync",
-        lambda raw, work: bounded.append(raw) or real_bounded(raw, work),
-    )
-    monkeypatch.setattr(stt_mtmd_sidecar, "_pair_in", lambda *args: probes.append(args))
-    for _ in range(2):
+    alice, bob = AccountContext("a" * 32, "alice"), AccountContext("b" * 32, "bob")
+    active = tmp_path / "active"
+    active.mkdir()
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: active)
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active])
+    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
+    _forget_custom_folder_memos(monkeypatch)
+    stt_mtmd_sidecar._forget_downloaded_probe()
+    # A member may register only folders inside their own workspace.
+    folder = run_as(alice, workspace_root) / "models"
+    _asr_pair(folder)
+    run_as(alice, studio_db.add_scan_folder, str(folder))
+    try:
+        assert run_as(alice, stt_mtmd_sidecar.is_model_downloaded, _MODEL_ID) is True
+        # Both memos are warm for alice now; bob must not read them.
+        assert run_as(bob, stt_mtmd_sidecar.is_model_downloaded, _MODEL_ID) is False
+        assert run_as(bob, stt_mtmd_sidecar._cached_model_paths, _MODEL_ID) is None
+    finally:
         stt_mtmd_sidecar._forget_downloaded_probe()
-        assert [stt_sidecar.is_model_downloaded(m) for m in stt_sidecar.STT_MODELS] == [False] * 5
-        assert not any(
-            stt_mtmd_sidecar.is_model_downloaded(m) for m in stt_mtmd_sidecar.MTMD_STT_MODELS
-        )
-        assert all(
-            stt_ggml_sidecar._cached_model_path(m) is None for m in stt_ggml_sidecar.GGML_STT_MODELS
-        )
-    assert bounded == [str(folder)]
-    assert probes == []
+
+
+def _record_thread(seen: list, answer):
+    def probe(*_args, **_kwargs):
+        seen.append(threading.current_thread() is threading.main_thread())
+        return answer
+
+    return probe
+
+
+def test_stt_status_looks_up_downloads_off_the_event_loop(monkeypatch):
+    import routes.inference as inference
+
+    on_loop = []
+    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", _record_thread(on_loop, False))
+    monkeypatch.setattr(stt_mtmd_sidecar, "is_model_downloaded", _record_thread(on_loop, False))
+    monkeypatch.setattr(stt_ggml_sidecar, "_cached_model_path", _record_thread(on_loop, None))
+    monkeypatch.setattr(inference, "_audio_cpp_runtime_status", lambda: {"available": False})
+    monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
+    body = json.loads(asyncio.run(inference.stt_status(model = None, current_subject = "owner")).body)
+    assert body["mtmd"]["downloaded_models"] == [] and body["gguf"]["downloaded_models"] == []
+    assert on_loop and not any(on_loop)
 
 
 def test_openai_translations_checks_the_model_off_the_event_loop(monkeypatch):
@@ -430,12 +366,7 @@ def test_openai_translations_checks_the_model_off_the_event_loop(monkeypatch):
     from fastapi import HTTPException
 
     on_loop = []
-
-    def can_translate(model):
-        on_loop.append(threading.current_thread() is threading.main_thread())
-        return False
-
-    monkeypatch.setattr(stt_sidecar, "can_translate", can_translate)
+    monkeypatch.setattr(stt_sidecar, "can_translate", _record_thread(on_loop, False))
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference.openai_audio_translations(
@@ -447,8 +378,7 @@ def test_openai_translations_checks_the_model_off_the_event_loop(monkeypatch):
                 current_subject = "owner",
             )
         )
-    assert exc.value.status_code == 400
-    assert on_loop == [False]
+    assert exc.value.status_code == 400 and on_loop == [False]
 
 
 # ── FLUX.3 prompt upsampler ─────────────────────────────────────────────────────────────────────────────────────
@@ -468,19 +398,22 @@ def _upsampler_tree(
     *,
     mmproj: bool = True,
 ) -> Path:
-    files = {model_file: b"GGUF"}
-    if mmproj:
-        files[pup.UPSAMPLER_MMPROJ_FILE] = b"GGUF"
+    files = {model_file: b"GGUF", **({pup.UPSAMPLER_MMPROJ_FILE: b"GGUF"} if mmproj else {})}
     return _hub_tree(hub, pup.UPSAMPLER_REPO, files)
 
 
 def test_upsampler_moved_into_a_custom_folder_is_found(upsampler, tmp_path):
     snapshot = _upsampler_tree(tmp_path / "custom", _UD)
-    upsampler["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
+    _register(upsampler, tmp_path / "custom")
     assert pup.model_path() == str(snapshot / _UD)
     assert pup.mmproj_path() == str(snapshot / pup.UPSAMPLER_MMPROJ_FILE)
     status = pup.status()
     assert status["downloaded"] is True and status["current_downloaded"] is True
+    # The download's own check reads only the cache it wrote.
+    assert (
+        pup._cached_download_paths(pup.UPSAMPLER_ID, hub_cache = upsampler["active"], revision = _SHA)
+        is None
+    )
 
 
 def test_upsampler_current_quant_elsewhere_beats_an_older_one_in_the_active_cache(
@@ -506,33 +439,24 @@ def test_upsampler_download_size_counts_only_the_active_cache(upsampler, tmp_pat
     )
 
 
-def test_upsampler_loose_files_are_not_matched(upsampler, tmp_path):
-    """mmproj-F16.gguf is the name many models give their projector."""
-    folder = tmp_path / "custom"
-    folder.mkdir()
+def test_upsampler_loose_files_are_not_matched_but_an_override_projector_is_searched(
+    upsampler, monkeypatch, tmp_path
+):
+    """mmproj-F16.gguf is the name many models give their projector, so only a Hub cache counts."""
+    loose = tmp_path / "loose"
+    loose.mkdir()
     for name in (_UD, pup.UPSAMPLER_MMPROJ_FILE):
-        (folder / name).write_bytes(b"GGUF")
-    upsampler["folders"].append({"path": str(folder), "recursive": False})
+        (loose / name).write_bytes(b"GGUF")
+    _register(upsampler, loose)
     assert pup.model_path() is None
 
-
-def test_upsampler_override_projector_is_searched_too(upsampler, monkeypatch, tmp_path):
     model = tmp_path / "local.gguf"
     model.write_bytes(b"GGUF")
     monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, str(model))
     snapshot = _upsampler_tree(tmp_path / "custom", _UD)
-    upsampler["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
+    _register(upsampler, tmp_path / "custom")
+    _forget_custom_folder_memos(monkeypatch)
     assert pup.mmproj_path() == str(snapshot / pup.UPSAMPLER_MMPROJ_FILE)
-
-
-def test_upsampler_download_check_reads_only_the_cache_it_wrote(upsampler, tmp_path):
-    _upsampler_tree(tmp_path / "custom", _UD)
-    upsampler["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
-    assert (
-        pup._cached_download_paths(pup.UPSAMPLER_ID, hub_cache = upsampler["active"], revision = _SHA)
-        is None
-    )
-    assert pup._cached_download_paths(pup.UPSAMPLER_ID, hub_cache = upsampler["active"]) is None
 
 
 # ── mask segmenter ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -550,8 +474,15 @@ def _segmenter_tree(hub: Path, variant_id: str) -> Path:
 
 def test_segmenter_moved_into_a_custom_folder_is_found(segmenter, tmp_path):
     snapshot = _segmenter_tree(tmp_path / "custom", diffusion_segment.DEFAULT_VARIANT)
-    segmenter["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
+    _register(segmenter, tmp_path / "custom")
     assert diffusion_segment.model_dir() == str(snapshot)
+    # The download's own check reads only the cache it wrote.
+    assert (
+        diffusion_segment._cached_download_paths(
+            diffusion_segment.DEFAULT_VARIANT, hub_cache = segmenter["active"], revision = _SHA
+        )
+        is None
+    )
 
 
 def test_segmenter_in_a_previous_models_folder_keeps_the_default_variant(segmenter, tmp_path):
@@ -562,14 +493,3 @@ def test_segmenter_in_a_previous_models_folder_keeps_the_default_variant(segment
     segmenter["known"].append(previous)
     variant, path = diffusion_segment._resolve_active()
     assert variant.id == diffusion_segment.DEFAULT_VARIANT and path == str(snapshot)
-
-
-def test_segmenter_download_check_reads_only_the_cache_it_wrote(segmenter, tmp_path):
-    _segmenter_tree(tmp_path / "custom", diffusion_segment.DEFAULT_VARIANT)
-    segmenter["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
-    assert (
-        diffusion_segment._cached_download_paths(
-            diffusion_segment.DEFAULT_VARIANT, hub_cache = segmenter["active"], revision = _SHA
-        )
-        is None
-    )

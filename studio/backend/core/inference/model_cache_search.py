@@ -82,7 +82,7 @@ def _custom_folder_rows(scope: str) -> tuple[tuple[str, Path, bool], ...]:
         from storage.studio_db import list_scan_folders
         folders = list_scan_folders()
     except Exception as exc:  # noqa: BLE001 - an unreadable folder list must not fail a lookup
-        logger.debug("STT: could not list custom folders: %s", exc)
+        logger.debug("Could not list custom folders: %s", exc)
         folders = []
     from hub.utils.paths import normalize_path
 
@@ -108,16 +108,9 @@ def _list_entries(directory: Path) -> list[os.DirEntry]:
     return entries
 
 
-def _entry_is_dir(entry: os.DirEntry) -> bool:
+def _entry_is(entry: os.DirEntry, kind: str) -> bool:
     try:
-        return entry.is_dir()
-    except OSError:
-        return False
-
-
-def _entry_is_file(entry: os.DirEntry) -> bool:
-    try:
-        return entry.is_file()
+        return entry.is_dir() if kind == "dir" else entry.is_file()
     except OSError:
         return False
 
@@ -135,12 +128,12 @@ def _build_custom_folder_listing(path: Path, recursive: bool) -> CustomFolderLis
 
     def note_files(directory: Path, entries: list[os.DirEntry]) -> None:
         for entry in entries:
-            if _entry_is_file(entry):
+            if _entry_is(entry, "file"):
                 file_dirs.setdefault(entry.name.lower(), []).append(directory)
 
     def note_caches(directory: Path, entries: list[os.DirEntry]) -> None:
         for entry in entries:
-            if entry.name.lower().startswith("models--") and _entry_is_dir(entry):
+            if entry.name.lower().startswith("models--") and _entry_is(entry, "dir"):
                 hub_caches.setdefault(entry.name.lower(), []).append(directory)
 
     for directory in walked:
@@ -152,7 +145,7 @@ def _build_custom_folder_listing(path: Path, recursive: bool) -> CustomFolderLis
             if (
                 name.startswith(".")
                 or name.lower().startswith("models--")
-                or not _entry_is_dir(entry)
+                or not _entry_is(entry, "dir")
             ):
                 continue
             child = Path(entry.path)
@@ -207,56 +200,40 @@ def search_custom_folders(
         try:
             found = run_custom_folder_bounded_sync(raw, search)
         except Exception as exc:  # noqa: BLE001 - one unreadable folder must not hide the others
-            logger.debug("STT: could not search a custom folder: %s", exc)
+            logger.debug("Could not search a custom folder: %s", exc)
             continue
         if found is not None:
             return found
     return None
 
 
-def search_custom_folder_hub_caches(
-    repo: str, lookup: Callable[[Path], Optional[_T]]
-) -> Optional[_T]:
-    """``lookup(hub_cache)`` over the Hub caches inside custom folders that hold *repo*."""
-    return search_custom_folders(lambda listing: listing.caches_holding(repo), lookup)
-
-
 def known_hub_caches() -> Iterator[Path]:
-    """The Hub caches Studio knows, active one first (downloads write only there): the roots chat model loads search
-    too. Lazy, so a model found in the active cache reads nothing else. Custom folders are searched after these,
-    through search_custom_folders."""
-    seen: set[str] = set()
-
-    def first_time(root: Path) -> bool:
-        key = os.path.normcase(os.path.normpath(str(root)))
-        if key in seen:
-            return False
-        seen.add(key)
-        return True
-
+    """The Hub caches Studio knows, active one first (downloads write only there), then the others chat model loads
+    search (previous Models folders, download folders, the legacy and default caches). Lazy, so a model found in the
+    active cache reads nothing else."""
     from core.inference.stt_sidecar import _active_hf_hub_cache
 
     active = Path(_active_hf_hub_cache())
-    first_time(active)
     yield active
     try:
         from hub.utils.hf_cache_state import hf_cache_roots
-
-        # Every known cache (previous Models folders, download folders), then the legacy and default ones.
-        known = hf_cache_roots()
+        roots = hf_cache_roots()
     except Exception as exc:  # noqa: BLE001 - the active cache still answered
-        logger.debug("STT: could not list known Hub caches: %s", exc)
-        known = []
-    for root in known:
-        if first_time(Path(root)):
+        logger.debug("Could not list known Hub caches: %s", exc)
+        return
+    seen = {os.path.normcase(os.path.normpath(str(active)))}
+    for root in roots:
+        key = os.path.normcase(os.path.normpath(str(root)))
+        if key not in seen:
+            seen.add(key)
             yield Path(root)
 
 
 def find_in_hub_caches(repo: str, lookup: Callable[[Path], Optional[_T]]) -> Optional[_T]:
-    """The first answer of ``lookup(hub_cache)`` over known_hub_caches(), then the custom-folder caches holding *repo*.
-    Downloads write only to the active cache, which is searched first."""
+    """The first answer of ``lookup(hub_cache)`` over known_hub_caches(), then over the custom-folder caches holding
+    *repo*."""
     for root in known_hub_caches():
         found = lookup(root)
         if found is not None:
             return found
-    return search_custom_folder_hub_caches(repo, lookup)
+    return search_custom_folders(lambda listing: listing.caches_holding(repo), lookup)
