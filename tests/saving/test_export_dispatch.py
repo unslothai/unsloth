@@ -396,7 +396,13 @@ def test_torchao_requires_config_or_qat(tmp_path):
         )
 
 
-def _run_lora_gguf(monkeypatch, tmp_path, token):
+def _run_lora_gguf(
+    monkeypatch,
+    tmp_path,
+    token,
+    write_gguf = True,
+    push_to_hub = False,
+):
     """Drive _unsloth_save_lora_gguf to the converter call and return the env it would use."""
     captured = {}
 
@@ -408,6 +414,9 @@ def _run_lora_gguf(monkeypatch, tmp_path, token):
             captured["env"] = kwargs["env"]
             self.stdout = []
             self.returncode = 0
+            if write_gguf:
+                with open(_cmd[_cmd.index("--outfile") + 1], "wb") as f:
+                    f.write(b"GGUF")
 
         def __enter__(self):
             return self
@@ -435,9 +444,25 @@ def _run_lora_gguf(monkeypatch, tmp_path, token):
     monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 
     save_mod._unsloth_save_lora_gguf(
-        _FakePeft(), _FakeTokenizer(), str(tmp_path / "out"), outtype = "f16", token = token
+        _FakePeft(),
+        _FakeTokenizer(),
+        str(tmp_path / "out"),
+        outtype = "f16",
+        token = token,
+        push_to_hub = push_to_hub,
     )
     return captured["env"]
+
+
+@pytest.mark.parametrize("push_to_hub", [False, True])
+def test_lora_gguf_converter_rejects_missing_artifact(monkeypatch, tmp_path, push_to_hub):
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi", lambda **kw: pytest.fail("must not upload a missing GGUF")
+    )
+    with pytest.raises(RuntimeError, match = "conversion reported success but wrote no .gguf"):
+        _run_lora_gguf(
+            monkeypatch, tmp_path, token = False, write_gguf = False, push_to_hub = push_to_hub
+        )
 
 
 def test_lora_gguf_converter_is_denied_the_host_token(monkeypatch, tmp_path):

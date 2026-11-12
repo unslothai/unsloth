@@ -6335,6 +6335,12 @@ def _unsloth_save_lora_gguf(
                 "See the output above for details."
             )
 
+        if not os.path.isfile(out_gguf):
+            raise RuntimeError(
+                f"Unsloth: LoRA GGUF conversion reported success but wrote no .gguf file to "
+                f"{out_gguf}. See the output above for details."
+            )
+
         if not push_to_hub:
             print(f"Unsloth: Done. Saved LoRA GGUF to '{out_gguf}'")
             return out_gguf
