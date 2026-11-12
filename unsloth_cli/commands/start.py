@@ -5551,9 +5551,12 @@ def _openclaw_provider(
     key: str,
     model: dict,
     max_tokens: Optional[int] = None,
+    vision: bool = False,
 ) -> dict:
     # Unsloth is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
     provider_model = {"id": model["id"], "name": model["id"]}
+    if vision:
+        provider_model["input"] = ["text", "image"]
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
@@ -5593,6 +5596,7 @@ def write_openclaw_config(
     embedding_model: Optional[str] = None,
     request_body: Optional[dict] = None,
     max_tokens: Optional[int] = None,
+    vision: bool = False,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -5605,7 +5609,9 @@ def write_openclaw_config(
     before = json.dumps(config, sort_keys = True)
     models = _subdict(config, "models")
     models.setdefault("mode", "merge")
-    _subdict(models, "providers")["unsloth"] = _openclaw_provider(base, key, model, max_tokens)
+    _subdict(models, "providers")["unsloth"] = _openclaw_provider(
+        base, key, model, max_tokens, vision
+    )
     # Memory search is on by default and defaults to openai, so a local session reaches OpenAI unless this block is written.
     search = _subdict(_subdict(config, "memory"), "search")
     if embedding_model:
@@ -5934,8 +5940,12 @@ def _opencode_provider(
     model: dict,
     max_tokens: Optional[int] = None,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> dict:
     model_entry = {"name": model["id"]}
+    if vision:
+        model_entry["attachment"] = True
+        model_entry["modalities"] = {"input": ["text", "image"], "output": ["text"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
@@ -5969,6 +5979,7 @@ def write_opencode_config(
     as_subagent: bool = False,
     max_tokens: Optional[int] = None,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -5987,7 +5998,7 @@ def write_opencode_config(
         reserved = opencode_compaction_reserved(window, opencode_output_limit(window, max_tokens))
     # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
     _subdict(config, "provider")[_OPENCODE_PROVIDER] = _opencode_provider(
-        base, key, model, max_tokens, request_body
+        base, key, model, max_tokens, request_body, vision
     )
     # Normal mode pins this as the session model. Subagent mode leaves the user's main/small models alone and exposes the local model to @unsloth and /models.
     opencode_model = f"{_OPENCODE_PROVIDER}/{model['id']}"
@@ -6251,9 +6262,12 @@ def _vibe_env(
     base: str,
     model: dict,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> dict:
     """VIBE_* env vars outrank config.toml, so the user's Vibe config is never written."""
     entry = {"name": model["id"], "provider": _VIBE_PROVIDER, "alias": _VIBE_MODEL_ALIAS}
+    if vision:
+        entry["supports_images"] = True
     # Vibe sends its own temperature (0.2 by default) with every request.
     temperature = (request_body or {}).get("temperature")
     if temperature is not None:
@@ -6294,6 +6308,7 @@ def write_pi_config(
     *,
     max_tokens: Optional[int] = None,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -6306,6 +6321,8 @@ def write_pi_config(
     before = json.dumps(config, sort_keys = True)
     # Pi reads custom providers from $PI_CODING_AGENT_DIR/models.json; the key lives there, not in the env, matching openclaw/opencode.
     provider_model = {"id": model["id"]}
+    if vision:
+        provider_model["input"] = ["text", "image"]
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
@@ -6545,6 +6562,7 @@ def write_pi_subagent_config(
     approve: bool = False,
     max_tokens: Optional[int] = None,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> None:
     """Write private bootstrap data for the bundled Pi extension."""
     window = model.get("context_length") or model.get("max_context_length")
@@ -6559,6 +6577,7 @@ def write_pi_subagent_config(
             "maxTokens": _agent_output_limit(window, max_tokens),
             "approve": approve,
             **({"samplingParams": request_body} if request_body else {}),
+            **({"vision": True} if vision else {}),
         },
     )
 
@@ -6568,12 +6587,15 @@ def write_dsh_patch(
     model: dict,
     path: Path,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> None:
     """dsh 0.1.7 dropped settings.yaml, which only applies after a first boot still on the DeepSeek
     default; the --patch overlay is read at boot and rewritten whole, as it is Unsloth's own."""
     import yaml
 
     model_entry = {"id": model["id"]}
+    if vision:
+        model_entry["input"] = ["text", "image"]
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
@@ -7219,7 +7241,9 @@ def _opencode_app_target(
     path = next((root / n for n in names if os.path.lexists(root / n)), root / "opencode.json")
 
     def updates(text, path, base, key, entry):
-        provider = _opencode_provider(base, key, entry, max_tokens, request_body)
+        provider = _opencode_provider(
+            base, key, entry, max_tokens, request_body, _accepts_images(base, key, entry)
+        )
         changes = [(("provider", _OPENCODE_PROVIDER), provider)]
         config = _parse_app_config(path, text) or {}
         enabled = config.get("enabled_providers")
@@ -7249,9 +7273,8 @@ def _openclaw_app_updates(
     defaults = agents.get("defaults") if isinstance(agents, dict) else None
     defaults = defaults if isinstance(defaults, dict) else {}
     ref = f"unsloth/{entry['id']}"
-    changes = [
-        (("models", "providers", "unsloth"), _openclaw_provider(base, key, entry, max_tokens))
-    ]
+    provider = _openclaw_provider(base, key, entry, max_tokens, _accepts_images(base, key, entry))
+    changes = [(("models", "providers", "unsloth"), provider)]
     # The picker only offers allowlisted models once an allowlist exists; never create one.
     policy = defaults.get("modelPolicy")
     allowed = policy.get("allow") if isinstance(policy, dict) else None
@@ -7493,6 +7516,10 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
         status.get("is_vision") is True,
         status.get("supports_reasoning") is True,
     )
+
+
+def _accepts_images(base: str, key: str, entry: dict) -> bool:
+    return _vscode_capabilities(base, key, entry)[1]
 
 
 def _container_engine() -> Optional[str]:
@@ -8071,6 +8098,7 @@ def openclaw(
             embedding_model = _studio_embedding_model(base, key),
             request_body = server_options.request_body(),
             max_tokens = max_tokens,
+            vision = _accepts_images(base, key, entry),
         )
         # Scope config and state so OpenClaw never touches ~/.openclaw. Shell env off, else it re-imports keys.
         env = {
@@ -8233,6 +8261,7 @@ def opencode(
                 as_subagent = True,
                 max_tokens = max_tokens,
                 request_body = server_options.request_body(),
+                vision = _accepts_images(base, key, entry),
             )
             env = {
                 "OPENCODE_CONFIG": str(config_path),
@@ -8314,6 +8343,7 @@ def opencode(
             yolo = yolo and not native_auto,
             max_tokens = max_tokens,
             request_body = server_options.request_body(),
+            vision = _accepts_images(base, key, entry),
         )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin would silently lose to a repo config; carry it in OPENCODE_CONFIG_CONTENT, which outranks project config, while the API key stays in the private file. Only the config fallback carries a permission: native --auto omits it (auto-approve asks, keep explicit denies) and a non-yolo session omits it too, honoring project rules. V1 filters are ordinary overlays, so scope that session to our provider; V2 turns filters into security policies where global/project rules intentionally win, so keep those policies intact and tell the user above that they must allow our provider. small_model is opencode's separate model for lightweight tasks; pin it to the session model too, or a user/project small_model on another (now filtered) provider would resolve a not-found error mid-session.
         inline_config: dict = {
@@ -8502,6 +8532,7 @@ def pi(
                 approve = yolo,
                 max_tokens = max_tokens,
                 request_body = server_options.request_body(),
+                vision = _accepts_images(base, key, entry),
             )
             command = [
                 "pi",
@@ -8545,6 +8576,7 @@ def pi(
             pi_agent_dir / "models.json",
             max_tokens = max_tokens,
             request_body = server_options.request_body(),
+            vision = _accepts_images(base, key, entry),
         )
         write_pi_user_resources(pi_agent_dir)
         env = {"PI_CODING_AGENT_DIR": str(pi_agent_dir)}
@@ -8627,7 +8659,9 @@ def dsh(
         )
     with _session_config("dsh", launch, persist = persist) as home:
         patch = home / _DSH_PATCH_FILE
-        write_dsh_patch(base, entry, patch, server_options.request_body())
+        write_dsh_patch(
+            base, entry, patch, server_options.request_body(), _accepts_images(base, key, entry)
+        )
         # A Windows dsh under WSL gets DSH_HOME translated through WSLENV, but not argv.
         command = _dsh_command(ctx.args, _agent_config_path(patch, ["dsh"]))
         env = {
@@ -8710,7 +8744,10 @@ def vibe(
             if status_id
         ):
             request_body = {**request_body, "temperature": recommended}
-    env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, request_body)}
+    env = {
+        _VIBE_ENV_KEY: key,
+        **_vibe_env(base, entry, request_body, _accepts_images(base, key, entry)),
+    }
     _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
