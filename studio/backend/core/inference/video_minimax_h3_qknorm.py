@@ -295,6 +295,9 @@ def _probe_inputs(device: Any, dtype: Any, dim: int, rot: int, seed: int) -> lis
         scale = 10.0 ** torch.randint(-3, 4, (1, seq, heads, 1), generator = g).float()
         base.mul_(scale).add_(torch.randn(1, seq, heads, 1, generator = g) * scale * 0.5)
         base[..., :3] *= 40
+        # Keep fp16 probes finite (row scale 1e3 x outlier 40 passes 65504): an inf input makes NaN on both sides.
+        cap = torch.finfo(dtype).max / 8
+        base.clamp_(-cap, cap)
         if strided:
             qkv = qkv.to(dtype).to(device)
             x = qkv[..., : heads * dim].unflatten(-1, (heads, dim))

@@ -274,3 +274,15 @@ def test_strided_processor_on_cuda_is_bit_identical_and_engages():
     assert torch.equal(got, want)
     # q and k of the 2 DiT blocks (the refiner attention has no rotary embedding)
     assert Q.STATS["fused"] + Q.STATS["rope"] == 4 and Q.STATS["stock"] == 0
+
+
+@pytest.mark.parametrize("dtype_name", ["float16", "bfloat16"])
+def test_probe_inputs_stay_finite_in_the_target_dtype(dtype_name):
+    """An fp16 probe past 65504 turns into inf, RMSNorm makes NaN on both sides, and torch.equal then rejects an
+    exact form; the cached verdict would switch the op off for every later finite input."""
+    dtype = getattr(torch, dtype_name)
+    for seed in (0, 1):
+        for x, w, cos, sin, _ in Q._probe_inputs(torch.device("cpu"), dtype, 128, 96, seed):
+            assert torch.isfinite(x).all() and torch.isfinite(w).all()
+            ref = Q.reference_qk_norm_rope(x.float(), w.float(), cos, sin, 1e-6)
+            assert torch.isfinite(ref).all()
