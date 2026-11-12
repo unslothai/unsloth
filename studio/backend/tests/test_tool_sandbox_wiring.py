@@ -16,6 +16,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import zipfile
 
 import pytest
 
@@ -735,6 +736,34 @@ def test_session_package_commands_stay_on_path(monkeypatch, tmp_path, os_name, s
     monkeypatch.setattr(os_sandbox, "_PIP_PREFIX_SCRIPTS_DIR", scripts)
     env = os_sandbox.with_session_packages({"PATH": "/usr/bin"}, str(workdir))
     assert env["PATH"].split(os.pathsep) == ["/usr/bin", str(packages / scripts)]
+
+
+def test_a_pip_install_without_os_isolation_stays_in_the_chat(monkeypatch, tmp_path):
+    name = "unsloth_chat_only_pkg"
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    wheel = workdir / f"{name}-1.0-py3-none-any.whl"
+    info = f"{name}-1.0.dist-info"
+    with zipfile.ZipFile(wheel, "w") as whl:
+        whl.writestr(f"{name}.py", "")
+        whl.writestr(f"{info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+        whl.writestr(
+            f"{info}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+        )
+        whl.writestr(f"{info}/RECORD", "")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = (
+        f"python -m pip install -q --no-index --no-deps {wheel.name} && "
+        f"python -c 'import {name}; print({name}.__file__)'"
+    )
+    try:
+        out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
+    finally:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "-q", name], capture_output = True
+        )
+    assert tools._last_tool_execution_record.os_isolation is False
+    assert str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH) in out, out
 
 
 def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):

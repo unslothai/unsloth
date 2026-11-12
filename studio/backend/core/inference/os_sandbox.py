@@ -32,7 +32,7 @@ PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
-# tools.py re-adds this only to an UNISOLATED launch, and only if it already exists.
+# tools.py re-adds this to an UNISOLATED launch.
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 
@@ -73,9 +73,7 @@ def session_script_dirs(packages: str) -> list[str]:
 def with_session_packages(env: dict, workdir: str) -> dict:
     """Reuse existing session packages without letting their binaries shadow PATH."""
     packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
-    if not os.path.isdir(packages):
-        return env
-    updated = dict(env)
+    updated = {**env, "PIP_PREFIX": packages, "PIP_IGNORE_INSTALLED": "1"}
     # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
     updated["PYTHONNOUSERSITE"] = "1"
     for key, value in (
