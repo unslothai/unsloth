@@ -143,13 +143,10 @@ def _largest_fitting(budget: int, kv: KvLayout, ceiling: int) -> int:
 
 
 def plan_context(
-    model: NpuModel,
-    files: Optional[FlmModelFiles],
-    requested: Optional[int],
-    previous: Optional[NpuModel] = None,
+    model: NpuModel, files: Optional[FlmModelFiles], requested: Optional[int]
 ) -> ContextPlan:
     """The context to load ``model`` with. A positive ``requested`` is honored up to the model's
-    limit; otherwise Auto. ``previous`` is the resident NPU model the load replaces."""
+    limit; otherwise Auto. Sample RAM after releasing the previous model."""
     limit = model.max_context_length
     requested = requested if requested and requested > 0 else None
     floor = min(DEFAULT_CONTEXT_LENGTH, limit or DEFAULT_CONTEXT_LENGTH)
@@ -158,8 +155,7 @@ def plan_context(
     weights = max(files.total if files is not None else 0, int((model.size_gb or 0) * _GIB))
     available = _available_mib() if kv and weights else None
     if available is not None:
-        reclaimed = int((previous.size_gb or 0) * _GIB) if previous is not None else 0
-        budget = (available - HOST_RAM_HEADROOM_MIB) * _MIB + reclaimed - weights
+        budget = (available - HOST_RAM_HEADROOM_MIB) * _MIB - weights
         ceiling = limit or max(AUTO_CONTEXT_CEILING, requested or 0)
         fits = _largest_fitting(budget, kv, ceiling)
     if requested is not None:

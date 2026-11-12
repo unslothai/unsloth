@@ -749,12 +749,16 @@ class LemonadeNpuBackend:
                 if not model.downloaded:
                     raise NpuError(f"{model.id} is not downloaded yet.")
                 files = self._model_files(model.checkpoint, self._flm_binary())
-                previous = self._loaded.model if self._loaded is not None else None
-                plan = plan_context(model, files, context_length, previous)
-                ctx = plan.context_length
+                # Release the resident weights, active KV and any populated prefix slots
+                # before taking the free-RAM sample. unload() also handles a failed unload.
+                if self._loaded is not None:
+                    replaced = True
+                    self.unload()
+                    self._raise_if_load_cancelled(model_id)
                 server = self._ensure_running()
+                plan = plan_context(model, files, context_length)
+                ctx = plan.context_length
                 replaced = True
-                self._loaded = None
                 self._raise_if_load_cancelled(model_id)
                 response = server.request(
                     "POST",
@@ -789,7 +793,7 @@ class LemonadeNpuBackend:
             finally:
                 self._loading = None
                 if replaced and not loaded and self._server is not None:
-                    # lemond may still hold the previous model, which Studio no longer records.
+                    # lemond may have loaded the replacement before failing its health check.
                     self._server.stop()
 
     def _raise_if_load_cancelled(self, model_id: str) -> None:

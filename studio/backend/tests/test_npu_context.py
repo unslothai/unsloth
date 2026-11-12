@@ -261,12 +261,6 @@ def test_the_qwen38_engine_cap_holds(tmp_path, free_ram, free_gib, entry):
     assert nc.plan_context(model, files, 16384).context_length == 8192
 
 
-def _files_again(tmp_path: Path, config) -> FlmModelFiles:
-    sub = tmp_path / "again"
-    sub.mkdir(exist_ok = True)
-    return _files(sub, config)
-
-
 def test_a_pin_wins_and_a_pin_that_will_not_fit_is_logged(tmp_path, free_ram, caplog):
     free_ram["mib"] = int(23.9 * _GIB)
     model = _model(*QWEN36_35B, 262144)
@@ -286,17 +280,6 @@ def test_a_pin_that_fits_is_not_logged_and_is_capped_at_the_limit(tmp_path, free
     assert caplog.text == ""
 
 
-def test_the_resident_models_weights_count_as_free(tmp_path, free_ram):
-    # Loading over a resident NPU model: lemond frees it first, so its weights are not lost to the budget.
-    free_ram["mib"] = int((23.9 - 7.6) * _GIB)
-    model = _model(*QWEN35_9B, 262144)
-    previous = _model(*QWEN35_9B, 262144)
-    alone = nc.plan_context(model, _files(tmp_path, _QWEN35_9B), None)
-    swapped = nc.plan_context(model, _files_again(tmp_path, _QWEN35_9B), None, previous)
-    assert swapped.fits > alone.fits
-    assert swapped.context_length == 65536
-
-
 class _Response:
     def __init__(
         self,
@@ -313,6 +296,9 @@ class _Server:
     def __init__(self):
         self.loads: list[dict] = []
         self.ctx = None
+
+    def is_alive(self):
+        return True
 
     def note(self, message):
         pass
@@ -342,6 +328,9 @@ class _Server:
         json_body = None,
         timeout = None,
     ):
+        if path == "/v1/unload":
+            self.ctx = None
+            return _Response({"status": "success"})
         if path == "/v1/load":
             self.loads.append(json_body)
             self.ctx = json_body["ctx_size"]
@@ -365,7 +354,7 @@ def backend(tmp_path, monkeypatch):
     server = _Server()
     monkeypatch.setattr(npu, "_ensure_running", lambda: server)
     monkeypatch.setattr(npu, "_flm_binary", lambda: None)
-    npu.server = server
+    npu._server = server
     return npu
 
 
@@ -381,18 +370,32 @@ def test_load_sends_the_auto_context_and_records_the_fit(backend, monkeypatch, t
     free_ram["mib"] = int(23.9 * _GIB)
     _serve(backend, monkeypatch, tmp_path, QWEN35_9B, 262144, _QWEN35_9B)
     backend.load("qwen3.5-9b-FLM")
-    assert backend.server.loads[-1]["ctx_size"] == 65536
+    assert backend._server.loads[-1]["ctx_size"] == 65536
     assert backend._loaded.context_length == 65536
     assert backend._loaded.requested_context_length is None
     assert backend._loaded.fitted_context_length == 262144
 
 
+def test_auto_reload_samples_free_ram_after_releasing_weights_and_caches(
+    backend, monkeypatch, tmp_path
+):
+    model = _serve(backend, monkeypatch, tmp_path, QWEN36_35B, 262144, _QWEN36_35B)
+    # With an active 64k KV buffer and a populated prefix cache the same host has
+    # only 3.15 GiB available until Lemonade unloads this 20.6 GiB model.
+    monkeypatch.setattr(
+        nc, "_available_mib", lambda: int((29 if backend._server.ctx is None else 3.15) * _GIB)
+    )
+    backend.load(model.id)
+    backend.load(model.id)
+    assert [load["ctx_size"] for load in backend._server.loads] == [65536, 65536]
+
+
 def test_load_keeps_a_pin_and_8192_without_a_config(backend, monkeypatch, tmp_path, free_ram):
     _serve(backend, monkeypatch, tmp_path, QWEN36_35B, 262144, None)
     backend.load("qwen3.6-moe-35b-a3b-FLM")
-    assert backend.server.loads[-1]["ctx_size"] == 8192
+    assert backend._server.loads[-1]["ctx_size"] == 8192
     backend.load("qwen3.6-moe-35b-a3b-FLM", 16384)
-    assert backend.server.loads[-1]["ctx_size"] == 16384
+    assert backend._server.loads[-1]["ctx_size"] == 16384
     assert backend._loaded.requested_context_length == 16384
     assert free_ram["reads"] == 0
 
