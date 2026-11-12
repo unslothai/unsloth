@@ -429,7 +429,7 @@ def test_preset_bounds_match_the_generation_request(monkeypatch):
             ).status_code
             == 422
         ), params
-    # 6272 x 4096: MiniMax-H3-Image's 16 MP sizes, which the generate request admits too.
+    # MiniMax-H3-Image 16 MP sizes.
     for params in (
         {"steps": 100},
         {"guidance": 20},

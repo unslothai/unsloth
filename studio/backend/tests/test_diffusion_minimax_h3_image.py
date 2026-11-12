@@ -560,12 +560,9 @@ def test_auto_scheme_is_bf16_only_when_it_fits(h3i, monkeypatch):
 @pytest.mark.parametrize(
     "vram, host, scheme",
     [
-        # RTX 6000 Ada (48 GB, about 72 GB of RAM free): bf16 fits alone, but beside the int8 encoder it would run
-        # sequential and need about 74 GB of RAM, so the load was refused. int8 stays on the card.
+        # 48 GB: bf16 beside the encoder would go sequential (refused under ~74 GB RAM).
         (48.2, 72.0, "int8"),
-        # More RAM would let bf16 load sequentially, but int8 is the one that stays on the card.
         (48.2, 128.0, "int8"),
-        # Cards that keep the bf16 DiT resident keep it.
         (80.0, 64.0, None),
         (190.0, 1500.0, None),
     ],
@@ -575,7 +572,6 @@ def test_auto_takes_bf16_only_when_it_stays_on_the_card_beside_the_encoder(h3i, 
     te = h3i.te_gb_for("int8")
     got, reason = h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram, host_gb = host, te_gb = te)
     assert got == scheme, reason
-    # Without the encoder size, the old rule (bf16 whenever it fits alone) is unchanged.
     assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram)[0] is None
 
 
@@ -590,8 +586,7 @@ def test_the_plan_sizes_the_encoder_the_request_takes(h3i, monkeypatch):
 
 
 def test_the_plan_credits_host_memory_the_unload_frees(h3i, monkeypatch):
-    """An 80 GB card keeps the bf16 DiT resident, but only with room on the host for the encoder. A CPU-offloaded
-    model leaving 20 GB of RAM free would plan int8, then the load unloads it first and takes bf16."""
+    """Host RAM held by the resident model is credited back, since the load unloads it first."""
     pytest.importorskip("torchao")
     import torch
 
@@ -601,7 +596,6 @@ def test_the_plan_credits_host_memory_the_unload_frees(h3i, monkeypatch):
     monkeypatch.setattr(h3i, "device_budgets", lambda dev: (80.0, 20.0))
     assert h3i.planned_dit_scheme(None, "cuda") == "int8"
     assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) is None
-    # A host budget is the user's word: nothing is credited on top of it.
     monkeypatch.setenv(h3i.HOST_BUDGET_ENV, "20")
     assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) == "int8"
 
@@ -1382,8 +1376,7 @@ def test_hosted_metadata_attention_is_recorded(h3i):
 def test_a_hub_snapshot_never_loads_the_bundled_encoder_or_the_converted_copy(
     h3i, release, tmp_path, monkeypatch
 ):
-    """The image repo bundles a bf16 text_encoder/ and a converted *_diffusers/ copy. A Hub load fetches neither, and
-    a snapshot that already holds the bundled encoder (an older plan staged it) still loads the int8 one it planned."""
+    """A Hub load skips the bundled encoder and *_diffusers/ copy, even if a snapshot already holds them."""
     import copy
 
     import transformers
@@ -1485,8 +1478,7 @@ def test_explicit_dit_schemes_are_honored_or_refused(h3i, monkeypatch):
 
 
 def test_the_plan_scheme_plans_the_whole_card(h3i, monkeypatch):
-    """The load evicts chat (another process, invisible to memory_reserved) before it reads free VRAM, so a plan on
-    today's free VRAM would stage int8 for a load that then takes bf16. A VRAM budget still wins."""
+    """The plan uses the whole card (the load evicts chat first); a VRAM budget still wins."""
     import torch
 
     monkeypatch.delenv(h3i.VRAM_BUDGET_ENV, raising = False)
@@ -1508,8 +1500,7 @@ def test_the_plan_scheme_plans_the_whole_card(h3i, monkeypatch):
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
 def test_the_preflight_passes_explicit_h3_schemes_without_a_compile(h3i, monkeypatch, scheme):
-    """The torchao compile gate refused every explicit scheme for this family, which never compiles and quantizes in
-    its own loader. int8 and fp8 reach that loader; anything else is still refused before the eviction."""
+    """int8 / fp8 bypass the torchao compile gate; other schemes are refused before eviction."""
     from core.inference import diffusion as dmod
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.diffusion_families import detect_family_for_pick
@@ -1522,7 +1513,6 @@ def test_the_preflight_passes_explicit_h3_schemes_without_a_compile(h3i, monkeyp
     backend = dmod.DiffusionBackend()
     import dataclasses
 
-    # The card's capability is the helper's concern (tested above); this pins the route's gate order.
     target = dataclasses.replace(resolve_diffusion_device_target(), device = "cpu")
     kwargs = {"model_kind": "pipeline", "te_mode": None, "memory_mode": None, "cpu_offload": False}
     backend._assert_precision_for_target(fam, target, pinned = scheme, **kwargs)
@@ -1532,8 +1522,7 @@ def test_the_preflight_passes_explicit_h3_schemes_without_a_compile(h3i, monkeyp
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
 def test_an_explicit_scheme_without_torchao_is_refused_not_run_as_bf16(h3i, monkeypatch, scheme):
-    """Without torchao, resolve_dit_scheme loads the bf16 DiT whatever was asked, so an explicit int8 / fp8 would
-    pass the preflight, stage the dense shards and run bf16. It is refused before the eviction instead."""
+    """Without torchao an explicit int8 / fp8 is refused, not silently run as bf16."""
     import dataclasses
 
     from core.inference import diffusion as dmod
@@ -1558,7 +1547,6 @@ def test_an_explicit_scheme_without_torchao_is_refused_not_run_as_bf16(h3i, monk
 
 
 def test_a_dit_scheme_the_plan_cannot_settle_marks_the_plan_partial(h3i, monkeypatch):
-    """The plan then stages the bf16 shards while the load may take the hosted file, so it reports the miss."""
     from core.inference import diffusion as dmod
     from core.inference.diffusion_families import detect_family_for_pick
 
@@ -1577,8 +1565,7 @@ def test_a_dit_scheme_the_plan_cannot_settle_marks_the_plan_partial(h3i, monkeyp
 
 
 def test_the_request_ceiling_admits_every_family_side(h3i):
-    """The generate request capped sides at 2752, so every 16 MP size this family advertises was a 422 before the
-    family bound in check_output_size was ever asked."""
+    """The request used to cap sides at 2752, rejecting every 16 MP size."""
     from pydantic import ValidationError
 
     from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE

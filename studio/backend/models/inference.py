@@ -5308,7 +5308,6 @@ class DiffusionGenerateRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
-    # Transport ceiling = the largest family side (MAX_REQUEST_SIDE); the loaded family enforces its own bounds and grid.
     width: int = Field(
         1024,
         ge = 256,

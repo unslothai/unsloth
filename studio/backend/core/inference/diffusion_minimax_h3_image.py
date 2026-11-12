@@ -106,8 +106,7 @@ PDD_HEADS_FILE = "pdd_fused_heads.safetensors"
 PDD_CONFIG_FILE = "pdd_config.json"
 DIFFUSERS_TRANSFORMER_SUBFOLDER = "transformer_diffusers"
 DIFFUSERS_VAE_SUBFOLDER = "vae_diffusers"
-# What a Hub load reads from the image repo besides the DiT shards; the converted *_diffusers/ copy and the bundled
-# text encoder are never opened.
+# Never the *_diffusers/ copy or the bundled text encoder.
 H3_IMAGE_BASE_PATTERNS = (
     "model_index.json",
     PDD_CONFIG_FILE,
@@ -1868,9 +1867,8 @@ def resolve_dit_scheme(
     inflight: int = 1,
 ) -> tuple[Optional[str], str]:
     """(scheme or None for bf16, reason). Auto: bf16 when the table-form bf16 DiT fits the card beside its working
-    set, else int8. Given the encoder size (``te_gb``), auto also needs the bf16 plan to keep the DiT on the card:
-    a 48 GB card fits the bf16 DiT alone, but beside the encoder it would run from host memory (slower, and refused
-    without about 74 GB of RAM), where int8 stays resident. fp8 needs SM 8.9+ (falls back to int8 elsewhere)."""
+    set, else int8. With ``te_gb``, bf16 must also stay resident beside the encoder (48 GB cards go int8).
+    fp8 needs SM 8.9+ (else int8)."""
     import torch
 
     req = (requested or "auto").strip().lower()
@@ -1951,9 +1949,7 @@ def device_budgets(device: Any) -> tuple[Optional[float], Optional[float]]:
 
 
 def explicit_scheme_refusal(scheme: str, device: Any) -> Optional[str]:
-    """Why an explicit DiT ``scheme`` cannot run as asked on ``device``, or None. ``resolve_dit_scheme`` would read an
-    unknown scheme as auto, an fp8 ask below SM 8.9 as int8 and any ask without torchao as bf16; an explicit request
-    is refused instead."""
+    """Why an explicit ``scheme`` cannot run as asked (resolve_dit_scheme would silently downgrade), or None."""
     import torch
 
     from .diffusion_precision import torchao_quantize_importable
@@ -1975,7 +1971,7 @@ def explicit_scheme_refusal(scheme: str, device: Any) -> Optional[str]:
     return None
 
 
-# Text encoder requests that keep the released bf16 encoder; anything else (unset included) takes the hosted int8 one.
+# Encoder requests that keep the bf16 encoder; any other value, unset included, takes the hosted int8 one.
 DENSE_TE_REQUESTS = frozenset({"none", "off", "bf16", "dense", "bfloat16"})
 
 
@@ -1990,10 +1986,8 @@ def planned_dit_scheme(
     text_encoder_quant: Optional[str] = None,
     reclaimable_host_gb: float = 0.0,
 ) -> Optional[str]:
-    """The DiT scheme a load on ``device`` would resolve, for the download plan. The load evicts chat and the resident
-    model first, so the whole card is planned, as the generic prequant plan does, and the host gets back
-    ``reclaimable_host_gb`` (the resident pipeline's host weights); budget env vars still win. The encoder the request
-    takes is planned beside it, as the load does."""
+    """DiT scheme for the download plan. The load evicts chat and the resident model first, so plan the whole card
+    plus ``reclaimable_host_gb``; budget env vars still win."""
     import torch
 
     dev = torch.device(device)
@@ -2279,7 +2273,6 @@ def load_h3_image_transformer(
     from safetensors import safe_open
 
     check = check_cancelled or (lambda: None)
-    # Native first: it is what a Hub load fetches; a folder holding only the converted copy still loads.
     native = _native_layout(root, "transformer", DIFFUSERS_TRANSFORMER_SUBFOLDER)
     tdir = root / ("transformer" if native else DIFFUSERS_TRANSFORMER_SUBFOLDER)
     raw_config = _read_json(tdir / "config.json")
@@ -2867,7 +2860,7 @@ def load_minimax_h3_image_pipeline(
             )
 
     local_te = root / "text_encoder"
-    # A local folder's own encoder only: a Hub snapshot can hold the bundled bf16 copy, which the plan did not size.
+    # Local folders only: a Hub snapshot may hold the unplanned bundled bf16 copy.
     if (
         text_encoder is None
         and os.path.isdir(str(repo_id))

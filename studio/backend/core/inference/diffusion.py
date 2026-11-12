@@ -4561,8 +4561,7 @@ class DiffusionBackend:
             if not dense_quant_supported_kind(model_kind):
                 reason = dense_quant_unsupported_kind_reason(model_kind)
             elif family_name == MINIMAX_H3_IMAGE_FAMILY_NAME and model_kind == "pipeline":
-                # Its in-tree loader quantizes (or reads the hosted file) without torch.compile, so the torchao
-                # compile and scheme gates below do not apply; it has its own.
+                # Own loader, no torch.compile: the torchao gates below do not apply.
                 from .diffusion_minimax_h3_image import explicit_scheme_refusal
                 reason = explicit_scheme_refusal(pinned, target.device)
             elif getattr(fam, "denoiser_attr", "transformer") != "transformer":
@@ -6341,9 +6340,7 @@ class DiffusionBackend:
         hf_token: Optional[str],
         failures_out: Optional[list] = None,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
-        """The encoder a MiniMax-H3-Image load opens: the hosted int8 file plus the H3 repo's
-        ``text_encoder/config.json`` it is built from, or the H3 repo's bf16 ``text_encoder/``; never the image repo's
-        bundled copy. An unlistable source stages nothing and is reported in ``failures_out``."""
+        """H3-Image encoder files (hosted int8 + H3 config, or H3 bf16), never the bundled copy."""
         from huggingface_hub import HfApi
 
         from .diffusion_minimax_h3_image import H3_IMAGE_TEXT_ENCODER_REPO, h3_image_te_scheme
@@ -6400,8 +6397,7 @@ class DiffusionBackend:
         failures_out: Optional[list] = None,
         text_encoder_quant: Optional[str] = None,
     ) -> Optional[str]:
-        """The hosted DiT scheme a MiniMax-H3-Image load would take on the selected card, or None for the bf16 shards.
-        An unsettled scheme stages the bf16 shards and is reported in ``failures_out``."""
+        """Hosted DiT scheme the H3-Image load would take, or None for bf16 shards."""
         try:
             from .diffusion_minimax_h3_image import QUANT_SCHEMES, planned_dit_scheme
             with diffusion_device_scope(gpu_ordinal):
@@ -6410,7 +6406,6 @@ class DiffusionBackend:
                     transformer_quant,
                     target.device,
                     text_encoder_quant,
-                    # The load unloads the resident pipeline first, as the generic plan credits.
                     reclaimable_host_gb = pipeline_host_mib(
                         getattr(getattr(self, "_state", None), "pipe", None)
                     )
@@ -7328,7 +7323,6 @@ class DiffusionBackend:
         te_quant_planned, _ = resolve_te_quant_request(
             "none" if te_bf16_auto else text_encoder_quant, getattr(fam, "te_quant_auto", None)
         )
-        # MiniMax-H3-Image's in-tree loader picks its encoder and DiT itself, so its plan asks that loader's rules.
         h3_image = (
             kind == "pipeline"
             and getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME
@@ -16877,8 +16871,7 @@ def _explicit_pipeline_components(fam: Any) -> Optional[tuple[str, ...]]:
     if name in (KREA2_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME):
         return ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
     if name == MINIMAX_H3_IMAGE_FAMILY_NAME:
-        # What its in-tree loader reads from the repo. Its encoder comes from the H3 repo or the hosted int8 file
-        # (download_plan's te_files), never the bundled text_encoder/ the index names.
+        # Encoder comes from download_plan's te_files, never the bundled text_encoder/.
         return ("processor", "tokenizer", "transformer", "vae")
     if name == IDEOGRAM4_FAMILY_NAME:
         return (
