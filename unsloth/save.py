@@ -5901,7 +5901,7 @@ def unsloth_push_to_hub_gguf(
             datasets_yaml = "datasets:\n" + datasets_yaml
         if isinstance(tags, str):
             tags = [tags]
-        # HfApi has no add_tags, so the tags go in the card with the datasets.
+        # HfApi has no add_tags: tags reach the Hub only through the card.
         card_tags = ["gguf", "llama.cpp", "llama-cpp", "unsloth"]
         if is_vlm:
             card_tags.append("vision-language-model")
