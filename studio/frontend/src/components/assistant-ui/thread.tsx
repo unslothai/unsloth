@@ -8634,6 +8634,7 @@ const AssistantMessage: FC = () => {
       <MessagePrimitive.Root
       className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
+      role="article"
       // The message is the tab stop that lets the action bar reveal fire; a tabIndex adds no DOM node,
       // and :focus-visible keeps mouse clicks unringed.
       tabIndex={0}
@@ -9384,6 +9385,7 @@ const UserMessage: FC = () => {
         arriving && "fade-in slide-in-from-bottom-1 animate-in duration-150",
       )}
       data-role="user"
+      role="article"
       tabIndex={0}
       {...focusReveal}
     >
@@ -9515,7 +9517,7 @@ const EditComposer: FC = () => {
 
   return (
     // Top gap and type match UserMessage, so the text stays near the prompt's line.
-    <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]">
+    <MessagePrimitive.Root role="article" className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]">
       <ComposerPrimitive.Root
         className="aui-edit-composer-root flex w-full flex-col rounded-xl bg-muted"
         onSubmit={(event) => {

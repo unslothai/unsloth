@@ -87,6 +87,7 @@ STATE = """() => {
     mounted: rows.length,
     positions: rows.map((row) => Number(row.getAttribute('aria-posinset'))),
     sizes: [...new Set(rows.map((row) => row.getAttribute('aria-setsize')))],
+    roles: [...new Set(rows.map((row) => row.getAttribute('role')))],
     scrollTop: viewport.scrollTop,
     scrollHeight: viewport.scrollHeight,
     clientHeight: viewport.clientHeight,
@@ -98,8 +99,14 @@ STATE = """() => {
 # One sample per frame: how much of the viewport rows cover, and which messages are mounted.
 RECORD = """() => {
   const viewport = window.__threadWeight.viewport();
-  const record = { frames: 0, minCoverage: 1, seen: new Set(), live: true };
+  const record = { frames: 0, minCoverage: 1, seen: new Set(), live: true, roleWrites: 0 };
   window.__windowRecord = record;
+  // A row's role written after it mounted restyles the row a second time, on every row the
+  // window mounts while scrolling. The rows render it; nothing sets it afterwards.
+  record.roles = new MutationObserver((records) => {
+    for (const change of records) if (change.target.parentElement === viewport) record.roleWrites += 1;
+  });
+  record.roles.observe(viewport, { subtree: true, attributes: true, attributeFilter: ['role'] });
   const tick = () => {
     if (!record.live) return;
     const box = viewport.getBoundingClientRect();
@@ -130,7 +137,13 @@ COVERED = """(min) => {
 STOP_RECORD = """() => {
   const record = window.__windowRecord;
   record.live = false;
-  return { frames: record.frames, minCoverage: record.minCoverage, seen: [...record.seen] };
+  record.roles.disconnect();
+  return {
+    frames: record.frames,
+    minCoverage: record.minCoverage,
+    seen: [...record.seen],
+    roleWrites: record.roleWrites,
+  };
 }"""
 
 # The first row the reader can see, and where it sits, over a run of frames.
@@ -306,6 +319,10 @@ def check_ordinals(
         f"{label}: rows must all publish the thread's length {state['length']} as aria-setsize, "
         f"got {state['sizes']}"
     )
+    assert state["roles"] == ["article"], (
+        f"{label}: every row must carry role=article, the role its ordinals belong to, got "
+        f"{state['roles']}"
+    )
     assert positions == sorted(positions), f"{label}: rows are out of order: {positions}"
     if pinned is not None:
         assert pinned in positions, f"{label}: the pinned row {pinned} is not mounted: {positions}"
@@ -408,6 +425,10 @@ def check_engine(playwright, engine: str) -> None:
         )
         missing = sorted(set(range(1, LARGE + 1)) - set(record["seen"]))
         assert not missing, f"messages never mounted on the way up: {missing[:20]}"
+        assert record["roleWrites"] == 0, (
+            f"a row's role was written {record['roleWrites']} times after it mounted on the "
+            f"way up: each write restyles the row again, and scrolling pays for it"
+        )
         check_ordinals(top, "at the top")
         assert top["positions"][0] == 1 and top["scrollTop"] <= 0 and top["topSpacer"] == 0, (
             f"the top of the thread is not its first message: {top['positions'][:3]}, "

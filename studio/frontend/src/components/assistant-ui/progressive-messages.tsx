@@ -432,7 +432,9 @@ function keepPinned(
 }
 
 /** WAI-ARIA ordinals for a windowed list. Written here, not by the rows: the total changes on
- *  every append, and a row must not re-render for it. */
+ *  every append, and a row must not re-render for it. The role the ordinals need (article) is
+ *  rendered by the rows themselves: written here after mount, it restyled every row a second
+ *  time, which scrolling paid for on each row it mounted. */
 function publishOrdinals(viewport: HTMLElement, lookup: Metas, windowed: boolean): void {
   const total = String(lookup.metas.length);
   for (const child of viewport.children) {
@@ -443,11 +445,8 @@ function publishOrdinals(viewport: HTMLElement, lookup: Metas, windowed: boolean
     if (index === undefined) {
       child.removeAttribute("aria-posinset");
       child.removeAttribute("aria-setsize");
-      if (child.getAttribute("role") === "article") child.removeAttribute("role");
       continue;
     }
-    // Ordinals need a role that supports them: a focusable message in a feed is an article.
-    if (!child.hasAttribute("role")) child.setAttribute("role", "article");
     const position = String(index + 1);
     if (child.getAttribute("aria-posinset") !== position) {
       child.setAttribute("aria-posinset", position);
