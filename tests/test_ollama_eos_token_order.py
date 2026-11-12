@@ -115,3 +115,38 @@ def test_ollama_eos_tokens_drop_whitespace_only_stops():
     for seed in range(4):
         tokens = ["<pad>", "\t", "\t\t", "\t\t\t", "\n\n", "<end_of_turn>"]
         assert _run(seed, tokens, "<pad>") == ["<end_of_turn>"]
+
+
+_RUNNER_ADDED = _RUNNER.replace(
+    "return {index: token for index, token in enumerate(self._tokens)}",
+    "return {index: AddedToken(*token) for index, token in enumerate(self._tokens)}",
+).replace(
+    "class _Tokenizer:",
+    "class AddedToken(str):\n    def __new__(cls, content, special):\n        token = str.__new__(cls, content)\n        token.special = special\n        return token\n\n\nclass _Tokenizer:",
+)
+
+
+def test_ollama_eos_tokens_skip_non_special_html_tags():
+    # Phi-3.5's non-special `</s>` is a real end token; Gemma's non-special HTML tags are answer text.
+    tokens = [
+        ["<pad>", True],
+        ["</s>", False],
+        ["<b>", False],
+        ["</table>", False],
+        ["<think>", False],
+        ["<end_of_turn>", True],
+    ]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _RUNNER_ADDED,
+            json.dumps(_extract_source()),
+            json.dumps(tokens),
+            json.dumps("<pad>"),
+        ],
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    assert json.loads(completed.stdout) == ["</s>", "<end_of_turn>", "<think>"]

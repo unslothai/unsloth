@@ -3163,8 +3163,20 @@ def to_sharegpt(
 
 
 def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
-    added_tokens_decoder = tokenizer.added_tokens_decoder.values()
-    added_tokens_decoder = [str(x) for x in added_tokens_decoder]
+    # Non-special HTML tags (Gemma's `<b>`, `<table>`) are answer text, never turn delimiters.
+    html_tags = {
+        "a", "abbr", "article", "b", "blockquote", "body", "br", "button", "caption", "cite",
+        "code", "dd", "del", "div", "dl", "dt", "em", "figcaption", "figure", "footer", "form",
+        "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "i", "iframe", "img",
+        "input", "ins", "label", "li", "link", "main", "mark", "meta", "nav", "ol", "p", "pre",
+        "q", "script", "section", "small", "span", "strong", "style", "sub", "sup", "table",
+        "tbody", "td", "tfoot", "th", "thead", "title", "tr", "u", "ul",
+    }
+    added_tokens_decoder = [
+        str(x) for x in tokenizer.added_tokens_decoder.values()
+        if getattr(x, "special", True)
+        or not (str(x).startswith("<") and str(x).endswith(">") and str(x)[1:-1].lstrip("/") in html_tags)
+    ]
 
     # Longest first, never through a set: the collapse below rewrites joined_text as it goes,
     # so a family member must be seen before any shorter token sharing its prefix (`<unused0>`
