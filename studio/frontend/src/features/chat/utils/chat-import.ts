@@ -180,20 +180,15 @@ function oaiMessagesToRecords(
       const idKey =
         typeof msg.tool_call_id === "string" ? msg.tool_call_id : undefined;
       const nameKey = typeof msg.name === "string" ? msg.name : undefined;
+      // An unnamed result goes to the newest turn's first unanswered call, so
+      // parallel calls answered in order keep their own results.
       const bound =
         idKey !== undefined
           ? bindResult((entry) => entry.part.toolCallId === idKey, result)
-          : nameKey !== undefined &&
-            bindResult((entry) => entry.part.toolName === nameKey, result);
-      if (!bound) {
-        if (idKey === undefined && nameKey === undefined && pending.length > 0) {
-          // An unnamed result can only belong to the newest still-unanswered call.
-          pending[pending.length - 1].part.result = result;
-          pending.pop();
-        } else {
-          stashedResults.push({ id: idKey, name: nameKey, result });
-        }
-      }
+          : nameKey !== undefined
+            ? bindResult((entry) => entry.part.toolName === nameKey, result)
+            : bindResult(() => true, result);
+      if (!bound) stashedResults.push({ id: idKey, name: nameKey, result });
       continue;
     }
 

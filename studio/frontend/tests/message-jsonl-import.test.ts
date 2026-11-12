@@ -687,6 +687,17 @@ test("an unnamed function result lands on the newest unanswered call", () => {
   assert.deepEqual(toolCallResults(conversation), ["undefined", "NONAME"]);
 });
 
+test("unnamed results for parallel calls bind in call order", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"name":"f","arguments":{}},{"name":"g","arguments":{}}]}\n' +
+      '{"role":"tool","content":"FIRST"}\n' +
+      '{"role":"tool","content":"SECOND"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["FIRST", "SECOND"]);
+});
+
 test("an unnamed early function result waits for a call", () => {
   const [conversation] = parseImportText(
     '{"role":"function","content":"ORPHAN"}\n' +
