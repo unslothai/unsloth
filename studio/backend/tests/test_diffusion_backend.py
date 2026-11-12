@@ -281,6 +281,9 @@ def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
         for repo in offered
         if not repo.lower().startswith("unsloth/")
         and "hunyuan" not in repo.lower()
+        # MiniMax-H3-Image's in-tree loader fetches only the files it reads from the official base (its shards and
+        # Studio's hosted int8 encoder), never a whole-repo snapshot, so it has no mirror.
+        and repo.lower() != "minimaxai/minimax-h3-image"
         and repo.lower() not in mirrored
     )
     assert not missing, f"catalog offers these vendor bases with no unsloth mirror: {missing}"
@@ -11875,11 +11878,12 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
     monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
     from core.inference import diffusion_nvfp4_gate as gate
-    from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSION
+    from core.inference.diffusion_nvfp4_install import FLASHINFER_RELEASES
 
-    # The gate covers only the flashinfer its record was measured on; pin the version Studio installs so the
-    # answer does not depend on this host's flashinfer (CI runners have none).
-    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: FLASHINFER_VERSION)
+    # Pin the covered release so the answer does not depend on this host's flashinfer.
+    monkeypatch.setattr(
+        gate, "installed_flashinfer_version", lambda: FLASHINFER_RELEASES[-1].version
+    )
 
     target = SimpleNamespace(device = "cuda", dtype = None)
     assert (
@@ -11891,7 +11895,14 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
         == "unsloth/FLUX.1-schnell-NVFP4"
     )
 
-    # An unreadable version is not covered: the plan and the load both drop the nvfp4 rung, so nothing fetches it.
+    # An unmeasured or unreadable version: plan and load both drop the nvfp4 rung.
+    from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSION
+
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: FLASHINFER_VERSION)
+    assert (
+        dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
+        != "nvfp4"
+    )
     monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: None)
     assert (
         dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
@@ -13315,7 +13326,7 @@ def _stub_rdna_w8a8_host(backend, monkeypatch):
 
     calls = _stub_amd_weight_only_host(backend, monkeypatch)
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: True)
-    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: True)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda *_a: True)
     monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
     monkeypatch.setattr(tq._sys, "platform", "linux")
     recorded = dmod.quantize_transformer

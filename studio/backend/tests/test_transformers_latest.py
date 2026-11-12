@@ -165,9 +165,8 @@ def _isolated_caches(tmp_path: Path, monkeypatch):
 
 
 def _no_network(monkeypatch, exc = None):
-    """Fail every urlopen and return a counter; tests assert n == 0 to prove no fetch
-    happened (check_upgrade_for_model swallows exceptions, so a raising stub alone
-    cannot prove the negative)."""
+    """Fail every urlopen and count calls; check_upgrade_for_model swallows exceptions, so a raising
+    stub alone cannot prove that no fetch happened."""
     calls = {"n": 0}
 
     def _raise(*args, **kwargs):
@@ -503,9 +502,8 @@ class TestRoutingParity:
         assert calls["n"] == 0
 
     def test_real_installed_mappings_route_without_checker(self, monkeypatch, tmp_path: Path):
-        """Parity over the REAL installed overlays (base + any provisioned sidecar):
-        every shipped model_type resolves statically, so the remote checker never
-        fires and routing is byte-identical with the feature enabled."""
+        """Shipped model_types resolve statically on the real overlays, so the remote checker never
+        fires and routing stays byte-identical with the feature enabled."""
         _no_network(monkeypatch)
         seen = 0
         for tier in ("default", "530", "550", "510"):
@@ -986,8 +984,7 @@ def test_install_serialized():
 
 
 def test_install_in_progress_reflects_reservation():
-    """is_install_in_progress mirrors the shared sidecar swap reservation, so a
-    lazy repair (which takes the same reservation) also blocks worker starts."""
+    """is_install_in_progress mirrors the swap reservation; a lazy repair blocks worker starts."""
     from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
 
     assert tl.is_install_in_progress() is False
@@ -1035,8 +1032,7 @@ def test_upgrade_check_ignores_nested_known_types(monkeypatch):
 
 
 def test_upgrade_check_requires_primary_supported(monkeypatch):
-    """Latest supporting only a nested type must not prompt: routing still
-    cannot load the primary, so the install would not fix the model."""
+    """A nested-only type in latest must not prompt: routing still cannot load the primary."""
     _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         tl,
@@ -1051,9 +1047,8 @@ def test_upgrade_check_requires_primary_supported(monkeypatch):
 
 
 def test_upgrade_check_requires_every_missing_type(monkeypatch):
-    """Primary supported but a nested backbone missing from latest -> no prompt
-    (CONFIG_MAPPING would still fail on the sub-config); all supported -> signal
-    carries the primary type."""
+    """A missing nested backbone suppresses the prompt, since CONFIG_MAPPING would still fail on the
+    sub-config; all supported gives a signal carrying the primary type."""
     _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         tl,
@@ -1113,8 +1108,7 @@ def test_upgrade_check_ignores_inert_nested_types(monkeypatch):
 
 
 def test_install_success_invalidates_capability_caches(monkeypatch):
-    """A successful install must drop tier probes, the latest mapping, and the
-    vision-detection cache so the new sidecar takes effect without a restart."""
+    """Install success drops tier probes, latest mapping, vision-detection cache; no restart."""
     from utils.models import model_config as mc
 
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
@@ -1142,8 +1136,7 @@ def test_install_success_invalidates_capability_caches(monkeypatch):
 
 
 def test_vision_subprocess_unions_sidecar_registry():
-    """The embedded vision-check script must extend the inlined parent sets with
-    the ACTIVE sidecar's registry so sidecar-only architectures classify."""
+    """Vision-check script unions the active sidecar registry so sidecar-only archs classify."""
     from utils.models import model_config as mc
 
     script = mc._VISION_CHECK_SCRIPT
@@ -1197,9 +1190,8 @@ def test_vision_subprocess_unions_sidecar_registry():
 
 
 def test_upgrade_check_mixed_pypi_main_reports_dev_only(monkeypatch):
-    """Primary in the PyPI release but a nested type only on main: no install
-    may be offered (CONFIG_MAPPING would fail on the nested sub-config), so the
-    aggregate must read as main-only."""
+    """Primary type in PyPI but nested type only on main: no install may be offered (CONFIG_MAPPING
+    fails on the nested sub-config), so the aggregate reads main-only."""
     _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         tl,
@@ -1218,8 +1210,7 @@ def test_upgrade_check_mixed_pypi_main_reports_dev_only(monkeypatch):
 
 
 def test_install_endpoint_not_mounted_on_v1():
-    """The consented pip-install endpoint is an Unsloth admin action; it must live
-    on studio_router (kept off the OpenAI-compatible /v1 mount), not router."""
+    """Admin pip-install endpoint belongs on studio_router, not OpenAI-compatible /v1 mount."""
     from routes import inference as ri
 
     path = "/install-latest-transformers"
@@ -1246,8 +1237,7 @@ def test_kill_switch_removes_provisioned_latest_from_routing(tmp_path, monkeypat
 
 
 def test_repair_failure_preserves_pin_and_live_dir(tmp_path, monkeypatch):
-    """A failed lazy repair must not delete the incomplete-but-pinned live
-    sidecar: the pin survives so a later attempt can still repair it."""
+    """A failed lazy repair keeps the pinned live sidecar so a later attempt can retry it."""
     venv_dir = tmp_path / ".venv_t5_latest"
     venv_dir.mkdir()
     (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
@@ -1339,8 +1329,7 @@ def test_waiter_never_answers_no_upgrade_while_the_refresh_is_still_running(monk
     tl.clear_caches()
     monkeypatch.setattr(tl, "_load_snapshot_file", lambda: None)
     monkeypatch.setattr(tl, "_save_snapshot_file", lambda snapshot: None)
-    # The wait expires long before the refresh finishes: a slow mirror doing exactly
-    # what the socket timeout permits.
+    # In-flight wait expires before a slow refresh ends: a mirror within its socket timeout.
     monkeypatch.setattr(tl, "_INFLIGHT_WAIT_SECONDS", 0.05)
     fetch_started = _threading.Event()
 
@@ -1489,8 +1478,7 @@ def _hardware_module(device):
 
 @pytest.fixture(autouse = True)
 def _transformers_backend_host(monkeypatch):
-    """Pin a transformers-loading device so these tests do not depend on the
-    host: on MLX the upgrade check short-circuits by design."""
+    """Pin device to cuda so tests ignore the host; on MLX the upgrade check short-circuits."""
     monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("cuda"))
 
 
@@ -1507,9 +1495,8 @@ def test_transformers_backends_still_get_the_upgrade_offer(device, monkeypatch):
 
 
 def test_mlx_host_is_never_offered_a_transformers_upgrade(monkeypatch):
-    """MLX picks its backend from hardware and never falls back to transformers,
-    so no install can make an architecture loadable there. Same inputs as the
-    transformers-backend test above, which does get an offer."""
+    """MLX chooses its backend from hardware and never falls back to transformers, so no install can
+    make an architecture loadable there."""
     _shared_setup_2(monkeypatch)
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "muse_glimmer"})
     _shared_setup_1(monkeypatch)

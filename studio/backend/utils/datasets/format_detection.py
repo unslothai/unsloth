@@ -856,19 +856,49 @@ def video_sample(
             return not video_parts(value)
         return value is None or (isinstance(value, str) and not value.strip())
 
-    if not any(_missing(k, v) for k, v in sample.items()):
+    missing = [k for k, v in sample.items() if _missing(k, v)]
+    if not missing:
         return sample
-    filled = dict(sample)
-    try:
-        for row in itertools.islice(iter(dataset), 1, rows):
+
+    def _fill(source):
+        filled = dict(sample)
+        for row in itertools.islice(iter(source), 1, rows):
             for key, value in row.items():
                 if _missing(key, filled.get(key)) and not _missing(key, value):
                     filled[key] = value
             if not any(_missing(k, v) for k, v in filled.items()):
                 break
+        return filled
+
+    def _is_media(value):
+        if isinstance(value, (list, tuple)):
+            return bool(value) and _is_media(value[0])
+        if isinstance(value, dict):
+            return any(k in value for k in ("bytes", "array", "path")) or any(
+                map(_is_media, value.values())
+            )
+        return value is not None and not isinstance(value, (str, int, float, bool))
+
+    # Whole rows decode every media cell; a schema mismatch or custom transform could change what a subset sees.
+    missing_keys = set(missing)
+    if len(missing) < len(sample) and any(
+        _is_media(v) for k, v in sample.items() if k not in missing_keys
+    ):
+        try:
+            columns = dataset.column_names
+            fmt = getattr(dataset, "format", None)
+            if (
+                isinstance(columns, list)
+                and set(columns) == set(sample)
+                and not (isinstance(fmt, dict) and fmt.get("type") == "custom")
+            ):
+                return _fill(dataset.select_columns(missing))
+        except Exception:  # noqa: BLE001 -- no column subset: read whole rows
+            pass
+    try:
+        return _fill(dataset)
     except Exception:  # noqa: BLE001 -- unreadable rows: detect from the first one
         return sample
-    return filled
 
 
 def video_parts(messages) -> list:

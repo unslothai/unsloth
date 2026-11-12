@@ -2471,6 +2471,7 @@ async def start_training(
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
+            _free_restyle_for_training()
             try:
                 # Video pipelines load under the VIDEO arbiter owner; tear down too. Must precede the chat block.
                 from core.inference import gpu_arbiter
@@ -3530,6 +3531,22 @@ def diffusion_dataset_interlock():
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
+def _free_restyle_for_training() -> None:
+    """The restyle sd-server sits outside the arbiter's owners; a running restyle refuses the start."""
+    from core.inference import video_restyle
+    from routes.training_vram import ManagedEngineStillRunning
+
+    try:
+        idle = video_restyle.runner.unload_if_idle()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not unload the video restyle server for training: %s", e)
+        return
+    if not idle:
+        raise ManagedEngineStillRunning(
+            "A video restyle is running. Cancel it or wait for it to finish."
+        )
+
+
 def _free_gpu_for_diffusion_training() -> None:
     """Frees resident GPU models first; the trainer's SDXL pipeline would OOM beside them."""
     try:
@@ -3565,6 +3582,7 @@ def _free_gpu_for_diffusion_training() -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 
+    _free_restyle_for_training()
     try:
         from core.inference import gpu_arbiter
         from core.inference.video import get_video_backend

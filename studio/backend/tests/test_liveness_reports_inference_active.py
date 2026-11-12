@@ -90,15 +90,18 @@ idle_after = probe()
 # Keep this independent of main._MEDIA_BACKEND_MODULES so omissions are detected.
 media_modules = (
     "core.inference.video",
+    "core.inference.video_restyle",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
     "core.inference.mlx_diffusion_backend",
     "routes.inference",
 )
-# routes.inference is imported at startup regardless, so the ML-stack question is only
-# about the three engines.
+# routes.inference and the import-light restyle module load at startup regardless, so the
+# ML-stack question is only about the three engines.
 media_import_free = [
-    name for name in media_modules if name.startswith("core.") and name in sys.modules
+    name
+    for name in media_modules
+    if name.startswith("core.") and name != "core.inference.video_restyle" and name in sys.modules
 ]
 scanned = list(getattr(main, "_MEDIA_BACKEND_MODULES", ()) or ())
 
@@ -157,9 +160,8 @@ def test_liveness_reports_a_generation_in_flight():
 
 
 def test_the_marker_disappears_once_nothing_is_generating():
-    """The wide budget is for a backend that is producing tokens. Leaving the marker lit
-    after the last stream ends would arm it for the rest of the session, and a genuinely
-    hung backend would sit unreported."""
+    """The wide budget is for token production; a marker left lit after the stream would hide a real
+    hang."""
     result = _probe()["probes"]
 
     assert not result["idle_before"][
@@ -183,8 +185,7 @@ def _watchdog_probe_budget_s() -> float:
 
 
 def test_the_marker_costs_nothing_to_read():
-    """A probe every 15s cannot pay for anything that waits, which is why the route reads
-    a registry len() rather than asking the backend what it is doing."""
+    """A probe every 15s cannot wait, so the route reads a registry len() instead of asking the backend."""
     result = _probe()["probes"]
 
     # relative bound vs a trivial route catches new I/O; absolute bound is the watchdog budget
@@ -200,8 +201,7 @@ def test_the_marker_costs_nothing_to_read():
 
 
 def test_the_desktop_watchdog_still_reads_the_marker():
-    """Cross-language guard: the marker only does anything because commands.rs reads it,
-    and either side can be changed without the other."""
+    """Cross-language guard: commands.rs must keep reading the marker, or the watchdog ignores it."""
     assert _COMMANDS_RS.is_file(), f"{_COMMANDS_RS} moved; update this guard"
     rust = _COMMANDS_RS.read_text(encoding = "utf-8")
     probe = rust[rust.index("async fn check_health_inner") :]
@@ -422,10 +422,7 @@ def _persist_marker_violations(source: str) -> list[str]:
 
 
 def test_both_image_routes_publish_the_persist_marker():
-    """The Unsloth route and the OpenAI-compatible one write the gallery on separate paths.
-    Only the first used to count, so an OpenAI client's persist was invisible to both
-    generate-progress and liveness. Each must raise the marker, and drop every raise on every exit
-    (the Detailer's hold included), or liveness reads idle mid-request or busy forever."""
+    """Both image routes must raise the persist marker and drop it on every exit, or liveness goes stale."""
     import inspect
     import importlib
 

@@ -238,9 +238,7 @@ async (timeoutMs) => {
 }
 """
 
-# Delete is a button on the reply's action bar again since #13615 (#12735 had moved it into the More
-# menu). The button is found before the clock starts, so the window holds only what Delete costs: the
-# message leaving the thread.
+# Delete is back on the reply action bar (PR/issue 13615); find the button before the clock starts.
 DELETE_JS = """
 async (timeoutMs) => {
   const api = window.__threadWeight;
@@ -605,8 +603,7 @@ GROWTH_AXES = (
 
 
 def harness_failures(results: dict) -> list[str]:
-    """Only the ways this harness can be measuring nothing. No performance budgets: see the
-    module docstring."""
+    """Ways this harness can measure nothing; no performance budgets (see module docstring)."""
     failures: list[str] = []
     layers = set()
     for size in results["sizes"]:

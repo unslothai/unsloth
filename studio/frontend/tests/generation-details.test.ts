@@ -475,6 +475,15 @@ test("the placement readout names expert weights and gives both memory figures",
   assert.equal(loadedPlacementFrom({ is_gguf: true }), null);
 });
 
+test("the placement row needs no setting", () => {
+  // Source text: the row cannot be mounted here, since it pulls in the chat feature's React tree.
+  const row = readSrc("features/model-picker/components/loaded-placement-row.tsx");
+  assert.doesNotMatch(row, /showGenerationDetails|useChatPreferencesStore/);
+  assert.match(row, /if \(placement === null\) return null;/);
+  assert.equal(en.settings.chat.showGenerationDetails, "Detailed speed info");
+  assert.doesNotMatch(en.settings.chat.showGenerationDetailsDescription, /layers/);
+});
+
 test("a GPU build that fell back to the CPU is not reported as GPU layers", () => {
   // CUDA build, no usable device: llama.cpp still logs "offloaded 29/29 layers to GPU", buffers AMX + CPU_Mapped.
   assert.deepEqual(

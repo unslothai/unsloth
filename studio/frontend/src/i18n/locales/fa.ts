@@ -745,6 +745,8 @@ export const fa = {
       "بستن این پنجره راه‌اندازی را متوقف نمی‌کند. نتیجهٔ آن در «تنظیمات > امنیت» نمایش داده می‌شود.",
   },
   composerSettings: {
+    shareDraft: "اشتراک‌گذاری پیش‌نویس‌ها بین گفتگوها",
+    shareDraftDescription: "از یک پیش‌نویس برای گفتگوها و مقایسه استفاده کنید. به‌طور پیش‌فرض خاموش است؛ هر گفتگو پیش‌نویس خودش را نگه می‌دارد.",
     title: "کادر نوشتن",
     plainText: "کادر نوشتن متن ساده",
     plainTextDescription:
@@ -1819,6 +1821,13 @@ export const fa = {
         audioUploadCancel: "لغو رونویسی",
         audioUploadTranscribing: "در حال رونویسی صدا…",
         sectionTitle: "دیکته",
+        micTargetLabel: "دکمه میکروفون",
+        micTargetAsr: "رونویسی با ASR",
+        micTargetModel: "ارسال صدا به مدل",
+        micTargetAsrDescription: "دکمه میکروفون آنچه می‌گویید را در کادر پیام تایپ می‌کند.",
+        micTargetModelDescription: "وقتی مدلی با ورودی صوتی بارگذاری شده باشد، میکروفون یک کلیپ ضبط کرده و به پیام شما پیوست می‌کند. مدل‌های دیگر همچنان دیکته دریافت می‌کنند.",
+        micTargetModelUnavailable: "برای ارسال صدای خود، مدلی را بارگذاری کنید که ورودی صوتی می‌پذیرد (برای مثال LFM3-Omni).",
+        micRecordForModel: "ضبط صدا برای مدل",
         engineLabel: "موتور دیکته",
         engineBrowser: "مرورگر",
         engineBrowserDescription:
@@ -1844,6 +1853,13 @@ export const fa = {
         sttQuantDescription:
           "یک مدل STT را برای اجرای محلی انتخاب یا جستجو کنید، سپس کوانتیزه‌سازی آن را.",
         sttDeviceLabel: "بارگذاری در",
+        sttContextLabel: "زمینهٔ صدا",
+        sttContextAuto: "خودکار (پیشنهادی)",
+        sttContextAutoDescription:
+          "با هر ضبط تنظیم می‌شود و برای صدای طولانی‌تر حافظهٔ بیشتری مصرف می‌کند. محیط‌های اجرای قدیمی‌تر ممکن است برای کاهش حافظه به اندازهٔ ثابت نیاز داشته باشند. برای Qwen3-ASR در صدا و رونویسی اعمال می‌شود.",
+        sttContextFixedDescription:
+          "محدودیت‌های کوچک‌تر حافظهٔ کمتری مصرف می‌کنند. ضبط‌هایی که جا نمی‌شوند به محدودیت بالاتر یا خودکار نیاز دارند. برای Qwen3-ASR در صدا و رونویسی اعمال می‌شود.",
+        sttContextTokens: "{count} توکن",
         sttDeviceAuto: "GPU در صورت وجود",
         sttDeviceCpu: "RAM پردازنده (CPU)",
         sttDeviceAutoDescription:
@@ -3262,11 +3278,11 @@ export const fa = {
         "زمان پایان هر پاسخ، زیر همان پاسخ نمایش داده شود.",
       showReplyTimesKeywords:
         "مهر زمانی زمان ساعت تاریخ پایان رسیدن پاسخ پیام timestamp",
-      showGenerationDetails: "اطلاعات دقیق سرعت و بارگذاری",
+      showGenerationDetails: "اطلاعات دقیق سرعت",
       showGenerationDetailsDescription:
-        "سرعت خواندن پرامپت، شمار توکن‌ها و پذیرش پیش‌نویس را به نمایش زنده می‌افزاید و نشان می‌دهد لایه‌های مدل کجا بارگذاری شده‌اند.",
+        "سرعت خواندن پرامپت، شمار توکن‌ها و پذیرش پیش‌نویس را به نمایش زنده می‌افزاید.",
       showGenerationDetailsKeywords:
-        "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode لایه‌ها offload vram experts",
+        "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode",
       generationStatsUpdates: "آمار سرعت و زمینه",
       generationStatsUpdatesDescription:
         "حالت بی‌درنگ توکن در ثانیه و مصرف زمینه را هنگام پخش پاسخ می‌شمارد. حالت پس از پایان آن‌ها را با تمام شدن هر پاسخ به‌روز می‌کند.",
@@ -3422,12 +3438,10 @@ export const fa = {
       exportingAction: "در حال خروجی گرفتن...",
       exportConversations: "خروجی گرفتن از «اخیر» و «پروژه‌ها»",
       exportConversationsDescription:
-        "«اخیر» یا «اخیر» به‌همراه گفتگوهای پروژه را به‌صورت Training JSONL، CSV، ShareGPT JSONL یا Markdown، ترکیبی یا جداگانه برای هر گفتگو دانلود کنید. Message JSONL فقط به‌صورت جداگانه برای هر گفتگو در دسترس است.",
+        "«اخیر» یا «اخیر» به‌همراه گفتگوهای پروژه را به‌صورت Training JSONL، CSV، ShareGPT JSONL، Markdown، HTML یا PDF، ترکیبی یا جداگانه برای هر گفتگو دانلود کنید. Message JSONL فقط به‌صورت جداگانه برای هر گفتگو در دسترس است.",
       exportConversationsAction: "خروجی گرفتن",
       exportScopeRecents: "اخیر",
       exportScopeAll: "اخیر + پروژه‌ها",
-      exportCombinedSuffix: "(ترکیبی)",
-      exportPerChatSuffix: "(برای هر گفتگو)",
       importChats: "وارد کردن گفتگوها",
       importChatsDescription:
         "فایل‌های JSON، JSONL، NDJSON، CSV یا Markdown را به «اخیر» وارد کنید.",
@@ -3855,7 +3869,7 @@ export const fa = {
       mcp: {
         title: "دسترسی عامل (MCP)",
         description:
-          "به عامل‌های برنامه‌نویسی مانند Claude Code و Codex اجازه دهید از طریق MCP از Unsloth استفاده کنند. عامل‌ها با یک کلید API مربوط به Unsloth از همین صفحه وارد می‌شوند.",
+          "به عامل‌های برنامه‌نویسی مانند Claude Code و Codex اجازه دهید از طریق MCP از Unsloth استفاده کنند.",
         enable: "اجازهٔ اتصال عامل‌ها",
         enableDescription:
           "/mcp/ را به درخواست‌هایی که کلید API مربوط به Unsloth دارند ارائه می‌دهد.",
@@ -3864,10 +3878,93 @@ export const fa = {
         saveError: "ذخیرهٔ تنظیم دسترسی عامل ممکن نشد.",
         agent: "عامل",
         exportKeyHint:
-          "پیش از شروع عامل، {name} را برابر با یک کلید API مربوط به Unsloth از همین صفحه قرار دهید.",
+          "پیش از شروع عامل، {name} را برابر با یک کلید API مربوط به Unsloth قرار دهید.",
         configFileHint: "این را به {path} اضافه کنید.",
         keywords:
           "mcp model context protocol عامل‌ها پروتکل زمینهٔ مدل claude codex ابزارها",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "عامل‌ها با یک کلید API از Unsloth وارد می‌شوند.",
+      createKey: "ساخت کلید API",
+      tools: {
+        title: "ابزارها",
+        count: "{on} از {total} روشن",
+        choose: "انتخاب ابزارها",
+        dialogTitle: "ابزارهای Unsloth MCP",
+        allTools: "همه ابزارها",
+        selectAll: "انتخاب همه",
+        selectNone: "انتخاب هیچ‌کدام",
+        description:
+          "هر ابزاری که روشن بماند به چیزی که عامل‌ها پیش از شروع می‌خوانند اضافه می‌شود، پس آن‌هایی را که لازم ندارید خاموش کنید. عامل‌ها هیچ‌وقت ابزار خاموش را نمی‌بینند و فراخوانی آن رد می‌شود. عامل‌هایی که از قبل وصل‌اند پس از اتصال دوباره تغییر را می‌بینند.",
+        saveError: "ذخیره تنظیم ابزارهای Unsloth MCP ممکن نشد.",
+        chatNote: "گفتگو هرگز {tools} را دریافت نمی‌کند.",
+        groups: {
+          models: "مدل‌ها",
+          generate: "تولید",
+          training: "آموزش و خروجی",
+          library: "داده و کتابخانه",
+          jobs: "کارها",
+          other: "سایر",
+        },
+      },
+      status: {
+        on: "روشن",
+        off: "خاموش",
+      },
+      apiKeysRow: {
+        open: "باز کردن در «عامل‌ها»",
+      },
+      toolLabels: {
+        studioStatus: "وضعیت",
+        listModels: "فهرست مدل‌ها",
+        loadModel: "بارگذاری مدل",
+        unloadModel: "تخلیه مدل",
+        planLoad: "برنامه‌ریزی بارگذاری",
+        downloadModel: "دانلود مدل",
+        chat: "گفتگو",
+        embed: "جاسازی متن",
+        systemOne: "مدل تصمیم",
+        generateImage: "تولید تصویر",
+        generateAudio: "تولید صدا",
+        transcribe: "رونویسی",
+        analyzeAudio: "تحلیل صدا",
+        generateVideo: "تولید ویدیو",
+        runRecipe: "اجرای Data Recipe",
+        getJob: "وضعیت کار",
+        datasets: "مجموعه‌داده‌ها",
+        startTraining: "شروع آموزش",
+        listTrainingRuns: "اجراهای آموزش",
+        exportModel: "خروجی گرفتن از مدل",
+        listMedia: "رسانه‌های ذخیره‌شده",
+        voices: "صداها",
+        cancel: "لغو کار",
+      },
+      toolDescriptions: {
+        studioStatus: "ببینید چه چیزی روی این رایانه بارگذاری شده، در حال اجراست و آزاد است.",
+        listModels: "مدل‌هایی را که عامل‌ها می‌توانند بارگذاری کنند فهرست کنید.",
+        loadModel: "یک مدل را بارگذاری کنید تا عامل‌ها با آن گفتگو یا تولید کنند.",
+        unloadModel: "یک مدل را برای آزاد کردن حافظه تخلیه کنید.",
+        planLoad: "حجم دانلود و حافظه یک بارگذاری را بدون بارگذاری ببینید.",
+        downloadModel: "یک مدل را از Hugging Face دانلود کنید.",
+        chat: "با مدل بارگذاری‌شده گفتگو کنید.",
+        embed: "متن را به بردار تبدیل کنید یا متن‌ها را بر اساس شباهت مرتب کنید.",
+        systemOne: "از مدل تصمیم سؤال بله یا خیر، انتخابی یا امتیازی بپرسید.",
+        generateImage: "تصویر بسازید و در گالری ذخیره کنید.",
+        generateAudio: "گفتار یا صدای دیگر بسازید.",
+        transcribe: "گفتار را به متن تبدیل کنید.",
+        analyzeAudio: "گویندگان، زمان‌بندی و تطابق یک کلیپ با متن را بررسی کنید.",
+        generateVideo: "یک ویدیو بسازید.",
+        runRecipe: "یک Data Recipe اجرا کنید تا مجموعه داده بسازید.",
+        getJob: "یک کار طولانی را تا پایان دنبال کنید.",
+        datasets: "مجموعه داده‌ها را فهرست و بارگذاری کنید.",
+        startTraining: "یک fine-tuning را شروع کنید.",
+        listTrainingRuns: "اجراهای آموزش و نتایج آن‌ها را فهرست کنید.",
+        exportModel: "یک مدل آموزش‌دیده را، مثلاً به GGUF، صادر کنید.",
+        listMedia: "تصاویر، صداها و ویدیوهای ذخیره‌شده را مرور کنید.",
+        voices: "صداها را فهرست، ذخیره، تغییر نام یا حذف کنید.",
+        cancel: "کار در حال اجرا، مثل آموزش یا صدور، را متوقف کنید.",
       },
     },
     about: {

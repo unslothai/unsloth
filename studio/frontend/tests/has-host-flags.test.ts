@@ -65,17 +65,18 @@ test("hub README badge rows are marked, not matched with :has()", () => {
 test("the Windows page blur learns about the sidebar frame from the root, not a :has()", () => {
   assert.match(
     css,
-    /\[data-windows-wallpaper-page\] > \[data-slot="page-wallpaper-blur"\]\[data-sidebar-frame\] \{\n {2}border-top-left-radius: 4px;/,
+    /\[data-windows-wallpaper-page\] > \[data-slot="page-wallpaper-blur"\]\[data-sidebar-frame\] \{\n {2}border-top-left-radius: var\(--radius-md\);/,
   );
   const root = readSrc("app/routes/__root.tsx");
   assert.match(
     root,
     /data-slot="page-wallpaper-blur"\s+\/\/[^\n]*\n\s+data-sidebar-frame=\{\(pinned && !mobileShell\) \|\| undefined\}/,
   );
-  // The flag mirrors AppSidebar's own condition (windowsWallpaperPage already implies the Windows titlebar).
+  // The flag mirrors AppSidebar's own condition (windowsWallpaperPage already implies the in-page titlebar,
+  // which Windows and Linux share).
   assert.match(
     readSrc("components/app-sidebar.tsx"),
-    /data-windows-glass-frame=\{\(pinned && usesWindowsTitlebar\(\)\) \|\| undefined\}/,
+    /data-windows-glass-frame=\{\(pinned && usesCustomTitlebar\) \|\| undefined\}/,
   );
 });
 

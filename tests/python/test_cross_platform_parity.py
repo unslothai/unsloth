@@ -610,9 +610,8 @@ class TestPinnedIndexClearsUvEnvParity:
             assert var in text, f"install_python_stack.py must clear {var} for pinned installs"
 
     def test_all_installers_clear_uv_torch_backend(self):
-        """uv's torch backend redirects torch resolution to its own per-backend
-        index even against an explicit pin, so every installer's pinned-install
-        scrub must clear UV_TORCH_BACKEND too."""
+        """uv's torch backend redirects torch to its own per-backend index even against an explicit
+        pin, so every pinned-install scrub must clear UV_TORCH_BACKEND."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
         assert "-u UV_TORCH_BACKEND" in sh, "install.sh pinned scrub must clear UV_TORCH_BACKEND"
         for path in (INSTALL_PS1, SETUP_PS1):
