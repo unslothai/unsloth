@@ -211,6 +211,45 @@ def test_install_is_off_off_cuda_and_under_the_umbrella_switch(monkeypatch):
     assert A.strided_attention_count(model) == 0
 
 
+@pytest.mark.parametrize(
+    "placement, env, want",
+    [
+        ("stream", None, True),
+        ("stream", "0", False),
+        ("resident", None, False),
+    ],
+)
+def test_the_streamed_tier_installs_the_int8_gemm_with_the_device(
+    monkeypatch, placement, env, want
+):
+    """The streamed tier asks the int8 GEMM for its call-time (device) mode; the resident tiers keep the resident
+    install; UNSLOTH_H3_IMAGE_INT8_GEMM_STREAMED=0 skips it."""
+    from core.inference import diffusion_int8_gemm as G
+
+    calls = []
+    monkeypatch.setattr(
+        G,
+        "install",
+        lambda t, logger = None, offload_active = False, device = None: calls.append(device) or 0,
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    if env is None:
+        monkeypatch.delenv(S.STREAMED_GEMM_ENV, raising = False)
+    else:
+        monkeypatch.setenv(S.STREAMED_GEMM_ENV, env)
+    pipe = type("P", (), {})()
+    pipe.transformer = _model()
+    plan = type("Plan", (), {"placement": placement})()
+    try:
+        S._install(pipe, plan, "cuda", None)
+    except Exception:  # noqa: BLE001 - the attention pick needs a real card; the GEMM install ran before it
+        pass
+    streamed = [d for d in calls if d is not None]
+    assert bool(streamed) == want
+    if want:
+        assert str(streamed[0]) == "cuda"
+
+
 def test_compile_is_opt_in(monkeypatch):
     monkeypatch.delenv(S.COMPILE_ENV, raising = False)
     assert not S.compile_enabled()

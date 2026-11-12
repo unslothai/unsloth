@@ -9,9 +9,11 @@ row index instead of gathered, eager roundings kept, checked per device; every t
 UNSLOTH_H3_ROW_MOD=0 turns it off),
 h3_qk_rope (bit-identical to the eager norm + rope, checked per device; on for every tier, UNSLOTH_H3_IMAGE_QK_ROPE=0
 turns it off), the _native_flash pin on sm80 / sm89.
-Tolerance-level: h3_fused_swiglu, h3_compiled (opt-in via UNSLOTH_H3_IMAGE_COMPILE=1: workspace
-unmeasured beside the 37.5 GB A100-40 dit_resident peak). The streamed tier gets attention levers only: its blocks
-move per forward, so resident-projection levers cannot engage."""
+Tolerance-level: h3_int8_gemm_streamed (the streamed tier's int8 Linears take the int8 GEMM while their weight is on
+the card; not byte-identical to the stock streamed path, the same GEMM the resident tiers run;
+UNSLOTH_H3_IMAGE_INT8_GEMM_STREAMED=0 keeps the stock path), h3_fused_swiglu, h3_compiled (opt-in via UNSLOTH_H3_IMAGE_COMPILE=1: workspace
+unmeasured beside the 37.5 GB A100-40 dit_resident peak). The streamed tier gets the attention levers and the
+streamed int8 GEMM; the resident-only ones (fused QKV, fused SwiGLU) need projections that stay on the card."""
 
 from __future__ import annotations
 
@@ -22,12 +24,23 @@ from typing import Any, Optional
 SPEED_ENV = "UNSLOTH_H3_IMAGE_SPEED"
 COMPILE_ENV = "UNSLOTH_H3_IMAGE_COMPILE"
 QK_ROPE_ENV = "UNSLOTH_H3_IMAGE_QK_ROPE"
+# "0": the streamed tier's int8 Linears keep the stock dequantize + matmul path
+STREAMED_GEMM_ENV = "UNSLOTH_H3_IMAGE_INT8_GEMM_STREAMED"
 LEVERS_ATTR = "_unsloth_h3_speed_levers"
 _RESIDENT_PLACEMENTS = ("resident", "dit_resident")
 
 
 def speed_enabled() -> bool:
     return (os.environ.get(SPEED_ENV) or "1").strip().lower() not in ("0", "off", "false", "no")
+
+
+def streamed_gemm_enabled() -> bool:
+    return (os.environ.get(STREAMED_GEMM_ENV) or "1").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def compile_enabled() -> bool:
@@ -130,6 +143,13 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
         if int8_gemm.install(transformer, logger):
             _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
             levers.append("h3_int8_gemm")
+    elif getattr(plan, "placement", None) == "stream" and streamed_gemm_enabled():
+        # The streamed blocks are on the card while they run: the swapped Linears take the fused-dequant GEMM
+        # whenever their weight is there at call time and keep the stock path otherwise.
+        from . import diffusion_int8_gemm as int8_gemm
+        if int8_gemm.install(transformer, logger, device = dev):
+            _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
+            levers.append("h3_int8_gemm_streamed")
     from .diffusion_attention import apply_attention_backend, select_attention_backend
     from .video_minimax_h3_attn import (
         h3_attention_backend,
