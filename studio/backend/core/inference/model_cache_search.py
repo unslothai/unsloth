@@ -29,8 +29,6 @@ _location_rows_memo: dict[str, tuple[float, tuple[_Row, ...]]] = {}
 # Keyed by kind too: a known cache that is also a custom folder is listed both ways (repos only, and loose files).
 _location_listings_memo: dict[tuple[str, str, str], tuple[float, "LocationListing"]] = {}
 _LOCATION_MEMO_MAX = 256
-# Entries read from one custom-folder directory, as the Model Hub's custom-folder scan (_MAX_CUSTOM_FOLDER_ENTRIES).
-_CUSTOM_FOLDER_ENTRY_LIMIT = 2000
 _T = TypeVar("_T")
 _C = TypeVar("_C")
 
@@ -78,9 +76,7 @@ def _memo_put(memo: dict, key, value) -> None:
         memo[key] = (time.monotonic(), value)
 
 
-def _list_entries(
-    directory: Path, limit: Optional[int] = _CUSTOM_FOLDER_ENTRY_LIMIT
-) -> list[os.DirEntry]:
+def _list_entries(directory: Path, limit: Optional[int]) -> list[os.DirEntry]:
     entries: list[os.DirEntry] = []
     try:
         with os.scandir(directory) as iterator:
@@ -101,14 +97,16 @@ def _entry_is(entry: os.DirEntry, kind: str) -> bool:
 
 
 def _build_custom_folder_listing(path: Path, recursive: bool) -> LocationListing:
+    """Read with the Model Hub's own folder-scan rules (its entry cap, nested folders and ``hub/`` cache rule), so the
+    places a model is found here stay the places the Model Hub lists it from."""
+    from hub.services.models.local_inventory import _MAX_CUSTOM_FOLDER_ENTRIES, nested_scan_roots
+    from hub.utils.inventory_scan import scan_folder_hf_caches
+
     hub_caches: dict[str, list[Path]] = {}
     file_dirs: dict[str, list[Path]] = {}
     if not path.is_dir():
         return LocationListing({}, {})
-    walked = [path]
-    if recursive:
-        from hub.services.models.local_inventory import nested_scan_roots
-        walked.extend(nested_scan_roots(path))
+    walked = [path, *(nested_scan_roots(path) if recursive else ())]
     walked_set = set(walked)
 
     def note_files(directory: Path, entries: list[os.DirEntry]) -> None:
@@ -122,9 +120,16 @@ def _build_custom_folder_listing(path: Path, recursive: bool) -> LocationListing
                 hub_caches.setdefault(entry.name.lower(), []).append(directory)
 
     for directory in walked:
-        entries = _list_entries(directory)
-        note_caches(directory, entries)
+        entries = _list_entries(directory, _MAX_CUSTOM_FOLDER_ENTRIES)
         note_files(directory, entries)
+        for hub_cache in scan_folder_hf_caches(directory):
+            note_caches(
+                hub_cache,
+                entries
+                if hub_cache == directory
+                else _list_entries(hub_cache, _MAX_CUSTOM_FOLDER_ENTRIES),
+            )
+        # Loose files one level down: the Model Hub lists a sub-folder holding a GGUF as a model.
         for entry in entries:
             name = entry.name
             if (
@@ -134,12 +139,8 @@ def _build_custom_folder_listing(path: Path, recursive: bool) -> LocationListing
             ):
                 continue
             child = Path(entry.path)
-            child_entries = _list_entries(child)
-            # A registered HF_HOME keeps its cache one level down, in hub/ (scan_folder_hf_caches).
-            if name == "hub":
-                note_caches(child, child_entries)
             if child not in walked_set:
-                note_files(child, child_entries)
+                note_files(child, _list_entries(child, _MAX_CUSTOM_FOLDER_ENTRIES))
     return LocationListing(
         {name: tuple(dirs) for name, dirs in hub_caches.items()},
         {name: tuple(dirs) for name, dirs in file_dirs.items()},
@@ -150,7 +151,7 @@ def _build_cache_listing(root: Path) -> LocationListing:
     # Every repo: a cache with more than the custom-folder entry cap must not lose the one asked for.
     repos = [
         entry.name.lower()
-        for entry in _list_entries(root, limit = None)
+        for entry in _list_entries(root, None)
         if entry.name.lower().startswith("models--") and _entry_is(entry, "dir")
     ]
     return LocationListing({name: (root,) for name in repos}, {})
