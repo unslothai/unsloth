@@ -732,3 +732,23 @@ test("a finished web_search_call imports as an answered call", () => {
   assert.equal(call?.result, "completed");
   assert.deepEqual(conversation.messages.at(-1)?.content, [{ type: "text", text: "Here is the news." }]);
 });
+
+test("a builtin call keeps its explicit output item over a status placeholder", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [
+        { role: "user", content: "List files" },
+        { type: "shell_call", call_id: "s1", status: "completed", action: { commands: ["ls"] } },
+        { type: "shell_call_output", call_id: "s1", output: "a.txt" },
+      ],
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "One file." }] }],
+    }),
+    "response.json",
+  );
+
+  const call = conversation.messages
+    .flatMap((m) => m.content as ReadonlyArray<{ type?: string; result?: unknown }>)
+    .find((p) => p.type === "tool-call");
+  assert.equal(call?.result, "a.txt");
+});

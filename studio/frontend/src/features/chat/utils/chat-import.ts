@@ -400,65 +400,71 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
   if (instructions) turns.push({ role: "system", content: instructions });
   const input = text(obj.input);
   if (input) turns.push({ role: "user", content: input });
-  for (const items of [obj.input, obj.output]) {
-    if (!Array.isArray(items)) continue;
-    for (const item of items) {
-      if (typeof item !== "object" || item === null) continue;
-      const entry = item as Record<string, unknown>;
-      const type = typeof entry.type === "string" ? entry.type : "";
-      if (entry.role === "assistant") {
-        assistantTurn().content.push(
-          ...(Array.isArray(entry.content)
-            ? entry.content
-            : text(entry.content)
-              ? [{ type: "text", text: entry.content }]
-              : []),
-        );
-      } else if (typeof entry.role === "string") {
-        turns.push(entry);
-      } else if (type === "image_generation_call") {
-        const encoded = text(entry.result) ?? text(entry.b64_json);
-        if (encoded) {
-          assistantTurn().content.push({
-            type: "image_url",
-            image_url: /^(?:https?:|data:)/i.test(encoded)
-              ? encoded
-              : `data:image/${text(entry.output_format) ?? "png"};base64,${encoded}`,
-          });
-        }
-      } else if (type.endsWith("_call")) {
-        const name = text(entry.name) ?? type.replace(/_call$/, "");
-        const id = text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID();
-        assistantTurn().tool_calls.push({
-          id,
-          type: "function",
-          function: {
-            // namespace__name and {input} wrapping match the backend.
-            name: text(entry.namespace) ? `${entry.namespace}__${name}` : name,
-            arguments:
-              typeof entry.arguments === "string"
-                ? entry.arguments
-                : JSON.stringify(
-                    entry.input !== undefined
-                      ? { input: entry.input }
-                      : (entry.arguments ?? entry.action ?? {}),
-                  ),
-          },
-        });
-        // Provider-run builtin calls (web_search_call, shell_call, ...) already finished:
-        // answer them with their bundled output or status so none replays as unanswered.
-        const builtin = type !== "function_call" && type !== "custom_tool_call";
-        const done = entry.output ?? (builtin ? (text(entry.status) ?? "completed") : undefined);
-        if (done != null) {
-          turns.push({ role: "tool", tool_call_id: id, content: toolOutputText(done) });
-        }
-      } else if (type.endsWith("_call_output") && typeof entry.call_id === "string") {
-        turns.push({
-          role: "tool",
-          tool_call_id: entry.call_id,
-          content: toolOutputText(entry.output),
+  const items = [obj.input, obj.output].flatMap((list) =>
+    Array.isArray(list)
+      ? list.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+      : [],
+  );
+  const answered = new Set(
+    items.flatMap((item) =>
+      typeof item.type === "string" && item.type.endsWith("_call_output") ? [item.call_id] : [],
+    ),
+  );
+  for (const entry of items) {
+    const type = typeof entry.type === "string" ? entry.type : "";
+    if (entry.role === "assistant") {
+      assistantTurn().content.push(
+        ...(Array.isArray(entry.content)
+          ? entry.content
+          : text(entry.content)
+            ? [{ type: "text", text: entry.content }]
+            : []),
+      );
+    } else if (typeof entry.role === "string") {
+      turns.push(entry);
+    } else if (type === "image_generation_call") {
+      const encoded = text(entry.result) ?? text(entry.b64_json);
+      if (encoded) {
+        assistantTurn().content.push({
+          type: "image_url",
+          image_url: /^(?:https?:|data:)/i.test(encoded)
+            ? encoded
+            : `data:image/${text(entry.output_format) ?? "png"};base64,${encoded}`,
         });
       }
+    } else if (type.endsWith("_call")) {
+      const name = text(entry.name) ?? type.replace(/_call$/, "");
+      const id = text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID();
+      assistantTurn().tool_calls.push({
+        id,
+        type: "function",
+        function: {
+          // namespace__name and {input} wrapping match the backend.
+          name: text(entry.namespace) ? `${entry.namespace}__${name}` : name,
+          arguments:
+            typeof entry.arguments === "string"
+              ? entry.arguments
+              : JSON.stringify(
+                  entry.input !== undefined
+                    ? { input: entry.input }
+                    : (entry.arguments ?? entry.action ?? {}),
+                ),
+        },
+      });
+      // Provider-run builtin calls (web_search_call, shell_call, ...) already finished:
+      // answer them with their bundled output or status so none replays as unanswered.
+      const builtin =
+        type !== "function_call" && type !== "custom_tool_call" && !answered.has(id);
+      const done = entry.output ?? (builtin ? (text(entry.status) ?? "completed") : undefined);
+      if (done != null) {
+        turns.push({ role: "tool", tool_call_id: id, content: toolOutputText(done) });
+      }
+    } else if (type.endsWith("_call_output") && typeof entry.call_id === "string") {
+      turns.push({
+        role: "tool",
+        tool_call_id: entry.call_id,
+        content: toolOutputText(entry.output),
+      });
     }
   }
   const output = text(obj.output);
