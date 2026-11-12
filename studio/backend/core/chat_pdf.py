@@ -30,7 +30,7 @@ p { margin: 0 0 6pt 0; }
 pre { background-color: #f6f8fa; padding: 6pt; font-family: monospace; font-size: 8.5pt; white-space: pre-wrap; }
 code { font-family: monospace; font-size: 9pt; }
 blockquote { margin: 0 0 6pt 0; padding: 0 0 0 10pt; border-left: 2pt solid #d0d7de; color: #57606a; }
-th, td { border: 1px solid #d0d7de; padding: 2pt 5pt; }
+th, td { border: 1px solid #d0d7de; padding: 2pt 5pt; overflow-wrap: normal; }
 details { color: #57606a; margin: 0 0 6pt 0; }
 summary { font-style: italic; }
 a { color: #0969da; }
@@ -49,25 +49,12 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
     heading = html.escape(" ".join(title.split()) or "Conversation")
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     document = f"<h1>{heading}</h1><p class='meta'>Exported from Unsloth on {stamp}</p>{body_html}"
-    story = pymupdf.Story(html = document, user_css = _PDF_CSS)
-    buffer = io.BytesIO()
-    writer = pymupdf.DocumentWriter(buffer)
-    mediabox = pymupdf.paper_rect("a4")
-    where = mediabox + (_PAGE_MARGIN_PT, _PAGE_MARGIN_PT, -_PAGE_MARGIN_PT, -_PAGE_MARGIN_PT)
-    pages = 0
-    more = 1
-    while more:
-        if pages >= MAX_EXPORT_PAGES:
-            writer.close()
-            raise ChatPdfTooLong(f"export exceeds {MAX_EXPORT_PAGES} pages")
-        device = writer.begin_page(mediabox)
-        more, _ = story.place(where)
-        story.draw(device)
-        writer.end_page()
-        pages += 1
-    writer.close()
+    pdf_bytes, widest = _write_pages(document, 1)
+    if widest > 1.001:
+        # MuPDF never shrinks a table below its natural width, so shrink the page content to fit it instead.
+        pdf_bytes, _ = _write_pages(document, 1 / widest)
 
-    pdf = pymupdf.open("pdf", buffer.getvalue())
+    pdf = pymupdf.open("pdf", pdf_bytes)
     try:
         pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth"})
         # The CJK fallback font alone is ~2 MB; keep only the glyphs used.
@@ -75,6 +62,33 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
         return pdf.tobytes(garbage = 3, deflate = True)
     finally:
         pdf.close()
+
+
+def _write_pages(document: str, scale: float) -> tuple[bytes, float]:
+    import pymupdf
+
+    story = pymupdf.Story(html = document, user_css = _PDF_CSS)
+    buffer = io.BytesIO()
+    writer = pymupdf.DocumentWriter(buffer)
+    mediabox = pymupdf.paper_rect("a4")
+    width = (mediabox.width - 2 * _PAGE_MARGIN_PT) / scale
+    where = pymupdf.Rect(0, 0, width, (mediabox.height - 2 * _PAGE_MARGIN_PT) / scale)
+    matrix = pymupdf.Matrix(scale, 0, 0, scale, _PAGE_MARGIN_PT, _PAGE_MARGIN_PT)
+    widest = width
+    pages = 0
+    more = 1
+    while more:
+        if pages >= MAX_EXPORT_PAGES:
+            writer.close()
+            raise ChatPdfTooLong(f"export exceeds {MAX_EXPORT_PAGES} pages")
+        device = writer.begin_page(mediabox)
+        more, filled = story.place(where)
+        widest = max(widest, filled[2])
+        story.draw(device, matrix)
+        writer.end_page()
+        pages += 1
+    writer.close()
+    return buffer.getvalue(), widest / width
 
 
 def main() -> int:

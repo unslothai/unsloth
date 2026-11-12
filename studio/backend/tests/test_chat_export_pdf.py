@@ -67,6 +67,52 @@ def test_text_without_break_points_wraps_inside_the_page(run, template):
     assert "TAILMARK" in _text(response.content).replace("\n", "")
 
 
+@pytest.mark.parametrize(
+    "headers, cell",
+    [
+        (
+            "Category January February March April May June July August September October November December",
+            "$1,234.56",
+        ),
+        (
+            "order_id customer_email shipping_address created_at updated_at total_amount status",
+            "someone.with.a.long.name@example.com",
+        ),
+        ("Item Q1 Q2 Total", "$1,234.56"),
+    ],
+    ids = ["months", "wide-cells", "narrow"],
+)
+def test_tables_keep_every_column_and_whole_cells(headers, cell):
+    headers = headers.split()
+    row = "".join(f"<td>{cell}</td>" for _ in headers)
+    body = (
+        "<table><tr>"
+        + "".join(f"<th>{header}</th>" for header in headers)
+        + "</tr>"
+        + f"<tr>{row}</tr>" * 3
+        + "</table>"
+    )
+    response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
+    assert response.status_code == 200
+    lines = _text(response.content).splitlines()
+    assert set(headers + [cell]) <= set(lines)
+
+
+def test_narrow_chats_keep_their_font_size():
+    response = _client().post(
+        "/api/chat-export/pdf", json = {"title": "x", "html": "<p>plain words</p>"}
+    )
+    with pymupdf.open("pdf", response.content) as document:
+        sizes = {
+            span["size"]
+            for block in document[0].get_text("dict")["blocks"]
+            for line in block["lines"]
+            for span in line["spans"]
+            if "plain words" in span["text"]
+        }
+    assert [round(size, 1) for size in sizes] == [10.5]
+
+
 def test_only_data_images_embed(tmp_path):
     png = io.BytesIO()
     pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 4, 4), False)
