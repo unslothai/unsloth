@@ -272,11 +272,11 @@ function markdownToRecords(
     if (!content.trim()) continue;
     const normalizedRole = role.trim().toLowerCase();
     const validRole =
-      normalizedRole === "user" ||
-      normalizedRole === "assistant" ||
-      normalizedRole === "system"
-        ? normalizedRole
-        : normalizedRole.length > 0
+      normalizedRole === "developer"
+        ? "system"
+        : normalizedRole === "user" ||
+            normalizedRole === "assistant" ||
+            normalizedRole === "system"
           ? normalizedRole
           : "user";
     const id = crypto.randomUUID();
