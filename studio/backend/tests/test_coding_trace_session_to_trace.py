@@ -356,10 +356,26 @@ def test_refused_and_abandoned_turns_are_pruned(custom, content, before):
 
 def test_abandoned_turn_warns_for_each_dropped_call():
     # Cursor stores calls with no results; a row of only such calls is pruned like the UI does.
-    trace = _turn({}, [_call("k", result = None), _call("s", "studio_load_skill", None)])
+    trace = _turn({}, [_call("k", result = None), _call(None, "studio_load_skill", None)])
     assert _shape(trace) == [("user", "again"), ("assistant", "fine")]
     assert _codes(trace) == ["unanswered_tool_call_dropped", "skill_preload_not_stored"]
-    assert trace.warnings[0].message_id == "a"
+    assert [w.message_id for w in trace.warnings[:2]] == ["a", "a"]
+    # A refused turn is dropped whole, with no warning for its calls.
+    assert _codes(_turn({"anthropicRefusal": True}, [_call("k", result = None)])) == []
+
+
+def test_pruned_turn_warnings_keep_row_order():
+    rows = [
+        _row("u", "user", _text("go"), None, 1),
+        _row("a", "assistant", [*_text("hi"), _call(None, result = None)], "u", 2),
+        _row("u2", "user", _text("again"), "a", 3),
+        _row("b", "assistant", [_call(None, result = None)], "u2", 4),
+        _row("u3", "user", _text("last"), "b", 5),
+        _row("c", "assistant", _text("fine"), "u3", 6),
+    ]
+    trace = session_to_trace({"id": "t"}, rows)
+    notes = [w.message for w in trace.warnings if w.code == "unanswered_tool_call_dropped"]
+    assert ["'a-1'" in notes[0], "'b-0'" in notes[1]] == [True, True]
 
 
 def test_stopped_turn_replays_reasoning_beside_text_or_calls():

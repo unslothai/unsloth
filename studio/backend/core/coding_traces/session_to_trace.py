@@ -461,7 +461,9 @@ def _prune(chain: list[dict], warnings: list[TraceWarning]) -> list[dict]:
             # An abandoned turn has no replayed call, so _skipped_call warns for each one.
             for position, part in enumerate([] if refused[index] else _model_parts(message)):
                 if isinstance(part, dict) and part.get("type") == "tool-call":
-                    warnings.append(_skipped_call(part, message["id"], position))
+                    skipped = _skipped_call(part, message["id"], position)
+                    if skipped:
+                        warnings.append(skipped)
             if (refused[index] or index < last) and kept and kept[-1].get("role") == "user":
                 kept.pop()
             continue
@@ -617,7 +619,11 @@ def session_to_trace(
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no messages")
     warnings: list[TraceWarning] = []
     chain = _branch(messages, head_id, warnings)
-    trace_messages = _convert(_prune(chain, warnings), warnings)
+    row_warnings: list[TraceWarning] = []
+    trace_messages = _convert(_prune(chain, row_warnings), row_warnings)
+    # _prune warns for the turns it drops before _convert runs; a stable sort restores row order.
+    order = {m["id"]: i for i, m in enumerate(chain)}
+    warnings += sorted(row_warnings, key = lambda w: order.get(w.message_id, len(chain)))
     if not any(m.role != "user" or m.text for m in trace_messages):
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no usable content on this branch")
     if not any(m.role == "user" for m in trace_messages):
