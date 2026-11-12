@@ -58,8 +58,11 @@ GRAPH_REPLICAS = (1, 2, 4)
 GRAPH_REPLICAS_ROCM = (1,)
 # A graph arm must beat eager by this fraction; between graph arms within it, fewer replicas win.
 GRAPH_MARGIN = 0.02
-# Timed decoder calls per race arm; eager also gets one untimed warm-up call first.
+# Timed decoder calls per race arm (at least one per replica); eager also gets one untimed warm-up call first.
 GRAPH_RACE_CALLS = 3
+# Kept graph pools (one per replica, reserved between renders): at most this many bytes or this share of the card.
+GRAPH_POOL_MAX_BYTES = 1 << 30
+GRAPH_POOL_MAX_FRACTION = 0.04
 
 _OFF = ("0", "off", "false", "no")
 _ON = ("1", "on", "true", "yes")
@@ -290,7 +293,7 @@ def _is_rocm() -> bool:
 
 
 class _Replica:
-    __slots__ = ("graph", "stream", "static_in", "static_out", "done", "consumed")
+    __slots__ = ("graph", "stream", "static_in", "static_out", "done", "consumed", "bytes")
 
 
 class TileGraphs:
@@ -302,8 +305,11 @@ class TileGraphs:
         self.fn, self.shape, self.dtype, self.device = fn, tuple(shape), dtype, device
         self.replicas: list = []
         self.failed: Optional[str] = None
-        self.pool_bytes = 0
         self.replays = 0
+
+    @property
+    def pool_bytes(self) -> int:
+        return sum(r.bytes for r in self.replicas)
 
     def grow(
         self,
@@ -352,7 +358,7 @@ class TileGraphs:
                         graph = None
                         raise
                 main.wait_stream(stream)
-                self.pool_bytes += max(0, torch.cuda.memory_reserved(self.device) - before)
+                rep.bytes = max(0, torch.cuda.memory_reserved(self.device) - before)
                 rep.graph, rep.stream, rep.static_in, rep.static_out = (
                     graph,
                     stream,
@@ -406,7 +412,9 @@ class TileGraphs:
 
 
 class _Race:
-    """In-place race of eager vs graph arms over real decoder calls, carried across decodes until decided."""
+    """In-place race of eager vs graph arms over real decoder calls, carried across decodes until decided. An arm is
+    timed per run of consecutive calls (replicas overlap, so one call's own interval undercounts them): run time over
+    run calls."""
 
     def __init__(
         self,
@@ -415,13 +423,27 @@ class _Race:
     ) -> None:
         self.arms = (0, *arms)
         self.forced = forced
-        self.times: dict = {a: [] for a in self.arms}
+        self.calls: dict = {a: 0 for a in self.arms}
+        self.ms: dict = {a: 0.0 for a in self.arms}
         self.decided: Optional[int] = None
         self.graphs: Optional[TileGraphs] = None
         self.warm = False
         self.reference: Optional[tuple] = None
         self.pending: list = []
         self.prints: Optional[tuple] = None
+        self.medians: dict = {}
+
+    @staticmethod
+    def needed(arm: int) -> int:
+        return max(GRAPH_RACE_CALLS, arm)
+
+    def counted(self, arm: int) -> int:
+        return self.calls[arm] + sum(1 for a, _s, _e in self.pending if a == arm)
+
+    def skip(self, arm: int) -> None:
+        """An arm that cannot run (its pool would pass the cap): never picked."""
+        self.calls[arm] = self.needed(arm)
+        self.ms[arm] = float("inf")
 
     def current(self) -> int:
         if self.decided is not None:
@@ -430,32 +452,51 @@ class _Race:
             # forced replicas: one eager call first gives the exactness reference, then the graphs
             return self.arms[-1] if self.reference is not None else 0
         for a in self.arms:
-            if len(self.times[a]) < GRAPH_RACE_CALLS:
+            if self.counted(a) < self.needed(a):
                 return a
         return 0
 
     def settle(self) -> None:
         """Read the timed calls (one sync, at the end of a decode) and decide when every arm has its calls."""
-        for arm, start, end in self.pending:
+        k = 0
+        while k < len(self.pending):
+            arm, start, _ = self.pending[k]
+            j = k
+            while j + 1 < len(self.pending) and self.pending[j + 1][0] == arm:
+                j += 1
+            end = self.pending[j][2]
             end.synchronize()
-            self.times[arm].append(start.elapsed_time(end))
+            self.ms[arm] += start.elapsed_time(end)
+            self.calls[arm] += j - k + 1
+            k = j + 1
         self.pending = []
         if self.decided is not None:
             return
         if self.graphs is not None and self.graphs.failed is not None:
             self.decided = 0
-        elif all(len(self.times[a]) >= GRAPH_RACE_CALLS for a in self.arms):
-            med = {a: sorted(v)[len(v) // 2] for a, v in self.times.items()}
+        elif all(self.calls[a] >= self.needed(a) for a in self.arms):
+            per = {a: self.ms[a] / max(1, self.calls[a]) for a in self.arms}
             graph_arms = [a for a in self.arms if a]
-            best = min(med[a] for a in graph_arms)
-            pick = min(a for a in graph_arms if med[a] <= best * (1 + GRAPH_MARGIN))
-            self.decided = pick if med[pick] < med[0] * (1 - GRAPH_MARGIN) else 0
-            self.medians = med
+            best = min(per[a] for a in graph_arms)
+            pick = min(a for a in graph_arms if per[a] <= best * (1 + GRAPH_MARGIN))
+            self.decided = pick if per[pick] < per[0] * (1 - GRAPH_MARGIN) else 0
+            self.medians = per
         if self.decided is not None and self.graphs is not None:
             if self.decided == 0:
                 self.graphs.drop()
             else:
                 self.graphs.keep(self.decided)
+
+
+def graph_pool_cap(device: Any) -> int:
+    """Bytes the kept tile graphs may hold: their private pools stay reserved between renders."""
+    import torch
+
+    try:
+        total = torch.cuda.get_device_properties(device).total_memory
+    except Exception:  # noqa: BLE001
+        return GRAPH_POOL_MAX_BYTES
+    return int(min(GRAPH_POOL_MAX_BYTES, total * GRAPH_POOL_MAX_FRACTION))
 
 
 def _weights_print(vae: Any) -> tuple:
@@ -544,7 +585,17 @@ def canvas_decode(
                 if race.graphs is None:
                     shape = (per * len(group), *inputs[0].shape[1:])
                     race.graphs = TileGraphs(fn, shape, inputs[0].dtype, z.device)
+                have = len(race.graphs.replicas)
+                if (
+                    have
+                    and not race.forced
+                    and race.graphs.pool_bytes / have * arm > graph_pool_cap(z.device)
+                ):
+                    race.skip(arm)
+                    arm, timed = 0, None
+            if arm:
                 if len(race.graphs.replicas) < arm:
+                    have = len(race.graphs.replicas)
                     sample, reference = race.reference or (None, None)
                     if sample is None:
                         sample = torch.cat(inputs) if len(inputs) > 1 else inputs[0]
@@ -555,6 +606,10 @@ def canvas_decode(
                         arm, timed = 0, None
                     elif race.forced:
                         race.decided = arm
+                    elif race.graphs.pool_bytes > graph_pool_cap(z.device):
+                        race.skip(arm)
+                        race.graphs.keep(have)
+                        arm, timed = 0, None
                     elif timed is not None:
                         # Capture took host time: restart the clock.
                         timed[0].record()

@@ -295,19 +295,61 @@ def test_bad_output_probe():
     assert not C._bad_output(torch.tensor([0.0, 0.5]))
 
 
+def _timed(race, per_call):
+    for arm, ms in per_call.items():
+        race.calls[arm] = race.needed(arm)
+        race.ms[arm] = ms * race.needed(arm)
+
+
 def test_race_keeps_eager_on_a_tie_and_picks_fewest_replicas():
     r = C._Race((1, 2, 4))
-    r.times = {0: [10.0] * 3, 1: [9.95] * 3, 2: [10.1] * 3, 4: [9.9] * 3}
+    _timed(r, {0: 10.0, 1: 9.95, 2: 10.1, 4: 9.9})
     r.settle()
     assert r.decided == 0, "inside the margin: the incumbent stays"
     r = C._Race((1, 2, 4))
-    r.times = {0: [10.0] * 3, 1: [8.0] * 3, 2: [6.05] * 3, 4: [6.0] * 3}
+    _timed(r, {0: 10.0, 1: 8.0, 2: 6.05, 4: 6.0})
     r.settle()
     assert r.decided == 2, "4 replicas within 2% of 2: the fewer wins"
     r = C._Race((1,))
-    r.times = {0: [10.0] * 3, 1: [5.0] * 2}
+    _timed(r, {0: 10.0})
+    r.calls[1] = 2
     r.settle()
     assert r.decided is None and r.current() == 1
+    r = C._Race((1, 2, 4))
+    _timed(r, {0: 10.0, 1: 8.0})
+    r.skip(2)
+    r.skip(4)
+    r.settle()
+    assert r.decided == 1, "skipped arms (pool over the cap) are never picked"
+
+
+class _Ev:
+    def __init__(self, t):
+        self.t = t
+
+    def synchronize(self):
+        pass
+
+    def elapsed_time(self, other):
+        return other.t - self.t
+
+
+def test_race_times_runs_not_single_calls():
+    """Replicas overlap: a run of N calls is timed first start to last end, so per-call intervals that undercount
+    the overlapped replays cannot make an arm look faster than it is."""
+    r = C._Race((4,))
+    # eager: 3 calls of 10 ms back to back
+    r.pending += [(0, _Ev(0), _Ev(10)), (0, _Ev(10), _Ev(20)), (0, _Ev(20), _Ev(30))]
+    # 4 replicas: each call's own interval is 1 ms (its replay ran ahead), the run took 36 ms
+    r.pending += [
+        (4, _Ev(30), _Ev(39)),
+        (4, _Ev(48), _Ev(49)),
+        (4, _Ev(57), _Ev(58)),
+        (4, _Ev(65), _Ev(66)),
+    ]
+    r.settle()
+    assert r.medians[0] == 10.0 and r.medians[4] == 9.0
+    assert r.decided == 4
 
 
 def test_graph_arms_off_cpu_and_by_switch(monkeypatch):
