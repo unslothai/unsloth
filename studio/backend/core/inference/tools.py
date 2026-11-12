@@ -14921,6 +14921,8 @@ _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 _MAX_FETCH_BYTES = 512 * 1024
 # news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
 _MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
+# docs sites put over 1 MB of menus before the page text, so a window without one of these reads on.
+_HTML_CONTENT_START_RE = re.compile(rb"<(?:main|article|h1)[\s>]", re.IGNORECASE)
 # keep % safe to avoid encoding existing escapes as %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
@@ -15908,11 +15910,17 @@ def _read_capped_body(
         read = lambda size: decoder.read(read_wire, size)
     chunks = []
     remaining = max_bytes
+    got = 0
     body_at = None
+    window_end = None
+    fallback_end = None
     body_locator = _HTMLBodyLocator(charset) if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
+            if fallback_end is not None:
+                window_end = fallback_end
+                break
             try:
                 resp.close()
             except Exception:
@@ -15925,8 +15933,11 @@ def _read_capped_body(
                 pass
         try:
             chunk = read(min(65536, remaining))
-        except (ValueError, zlib.error) as exc:
-            if decoder is None:
+        except Exception as exc:
+            if fallback_end is not None:
+                window_end = fallback_end
+                break
+            if decoder is None or not isinstance(exc, (ValueError, zlib.error)):
                 raise
             if decoder.wire > decoder.wire_limit:
                 return f"(compressed content exceeds the {decoder.wire_limit} byte limit)", b""
@@ -15938,8 +15949,8 @@ def _read_capped_body(
             break
         chunks.append(chunk)
         remaining -= len(chunk)
+        got += len(chunk)
         if body_locator is not None and body_at is None:
-            got = max_bytes - remaining
             try:
                 body_locator.feed_bytes(chunk)
             except Exception:
@@ -15947,14 +15958,29 @@ def _read_capped_body(
             if body_locator is not None and body_locator.body_at is not None:
                 body_at = body_locator.body_at
                 remaining = max(0, min(remaining, body_at + body_window - got))
-    budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+        elif window_end is not None and _HTML_CONTENT_START_RE.search(chunks[-2][-8:] + chunk):
+            window_end = None
+            remaining = min(remaining, body_window)
+        if (
+            not remaining
+            and got < max_bytes
+            and body_at is not None
+            and body_locator._codec == "latin-1"
+            and not _has_pdf_magic(so_far := b"".join(chunks))
+            and not _HTML_CONTENT_START_RE.search(so_far, body_at)
+        ):
+            window_end = fallback_end = got
+            remaining = max_bytes - got
+    budget_error = _fetch_budget_exceeded(
+        None if fallback_end is not None else deadline, cancel_event
+    )
     if budget_error is not None:
         try:
             resp.close()
         except Exception:
             pass
         return budget_error, b""
-    return None, b"".join(chunks)
+    return None, b"".join(chunks)[:window_end]
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
