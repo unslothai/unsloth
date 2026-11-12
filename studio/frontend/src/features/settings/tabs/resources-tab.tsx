@@ -1018,12 +1018,11 @@ export function ResourcesTab() {
               {separateInferenceGpu.available &&
                 inferenceDisplay.sharedDevices.length > 0 && (
                   <span className="block normal-case">
-                    {t("settings.resources.gpu.sharedEstimatedAvailable", {
-                      value:
-                        inferenceDisplay.sharedAvailableGb === null
-                          ? unknownLabel
-                          : formatGiB(inferenceDisplay.sharedAvailableGb),
-                    })}
+                    {inferenceDisplay.sharedAvailableGb === null
+                      ? t("settings.resources.gpu.sharedWithSystemRam")
+                      : t("settings.resources.gpu.sharedEstimatedAvailable", {
+                          value: formatGiB(inferenceDisplay.sharedAvailableGb),
+                        })}
                   </span>
                 )}
             </span>
