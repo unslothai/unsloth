@@ -237,8 +237,8 @@ def _reachable_intel_arc_render_node() -> bool:
 
 def _vulkan_gpu_for_cpu_torch() -> bool:
     """True when torch is CPU-only but the host has a GPU the Vulkan sd.cpp build can render on:
-    an AMD card, an Intel Arc, or another Windows Intel GPU with UNSLOTH_FORCE_VULKAN. Never beside NVIDIA,
-    which Vulkan could enumerate first, nor under a mask Vulkan does not read (#13666)."""
+    an AMD card, an Intel Arc, or any Intel GPU once the llama.cpp backend is set to Vulkan. Never
+    beside NVIDIA, which Vulkan could enumerate first, nor under a mask Vulkan does not read (#13666)."""
     if not sd_cpp_vulkan_fallback_enabled():
         return False
     if (sys.platform, platform.machine().lower()) not in _VULKAN_SD_CPP_PLATFORMS:
@@ -255,8 +255,14 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     if any(d.get("vendor") == "nvidia" for d in devices) or _nvidia_adapter_present():
         return False
 
-    allow_intel_igpu = sys.platform == "win32" and (
-        os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in _ENABLE_TOKENS
+    from utils.prebuilt.llama_backend import environment_backend_override
+
+    # A non-Arc iGPU can render slower than the CPU build, so only an explicit Vulkan request takes it.
+    vulkan_requested = (
+        environment_backend_override(
+            os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"), os.environ.get("UNSLOTH_FORCE_VULKAN")
+        )
+        == "vulkan"
     )
 
     def _renders(device: dict) -> bool:
@@ -264,8 +270,7 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
             return True
         if device.get("vendor") != "intel":
             return False
-        # Non-Arc Intel GPUs stay opt-in on Windows: a UHD iGPU can be slower than CPU.
-        if allow_intel_igpu:
+        if vulkan_requested:
             return True
         # Linux carries the PCI class, the Windows registry only the name.
         if "xpu_class" in device:

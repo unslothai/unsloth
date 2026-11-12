@@ -29,6 +29,7 @@ _ENVS = (
     "UNSLOTH_DIFFUSION_SD_CPP",
     "UNSLOTH_DIFFUSION_SD_CPP_DEVICE",
     "UNSLOTH_FORCE_VULKAN",
+    "UNSLOTH_LLAMA_CPP_BACKEND",
     "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK",
     "ROCR_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -108,17 +109,26 @@ def test_windows_intel_is_read_by_name(monkeypatch, device, expected):
 
 
 @pytest.mark.parametrize(
+    "system,machine,device", [("win32", "AMD64", _IRIS_WINDOWS), ("linux", "x86_64", _UHD_LINUX)]
+)
+@pytest.mark.parametrize(
     "env,expected",
     [
-        ({}, "vulkan"),
-        ({"ZE_AFFINITY_MASK": "0"}, "auto"),
-        ({"UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK": "0"}, "auto"),
+        ({"UNSLOTH_FORCE_VULKAN": "1"}, "vulkan"),
+        ({"UNSLOTH_LLAMA_CPP_BACKEND": "vulkan"}, "vulkan"),
+        # The public selector outranks the legacy flag, auto included.
+        ({"UNSLOTH_LLAMA_CPP_BACKEND": "cpu", "UNSLOTH_FORCE_VULKAN": "1"}, "auto"),
+        ({"UNSLOTH_LLAMA_CPP_BACKEND": "auto", "UNSLOTH_FORCE_VULKAN": "1"}, "auto"),
+        ({"UNSLOTH_FORCE_VULKAN": "0"}, "auto"),
+        ({"UNSLOTH_FORCE_VULKAN": "1", "ZE_AFFINITY_MASK": "0"}, "auto"),
+        ({"UNSLOTH_FORCE_VULKAN": "1", "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK": "0"}, "auto"),
     ],
 )
-def test_windows_iris_xe_force_vulkan(monkeypatch, env, expected):
-    _platform(monkeypatch, "win32", "AMD64")
-    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_IRIS_WINDOWS))
-    monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
+def test_vulkan_request_opts_in_a_non_arc_intel_gpu(
+    monkeypatch, system, machine, device, env, expected
+):
+    _platform(monkeypatch, system, machine)
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(device))
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     assert r.image_install_accelerator("cpu") == expected
