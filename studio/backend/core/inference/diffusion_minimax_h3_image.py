@@ -106,6 +106,16 @@ PDD_HEADS_FILE = "pdd_fused_heads.safetensors"
 PDD_CONFIG_FILE = "pdd_config.json"
 DIFFUSERS_TRANSFORMER_SUBFOLDER = "transformer_diffusers"
 DIFFUSERS_VAE_SUBFOLDER = "vae_diffusers"
+# Never the *_diffusers/ copy or the bundled text encoder.
+H3_IMAGE_BASE_PATTERNS = (
+    "model_index.json",
+    PDD_CONFIG_FILE,
+    "transformer/config.json",
+    "vae/*",
+    "tokenizer/*",
+    "processor/*",
+)
+H3_IMAGE_DENSE_DIT_PATTERNS = (PDD_HEADS_FILE, "transformer/*")
 
 # "0" keeps the dense AdaLN projections (diagnostic: the table is the default and exact to the dense math).
 ADALN_TABLE_ENV = "UNSLOTH_H3_IMAGE_ADALN_TABLE"
@@ -1690,6 +1700,13 @@ def _hub_files(
     return Path(root)
 
 
+def _native_layout(root: Path, native: str, converted: str) -> bool:
+    """True to read ``root/native``: whenever it is there, else only when no converted copy is."""
+    return (root / native / "config.json").is_file() or not (
+        root / converted / "config.json"
+    ).is_file()
+
+
 def _read_json(path: Path) -> dict:
     with open(path, "r", encoding = "utf-8") as f:
         return json.load(f)
@@ -1856,9 +1873,13 @@ def resolve_dit_scheme(
     vram_gb: Optional[float],
     width: int = 2048,
     height: int = 2048,
+    host_gb: Optional[float] = None,
+    te_gb: Optional[float] = None,
+    inflight: int = 1,
 ) -> tuple[Optional[str], str]:
     """(scheme or None for bf16, reason). Auto: bf16 when the table-form bf16 DiT fits the card beside its working
-    set, else int8. fp8 needs SM 8.9+ (falls back to int8 elsewhere)."""
+    set, else int8. With ``te_gb``, bf16 must also stay resident beside the encoder (48 GB cards go int8).
+    fp8 needs SM 8.9+ (else int8)."""
     import torch
 
     req = (requested or "auto").strip().lower()
@@ -1885,7 +1906,30 @@ def resolve_dit_scheme(
         return "int8", "int8 requested"
     need = H3_IMAGE_DIT_TABLE_BF16_GB + activation_gb(width, height) + 1.5
     if vram_gb is not None and vram_gb >= need:
-        return None, f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) fits {vram_gb:.1f} GB"
+        if te_gb is None:
+            return None, f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) fits {vram_gb:.1f} GB"
+        try:
+            placement = plan_placement(
+                vram_gb = vram_gb,
+                host_gb = host_gb,
+                dit_gb = dit_gb_for(None, adaln_table_enabled()),
+                te_gb = te_gb,
+                width = width,
+                height = height,
+                inflight = inflight,
+            ).placement
+        except RuntimeError:  # no bf16 placement fits this host at all
+            placement = None
+        if placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
+            return (
+                None,
+                f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) stays on {vram_gb:.1f} GB",
+            )
+        return (
+            "int8",
+            f"auto: beside the {te_gb:.1f} GB encoder the bf16 DiT would not stay on {vram_gb:.1f} GB "
+            f"({placement or 'no placement fits'}), int8 ConvRot",
+        )
     return (
         "int8",
         f"auto: bf16 DiT would not fit {vram_gb if vram_gb is not None else 0:.1f} GB, int8 ConvRot",
@@ -1913,6 +1957,64 @@ def device_budgets(device: Any) -> tuple[Optional[float], Optional[float]]:
         except Exception:  # noqa: BLE001 - psutil missing
             host = None
     return vram, host
+
+
+def explicit_scheme_refusal(scheme: str, device: Any) -> Optional[str]:
+    """Why an explicit ``scheme`` cannot run as asked (resolve_dit_scheme would silently downgrade), or None."""
+    import torch
+
+    from .diffusion_precision import torchao_quantize_importable
+
+    if scheme not in QUANT_SCHEMES:
+        return (
+            f"MiniMax-H3-Image runs {' or '.join(QUANT_SCHEMES)} transformer weights, not {scheme}"
+        )
+    if not torchao_quantize_importable():
+        return (
+            "torchao is not importable on this install, and MiniMax-H3-Image's int8 and fp8 weights "
+            "need it"
+        )
+    dev = torch.device(device)
+    if scheme == "fp8" and dev.type == "cuda" and torch.cuda.is_available():
+        cap = tuple(torch.cuda.get_device_capability(dev))
+        if cap < (8, 9):
+            return f"fp8 needs compute capability 8.9 or newer, and this card is {cap[0]}.{cap[1]}; int8 runs here"
+    return None
+
+
+# Encoder requests that keep the bf16 encoder; any other value, unset included, takes the hosted int8 one.
+DENSE_TE_REQUESTS = frozenset({"none", "off", "bf16", "dense", "bfloat16"})
+
+
+def h3_image_te_scheme(requested: Optional[str]) -> Optional[str]:
+    """The encoder a load takes for the raw ``text_encoder_quant`` request: "int8" (hosted) or None (bf16)."""
+    return None if str(requested or "").strip().lower() in DENSE_TE_REQUESTS else "int8"
+
+
+def planned_dit_scheme(
+    transformer_quant: Optional[str],
+    device: Any,
+    text_encoder_quant: Optional[str] = None,
+    reclaimable_host_gb: float = 0.0,
+) -> Optional[str]:
+    """DiT scheme for the download plan. The load evicts chat and the resident model first, so plan the whole card
+    plus ``reclaimable_host_gb``; budget env vars still win."""
+    import torch
+
+    dev = torch.device(device)
+    vram, host = device_budgets(dev)
+    if not os.environ.get(VRAM_BUDGET_ENV) and dev.type == "cuda" and torch.cuda.is_available():
+        vram = torch.cuda.mem_get_info(dev)[1] / 1e9
+    if host is not None and not os.environ.get(HOST_BUDGET_ENV):
+        host += max(0.0, float(reclaimable_host_gb))
+    return resolve_dit_scheme(
+        transformer_quant,
+        device = dev,
+        vram_gb = vram,
+        host_gb = host,
+        te_gb = te_gb_for(h3_image_te_scheme(text_encoder_quant)),
+        inflight = stream_inflight() if dev.type == "cuda" else 1,
+    )[0]
 
 
 def build_transformer_skeleton(config: dict, *, table_grid: Optional[Sequence[float]]) -> Any:
@@ -2182,8 +2284,7 @@ def load_h3_image_transformer(
     from safetensors import safe_open
 
     check = check_cancelled or (lambda: None)
-    converted_dir = root / DIFFUSERS_TRANSFORMER_SUBFOLDER
-    native = not (converted_dir / "config.json").is_file()
+    native = _native_layout(root, "transformer", DIFFUSERS_TRANSFORMER_SUBFOLDER)
     tdir = root / ("transformer" if native else DIFFUSERS_TRANSFORMER_SUBFOLDER)
     raw_config = _read_json(tdir / "config.json")
     if native:
@@ -2289,8 +2390,7 @@ def load_h3_image_vae(root: Path, *, dtype: Any = None) -> Any:
     from accelerate import init_empty_weights
     from safetensors import safe_open
 
-    converted_dir = root / DIFFUSERS_VAE_SUBFOLDER
-    native = not (converted_dir / "config.json").is_file()
+    native = _native_layout(root, "vae", DIFFUSERS_VAE_SUBFOLDER)
     vdir = root / ("vae" if native else DIFFUSERS_VAE_SUBFOLDER)
     raw = _read_json(vdir / "config.json")
     config = (
@@ -2642,16 +2742,7 @@ def load_minimax_h3_image_pipeline(
     dtype = dtype or torch.bfloat16
     device = torch.device(device)
     vram, host = device_budgets(device)
-    patterns = [
-        "model_index.json",
-        PDD_CONFIG_FILE,
-        "transformer/config.json",
-        "vae/*",
-        "tokenizer/*",
-        "processor/*",
-        f"{DIFFUSERS_TRANSFORMER_SUBFOLDER}/config.json",
-        f"{DIFFUSERS_VAE_SUBFOLDER}/*",
-    ]
+    patterns = list(H3_IMAGE_BASE_PATTERNS)
     hub = {"hf_token": hf_token, "cache_dir": cache_dir, "local_files_only": local_files_only}
     root = _hub_files(repo_id, patterns, **hub)
     check()
@@ -2666,10 +2757,18 @@ def load_minimax_h3_image_pipeline(
     ):
         te_repo = te_entry[2].get("pretrained_model_name_or_path")
     te_repo = te_repo or H3_IMAGE_TEXT_ENCODER_REPO
-    scheme, scheme_reason = resolve_dit_scheme(
-        transformer_quant, device = device, vram_gb = vram, width = plan_width, height = plan_height
-    )
     te_scheme = "int8" if (text_encoder_quant or "").strip().lower() == "int8" else None
+    inflight = stream_inflight() if device.type == "cuda" else 1
+    scheme, scheme_reason = resolve_dit_scheme(
+        transformer_quant,
+        device = device,
+        vram_gb = vram,
+        width = plan_width,
+        height = plan_height,
+        host_gb = host,
+        te_gb = te_gb_for(te_scheme) if text_encoder is None else _module_gb(text_encoder),
+        inflight = inflight,
+    )
     table = adaln_table_enabled()
     plan_args = {
         "vram_gb": vram if device.type == "cuda" else None,
@@ -2678,7 +2777,7 @@ def load_minimax_h3_image_pipeline(
         "width": plan_width,
         "height": plan_height,
         "forced": (os.environ.get(PLACEMENT_ENV) or "").strip().lower() or None,
-        "inflight": stream_inflight() if device.type == "cuda" else 1,
+        "inflight": inflight,
     }
     plan = plan_placement(
         te_gb = te_gb_for(te_scheme) if text_encoder is None else _module_gb(text_encoder),
@@ -2719,11 +2818,7 @@ def load_minimax_h3_image_pipeline(
                 "dense_conditioning_linears": densified,
             }
     if transformer is None:
-        root = _hub_files(
-            repo_id,
-            [PDD_HEADS_FILE, "transformer/*", f"{DIFFUSERS_TRANSFORMER_SUBFOLDER}/*"],
-            **hub,
-        )
+        root = _hub_files(repo_id, H3_IMAGE_DENSE_DIT_PATTERNS, **hub)
         transformer, stats = load_h3_image_transformer(
             root,
             dtype = dtype,
@@ -2776,7 +2871,12 @@ def load_minimax_h3_image_pipeline(
             )
 
     local_te = root / "text_encoder"
-    if text_encoder is None and (local_te / "config.json").is_file():
+    # Local folders only: a Hub snapshot may hold the unplanned bundled bf16 copy.
+    if (
+        text_encoder is None
+        and os.path.isdir(str(repo_id))
+        and (local_te / "config.json").is_file()
+    ):
         local_gb = sum(f.stat().st_size for f in local_te.glob("*.safetensors")) / 1e9
         if local_gb > plan.te_gb + 1.0:
             _encoder_fits(local_gb, "the text encoder in this model folder")
