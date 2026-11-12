@@ -244,16 +244,18 @@ def _cached_model_paths(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[tuple[str, str]]:
-    """Both cached files in *hub_cache*, or None when either is missing. Without one, every cache
-    _stt_hub_cache_roots lists, then the pair moved out of a cache into a custom folder."""
+    """Both cached files in *hub_cache*, or None when either is missing. Without one, the caches Studio knows, then
+    custom folders (_custom_folder_hit)."""
     spec = MTMD_STT_MODELS[model_id]
     if hub_cache is None:
-        from core.inference.stt_sidecar import _stt_hub_cache_roots
+        from core.inference.stt_sidecar import _search_custom_folders, _stt_hub_cache_roots
         for root in _stt_hub_cache_roots():
             cached = _cached_model_paths(model_id, hub_cache = root, revision = revision)
             if cached is not None:
                 return cached
-        return _custom_folder_pair(spec) if revision is None else None
+        return _search_custom_folders(
+            lambda directory: _custom_folder_hit(model_id, directory, revision)
+        )
     root = hub_cache
 
     def cached_at(candidate_revision: str) -> Optional[tuple[str, str]]:
@@ -305,33 +307,42 @@ def _pair_in(directory: Path, spec: MtmdSttModel) -> Optional[tuple[str, str]]:
     return None
 
 
-def _custom_folder_pair(spec: MtmdSttModel) -> Optional[tuple[str, str]]:
-    """The model and its mmproj side by side in a custom folder or one of its sub-folders, the places the Model Hub
-    lists a loose GGUF from. Matched by the exact curated file names; no revision is known for a loose copy."""
-    from core.inference.stt_sidecar import _custom_folder_dirs
+def _custom_folder_hit(
+    model_id: str, directory: Path, revision: Optional[str]
+) -> Optional[tuple[str, str]]:
+    """The pair in one custom-folder directory: a Hub cache there, then the model and its mmproj loose side by side in
+    the directory or one of its sub-folders, the places the Model Hub lists a loose GGUF from. Loose files are matched
+    by the exact curated names and carry no revision, so a pinned revision never matches them."""
+    from hub.utils.inventory_scan import scan_folder_hf_caches
 
-    for folder in _custom_folder_dirs():
-        pair = _pair_in(folder, spec)
-        if pair is not None:
-            return pair
-        try:
-            with os.scandir(folder) as entries:
-                for index, entry in enumerate(entries):
-                    if index >= _CUSTOM_FOLDER_ENTRY_LIMIT:
-                        break
-                    # A models--* tree is a Hub cache, already searched by revision.
-                    if entry.name.startswith((".", "models--")):
+    for hub_cache in scan_folder_hf_caches(directory):
+        cached = _cached_model_paths(model_id, hub_cache = hub_cache, revision = revision)
+        if cached is not None:
+            return cached
+    if revision is not None:
+        return None
+    spec = MTMD_STT_MODELS[model_id]
+    pair = _pair_in(directory, spec)
+    if pair is not None:
+        return pair
+    try:
+        with os.scandir(directory) as entries:
+            for index, entry in enumerate(entries):
+                if index >= _CUSTOM_FOLDER_ENTRY_LIMIT:
+                    break
+                # A models--* tree is a Hub cache, already searched by revision.
+                if entry.name.startswith((".", "models--")):
+                    continue
+                try:
+                    if not entry.is_dir():
                         continue
-                    try:
-                        if not entry.is_dir():
-                            continue
-                    except OSError:
-                        continue
-                    pair = _pair_in(Path(entry.path), spec)
-                    if pair is not None:
-                        return pair
-        except OSError:
-            continue
+                except OSError:
+                    continue
+                pair = _pair_in(Path(entry.path), spec)
+                if pair is not None:
+                    return pair
+    except OSError:
+        pass
     return None
 
 

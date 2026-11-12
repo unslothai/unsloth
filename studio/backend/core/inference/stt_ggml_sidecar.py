@@ -386,14 +386,20 @@ def _cached_model_path(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a fully downloaded GGML file in *hub_cache*, else None. Without one, every cache _stt_hub_cache_roots lists."""
+    """Path of a fully downloaded GGML file in *hub_cache*, else None. Without one, the caches Studio knows, then the
+    caches inside custom folders."""
     if hub_cache is None:
-        from core.inference.stt_sidecar import _stt_hub_cache_roots
+        from core.inference.stt_sidecar import (
+            _search_custom_folder_hub_caches,
+            _stt_hub_cache_roots,
+        )
         for root in _stt_hub_cache_roots():
             cached = _cached_model_path(model_id, hub_cache = root, revision = revision)
             if cached is not None:
                 return cached
-        return None
+        return _search_custom_folder_hub_caches(
+            lambda root: _cached_model_path(model_id, hub_cache = root, revision = revision)
+        )
 
     from huggingface_hub import hf_hub_download
 

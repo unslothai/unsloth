@@ -21,7 +21,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional, TypeVar
 
 from loggers import get_logger
 
@@ -449,12 +449,14 @@ def _repo_cache_dir(repo: str, *, hub_cache: Optional[Path] = None) -> Path:
     return root / f"models--{repo.replace('/', '--')}"
 
 
-# One status poll runs a dozen lookups and a recursive folder's walk can take a few hundred ms, so memoise briefly.
-_CUSTOM_FOLDER_DIRS_TTL_SECONDS = 2.0
-_custom_folder_dirs_lock = threading.Lock()
-# Keyed by account: each account registers its own custom folders.
-_custom_folder_dirs_memo: dict[str, tuple[float, tuple[Path, ...]]] = {}
-_CUSTOM_FOLDER_DIRS_MEMO_MAX = 64
+# One status poll runs a dozen lookups, so the folder list and a recursive folder's walk (a few hundred ms) are
+# memoised briefly, per account: each account registers its own custom folders.
+_CUSTOM_FOLDER_TTL_SECONDS = 2.0
+_custom_folder_lock = threading.Lock()
+_custom_folder_rows_memo: dict[str, tuple[float, tuple[tuple[str, Path, bool], ...]]] = {}
+_custom_folder_dirs_memo: dict[tuple[str, str], tuple[float, tuple[Path, ...]]] = {}
+_CUSTOM_FOLDER_MEMO_MAX = 256
+_T = TypeVar("_T")
 
 
 def _account_scope() -> str:
@@ -467,64 +469,112 @@ def _account_scope() -> str:
         return ""
 
 
-def _custom_folder_dirs() -> list[Path]:
-    """The acting account's custom folders, plus the nested folders of a recursive one: the directories the Model Hub
-    scans. A folder that does not answer within the Model Hub's scan budget is skipped."""
-    scope = _account_scope()
-    with _custom_folder_dirs_lock:
-        memo = _custom_folder_dirs_memo.get(scope)
-        if memo is not None and time.monotonic() - memo[0] < _CUSTOM_FOLDER_DIRS_TTL_SECONDS:
-            return list(memo[1])
-    dirs = _list_custom_folder_dirs()
-    with _custom_folder_dirs_lock:
-        if len(_custom_folder_dirs_memo) >= _CUSTOM_FOLDER_DIRS_MEMO_MAX:
-            _custom_folder_dirs_memo.clear()
-        _custom_folder_dirs_memo[scope] = (time.monotonic(), tuple(dirs))
-    return dirs
+def _memo_get(memo: dict, key):
+    with _custom_folder_lock:
+        entry = memo.get(key)
+        if entry is not None and time.monotonic() - entry[0] < _CUSTOM_FOLDER_TTL_SECONDS:
+            return entry[1]
+    return None
 
 
-def _list_custom_folder_dirs() -> list[Path]:
+def _memo_put(memo: dict, key, value) -> None:
+    with _custom_folder_lock:
+        if len(memo) >= _CUSTOM_FOLDER_MEMO_MAX:
+            memo.clear()
+        memo[key] = (time.monotonic(), value)
+
+
+def _custom_folder_rows(scope: str) -> tuple[tuple[str, Path, bool], ...]:
+    """(row path, folder, recursive) for each custom folder the acting account registered. Database only."""
+    rows = _memo_get(_custom_folder_rows_memo, scope)
+    if rows is not None:
+        return rows
     try:
         from storage.studio_db import list_scan_folders
         folders = list_scan_folders()
     except Exception as exc:  # noqa: BLE001 - an unreadable folder list must not fail a lookup
         logger.debug("STT: could not list custom folders: %s", exc)
-        return []
-    if not folders:
-        return []
-    from hub.services.models.local_inventory import (
-        nested_scan_roots,
-        run_custom_folder_bounded_sync,
-    )
+        folders = []
     from hub.utils.paths import normalize_path
-    from utils.paths.scan_folder_health import STATUS_SLOW, scan_folder_status
 
-    dirs: list[Path] = []
-    for folder in folders:
-        raw = str(folder.get("path") or "")
-        # An earlier scan is still stuck on this folder: touching it again would only stall here as well.
-        if not raw.strip() or scan_folder_status(raw) == STATUS_SLOW:
-            continue
-        path = Path(normalize_path(raw)).expanduser()
-        recursive = bool(folder.get("recursive"))
+    rows = tuple(
+        (raw, Path(normalize_path(raw)).expanduser(), bool(folder.get("recursive")))
+        for folder in folders
+        if (raw := str(folder.get("path") or "")).strip()
+    )
+    _memo_put(_custom_folder_rows_memo, scope, rows)
+    return rows
 
-        def reach(path = path, recursive = recursive) -> list[Path]:
-            if not path.is_dir():
-                return []
-            return [path, *(nested_scan_roots(path) if recursive else ())]
 
-        try:
-            # The Model Hub's per-folder budget and stuck-thread record, shared with its own scans.
-            dirs.extend(run_custom_folder_bounded_sync(raw, reach) or ())
-        except Exception as exc:  # noqa: BLE001 - one unreadable folder must not hide the others
-            logger.debug("STT: could not read a custom folder: %s", exc)
+def _custom_folder_dirs(scope: str, raw: str, path: Path, recursive: bool) -> tuple[Path, ...]:
+    """The folder and, when it is recursive, its nested folders: the directories the Model Hub scans."""
+    dirs = _memo_get(_custom_folder_dirs_memo, (scope, raw))
+    if dirs is not None:
+        return dirs
+    if not path.is_dir():
+        dirs = ()
+    elif recursive:
+        from hub.services.models.local_inventory import nested_scan_roots
+        dirs = (path, *nested_scan_roots(path))
+    else:
+        dirs = (path,)
+    _memo_put(_custom_folder_dirs_memo, (scope, raw), dirs)
     return dirs
 
 
+def _search_custom_folders(probe: Callable[[Path], Optional[_T]]) -> Optional[_T]:
+    """The first answer of ``probe(directory)`` over the acting account's custom folders. A folder's whole search,
+    its walk and every file probe, runs under the Model Hub's per-folder budget and stuck-thread record: a folder that
+    does not answer in time is skipped and marked slow, and one already marked slow is not touched."""
+    scope = _account_scope()
+    rows = _custom_folder_rows(scope)
+    if not rows:
+        return None
+    from hub.services.models.local_inventory import run_custom_folder_bounded_sync
+    from utils.paths.scan_folder_health import STATUS_SLOW, scan_folder_status
+
+    for raw, path, recursive in rows:
+        if scan_folder_status(raw) == STATUS_SLOW:
+            continue
+
+        def search(
+            raw = raw,
+            path = path,
+            recursive = recursive,
+        ) -> Optional[_T]:
+            for directory in _custom_folder_dirs(scope, raw, path, recursive):
+                found = probe(directory)
+                if found is not None:
+                    return found
+            return None
+
+        try:
+            found = run_custom_folder_bounded_sync(raw, search)
+        except Exception as exc:  # noqa: BLE001 - one unreadable folder must not hide the others
+            logger.debug("STT: could not search a custom folder: %s", exc)
+            continue
+        if found is not None:
+            return found
+    return None
+
+
+def _search_custom_folder_hub_caches(lookup: Callable[[Path], Optional[_T]]) -> Optional[_T]:
+    """``lookup(hub_cache)`` over the Hugging Face caches inside custom folders, under _search_custom_folders' budget."""
+    from hub.utils.inventory_scan import scan_folder_hf_caches
+
+    def probe(directory: Path) -> Optional[_T]:
+        for hub_cache in scan_folder_hf_caches(directory):
+            found = lookup(hub_cache)
+            if found is not None:
+                return found
+        return None
+
+    return _search_custom_folders(probe)
+
+
 def _stt_hub_cache_roots() -> Iterator[Path]:
-    """Hub caches a downloaded dictation model may sit in, the roots chat model loads search too: the active one
-    (downloads write only there), every other cache Studio knows, then the caches inside custom folders. Lazy, so a
-    model found early never waits on a custom folder."""
+    """The Hub caches Studio knows, active one first (downloads write only there). Lazy, so a model found in the
+    active cache reads nothing else. Custom folders are searched after these, through _search_custom_folders."""
     seen: set[str] = set()
 
     def first_time(root: Path) -> bool:
@@ -546,15 +596,6 @@ def _stt_hub_cache_roots() -> Iterator[Path]:
     for root in known:
         if first_time(Path(root)):
             yield Path(root)
-    folders = _custom_folder_dirs()
-    if not folders:
-        return
-    from hub.utils.inventory_scan import scan_folder_hf_caches
-
-    for folder in folders:
-        for root in scan_folder_hf_caches(folder):
-            if first_time(root):
-                yield root
 
 
 def _revision_record_path(repo: str) -> Path:
@@ -656,7 +697,7 @@ def _snapshot_usable(model_id: str, snapshot: Path) -> bool:
 
 
 def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
-    """Find one complete local snapshot without contacting the Hub, in every cache _stt_hub_cache_roots lists."""
+    """Find one complete local snapshot without contacting the Hub: in the caches Studio knows, then in custom folders."""
     model_id = resolve_model_id(model)
     repo = resolve_model_repo(model_id)
     recorded = _read_revision_record(repo)
@@ -664,7 +705,9 @@ def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
         snapshot = _complete_snapshot_in(model_id, repo, recorded, hub_cache)
         if snapshot is not None:
             return snapshot
-    return None
+    return _search_custom_folder_hub_caches(
+        lambda hub_cache: _complete_snapshot_in(model_id, repo, recorded, hub_cache)
+    )
 
 
 def _complete_snapshot_in(
