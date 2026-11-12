@@ -538,6 +538,11 @@ def apply_speed_optims(
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
+        # Bit-identical, so "off" keeps it: torchao's eager int8 Linear is ~3x a bf16 one on sm_120.
+        if _install_eager_int8_gemm(
+            pipe, logger, offload_active = offload_active, denoiser_offloaded = denoiser_offloaded
+        ):
+            applied["int8_gemm_eager"] = True
         return applied
     if mode in (SPEED_DEFAULT, SPEED_MAX):
         _pin_compile_defaults()
@@ -653,6 +658,14 @@ def apply_speed_optims(
         except Exception:  # noqa: BLE001
             pass
 
+    if not applied["compiled"] and on_cuda:
+        # The denoiser stays eager (eager tier, or the compile was declined): bit-identical int8 GEMM routes. Keyed
+        # only when engaged, so a load with no int8 Linear reports exactly what it did before.
+        if _install_eager_int8_gemm(
+            pipe, logger, offload_active = offload_active, denoiser_offloaded = denoiser_offloaded
+        ):
+            applied["int8_gemm_eager"] = True
+
     if mode in (SPEED_DEFAULT, SPEED_MAX) and on_cuda and tf32_enabled():
         applied["tf32"] = _enable_tf32(logger)
     if mode == SPEED_MAX:
@@ -703,6 +716,40 @@ def apply_speed_optims(
                 _warn(logger, "cuda graph capture", exc)
 
     return applied
+
+
+def _install_eager_int8_gemm(
+    pipe: Any,
+    logger: Any = None,
+    *,
+    offload_active: bool,
+    denoiser_offloaded: Optional[bool],
+) -> bool:
+    """``diffusion_int8_gemm.install_eager`` on every uncompiled denoiser (resident, or swapped at its first forward);
+    a moved denoiser keeps torchao's path, as the compiled install does. True when any int8 Linear is a candidate."""
+    if pipe is None:
+        return False
+    moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
+    if moved:
+        return False
+    try:
+        from .diffusion_int8_gemm import candidates, install_eager
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "int8 eager gemm", exc)
+        return False
+    engaged = False
+    for transformer in _denoiser_dits(pipe):
+        # a dense denoiser never imports the kernels
+        if bool(getattr(transformer, "_unsloth_int8_gemm", 0)) or not candidates(transformer):
+            continue
+        try:
+            n = install_eager(transformer, logger)
+            if n:
+                transformer._unsloth_int8_gemm = n
+                engaged = True
+        except Exception as exc:  # noqa: BLE001 - optimisation only, torchao's path stays
+            _warn(logger, "int8 eager gemm", exc)
+    return engaged
 
 
 def _prepare_lowbit_iq_tables(pipe: Any, target: Any) -> None:
@@ -1097,10 +1144,10 @@ def _denoiser_dits(pipe: Any) -> list:
 def int8_gemm_live(pipe: Any, optims: Any) -> list:
     """``speed_optims`` with ``int8_gemm`` dropped once a deferred install's first-forward probe swapped nothing."""
     optims = list(optims or ())
-    if "int8_gemm" in optims and not any(
-        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
-    ):
-        optims.remove("int8_gemm")
+    live = any(bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe))
+    for key in ("int8_gemm", "int8_gemm_eager"):
+        if key in optims and not live:
+            optims.remove(key)
     return optims
 
 

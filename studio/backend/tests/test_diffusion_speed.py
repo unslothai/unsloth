@@ -3182,3 +3182,91 @@ def test_compile_cache_gate_skips_the_rocm_probe_for_a_model_with_nothing_to_com
     assert dmod._compile_cache_wanted(
         pipe, cuda, fam, is_gguf = False, speed_mode = "default", offload_active = False
     ) is ds_mod.compile_eligible(cuda, is_gguf = False, family = fam)
+
+
+# ---- eager int8 GEMM: an uncompiled int8 denoiser takes Studio's bit-identical GEMM routes ----
+
+
+def _eager_gemm_spy(monkeypatch, n = 5):
+    from core.inference import diffusion_int8_gemm as g8
+
+    calls = []
+    dit = types.SimpleNamespace()
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda pipe: [dit])
+    monkeypatch.setattr(g8, "candidates", lambda t, rotated_only = False: n)
+    monkeypatch.setattr(g8, "install_eager", lambda t, lg = None, **k: calls.append(t) or n)
+    return dit, calls
+
+
+def test_speed_off_installs_the_eager_int8_gemm_on_a_resident_int8_denoiser(monkeypatch):
+    _stub_torch(monkeypatch)
+    dit, calls = _eager_gemm_spy(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(), _target(), is_gguf = False, family = _family(), speed_mode = SPEED_OFF
+    )
+    assert applied["int8_gemm_eager"] is True and applied["compiled"] is False
+    assert calls == [dit] and dit._unsloth_int8_gemm == 5
+
+
+@pytest.mark.parametrize("offload_active, denoiser_offloaded", [(True, None), (False, True)])
+def test_eager_int8_gemm_skips_a_moved_denoiser(monkeypatch, offload_active, denoiser_offloaded):
+    _stub_torch(monkeypatch)
+    _dit, calls = _eager_gemm_spy(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_OFF,
+        offload_active = offload_active,
+        denoiser_offloaded = denoiser_offloaded,
+    )
+    assert "int8_gemm_eager" not in applied and calls == []
+
+
+def test_eager_int8_gemm_skips_a_dense_denoiser(monkeypatch):
+    _stub_torch(monkeypatch)
+    _dit, calls = _eager_gemm_spy(monkeypatch, n = 0)
+    applied = apply_speed_optims(
+        _Pipe(), _target(), is_gguf = False, family = _family(), speed_mode = SPEED_OFF
+    )
+    assert "int8_gemm_eager" not in applied and calls == []
+
+
+def test_eager_int8_gemm_is_not_installed_beside_the_compile(monkeypatch):
+    _stub_torch(monkeypatch)
+    _dit, calls = _eager_gemm_spy(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: True)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert applied["compiled"] is True
+    assert "int8_gemm_eager" not in applied and calls == []
+
+
+def test_eager_int8_gemm_engages_when_the_compile_is_declined(monkeypatch):
+    _stub_torch(monkeypatch)
+    dit, calls = _eager_gemm_spy(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(compile_ok = False),
+        is_gguf = False,
+        family = _family(compile_ok = False),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert applied["compiled"] is False and applied["int8_gemm_eager"] is True and calls == [dit]
+
+
+def test_int8_gemm_live_drops_the_eager_key_when_nothing_swapped(monkeypatch):
+    dit = types.SimpleNamespace(_unsloth_int8_gemm = 0)
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda pipe: [dit])
+    assert ds_mod.int8_gemm_live(object(), ["int8_gemm_eager", "tf32"]) == ["tf32"]
+    dit._unsloth_int8_gemm = 3
+    assert ds_mod.int8_gemm_live(object(), ["int8_gemm_eager", "tf32"]) == [
+        "int8_gemm_eager",
+        "tf32",
+    ]
