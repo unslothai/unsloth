@@ -134,6 +134,7 @@ def _request_options(entry: AudioCppModel, aligned: bool, duration: Optional[flo
             options["max_tokens"] = max_tokens
     return options
 
+
 # model_specs/nemotron_asr.json "languages"; the prompt dictionary also keys en/es/fr/pt/no.
 _NEMOTRON_ASR_LOCALES = (
     "ar-AR", "bg-BG", "cs-CZ", "da-DK", "de-DE", "el-GR", "en-GB", "en-US", "es-ES", "es-US",
