@@ -6398,6 +6398,7 @@ class DiffusionBackend:
         transformer_quant: Optional[str],
         gpu_ordinal: Optional[int],
         failures_out: Optional[list] = None,
+        text_encoder_quant: Optional[str] = None,
     ) -> Optional[str]:
         """The hosted DiT scheme a MiniMax-H3-Image load would take on the selected card, or None for the bf16 shards.
         An unsettled scheme stages the bf16 shards and is reported in ``failures_out``."""
@@ -6405,7 +6406,7 @@ class DiffusionBackend:
             from .diffusion_minimax_h3_image import QUANT_SCHEMES, planned_dit_scheme
             with diffusion_device_scope(gpu_ordinal):
                 target = self._target_for_ordinal(fam, gpu_ordinal)
-                scheme = planned_dit_scheme(transformer_quant, target.device)
+                scheme = planned_dit_scheme(transformer_quant, target.device, text_encoder_quant)
             return scheme if scheme in QUANT_SCHEMES else None
         except Exception as exc:  # noqa: BLE001 -- unplannable: stage the bf16 shards, as before
             logger.warning("diffusion.h3_image_dit_plan_failed: %s", exc)
@@ -7355,6 +7356,7 @@ class DiffusionBackend:
                 load_kwargs.get("transformer_quant"),
                 load_kwargs.get("gpu_ordinal"),
                 plan_failures,
+                text_encoder_quant,
             )
             if h3_image and allow_device_probe
             else self._pipeline_planned_denoiser_scheme(

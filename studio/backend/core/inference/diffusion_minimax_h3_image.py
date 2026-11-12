@@ -1863,9 +1863,14 @@ def resolve_dit_scheme(
     vram_gb: Optional[float],
     width: int = 2048,
     height: int = 2048,
+    host_gb: Optional[float] = None,
+    te_gb: Optional[float] = None,
+    inflight: int = 1,
 ) -> tuple[Optional[str], str]:
     """(scheme or None for bf16, reason). Auto: bf16 when the table-form bf16 DiT fits the card beside its working
-    set, else int8. fp8 needs SM 8.9+ (falls back to int8 elsewhere)."""
+    set, else int8. Given the encoder size (``te_gb``), auto also needs the bf16 plan to keep the DiT on the card:
+    a 48 GB card fits the bf16 DiT alone, but beside the encoder it would run from host memory (slower, and refused
+    without about 74 GB of RAM), where int8 stays resident. fp8 needs SM 8.9+ (falls back to int8 elsewhere)."""
     import torch
 
     req = (requested or "auto").strip().lower()
@@ -1892,7 +1897,30 @@ def resolve_dit_scheme(
         return "int8", "int8 requested"
     need = H3_IMAGE_DIT_TABLE_BF16_GB + activation_gb(width, height) + 1.5
     if vram_gb is not None and vram_gb >= need:
-        return None, f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) fits {vram_gb:.1f} GB"
+        if te_gb is None:
+            return None, f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) fits {vram_gb:.1f} GB"
+        try:
+            placement = plan_placement(
+                vram_gb = vram_gb,
+                host_gb = host_gb,
+                dit_gb = dit_gb_for(None, adaln_table_enabled()),
+                te_gb = te_gb,
+                width = width,
+                height = height,
+                inflight = inflight,
+            ).placement
+        except RuntimeError:  # no bf16 placement fits this host at all
+            placement = None
+        if placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
+            return (
+                None,
+                f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) stays on {vram_gb:.1f} GB",
+            )
+        return (
+            "int8",
+            f"auto: beside the {te_gb:.1f} GB encoder the bf16 DiT would not stay on {vram_gb:.1f} GB "
+            f"({placement or 'no placement fits'}), int8 ConvRot",
+        )
     return (
         "int8",
         f"auto: bf16 DiT would not fit {vram_gb if vram_gb is not None else 0:.1f} GB, int8 ConvRot",
@@ -1956,16 +1984,28 @@ def h3_image_te_scheme(requested: Optional[str]) -> Optional[str]:
     return None if str(requested or "").strip().lower() in DENSE_TE_REQUESTS else "int8"
 
 
-def planned_dit_scheme(transformer_quant: Optional[str], device: Any) -> Optional[str]:
+def planned_dit_scheme(
+    transformer_quant: Optional[str],
+    device: Any,
+    text_encoder_quant: Optional[str] = None,
+) -> Optional[str]:
     """The DiT scheme a load on ``device`` would resolve, for the download plan. The load evicts chat and the resident
-    model first, so the whole card is planned, as the generic prequant plan does; a VRAM budget still wins."""
+    model first, so the whole card is planned, as the generic prequant plan does; a VRAM budget still wins. The
+    encoder the request takes is planned beside it, as the load does."""
     import torch
 
     dev = torch.device(device)
-    vram, _host = device_budgets(dev)
+    vram, host = device_budgets(dev)
     if not os.environ.get(VRAM_BUDGET_ENV) and dev.type == "cuda" and torch.cuda.is_available():
         vram = torch.cuda.mem_get_info(dev)[1] / 1e9
-    return resolve_dit_scheme(transformer_quant, device = dev, vram_gb = vram)[0]
+    return resolve_dit_scheme(
+        transformer_quant,
+        device = dev,
+        vram_gb = vram,
+        host_gb = host,
+        te_gb = te_gb_for(h3_image_te_scheme(text_encoder_quant)),
+        inflight = stream_inflight() if dev.type == "cuda" else 1,
+    )[0]
 
 
 def build_transformer_skeleton(config: dict, *, table_grid: Optional[Sequence[float]]) -> Any:
@@ -2709,10 +2749,18 @@ def load_minimax_h3_image_pipeline(
     ):
         te_repo = te_entry[2].get("pretrained_model_name_or_path")
     te_repo = te_repo or H3_IMAGE_TEXT_ENCODER_REPO
-    scheme, scheme_reason = resolve_dit_scheme(
-        transformer_quant, device = device, vram_gb = vram, width = plan_width, height = plan_height
-    )
     te_scheme = "int8" if (text_encoder_quant or "").strip().lower() == "int8" else None
+    inflight = stream_inflight() if device.type == "cuda" else 1
+    scheme, scheme_reason = resolve_dit_scheme(
+        transformer_quant,
+        device = device,
+        vram_gb = vram,
+        width = plan_width,
+        height = plan_height,
+        host_gb = host,
+        te_gb = te_gb_for(te_scheme) if text_encoder is None else _module_gb(text_encoder),
+        inflight = inflight,
+    )
     table = adaln_table_enabled()
     plan_args = {
         "vram_gb": vram if device.type == "cuda" else None,
@@ -2721,7 +2769,7 @@ def load_minimax_h3_image_pipeline(
         "width": plan_width,
         "height": plan_height,
         "forced": (os.environ.get(PLACEMENT_ENV) or "").strip().lower() or None,
-        "inflight": stream_inflight() if device.type == "cuda" else 1,
+        "inflight": inflight,
     }
     plan = plan_placement(
         te_gb = te_gb_for(te_scheme) if text_encoder is None else _module_gb(text_encoder),

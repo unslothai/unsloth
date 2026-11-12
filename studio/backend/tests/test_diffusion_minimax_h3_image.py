@@ -557,6 +557,38 @@ def test_auto_scheme_is_bf16_only_when_it_fits(h3i, monkeypatch):
         assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] is None
 
 
+@pytest.mark.parametrize(
+    "vram, host, scheme",
+    [
+        # RTX 6000 Ada (48 GB, about 72 GB of RAM free): bf16 fits alone, but beside the int8 encoder it would run
+        # sequential and need about 74 GB of RAM, so the load was refused. int8 stays on the card.
+        (48.2, 72.0, "int8"),
+        # More RAM would let bf16 load sequentially, but int8 is the one that stays on the card.
+        (48.2, 128.0, "int8"),
+        # Cards that keep the bf16 DiT resident keep it.
+        (80.0, 64.0, None),
+        (190.0, 1500.0, None),
+    ],
+)
+def test_auto_takes_bf16_only_when_it_stays_on_the_card_beside_the_encoder(h3i, vram, host, scheme):
+    pytest.importorskip("torchao")
+    te = h3i.te_gb_for("int8")
+    got, reason = h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram, host_gb = host, te_gb = te)
+    assert got == scheme, reason
+    # Without the encoder size, the old rule (bf16 whenever it fits alone) is unchanged.
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram)[0] is None
+
+
+def test_the_plan_sizes_the_encoder_the_request_takes(h3i, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        h3i, "resolve_dit_scheme", lambda req, **kw: seen.append(kw["te_gb"]) or (None, "x")
+    )
+    h3i.planned_dit_scheme(None, "cpu")
+    h3i.planned_dit_scheme(None, "cpu", "none")
+    assert seen == [h3i.H3_IMAGE_TE_INT8_GB, h3i.H3_IMAGE_TE_BF16_GB]
+
+
 def test_streamer_runs_blocks_from_the_host(h3i):
     import torch
 
