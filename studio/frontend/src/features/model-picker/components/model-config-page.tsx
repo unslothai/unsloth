@@ -3257,11 +3257,18 @@ export function ModelConfigPage({
   const contextAtDefault = !target.isGguf
     ? savedContextPin(config) == null
     : config.customContextLength == null;
+  // Compared as the set store compares (normalized, speculative `auto` as unset): a loaded model's
+  // config spells its defaults out (`speculativeType: "auto"`, `gpuLayers: -1`), and read raw, Default
+  // looked edited, so a pinned model loaded on defaults showed Unsaved changes and each Save added a set.
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(
-      { ...config, customContextLength: null },
-      DEFAULT_PER_MODEL_CONFIG,
+      normalizePerModelConfig(
+        storedSpeculativeAuto({ ...config, customContextLength: null }, targetIsMlx),
+      ),
+      normalizePerModelConfig(
+        storedSpeculativeAuto(DEFAULT_PER_MODEL_CONFIG, targetIsMlx),
+      ),
     );
   const nativeMaxSeqLength =
     floorMaxSeqLength(
