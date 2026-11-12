@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readSrc, readText } from "./helpers/kit.ts";
 
 const LINES = readSrc(
   "features/model-picker/components/model-config-page.tsx",
@@ -67,15 +67,19 @@ test("the Memory group renders for diffusion only when it has the GPU picker to 
   );
 });
 
-test("a diffusion context the runner did not apply says so, with the value it runs", () => {
-  const page = LINES.join("\n");
+function contextNote(page: string): string {
   const start = page.indexOf("function DiffusionContextNote(");
   assert.notEqual(start, -1, "no DiffusionContextNote");
-  const note = page.slice(start, page.indexOf("\nfunction ", start + 1));
+  return page.slice(start, page.indexOf("\nfunction ", start + 1));
+}
+
+test("a diffusion context the runner did not apply says so, with the value it runs", () => {
+  const page = LINES.join("\n");
+  const note = contextNote(page);
   // Only for the value the load was asked for, and only when the runner reports another.
   assert.match(
     note,
-    /if \(loadedContext == null \|\| value !== requested \|\| value === loadedContext\) \{\s+return null;/,
+    /if \(loadedContext != null && value === requested && value !== loadedContext\) \{/,
   );
   assert.match(note, /running with \{loadedContext\.toLocaleString\(\)\} tokens/);
   // It replaces the VRAM-capacity warning, which describes a context the runner never uses.
@@ -83,4 +87,23 @@ test("a diffusion context the runner did not apply says so, with the value it ru
     page.replace(/\s+/g, " "),
     /resolvedIsDiffusion \? \( <DiffusionContextNote value=\{v\} requested=\{loadedConfig\?\.customContextLength \?\? null\} loadedContext=\{activeLoadedContext\} \/> \) : isActiveModel &&/,
   );
+});
+
+test("before a load, a context above what the runner applies as set says it will be sized", () => {
+  const note = contextNote(LINES.join("\n"));
+  const afterLoadNote = note.indexOf("running with");
+  const limit = note.indexOf("if (value <= DIFFUSION_EXPLICIT_CONTEXT_MAX) {");
+  assert.ok(afterLoadNote !== -1 && limit > afterLoadNote);
+  assert.match(note.slice(limit), /sizes the context to fit memory/);
+});
+
+test("the limit named in the note is the one the backend launches with", () => {
+  const frontend = LINES.join("\n").match(
+    /^const DIFFUSION_EXPLICIT_CONTEXT_MAX = (\d+);$/m,
+  );
+  const backend = readText("../../backend/core/inference/llama_cpp.py").match(
+    /^_DIFFUSION_EXPLICIT_CTX_MAX = (\d+)$/m,
+  );
+  assert.ok(frontend && backend);
+  assert.equal(frontend[1], backend[1]);
 });

@@ -279,6 +279,8 @@ const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
+// Mirrors the backend's _DIFFUSION_EXPLICIT_CTX_MAX.
+const DIFFUSION_EXPLICIT_CONTEXT_MAX = 8192;
 const KV_CACHE_DTYPE_DEFAULT = "f16";
 const SPECULATIVE_TYPE_LABELS: Record<
   (typeof SPECULATIVE_TYPES)[number],
@@ -656,13 +658,22 @@ function DiffusionContextNote({
   requested: number | null;
   loadedContext: number | null;
 }) {
-  if (loadedContext == null || value !== requested || value === loadedContext) {
+  if (loadedContext != null && value === requested && value !== loadedContext) {
+    return (
+      <p className="text-ui-11 text-amber-500">
+        DiffusionGemma did not apply this value. It sized the context to fit
+        memory and is running with {loadedContext.toLocaleString()} tokens.
+      </p>
+    );
+  }
+  if (value <= DIFFUSION_EXPLICIT_CONTEXT_MAX) {
     return null;
   }
   return (
     <p className="text-ui-11 text-amber-500">
-      DiffusionGemma did not apply this value. It sized the context to fit
-      memory and is running with {loadedContext.toLocaleString()} tokens.
+      DiffusionGemma applies a set context only up to{" "}
+      {DIFFUSION_EXPLICIT_CONTEXT_MAX.toLocaleString()} tokens. Above that it
+      sizes the context to fit memory.
     </p>
   );
 }
