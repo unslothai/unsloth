@@ -1043,7 +1043,7 @@ export const nl = {
       showMore: "Meer weergeven",
       showLess: "Minder weergeven",
       settings: "Instellingen",
-      api: "API",
+      api: "API-monitor",
       lightMode: "Lichte modus",
       darkMode: "Donkere modus",
       guidedTour: "Rondleiding",
