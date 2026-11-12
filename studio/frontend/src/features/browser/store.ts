@@ -505,7 +505,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         // Another chat's: it shows there next time, without moving this chat's panel.
         const saved = state.chats[chat];
         const activeTabId = background && saved?.activeTabId ? saved.activeTabId : owned.id;
-        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, floating: saved?.floating ?? false, activeTabId } } };
+        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, floating: saved?.floating ?? false, floatedForAgent: saved?.floatedForAgent, activeTabId } } };
       }
       return {
         open: true,
@@ -592,6 +592,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
             open: true,
             fullView: state.chats[chat]?.fullView ?? false,
             floating: state.chats[chat]?.floating ?? false,
+            floatedForAgent: state.chats[chat]?.floatedForAgent,
             activeTabId: tabId,
           },
         },

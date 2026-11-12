@@ -83,3 +83,18 @@ test("a browser floated by a close mid-run is still that on return from another 
   store().closePanel();
   assert.deepEqual([store().open, store().floating, store().floatedForAgent], [false, false, false]);
 });
+
+test("the agent working in the floated browser while another chat shows keeps it floated for the agent", () => {
+  const store = () => useBrowserStore.getState();
+  store().showChat("single:agent-c");
+  store().openUrl("https://example.com/c");
+  const tab = store().activeTabId ?? "";
+  store().floatForAgent();
+  store().showChat("single:agent-d");
+  store().revealIn("single:agent-c", tab);
+  store().openTabIn("single:agent-c", "https://example.com/c2", { background: true });
+  store().showChat("single:agent-c");
+  assert.deepEqual([store().floating, store().floatedForAgent], [true, true]);
+  store().closePanel();
+  assert.deepEqual([store().open, store().floating], [false, false]);
+});
