@@ -709,7 +709,7 @@ test("alpaca system, text-part tool outputs and bundled call outputs survive imp
   ).filter((p) => p.type === "tool-call");
   assert.deepEqual(calls.map((p) => p.result), ["file body", "a.txt"]);
   assert.equal(response.messages.at(-1)?.role, "assistant");
-  assert.deepEqual(response.messages.at(-1)?.content, [{ type: "text", text: "Done." }]);
+  assert.deepEqual((response.messages.at(-1)?.content as ReadonlyArray<unknown>)[0], { type: "text", text: "Done." });
 });
 
 test("a finished web_search_call imports as an answered call", () => {
@@ -730,7 +730,7 @@ test("a finished web_search_call imports as an answered call", () => {
     .find((p) => p.type === "tool-call");
   assert.equal(call?.toolName, "web_search");
   assert.equal(call?.result, "completed");
-  assert.deepEqual(conversation.messages.at(-1)?.content, [{ type: "text", text: "Here is the news." }]);
+  assert.deepEqual((conversation.messages.at(-1)?.content as ReadonlyArray<unknown>)[0], { type: "text", text: "Here is the news." });
 });
 
 test("a builtin call keeps its explicit output item over a status placeholder", () => {
@@ -882,4 +882,27 @@ test("file search results and whitespace-sensitive prompts survive import", () =
     "pairs.jsonl",
   );
   assert.deepEqual(pair.messages[0].content, [{ type: "text", text: "def f():\n    " }]);
+});
+
+test("hosted results do not split the assistant run they belong to", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [{ role: "user", content: "News?" }],
+      output: [
+        { type: "web_search_call", id: "ws1", status: "completed", action: { type: "search", query: "news" } },
+        { type: "shell_call", call_id: "s1", action: { commands: ["date"] } },
+        { type: "shell_call_output", call_id: "s1", output: "Monday" },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Here is the news." }] },
+      ],
+    }),
+    "response.json",
+  );
+
+  assert.deepEqual(conversation.messages.map((m) => m.role), ["user", "assistant"]);
+  const parts = conversation.messages[1].content as ReadonlyArray<{ type?: string; text?: string; result?: unknown }>;
+  assert.deepEqual(
+    parts.map((p) => (p.type === "tool-call" ? p.result : p.text)),
+    ["Here is the news.", "completed", "Monday"],
+  );
 });

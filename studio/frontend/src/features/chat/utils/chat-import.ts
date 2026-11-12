@@ -415,8 +415,8 @@ const CLIENT_RUN_CALLS = new Set(["function_call", "custom_tool_call", "local_sh
 // Saved Responses API object: adjacent assistant items share one turn, as in the
 // backend's _normalise_responses_input, so parallel calls precede their outputs.
 function responsesToTurns(obj: Record<string, unknown>): unknown[] {
-  const turns: Record<string, unknown>[] = [];
-  const built = new Set<Record<string, unknown>>();
+  const turns: Record<string | symbol, unknown>[] = [];
+  const built = new Set<Record<string | symbol, unknown>>();
   const assistantTurn = () => {
     const last = turns[turns.length - 1];
     if (last && built.has(last)) return last as { content: unknown[]; tool_calls: unknown[] };
@@ -425,6 +425,11 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
     turns.push(turn);
     return turn;
   };
+  // Hosted results wait until the assistant run ends: a tool turn mid-run would split it, and
+  // replay drops the hosted call, leaving a tool-only record that pruning treats as abandoned.
+  const hosted = new Set<string>();
+  const deferred: Record<string | symbol, unknown>[] = [];
+  const push = (turn: Record<string | symbol, unknown>) => turns.push(...deferred.splice(0), turn);
   const text = (value: unknown) =>
     typeof value === "string" && value.trim() ? value : undefined;
   const instructions = text(obj.instructions);
@@ -452,7 +457,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
             : []),
       );
     } else if (typeof entry.role === "string") {
-      turns.push(entry);
+      push(entry);
     } else if (type === "image_generation_call") {
       const encoded = text(entry.result) ?? text(entry.b64_json);
       if (encoded) {
@@ -466,6 +471,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
     } else if (type.endsWith("_call")) {
       const id = text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID();
       const builtin = !CLIENT_RUN_CALLS.has(type);
+      if (builtin) hosted.add(id);
       const commands = (entry.action as { commands?: unknown } | undefined)?.commands;
       const name =
         BUILTIN_TOOL_NAMES[type] ??
@@ -509,12 +515,16 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
         entry.error ??
         (builtin && !answered.has(id) ? (text(entry.status) ?? "completed") : undefined);
       if (done != null) {
-        turns.push(toolTurn(id, done));
+        if (builtin) deferred.push(toolTurn(id, done));
+        else push(toolTurn(id, done));
       }
     } else if (type.endsWith("_call_output") && typeof entry.call_id === "string") {
-      turns.push(toolTurn(entry.call_id, entry.output));
+      const turn = toolTurn(entry.call_id, entry.output);
+      if (hosted.has(entry.call_id)) deferred.push(turn);
+      else push(turn);
     }
   }
+  turns.push(...deferred);
   const output = text(obj.output);
   if (output) turns.push({ role: "assistant", content: output });
   return turns;
