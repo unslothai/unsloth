@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The patched ``safe_int_mm`` hands torchao's transposed int8 weight to cuBLASLt as is. The row-major copy torchao
-makes selected cuBLASLt kernels that read past the end of their operands on CUDA 13 (L4: an illegal memory access
-at M=4384 K=7168 N=5376, the MiniMax-H3-Image attention output projection at a 1024 canvas)."""
+"""Transposed int8 weight reaches cuBLASLt uncopied (row-major copy: illegal access on L4, M=4384 K=7168 N=5376)."""
 
 from __future__ import annotations
 
@@ -39,7 +37,7 @@ def _operands(
     k = 128,
     n = 96,
 ):
-    # meta: past the CPU branch without a GPU; the layout logic is all that runs
+    # meta: skips the CPU branch without a GPU
     x = torch.empty(m, k, dtype = torch.int8, device = "meta")
     w = torch.empty(n, k, dtype = torch.int8, device = "meta")  # torchao qdata [N, K]
     return x, w
@@ -85,7 +83,6 @@ def test_rocm_keeps_the_row_major_copy(monkeypatch):
     "m,k,n", [(4384, 7168, 5376), (4128, 5376, 7168), (17, 64, 32), (1024, 14336, 5376)]
 )
 def test_cuda_transposed_int_mm_is_exact(monkeypatch, m, k, n):
-    """Both layouts are integer GEMMs: the uncopied one must equal an fp64 product exactly."""
     import importlib
 
     intmm = None

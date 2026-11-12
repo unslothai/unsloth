@@ -192,7 +192,6 @@ def test_real_torchao_int_mm_is_patched_and_bit_identical():
 
 
 def _capturing_safe_int_mm():
-    """The patched body over a stand-in torchao module whose ``out_dtype`` records the ``mat2`` the GEMM receives."""
     seen = []
 
     def original(input, mat2):
@@ -206,9 +205,6 @@ def _capturing_safe_int_mm():
 
 
 def test_transposed_weight_reaches_the_gemm_without_a_row_major_copy():
-    """torchao hands ``qdata.contiguous().t()``. A row-major copy of it selects cuBLASLt's NN int8 kernel, which reads
-    up to a row tile past the end of the activation (illegal address on L4, H3-Image 1024 renders); the column-major
-    view is the TN layout. Meta tensors reach the GEMM branch on a CPU-only host."""
     torch = pytest.importorskip("torch")
     patched, seen = _capturing_safe_int_mm()
     a = torch.empty((1184, 7168), dtype = torch.int8, device = "meta")

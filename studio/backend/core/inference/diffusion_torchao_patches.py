@@ -55,8 +55,7 @@ def _is_fake_tensor(x):
 
 
 def _make_safe_int_mm(mod, original):
-    """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe. One change: a
-    transposed row-major ``mat2`` reaches ``_int_mm`` as is (no row-major copy)."""
+    """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
     import torch
 
     out_dtype = mod.out_dtype
@@ -90,10 +89,8 @@ def _make_safe_int_mm(mod, original):
                 input.device.type
             )
 
-        # A transposed row-major weight (torchao passes ``qdata.t()``) stays as it is: that column-major view is
-        # cuBLASLt's TN int8 layout. A row-major copy picks the NN kernel, which on sm89 reads up to a 64-row tile
-        # past the end of ``input`` when M is not a multiple of it (an illegal address once the activation ends a
-        # mapped segment), and costs a full weight copy per call. Other strides still get the copy.
+        # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads
+        # past the end of ``input`` when M is not a 64-multiple (illegal address), and copies the weight every call.
         if not mat2.is_contiguous() and not (keep_transposed and mat2.t().is_contiguous()):
             mat2 = mat2.contiguous()  # silently gives incorrect result without this
         if (not input.is_contiguous()) and (input.shape[0] % 8 != 0):
