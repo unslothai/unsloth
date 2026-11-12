@@ -796,3 +796,28 @@ test("a Responses mcp_call keeps its server and tool name", () => {
   assert.equal(call?.toolName, "docs__search_docs");
   assert.equal(call?.result, "hit");
 });
+
+test("Responses shell calls: hosted ones render their command, client ones and MCP errors stay honest", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [
+        { role: "user", content: "Go" },
+        { type: "shell_call", call_id: "s1", status: "completed", action: { commands: ["ls", "pwd"] } },
+        { type: "local_shell_call", call_id: "l1", action: { type: "exec", command: ["ls"] } },
+        { type: "local_shell_call_output", call_id: "l1", output: "local.txt" },
+        { type: "mcp_call", id: "m1", server_label: "docs", name: "search", arguments: "{}", output: null, error: "Authentication failed" },
+      ],
+    }),
+    "response.json",
+  );
+
+  const calls = conversation.messages
+    .flatMap((m) => m.content as ReadonlyArray<{ type?: string; toolName?: string; args?: Record<string, unknown>; result?: unknown }>)
+    .filter((p) => p.type === "tool-call");
+  assert.deepEqual(calls[0].args, { kind: "bash", command: "ls\npwd", _server_tool: true });
+  assert.equal(calls[1].toolName, "local_shell");
+  assert.equal(calls[1].args?._server_tool, undefined);
+  assert.equal(calls[1].result, "local.txt");
+  assert.equal(calls[2].result, "Authentication failed");
+});

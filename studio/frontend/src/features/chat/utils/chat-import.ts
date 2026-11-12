@@ -374,8 +374,9 @@ const BUILTIN_TOOL_NAMES: Record<string, string> = {
   web_search_call: "web_search",
   code_interpreter_call: "code_execution",
   shell_call: "code_execution",
-  local_shell_call: "code_execution",
 };
+// Executed by the client, so neither hosted nor answered on its own.
+const CLIENT_RUN_CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call", "computer_call"]);
 
 function toolOutputText(output: unknown): string {
   if (typeof output === "string") return output;
@@ -442,17 +443,22 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
       }
     } else if (type.endsWith("_call")) {
       const id = text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID();
-      const builtin = type !== "function_call" && type !== "custom_tool_call";
+      const builtin = !CLIENT_RUN_CALLS.has(type);
+      const commands = (entry.action as { commands?: unknown } | undefined)?.commands;
       const name =
-        BUILTIN_TOOL_NAMES[type] ?? text(entry.name) ?? (builtin ? type.replace(/_call$/, "") : "unknown");
+        BUILTIN_TOOL_NAMES[type] ??
+        text(entry.name) ??
+        (type === "function_call" || type === "custom_tool_call" ? "unknown" : type.replace(/_call$/, ""));
       // mcp_call names its server in server_label.
       const namespace = text(entry.namespace) ?? text(entry.server_label);
       const payload =
         typeof entry.code === "string"
           ? { code: entry.code }
-          : entry.input !== undefined
-            ? { input: entry.input }
-            : (entry.arguments ?? entry.action ?? {});
+          : type === "shell_call" && Array.isArray(commands)
+            ? { kind: "bash", command: commands.join("\n") }
+            : entry.input !== undefined
+              ? { input: entry.input }
+              : (entry.arguments ?? entry.action ?? {});
       assistantTurn().tool_calls.push({
         id,
         type: "function",
@@ -477,6 +483,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
       const done =
         entry.output ??
         (logs || undefined) ??
+        entry.error ??
         (builtin && !answered.has(id) ? (text(entry.status) ?? "completed") : undefined);
       if (done != null) {
         turns.push({ role: "tool", tool_call_id: id, content: toolOutputText(done) });
