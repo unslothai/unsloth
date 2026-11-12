@@ -1280,6 +1280,35 @@ function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   return false;
 }
 
+/** Puts the chat's own values back where the store shows the loaded model's or a provider's. */
+function restoreChatOwnedValues(
+  threadId: string,
+  settings: ThreadScopedSettings,
+): void {
+  // A model that cannot stop thinking forces thinking on: that true is the model's, so
+  // persisting it would erase a chat's stored false.
+  if (
+    threadId === threadScopedSettingsThreadId &&
+    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
+    activeThreadScopedSettings?.reasoningEnabled === false &&
+    settings.reasoningEnabled !== false &&
+    useChatRuntimeStore.getState().reasoningAlwaysOn
+  ) {
+    settings.reasoningEnabled = false;
+  }
+  if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
+    const onRecord = reasoningEffortOnRecord();
+    if (onRecord !== undefined) settings.reasoningEffort = onRecord;
+  }
+  // A provider constraint moves pills without persisting: the chat keeps its stored value.
+  if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
+    settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
+  }
+  if (keepsStoredValueUnderConstraint("toolsEnabled", threadId, settings)) {
+    settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
+  }
+}
+
 function buildThreadScopedSnapshot(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
@@ -1294,29 +1323,7 @@ function buildThreadScopedSnapshot(
   ) {
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
-  // And for thinking, which a model that cannot stop thinking forces on: that true is the
-  // model's, so persisting it would erase a chat's stored false.
-  if (
-    threadId === threadScopedSettingsThreadId &&
-    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
-    activeThreadScopedSettings?.reasoningEnabled === false &&
-    settings.reasoningEnabled !== false &&
-    useChatRuntimeStore.getState().reasoningAlwaysOn
-  ) {
-    settings.reasoningEnabled = false;
-  }
-  if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
-    const onRecord = reasoningEffortOnRecord();
-    if (onRecord !== undefined) settings.reasoningEffort = onRecord;
-  }
-  // And for pills a provider constraint moved without persisting: the store holds the
-  // provider's value, so the chat keeps the one it was stored with.
-  if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
-    settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
-  }
-  if (keepsStoredValueUnderConstraint("toolsEnabled", threadId, settings)) {
-    settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
-  }
+  restoreChatOwnedValues(threadId, settings);
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
@@ -1981,21 +1988,28 @@ function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
     : false;
 }
 
-/** `state` with the paired chat's own pill choices, not the clamp its current model applies. */
-export function withPillPreferences<T extends ChatRuntimeStore>(state: T): T {
-  const next: Record<string, unknown> = { ...state };
+/** `state` with the paired chat's own values where the store shows its model's (pill clamps, a pin). */
+export function withChatOwnedSettings<T extends ChatRuntimeStore>(state: T): T {
+  const owned: ThreadScopedSettings = {
+    reasoningEnabled: state.reasoningEnabled,
+    reasoningEffort: state.reasoningEffort,
+  };
   for (const key of CLAMPED_PILL_KEYS) {
-    next[key] = readThreadScopedValue(state, key) === true;
+    owned[key] = readThreadScopedValue(state, key) === true;
   }
-  return next as T;
+  if (threadScopedSettingsThreadId !== null) {
+    restoreChatOwnedValues(threadScopedSettingsThreadId, owned);
+  }
+  return { ...state, ...owned };
 }
 
-/** Turns off the pills `state`'s model cannot serve, as a model load does. */
-export function clampPillsToModel<T extends ChatRuntimeStore>(state: T): T {
-  const next: Record<string, unknown> = { ...state };
+/** `run`, which carries `live`'s model, with that model's pill clamps and effort pin, as a load applies. */
+export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, live: T): T {
+  const next: Record<string, unknown> = { ...run };
   for (const key of CLAMPED_PILL_KEYS) {
-    next[key] = state[key] === true && !isPillClampedOff(state, key);
+    next[key] = run[key] === true && !isPillClampedOff(run, key);
   }
+  if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
   return next as T;
 }
 

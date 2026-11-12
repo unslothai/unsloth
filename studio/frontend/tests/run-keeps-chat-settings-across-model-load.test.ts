@@ -10,6 +10,7 @@ import test from "node:test";
 import ts from "@typescript/typescript6";
 
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
+import { useModelReasoningEffortStore } from "../src/features/model-picker/components/model-selector/model-reasoning-effort.ts";
 import {
   THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
@@ -27,8 +28,8 @@ type StoreState = Record<string, unknown> & { params: { checkpoint: string } };
 const {
   useChatRuntimeStore,
   codeToolsOn,
-  withPillPreferences,
-  clampPillsToModel,
+  withChatOwnedSettings,
+  withLoadedModelOverrides,
   resolveToolsEnabledOnLoad,
 } = (await import("../src/features/chat/stores/chat-runtime-store.ts")) as unknown as {
   useChatRuntimeStore: {
@@ -36,8 +37,8 @@ const {
     setState: (patch: Record<string, unknown>) => void;
   };
   codeToolsOn: (state: StoreState) => boolean;
-  withPillPreferences: (state: StoreState) => StoreState;
-  clampPillsToModel: (state: StoreState) => StoreState;
+  withChatOwnedSettings: (state: StoreState) => StoreState;
+  withLoadedModelOverrides: (run: StoreState, live: StoreState) => StoreState;
   resolveToolsEnabledOnLoad: (supportsTools: boolean) => Record<string, boolean>;
 };
 
@@ -193,7 +194,7 @@ const selectRunRuntime = new Function(
   "runtimeAtSend",
   "resolvedThreadId",
   "withRunThreadScopedSettings",
-  "clampPillsToModel",
+  "withLoadedModelOverrides",
   "mergeQueuedModelCapabilities",
   `let runtime;\n${ts.transpileModule(ADAPTER.slice(selectionStart, selectionEnd), {
     compilerOptions: { target: ts.ScriptTarget.ES2020 },
@@ -204,7 +205,7 @@ function runAfterWait(
   live: ReturnType<typeof chatState>,
   atSend: ReturnType<typeof chatState>,
   resolvedThreadId: string | undefined,
-  clamp: (state: never) => unknown = (state) => state,
+  overrides: (run: never, live: never) => unknown = (run) => run,
 ) {
   return selectRunRuntime(
     { getState: () => live },
@@ -213,7 +214,7 @@ function runAfterWait(
     atSend,
     resolvedThreadId,
     withRunThreadScopedSettings,
-    clamp,
+    overrides,
     () => {
       throw new Error("a direct send has no queued model capabilities");
     },
@@ -254,7 +255,7 @@ test("the adapter keeps the sent chat's settings while the shown chat's settings
 });
 
 test("the adapter takes its send-time settings before the model wait", () => {
-  const capture = ADAPTER.indexOf("      const runtimeAtSend = withPillPreferences(runtime);");
+  const capture = ADAPTER.indexOf("      const runtimeAtSend = withChatOwnedSettings(runtime);");
   const wait = ADAPTER.indexOf("await waitForModelReady(abortSignal);", capture);
   assert.ok(capture >= 0, "runtimeAtSend is captured");
   assert.ok(wait - capture < 400 && wait < selectionStart, "captured just before the wait");
@@ -276,7 +277,7 @@ test("chat A's tools follow its choice, not the clamp the outgoing model left", 
   });
   store.setState({ modelLoading: true });
   assert.equal(store.getState().toolsEnabled, false, "the outgoing model clamps the pill");
-  const atSend = withPillPreferences(store.getState());
+  const atSend = withChatOwnedSettings(store.getState());
 
   const loaded = {
     ...store.getState(),
@@ -285,14 +286,52 @@ test("chat A's tools follow its choice, not the clamp the outgoing model left", 
     supportsTools: true,
     params: { ...store.getState().params, checkpoint: "unsloth/new-model-GGUF" },
   } as unknown as ReturnType<typeof chatState>;
-  const run = runAfterWait(loaded, atSend as never, "chat-a", clampPillsToModel as never) as unknown as StoreState;
+  const run = runAfterWait(loaded, atSend as never, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState;
   assert.equal(run.toolsEnabled, true);
   assert.equal(codeToolsOn(run), true);
 
   // The model that loaded has no tools: the run's pills are off however the chat set them.
   const plain = { ...loaded, supportsTools: false } as typeof loaded;
-  const offRun = runAfterWait(plain, atSend as never, "chat-a", clampPillsToModel as never) as unknown as StoreState;
+  const offRun = runAfterWait(plain, atSend as never, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState;
   assert.equal(offRun.toolsEnabled, false);
   assert.equal(offRun.codeToolsEnabled, false);
+  store.setState({ modelLoading: false });
+});
+
+test("chat A runs at its own effort, not the outgoing model's pin", () => {
+  const store = useChatRuntimeStore;
+  store.setState({ settingsHydrated: true, modelLoading: false });
+  (store.getState().applyThreadScopedSettings as (id: string, s: object) => void)("chat-a", {
+    reasoningEffort: "low",
+  });
+  useModelReasoningEffortStore.setState({ effortByModel: { "pinned-model": "high" } });
+  const reasoning = {
+    supportsReasoning: true,
+    reasoningStyle: "reasoning_effort",
+    reasoningEffortLevels: ["low", "medium", "high"],
+  };
+  store.setState({
+    ...reasoning,
+    params: { ...store.getState().params, checkpoint: "pinned-model" },
+    reasoningEffort: "high",
+    modelLoading: true,
+  });
+  const atSend = withChatOwnedSettings(store.getState());
+  assert.equal(atSend.reasoningEffort, "low");
+
+  const loaded = (checkpoint: string, reasoningEffort: string) =>
+    ({
+      ...store.getState(),
+      ...reasoning,
+      activeThreadId: "chat-b",
+      modelLoading: false,
+      reasoningEffort,
+      params: { ...store.getState().params, checkpoint },
+    }) as unknown as ReturnType<typeof chatState>;
+  const run = (live: ReturnType<typeof chatState>) =>
+    runAfterWait(live, atSend as never, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState;
+  assert.equal(run(loaded("unsloth/local-model", "medium")).reasoningEffort, "low");
+  // A pin on the model that loaded still outranks the chat, as it would on screen.
+  assert.equal(run(loaded("pinned-model", "high")).reasoningEffort, "high");
   store.setState({ modelLoading: false });
 });
