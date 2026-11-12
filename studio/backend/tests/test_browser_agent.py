@@ -69,17 +69,25 @@ def test_navigate_refuses_local_and_non_web_addresses(url):
 
 def test_navigate_refuses_the_port_this_studio_listens_on(monkeypatch):
     state = types.SimpleNamespace(server_port = 8000, loopback_http_port = None)
-    monkeypatch.setitem(sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state)))
+    monkeypatch.setitem(
+        sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state))
+    )
     with pytest.raises(ValueError, match = "Unsloth's own address"):
         _request("browser_navigate", {"url": "http://localhost:8000/api/auth/me"})
     out = browser_agent.format_result(
         "browser_click", {"ok": True, "url": "http://127.0.0.1:8000/", "text": "secret"}, None
     )
     assert out.startswith("Error:") and "secret" not in out
-    assert _request("browser_navigate", {"url": "http://localhost:7860/"})["url"] == "http://localhost:7860/"
+    assert (
+        _request("browser_navigate", {"url": "http://localhost:7860/"})["url"]
+        == "http://localhost:7860/"
+    )
     # Before the server binds (or under another entry point) only the fixed rules apply.
     state.server_port = None
-    assert _request("browser_navigate", {"url": "http://localhost:8000/"})["url"] == "http://localhost:8000/"
+    assert (
+        _request("browser_navigate", {"url": "http://localhost:8000/"})["url"]
+        == "http://localhost:8000/"
+    )
     with pytest.raises(ValueError):
         _request("browser_navigate", {"url": "http://localhost:8888/"})
 
