@@ -319,7 +319,7 @@ from models.responses import (
     VisionCheckResponse,
     EmbeddingCheckResponse,
 )
-from utils.paths.path_utils import is_appledouble_metadata
+from utils.paths.path_utils import is_appledouble_metadata, is_network_or_device_path
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -1826,6 +1826,16 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
         seen_roots.add(key)
         resolved_roots.append(resolved)
 
+    if not any(_browse_relative_parts(requested_path, root) is not None for root in resolved_roots):
+        # Spelled through a symlinked root (moved install, linked $HOME): matches only once resolved.
+        if not is_network_or_device_path(requested_path):
+            try:
+                real = os.path.realpath(requested_path)
+            except (OSError, ValueError):
+                real = requested_path
+            if not is_network_or_device_path(real):
+                requested_path = real
+
     for root in resolved_roots:
         parts = _browse_relative_parts(requested_path, root)
         if parts is None:
@@ -2153,6 +2163,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     is_vision = llama_backend.is_vision,
                     is_audio = getattr(llama_backend, "_is_audio", False),
                     audio_type = getattr(llama_backend, "_audio_type", None),
+                    has_audio_input = bool(getattr(llama_backend, "_has_audio_input", False)),
                 )
             ]
 

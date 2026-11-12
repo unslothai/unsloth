@@ -2082,8 +2082,7 @@ def _run_search_then_finish(
     retrieve = None,
     decision_payloads = None,
 ):
-    """Drive the supplied decisions (by default one search followed by finish) and return
-    the completed run plus the synthesis prompts the model was given."""
+    """Drives the decisions (default: one search, then finish); returns run and synthesis prompts."""
     from core import research_runs as worker
 
     _patch_web_rank(monkeypatch, retrieve = retrieve)
@@ -2626,9 +2625,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
 def test_knowledge_base_evidence_beyond_the_source_cap_is_not_synthesized(
     research_home, monkeypatch
 ):
-    """A knowledge-base hit that the source cap refuses to persist must not reach synthesis:
-    it has no document_source_catalog entry, so any citation of it is stripped from the
-    finished report and the claim it supports would be left unattributed."""
+    """Unpersisted KB hits must not reach synthesis: their citations would be stripped as uncatalogued."""
     from core import research_runs as worker
 
     _create(
@@ -4125,8 +4122,7 @@ def test_repointing_clears_the_stopped_run_of_its_old_question(research_home):
     assert reused["steps"] == []
     assert reused["sources"] == []
     assert reused["planRevision"] > plan["planRevision"]
-    # Events replay into the activity panel, so a kept approval would claim the new question's
-    # plan was already approved.
+    # A kept approval must not survive a rebound, since events replay into the activity panel.
     types = [event["type"] for event in research_db.list_events("run-1")]
     assert "run.approved" not in types
     assert types[-1] == "run.rebound"
@@ -4494,8 +4490,7 @@ def _create_via_route(user_message_id, question = None):
 
 
 def test_an_attachment_only_turn_researches_the_handed_off_question(research_home):
-    """An attachment-only turn still researches the handed-off question, not the message's own empty
-    text."""
+    """An attachment-only turn researches the handed-off question, not the message's empty text."""
     message_id = _attachment_only_message()
 
     run = _create_via_route(message_id, question = "What does this revenue chart show for Q3?")
@@ -4679,3 +4674,93 @@ def test_worker_leaves_an_approved_run_unsearched_under_disable_tools(research_h
     run = research_db.get_run("run-1")
     assert called == []
     assert (run["status"], run["error"]) == ("failed", "Tools are disabled on this server")
+
+
+def _inventory_snapshot():
+    conn = studio_db.get_connection()
+    try:
+        state = conn.execute(
+            "SELECT dirty FROM chat_attachment_inventory_state WHERE singleton=1"
+        ).fetchone()
+        rows = conn.execute("SELECT * FROM chat_attachment_inventory ORDER BY 1, 2").fetchall()
+        return (state["dirty"] if state is not None else None), [tuple(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def test_terminal_fallback_keeps_a_clean_attachment_inventory_clean():
+    studio_db.upsert_chat_thread(
+        {
+            "id": "thread-inv",
+            "title": "T",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-inv",
+            "threadId": "thread-inv",
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "question"},
+                {"type": "image", "image": "data:image/png;base64,iVBORw0KGgo="},
+            ],
+            "createdAt": 2,
+        }
+    )
+    _create(
+        "run-inv", assistant_message_id = None, thread_id = "thread-inv", user_message_id = "user-inv"
+    )
+    research_db.set_plan("run-inv", _plan())
+    assert research_db.request_cancel("run-inv") == "cancelled"
+    before_dirty, before_rows = _inventory_snapshot()
+    assert before_dirty == 0
+
+    message_id, created = research_db.create_and_bind_terminal_fallback(
+        "run-inv",
+        text = "Research cancelled.",
+        status = "cancelled",
+        sources = [{"url": "https://example.com", "title": "Example", "snippet": "s"}],
+    )
+    assert created is True
+    dirty, rows = _inventory_snapshot()
+    assert dirty == 0
+    assert rows == before_rows
+
+    conn = studio_db.get_connection()
+    try:
+        studio_db._rebuild_chat_attachment_inventory(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    rebuilt_dirty, rebuilt_rows = _inventory_snapshot()
+    assert rebuilt_dirty == 0
+    assert rebuilt_rows == rows
+    assert any(m["id"] == message_id for m in studio_db.list_chat_messages("thread-inv"))
+
+
+def test_insert_server_chat_message_indexes_entries_like_a_rebuild():
+    studio_db.upsert_chat_thread(
+        {"id": "thread-img", "title": "T", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    assert _inventory_snapshot()[0] == 0
+    content = [{"type": "image", "image": "data:image/png;base64,iVBORw0KGgo="}]
+    conn = studio_db.get_connection()
+    try:
+        studio_db.insert_server_chat_message(
+            conn, "server-img", "thread-img", None, json.dumps(content), "{}", 2
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    dirty, rows = _inventory_snapshot()
+    assert dirty == 0 and len(rows) == 1
+    conn = studio_db.get_connection()
+    try:
+        studio_db._rebuild_chat_attachment_inventory(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    assert _inventory_snapshot() == (0, rows)

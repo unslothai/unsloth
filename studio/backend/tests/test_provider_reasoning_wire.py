@@ -262,7 +262,6 @@ def test_gemma_on_gemini_toggles_with_thinking_level_not_budget():
 
 
 # Claude 4.5 and earlier reject adaptive thinking and require budget_tokens.
-# https://platform.claude.com/docs/en/build-with-claude/extended-thinking
 @pytest.mark.parametrize(
     "model,effort,budget",
     [

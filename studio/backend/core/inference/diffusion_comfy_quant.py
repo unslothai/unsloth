@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
 from .diffusion_fp8_dequant import chunk_rows, dequant_rows, fused_dequant_enabled
+from .diffusion_init_buffers import is_fp32_init_table
 from .diffusion_single_file_converters import host_ram_budget_scope
 from .diffusion_small_host import FP8_STORAGE_HOST_RESERVE_MIB
 
@@ -968,16 +969,20 @@ def comfy_int8_backend(
     base_repo: Optional[str] = None,
     *,
     offload: bool = False,
+    lora: bool = False,
 ) -> Optional[str]:
-    """int8 runtime: torchao when resident, native under offload, None to dequantise to bf16."""
+    """int8 runtime: torchao when resident, native under offload (or as storage, ``int8_storage_scheme``, where neither
+    runs; never under a LoRA), None to dequantise to bf16."""
     if (os.environ.get(COMFY_INT8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:
         from .diffusion_transformer_quant import (
             TQ_INT8,
+            int8_storage_scheme,
             native_quant_scheme,
             select_transformer_quant_scheme,
         )
+
         if native_quant_scheme(target, TQ_INT8, family = family, offload = offload) == TQ_INT8:
             return "native"
         if not offload and (
@@ -985,6 +990,8 @@ def comfy_int8_backend(
             == TQ_INT8
         ):
             return "torchao"
+        if not lora and int8_storage_scheme(target, family, offload = offload) == TQ_INT8:
+            return "native"
     except Exception:  # noqa: BLE001 -- an unanswerable probe takes the exact dense path
         pass
     return None
@@ -996,6 +1003,7 @@ def comfy_fp8_backend(
     base_repo: Optional[str] = None,
     *,
     offload: bool = False,
+    torchao_offload: bool = False,
 ) -> Optional[str]:
     """Which of Studio's fp8 runtimes takes the ``float8_e4m3fn`` layers, by the rule its own fp8 quant
     follows: ``"torchao"`` (the per-row ``Float8Tensor`` and ``_scaled_mm``) on a resident plan whose GPU
@@ -1003,6 +1011,7 @@ def comfy_fp8_backend(
     quant runs natively (ROCm, the stubbed torchao), None (dequantize to bf16) where neither runs: an
     older GPU, CPU, MPS, or an offloaded plan on the torchao path (the model offload hooks cannot move a
     ``Float8Tensor``: "Attempted to set the storage of a tensor on device cuda:0 to a storage on ... cpu").
+    ``torchao_offload``: the plan streams the denoiser (``torchao_offload_plan``), which torchao survives.
     ``UNSLOTH_DIFFUSION_COMFY_FP8=0`` never takes an fp8 GEMM."""
     if (os.environ.get(COMFY_FP8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
@@ -1018,7 +1027,7 @@ def comfy_fp8_backend(
         if native_quant_scheme(target, TQ_FP8, family = family, offload = offload) == TQ_FP8:
             return "native"
         if (
-            not offload
+            (not offload or torchao_offload)
             and getattr(target, "dtype", None) is torch.bfloat16
             and select_transformer_quant_scheme(target, TQ_FP8, family = family, base_repo = base_repo)
             == TQ_FP8
@@ -1778,12 +1787,14 @@ def load_comfy_quant_transformer(
         model.load_state_dict(converted, strict = False, assign = True)
     loaded = set(converted)
     del converted
-    # __init__ buffers (Wan's float64 rope) follow the compute dtype; checkpoint buffers keep theirs (H3 curve table)
+    # __init__ buffers follow the compute dtype except fp32 tables; checkpoint buffers keep theirs (H3 curve)
     for module_name, module in model.named_modules():
         if module_name in block_native or module_name in block_packed:
             continue  # fp32 scales / alpha the block kernels need; codes are not floating
         for buffer_name, buffer in list(module._buffers.items()):
             if (f"{module_name}.{buffer_name}" if module_name else buffer_name) in loaded:
+                continue
+            if is_fp32_init_table(module, buffer_name, buffer):
                 continue
             if buffer is not None and buffer.is_floating_point():
                 want = _dtype_for(f"{module_name}.{buffer_name}")

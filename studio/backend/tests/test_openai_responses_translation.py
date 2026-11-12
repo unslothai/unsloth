@@ -67,8 +67,7 @@ def _responses_sse(events: list[dict]) -> bytes:
 
 
 def _capture_responses_body(monkeypatch, model: str) -> dict:
-    """The outbound /v1/responses body for one model, with the sampling
-    defaults ChatCompletionRequest fills in when the caller sets nothing."""
+    """Outbound /v1/responses body, including ChatCompletionRequest's default sampling fields."""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -446,9 +445,8 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
 
 
 def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):
-    """Round 13: parallel function_call items must land on distinct
-    delta.tool_calls[].index slots so index-keyed clients don't collapse the
-    second call into the first."""
+    """Parallel function_call items must get distinct delta.tool_calls[].index slots, or index-keyed
+    clients merge the second call into the first."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         events = [
@@ -937,6 +935,80 @@ def test_responses_streamed_reasoning_summary_shown_once(monkeypatch, with_delta
         if payload["choices"][0]["delta"]
     )
     assert combined == "<think>Thinking about it.\n\nThen answering.</think>Hello"
+
+
+@pytest.mark.parametrize(
+    "tool_item",
+    (
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "web_search",
+            "arguments": '{"query":"unsloth"}',
+        },
+        {
+            "type": "web_search_call",
+            "id": "ws_1",
+            "action": {"type": "search", "query": "unsloth"},
+        },
+        {"type": "shell_call", "id": "sh_1", "action": {"commands": ["ls"]}},
+        {"type": "image_generation_call", "id": "ig_1", "result": ""},
+    ),
+    ids = lambda item: item["type"],
+)
+def test_responses_think_block_closes_before_tool_call(monkeypatch, tool_item):
+    def handler(request: httpx.Request) -> httpx.Response:
+        base = {"item_id": "rs_1", "output_index": 0, "summary_index": 0}
+        events = [
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {"type": "reasoning", "id": "rs_1", "summary": []},
+            },
+            {"type": "response.reasoning_summary_text.delta", **base, "delta": "Planning "},
+            {"type": "response.reasoning_summary_text.delta", **base, "delta": "a tool call."},
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "Planning a tool call."}],
+                },
+            },
+            {"type": "response.output_item.added", "output_index": 1, "item": tool_item},
+            {"type": "response.output_item.done", "output_index": 1, "item": tool_item},
+            {"type": "response.completed", "response": {}},
+        ]
+        return httpx.Response(
+            200,
+            content = _responses_sse(events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    lines = _drive(run())
+    payloads = [
+        json.loads(line[len("data:") :].strip())
+        for line in lines
+        if line.startswith("data:") and line[len("data:") :].strip() not in ("", "[DONE]")
+    ]
+    tool_at = next(
+        i
+        for i, payload in enumerate(payloads)
+        if payload.get("_toolEvent")
+        or (payload["choices"] and payload["choices"][0]["delta"].get("tool_calls"))
+    )
+
+    def text(chunks: list[dict]) -> str:
+        return "".join(
+            chunk["choices"][0]["delta"].get("content", "") for chunk in chunks if chunk["choices"]
+        )
+
+    assert text(payloads[:tool_at]) == "<think>Planning a tool call.</think>"
+    assert text(payloads[tool_at:]) == ""
 
 
 @pytest.mark.parametrize(

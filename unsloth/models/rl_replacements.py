@@ -1464,9 +1464,8 @@ def sft_trainer_compute_loss(function_name, function):
         return_outputs = False,
         num_items_in_batch = None,
     ):
-        # TRL >= 1.15 computes loss_type="dft" only in the compute_loss this replaces (else it trains as NLL):
-        # run it on TRL's fused LM head. Older TRL routes DFT through compute_loss_func.
-        # TRL label smoothing applies only to "nll", so label_smoother must not opt dft out.
+        # Runs DFT on the TRL fused LM head (TRL >= 1.15 computes it only in compute_loss; older TRL
+        # routes it via compute_loss_func); label smoothing must not opt dft out.
         if getattr(self.args, "loss_type", None) == "dft" and self.compute_loss_func is None:
             import trl.trainer.utils as _trl_utils
             if hasattr(_trl_utils, "add_fused_lm_head"):
@@ -2408,7 +2407,38 @@ def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad)
         if model_config is None:
             model_config = getattr(getattr(engine, "vllm_config", None), "model_config", None)
         max_model_len = getattr(model_config, "max_model_len", None)
-        if not isinstance(max_model_len, int):
+        if model_config is None:
+            # Server mode: ask the server once per rank (only rank 0 holds a client, so use the args URL).
+            # vLLM's /v1/models has it (TRL 1.16+ runs `vllm serve`); older TRL servers lack it, so fall
+            # back to vllm_max_model_length, then max_position_embeddings (what TRL's tool loop uses).
+            args = getattr(trainer, "args", None)
+            max_model_len = getattr(trainer, "_unsloth_server_max_model_len", False)
+            if max_model_len is False:
+                max_model_len = None
+                try:
+                    import requests
+
+                    url = getattr(args, "vllm_server_base_url", None) or (
+                        f"http://{args.vllm_server_host}:{args.vllm_server_port}"
+                    )
+                    response = requests.get(f"{url.rstrip('/')}/v1/models", timeout = 10)
+                    if response.status_code == 200:
+                        max_model_len = response.json()["data"][0]["max_model_len"]
+                except Exception:
+                    pass
+                trainer._unsloth_server_max_model_len = max_model_len
+            if not isinstance(max_model_len, int) or max_model_len <= 0:
+                max_model_len = getattr(args, "vllm_max_model_length", None)
+            # vLLM reads -1 as "auto"; the resolved server value is unknown here.
+            if not isinstance(max_model_len, int) or max_model_len <= 0:
+                config = getattr(getattr(trainer, "model", None), "config", None)
+                get_text_config = getattr(config, "get_text_config", None)
+                if callable(get_text_config):
+                    config = get_text_config()
+                elif getattr(config, "text_config", None) is not None:
+                    config = config.text_config
+                max_model_len = getattr(config, "max_position_embeddings", None)
+        if not isinstance(max_model_len, int) or isinstance(max_model_len, bool):
             max_model_len = None
     if (
         max_model_len is not None
@@ -3227,8 +3257,7 @@ def _unsloth_vllm_peft_unsupported(model):
             problems.append(f"LoRA on MultiheadAttention at {module_name}")
             break
     for module_name, module in model.named_modules():
-        # A custom tuner layer on a composite base: its weights live in child modules the copy
-        # merge does not see, so the merged weights would never be sent.
+        # Custom tuner on a composite base: weights sit in child modules the merge never sees.
         if getattr(module, "base_layer", None) is None or not hasattr(module, "get_base_layer"):
             continue
         base = module.get_base_layer()
@@ -3343,11 +3372,9 @@ def _unsloth_vllm_sync_kind(trainer):
     problems.extend(
         f"one base weight shared by {names}" for names in _unsloth_vllm_shared_targets(model)
     )
-    # Unsharded: every mergeable PEFT setup is merged out of place, so the frozen base never moves.
-    # ZeRO-3: TRL merges inside GatheredParameters(modifier_rank = None), which discards in-place edits
-    # of the gathered copy on exit, so its merge / unmerge cannot drift the stored base either.
-    # FSDP: TRL calls merge_adapter before it gathers the sharded parameters, so PEFT's full-size
-    # deltas meet sharded base weights (and the in-place round trip would drift a 16-bit base).
+    # Unsharded merges out of place so the frozen base never moves; ZeRO-3 merges inside
+    # GatheredParameters, which discards in-place edits on exit; FSDP is refused since TRL merges
+    # before gathering shards.
     kind = "peft_merged" if not sharded else "trl"
     if getattr(trainer, "is_fsdp_enabled", False):
         problems.append(
@@ -3846,8 +3873,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             def chunked_hidden_states_selective_log_softmax(
                 hidden_states, _lm_head, *args, **kwargs
             ):
-                # FSDP2's forward hooks replace Parameters. Read the current head
-                # at projection time, including the bias, instead of retaining a shard.
+                # FSDP2 replaces Parameters; read the head at projection, not a saved shard.
                 if _zero3_head is not None:
                     head_weight, head_bias = _zero3_head
                 else:
@@ -4011,7 +4037,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     # Skip softcap models (the flex kernel never applies attn_logit_softcapping) and hybrid SSM / MoE models: only the threaded attention forwards get shared-prefix isolation, so a decoder that does not forward prefix_seg_info leaks suffixes across completions. PG also rides on sequence packing, so it needs the same zoo masked-column guard.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
                     _pg_engage = (
-                        _pg_enabled_fn()
+                        # Given the model, also requires prefix_seg_info_applied(model).
+                        _pg_enabled_fn(unwrapped_model)
                         and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
                         and pixel_values is None
                         and token_type_ids is None
@@ -4799,6 +4826,22 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
     return source
 
 
+_GRPO_PREFIX_GROUPER_GATE = re.compile(r"\b_pg_enabled_fn\(\s*\)")
+
+
+def _patch_grpo_accumulated_loss_prefix_grouper_gate(source):
+    """Pass the model to zoo's ``_pg_enabled_fn()`` so the gradient PrefixGrouper checks ``prefix_seg_info_applied``: a forward ignoring ``prefix_seg_info`` leaks completions across a group yet passes the 0.7-nat self-verify. Fails at generation if zoo has the feature but not this gate."""
+    if "prefix_seg_info" not in source:
+        return source
+    source, replacements = _GRPO_PREFIX_GROUPER_GATE.subn("_pg_enabled_fn(unwrapped_model)", source)
+    if replacements == 0 and "_pg_enabled_fn(unwrapped_model)" not in source:
+        raise RuntimeError(
+            "Unsloth: could not find the GRPO gradient PrefixGrouper gate in this "
+            "unsloth_zoo version. Please upgrade unsloth_zoo."
+        )
+    return source
+
+
 _GRPO_HIDDEN_STATES_REQUEST = re.compile(
     r"""os\.environ\[\s*(["'])UNSLOTH_RETURN_HIDDEN_STATES\1\s*\]\s*=\s*(["'])1\2"""
 )
@@ -5157,8 +5200,10 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_head_hooks(
-        _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_prefix_grouper_gate(
+        _patch_grpo_accumulated_loss_head_hooks(
+            _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+        )
     )
 )
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
