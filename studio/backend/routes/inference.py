@@ -3762,6 +3762,7 @@ from core.inference.sse_control_frames import (
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
     ToolLoopRun,
+    _delta_text,
     stream_with_studio_tools,
 )
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -7568,7 +7569,19 @@ def _monitor_openai_chunk(
             choice_index = idx
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
-        if isinstance(delta, dict) and delta.get("reasoning_content"):
+        raw_content = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(delta, dict) and (
+            delta.get("reasoning_content")
+            or (
+                isinstance(raw_content, list)
+                and any(
+                    isinstance(part, dict)
+                    and part.get("type") == "thinking"
+                    and _delta_text(part.get("thinking"))
+                    for part in raw_content
+                )
+            )
+        ):
             api_monitor.mark_first_token(monitor_id)
 
         streamed_tool_delta = False
@@ -7584,7 +7597,7 @@ def _monitor_openai_chunk(
                     choice_index,
                     delta.get("function_call"),
                 )
-        content = delta.get("content") if isinstance(delta, dict) else None
+        content = _delta_text(raw_content)
         if content:
             if streaming:
                 _flush_monitor_stream_tool_calls(
@@ -7684,7 +7697,10 @@ def _monitor_openai_sse_data(
         if error_message:
             api_monitor.fail(monitor_id, error_message)
             return "error"
-        _monitor_openai_chunk(monitor_id, data, context_length, streaming = True)
+        try:
+            _monitor_openai_chunk(monitor_id, data, context_length, streaming = True)
+        except Exception as exc:
+            logger.warning("api_monitor.chunk_failed", error = str(exc))
     return None
 
 
