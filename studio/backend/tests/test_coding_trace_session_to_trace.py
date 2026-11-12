@@ -539,7 +539,7 @@ def test_user_attachments_are_model_input():
         {**_row("u2", "user", [], "a", 3), "attachments": attachments[:1]},
     ]
     trace = session_to_trace({"id": "t"}, rows)
-    assert [m.text for m in trace.messages] == ["Fix this\ndef f(): pass", "ok", "\ndef f(): pass"]
+    assert [m.text for m in trace.messages] == ["Fix this\ndef f(): pass", "ok", "def f(): pass"]
     assert _codes(trace).count("unsupported_part") == 1
 
 

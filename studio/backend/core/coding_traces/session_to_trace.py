@@ -119,8 +119,9 @@ def _model_parts(message: dict) -> list:
     """Parts minus mcpToolOnly ones (modelVisibleMessage); only user rows keep attachments."""
     parts = message.get("content")
     if message.get("role") == "user":
-        # toThreadMessage loads content that is not a non-empty list as one empty text part.
-        loaded = parts if isinstance(parts, list) and parts else [{"type": "text", "text": ""}]
+        # The first send has no text part when nothing was typed, so attachment text comes
+        # first; a replay would load "" there (toThreadMessage) and prefix a "\n".
+        loaded = parts if isinstance(parts, list) else []
         parts = _with_attachments({**message, "content": loaded})
     if not isinstance(parts, list):
         return []  # an assistant's lone empty text part sends nothing
@@ -206,7 +207,7 @@ def _convert_row(
     # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
     pending: list[TraceMessage] = []
     pending_round = reasoned = imaged = None
-    # collectTextParts joins all user text parts, even the "" that _model_parts loads.
+    # collectTextParts joins all user text parts with "\n", empty ones included.
     pieces, texted, split = 0, None, False
     for position, part in enumerate(_model_parts(message)):
         kind = part.get("type") if isinstance(part, dict) else None
