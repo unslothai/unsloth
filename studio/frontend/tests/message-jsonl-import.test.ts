@@ -709,7 +709,7 @@ test("alpaca system, text-part tool outputs and bundled call outputs survive imp
   ).filter((p) => p.type === "tool-call");
   assert.deepEqual(calls.map((p) => p.result), ["file body", "a.txt"]);
   assert.equal(response.messages.at(-1)?.role, "assistant");
-  assert.deepEqual((response.messages.at(-1)?.content as ReadonlyArray<unknown>)[0], { type: "text", text: "Done." });
+  assert.deepEqual((response.messages.at(-1)?.content as ReadonlyArray<unknown>).at(-1), { type: "text", text: "Done." });
 });
 
 test("a finished web_search_call imports as an answered call", () => {
@@ -730,7 +730,7 @@ test("a finished web_search_call imports as an answered call", () => {
     .find((p) => p.type === "tool-call");
   assert.equal(call?.toolName, "web_search");
   assert.equal(call?.result, "completed");
-  assert.deepEqual((conversation.messages.at(-1)?.content as ReadonlyArray<unknown>)[0], { type: "text", text: "Here is the news." });
+  assert.deepEqual((conversation.messages.at(-1)?.content as ReadonlyArray<unknown>).at(-1), { type: "text", text: "Here is the news." });
 });
 
 test("a builtin call keeps its explicit output item over a status placeholder", () => {
@@ -903,7 +903,7 @@ test("hosted results do not split the assistant run they belong to", () => {
   const parts = conversation.messages[1].content as ReadonlyArray<{ type?: string; text?: string; result?: unknown }>;
   assert.deepEqual(
     parts.map((p) => (p.type === "tool-call" ? p.result : p.text)),
-    ["Here is the news.", "completed", "Monday"],
+    ["completed", "Monday", "Here is the news."],
   );
 });
 
@@ -932,4 +932,39 @@ test("string output, id-keyed local shell output and lone screenshots import int
   const last = conversation.messages.at(-1);
   assert.equal(last?.role, "assistant");
   assert.ok((last?.content as ReadonlyArray<{ type?: string }>).some((p) => p.type === "tool-call"));
+});
+
+test("raw Responses item lines do not import as standalone answers", () => {
+  const conversations = parseImportText(
+    [
+      { type: "function_call", call_id: "c", name: "add", arguments: "{}" },
+      { type: "function_call_output", call_id: "c", output: "8" },
+    ].map((item) => JSON.stringify(item)).join("\n"),
+    "items.jsonl",
+  );
+
+  assert.deepEqual(conversations, []);
+});
+
+test("a hosted call before its answer exports in that order", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [{ role: "user", content: "Compute" }],
+      output: [
+        { type: "code_interpreter_call", id: "ci1", code: "print(2)", outputs: [{ type: "logs", logs: "2" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "It printed 2." }] },
+      ],
+    }),
+    "response.json",
+  );
+
+  const exported = messageToOpenAI({
+    role: "assistant",
+    content: conversation.messages[1].content,
+  }) as Array<{ role: string; content?: unknown }>;
+  const answerAt = exported.findIndex(
+    (m) => m.role === "assistant" && JSON.stringify(m.content ?? "").includes("It printed 2."),
+  );
+  assert.equal(answerAt, exported.length - 1);
 });

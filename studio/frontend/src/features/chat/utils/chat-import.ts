@@ -184,6 +184,7 @@ function oaiMessagesToRecords(
     if (role === "assistant") {
       const parts = oaiContentToParts(msg.content);
       if (parts.length === 0) parts.push(...oaiContentToParts(msg.refusal));
+      const callParts: unknown[] = [];
       if (Array.isArray(msg.tool_calls)) {
         for (const tc of msg.tool_calls) {
           const tcObj = tc as Record<string, unknown>;
@@ -201,11 +202,16 @@ function oaiMessagesToRecords(
             args,
             argsText: argsStr,
           };
-          parts.push(part);
+          callParts.push(part);
           pending.push({ turn: idx, part });
         }
       }
-      content = parts;
+      const order = (msg as { [ITEM_ORDER]?: unknown[] })[ITEM_ORDER];
+      content = order
+        ? order.flatMap((item) =>
+            typeof item === "number" ? callParts.slice(item, item + 1) : oaiContentToParts([item]),
+          )
+        : [...parts, ...callParts];
     } else {
       content = oaiContentToParts(msg.content);
     }
@@ -373,6 +379,8 @@ function pairToTurns(obj: Record<string, unknown>): unknown[] {
 // A Responses tool turn's {text, images} result: the live parser's wrapper, which replay unwraps
 // into text plus image input. Symbol-keyed so imported JSON cannot set it.
 const STRUCTURED_RESULT = Symbol("structuredResult");
+// Item order of a merged Responses assistant run: content parts and tool_calls indices.
+const ITEM_ORDER = Symbol("itemOrder");
 
 // Responses tool outputs may be content-part arrays (text, logs, images).
 function toolTurn(callId: string, output: unknown): Record<string | symbol, unknown> {
@@ -416,15 +424,23 @@ const CLIENT_RUN_CALLS = new Set(["function_call", "custom_tool_call", "local_sh
 // Saved Responses API object: adjacent assistant items share one turn, as in the
 // backend's _normalise_responses_input, so parallel calls precede their outputs.
 function responsesToTurns(obj: Record<string, unknown>): unknown[] {
+  // A lone typed item (a raw function_call_output line) is not a transcript.
+  if (typeof obj.type === "string") return [];
   const turns: Record<string | symbol, unknown>[] = [];
   const built = new Set<Record<string | symbol, unknown>>();
-  const assistantTurn = () => {
+  type Built = { content: unknown[]; tool_calls: unknown[]; [ITEM_ORDER]: unknown[] };
+  const assistantTurn = (): Built => {
     const last = turns[turns.length - 1];
-    if (last && built.has(last)) return last as { content: unknown[]; tool_calls: unknown[] };
-    const turn = { role: "assistant", content: [] as unknown[], tool_calls: [] as unknown[] };
+    if (last && built.has(last)) return last as unknown as Built;
+    const turn = { role: "assistant", content: [], tool_calls: [], [ITEM_ORDER]: [] };
     built.add(turn);
     turns.push(turn);
     return turn;
+  };
+  const addContent = (...parts: unknown[]) => {
+    const turn = assistantTurn();
+    turn.content.push(...parts);
+    turn[ITEM_ORDER].push(...parts);
   };
   // Hosted results wait until the assistant run ends: a tool turn mid-run would split it, and
   // replay drops the hosted call, leaving a tool-only record that pruning treats as abandoned.
@@ -450,7 +466,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
   for (const entry of items) {
     const type = typeof entry.type === "string" ? entry.type : "";
     if (entry.role === "assistant") {
-      assistantTurn().content.push(
+      addContent(
         ...(Array.isArray(entry.content)
           ? entry.content
           : text(entry.content)
@@ -462,7 +478,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
     } else if (type === "image_generation_call") {
       const encoded = text(entry.result) ?? text(entry.b64_json);
       if (encoded) {
-        assistantTurn().content.push({
+        addContent({
           type: "image_url",
           image_url: /^(?:https?:|data:)/i.test(encoded)
             ? encoded
@@ -491,7 +507,9 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
               : entry.input !== undefined
                 ? { input: entry.input }
                 : (entry.arguments ?? entry.action ?? {});
-      assistantTurn().tool_calls.push({
+      const turn = assistantTurn();
+      turn[ITEM_ORDER].push(turn.tool_calls.length);
+      turn.tool_calls.push({
         id,
         type: "function",
         function: {
@@ -529,7 +547,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
     }
   }
   const output = text(obj.output);
-  if (output) assistantTurn().content.push({ type: "text", text: output });
+  if (output) addContent({ type: "text", text: output });
   turns.push(...deferred);
   return turns;
 }
