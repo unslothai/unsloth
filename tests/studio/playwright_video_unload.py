@@ -62,6 +62,8 @@ def main():
         menu_eject = page.get_by_role("button", name = "Eject model", exact = True)
         unloading = page.get_by_text("Unloading model", exact = True)
         expect(shortcut).to_be_visible(timeout = 30_000)
+        # The mount probe must have resumed the generation, or the eject parks it behind the held unload.
+        expect(page.get_by_role("button").filter(has_text = "Cancel").first).to_be_visible()
 
         # Two clicks in one event turn also exercise the guard before React updates the DOM.
         with page.expect_request("**/api/inference/video/unload"):
