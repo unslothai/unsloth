@@ -4663,7 +4663,7 @@ export function ImagesPage({
         wanted,
         "auto",
         false,
-        pick.opts.kind === "gguf" ? (pick.opts.filename ?? null) : null,
+        pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null),
       );
     }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
