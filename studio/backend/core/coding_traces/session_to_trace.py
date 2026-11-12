@@ -239,7 +239,7 @@ def _convert_row(
         elif kind == "tool-call" and role == "assistant":
             call_id = _unique_call_id(part, message_id, position, call_ids, warnings)
             name = str(part.get("toolName") or "")
-            current.tool_calls.append(ToolCall(call_id, name or "unknown", _call_arguments(part)))
+            current.tool_calls.append(ToolCall(call_id, name, _call_arguments(part)))
             pending.append(_tool_message(part, name, call_id, message))
             if flush_pair:
                 _flush(pending, out)

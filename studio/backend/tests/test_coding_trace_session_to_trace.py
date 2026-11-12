@@ -287,6 +287,15 @@ def test_adjacent_rows_alternate_calls_and_results():
     assert "unsupported_part" not in _codes(trace)  # the UI drops source parts silently
 
 
+def test_empty_tool_name_is_kept():
+    rows = [
+        _row("u", "user", _text("go"), None, 1),
+        _row("a", "assistant", [_call("c", "")], "u", 2),
+    ]
+    trace = session_to_trace({"id": "t"}, rows)
+    assert trace.messages[-2].tool_calls[0].name == ""  # chat-import.ts stores "" as is
+
+
 @pytest.mark.parametrize(
     "parts, text, codes",
     [
