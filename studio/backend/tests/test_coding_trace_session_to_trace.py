@@ -354,6 +354,14 @@ def test_refused_and_abandoned_turns_are_pruned(custom, content, before):
     assert _shape(_turn(custom, content)) == before + [("user", "again"), ("assistant", "fine")]
 
 
+def test_abandoned_turn_warns_for_each_dropped_call():
+    # Cursor stores calls with no results; a row of only such calls is pruned like the UI does.
+    trace = _turn({}, [_call("k", result = None), _call("s", "studio_load_skill", None)])
+    assert _shape(trace) == [("user", "again"), ("assistant", "fine")]
+    assert _codes(trace) == ["unanswered_tool_call_dropped", "skill_preload_not_stored"]
+    assert trace.warnings[0].message_id == "a"
+
+
 def test_stopped_turn_replays_reasoning_beside_text_or_calls():
     # Untrimmed text or a call keeps a stopped group's reasoning; a completed turn always keeps it.
     think = {"type": "reasoning", "text": "think"}

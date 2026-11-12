@@ -439,10 +439,11 @@ def _abandoned(message: dict) -> bool:
     return not payload and not _replayed(message, reasoning = True)
 
 
-def _prune(chain: list[dict]) -> list[dict]:
+def _prune(chain: list[dict], warnings: list[TraceWarning]) -> list[dict]:
     """Drop refused and abandoned turns as pruneOutboundHistory (chat-adapter.ts) does, and give an
     empty stopped turn its label, as fillStoppedAssistantReplay does. An unsettled run's row gets no
-    "Response interrupted" label: the UI asks the server if the run is live, and rows lack that."""
+    "Response interrupted" label: the UI asks the server if the run is live, and rows lack that.
+    Each tool call in an abandoned turn gets the warning it would get in a kept turn."""
 
     meta = [_as_dict(m.get("metadata")) for m in chain]  # runtime-provider.tsx: metadata.custom
     assistant = [m.get("role") != "user" for m in chain]
@@ -457,6 +458,10 @@ def _prune(chain: list[dict]) -> list[dict]:
     kept: list[dict] = []
     for index, message in enumerate(chain):
         if dropped[index]:
+            # An abandoned turn has no replayed call, so _skipped_call warns for each one.
+            for position, part in enumerate([] if refused[index] else _model_parts(message)):
+                if isinstance(part, dict) and part.get("type") == "tool-call":
+                    warnings.append(_skipped_call(part, message["id"], position))
             if (refused[index] or index < last) and kept and kept[-1].get("role") == "user":
                 kept.pop()
             continue
@@ -612,7 +617,7 @@ def session_to_trace(
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no messages")
     warnings: list[TraceWarning] = []
     chain = _branch(messages, head_id, warnings)
-    trace_messages = _convert(_prune(chain), warnings)
+    trace_messages = _convert(_prune(chain, warnings), warnings)
     if not any(m.role != "user" or m.text for m in trace_messages):
         raise ChatTraceError(f"Thread {thread.get('id')!r} has no usable content on this branch")
     if not any(m.role == "user" for m in trace_messages):
