@@ -1242,6 +1242,31 @@ def _model_capability_names(model: dict) -> Optional[list[str]]:
     return [name for name in values if isinstance(name, str) and name]
 
 
+@router.post("/{provider_id}/served-window")
+async def load_served_window(provider_id: str, model: str):
+    row = providers_db.get_provider(provider_id)
+    if row is None or not row["is_enabled"] or model not in (row.get("models") or []):
+        raise HTTPException(status_code = 404, detail = "Connection model not found")
+    try:
+        # The saved key and headers stay with the chat path; a keyed server just reports nothing.
+        client = await asyncio.to_thread(
+            ExternalProviderClient,
+            provider_type = row["provider_type"],
+            base_url = row["base_url"],
+            api_key = "",
+            api_type = row.get("api_type", "chat_completions"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    if row["provider_type"] != "ollama":
+        return {"context_length": await client.served_context_window(model)}
+    try:
+        return {"context_length": await client.load_ollama_window(model)}
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.info("providers.ollama_load_failed", error = repr(exc))
+        return {"context_length": None}
+
+
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
