@@ -198,8 +198,7 @@ def _strip_bos_from_chat_template_text(chat_template):
     if not isinstance(chat_template, str) or not chat_template:
         return chat_template
     stripped = re.sub(r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\}[\s\-]*\}", "", chat_template, count = 1)
-    # Drop only the `bos_token +` term, so Llama 2's `{{ bos_token + ... }}` keeps its `{{ }}` and
-    # Llama 3's `{% set content = bos_token + content %}` keeps its statement.
+    # Drop only the `bos_token +` term: Llama 2's `{{ }}` and Llama 3's `{% set %}` must survive.
     return re.sub(r"\bbos\_token\s*\+\s*", "", stripped, count = 1)
 
 
