@@ -408,8 +408,13 @@ class TileGraphs:
 class _Race:
     """In-place race of eager vs graph arms over real decoder calls, carried across decodes until decided."""
 
-    def __init__(self, arms: tuple) -> None:
+    def __init__(
+        self,
+        arms: tuple,
+        forced: bool = False,
+    ) -> None:
         self.arms = (0, *arms)
+        self.forced = forced
         self.times: dict = {a: [] for a in self.arms}
         self.decided: Optional[int] = None
         self.graphs: Optional[TileGraphs] = None
@@ -421,6 +426,9 @@ class _Race:
     def current(self) -> int:
         if self.decided is not None:
             return self.decided
+        if self.forced:
+            # forced replicas: one eager call first gives the exactness reference, then the graphs
+            return self.arms[-1] if self.reference is not None else 0
         for a in self.arms:
             if len(self.times[a]) < GRAPH_RACE_CALLS:
                 return a
@@ -504,7 +512,7 @@ def canvas_decode(
         if race is None:
             if len(races) >= 4:
                 races.clear()
-            race = races[key] = _Race(arms)
+            race = races[key] = _Race(arms, forced = tile_graphs_setting() is not None)
         prints = _weights_print(vae)
         if race.prints is None:
             race.prints = prints
@@ -525,7 +533,7 @@ def canvas_decode(
         arm = race.current() if race is not None and len(group) == batch else 0
         rep = None
         timed = None
-        if race is not None and race.decided is None and len(group) == batch:
+        if race is not None and race.decided is None and not race.forced and len(group) == batch:
             if arm == 0 and not race.warm:
                 race.warm = True
             else:
@@ -545,6 +553,8 @@ def canvas_decode(
                         race.decided = 0
                         race.graphs = None
                         arm, timed = 0, None
+                    elif race.forced:
+                        race.decided = arm
                     elif timed is not None:
                         # Capture took host time: restart the clock.
                         timed[0].record()
