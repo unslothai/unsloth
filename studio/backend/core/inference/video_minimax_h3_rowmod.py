@@ -1,21 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-row AdaLN modulation and gated residual for MiniMax-H3 blocks without the per-row gathers, bit-identical to
-the stock eager chain. Off with ``UNSLOTH_H3_ROW_MOD=0``.
-
-A block's stock forward reads its AdaLN rows per packed row with ``index_select`` (one ``[seq, hidden]`` copy per
-shift / scale / gate) and runs each op as its own pass:
-
-* ``x * (1.0 + scale.index_select(0, idx)) + shift.index_select(0, idx)``
-* ``residual + gate.index_select(0, idx) * out``
-
-Two Triton kernels read the small AdaLN tables through ``idx`` instead and keep eager's roundings: every op is an
-fp32 op rounded to the activation dtype (``1 + scale``, the product, the sum; explicit-rounding PTX so nothing is
-contracted into an FMA). NVIDIA CUDA only, bfloat16 / float16, contiguous rows, table rows with unit column stride.
-The pair engages per (device, dtype, hidden size) only after it matched the eager chain bit for bit on the device
-and beat it on a timed probe (cached for the process); anything else, and a first call made during CUDA graph
-capture, takes the stock math.
+"""Per-row AdaLN modulation and gated residual for MiniMax-H3 blocks via Triton, reading AdaLN rows through
+``idx`` instead of ``index_select`` gathers. Bit-identical to eager: each op is fp32 rounded to the activation dtype
+with explicit-rounding PTX (no FMA contraction). Engages per (device, dtype, hidden) only after a bit-exact check and
+a timed win; otherwise (and on a first call during CUDA graph capture) the stock math runs. ``UNSLOTH_H3_ROW_MOD=0``
+disables it.
 """
 
 from __future__ import annotations
@@ -111,7 +101,6 @@ def _kernels() -> Any:
 
 
 def _rows(t: Any) -> Optional[tuple]:
-    """``(n_rows, row_stride)`` of a ``[1, seq, hidden]`` / ``[seq, hidden]`` tensor with unit column stride."""
     if t.dim() == 3:
         if t.shape[0] != 1:
             return None
@@ -196,7 +185,6 @@ def _probe(
     rows: int = 389,
     table_rows: int = 6,
 ) -> tuple:
-    """Activations over a wide range (with zeros, negative zeros and tiny values) and chunked AdaLN tables."""
     import torch
 
     g = torch.Generator(device = "cpu").manual_seed(seed)
@@ -291,7 +279,6 @@ def _use(x: Any, idx: Any, *tables: Any) -> bool:
 
 
 def modulate(x: Any, scale: Any, shift: Any, idx: Any) -> Any:
-    """``x * (1.0 + scale[idx]) + shift[idx]``, bit-identical to the stock expression."""
     if _use(x, idx, scale, shift):
         STATS["fused"] += 1
         return _launch_modulate(x, scale, shift, idx)
@@ -300,7 +287,6 @@ def modulate(x: Any, scale: Any, shift: Any, idx: Any) -> Any:
 
 
 def gated_residual(residual: Any, gate: Any, out: Any, idx: Any) -> Any:
-    """``residual + gate[idx] * out``, bit-identical to the stock expression."""
     if (
         out.dtype == residual.dtype
         and out.shape == residual.shape
@@ -357,7 +343,6 @@ _STOCK_BODY = (
 
 
 def _body_statements(fn: Any) -> Optional[tuple]:
-    """The function body's statements, each whitespace-normalised and joined over line breaks; None if unreadable."""
     import ast
     import textwrap
 
@@ -375,7 +360,7 @@ def _body_statements(fn: Any) -> Optional[tuple]:
     lines = src.splitlines()
     for stmt in node.body:
         if isinstance(stmt, ast.Expr) and isinstance(getattr(stmt, "value", None), ast.Constant):
-            continue  # docstring
+            continue
         text = " ".join(" ".join(lines[stmt.lineno - 1 : stmt.end_lineno]).split())
         out.append(text)
     return tuple(out)
