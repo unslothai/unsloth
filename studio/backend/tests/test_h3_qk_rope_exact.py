@@ -84,17 +84,34 @@ def test_fused_form_only_where_torch_takes_its_vectorized_row_kernel():
     assert not xs.is_contiguous() and Q._fused_row_path(
         xs, w
     )  # torch copies a strided input to a fresh buffer
+    odd = torch.empty(1, 37, 3 * 3 * 128 + 8, dtype = x.dtype)[..., : 3 * 128].unflatten(-1, (3, 128))
+    assert not Q._fused_row_path(
+        odd, w
+    )  # token stride 1160: a specialization the check never compiled
 
 
 @pytest.mark.parametrize(
     "passed, env, aligned, want",
     [
-        ({"fused": True, "rope": True}, None, True, "fused"),
-        ({"fused": True, "rope": True}, "rope", True, "rope"),
-        ({"fused": True, "rope": True}, None, False, "rope"),
-        ({"fused": True, "rope": False}, None, False, None),
-        ({"fused": False, "rope": True}, "fused", True, None),
-        ({"fused": False, "rope": False}, None, True, None),
+        ({"fused": True, "rope": True, "order": ["fused", "rope"]}, None, True, "fused"),
+        (
+            {"fused": True, "rope": True, "order": ["rope", "fused"]},
+            None,
+            True,
+            "rope",
+        ),  # the race decides
+        ({"fused": True, "rope": True, "order": ["fused", "rope"]}, "rope", True, "rope"),
+        ({"fused": True, "rope": True, "order": ["fused", "rope"]}, None, False, "rope"),
+        (
+            {"fused": True, "rope": True, "order": []},
+            None,
+            True,
+            None,
+        ),  # neither beat the stock chain
+        ({"fused": True, "rope": True, "order": []}, "fused", True, "fused"),  # forced, still exact
+        ({"fused": True, "rope": False, "order": ["fused"]}, None, False, None),
+        ({"fused": False, "rope": True, "order": ["rope"]}, "fused", True, None),
+        ({"fused": False, "rope": False, "order": []}, None, True, None),
     ],
 )
 def test_form_selection(monkeypatch, passed, env, aligned, want):
@@ -161,7 +178,16 @@ def test_a_failed_check_launch_fails_only_that_form(monkeypatch):
 
     monkeypatch.setattr(Q, "_launch", launch)
     monkeypatch.setattr(Q, "torch_fused_rms_norm_on_cuda", lambda: True)
-    assert Q._check("cpu", torch.bfloat16, 128, 96) == {"fused": False, "rope": True}
+    monkeypatch.setattr(Q, "_race_ms", lambda form, *a, **k: {"stock": 1.0, "rope": 0.5}[form])
+    got = Q._check("cpu", torch.bfloat16, 128, 96)
+    assert got == {
+        "fused": False,
+        "rope": True,
+        "order": ["rope"],
+        "ms": {"stock": 1.0, "rope": 0.5},
+    }
+    monkeypatch.setattr(Q, "_race_ms", lambda form, *a, **k: {"stock": 1.0, "rope": 0.99}[form])
+    assert Q._check("cpu", torch.bfloat16, 128, 96)["order"] == []  # a tie keeps the stock chain
     monkeypatch.setattr(Q, "_launch", real)
 
 
@@ -212,9 +238,10 @@ def test_the_device_check_picks_the_fused_form_and_a_perturbed_kernel_fails_it()
     passed = Q.verdict(x, 96)
     assert passed["rope"]
     assert passed["fused"] is Q.torch_fused_rms_norm_on_cuda()
+    assert passed["order"], passed["ms"]  # some exact form beats the stock chain on this card
     got = Q.qk_norm_rope_impl(x, w, cos, sin, 1e-5)
     assert torch.equal(got, Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5))
-    assert Q.STATS["fused" if passed["fused"] else "rope"] == 1
+    assert Q.STATS[passed["order"][0]] == 1
     bad = (got.float() * (1 + 2**-7)).to(got.dtype)
     assert int((bad != got).sum()) > got.numel() // 2
 

@@ -8,15 +8,17 @@ Two Triton forms, NVIDIA CUDA only, each engaged only after it matched the eager
 (per device, dtype, head dim and rotary dim; cached for the process):
 
 * ``fused``: one kernel. The norm reproduces torch's CUDA ``_fused_rms_norm`` row kernel (the vectorized path:
-  lane ``l`` of warp ``g`` sums the squares of elements ``4 * (32 g + l) .. + 3`` in order, each warp folds its lanes
-  by shuffle-down 16, 8, 4, 2, 1, the warps fold last; ``rsqrt(sum / D + eps)``; ``w * (rstd * x)`` rounded once),
-  and the rotation rounds to the activation dtype at the same points eager does.
-* ``rope``: the stock ``F.rms_norm`` call, then the same exact rotation kernel (one fewer pass saved, exact on any
-  torch whose norm takes another path, e.g. the composite one).
+  thread ``l`` of warp ``g`` sums the squares of elements ``4 * (32 g + l) .. + 3`` in order, the warp folds its
+  lanes by shuffles 16, 8, 4, 2, 1, the warps fold last; ``rsqrt(sum / D + eps)``; ``w * (rstd * x)`` rounded
+  once); the reduction is written so Triton's own layout follows that order, which the device check proves.
+* ``rope``: the stock ``F.rms_norm`` call, then the same rotation kernel (exact on any torch whose norm takes
+  another path, e.g. the composite one).
 
-``UNSLOTH_H3_QK_ROPE_MODE=fused|rope`` restricts the choice (ablation); ``auto`` (default) takes ``fused`` when it
-passes, else ``rope``, else the stock math. Shapes, dtypes or alignments a form was not checked for take the stock
-math, and so does a first call made during CUDA graph capture.
+The rotation rounds each product and the sum to the activation dtype as eager does (explicit-rounding PTX: with fp
+fusion on, plain ops become one bf16 FMA). The check also races the passing forms against the stock chain and keeps
+only those more than 2% faster, fastest first. ``UNSLOTH_H3_QK_ROPE_MODE=fused|rope`` forces one form (when exact).
+Shapes, dtypes or alignments a form was not checked for take the stock math, and so does a first call made during
+CUDA graph capture.
 """
 
 from __future__ import annotations
@@ -82,12 +84,23 @@ def _kernel() -> Any:
     _div = libdevice.div_rn
     _add = libdevice.add_rn
 
+    # The rotation's roundings to the activation dtype must stay: with fp fusion on, LLVM narrows
+    # fptrunc(fmul(fpext a, fpext b)) to a bf16 / fp16 mul and contracts it with the add into one
+    # fma.rn.bf16, skipping eager's rounding of each product. An explicit-rounding PTX mul / add is never
+    # contracted, and unlike libdevice's *_rn (ftz builds) keeps subnormals, as eager does.
     @triton.jit
-    def _fold(t, ROWS: tl.constexpr, G: tl.constexpr, W: tl.constexpr):
-        # lane b += lane b + W / 2 (one shuffle-down step), as [ROWS, G, W] -> [ROWS, G, W / 2]
-        return tl.sum(tl.reshape(t, [ROWS, G, 2, W // 2]), axis = 2)
+    def _mul_rn(a, b):
+        return tl.inline_asm_elementwise(
+            "mul.rn.f32 $0, $1, $2;", "=f,f,f", [a, b], dtype = tl.float32, is_pure = True, pack = 1
+        )
 
-    @triton.jit(do_not_specialize = ["n_rows"])
+    @triton.jit
+    def _add_rn(a, b):
+        return tl.inline_asm_elementwise(
+            "add.rn.f32 $0, $1, $2;", "=f,f,f", [a, b], dtype = tl.float32, is_pure = True, pack = 1
+        )
+
+    @triton.jit(do_not_specialize = ["n_rows", "n_heads"])
     def _qk_norm_rope_kernel(
         x_ptr,
         w_ptr,
@@ -121,24 +134,25 @@ def _kernel() -> Any:
             tl.float32
         )
         if NORM:
-            # vector v = 32 g + l holds elements 4v .. 4v + 3; lanes past D // 4 hold zero
-            vec = tl.arange(0, 32 * G)
-            vmask = mask & (vec < D // 4)[None, :]
-            vptr = x_ptr + base[:, None] + 4 * vec[None, :]
-            acc = tl.zeros([ROWS, 32 * G], dtype = tl.float32)
-            for j in tl.static_range(4):
-                v = tl.load(vptr + j, mask = vmask, other = 0.0).to(tl.float32)
-                acc = (
-                    acc + v * v
-                )  # a bf16 / fp16 square is exact in fp32, so fma or not is the same sum
-            t = tl.reshape(acc, [ROWS, G, 32])
-            t = _fold(t, ROWS, G, 32)
-            t = _fold(t, ROWS, G, 16)
-            t = _fold(t, ROWS, G, 8)
-            t = _fold(t, ROWS, G, 4)
-            t = tl.sum(t, axis = 2)  # lane 0 += lane 1
-            # warps: (0 + 2) + (1 + 3); only warps 0 and 1 hold data for D <= 256
-            total = tl.sum(t, axis = 1)
+            # Vector v = 32 g + l (elements 4v .. 4v + 3, zero past D // 4) is lane l of warp g. Its 4 squares are
+            # summed in element order with explicit adds (a within-thread tl.sum may reassociate), then each warp's
+            # 32 lanes by tl.sum over a [ROWS, 32] tile whose lanes are the warp's threads (xor shuffles 16, 8, 4,
+            # 2, 1: the pairs shuffle-down gives lane 0), then the warps in order. The device check proves the layout.
+            lane = tl.arange(0, 32)
+            for g in tl.static_range(G):
+                vec = 32 * g + lane
+                vmask = row_ok[:, None] & (vec < D // 4)[None, :]
+                vptr = x_ptr + base[:, None] + 4 * vec[None, :]
+                acc = tl.zeros([ROWS, 32], dtype = tl.float32)
+                for j in tl.static_range(4):
+                    v = tl.load(vptr + j, mask = vmask, other = 0.0).to(tl.float32)
+                    acc = (
+                        acc + v * v
+                    )  # a bf16 / fp16 square is exact in fp32: fma or not, the same sum
+                if g == 0:
+                    total = tl.sum(acc, axis = 1)
+                else:
+                    total = total + tl.sum(acc, axis = 1)
             rstd = _rsqrt(_add(_div(total, D * 1.0), eps))
             w = tl.load(w_ptr + cols).to(tl.float32)
             wpart = tl.load(w_ptr + partner).to(tl.float32)
@@ -155,9 +169,9 @@ def _kernel() -> Any:
         sn = sn.to(odt).to(tl.float32)
         sign = tl.where(cols < HALF, -1.0, 1.0)
         # eager: x * cos and rot * sin each rounded to the activation dtype, then their sum rounded
-        a = (xn.to(tl.float32) * c).to(odt).to(tl.float32)
-        b = ((pn.to(tl.float32) * sign[None, :]) * sn).to(odt).to(tl.float32)
-        roped = (a + b).to(odt)
+        a = _mul_rn(xn.to(tl.float32), c).to(odt).to(tl.float32)
+        b = _mul_rn(pn.to(tl.float32) * sign[None, :], sn).to(odt).to(tl.float32)
+        roped = _add_rn(a, b).to(odt)
         y = tl.where(rot_cols[None, :], roped, xn)
         tl.store(out_ptr + rows[:, None] * D + cols[None, :], y, mask = mask)
 
@@ -255,9 +269,13 @@ def torch_fused_rms_norm_on_cuda() -> bool:
 
 def _fused_row_path(x: Any, weight: Any) -> bool:
     """The inputs take torch's vectorized ``_fused_rms_norm`` row kernel (the order ``fused`` reproduces): weight in
-    the activation dtype, both 4-element aligned (a strided ``x`` is copied to a fresh, aligned buffer first)."""
+    the activation dtype, both 4-element aligned (a strided ``x`` is copied to a fresh, aligned buffer first). And
+    the kernel gets the specialization the device check compiled: ``x`` 16-byte aligned with token and head strides
+    divisible by 16, so its loads keep the layout whose reduction order was proven."""
     align = 4 * x.element_size()
     if weight.dtype != x.dtype or weight.data_ptr() % align or not weight.is_contiguous():
+        return False
+    if x.data_ptr() % 16 or x.stride(1) % 16 or x.stride(2) % 16:
         return False
     return not (x.is_contiguous() and x.data_ptr() % align)
 
@@ -289,10 +307,44 @@ def _probe_inputs(device: Any, dtype: Any, dim: int, rot: int, seed: int) -> lis
     return out
 
 
-def _check(device: Any, dtype: Any, dim: int, rot: int) -> dict:
-    """``{form: matched the eager chain bit for bit on every probe}``; a launch failure fails that form."""
-    import torch
+def _run_form(form: str, x: Any, w: Any, cos: Any, sin: Any, eps: float) -> Any:
     import torch.nn.functional as F
+
+    if form == "fused":
+        return _launch(x, w, cos, sin, eps)
+    if form == "rope":
+        return _launch(F.rms_norm(x, (x.shape[-1],), w, eps), w, cos, sin, eps, norm = False)
+    return reference_qk_norm_rope(x, w, cos, sin, eps)
+
+
+def _race_ms(
+    form: str,
+    x: Any,
+    w: Any,
+    cos: Any,
+    sin: Any,
+    eps: float,
+    reps: int = 7,
+) -> float:
+    import torch
+
+    for _ in range(2):
+        _run_form(form, x, w, cos, sin, eps)
+    times = []
+    for _ in range(reps):
+        a, b = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+        a.record()
+        _run_form(form, x, w, cos, sin, eps)
+        b.record()
+        b.synchronize()
+        times.append(a.elapsed_time(b))
+    return sorted(times)[len(times) // 2]
+
+
+def _check(device: Any, dtype: Any, dim: int, rot: int) -> dict:
+    """``{form: matched the eager chain bit for bit on every probe}`` plus ``order``: the passing forms that beat
+    the stock chain by more than 2% on a timed probe, fastest first (the stock chain is kept on a tie)."""
+    import torch
 
     passed = {m: True for m in MODES}
     for seed in (11, 12, 13):
@@ -301,18 +353,36 @@ def _check(device: Any, dtype: Any, dim: int, rot: int) -> dict:
             for form in MODES:
                 if not passed[form]:
                     continue
+                if form == "fused" and not (
+                    _fused_row_path(x, w) and torch_fused_rms_norm_on_cuda()
+                ):
+                    passed[form] = False
+                    continue
                 try:
-                    if form == "fused":
-                        fusable = _fused_row_path(x, w) and torch_fused_rms_norm_on_cuda()
-                        got = _launch(x, w, cos, sin, eps) if fusable else None
-                    else:
-                        got = _launch(F.rms_norm(x, (dim,), w, eps), w, cos, sin, eps, norm = False)
+                    got = _run_form(form, x, w, cos, sin, eps)
                 except torch.OutOfMemoryError:
                     raise
                 except Exception:  # noqa: BLE001 -- a JIT / launch failure keeps the stock math
                     got = None
                 passed[form] = got is not None and torch.equal(got, ref)
-    return passed
+    ms = {}
+    if any(passed.values()):
+        g = torch.Generator(device = "cpu").manual_seed(29)
+        x = torch.randn(1, 2048, 24, dim, generator = g).to(dtype).to(device)
+        w = (1 + 0.2 * torch.randn(dim, generator = g)).to(dtype).to(device)
+        ang = (torch.rand(2048, rot // 2, generator = g) * 60).to(device)
+        cos, sin = torch.cat((ang, ang), -1).cos(), torch.cat((ang, ang), -1).sin()
+        for form in ("stock", *[m for m in MODES if passed[m]]):
+            try:
+                ms[form] = round(_race_ms(form, x, w, cos, sin, 1e-5), 5)
+            except torch.OutOfMemoryError:
+                raise
+            except Exception:  # noqa: BLE001
+                ms[form] = float("inf")
+    order = sorted(
+        (m for m in MODES if passed[m] and ms.get(m, float("inf")) < 0.98 * ms["stock"]), key = ms.get
+    )
+    return {**passed, "order": order, "ms": ms}
 
 
 def verdict(x: Any, rot: int) -> Optional[dict]:
@@ -339,7 +409,10 @@ def _mode(x: Any, weight: Any, cos: Any) -> Optional[str]:
     passed = verdict(x, int(cos.shape[-1]))
     if not passed:
         return None
-    for form in allowed_modes():
+    allowed = allowed_modes()
+    # a forced form (UNSLOTH_H3_QK_ROPE_MODE) runs whenever it is exact; otherwise the race order decides
+    candidates = allowed if len(allowed) == 1 else passed.get("order", ())
+    for form in candidates:
         if passed.get(form) and (form != "fused" or _fused_row_path(x, weight)):
             return form
     return None
