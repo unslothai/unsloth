@@ -647,6 +647,26 @@ function GgufContextLengthSetting({
   );
 }
 
+function DiffusionContextNote({
+  value,
+  requested,
+  loadedContext,
+}: {
+  value: number;
+  requested: number | null;
+  loadedContext: number | null;
+}) {
+  if (loadedContext == null || value !== requested || value === loadedContext) {
+    return null;
+  }
+  return (
+    <p className="text-ui-11 text-amber-500">
+      DiffusionGemma did not apply this value. It sized the context to fit
+      memory and is running with {loadedContext.toLocaleString()} tokens.
+    </p>
+  );
+}
+
 function clampMaxSeqLength(value: number, max: number): number {
   const normalized = normalizeMaxSeqLength(value) ?? MAX_SEQ_LENGTH_MIN;
   return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(max, normalized));
@@ -1900,9 +1920,13 @@ function GgufAdvancedSettings({
       : N_BATCH_LLAMA_DEFAULT;
   const ubatchExceedsBatch =
     config.nUbatch != null && config.nUbatch > effectiveBatch;
+  const showGpuPicker =
+    (pinnableGpuContext(gpuDevices, isDiffusion).ids?.length ?? 0) > 1;
   return (
     <>
+      {(!isDiffusion || showGpuPicker) && (
       <AdvancedGroup title="Memory">
+      {!isDiffusion && (
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
@@ -1937,6 +1961,7 @@ function GgufAdvancedSettings({
           </SelectContent>
         </Select>
       </div>
+      )}
 
       <GpuMemorySettings
         config={config}
@@ -1968,7 +1993,9 @@ function GgufAdvancedSettings({
         </div>
       )}
       </AdvancedGroup>
+      )}
 
+      {!isDiffusion && (
       <AdvancedGroup title="Speed">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
@@ -2206,6 +2233,7 @@ function GgufAdvancedSettings({
         </div>
       )}
       </AdvancedGroup>
+      )}
 
       <AdvancedGroup title="Output">
       {!isDiffusion && (
@@ -4255,7 +4283,13 @@ export function ModelConfigPage({
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
               renderWarning={(v) =>
-                isActiveModel &&
+                resolvedIsDiffusion ? (
+                  <DiffusionContextNote
+                    value={v}
+                    requested={loadedConfig?.customContextLength ?? null}
+                    loadedContext={activeLoadedContext}
+                  />
+                ) : isActiveModel &&
                 loadedMaxContextLength != null &&
                 v > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">
