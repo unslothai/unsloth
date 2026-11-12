@@ -81,9 +81,12 @@ export function npuRowsFor(
     .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
 }
 
-// Newest models that run on a Strix laptop NPU first. Big ones (qwen3.6-moe 35B-A3B, qwen3.8
-// 27B) fail to load or take hours to download there, so they keep the backend's order after.
+// The AMD NPU launch blog's headline models lead, then the newest ones that fit a Strix laptop
+// NPU, then the backend's order.
 const NPU_RECOMMENDED = [
+  "qwen3.6-moe:35b-a3b",
+  "qwen3.8-mtp:27b",
+  "qwen3.8-dflash2:27b",
   "qwen3.5:9b",
   "qwen3.5:4b",
   "gemma4-it:e4b",
