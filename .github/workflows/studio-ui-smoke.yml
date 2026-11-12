@@ -514,7 +514,7 @@ jobs:
           mkdir -p logs/playwright_image_footprint
           python tests/studio/playwright_image_model_footprint.py
 
-      - name: Image generation time and model unload regressions (Playwright)
+      - name: Image generation time and Images/Video model unload regressions (Playwright)
         if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
@@ -522,6 +522,7 @@ jobs:
         run: |
           python tests/studio/playwright_images_generation_time.py
           python tests/studio/playwright_image_unload.py
+          python tests/studio/playwright_video_unload.py
 
       - name: Image staged-download cancel/retry regression (Playwright)
         if: matrix.shard == 'extra'
