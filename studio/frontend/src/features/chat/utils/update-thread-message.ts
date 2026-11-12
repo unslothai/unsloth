@@ -235,15 +235,14 @@ export async function updateThreadMessage(args: {
     const previousText = extractTaggedText(previousContent);
     const unchanged = extractTaggedText(finalContent) === previousText
       && JSON.stringify(finalContent.filter((part) => part && !isEditablePart(part))) === JSON.stringify(previousTools);
-    // Keyed on the box text, not `unchanged`: tagged text trims reasoning, so a
-    // whitespace-only reasoning edit would otherwise be dropped.
+    // An untouched save writes back the stored parts so invisible fields survive. Not `unchanged`:
+    // tagged text trims reasoning, so that would drop a whitespace-only reasoning edit.
     const untouched = newText === previousText && Array.isArray(previousContent);
 
     return {
       ...m,
       message: {
         ...m.message,
-        // An untouched save writes back the stored parts so nothing invisible is rebuilt away.
         content: untouched ? previousContent : finalContent,
         metadata:
           unchanged
