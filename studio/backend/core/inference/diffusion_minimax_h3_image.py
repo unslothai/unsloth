@@ -129,6 +129,8 @@ HOST_BUDGET_ENV = "UNSLOTH_H3_IMAGE_HOST_GB"
 PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
 # "0": run every reference through the VAE encoder on every render (no posterior cache)
 REF_CACHE_ENV = "UNSLOTH_H3_IMAGE_REF_CACHE"
+# "0": keep the allocator blocks the load's staging and lever installs freed reserved on the card
+TRIM_AFTER_LOAD_ENV = "UNSLOTH_H3_IMAGE_TRIM_AFTER_LOAD"
 # Posteriors kept per pipeline (a 2720x1536 reference is about 3 MB of mean / log-variance on the device)
 REF_CACHE_ENTRIES = 8
 
@@ -3002,6 +3004,18 @@ def load_minimax_h3_image_pipeline(
     int8_attention = install_checkpoint_attention(pipe, device, scheme = scheme, logger = logger)
     if int8_attention:
         speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)
+    if device.type == "cuda" and (
+        os.environ.get(TRIM_AFTER_LOAD_ENV) or "1"
+    ).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        # The staged upload, the QKV fusion and the GEMM / attention probes leave several GB of freed blocks
+        # reserved (58.5 GB reserved over 51.4 GB allocated on a 96 GB card): hand them back before the first render.
+        gc.collect()
+        _empty_cache()
     report = H3ImageLoadReport(
         scheme = scheme,
         scheme_reason = scheme_reason,
