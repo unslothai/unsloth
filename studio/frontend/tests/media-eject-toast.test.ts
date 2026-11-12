@@ -81,7 +81,7 @@ test("a failed or still-loading unload drops the loading toast", async () => {
 for (const path of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
   test(`${path} routes the pill eject through ejectWithToast`, () => {
     const page = readSrc(path);
-    assert.match(page, /onEject=\{status\?\.loaded \? handleEject : undefined\}/);
+    assert.match(page, /onEject=\{status\?\.loaded && busy !== "unloading" \? handleEject : undefined\}/);
     assert.match(page, /const handleEject = useCallback\(\(\) => ejectWithToast\(ejecting, handleUnload\), \[handleUnload\]\);/);
   });
 }

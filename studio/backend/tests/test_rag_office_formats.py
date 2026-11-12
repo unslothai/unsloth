@@ -981,6 +981,45 @@ def test_doc_reads_compressed_and_unicode_pieces_and_note_stories(tmp_path):
     )
 
 
+def test_doc_repairs_a_surrogate_pair_split_across_pieces(tmp_path):
+    word = bytearray(0x1800)
+    struct.pack_into("<HH", word, 0, 0xA5EC, 0xC1)
+    struct.pack_into("<H", word, 0x0A, 0x0200)
+    struct.pack_into("<H", word, 32, 14)  # csw
+    struct.pack_into("<H", word, 62, 22)  # cslw
+    struct.pack_into("<i", word, 64 + 3 * 4, 4)  # ccpText
+    struct.pack_into("<H", word, 152, 93)  # cbRgFcLcb
+    word[0x1400:0x1404] = "A\ud83d".encode("utf-16-le", "surrogatepass")
+    word[0x1410:0x1414] = "\ude00B".encode("utf-16-le", "surrogatepass")
+    cps = [0, 2, 4]
+    pcds = [0x1400, 0x1410]
+    plc = struct.pack("<3I", *cps) + b"".join(struct.pack("<HIH", 0, fc, 0) for fc in pcds)
+    clx = b"\x02" + struct.pack("<I", len(plc)) + plc
+    struct.pack_into("<II", word, 154 + 33 * 8, 0, len(clx))  # fcClx, lcbClx
+    path = tmp_path / "split.doc"
+    path.write_bytes(compound_file({("WordDocument",): bytes(word), ("1Table",): clx}))
+    assert _text(path) == "A\U0001f600B"
+
+
+def test_doc_leaves_one_replacement_char_when_a_piece_ends_mid_character(tmp_path):
+    word = bytearray(0x1800)
+    struct.pack_into("<HH", word, 0, 0xA5EC, 0xC1)
+    struct.pack_into("<H", word, 0x0A, 0x0200)
+    struct.pack_into("<H", word, 32, 14)  # csw
+    struct.pack_into("<H", word, 62, 22)  # cslw
+    struct.pack_into("<i", word, 64 + 3 * 4, 2)  # ccpText
+    struct.pack_into("<H", word, 152, 93)  # cbRgFcLcb
+    word[0x17FD:0x1800] = b"A\x00B"
+    cps = [0, 2]
+    pcds = [0x17FD]
+    plc = struct.pack("<2I", *cps) + b"".join(struct.pack("<HIH", 0, fc, 0) for fc in pcds)
+    clx = b"\x02" + struct.pack("<I", len(plc)) + plc
+    struct.pack_into("<II", word, 154 + 33 * 8, 0, len(clx))  # fcClx, lcbClx
+    path = tmp_path / "clipped.doc"
+    path.write_bytes(compound_file({("WordDocument",): bytes(word), ("1Table",): clx}))
+    assert _text(path) == "A\ufffd"
+
+
 def test_xls_reads_errors_and_continued_formula_strings(tmp_path):
     long_text = "A" * 8000 + "Ж" * 300
     string = struct.pack("<HB", len(long_text), 0) + b"A" * 8000
