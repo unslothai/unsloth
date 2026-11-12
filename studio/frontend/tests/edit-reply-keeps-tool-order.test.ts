@@ -514,6 +514,17 @@ test("a no-op save writes back the stored parts, fields and all", async () => {
   assert.equal(result[0], content[0], "the stored part was rebuilt");
 });
 
+test("indenting a reasoning line is saved, not mistaken for a no-op", async () => {
+  const content = [{ type: "reasoning", text: "print(1)" }, { type: "text", text: "A" }];
+
+  const { result } = await save(content, "<THINK>\n    print(1)\n</THINK>\n\nA");
+
+  assert.deepEqual(result, [
+    { type: "reasoning", text: "    print(1)" },
+    { type: "text", text: "A" },
+  ]);
+});
+
 test("a hole in the parts list does not shift a card's slot", async () => {
   const content = [
     { type: "text", text: "A" },

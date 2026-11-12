@@ -232,16 +232,19 @@ export async function updateThreadMessage(args: {
     const previousTools = Array.isArray(previousContent)
       ? previousContent.filter((part) => part && !isEditablePart(part))
       : [];
-    const unchanged = extractTaggedText(finalContent) === extractTaggedText(previousContent)
+    const previousText = extractTaggedText(previousContent);
+    const unchanged = extractTaggedText(finalContent) === previousText
       && JSON.stringify(finalContent.filter((part) => part && !isEditablePart(part))) === JSON.stringify(previousTools);
+    // Keyed on the box text, not `unchanged`: tagged text trims reasoning, so a
+    // whitespace-only reasoning edit would otherwise be dropped.
+    const untouched = newText === previousText && Array.isArray(previousContent);
 
     return {
       ...m,
       message: {
         ...m.message,
-        // An unchanged save writes back the stored parts so nothing invisible is rebuilt away.
-        content:
-          unchanged && Array.isArray(previousContent) ? previousContent : finalContent,
+        // An untouched save writes back the stored parts so nothing invisible is rebuilt away.
+        content: untouched ? previousContent : finalContent,
         metadata:
           unchanged
             ? withoutGeminiContinuationReplay(m.message.metadata)
