@@ -1280,6 +1280,13 @@ function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   return false;
 }
 
+/** The gates resolveReasoningEnabledOnLoad forces Think on with. */
+function modelForcesThinking(
+  state: Pick<ChatRuntimeStore, "reasoningAlwaysOn" | "supportsReasoning" | "supportsReasoningOff">,
+): boolean {
+  return state.reasoningAlwaysOn || (state.supportsReasoning && !state.supportsReasoningOff);
+}
+
 /** Puts the chat's own values back where the store shows the loaded model's or a provider's. */
 function restoreChatOwnedValues(
   threadId: string,
@@ -1292,7 +1299,7 @@ function restoreChatOwnedValues(
     !explicitlyEditedThreadFields.has("reasoningEnabled") &&
     activeThreadScopedSettings?.reasoningEnabled === false &&
     settings.reasoningEnabled !== false &&
-    useChatRuntimeStore.getState().reasoningAlwaysOn
+    modelForcesThinking(useChatRuntimeStore.getState())
   ) {
     settings.reasoningEnabled = false;
   }
@@ -2010,10 +2017,7 @@ export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, liv
     next[key] = run[key] === true && !isPillClampedOff(run, key);
   }
   if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
-  // A model that cannot stop thinking forces Think on, as its load does (resolveReasoningEnabledOnLoad).
-  if (run.reasoningAlwaysOn || (run.supportsReasoning && !run.supportsReasoningOff)) {
-    next.reasoningEnabled = true;
-  }
+  if (modelForcesThinking(run)) next.reasoningEnabled = true;
   return next as T;
 }
 

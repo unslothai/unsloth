@@ -200,7 +200,10 @@ test("a model that forces thinking on does not erase a chat's stored preference"
   assert.match(build, /restoreChatOwnedValues\(threadId, settings\);/);
   const restore = slice(store, "function restoreChatOwnedValues", "\n}");
   assert.match(restore, /activeThreadScopedSettings\?\.reasoningEnabled === false/);
-  assert.match(restore, /reasoningAlwaysOn/);
+  assert.match(restore, /modelForcesThinking\(useChatRuntimeStore\.getState\(\)\)/);
+  const forces = slice(store, "function modelForcesThinking", "\n}");
+  assert.match(forces, /reasoningAlwaysOn/);
+  assert.match(forces, /!state\.supportsReasoningOff/);
 });
 
 test("compare mode drops the thread-scoped state rather than keeping the last chat's", () => {

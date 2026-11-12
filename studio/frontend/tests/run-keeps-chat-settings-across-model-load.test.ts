@@ -355,3 +355,36 @@ test("chat A's Think-off yields to a loaded model that cannot stop thinking", ()
   assert.equal(think({ reasoningAlwaysOn: true, supportsReasoningOff: true }), true);
   assert.equal(think({ reasoningStyle: "enable_thinking", supportsReasoningOff: true, reasoningAlwaysOn: false }), false);
 });
+
+test("chat A's stored Think-off survives an outgoing model that forced it on", () => {
+  const store = useChatRuntimeStore;
+  store.setState({ settingsHydrated: true, modelLoading: false });
+  (store.getState().applyThreadScopedSettings as (id: string, s: object) => void)("chat-a", {
+    reasoningEnabled: false,
+  });
+  // The outgoing model cannot stop thinking, so its load forced Think on.
+  store.setState({
+    params: { ...store.getState().params, checkpoint: "unsloth/gpt-oss-20b-GGUF" },
+    supportsReasoning: true,
+    reasoningStyle: "reasoning_effort",
+    supportsReasoningOff: false,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    modelLoading: true,
+  });
+  const atSend = withChatOwnedSettings(store.getState());
+  assert.equal(atSend.reasoningEnabled, false);
+
+  const loaded = {
+    ...store.getState(),
+    activeThreadId: "chat-b",
+    modelLoading: false,
+    reasoningStyle: "enable_thinking",
+    supportsReasoningOff: true,
+    reasoningEnabled: true,
+    params: { ...store.getState().params, checkpoint: "unsloth/Qwen3.5-4B-GGUF" },
+  } as unknown as ReturnType<typeof chatState>;
+  const run = runAfterWait(loaded, atSend as never, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState;
+  assert.equal(run.reasoningEnabled, false);
+  store.setState({ modelLoading: false });
+});
