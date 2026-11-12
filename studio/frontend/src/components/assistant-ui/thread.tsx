@@ -4479,7 +4479,7 @@ const Composer: FC<{
       }
     >(),
   );
-  // Both starts await settings or a read before the queue store lists them.
+  // Starts not yet in the queue store.
   const hasPendingQueueStart = useCallback(
     () =>
       hasPendingPromptQueueStart(
@@ -5228,7 +5228,7 @@ const Composer: FC<{
     [cancelQueuedSend],
   );
 
-  // Carries out parkedSendSteer; consuming the intent makes one press cancel once.
+  // Consuming the intent makes one press cancel once.
   const steerParkedSend = useCallback(
     (state: Omit<ParkedSendSteerState, "behavior">) => {
       const steer = parkedSendSteer({
@@ -5242,7 +5242,7 @@ const Composer: FC<{
       try {
         aui.thread().cancelRun();
       } catch {
-        // The response may have already ended; the parked send releases either way.
+        // Already ended.
       }
     },
     [aui, preStreamThreadIds],
@@ -5421,7 +5421,7 @@ const Composer: FC<{
       hasMaterializingAudioAttachments ||
       hasMaterializingVideoAttachments
     ) {
-      // A send parked for an upload or settings keeps its steer until that hold clears.
+      // Keeps its steer until an upload or settings hold clears.
       if (pendingSend && pendingSendRef.current) {
         steerParkedSend({
           parkedBehindResponse,
@@ -5849,7 +5849,7 @@ const Composer: FC<{
           }
           if (canQueueAttachmentPrompt) {
             enqueueSend("running");
-            // Here too: a repeat press on an already parked send does not re-run the release effect.
+            // A repeat press does not re-run the release effect.
             steerParkedSend({
               parkedBehindResponse: true,
               otherHoldActive: false,

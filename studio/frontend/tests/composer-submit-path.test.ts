@@ -291,7 +291,7 @@ for (const [active, behavior] of ["runtime", "pre-stream", "queue"].flatMap(
       steerParkedSend,
     });
     release();
-    // steer stops the response, but queued prompts stay ahead of the image.
+    // queued prompts stay ahead of the image.
     const cancels =
       behavior === "queue" || active === "queue"
         ? []
