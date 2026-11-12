@@ -94,15 +94,12 @@ test("chat A keeps its permission mode, tools, prompt and sampling over chat B's
   assert.equal(run.params.systemPrompt, "chat A prompt");
   assert.equal(run.params.temperature, 0.2);
   assert.equal(run.params.topP, 0.9);
-  // The model that just loaded is the one the run uses.
   assert.equal(run.params.checkpoint, "unsloth/new-model-GGUF");
   assert.equal(run.supportsTools, true);
   assert.equal(run.loadedContextLength, 32768);
   assert.equal(run.loadedIsGguf, true);
-  // Not chat-scoped, so the live value stands.
   assert.equal(run.params.maxTokens, 2048);
   assert.equal(run.activeThreadId, "chat-b");
-  // Neither input is mutated.
   assert.equal(afterSwitchAndLoad.permissionMode, "auto");
   assert.equal(afterSwitchAndLoad.params.systemPrompt, "chat B prompt");
 });
@@ -175,8 +172,7 @@ test("chat A's Code-off under Full access holds after chat B picks Ask for appro
   assert.equal(codeToolsOn(run), false);
 });
 
-// The adapter's own post-wait selection, lifted from source: importing the adapter would drag in
-// the stores, toasts and network layer. Dropping the snapshot from that block fails these tests.
+// The adapter's post-wait block, lifted from source: importing the adapter drags in stores and network.
 const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 const selectionStart = ADAPTER.indexOf(
   "      const liveRuntime = useChatRuntimeStore.getState();",

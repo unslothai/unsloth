@@ -158,8 +158,7 @@ export function isThreadOwnedSettingKey(key: string): boolean {
   );
 }
 
-// They follow permissionMode: two mirror it, the full-access overlay reads the third, and
-// codeToolsOn reads the last with it (a Code-off under Full access).
+// Derived from permissionMode, so they must travel with it (codeToolsOn reads the last).
 const PERMISSION_MIRROR_KEYS = [
   "confirmToolCalls",
   "bypassPermissions",
