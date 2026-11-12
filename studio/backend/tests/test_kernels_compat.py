@@ -75,17 +75,17 @@ def _dists(monkeypatch, **versions):
 @pytest.mark.parametrize(
     "tf, hub, spec",
     [
-        ("5.5.0", "1.33.0", "kernels>=0.12.3,<0.15"),
-        ("5.8.0", None, "kernels>=0.12.3,<0.15"),
-        ("5.12.1", "1.33.0", "kernels>=0.12.3,<0.15"),
-        ("5.13.0rc0", "1.33.0", "kernels>=0.12.3,<0.15"),
-        ("5.13.0.dev0", "1.33.0", "kernels>=0.12.3,<0.15"),
+        ("5.5.0", "1.33.0", "kernels==0.12.3"),
+        ("5.8.0", None, "kernels==0.12.3"),
+        ("5.12.1", "1.33.0", "kernels==0.12.3"),
+        ("5.13.0rc0", "1.33.0", "kernels==0.12.3"),
+        ("5.13.0.dev0", "1.33.0", "kernels==0.12.3"),
         ("5.13.0", "1.33.0", "kernels>=0.12.3"),
         ("5.17.0", "1.33.0", "kernels>=0.12.3"),
         ("6.0.0", None, "kernels>=0.12.3"),
-        (None, None, "kernels>=0.12.3,<0.15"),
-        ("garbage", None, "kernels>=0.12.3,<0.15"),
-        ("5.5.0", "1.5.0", "kernels>=0.12.3,<0.15,<0.14.1"),
+        (None, None, "kernels==0.12.3"),
+        ("garbage", None, "kernels==0.12.3"),
+        ("5.17.0", "1.5.0", "kernels==0.12.3"),
     ],
 )
 def test_install_spec_follows_transformers(tf, hub, spec):
@@ -125,7 +125,7 @@ def test_on_demand_install_pins_kernels_for_old_transformers(monkeypatch):
     run = _Run([True])
     monkeypatch.setattr(subprocess, "run", run)
     assert att._ensure_backend_package("sage", _Logger()) is None
-    assert run.pip()[0][-1] == "kernels>=0.12.3,<0.15"
+    assert run.pip()[0][-1] == "kernels==0.12.3"
     assert run.calls[1][1:] == ["-c", "import transformers.activations"]
     assert refreshed == [1]
     assert "kernels" not in sys.modules
@@ -170,8 +170,8 @@ def test_rollback_reinstalls_the_previous_version(monkeypatch):
     run = _Run([False])
     monkeypatch.setattr(subprocess, "run", run)
     _dists(monkeypatch, transformers = "5.5.0", kernels = "0.18.2")
-    assert kc.check_kernels_install("0.12.3", _Logger()) is False
-    assert run.calls[-1][-1] == "kernels==0.12.3"
+    assert kc.check_kernels_install("0.11.7", _Logger()) is False
+    assert run.calls[-1][-1] == "kernels==0.11.7"
 
 
 def test_unconfirmed_import_check_keeps_the_install(monkeypatch):
@@ -198,8 +198,8 @@ def test_heal_repairs_a_broken_install(monkeypatch):
     monkeypatch.setattr(subprocess, "run", run)
     _dists(monkeypatch, transformers = "5.5.0", kernels = "0.18.2", huggingface_hub = "1.33.0")
     log = _Logger()
-    assert kc.heal_kernels_conflict(log) == "repaired: kernels>=0.12.3,<0.15"
-    assert run.pip()[0][-1] == "kernels>=0.12.3,<0.15" and "--no-deps" in run.pip()[0]
+    assert kc.heal_kernels_conflict(log) == "repaired: kernels==0.12.3"
+    assert run.pip()[0][-1] == "kernels==0.12.3" and "--no-deps" in run.pip()[0]
     assert "kernels" not in sys.modules
     assert any("reinstalled" in w for w in log.warnings)
     # Once per process.

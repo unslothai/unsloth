@@ -19,7 +19,8 @@ import sys
 import threading
 from typing import Any, Optional
 
-# diffusers' flash_4_hub refuses older kernels; the Studio install pins exactly this version.
+# diffusers' flash_4_hub refuses older kernels; the Studio installer pins exactly this version
+# (requirements/extras-no-deps.txt), and its dependencies are already in the Studio environment.
 KERNELS_FLOOR = "0.12.3"
 # First kernels release that rejects a LayerRepository without a revision or version.
 KERNELS_STRICT = (0, 15)
@@ -75,14 +76,16 @@ def transformers_accepts_strict_kernels(transformers_version: Optional[str]) -> 
 def kernels_install_spec(
     transformers_version: Optional[str] = None, hub_version: Optional[str] = None
 ) -> str:
-    """The pip requirement for an on-demand kernels install next to ``transformers_version``."""
-    spec = f"kernels>={KERNELS_FLOOR}"
-    if not transformers_accepts_strict_kernels(transformers_version):
-        spec += f",<{KERNELS_STRICT[0]}.{KERNELS_STRICT[1]}"
+    """The pip requirement for an on-demand ``--no-deps`` kernels install next to ``transformers_version``.
+
+    Below transformers 5.13 the newest usable release is 0.14.x, and 0.14.0 to 0.16.x import a separate
+    ``kernels-data`` package that ``--no-deps`` leaves out, so the pin is the release the Studio installer ships."""
     hub = _release(hub_version)
-    if hub is not None and hub[:2] < _KERNELS_HUB_FLOOR:
-        spec += ",<0.14.1"
-    return spec
+    if not transformers_accepts_strict_kernels(transformers_version) or (
+        hub is not None and hub[:2] < _KERNELS_HUB_FLOOR
+    ):
+        return f"kernels=={KERNELS_FLOOR}"
+    return f"kernels>={KERNELS_FLOOR}"
 
 
 def current_kernels_install_spec() -> str:

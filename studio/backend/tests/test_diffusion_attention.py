@@ -304,7 +304,7 @@ def test_sage_install_never_asks_pypi_for_sageattention(monkeypatch):
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
     assert run.calls and not any("sageattention" in part for cmd in run.calls for part in cmd)
-    assert run.calls[0][-1].startswith("kernels>=0.12.3")
+    assert run.calls[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 _XFORMERS_WHEEL = "https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
@@ -530,7 +530,7 @@ def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
     monkeypatch.setattr(att, "_kernels_hub_compatible", lambda: True)
     att._ensure_attention_backend_installed("sage")
     assert len(_pip_calls(run)) == 1
-    assert run.calls[0][-1].startswith("kernels>=0.12.3")
+    assert run.calls[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 def test_failed_install_not_retried_in_same_process(monkeypatch):
@@ -664,7 +664,7 @@ def test_kernels_install_allowed_on_supported_hub(monkeypatch):
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("flash_4_hub")
     pip = _pip_calls(run)
-    assert len(pip) == 1 and pip[0][-1].startswith("kernels>=0.12.3")
+    assert len(pip) == 1 and pip[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 def test_kernels_gate_also_covers_sage(monkeypatch):
