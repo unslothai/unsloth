@@ -90,6 +90,17 @@ test("a rejected budget save prevents image loading and unlocks the slider", asy
   assert.equal(budget.isVramBudgetLocked(), false);
 });
 
+test("a failed in-flight budget save is not retried by the next image load", async () => {
+  const { budget, images, sent, release } = setup();
+  const saving = budget.updateVramBudgetSettings(0.9);
+  const loading = images.loadDiffusionModel({ model_path: "example/image" });
+  release(Response.json({ detail: "Budget save failed" }, { status: 500 }));
+  await assert.rejects(saving, /Budget save failed/);
+  await assert.rejects(loading, /Budget save failed/);
+  assert.equal(budget.flushVramBudgetSave(), null);
+  assert.deepEqual(sent, ["PUT /api/settings/vram-budget"]);
+});
+
 test("image loading also waits for an in-flight reset", async () => {
   const { budget, images, sent, ok } = setup();
   const resetting = budget.updateVramBudgetSettings(null);

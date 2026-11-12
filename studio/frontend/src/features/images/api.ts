@@ -3,7 +3,7 @@
 
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 // eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
-import { settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
+import { dropVramBudgetRetry, settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
@@ -452,7 +452,11 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
   const budgetSave = settleVramBudgetSave();
   if (budgetSave) setVramBudgetLocked(true);
   try {
-    if (budgetSave) await budgetSave;
+    // The refused load repaints the stored budget, so a re-staged retry would load a hidden value.
+    if (budgetSave) await budgetSave.catch((error: unknown) => {
+      dropVramBudgetRetry();
+      throw error;
+    });
     // This POST only starts the load, so the notice settles from load-progress, not the response.
     return await withBackgroundLoadNotice(
       "image",
