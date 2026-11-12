@@ -2003,13 +2003,17 @@ export function withChatOwnedSettings<T extends ChatRuntimeStore>(state: T): T {
   return { ...state, ...owned };
 }
 
-/** `run`, which carries `live`'s model, with that model's pill clamps and effort pin, as a load applies. */
+/** `run`, which carries `live`'s model, with what that model forces (pill clamps, effort pin, Think), as a load applies. */
 export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, live: T): T {
   const next: Record<string, unknown> = { ...run };
   for (const key of CLAMPED_PILL_KEYS) {
     next[key] = run[key] === true && !isPillClampedOff(run, key);
   }
   if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
+  // A model that cannot stop thinking forces Think on, as its load does (resolveReasoningEnabledOnLoad).
+  if (run.reasoningAlwaysOn || (run.supportsReasoning && !run.supportsReasoningOff)) {
+    next.reasoningEnabled = true;
+  }
   return next as T;
 }
 

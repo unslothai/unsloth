@@ -335,3 +335,23 @@ test("chat A runs at its own effort, not the outgoing model's pin", () => {
   assert.equal(run(loaded("pinned-model", "high")).reasoningEffort, "high");
   store.setState({ modelLoading: false });
 });
+
+test("chat A's Think-off yields to a loaded model that cannot stop thinking", () => {
+  const atSend = chatState({ reasoningEnabled: false }, {}) as unknown as StoreState;
+  const loaded = (fields: Record<string, unknown>) =>
+    ({
+      ...useChatRuntimeStore.getState(),
+      activeThreadId: "chat-b",
+      modelLoading: false,
+      supportsReasoning: true,
+      reasoningEnabled: true,
+      params: { ...useChatRuntimeStore.getState().params, checkpoint: "unsloth/new-model-GGUF" },
+      ...fields,
+    }) as unknown as ReturnType<typeof chatState>;
+  const think = (fields: Record<string, unknown>) =>
+    (runAfterWait(loaded(fields), atSend as never, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState)
+      .reasoningEnabled;
+  assert.equal(think({ reasoningStyle: "reasoning_effort", supportsReasoningOff: false }), true);
+  assert.equal(think({ reasoningAlwaysOn: true, supportsReasoningOff: true }), true);
+  assert.equal(think({ reasoningStyle: "enable_thinking", supportsReasoningOff: true, reasoningAlwaysOn: false }), false);
+});
