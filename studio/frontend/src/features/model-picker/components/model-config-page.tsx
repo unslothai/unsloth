@@ -248,7 +248,9 @@ import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import {
   isNpuModelId,
   NPU_DEFAULT_CONTEXT_LENGTH,
+  refreshNpuModels,
   useNpuCatalogStore,
+  useNpuStatus,
 } from "../../npu";
 import {
   type RunConfigImport,
@@ -2737,6 +2739,16 @@ export function ModelConfigPage({
   const npuCatalogVision = useNpuCatalogStore(
     (s) => s.models?.some((m) => m.model_path === target.id && m.supports_vision) ?? false,
   );
+  // The catalog is otherwise filled by the picker, so a chat opened straight onto an NPU
+  // model would not know it reads images and hide Image Pre-resize.
+  const npuCatalogListed = useNpuCatalogStore((s) => s.models != null);
+  const [npuStatus] = useNpuStatus(targetIsNpu && !npuCatalogListed);
+  useEffect(() => {
+    // Listing starts lemond, so only on a validated runtime.
+    if (targetIsNpu && !npuCatalogListed && npuStatus?.ready === true) {
+      void refreshNpuModels();
+    }
+  }, [targetIsNpu, npuCatalogListed, npuStatus?.ready]);
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(configId, target.ggufVariant);

@@ -165,3 +165,13 @@ test("the run settings panel offers Advanced settings for NPU models", () => {
     assert.ok(page.includes(label), label);
   }
 });
+
+test("Run settings lists the NPU catalog itself, so Image Pre-resize shows without the picker", () => {
+  const page = readSrc("features/model-picker/components/model-config-page.tsx");
+  assert.match(page, /useNpuStatus\(targetIsNpu && !npuCatalogListed\)/);
+  assert.match(
+    page,
+    /targetIsNpu && !npuCatalogListed && npuStatus\?\.ready === true\)\s*\{\s*void refreshNpuModels\(\)/,
+  );
+  assert.match(page, /showImagePreResize=\{target\.meta\.isVision === true \|\| npuCatalogVision\}/);
+});
