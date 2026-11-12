@@ -6,7 +6,6 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   type NpuCatalog,
   type NpuModel,
-  type NpuPickerSource,
   NpuSetupNotice,
   npuCapabilities,
   npuDownloadLabel,
