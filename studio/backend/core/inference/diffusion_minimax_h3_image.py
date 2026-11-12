@@ -1117,8 +1117,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         self._unsloth_h3_te_loader: Optional[Callable[[], Any]] = None
         self._unsloth_h3_streamers: list = []
         self._unsloth_h3_last_stats: dict = {}
-        # reference posteriors by image content: an edit re-run on the same picture samples the cached
-        # distribution with its own generator instead of encoding the picture again
+        # reference posteriors by image content, resampled per render instead of re-encoding
         self._unsloth_h3_ref_posteriors: "OrderedDict[tuple, Any]" = OrderedDict()
         self._unsloth_h3_ref_stats: dict = {"hits": 0, "misses": 0}
 
@@ -2610,8 +2609,7 @@ def _place_streamed_dit(
     return streamer
 
 
-# "0": native attention; "1": probe-gated SageAttention on the DiT blocks; unset: as the checkpoint declares, kept
-# only where a DiT block's attention times faster with it than with the native backend on the card
+# "0": native attention; "1": probe-gated SageAttention, no timing race; unset: kept only where it times faster
 INT8_ATTENTION_ENV = "UNSLOTH_H3_IMAGE_INT8_ATTENTION"
 CHECKPOINT_ATTENTION_ATTR = "_unsloth_checkpoint_attention"
 # the INT8 DiT checkpoint runs INT8 attention on its DiT blocks unless its file says otherwise
@@ -3093,8 +3091,7 @@ def load_minimax_h3_image_pipeline(
         "false",
         "no",
     ):
-        # The staged upload, the QKV fusion and the GEMM / attention probes leave several GB of freed blocks
-        # reserved (58.5 GB reserved over 51.4 GB allocated on a 96 GB card): hand them back before the first render.
+        # Load staging and probes leave several GB of freed blocks reserved: release them before rendering.
         gc.collect()
         _empty_cache()
     report = H3ImageLoadReport(
