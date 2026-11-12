@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useHubDownloadPlan } from "../download-manager/use-hub-download-queue";
+import { imageCheckpointSelection } from "../download-manager/required-assets";
+import { useHubDownloadPlan, useHubQueue } from "../download-manager/use-hub-download-queue";
 import { HubPlanProgress } from "../download-manager/hub-plan-progress";
 import { useRequiredAssetsDownload, type AssetRuntime } from "./use-required-assets-download";
 import { useHfEndpoint } from "@/lib/hf-endpoint";
@@ -99,12 +100,31 @@ export function SafetensorsDownloadCard({
   const [metadata, setMetadata] = useState<{ key: string; info: ModelSizeInfo | null }>();
   const info = metadata?.key === sizeKey ? metadata.info : undefined;
   const choices = discoverCheckpoints ? info?.imageCheckpoints : undefined;
+  const job = useRepoDownload({
+    kind: "model",
+    repoId,
+    activeVariant: null,
+    autoAdopt: true,
+    includeScopedJobs: true,
+  });
+
+  const progress = job.progress;
+  const cancelling = job.cancelling;
+  const setJobExpectedBytes = job.setExpectedBytes;
+
   const [picked, setPicked] = useState<{ key: string; filename: string }>();
-  const basename = repoId.split("/").pop()?.toLowerCase();
-  const checkpoint =
-    choices?.find((file) => picked?.key === sizeKey && file.filename === picked.filename) ??
-    choices?.find((file) => file.filename.toLowerCase() === basename + ".safetensors") ??
-    choices?.[0];
+  const queuedFilename = useHubQueue((state) =>
+    state.plans.find((plan) => plan.origin?.repoId === repoId && plan.origin.filename)?.origin?.filename,
+  );
+  const { active, selected: checkpoint } = imageCheckpointSelection(
+    repoId, choices, picked?.key === sizeKey ? picked.filename : undefined,
+    queuedFilename, progress?.scopedFiles,
+  );
+  const activeFilename = active?.filename;
+  // A reopened card keeps the transferred file selected when its queue entry disappears.
+  useEffect(() => {
+    if (activeFilename) setPicked({ key: sizeKey, filename: activeFilename });
+  }, [sizeKey, activeFilename]);
   const discovering = discoverCheckpoints && online && info === undefined;
   const assets = useRequiredAssetsDownload({
     repoId,
@@ -130,19 +150,6 @@ export function SafetensorsDownloadCard({
       onChange?.();
     },
   });
-
-  const job = useRepoDownload({
-    kind: "model",
-    repoId,
-    activeVariant: null,
-    autoAdopt: true,
-    includeScopedJobs: true,
-  });
-
-  const progress = job.progress;
-  const cancelling = job.cancelling;
-  const repoPeerActive = job.repoPeerActive;
-  const setJobExpectedBytes = job.setExpectedBytes;
 
   useEffect(() => {
     if (knownBytes && knownBytes > 0) {
@@ -172,7 +179,10 @@ export function SafetensorsDownloadCard({
     };
   }, [repoId, hfToken, sizeKey, setJobExpectedBytes, knownBytes, online, discoverCheckpoints]);
 
-  const downloading = isRepoDownloadProgress(progress);
+  const repoDownloading = isRepoDownloadProgress(progress);
+  const downloading = repoDownloading &&
+    (!checkpoint || progress?.variant === null || progress?.scopedFiles?.includes(checkpoint.filename) === true);
+  const repoPeerActive = job.repoPeerActive || (repoDownloading && !downloading);
   const partialsResumable = useHttpPartialsResumable();
   const downloadAction = useDownloadCardState({
     job,

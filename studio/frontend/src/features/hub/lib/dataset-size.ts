@@ -6,6 +6,7 @@ import {
   getHfEndpoint,
   hasDatasetsServer,
 } from "@/lib/hf-endpoint";
+import type { ImageCheckpointFile } from "../download-manager/required-assets";
 import { LruMap } from "./lru-map";
 import { fetchWithTimeout } from "./network";
 import { fingerprintToken } from "./token-fingerprint";
@@ -259,7 +260,7 @@ export function fetchDatasetSize(
 export interface ModelSizeInfo {
   totalBytes: number | null;
   weightsBytes: number | null;
-  imageCheckpoints?: { filename: string; bytes: number | null }[];
+  imageCheckpoints?: ImageCheckpointFile[];
 }
 
 interface ModelInfoApiResponse {
