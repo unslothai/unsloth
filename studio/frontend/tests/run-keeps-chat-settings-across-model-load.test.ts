@@ -24,14 +24,21 @@ await import("./helpers/store-stubs/settings-http.ts");
 await import("./helpers/store-stubs/chat-history-storage.ts");
 
 type StoreState = Record<string, unknown> & { params: { checkpoint: string } };
-const { useChatRuntimeStore, codeToolsOn } = (await import(
-  "../src/features/chat/stores/chat-runtime-store.ts"
-)) as unknown as {
+const {
+  useChatRuntimeStore,
+  codeToolsOn,
+  withPillPreferences,
+  clampPillsToModel,
+  resolveToolsEnabledOnLoad,
+} = (await import("../src/features/chat/stores/chat-runtime-store.ts")) as unknown as {
   useChatRuntimeStore: {
     getState: () => StoreState;
     setState: (patch: Record<string, unknown>) => void;
   };
   codeToolsOn: (state: StoreState) => boolean;
+  withPillPreferences: (state: StoreState) => StoreState;
+  clampPillsToModel: (state: StoreState) => StoreState;
+  resolveToolsEnabledOnLoad: (supportsTools: boolean) => Record<string, boolean>;
 };
 
 function chatState(overrides: Record<string, unknown>, params: Record<string, unknown>) {
@@ -186,6 +193,7 @@ const selectRunRuntime = new Function(
   "runtimeAtSend",
   "resolvedThreadId",
   "withRunThreadScopedSettings",
+  "clampPillsToModel",
   "mergeQueuedModelCapabilities",
   `let runtime;\n${ts.transpileModule(ADAPTER.slice(selectionStart, selectionEnd), {
     compilerOptions: { target: ts.ScriptTarget.ES2020 },
@@ -196,6 +204,7 @@ function runAfterWait(
   live: ReturnType<typeof chatState>,
   atSend: ReturnType<typeof chatState>,
   resolvedThreadId: string | undefined,
+  clamp: (state: never) => unknown = (state) => state,
 ) {
   return selectRunRuntime(
     { getState: () => live },
@@ -204,6 +213,7 @@ function runAfterWait(
     atSend,
     resolvedThreadId,
     withRunThreadScopedSettings,
+    clamp,
     () => {
       throw new Error("a direct send has no queued model capabilities");
     },
@@ -244,8 +254,45 @@ test("the adapter keeps the sent chat's settings while the shown chat's settings
 });
 
 test("the adapter takes its send-time settings before the model wait", () => {
-  const capture = ADAPTER.indexOf("      const runtimeAtSend = runtime;");
+  const capture = ADAPTER.indexOf("      const runtimeAtSend = withPillPreferences(runtime);");
   const wait = ADAPTER.indexOf("await waitForModelReady(abortSignal);", capture);
   assert.ok(capture >= 0, "runtimeAtSend is captured");
   assert.ok(wait - capture < 400 && wait < selectionStart, "captured just before the wait");
+});
+
+test("chat A's tools follow its choice, not the clamp the outgoing model left", () => {
+  const store = useChatRuntimeStore;
+  const call = (name: string, value: unknown) =>
+    (store.getState()[name] as (value: unknown) => void)(value);
+  store.setState({ params: { ...store.getState().params, checkpoint: "tools-model" }, supportsTools: true });
+  call("setPermissionMode", "ask");
+  call("setToolsEnabled", true);
+  call("setCodeToolsEnabled", true);
+  // A model without tools is loaded, then chat A sends while a tool model loads.
+  store.setState({
+    params: { ...store.getState().params, checkpoint: "plain-model" },
+    supportsTools: false,
+    ...resolveToolsEnabledOnLoad(false),
+  });
+  store.setState({ modelLoading: true });
+  assert.equal(store.getState().toolsEnabled, false, "the outgoing model clamps the pill");
+  const atSend = withPillPreferences(store.getState());
+
+  const loaded = {
+    ...store.getState(),
+    activeThreadId: "chat-b",
+    modelLoading: false,
+    supportsTools: true,
+    params: { ...store.getState().params, checkpoint: "unsloth/new-model-GGUF" },
+  } as unknown as ReturnType<typeof chatState>;
+  const run = runAfterWait(loaded, atSend as never, "chat-a", clampPillsToModel as never) as unknown as StoreState;
+  assert.equal(run.toolsEnabled, true);
+  assert.equal(codeToolsOn(run), true);
+
+  // The model that loaded has no tools: the run's pills are off however the chat set them.
+  const plain = { ...loaded, supportsTools: false } as typeof loaded;
+  const offRun = runAfterWait(plain, atSend as never, "chat-a", clampPillsToModel as never) as unknown as StoreState;
+  assert.equal(offRun.toolsEnabled, false);
+  assert.equal(offRun.codeToolsEnabled, false);
+  store.setState({ modelLoading: false });
 });

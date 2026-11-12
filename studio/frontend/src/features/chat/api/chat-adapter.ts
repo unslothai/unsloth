@@ -302,6 +302,8 @@ import {
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   codeToolsOn,
+  withPillPreferences,
+  clampPillsToModel,
   localMediaToolsForTurn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -4958,7 +4960,7 @@ export function createOpenAIStreamAdapter(
         }
       };
       // The waits below let the user open another chat, whose settings then fill the store.
-      const runtimeAtSend = runtime;
+      const runtimeAtSend = withPillPreferences(runtime);
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
         try {
@@ -5068,7 +5070,7 @@ export function createOpenAIStreamAdapter(
             }
         : runChatSettingsLive
           ? liveRuntime
-          : withRunThreadScopedSettings(liveRuntime, runtimeAtSend);
+          : clampPillsToModel(withRunThreadScopedSettings(liveRuntime, runtimeAtSend));
       runtime = withChatFullAccess(runtime, liveRuntime.chatFullAccessGrants, resolvedThreadId);
       const { params } = runtime;
       const sandboxSessionId = await resolveSandboxSessionId(

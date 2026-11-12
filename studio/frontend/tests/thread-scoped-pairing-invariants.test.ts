@@ -509,8 +509,8 @@ test("the sampling params are read and applied through params", () => {
   );
   assert.equal(
     store.match(/readThreadScopedValue\(state, key\)/g)?.length,
-    3,
-    "the snapshot, the held edit and the sameness check",
+    4,
+    "the snapshot, the held edit, the sameness check and a send's pill choices",
   );
   assert.match(store, /paramsPatch\[key\] = value;/);
   assert.match(

@@ -1981,6 +1981,24 @@ function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
     : false;
 }
 
+/** `state` with the paired chat's own pill choices, not the clamp its current model applies. */
+export function withPillPreferences<T extends ChatRuntimeStore>(state: T): T {
+  const next: Record<string, unknown> = { ...state };
+  for (const key of CLAMPED_PILL_KEYS) {
+    next[key] = readThreadScopedValue(state, key) === true;
+  }
+  return next as T;
+}
+
+/** Turns off the pills `state`'s model cannot serve, as a model load does. */
+export function clampPillsToModel<T extends ChatRuntimeStore>(state: T): T {
+  const next: Record<string, unknown> = { ...state };
+  for (const key of CLAMPED_PILL_KEYS) {
+    next[key] = state[key] === true && !isPillClampedOff(state, key);
+  }
+  return next as T;
+}
+
 /** Read the level live: Full access outlives a chat switch but codeToolsEnabled does not. */
 export function codeToolsOn(
   state: Pick<
