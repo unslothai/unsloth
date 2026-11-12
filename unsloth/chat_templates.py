@@ -2704,8 +2704,7 @@ def get_chat_template(
             "{%- endif %}" + \
             chat_template
 
-    # The Modelfile gets the caller's message only if the Jinja template bakes it in. It is applied at
-    # export, after create_ollama_modelfile picks the template, so passing it cannot change that choice.
+    # Only templates that bake the message in pass it on; applied after create_ollama_modelfile picks the template.
     ollama_system_message = system_message if "{system_message}" in chat_template else None
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
 

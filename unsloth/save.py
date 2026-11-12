@@ -3583,8 +3583,6 @@ _OLLAMA_SYSTEM_CUT_RE = re.compile(r'"""\s*\n')
 
 
 def _set_ollama_system_message(modelfile, system_message):
-    # Ollama falls back to the Modelfile's SYSTEM line when a request has no system turn, the way the
-    # Jinja template falls back to {system_message}, so both must carry the same text.
     if _OLLAMA_SYSTEM_CUT_RE.search(system_message):
         raise ValueError(
             'Unsloth: The system message has a line ending in """, which an Ollama Modelfile cannot hold.'
