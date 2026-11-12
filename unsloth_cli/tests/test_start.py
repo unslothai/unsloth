@@ -8423,7 +8423,7 @@ def test_write_dsh_patch_is_idempotent_and_follows_the_server(dsh_patch, capsys)
     assert entries["agent-default-model"]["config"]["model"] == "other"
 
 
-def _generated_image_input(tmp_path, agent, output):
+def _generated_image_input(tmp_path, agent, vibe_env):
     agents = tmp_path / "agents"
     if agent == "opencode":
         config = json.loads((agents / "opencode" / "opencode.json").read_text())
@@ -8440,8 +8440,7 @@ def _generated_image_input(tmp_path, agent, output):
         entries = _dsh_entries(agents / "dsh" / start._DSH_PATCH_FILE)
         model = entries["llm-pi-ai"]["config"]["providers"]["unsloth"]["models"][0]
         return "image" in model.get("input", ())
-    models = re.search(r"VIBE_MODELS=(.+)", output).group(1)
-    return json.loads(shlex.split(models)[0])[0].get("supports_images") is True
+    return json.loads(vibe_env["VIBE_MODELS"])[0].get("supports_images") is True
 
 
 @pytest.mark.parametrize("vision", [True, False])
@@ -8458,10 +8457,15 @@ def test_agent_config_declares_image_input_only_for_a_vision_model(
         return answer
 
     monkeypatch.setattr(start, "_http_json", with_vision)
+    vibe_env = {}
+    vibe_env_fn = start._vibe_env
+    monkeypatch.setattr(
+        start, "_vibe_env", lambda *a, **k: vibe_env.update(vibe_env_fn(*a, **k)) or vibe_env
+    )
     args = ["pi", "--as-subagent"] if agent == "pi-subagent" else [agent]
     result = CliRunner().invoke(start.start_app, [*args, "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert _generated_image_input(tmp_path, agent, result.output) is vision
+    assert _generated_image_input(tmp_path, agent, vibe_env) is vision
 
 
 @pytest.mark.parametrize(
