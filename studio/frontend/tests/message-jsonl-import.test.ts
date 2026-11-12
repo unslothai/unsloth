@@ -870,3 +870,24 @@ test("imports without message send times mark their ordering timestamps as estim
     assert.equal(conversation.messages[0].metadata?.createdAtEstimated, true, filename);
   }
 });
+
+test("an early keyed result is not displaced by a later anonymous one", () => {
+  const [conversation] = parseImportText(
+    '{"role":"tool","tool_call_id":"a","content":"A"}\n' +
+      '{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"g","arguments":"{}"}}]}\n' +
+      '{"role":"tool","content":"B"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
+});
+
+test("a reserialized function_call copy of a tool call is not duplicated", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{\\"a\\":1}"}}],"function_call":{"name":"f","arguments":"{\\"a\\": 1}"}}\n' +
+      '{"role":"tool","tool_call_id":"c1","content":"R"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["R"]);
+});

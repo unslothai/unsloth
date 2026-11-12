@@ -199,21 +199,24 @@ function oaiMessagesToRecords(
         typeof fn.arguments === "string"
           ? fn.arguments
           : JSON.stringify(fn.arguments ?? {});
-      const addCall = (fn: Record<string, unknown>, callId: unknown) => {
-        const name = typeof fn.name === "string" ? fn.name : "unknown";
-        const argsStr = argumentsText(fn);
-        let args: unknown = {};
+      const parseArgs = (argsStr: string): unknown => {
         // _raw matches what the stream adapter and backend keep for invalid JSON arguments.
-        try { args = JSON.parse(argsStr); } catch { args = { _raw: argsStr }; }
-        const part = {
+        try { return JSON.parse(argsStr); } catch { return { _raw: argsStr }; }
+      };
+      const addCall = (fn: Record<string, unknown>, callId: unknown) => {
+        const argsStr = argumentsText(fn);
+        const part: { type: string; toolCallId: string; toolName: string; args: unknown; argsText: string; result?: string } = {
           type: "tool-call",
           toolCallId: typeof callId === "string" ? callId : crypto.randomUUID(),
-          toolName: name,
-          args,
+          toolName: typeof fn.name === "string" ? fn.name : "unknown",
+          args: parseArgs(argsStr),
           argsText: argsStr,
         };
         parts.push(part);
-        pending.push({ turn: idx, part, hasExplicitId: typeof callId === "string" });
+        // A keyed result seen before its call binds now, before weaker name/anonymous matching.
+        const early = stashedResults.findIndex(({ id }) => id !== undefined && id === callId);
+        if (early !== -1) part.result = stashedResults.splice(early, 1)[0].result;
+        else pending.push({ turn: idx, part, hasExplicitId: typeof callId === "string" });
       };
       // LangChain nests both call shapes under additional_kwargs.
       const additional =
@@ -242,11 +245,15 @@ function oaiMessagesToRecords(
       if (typeof legacyCall === "object" && legacyCall !== null) {
         const fn = legacyCall as Record<string, unknown>;
         const name = typeof fn.name === "string" ? fn.name : "unknown";
-        const argsText = argumentsText(fn);
-        // Converters that upgraded the call to tool_calls sometimes leave the copy.
+        const args = JSON.stringify(parseArgs(argumentsText(fn)));
+        // Converters that upgraded the call to tool_calls sometimes leave the copy, maybe reserialized.
         const alreadyListed = parts.some((part) => {
-          const p = part as { type?: string; toolName?: string; argsText?: string };
-          return p.type === "tool-call" && p.toolName === name && p.argsText === argsText;
+          const p = part as { type?: string; toolName?: string; toolCallId?: string; args?: unknown };
+          return (
+            p.type === "tool-call" &&
+            p.toolName === name &&
+            ((typeof fn.id === "string" && p.toolCallId === fn.id) || JSON.stringify(p.args) === args)
+          );
         });
         if (!alreadyListed) addCall(fn, fn.id);
       }
@@ -270,12 +277,6 @@ function oaiMessagesToRecords(
     idx++;
   }
 
-  for (const { part } of pending) {
-    const at = stashedResults.findIndex(
-      ({ id }) => id !== undefined && id === part.toolCallId,
-    );
-    if (at !== -1) part.result = stashedResults.splice(at, 1)[0].result;
-  }
   for (const { part, hasExplicitId } of pending) {
     if (part.result !== undefined) continue;
     const at = stashedResults.findIndex(
