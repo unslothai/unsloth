@@ -2352,17 +2352,17 @@ export const Thread: FC<{
 
           <TurnNavigator viewportRef={viewportElRef} />
 
-          {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
-          the tail and mounts the rest over the following frames. Nothing unmounts and the
-          document converges to the tree this rendered before; consumers that cannot wait call
-          completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
-          reason: React's bail-out needs one shared element per row. See
-          progressive-mount-controller.ts. */}
+          {/* Drop-in for ThreadPrimitive.Messages that mounts only the rows near the reader, with a
+          spacer for the rows on either side, so a thread costs what is on screen and not its
+          length. Readers of the whole document (find, print, select all) call
+          completeProgressiveMounts. It takes the propless slot #9042 introduced: React's bail-out
+          needs one shared element per row. See thread-window.ts. */}
           <ProgressiveMessages
             renderMessage={renderThreadMessage}
             resetKey={runtimeThreadId}
             viewportRef={viewportElRef}
           />
+          <ForkChatShortcut />
 
           {/* Bottom slack so the last message has room above the sticky
           scroll-to-bottom button (and floating composer in single mode),
@@ -4085,15 +4085,16 @@ const Composer: FC<{
   const cancelAudioUpload = audioUpload.cancel;
   // Read at Send time so a send materializing after a project switch is filed where made.
   const projectScope = useChatProjectScope();
-  const promptQueueThreadIds = compactIds([
-    threadListItemId,
-    threadListItemRemoteId,
-    threadId,
-  ]);
-  const preStreamThreadIds = compactIds([
-    ...promptQueueThreadIds,
-    referenceThreadId,
-  ]);
+  // One array per set of ids, not per render: the queue callbacks and the context they feed are
+  // keyed on these, and the composer renders on every keystroke.
+  const promptQueueThreadIds = useMemo(
+    () => compactIds([threadListItemId, threadListItemRemoteId, threadId]),
+    [threadListItemId, threadListItemRemoteId, threadId],
+  );
+  const preStreamThreadIds = useMemo(
+    () => compactIds([...promptQueueThreadIds, referenceThreadId]),
+    [promptQueueThreadIds, referenceThreadId],
+  );
   const preStreamRunReservationRef = useRef<symbol | null>(null);
   // Wakes a parked attachment when a preflight releases without ever streaming.
   const preStreamRunActive = useSyncExternalStore(
@@ -5943,20 +5944,84 @@ const Composer: FC<{
     [aui, startHydratedPromptQueue, threadIsRunning, disableQueue],
   );
 
-  const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
+  const queueContextValue: PromptQueueCallbacks = useMemo(
+    () => ({ startQueue, stopQueue }),
+    [startQueue, stopQueue],
+  );
   // Skills off sends no read_skill, so a mention would load nothing.
   const [skillsSwitchOn] = useSkillsSwitch();
 
+  // The composer renders on every keystroke, since it owns the draft. Nothing in these controls
+  // reads the text, so their elements are kept from one render to the next: React skips a subtree
+  // whose element is the one it rendered last. Measured on a keystroke: 297 component renders
+  // under the composer without this, 68 with it.
+  const toolsMenu = useMemo(
+    () => (
+      <ComposerToolsMenu
+        inputRef={inputRef}
+        side={effectiveMenuSide}
+        researchAvailable={!researchUsed}
+        audioUploadBusy={audioUpload.busy}
+      />
+    ),
+    [effectiveMenuSide, researchUsed, audioUpload.busy],
+  );
+  const pills = useMemo(
+    () => (
+      <>
+        <PermissionModeComposerPill side={effectiveMenuSide} />
+        {effectiveDeepResearchEnabled ? (
+          <DeepResearchComposerButton
+            onConfigure={() => setResearchWebsiteAccessOpen(true)}
+          />
+        ) : null}
+        <WebSearchToggle />
+        <CodeToolsToggle />
+        <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
+        <ImagesToggle />
+        <KnowledgeBaseComposerButton side={effectiveMenuSide} />
+        {mcpEnabledForChat ? (
+          <McpComposerButton side={effectiveMenuSide} />
+        ) : null}
+        <SkillsComposerButton side={effectiveMenuSide} />
+      </>
+    ),
+    [effectiveMenuSide, effectiveDeepResearchEnabled, mcpEnabledForChat],
+  );
+  const attachments = useMemo(
+    () => (
+      <>
+        <ComposerAttachments oneRowInChat={true} />
+        <PendingAudioChip />
+      </>
+    ),
+    [],
+  );
+  const toolStatus = useMemo(() => <ToolStatusDisplay />, []);
+  const documentsBar = useMemo(
+    () => (
+      <ThreadDocumentsBar
+        threadId={referenceThreadId}
+        onIndexingChange={handleIndexingChange}
+      />
+    ),
+    [referenceThreadId, handleIndexingChange],
+  );
+  const researchWebsiteAccessDialog = useMemo(
+    () => (
+      <DeepResearchWebsiteAccessDialog
+        open={researchWebsiteAccessOpen && effectiveDeepResearchEnabled}
+        onOpenChange={setResearchWebsiteAccessOpen}
+      />
+    ),
+    [researchWebsiteAccessOpen, effectiveDeepResearchEnabled],
+  );
+
   const composerContent = (
     <>
-      {!isDictating ? (
-        <>
-          <ComposerAttachments oneRowInChat={true} />
-          <PendingAudioChip />
-        </>
-      ) : null}
+      {!isDictating ? attachments : null}
       {!isDictating ? <ComposerDraftPreview text={composerText} /> : null}
-      {!isDictating ? <ToolStatusDisplay /> : null}
+      {!isDictating ? toolStatus : null}
       <div
         className="unsloth-composer-line"
         // The permission pill is always visible, so stay two-row unless dictating.
@@ -5968,31 +6033,8 @@ const Composer: FC<{
           className="unsloth-composer-left"
           data-pill-compact={pillCompact}
         >
-          <ComposerToolsMenu
-            inputRef={inputRef}
-            side={effectiveMenuSide}
-            researchAvailable={!researchUsed}
-            audioUploadBusy={audioUpload.busy}
-          />
-          {!isDictating ? (
-            <>
-              <PermissionModeComposerPill side={effectiveMenuSide} />
-              {effectiveDeepResearchEnabled ? (
-                <DeepResearchComposerButton
-                  onConfigure={() => setResearchWebsiteAccessOpen(true)}
-                />
-              ) : null}
-              <WebSearchToggle />
-              <CodeToolsToggle />
-              <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
-              <ImagesToggle />
-              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
-              {mcpEnabledForChat ? (
-                <McpComposerButton side={effectiveMenuSide} />
-              ) : null}
-              <SkillsComposerButton side={effectiveMenuSide} />
-            </>
-          ) : null}
+          {toolsMenu}
+          {!isDictating ? pills : null}
         </div>
         {isDictating ? (
           <ChatDictationBar
@@ -6110,10 +6152,7 @@ const Composer: FC<{
           </>
         )}
       </div>
-      <DeepResearchWebsiteAccessDialog
-        open={researchWebsiteAccessOpen && effectiveDeepResearchEnabled}
-        onOpenChange={setResearchWebsiteAccessOpen}
-      />
+      {researchWebsiteAccessDialog}
       <ChatAudioUploadMount audioUpload={audioUpload} />
     </>
   );
@@ -6162,10 +6201,7 @@ const Composer: FC<{
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
       {/* Chat with files card. Stays mounted while dictating to keep indexing state. */}
       <div className={isDictating ? "hidden" : "contents"}>
-        <ThreadDocumentsBar
-          threadId={referenceThreadId}
-          onIndexingChange={handleIndexingChange}
-        />
+        {documentsBar}
       </div>
       {youtubeOfferUrl && !isDictating && !disabled ? (
         // Keyed by URL so a second paste remounts and aborts the stale request.
@@ -8612,10 +8648,6 @@ const AssistantMessage: FC = () => {
         <AssistantActionBar />
       </div>
       </WindowedMessageBody>
-      {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
-      <MessagePrimitive.If last={true}>
-        <ForkChatShortcut />
-      </MessagePrimitive.If>
 
       {/* Trailing stop so Shift+Tab enters the action bar; the root's onFocus mounts it. */}
       <span
@@ -8667,10 +8699,9 @@ const ForkCountBadge: FC = () => {
   );
 };
 
-const useForkMessageAction = () => {
+const useForkMessageAction = (messageId: string | undefined) => {
   const aui = useAui();
   const navigate = useNavigate();
-  const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const pending = useForkInFlight((s) => s.forking);
   const setPending = useForkInFlight((s) => s.setForking);
@@ -8678,6 +8709,7 @@ const useForkMessageAction = () => {
   const handleFork = async () => {
     // Read the store, not the render: two handlers can run in one tick.
     if (useForkInFlight.getState().forking) return;
+    if (!messageId) return;
     const remoteId = aui.threadListItem().getState().remoteId;
     if (!remoteId) {
       toast.error("Cannot fork an unsaved chat");
@@ -8722,9 +8754,11 @@ const useForkMessageAction = () => {
   };
 };
 
-/** The fork chord's registration, mounted once under `If last`: autohidden action bars drop it. */
+/** The fork chord's registration, mounted once per thread outside the rows: the window unmounts
+ *  the last row when the reader scrolls away, and autohidden action bars drop theirs. */
 const ForkChatShortcut: FC = () => {
-  const { forkMessage, forkDisabled } = useForkMessageAction();
+  const lastId = useAuiState(({ thread }) => thread.messages.at(-1)?.id);
+  const { forkMessage, forkDisabled } = useForkMessageAction(lastId);
   const chatActive = useChatActive();
   // Compare mounts a thread per pane and the chord goes to whichever registered first.
   const inComparePane = useInComparePane();
@@ -8735,13 +8769,14 @@ const ForkChatShortcut: FC = () => {
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       void forkMessage();
     },
-    { enabled: chatActive && !inComparePane && !forkDisabled },
+    { enabled: lastId !== undefined && chatActive && !inComparePane && !forkDisabled },
   );
   return null;
 };
 
 const ForkMessageButton: FC = () => {
-  const { forkMessage, forkDisabled } = useForkMessageAction();
+  const messageId = useAuiState(({ message }) => message.id);
+  const { forkMessage, forkDisabled } = useForkMessageAction(messageId);
 
   return (
     <TooltipIconButton
@@ -9269,8 +9304,16 @@ const ScheduledTaskSource: FC = () => {
   );
 };
 
+/** Prompts already shown: the thread window remounts rows, and a remount must not replay the arrival. */
+const shownPrompts = new Set<string>();
+
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
+  const id = useAuiState(({ message }) => message.id);
+  const [arriving] = useState(() => !shownPrompts.has(id));
+  useEffect(() => {
+    shownPrompts.add(id);
+  }, [id]);
   const promptRef = focusReveal.ref;
   const adjustAbove = useAdjustForContentInsertedAbove();
   useEffect(() => {
@@ -9282,7 +9325,10 @@ const UserMessage: FC = () => {
   );
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
+      className={cn(
+        "aui-user-message-root mx-auto flex w-full max-w-(--thread-content-max-width) flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]",
+        arriving && "fade-in slide-in-from-bottom-1 animate-in duration-150",
+      )}
       data-role="user"
       tabIndex={0}
       {...focusReveal}
@@ -9306,9 +9352,6 @@ const UserMessage: FC = () => {
         </UserMessageFooter>
       </div>
       </WindowedMessageBody>
-      <MessagePrimitive.If last={true}>
-        <ForkChatShortcut />
-      </MessagePrimitive.If>
       {/* Reverse traversal reaches a trailing stop before the root. Focusing it
           mounts the autohidden controls, so the next Shift+Tab enters its controls
           instead of skipping the action bar and leaving the message. */}
@@ -9349,7 +9392,8 @@ const UserActionBar: FC = () => {
 const UserMoreMenu: FC = () => {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const collisionPadding = useWindowChromeCollisionPadding(undefined);
-  const { forkMessage, forkDisabled } = useForkMessageAction();
+  const messageId = useAuiState(({ message }) => message.id);
+  const { forkMessage, forkDisabled } = useForkMessageAction(messageId);
   return (
     // Non-modal: see AssistantActionBar.
     <ActionBarMorePrimitive.Root modal={false}>
