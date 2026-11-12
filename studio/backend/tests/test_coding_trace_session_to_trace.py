@@ -713,6 +713,13 @@ def test_system_variable_too_deep_to_print_stays_as_written(monkeypatch):
         ),
         # JSON.parse and String() print 1.0 as 1; a NaN map fails the parse and fills nothing.
         ({"systemPrompt": "{{x}}", "systemVariables": '{"x":[1.0]}'}, None, "[1]", []),
+        # JS \s matches \ufeff and not \x1c, the opposite of Python's.
+        (
+            {"systemPrompt": "{{\ufeffx}} {{\x1cx}}", "systemVariables": '{"x":"a"}'},
+            None,
+            "a {{\x1cx}}",
+            [],
+        ),
         (
             {"systemPrompt": "{{n}}", "systemVariables": '{"n":NaN}'},
             None,

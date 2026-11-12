@@ -54,9 +54,6 @@ _STOP_LABELS = {
     "quote_cut": "This response may have ended early",
 }
 
-# resolveSystemPromptVariables in frontend/src/features/chat/api/chat-adapter.ts.
-_PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
-
 # fromThreadMessageLike in @assistant-ui/core keeps only these assistant images.
 # JS "." stops at line breaks, so a data URL with one is dropped too.
 _DATA_IMAGE = re.compile(r"data:image/(png|jpeg|jpg|gif|webp);base64,[^\n\r\u2028\u2029]*")
@@ -66,6 +63,9 @@ _JS_SPACE = (
     " \t\n\v\f\r\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
     "\u2028\u2029\u202f\u205f\u3000\ufeff"
 )
+
+# resolveSystemPromptVariables in frontend/src/features/chat/api/chat-adapter.ts; \s is _JS_SPACE.
+_PROMPT_VARIABLE = re.compile(rf"{{{{[{_JS_SPACE}]*([a-zA-Z_$][a-zA-Z0-9_$.-]*)[{_JS_SPACE}]*}}}}")
 
 
 def _as_dict(value: object) -> dict:
