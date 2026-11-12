@@ -543,6 +543,22 @@ def test_user_attachments_are_model_input():
     assert _codes(trace).count("unsupported_part") == 1
 
 
+def test_user_turns_with_no_typed_text():
+    code = [{"content": _text("def f(): pass")}]
+    image = [{"content": [{"type": "image", "image": "x"}]}]
+    rows = [
+        {**_row("u1", "user", None, None, 1), "attachments": code},
+        _row("a1", "assistant", _text("ok"), "u1", 2),
+        {**_row("u2", "user", [], "a1", 3), "attachments": image},
+        _row("a2", "assistant", _text("ok"), "u2", 4),
+        _row("u3", "user", [], "a2", 5),
+    ]
+    trace = session_to_trace({"id": "t"}, rows)
+    # Only stored [] comes from a send; other content replays as "" and a "\n".
+    assert [m.text for m in trace.messages] == ["\ndef f(): pass", "ok", "", "ok", ""]
+    assert _codes(trace) == ["unsupported_part"]
+
+
 def test_image_only_user_turn_stays_empty():
     rows = [
         _row("u1", "user", _text("hi"), None, 1),
