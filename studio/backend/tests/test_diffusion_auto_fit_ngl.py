@@ -170,8 +170,7 @@ def _launch(
     runner_log = None,
     **kwargs,
 ):
-    """Drive the real _start_diffusion_server to the health wait, or past it when
-    runner_log gives the lines a healthy runner printed; return (argv, backend)."""
+    """Drive the real _start_diffusion_server to the health wait (past it with runner_log); return (argv, backend)."""
     backend = _fit_host(monkeypatch, gpus)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("DG_GPU", raising = False)

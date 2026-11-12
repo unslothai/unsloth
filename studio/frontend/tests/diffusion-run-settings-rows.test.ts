@@ -72,7 +72,6 @@ test("a diffusion context the runner did not apply says so, with the value it ru
   const start = page.indexOf("function DiffusionContextNote(");
   assert.notEqual(start, -1, "no DiffusionContextNote");
   const note = page.slice(start, page.indexOf("\nfunction ", start + 1));
-  // Only for the value the load was asked for, and only when the runner reports another.
   assert.match(
     note,
     /if \(loadedContext == null \|\| value !== requested \|\| value === loadedContext\) \{\s+return null;/,
