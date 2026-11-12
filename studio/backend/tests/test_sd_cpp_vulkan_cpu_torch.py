@@ -116,7 +116,6 @@ def test_windows_intel_is_read_by_name(monkeypatch, device, expected):
     [
         ({"UNSLOTH_FORCE_VULKAN": "1"}, "vulkan"),
         ({"UNSLOTH_LLAMA_CPP_BACKEND": "vulkan"}, "vulkan"),
-        # The public selector outranks the legacy flag, auto included.
         ({"UNSLOTH_LLAMA_CPP_BACKEND": "cpu", "UNSLOTH_FORCE_VULKAN": "1"}, "auto"),
         ({"UNSLOTH_LLAMA_CPP_BACKEND": "auto", "UNSLOTH_FORCE_VULKAN": "1"}, "auto"),
         ({"UNSLOTH_FORCE_VULKAN": "0"}, "auto"),
