@@ -96,6 +96,15 @@ class LocalQ4nx:
     def vision(self) -> bool:
         return any(name in self.files for name in VISION_FILES)
 
+    @property
+    def stamp(self) -> str:
+        """Changes when the folder is converted again, so a hidden row comes back with new weights."""
+        try:
+            info = (self.folder / "model.q4nx").stat()
+        except OSError:
+            return ""
+        return f"{os.path.normcase(str(self.folder))}|{info.st_mtime_ns}|{info.st_size}"
+
 
 def is_local_checkpoint(checkpoint: str) -> bool:
     return checkpoint.startswith(LOCAL_PREFIX)
@@ -263,7 +272,7 @@ def local_entry(
             "files": ["config.json", *model.files],
             "vlm": model.vision,
             "label": labels,
-            "size": model.size_bytes,
+            # "size" stays the base's: engines key behaviour off it (Qwen3.5 enables tools above 0.8B).
             # The engine finds its kernels by this folder name; the base's are the ones that fit.
             "xclbin_folder": base.get("xclbin_folder") or base["name"],
         }

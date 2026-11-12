@@ -117,7 +117,8 @@ def test_the_registered_entry_runs_on_the_base_kernels_and_cannot_be_pulled():
     assert entry["flm_min_version"] == "1.0.12"
     assert entry["url"].split("/")[-1] == local.family
     assert ".invalid/" in entry["url"] and "ms_url" not in entry
-    assert entry["size"] == sum(f.stat().st_size for f in folder.iterdir() if f.name in local.files)
+    assert entry["size"] == _BASE_ENTRY["size"]
+    assert folder.is_dir()
 
 
 def test_a_text_only_conversion_drops_the_vision_tower():
@@ -239,6 +240,13 @@ def test_delete_drops_the_registration_and_keeps_the_export(runtime):
     assert sorted(p.name for p in folder.iterdir()) == sorted([*local.files, q4nx.SOURCE_FILE])
     assert (folder / "model.q4nx").read_bytes() == b"weights"
     assert not any(r["path"] == "/v1/delete" for r in _requests(runtime))
+    assert not any(m.local for m in runtime.catalog())
+    with pytest.raises(nb.NpuError, match = "not a converted model"):
+        runtime.load(local.id)
+
+    # Converting into the folder again lists it again.
+    (folder / "model.q4nx").write_bytes(b"new weights")
+    assert [m.id for m in runtime.catalog() if m.local] == [local.id]
 
 
 @posix_only

@@ -661,7 +661,7 @@ class LemonadeNpuBackend:
     def _local_rows(self, catalog: list[NpuModel]) -> list[NpuModel]:
         by_checkpoint = {model.checkpoint: model for model in catalog}
         rows = []
-        for local in local_q4nx.account_local_models():
+        for local in self._account_local_models():
             base = by_checkpoint.get(local.base or "")
             labels = tuple(
                 label
@@ -685,8 +685,20 @@ class LemonadeNpuBackend:
             )
         return rows
 
+    def _hidden_local(self) -> list[str]:
+        try:
+            hidden = json.loads((self._local_dir / "hidden.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            return []
+        return [str(stamp) for stamp in hidden] if isinstance(hidden, list) else []
+
+    def _account_local_models(self) -> list[local_q4nx.LocalQ4nx]:
+        """The acting account's conversions, less the ones deleted from the list since converting."""
+        hidden = set(self._hidden_local())
+        return [local for local in local_q4nx.account_local_models() if local.stamp not in hidden]
+
     def _local_model(self, model_id: str) -> local_q4nx.LocalQ4nx:
-        for local in local_q4nx.account_local_models():
+        for local in self._account_local_models():
             if local.id == model_id:
                 return local
         raise NpuError(f"{model_id} is not a converted model in this account's exports.")
@@ -773,6 +785,13 @@ class LemonadeNpuBackend:
         for staged in self._flm_model_dir.glob(f"*/{local.family}"):
             if staged.is_dir() and not staged.is_symlink():
                 shutil.rmtree(staged, ignore_errors = True)
+        if local.stamp:
+            # Hidden by the weights' stamp: a new conversion into the folder lists it again.
+            hidden = [stamp for stamp in self._hidden_local() if stamp != local.stamp]
+            self._local_dir.mkdir(parents = True, exist_ok = True)
+            (self._local_dir / "hidden.json").write_text(
+                json.dumps([*hidden[-199:], local.stamp], indent = 2) + "\n", encoding = "utf-8"
+            )
 
     def _model_files(self, checkpoint: str, flm_binary: Optional[Path]) -> Optional[FlmModelFiles]:
         return read_model_files(flm_binary, self._flm_model_dir, checkpoint)
