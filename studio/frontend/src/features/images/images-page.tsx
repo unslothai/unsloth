@@ -87,8 +87,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
-// Import the shared leaf directly to avoid cycling through the settings/model-picker UI barrels.
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
 import { VramBudgetControl } from "@/features/settings/components/vram-budget-control";
 import { useDiffusionGpuChoices, useGpuDevices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";

@@ -4,8 +4,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { usePlatformStore } from "@/config/env";
-// Import the shared leaf directly to avoid cycling through the settings/model-picker UI barrels.
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
 import { AdvancedGpuSlider } from "@/features/model-picker/components/advanced-gpu-slider";
 // eslint-disable-next-line no-restricted-imports -- Pure conversions; avoid the model-picker UI barrel.
 import {
