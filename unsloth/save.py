@@ -9034,6 +9034,7 @@ def unsloth_save_pretrained_openvino(
     - is_main_process: Only the main process exports under multi-GPU / DDP.
     - **kwargs: Other `optimum-cli export openvino` options, with underscores for dashes, e.g. group_size = 64, ratio = 0.8, sym = False, awq = True, dataset = "wikitext2". They override the quantization_type preset.
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     return _unsloth_save_openvino(
         model = self,
         save_directory = save_directory,
@@ -9060,6 +9061,7 @@ def unsloth_push_to_hub_openvino(
     **kwargs,
 ):
     """Export the model to OpenVINO IR format and push it to the Hugging Face Hub. Takes the same options as save_pretrained_openvino."""
+    _assert_export_target_is_not_base_with_lora_layers(self)
     return _unsloth_save_openvino(
         model = self,
         save_directory = repo_id,
