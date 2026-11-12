@@ -563,14 +563,13 @@ function FloatingMonitorPanel({
                 <div className="font-medium">
                   {t("settings.resources.gpu.sharedWithSystemRam")}
                 </div>
-                <div className="font-mono tabular-nums text-muted-foreground">
-                  {t("settings.resources.gpu.estimatedAvailable", {
-                    value:
-                      memoryDisplay.sharedAvailableGb === null
-                        ? unknownLabel
-                        : formatGiB(memoryDisplay.sharedAvailableGb),
-                  })}
-                </div>
+                {memoryDisplay.sharedAvailableGb !== null && (
+                  <div className="font-mono tabular-nums text-muted-foreground">
+                    {t("settings.resources.gpu.estimatedAvailable", {
+                      value: formatGiB(memoryDisplay.sharedAvailableGb),
+                    })}
+                  </div>
+                )}
               </div>
             )}
             {separateInferenceGpu && (
@@ -597,12 +596,11 @@ function FloatingMonitorPanel({
                   {separateInferenceGpu.available &&
                     inferenceDisplay.sharedDevices.length > 0 && (
                       <span className="block normal-case">
-                        {t("settings.resources.gpu.estimatedAvailable", {
-                          value:
-                            inferenceDisplay.sharedAvailableGb === null
-                              ? unknownLabel
-                              : formatGiB(inferenceDisplay.sharedAvailableGb),
-                        })}
+                        {inferenceDisplay.sharedAvailableGb === null
+                          ? t("settings.resources.gpu.sharedWithSystemRam")
+                          : t("settings.resources.gpu.estimatedAvailable", {
+                              value: formatGiB(inferenceDisplay.sharedAvailableGb),
+                            })}
                       </span>
                     )}
                 </span>

@@ -37,6 +37,15 @@ export function sharedMemoryAvailableGb(devices: GpuDevice[]): number | null {
   return Math.max(...devices.map((device) => device.vram_free_gb as number));
 }
 
+/** Shared-RAM detail for the VRAM tile; drops the estimate line when no free reading exists. */
+export function sharedMemoryDetail(
+  availableGb: number | null,
+  label: string,
+  estimate: (gb: number) => string,
+): string {
+  return availableGb === null ? label : `${label}\n${estimate(availableGb)}`;
+}
+
 /** A shared iGPU with no usage counter beside cards that all report one: shown as shared RAM rather
  * than blanking the cards' used VRAM, or counting its pool as free. */
 function parkedSharedDevices(

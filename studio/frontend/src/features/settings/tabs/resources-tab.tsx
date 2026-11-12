@@ -22,6 +22,7 @@ import {
   gpuMemoryDisplay,
   hasSharedMemoryHeadroom,
   sharedMemoryAvailableGb,
+  sharedMemoryDetail,
 } from "@/hooks/gpu-memory-display";
 import {
   carveOutVramGb,
@@ -854,7 +855,14 @@ export function ResourcesTab() {
             extraDetail={
               !memoryDisplay.sharedOnly &&
               memoryDisplay.sharedDevices.length > 0
-                ? `${t("settings.resources.gpu.sharedWithSystemRam")}\n${t("settings.resources.gpu.estimatedAvailable", { value: memoryDisplay.sharedAvailableGb === null ? unknownLabel : formatGiB(memoryDisplay.sharedAvailableGb) })}`
+                ? sharedMemoryDetail(
+                    memoryDisplay.sharedAvailableGb,
+                    t("settings.resources.gpu.sharedWithSystemRam"),
+                    (gb) =>
+                      t("settings.resources.gpu.estimatedAvailable", {
+                        value: formatGiB(gb),
+                      }),
+                  )
                 : metrics.vramCarveOut
                   ? t("settings.resources.gpu.alsoSystemRam", {
                       value: formatGiB(metrics.vramCarveOut.borrowableGb),
@@ -1070,12 +1078,11 @@ export function ResourcesTab() {
               {separateInferenceGpu.available &&
                 inferenceDisplay.sharedDevices.length > 0 && (
                   <span className="block normal-case">
-                    {t("settings.resources.gpu.estimatedAvailable", {
-                      value:
-                        inferenceDisplay.sharedAvailableGb === null
-                          ? unknownLabel
-                          : formatGiB(inferenceDisplay.sharedAvailableGb),
-                    })}
+                    {inferenceDisplay.sharedAvailableGb === null
+                      ? t("settings.resources.gpu.sharedWithSystemRam")
+                      : t("settings.resources.gpu.estimatedAvailable", {
+                          value: formatGiB(inferenceDisplay.sharedAvailableGb),
+                        })}
                   </span>
                 )}
             </span>

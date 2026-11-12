@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { vramCards } from "../src/components/monitor-cards.ts";
-import { gpuMemoryDisplay } from "../src/hooks/gpu-memory-display.ts";
+import {
+  gpuMemoryDisplay,
+  sharedMemoryDetail,
+} from "../src/hooks/gpu-memory-display.ts";
 import {
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
@@ -51,8 +54,17 @@ test("an unreadable shared iGPU leaves the discrete cards' usage on the VRAM til
   const used = resolveGpuVramUsedGb(display.usageGpu);
   assert.ok(used !== null, "VRAM used must not be Unknown");
   assert.ok(Math.abs(used - 23.72) < 1e-9);
-  // No free reading on the iGPU, so its shared line says Unknown instead of a number.
+  // No free reading on the iGPU, so the tile keeps the shared label and drops the estimate line.
   assert.equal(display.sharedAvailableGb, null);
+  const estimate = (gb: number) => `Estimated available: ${gb}`;
+  assert.equal(
+    sharedMemoryDetail(display.sharedAvailableGb, "Shared with system RAM", estimate),
+    "Shared with system RAM",
+  );
+  assert.equal(
+    sharedMemoryDetail(12.5, "Shared with system RAM", estimate),
+    "Shared with system RAM\nEstimated available: 12.5",
+  );
 });
 
 test("the monitor cards agree with the tile on this host", () => {
