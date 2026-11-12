@@ -1823,9 +1823,7 @@ def _load_probe_memo_scope(fn):
 # Failed fetches retry after a short pause, not per load: a firewall would cost each load the timeout.
 _NEW_MAPPER_TTL_S = 3600.0
 _NEW_MAPPER_RETRY_S = 300.0
-_NEW_MAPPER_CACHE = {
-    "entry": None
-}  # (tables, fetched_at) in one slot, so a reader never sees a torn pair
+_NEW_MAPPER_CACHE = {"entry": None}  # (tables, fetched_at): one slot, never a torn pair
 
 
 def _new_mapper_tables():
