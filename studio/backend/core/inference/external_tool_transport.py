@@ -65,6 +65,7 @@ class OAICompatTransport:
             "llama_cpp",
             "vllm",
             "minimax",
+            "deepseek",
         ) or _is_kimi_k3(client.provider_type, model)
 
     def stream(

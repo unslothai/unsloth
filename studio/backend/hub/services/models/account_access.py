@@ -1008,17 +1008,44 @@ def require_model_access(
     repo_type: str = "model",
     *,
     offline: bool = False,
+    hf_token = None,
 ) -> None:
     access_options = {"offline": True} if offline else {}
     if not model_visible(reference, repo_type = repo_type, **access_options):
         from utils.paths.path_utils import is_network_or_device_path
 
         # The allowlist check below resolves the reference on disk: not for a share path.
-        if repo_type == "model" and not (
-            isinstance(reference, str) and is_network_or_device_path(reference)
-        ):
+        if isinstance(reference, str) and is_network_or_device_path(reference):
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        if repo_type == "model":
             require_model_allowed(reference)
+        if not offline and _grant_with_token(reference, repo_type, hf_token):
+            return
         raise HTTPException(status_code = 404, detail = "Model not found")
+
+
+def _grant_with_token(reference, repo_type: str, hf_token) -> bool:
+    token = account_hf_token(hf_token)
+    if not isinstance(reference, str) or not token:
+        return False
+    repo_id = _reference_repo_id(reference.strip())
+    if repo_id is None or not _source_speaks_for_the_cache():
+        return False
+    if repo_type == "model" and not model_allowed(repo_id):
+        return False
+    from hub.utils.hf_tokens import _explicit_token_reaches_repo
+
+    # HfApi.auth_check has no timeout; this probe is bounded.
+    if _explicit_token_reaches_repo(repo_id, token, repo_type) is not True:
+        return False
+    record_model_grant(repo_id, repo_type)
+    return model_visible(reference, repo_type = repo_type)
+
+
+def require_media_model_access(request) -> None:
+    require_model_access(request.model_path, hf_token = request.hf_token)
+    if request.base_repo:
+        require_model_access(request.base_repo, hf_token = request.hf_token)
 
 
 def require_model_allowed(reference) -> None:

@@ -557,6 +557,68 @@ def test_auto_scheme_is_bf16_only_when_it_fits(h3i, monkeypatch):
         assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] is None
 
 
+@pytest.mark.parametrize(
+    "vram, host, scheme",
+    [
+        # 48 GB: bf16 beside the encoder would go sequential (refused under ~74 GB RAM).
+        (48.2, 72.0, "int8"),
+        (48.2, 128.0, "int8"),
+        (80.0, 64.0, None),
+        (190.0, 1500.0, None),
+    ],
+)
+def test_auto_takes_bf16_only_when_it_stays_on_the_card_beside_the_encoder(h3i, vram, host, scheme):
+    pytest.importorskip("torchao")
+    te = h3i.te_gb_for("int8")
+    got, reason = h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram, host_gb = host, te_gb = te)
+    assert got == scheme, reason
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram)[0] is None
+
+
+def test_the_plan_sizes_the_encoder_the_request_takes(h3i, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        h3i, "resolve_dit_scheme", lambda req, **kw: seen.append(kw["te_gb"]) or (None, "x")
+    )
+    h3i.planned_dit_scheme(None, "cpu")
+    h3i.planned_dit_scheme(None, "cpu", "none")
+    assert seen == [h3i.H3_IMAGE_TE_INT8_GB, h3i.H3_IMAGE_TE_BF16_GB]
+
+
+def test_the_plan_credits_host_memory_the_unload_frees(h3i, monkeypatch):
+    """Host RAM held by the resident model is credited back, since the load unloads it first."""
+    pytest.importorskip("torchao")
+    import torch
+
+    monkeypatch.delenv(h3i.VRAM_BUDGET_ENV, raising = False)
+    monkeypatch.delenv(h3i.HOST_BUDGET_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (80.0, 20.0))
+    assert h3i.planned_dit_scheme(None, "cuda") == "int8"
+    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) is None
+    monkeypatch.setenv(h3i.HOST_BUDGET_ENV, "20")
+    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) == "int8"
+
+
+def test_the_backend_plan_passes_the_resident_pipeline_host_memory(h3i, monkeypatch):
+    import types
+
+    from core.inference import diffusion as dmod
+
+    seen = []
+    monkeypatch.setattr(
+        h3i, "planned_dit_scheme", lambda *a, **kw: seen.append(kw["reclaimable_host_gb"])
+    )
+    monkeypatch.setattr(dmod, "pipeline_host_mib", lambda pipe: 4096 if pipe == "resident" else 0)
+    backend = dmod.DiffusionBackend()
+    monkeypatch.setattr(
+        backend, "_target_for_ordinal", lambda fam, ordinal: types.SimpleNamespace(device = "cpu")
+    )
+    backend._state = types.SimpleNamespace(pipe = "resident")
+    backend._h3_image_planned_dit_scheme(None, None, None)
+    assert seen == [pytest.approx(4096 * 2**20 / 1e9)]
+
+
 def test_streamer_runs_blocks_from_the_host(h3i):
     import torch
 
@@ -611,8 +673,18 @@ def test_backend_loads_and_generates(h3i, release, tmp_path, monkeypatch):
         status = backend.load_pipeline(str(root), model_kind = "pipeline")
         assert backend._state is not None and backend._state.family.name == "minimax-h3-image"
         assert backend._state.pipe._unsloth_h3_report.layout == "native"
+        from core.inference import diffusion_prompt_cache as prompt_cache
+
+        cache = prompt_cache.cache_for(backend._state.pipe)
+        assert cache is not None, "the H3-Image load must install the prompt cache"
         out = backend.generate(prompt = "a cat", width = 256, height = 256, steps = 6, guidance = 1.0, seed = 3)
         assert out["images"], out
+        assert cache.stats["misses"] == 1 and cache.stats["hits"] == 0
+        again = backend.generate(
+            prompt = "a cat", width = 256, height = 256, steps = 6, guidance = 1.0, seed = 4
+        )
+        assert again["images"] and cache.stats["hits"] == 1
+        assert backend._state.pipe._unsloth_h3_last_stats["encode_cached"] is True
         raw = out["images"][0]
         data = raw.get("b64") if isinstance(raw, dict) else raw
         if isinstance(data, str):
@@ -1139,3 +1211,369 @@ def test_the_per_prompt_encoder_refuses_a_bf16_fallback(h3i, release, tmp_path, 
     with pytest.raises(RuntimeError, match = "bf16 encoder it would fall back to"):
         pipe._unsloth_h3_te_loader()
     pipe.release()
+
+
+def _cached_pipe(h3i, release):
+    from core.inference import diffusion_prompt_cache as prompt_cache
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    assert prompt_cache.install(p, identity = {"family": "minimax-h3-image"})
+    return p, prompt_cache.cache_for(p)
+
+
+def _latents(
+    p,
+    prompt,
+    seed,
+    image = None,
+):
+    import torch
+    out = p(
+        prompt = prompt,
+        image = image,
+        height = 256,
+        width = 256,
+        generator = torch.Generator("cpu").manual_seed(seed),
+        output_type = "latent",
+    )
+    return out.images[0]
+
+
+def test_a_repeated_prompt_reuses_the_conditioning_bitwise(h3i, release, monkeypatch):
+    import torch
+
+    p, cache = _cached_pipe(h3i, release)
+    calls = []
+    real = h3i.qwen3vl_hidden_state
+    monkeypatch.setattr(
+        h3i, "qwen3vl_hidden_state", lambda *a, **k: calls.append(1) or real(*a, **k)
+    )
+    first = _latents(p, "a red bicycle", 5)
+    hit = _latents(p, "a red bicycle", 5)
+    assert (
+        len(calls) == 1 and cache.stats["hits"] == 1 and p._unsloth_h3_last_stats["encode_cached"]
+    )
+    assert torch.equal(first, hit)
+    _latents(p, "a blue bicycle", 5)
+    assert len(calls) == 2 and not p._unsloth_h3_last_stats["encode_cached"]
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PROMPT_CACHE", "0")
+    from core.inference import diffusion_prompt_cache as prompt_cache
+
+    q = h3i.load_minimax_h3_image_pipeline(str(release[0]), device = "cpu", text_encoder = release[2])
+    assert not prompt_cache.install(q, identity = {"family": "minimax-h3-image"})
+    assert torch.equal(_latents(q, "a red bicycle", 5), first)
+
+
+def test_the_conditioning_cache_keys_on_the_reference_pixels(h3i, release, monkeypatch):
+    from PIL import Image
+
+    p, cache = _cached_pipe(h3i, release)
+    seen = []
+    real = h3i.qwen3vl_hidden_state
+    monkeypatch.setattr(
+        h3i, "qwen3vl_hidden_state", lambda *a, **k: seen.append(1) or real(*a, **k)
+    )
+    if p.processor is None:
+        pytest.skip("tiny release has no processor")
+    red = Image.new("RGB", (128, 128), (200, 10, 10))
+    blue = Image.new("RGB", (128, 128), (10, 10, 200))
+    _latents(p, "<Picture 1> at night", 1, image = [red])
+    _latents(p, "<Picture 1> at night", 2, image = [red.copy()])
+    assert len(seen) == 1 and cache.stats["hits"] == 1
+    _latents(p, "<Picture 1> at night", 1, image = [blue])
+    assert len(seen) == 2
+
+
+def test_every_backend_loader_installs_the_prompt_cache():
+    """Each DiffusionBackend method that commits a load (builds a _LoadState) installs the conditioning cache."""
+    import ast
+
+    path = _BACKEND / "core" / "inference" / "diffusion.py"
+    src = path.read_text(encoding = "utf-8")
+    loaders = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = {ast.unparse(c.func) for c in ast.walk(node) if isinstance(c, ast.Call)}
+        if "_LoadState" in calls:
+            loaders.append(node.name)
+            assert (
+                "prompt_cache.install" in calls
+            ), f"{node.name} commits a load without the prompt cache"
+    assert {"load_pipeline", "_load_h3_image_locked"} <= set(loaders), loaders
+
+
+def test_a_declared_int8_attention_maps_to_sage():
+    from core.inference import diffusion_attention as da
+
+    assert da.checkpoint_attention_backend("int8") == "sage"
+    assert da.checkpoint_attention_backend(" INT8 ") == "sage"
+    assert da.checkpoint_attention_backend("fp4") is None
+    assert da.checkpoint_attention_backend(None) is None
+
+
+def test_int8_attention_follows_the_checkpoint_and_the_switch(h3i, monkeypatch):
+    import types
+
+    t = types.SimpleNamespace()
+    monkeypatch.delenv(h3i.INT8_ATTENTION_ENV, raising = False)
+    assert h3i.checkpoint_attention_wanted(t, "int8") == "sage"
+    assert h3i.checkpoint_attention_wanted(t, "fp8") is None
+    assert h3i.checkpoint_attention_wanted(t, None) is None
+    setattr(t, h3i.CHECKPOINT_ATTENTION_ATTR, "int8")
+    assert h3i.checkpoint_attention_wanted(t, "fp8") == "sage"
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "0")
+    assert h3i.checkpoint_attention_wanted(t, "int8") is None
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "1")
+    assert h3i.checkpoint_attention_wanted(types.SimpleNamespace(), None) == "sage"
+
+
+def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, monkeypatch):
+    from core.inference import diffusion_attention as da
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    mods = h3i._attention_processors(p.transformer)
+    blocks = {id(m) for b in p.transformer.transformer_blocks for m in b.modules()}
+    before = {id(m): m.processor._attention_backend for m in mods}
+
+    def fake_apply(
+        pipe,
+        backend,
+        logger = None,
+        target = None,
+    ):
+        for m in h3i._attention_processors(pipe.transformer):
+            m.processor._attention_backend = backend
+        return backend
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") == "sage"
+    for m in mods:
+        want = "sage" if id(m) in blocks else before[id(m)]
+        assert m.processor._attention_backend == want
+    assert any(id(m) not in blocks for m in mods)
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    monkeypatch.setattr(
+        da, "apply_attention_backend", lambda *a, **k: fake_apply(a[0], None) and None
+    )
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    assert h3i.install_checkpoint_attention(p, "cpu", scheme = "int8") is None
+
+
+def test_hosted_metadata_attention_is_recorded(h3i):
+    import types
+
+    t = types.SimpleNamespace()
+    h3i.h3_image_prepare_prequant_model()(t, {"attention": "INT8"})
+    assert getattr(t, h3i.CHECKPOINT_ATTENTION_ATTR) == "int8"
+
+
+def test_a_hub_snapshot_never_loads_the_bundled_encoder_or_the_converted_copy(
+    h3i, release, tmp_path, monkeypatch
+):
+    """A Hub load skips the bundled encoder and *_diffusers/ copy, even if a snapshot already holds them."""
+    import copy
+
+    import transformers
+
+    root, _ref, te = release
+    snap = _release_copy(root, tmp_path / "snap", with_encoder = False)
+    te.save_pretrained(str(snap / "text_encoder"))
+    fetched = []
+    monkeypatch.setattr(
+        h3i, "_hub_files", lambda repo, patterns, **kw: fetched.extend(patterns) or snap
+    )
+    loaded = []
+    monkeypatch.setattr(
+        h3i,
+        "load_h3_image_text_encoder",
+        lambda scheme, **kw: loaded.append(scheme) or (copy.deepcopy(te), scheme),
+    )
+
+    def _no_local_encoder(*a, **k):
+        raise AssertionError(f"the bundled encoder was loaded: {a}")
+
+    monkeypatch.setattr(
+        transformers.Qwen3VLForConditionalGeneration, "from_pretrained", _no_local_encoder
+    )
+    pipe = h3i.load_minimax_h3_image_pipeline(
+        h3i.H3_IMAGE_BASE_REPO, device = "cpu", text_encoder_quant = "int8"
+    )
+    assert pipe._unsloth_h3_report.te_scheme == "int8"
+    assert loaded in ([], ["int8"])
+    assert not [p for p in fetched if "text_encoder" in p or "_diffusers" in p]
+    assert "transformer/*" in fetched
+    pipe.release()
+
+
+def test_a_local_folder_still_brings_its_own_encoder(h3i, release, tmp_path, monkeypatch):
+    import transformers
+
+    root, _ref, te = release
+    rel = _release_copy(root, tmp_path / "rel", with_encoder = False)
+    te.save_pretrained(str(rel / "text_encoder"))
+    monkeypatch.setattr(
+        h3i,
+        "load_h3_image_text_encoder",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("the hosted encoder was fetched")),
+    )
+    sized = _bf16_sized(h3i, monkeypatch, transformers.Qwen3VLForConditionalGeneration)
+    pipe = h3i.load_minimax_h3_image_pipeline(str(rel), device = "cpu", text_encoder_quant = "int8")
+    assert pipe._unsloth_h3_report.te_scheme is None
+    assert sized[-1] == h3i.H3_IMAGE_TE_BF16_GB
+    pipe.release()
+
+
+@pytest.mark.parametrize(
+    "native, converted, reads_native",
+    [(True, True, True), (True, False, True), (False, True, False), (False, False, True)],
+)
+def test_the_native_layout_wins_when_both_are_present(
+    h3i, tmp_path, native, converted, reads_native
+):
+    for name, present in (("transformer", native), ("transformer_diffusers", converted)):
+        if present:
+            (tmp_path / name).mkdir()
+            (tmp_path / name / "config.json").write_text("{}")
+    assert h3i._native_layout(tmp_path, "transformer", "transformer_diffusers") is reads_native
+
+
+@pytest.mark.parametrize(
+    "request_value, scheme",
+    [
+        (None, "int8"),
+        ("", "int8"),
+        ("auto", "int8"),
+        ("int8", "int8"),
+        ("none", None),
+        ("Off", None),
+        ("bf16", None),
+    ],
+)
+def test_the_encoder_scheme_follows_the_raw_request(h3i, request_value, scheme):
+    assert h3i.h3_image_te_scheme(request_value) == scheme
+
+
+def test_explicit_dit_schemes_are_honored_or_refused(h3i, monkeypatch):
+    import torch
+
+    from core.inference import diffusion_precision
+
+    monkeypatch.setattr(diffusion_precision, "torchao_quantize_importable", lambda: True)
+    assert h3i.explicit_scheme_refusal("int8", "cpu") is None
+    assert h3i.explicit_scheme_refusal("fp8", "cpu") is None
+    assert "not nvfp4" in h3i.explicit_scheme_refusal("nvfp4", "cpu")
+    assert "not mxfp8" in h3i.explicit_scheme_refusal("mxfp8", "cpu")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: (8, 0))
+    assert "8.9 or newer" in h3i.explicit_scheme_refusal("fp8", "cuda")
+    assert h3i.explicit_scheme_refusal("int8", "cuda") is None
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: (8, 9))
+    assert h3i.explicit_scheme_refusal("fp8", "cuda") is None
+
+
+def test_the_plan_scheme_plans_the_whole_card(h3i, monkeypatch):
+    """The plan uses the whole card (the load evicts chat first); a VRAM budget still wins."""
+    import torch
+
+    monkeypatch.delenv(h3i.VRAM_BUDGET_ENV, raising = False)
+    seen = []
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (20.0, 500.0))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev = None: (20e9, 80e9))
+    monkeypatch.setattr(
+        h3i,
+        "resolve_dit_scheme",
+        lambda req, *, device, vram_gb, **kw: seen.append(vram_gb) or (None, "x"),
+    )
+    assert h3i.planned_dit_scheme(None, "cuda") is None
+    monkeypatch.setenv(h3i.VRAM_BUDGET_ENV, "24")
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (24.0, 500.0))
+    h3i.planned_dit_scheme(None, "cuda")
+    assert seen == [pytest.approx(80.0), pytest.approx(24.0)]
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_the_preflight_passes_explicit_h3_schemes_without_a_compile(h3i, monkeypatch, scheme):
+    """int8 / fp8 bypass the torchao compile gate; other schemes are refused before eviction."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    from core.inference import diffusion_precision
+
+    fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda target, **kw: False)
+    monkeypatch.setattr(diffusion_precision, "torchao_quantize_importable", lambda: True)
+    backend = dmod.DiffusionBackend()
+    import dataclasses
+
+    target = dataclasses.replace(resolve_diffusion_device_target(), device = "cpu")
+    kwargs = {"model_kind": "pipeline", "te_mode": None, "memory_mode": None, "cpu_offload": False}
+    backend._assert_precision_for_target(fam, target, pinned = scheme, **kwargs)
+    with pytest.raises(RuntimeError, match = "MiniMax-H3-Image runs int8 or fp8"):
+        backend._assert_precision_for_target(fam, target, pinned = "mxfp8", **kwargs)
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_an_explicit_scheme_without_torchao_is_refused_not_run_as_bf16(h3i, monkeypatch, scheme):
+    """Without torchao an explicit int8 / fp8 is refused, not silently run as bf16."""
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_precision
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(diffusion_precision, "torchao_quantize_importable", lambda: False)
+    assert "torchao is not importable" in h3i.explicit_scheme_refusal(scheme, "cpu")
+    fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
+    target = dataclasses.replace(resolve_diffusion_device_target(), device = "cpu")
+    with pytest.raises(RuntimeError, match = "torchao is not importable"):
+        dmod.DiffusionBackend()._assert_precision_for_target(
+            fam,
+            target,
+            model_kind = "pipeline",
+            pinned = scheme,
+            te_mode = None,
+            memory_mode = None,
+            cpu_offload = False,
+        )
+
+
+def test_a_dit_scheme_the_plan_cannot_settle_marks_the_plan_partial(h3i, monkeypatch):
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    def _broken(*a, **k):
+        raise RuntimeError("no device answer")
+
+    monkeypatch.setattr(h3i, "planned_dit_scheme", _broken)
+    fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
+    failures = []
+    assert dmod.DiffusionBackend()._h3_image_planned_dit_scheme(fam, None, None, failures) is None
+    assert [str(e) for e in failures] == ["no device answer"]
+    monkeypatch.setattr(h3i, "planned_dit_scheme", lambda *a, **k: "int8")
+    failures.clear()
+    assert dmod.DiffusionBackend()._h3_image_planned_dit_scheme(fam, None, None, failures) == "int8"
+    assert failures == []
+
+
+def test_the_request_ceiling_admits_every_family_side(h3i):
+    """The request used to cap sides at 2752, rejecting every 16 MP size."""
+    from pydantic import ValidationError
+
+    from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
+    from core.inference.diffusion_families import _FAMILIES
+    from models.inference import DiffusionGenerateRequest
+
+    assert MAX_REQUEST_SIDE == max(int(f.max_output_side) for f in _FAMILIES)
+    for width, height in h3i.H3_IMAGE_16MP_SIZES:
+        DiffusionGenerateRequest(prompt = "x", width = width, height = height)
+    with pytest.raises(ValidationError):
+        DiffusionGenerateRequest(prompt = "x", width = MAX_REQUEST_SIDE + 16, height = 1024)

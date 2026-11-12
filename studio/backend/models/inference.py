@@ -26,6 +26,7 @@ from pydantic import (
 )
 
 from core.inference.audio_workflows import status_audio_workflows
+from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
 from core.inference.llama_server_args import (
     BATCH_MAX,
     BATCH_MIN,
@@ -5307,17 +5308,16 @@ class DiffusionGenerateRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
-    # Transport ceiling = the largest 2K preset side; the loaded family enforces its own bounds and grid.
     width: int = Field(
         1024,
         ge = 256,
-        le = 2752,
+        le = MAX_REQUEST_SIDE,
         description = "Image width in pixels (multiple of 16; the loaded model may require more)",
     )
     height: int = Field(
         1024,
         ge = 256,
-        le = 2752,
+        le = MAX_REQUEST_SIDE,
         description = "Image height in pixels (multiple of 16; the loaded model may require more)",
     )
     steps: int = Field(
@@ -5582,7 +5582,10 @@ class DiffusionGenerateRequest(BaseModel):
     provider_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
-        "connection's /images/generations as `model` and the results are saved to the gallery.",
+        "connection's /images/generations as `model` and the results are saved to the gallery. "
+        "With `workflow` edit, init_image (then reference_images) and the prompt go to its "
+        "/images/edits instead. No size is sent with an edit, so width and height are not used and "
+        "the server picks the output size. No other image-input workflow runs on a connection.",
     )
     model: Optional[str] = Field(
         None, description = "Model name on the connection named by `provider_id`."

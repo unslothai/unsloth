@@ -229,6 +229,14 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 **LAN Access (home network)**: `Settings > API keys > LAN access`
 
+**Your own reverse proxy or custom domain** (Cloudflare Named Tunnel, nginx, Caddy) running on the same computer: Unsloth Desktop only serves its web UI to a proxy for hostnames you list (comma separated), so set them, then quit and reopen it:
+```bash
+export UNSLOTH_STUDIO_PROXY_HOSTS=studio.example.com            # Linux: start Unsloth Desktop from this shell
+launchctl setenv UNSLOTH_STUDIO_PROXY_HOSTS studio.example.com  # macOS
+setx UNSLOTH_STUDIO_PROXY_HOSTS studio.example.com              # Windows
+```
+The proxy must send that hostname as `Host` (cloudflared's default, so leave its HTTP Host Header override unset) or as `X-Forwarded-Host`. Sign in with the password from `Settings > Remote access > Remote password`.
+
 #### Password management & headless starts
 Exposing Unsloth (`--secure`, `--cloudflare`, or a non-loopback `-H`) asks once at the terminal for a new admin password. Ctrl+C there aborts the launch rather than exposing the auto-generated one; set a password non-interactively instead, or use `-H 127.0.0.1` to stay off the network.
 
