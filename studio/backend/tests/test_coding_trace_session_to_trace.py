@@ -228,12 +228,13 @@ def _local(cid, round_id = None):
 
 
 @pytest.mark.parametrize(
-    "parts, shape",
+    "parts, shape, codes",
     [
         # One row's calls replay as one group past skipped parts; tool messages follow it.
         (
             [_call("A"), {"type": "image", "image": "x"}, _call("B"), *_text("done")],
             [("assistant", ["A", "B"]), ("tool", "A"), ("tool", "B"), ("assistant", "done")],
+            ["unsupported_part"],
         ),
         # A new local round closes the group.
         (
@@ -245,24 +246,27 @@ def _local(cid, round_id = None):
                 ("assistant", ["C"]),
                 ("tool", "C"),
             ],
+            ["unsupported_part"],
         ),
         # Completed round-less local calls replay as separate rounds.
         (
             [_local("A"), _local("B")],
             [("assistant", ["A"]), ("tool", "A"), ("assistant", ["B"]), ("tool", "B")],
+            [],
         ),
         # Calls without ids use their position.
         (
             [_call(None), _call(None)],
             [("assistant", ["a-0", "a-1"]), ("tool", "a-0"), ("tool", "a-1")],
+            [],
         ),
     ],
 )
-def test_tool_calls_group_like_the_ui_replay(parts, shape):
+def test_tool_calls_group_like_the_ui_replay(parts, shape, codes):
     trace = _assistant(parts)
     assert _shape(trace)[1:] == shape
     assert len({m.id for m in trace.messages}) == len(trace.messages)
-    assert set(_codes(trace)) <= {"unsupported_part"}
+    assert _codes(trace) == codes
 
 
 def test_adjacent_rows_alternate_calls_and_results():
@@ -434,22 +438,26 @@ def test_native_builtin_or_image_turn_keeps_its_prompt(custom, part, code):
     assert _turn(custom, [_R1, part]).messages[1].reasoning == "r1"
 
 
+_BOTH = [("a", "r1"), ("a#2", "r2")]
+
+
 @pytest.mark.parametrize(
-    "parts, kept",
+    "parts, stopped, completed",
     [
-        ([_R1, _NATIVE, _R2], "r1"),
-        ([_R1, *_text("t"), _NATIVE, _R2], "r1"),
-        ([*_text("t"), _NATIVE, _R2], ""),
-        ([_NATIVE, _R1, _IMAGE], None),
-        ([_IMAGE, _R1, _NATIVE, _R2], "r1"),
+        ([_R1, _NATIVE, _R2], [("a", "r1")], _BOTH),
+        ([_R1, *_text("t"), _NATIVE, _R2], [("a", "r1")], _BOTH),
+        ([*_text("t"), _NATIVE, _R2], [("a", "")], [("a", ""), ("a#2", "r2")]),
+        ([_NATIVE, _R1, _IMAGE], [], [("a", "r1")]),
+        ([_IMAGE, _R1, _NATIVE, _R2], [("a", "r1")], _BOTH),
     ],
 )
-def test_stopped_turn_decides_reasoning_per_ui_group(parts, kept):
-    # A native call ends its UI group, and each group of a stopped turn keeps reasoning alone.
-    replayed = {m.id: m.reasoning for m in _turn(_STOPPED, parts).messages}
-    assert replayed.get("a") == kept
-    completed = _turn({}, [p for p in parts if p is not _IMAGE]).messages
-    assert any(m.reasoning for m in completed)
+def test_stopped_turn_decides_reasoning_per_ui_group(parts, stopped, completed):
+    # A native call ends its UI group and keeps that group's reasoning. A stopped turn drops the
+    # reasoning of a later group with no text or call. A completed turn keeps all reasoning.
+    replayed = _turn(_STOPPED, parts).messages[1:-2]
+    assert [(m.id, m.reasoning) for m in replayed] == stopped
+    messages = _turn({}, [p for p in parts if p is not _IMAGE]).messages[1:-2]
+    assert [(m.id, m.reasoning) for m in messages] == completed
 
 
 def test_stopped_row_merged_into_earlier_text_keeps_its_first_group():
@@ -522,8 +530,7 @@ def test_untrimmed_text_group_after_a_tool_round_is_sent():
     ],
 )
 def test_tool_results_match_the_ui_wire_text(part, text):
-    wire = json.dumps(part["result"], separators = (",", ":"))
-    assert _assistant([part]).messages[2].text == (text or wire)
+    assert _assistant([part]).messages[2].text == text
 
 
 def test_infinite_args_text_falls_back_to_args():
@@ -574,38 +581,29 @@ def test_user_turns_with_no_typed_text():
     assert _codes(trace) == ["unsupported_part"]
 
 
-def test_image_only_user_turn_stays_empty():
+@pytest.mark.parametrize(
+    "content, attachments, codes",
+    [
+        ([{"type": "image", "image": "x"}], [], ["unsupported_part"]),
+        (_text(""), [{"type": "file", "content": [{"type": "audio", "audio": "x"}]}], []),
+    ],
+    ids = ["image", "audio"],
+)
+def test_image_or_audio_only_user_turn_stays_empty(content, attachments, codes):
     rows = [
         _row("u1", "user", _text("hi"), None, 1),
         _row("a1", "assistant", _text("ok"), "u1", 2),
-        _row("u2", "user", [{"type": "image", "image": "x"}], "a1", 3),
-        _row("a2", "assistant", _text("a cat"), "u2", 4),
+        _row("u2", "user", content, "a1", 3, attachments = attachments),
+        _row("a2", "assistant", _text("seen"), "u2", 4),
     ]
     trace = session_to_trace({"id": "t"}, rows)
     assert _shape(trace) == [
         ("user", "hi"),
         ("assistant", "ok"),
         ("user", ""),
-        ("assistant", "a cat"),
+        ("assistant", "seen"),
     ]
-    assert _codes(trace) == ["unsupported_part"]
-
-
-def test_audio_only_user_turn_stays_between_replies():
-    audio = [{"type": "file", "content": [{"type": "audio", "audio": "x"}]}]
-    rows = [
-        _row("u1", "user", _text("hi"), None, 1),
-        _row("a1", "assistant", _text("ok"), "u1", 2),
-        _row("u2", "user", _text(""), "a1", 3, attachments = audio),
-        _row("a2", "assistant", _text("heard"), "u2", 4),
-    ]
-    trace = session_to_trace({"id": "t"}, rows)
-    assert _shape(trace) == [
-        ("user", "hi"),
-        ("assistant", "ok"),
-        ("user", ""),
-        ("assistant", "heard"),
-    ]
+    assert _codes(trace) == codes
 
 
 # Legacy threads without parentId
@@ -641,8 +639,11 @@ def test_legacy_threads_drop_data_images_with_line_breaks():
     assert _shape(trace) == [("user", "again"), ("assistant", "ok")]
 
 
-@pytest.mark.parametrize("blank, dropped", [("\ufeff \u3000", True), ("\x1c", False)])
-def test_legacy_blank_text_uses_js_trim(blank, dropped):
+@pytest.mark.parametrize(
+    "blank, kept",
+    [("\ufeff \u3000", []), ("\x1c", [("user", "hi"), ("assistant", "\x1c")])],
+)
+def test_legacy_blank_text_uses_js_trim(blank, kept):
     rows = [
         _row("u1", "user", _text("hi"), None, 1),
         _row("a1", "assistant", _text(blank), None, 2),
@@ -650,7 +651,7 @@ def test_legacy_blank_text_uses_js_trim(blank, dropped):
         _row("a2", "assistant", _text("ok"), None, 4),
     ]
     shape = _shape(session_to_trace({"id": "t"}, rows))
-    assert (shape == [("user", "again"), ("assistant", "ok")]) == dropped
+    assert shape == kept + [("user", "again"), ("assistant", "ok")]
 
 
 # System prompt
