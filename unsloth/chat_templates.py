@@ -778,7 +778,7 @@ qwen25_template = \
     {%- if messages[0][\'role\'] == \'system\' %}
         {{- messages[0][\'content\'] }}
     {%- else %}
-        {{- \'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.\' }}
+        {{- \'{system_message}\' }}
     {%- endif %}
     {{- "\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>" }}
     {%- for tool in tools %}
