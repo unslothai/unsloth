@@ -89,34 +89,27 @@ def launch(
     n_tensors,
     constexprs,
     device_index,
-    unspecialized = (),
     unaligned = (),
     **options,
 ):
     """kernel[grid](*args, **constexprs, **options) on device_index's current stream (the current device).
     args: runtime arguments in signature order before every constexpr: n_tensors tensors, then ints in
-    [0, 2**63) (sizes, strides, offsets: `< 2**31` then matches Triton's i32 / i64 typing). unspecialized /
-    unaligned: positions of ints in do_not_specialize / do_not_specialize_on_alignment (jit_any_alignment),
-    keyed by width only / by == 1 and width. Returns the cache entry relaunch() takes, or None."""
+    [0, 2**63) (sizes, strides, offsets: `< 2**31` then matches Triton's i32 / i64 typing). unaligned:
+    positions of ints in do_not_specialize_on_alignment (jit_any_alignment), keyed without % 16.
+    Returns the cache entry relaunch() takes, or None."""
     global _ENABLED
     if _ENABLED and not _hooks_set():
+        ints = [(arg == 1, arg & 15, arg < (1 << 31)) for arg in args[n_tensors:]]
+        # Patched after, not branched per arg: launch() is on the decode hot path.
+        for i in unaligned:
+            ints[i - n_tensors] = (args[i] == 1, args[i] < (1 << 31))
         key = (
             kernel,
             device_index,
             tuple(constexprs.values()),
             tuple(options.values()),
             tuple([(arg.dtype, arg.data_ptr() & 15) for arg in args[:n_tensors]]),
-            # Triton specializes integers (== 1, % 16) unless do_not_specialize lists them.
-            tuple(
-                [
-                    arg < (1 << 31)
-                    if i in unspecialized
-                    else (arg == 1, arg < (1 << 31))
-                    if i in unaligned
-                    else (arg == 1, arg & 15, arg < (1 << 31))
-                    for i, arg in enumerate(args[n_tensors:], n_tensors)
-                ]
-            ),
+            tuple(ints),
         )
         entry = _CACHE.get(key)
         if entry is not None:

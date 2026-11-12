@@ -29,7 +29,7 @@ def _load_triton_launch():
 
 def _param(kernel, name):
     if not hasattr(kernel, "params"):  # TRITON_INTERPRET=1 returns an InterpretedFunction
-        pytest.skip("interpreted Triton function has no params")
+        pytest.skip(reason = "TRITON_INTERPRET=1: an InterpretedFunction has no params to inspect")
     return next(p for p in kernel.params if p.name == name)
 
 
@@ -42,9 +42,29 @@ def test_alignment_dropped_one_kept():
 
     n, m = _param(kernel, "n"), _param(kernel, "m")
     if not hasattr(n, "do_not_specialize_on_alignment"):
-        pytest.skip("this Triton has no do_not_specialize_on_alignment")
+        pytest.skip(
+            reason = "Triton without do_not_specialize_on_alignment: jit_any_alignment falls back to plain triton.jit"
+        )
     assert n.do_not_specialize_on_alignment and not n.do_not_specialize
     assert not m.do_not_specialize_on_alignment and not m.do_not_specialize
+
+
+def test_falls_back_to_plain_jit(monkeypatch):
+    mod = _load_triton_launch()
+    calls = []
+
+    def old_jit(fn, **kwargs):
+        if kwargs:
+            raise TypeError("unexpected keyword argument 'do_not_specialize_on_alignment'")
+        calls.append(fn)
+        return "jitted"
+
+    monkeypatch.setattr(mod.triton, "jit", old_jit)
+
+    def kernel(n):
+        pass
+
+    assert mod.jit_any_alignment("n")(kernel) == "jitted" and calls == [kernel]
 
 
 @pytest.mark.parametrize(
@@ -139,8 +159,6 @@ def _fast_launch(monkeypatch):
 @pytest.mark.parametrize(
     "mode, same, different",
     [
-        # unspecialized: one entry for every int32 value; int32 vs int64 still split.
-        ("unspecialized", [2, 3, 16, 1, 17], [2**31]),
         # unaligned: == 1 split, % 16 not.
         ("unaligned", [2, 3, 16, 17], [1, 2**31]),
         # default: == 1 and the low 4 bits split.
