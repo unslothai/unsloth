@@ -511,10 +511,8 @@ def test_the_last_listed_models_survive_a_models_dev_outage(listed_catalog, tmp_
     assert _registry_models("openai") == ["gpt-9", "gpt-8"]
 
 
-def test_a_capped_live_list_keeps_the_catalog_models(listed_catalog, monkeypatch):
-    live = [f"openai/older-{n}" for n in range(20)] + ["openai/fresh-a", "openai/fresh-b"]
-
-    class _FakeClient:
+def _serve_live_list(monkeypatch, live):
+    class _LiveListClient:
         def __init__(self, **_kwargs):
             pass
 
@@ -524,13 +522,44 @@ def test_a_capped_live_list_keeps_the_catalog_models(listed_catalog, monkeypatch
         async def close(self):
             return None
 
-    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _LiveListClient)
     monkeypatch.setattr(
         providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "hf-test"
     )
+
+
+def test_a_capped_live_list_keeps_the_catalog_models(listed_catalog, monkeypatch):
+    live = [f"openai/older-{n}" for n in range(20)] + ["openai/fresh-a", "openai/fresh-b"]
+    _serve_live_list(monkeypatch, live)
     listed_catalog()
     payload = ProviderModelsRequest(provider_type = "huggingface")
     listed = asyncio.run(providers_route.list_provider_models(payload, "tester", False))
     ids = [model.id for model in listed]
     assert ids[:2] == ["openai/fresh-a", "openai/fresh-b"]
     assert ids[2:] == live[:13]
+
+
+def test_a_capped_live_list_keeps_the_connection_saved_models(listed_catalog, monkeypatch):
+    live = [f"openai/older-{n}" for n in range(20)] + ["openai/fresh-a", "openai/fresh-b"]
+    info = providers_route.get_provider_info("huggingface")
+    saved = {
+        "id": "hf-1",
+        "provider_type": "huggingface",
+        "api_type": "chat_completions",
+        "base_url": info["base_url"],
+        "display_name": "HF",
+        "is_enabled": True,
+        "models": ["openai/older-19"],
+    }
+    _serve_live_list(monkeypatch, live)
+    monkeypatch.setattr(providers_route.providers_db, "get_provider", lambda _id: saved)
+    monkeypatch.setattr(providers_route.providers_db, "is_owner_shared_provider", lambda _id: False)
+    monkeypatch.setattr(
+        providers_route.credential_secrets, "provider_api_key_saved", lambda _id: True
+    )
+    listed_catalog()
+    payload = ProviderModelsRequest(provider_type = "huggingface", provider_id = "hf-1")
+    listed = asyncio.run(providers_route.list_provider_models(payload, "tester", False))
+    ids = [model.id for model in listed]
+    assert len(ids) == 15
+    assert ids[:3] == ["openai/older-19", "openai/fresh-a", "openai/fresh-b"]

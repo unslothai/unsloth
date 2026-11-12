@@ -1379,14 +1379,19 @@ async def list_provider_models(
             denylist = info.get("model_id_denylist")
             if denylist is not None:
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
-        # Optional cap after filtering to keep large catalogs picker-sized. The server does not sort, so catalog
-        # models go first.
+        # Cap after filtering; the server does not sort, so catalog models go first.
         if shared_models is not None:
             models = [m for m in models if m.get("id", "") in shared_models]
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
             newest = provider_default_models(payload.provider_type, cached_catalog_models())
-            models.sort(key = lambda m: m.get("id", "") not in newest)
+            # Saved models first: the form drops a selected id the capped list omits.
+            saved = set()
+            if payload.provider_id:
+                saved = set(
+                    (providers_db.get_provider(payload.provider_id) or {}).get("models") or []
+                )
+            models.sort(key = lambda m: (m.get("id", "") not in saved, m.get("id", "") not in newest))
             models = models[:limit]
         return [
             ProviderModelInfo(
