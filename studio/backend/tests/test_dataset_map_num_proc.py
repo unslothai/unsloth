@@ -509,10 +509,11 @@ def test_a_trainer_too_big_to_fork_tokenizes_in_process():
     assigned = [
         ast.unparse(node.value)
         for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(ast.unparse(t) == "fork_veto" for t in node.targets)
+        if isinstance(node, ast.Assign) and any(ast.unparse(t) == "fork_veto" for t in node.targets)
     ]
-    assert assigned and all("host_memory_fork_veto(" in a and "_offload_layers" in a for a in assigned)
+    assert assigned and all(
+        "host_memory_fork_veto(" in a and "_offload_layers" in a for a in assigned
+    )
 
 
 def test_the_escape_hatch_still_beats_a_host_memory_serial_request(monkeypatch):

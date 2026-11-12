@@ -34,7 +34,7 @@ datasets = pytest.importorskip("datasets")
 
 ROWS = MIN_ROWS_FOR_ONLINE + 5
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 def _text_dataset(n = ROWS, extra_columns = None):

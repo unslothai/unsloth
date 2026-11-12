@@ -222,7 +222,9 @@ def host_memory_snapshot() -> Optional[tuple]:
         return None
 
 
-def host_memory_fork_veto(offload_layers: Any = 0, host_memory: Optional[tuple] = None) -> Optional[str]:
+def host_memory_fork_veto(
+    offload_layers: Any = 0, host_memory: Optional[tuple] = None
+) -> Optional[str]:
     """Why forking this trainer could run the host out of RAM, or None. A forked child shares the parent's pages copy-on-write, and every page the parent rewrites while the child lives is then held twice: on a 180B MoE with Block Swap a 122 GiB trainer took the host from 128 to 174 GiB within 7s of the fork and was OOM-killed. Covers DataLoader workers and ``Dataset.map`` pools alike."""
     if offload_layers:
         return "Block Swap keeps offloaded layers in host RAM, which a fork would duplicate"
@@ -232,7 +234,7 @@ def host_memory_fork_veto(offload_layers: Any = 0, host_memory: Optional[tuple] 
     rss, available = snapshot
     if rss <= available:
         return None
-    gib = 1024 ** 3
+    gib = 1024**3
     return (
         f"trainer holds {rss / gib:.1f} GiB of host RAM with {available / gib:.1f} GiB "
         f"available, more than a fork can safely duplicate"
