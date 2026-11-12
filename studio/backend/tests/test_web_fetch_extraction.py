@@ -4045,3 +4045,9 @@ def test_formula_counts_as_article_text():
     )
     out = html_to_markdown(html, main_content = True)
     assert out.count("$d_{k}$") == 1 and "Menu" not in out
+
+
+def test_blank_alttext_falls_back_to_mathml():
+    assert html_to_markdown('<p>Value <math alttext=" "><mi>x</mi></math> here.</p>') == (
+        "Value $x$ here."
+    )

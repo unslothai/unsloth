@@ -1748,7 +1748,7 @@ class _MarkdownRenderer(HTMLParser):
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
             if tag == "math" and not self._text_suppressed() and not _is_hidden_element(attr_dict):
                 self._math = [[]]
-                self._math_tex = attr_dict.get("alttext") or ""
+                self._math_tex = (attr_dict.get("alttext") or "").strip()
                 self._math_block = (attr_dict.get("display") or "").strip().lower() == "block"
             self._skip_tags.append(tag)
             self._skip_at = {tag: [0]}
