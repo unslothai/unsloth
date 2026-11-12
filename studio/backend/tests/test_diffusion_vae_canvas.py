@@ -240,6 +240,30 @@ def test_tile_batch_groups_are_even(monkeypatch):
     assert C.tile_batch_size(vae, tile, 17) == 9  # 2 calls, not 16 + 1
 
 
+def test_speed_off_keeps_one_tile_per_call(monkeypatch):
+    """speed=False (UNSLOTH_H3_IMAGE_SPEED=0) must not batch tiles on CUDA: stock memory and numerics, canvas kept."""
+    vae = _tiny_image_vae()
+    monkeypatch.setattr(C, "tile_batch_setting", lambda: None)
+    monkeypatch.setattr(C, "_decoder_tile_bytes", lambda v, t: 1)
+
+    class _Dev:
+        type = "cuda"
+
+    tile = types_ns(shape = (1, 8, 4, 4), device = _Dev())
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d: (10**12, 10**12))
+    import core.inference.diffusion_memory as M
+
+    monkeypatch.setattr(M, "user_budget_reserve_bytes", lambda d, t: 0)
+    vae._unsloth_canvas_batch_ok = False
+    assert C.tile_batch_size(vae, tile, 121) == 1
+    vae._unsloth_canvas_batch_ok = True
+    assert C.tile_batch_size(vae, tile, 121) == 16
+    vae2 = _tiny_image_vae()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    C.install(vae2, "cuda", speed = False)
+    assert vae2._unsloth_canvas_batch_ok is False
+
+
 def types_ns(**kw):
     import types
     return types.SimpleNamespace(**kw)

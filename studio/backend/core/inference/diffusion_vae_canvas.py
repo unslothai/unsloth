@@ -258,7 +258,7 @@ def tile_batch_size(vae: Any, tile: Any, count: int) -> int:
     forced = tile_batch_setting()
     if forced is not None:
         return max(1, min(forced, count))
-    if tile.device.type != "cuda":
+    if tile.device.type != "cuda" or not vae.__dict__.get("_unsloth_canvas_batch_ok", True):
         return 1
     try:
         from .diffusion_memory import user_budget_reserve_bytes
@@ -813,6 +813,8 @@ def install(
         vae._unsloth_canvas_logger = logger
         cuda = dev is not None and dev.type == "cuda" and torch.cuda.is_available()
         vae._unsloth_canvas_graphs = bool(speed and cuda)
+        # Speed off keeps one tile per call (stock memory and numerics); the canvas seam fix still applies.
+        vae._unsloth_canvas_batch_ok = bool(speed and cuda)
         if canvas_enabled():
             levers.append(LEVER_CANVAS)
         if speed and cuda and tile_batch_setting() != 1:
