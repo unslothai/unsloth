@@ -1624,8 +1624,7 @@ def _probe_cache_key(model_name: str) -> str:
     return f"{config_path}\0{st.st_size}:{st.st_mtime_ns}"
 
 
-# Probes run in freshly spawned workers, so the dict above starts empty there; local-dir verdicts
-# also persist on disk, keyed on config.json bytes plus each walked tier's installed transformers.
+# Spawned workers start with the dict above empty, so local-dir verdicts also persist on disk.
 _PROBE_DISK_CACHE_NAME = "transformers_tier_probe.json"
 _PROBE_DISK_CACHE_MAX = 256
 
@@ -1691,7 +1690,7 @@ def _probe_disk_lookup(disk_key: str, venvs: dict) -> str | None:
         if not (isinstance(item, list) and len(item) == 2 and item[0] in venvs):
             return None
         if _tier_transformers_version(venvs[item[0]][0]) != item[1]:
-            return None  # a walked tier was upgraded or removed: re-probe
+            return None
     return tier
 
 
@@ -1721,7 +1720,7 @@ def _probe_disk_store(disk_key: str, tier: str, walked: list) -> None:
 
 
 def _cached_tier_available(venvs: dict, tier: str) -> bool:
-    """A live probe runs the chosen tier's ensure_fn and walks past it when unavailable; a disk hit must too."""
+    """A disk hit must pass the tier's ensure_fn, as a live probe does."""
     try:
         return bool(venvs[tier][1]())
     except Exception:
@@ -1785,7 +1784,6 @@ def _probe_tier(
         # Don't pin a result that depended on a skipped lower tier; re-probe next call.
         if not skipped:
             _probe_tier_cache[key] = tier
-            # Persist only if every walked tier has a readable version and config.json is unchanged.
             if (
                 disk_key is not None
                 and all(v is not None for _, v in walked)
