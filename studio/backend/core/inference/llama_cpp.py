@@ -21811,6 +21811,31 @@ class LlamaCppBackend:
                 secrets,
             )
 
+        # llama.cpp's Jinja engine rejected the chat template. An embedded one fails after the
+        # weights load; one passed with --chat-template(-file) fails during argument parsing.
+        if (
+            "failed to initialize chat template" in lowered
+            or "chat template parsing error" in lowered
+            or "the supplied chat template is not supported" in lowered
+        ):
+            template_error = re.search(
+                r"common_chat_templates_init: error:[ \t]*([^\r\n]+)", scan_tail
+            )
+            why = f" ({_short(template_error.group(1))})" if template_error else ""
+            if "the supplied chat template is not supported" in lowered:
+                summary = (
+                    f"llama-server rejected the chat template it was started with{why}; this is "
+                    "not a memory problem. Set a working template under Chat Template in this "
+                    "model's settings, or fix --chat-template in its extra arguments."
+                )
+            else:
+                summary = (
+                    f"llama-server rejected the chat template embedded in this GGUF{why}; this is "
+                    "not a memory problem. Update llama.cpp if the model needs a newer build, or "
+                    "set a working template under Chat Template in this model's settings."
+                )
+            return LlamaCppBackend._with_startup_diagnostics(summary, output, log_path, secrets)
+
         # 127 without any loader line above is not specific to a library: it is
         # also what a shell wrapper entrypoint reports when its exec target is
         # gone (_llama_lib_dir supports those, as does a custom

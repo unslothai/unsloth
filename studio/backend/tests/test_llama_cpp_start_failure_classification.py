@@ -1870,3 +1870,131 @@ class TestActionableStartupFailures:
         assert msg.count("llama-server output:") == 1
         assert msg.count("Full log: /tmp/llama.log") == 1
         assert len(msg) < 4000
+
+
+class TestRejectedChatTemplate:
+    """A chat template the Jinja engine rejects is neither a damaged file nor a memory shortfall."""
+
+    # llama-server b12246 on a GGUF whose embedded template has an escape its lexer does not know.
+    _EMBEDDED_OUT = (
+        "0.00.095.348 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, "
+        "kv_unified = 'true'\n"
+        "0.00.095.945 E common_chat_templates_init: error: lexer: unknown escape character \\q\n"
+        '...{{ "a\\qb" }}{% for m in messages %}{{ m.content...\n'
+        "          ^\n"
+        "0.00.095.946 E common_chat_templates_init: failed to initialize chat template\n"
+        "0.00.095.946 E common_chat_templates_init: please consider disabling jinja via "
+        "--no-jinja, or using another chat template\n"
+        "0.00.095.995 E srv          init: init: chat template parsing error: std::exception\n"
+        "0.00.095.996 E srv          init: init: please consider disabling jinja via --no-jinja, "
+        "or use a custom chat template via --chat-template\n"
+        "0.00.095.996 E srv          init: init: for example: --no-jinja --chat-template chatml\n"
+        "0.00.106.114 E srv  server_run_i: exiting due to model loading error\n"
+    )
+    # The same template passed with --chat-template-file: rejected while parsing arguments.
+    _SUPPLIED_OUT = (
+        'error: the supplied chat template is not supported: {{ "a\\qb" }}'
+        "{% for m in messages %}{{ m.content }}{% endfor %}\n"
+        "0.00.212.465 E common_chat_templates_init: error: lexer: unknown escape character \\q\n"
+        '...{{ "a\\qb" }}{% for m in messages %}{{ m.content...\n'
+        "          ^\n"
+        "0.00.212.469 E common_chat_templates_init: failed to initialize chat template\n"
+        "0.00.212.485 E common_chat_verify_template: failed to apply template: std::exception\n"
+    )
+    # An embedded template that parses but raises when llama-server renders its example.
+    _EMBEDDED_RENDER_OUT = (
+        "0.00.150.257 E srv          init: init: chat template parsing error: Unable to generate "
+        "parser for this template. Automatic parser generation failed: \n"
+        "Error: Jinja Exception: this template refuses\n"
+        "0.00.160.851 E srv  server_run_i: exiting due to model loading error\n"
+    )
+    # A custom template that parses but raises: only the argument-parsing rejection is printed.
+    _SUPPLIED_RENDER_OUT = (
+        "error: the supplied chat template is not supported: "
+        '{{ raise_exception("this template refuses") }}\n'
+        "0.00.046.185 E common_chat_verify_template: failed to apply template: Unable to generate "
+        "parser for this template. Automatic parser generation failed: \n"
+        "Error: Jinja Exception: this template refuses\n"
+    )
+
+    def test_embedded_template_names_the_template_and_the_parser_error(self):
+        msg = _classify(
+            self._EMBEDDED_OUT, "/models/m.gguf", "local/m", 1, log_path = "/tmp/llama.log"
+        )
+        summary = msg.split("\n\n")[0]
+        assert "chat template embedded in this GGUF" in summary
+        assert "(lexer: unknown escape character \\q)" in summary
+        assert "not a memory problem" in summary
+        assert "Update llama.cpp" in summary
+        assert "Chat Template in this model's settings" in summary
+        assert "GGUF file is valid" not in msg
+        assert "enough memory" not in msg
+        assert "\n" not in summary
+        assert "chat template parsing error" in msg
+        assert "Full log: /tmp/llama.log" in msg
+
+    def test_reporters_hex_escape_output_is_classified(self):
+        # What a Flint GGUF printed before llama.cpp's lexer learned hexadecimal escapes.
+        out = (
+            "common_chat_templates_init: error: lexer: unknown escape character \\x\n"
+            "common_chat_templates_init: failed to initialize chat template\n"
+            "srv          init: chat template parsing error: std::exception\n"
+        )
+        summary = _classify(out, "/models/flint.gguf", "unsloth/flint-GGUF", 1).split("\n\n")[0]
+        assert "chat template embedded in this GGUF" in summary
+        assert "(lexer: unknown escape character \\x)" in summary
+        assert "GGUF file is valid" not in summary
+
+    def test_supplied_template_points_at_the_setting_not_the_gguf(self):
+        summary = _classify(self._SUPPLIED_OUT, "/models/m.gguf", "local/m", 1).split("\n\n")[0]
+        assert "chat template it was started with" in summary
+        assert "(lexer: unknown escape character \\q)" in summary
+        assert "not a memory problem" in summary
+        assert "Chat Template in this model's settings" in summary
+        assert "embedded in this GGUF" not in summary
+        assert "Update llama.cpp" not in summary
+        assert "GGUF file is valid" not in summary
+
+    @pytest.mark.parametrize(
+        "output, expected",
+        [
+            ("_EMBEDDED_RENDER_OUT", "chat template embedded in this GGUF"),
+            ("_SUPPLIED_RENDER_OUT", "chat template it was started with"),
+        ],
+    )
+    def test_render_failure_without_a_parser_line_omits_the_reason(self, output, expected):
+        msg = _classify(getattr(self, output), "/models/m.gguf", "local/m", 1)
+        summary = msg.split("\n\n")[0]
+        assert expected in summary
+        assert f"{expected};" in summary
+        assert "std::exception" not in summary
+        assert "GGUF file is valid" not in summary
+        assert "Jinja Exception: this template refuses" in msg
+
+    def test_an_ignored_tool_use_template_keeps_the_generic_message(self):
+        # llama-server only warns about this one and keeps starting, so it is not the cause.
+        out = (
+            "common_chat_templates_init: failed to parse tool use chat template (ignoring it): "
+            "lexer: unknown escape character \\q\n"
+            "GGML_ASSERT(ctx->device != nil) failed"
+        )
+        msg = _classify(out, "/models/m.gguf", "local/m", 1)
+        assert "GGUF file is valid" in msg
+        assert "rejected the chat template" not in msg
+
+    def test_gpu_allocation_failure_is_not_reclassified(self):
+        msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
+        assert msg.startswith("Couldn't allocate memory.")
+
+    def test_the_quoted_parser_error_is_bounded_and_redacted(self):
+        secret = "hf_" + "a" * 34
+        out = (
+            f"common_chat_templates_init: error: lexer: {secret} " + "x" * 5000 + "\n"
+            "common_chat_templates_init: failed to initialize chat template\n"
+        )
+        msg = _classify(out, "/models/m.gguf", "local/m", 1, secrets = (secret,))
+        summary = msg.split("\n\n")[0]
+        assert secret not in msg
+        assert "***" in summary
+        assert len(summary) < 600
+        assert msg.count("llama-server output:") == 1
