@@ -125,6 +125,20 @@ def install_h3_image_speed(
     return out
 
 
+def _dit_streamer_keeps_parameters(pipe: Any) -> bool:
+    """True when the DiT blocks stream through the pinned prefetch streamer, which copies into the same parameters.
+    The pageable ``ModuleListStreamer`` swaps in a new Parameter per call, so the swapped GEMM would always take its
+    stock fallback and unwrapping the row pads would only lose them: that streamer keeps the stock path."""
+    from .diffusion_minimax_h3_image import ModuleListStreamer
+
+    streamers = [
+        s
+        for s in getattr(pipe, "_unsloth_h3_streamers", None) or ()
+        if getattr(s, "_unsloth_role", None) == "transformer"
+    ]
+    return bool(streamers) and not any(isinstance(s, ModuleListStreamer) for s in streamers)
+
+
 def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
     import torch
 
@@ -143,7 +157,11 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
         if int8_gemm.install(transformer, logger):
             _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
             levers.append("h3_int8_gemm")
-    elif getattr(plan, "placement", None) == "stream" and streamed_gemm_enabled():
+    elif (
+        getattr(plan, "placement", None) == "stream"
+        and streamed_gemm_enabled()
+        and _dit_streamer_keeps_parameters(pipe)
+    ):
         # The streamed blocks are on the card while they run: the swapped Linears take the fused-dequant GEMM
         # whenever their weight is there at call time and keep the stock path otherwise.
         from . import diffusion_int8_gemm as int8_gemm
