@@ -681,9 +681,7 @@ def row_timestep_plan(timesteps: Any, seq_len: int, reference_rows: Any) -> list
 
 
 def _close_diffusers_import_window() -> None:
-    """Called before each diffusers import this module makes at import time. The download plan and load preflight
-    import the module before any load closes the window, so a concurrent background diffusers import (the
-    /api/system probe) would otherwise race it through peft's circular imports and leave one side half-initialized."""
+    """The download plan and load preflight import this module before any load closes the window."""
     try:
         from utils.torch_warmup import close_dynamo_import_window
         close_dynamo_import_window(logger)

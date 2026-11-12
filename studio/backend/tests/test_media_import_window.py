@@ -181,8 +181,7 @@ def test_close_dynamo_import_window_claims_the_media_window():
     assert "claim_media_import_window(" in src
 
 
-# A fresh process: the first import of the H3 module, made while background work holds the window. The background
-# side only holds it (no import of its own), so diffusers appearing before it lets go means the module did not wait.
+# The background side imports nothing, so diffusers appearing before it lets go means the module did not wait.
 _H3_FIRST_IMPORT_PROBE = """
 import sys, threading, time
 from utils import torch_warmup as warm
@@ -212,10 +211,8 @@ print("pipeline base:", h3i.MiniMaxH3ImagePipeline.__mro__[1].__name__)
 
 
 def test_the_h3_image_module_waits_for_a_background_import_before_its_diffusers_import():
-    """MiniMax-H3-Image builds its pipeline class from diffusers when the module is first imported, and the
-    download plan and load preflight import it before any load closes the window. On a cold start the first
-    /api/system probe imports diffusers in the background, and a pick made then failed with "cannot import name
-    'MixedModel' from partially initialized module 'peft.tuners'"."""
+    """A cold-start pick racing the /api/system probe failed with "cannot import name 'MixedModel'
+    from partially initialized module 'peft.tuners'"."""
     pytest.importorskip("diffusers")
     out = subprocess.run(
         [sys.executable, "-c", _H3_FIRST_IMPORT_PROBE],
@@ -232,7 +229,6 @@ def test_the_h3_image_module_waits_for_a_background_import_before_its_diffusers_
 
 @pytest.mark.parametrize("name", ["_scheduler_bases", "_pipeline_base"])
 def test_each_h3_image_import_time_diffusers_import_closes_the_window_first(name):
-    """The two helpers the module runs at import time to build its scheduler and pipeline classes."""
     tree = ast.parse(
         (_BACKEND / "core" / "inference" / "diffusion_minimax_h3_image.py").read_text(
             encoding = "utf-8"
