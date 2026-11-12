@@ -628,3 +628,30 @@ test("imports without message send times mark their ordering timestamps as estim
     assert.equal(conversation.messages[0].metadata?.createdAtEstimated, true, filename);
   }
 });
+
+test("a Responses object keeps its instructions and custom tool call input", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      instructions: "Answer tersely.",
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "Patch it" }] },
+        { type: "custom_tool_call", call_id: "c1", name: "apply_patch", input: "*** Begin Patch" },
+        { type: "custom_tool_call_output", call_id: "c1", output: "Done" },
+      ],
+      output: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Patched." }] },
+      ],
+    }),
+    "response.json",
+  );
+
+  assert.equal(conversation.messages[0].role, "system");
+  assert.deepEqual(conversation.messages[0].content, [{ type: "text", text: "Answer tersely." }]);
+  const call = conversation.messages
+    .flatMap((m) => m.content as ReadonlyArray<{ type?: string; toolName?: string; args?: unknown; result?: unknown }>)
+    .find((p) => p.type === "tool-call");
+  assert.equal(call?.toolName, "apply_patch");
+  assert.deepEqual(call?.args, { input: "*** Begin Patch" });
+  assert.equal(call?.result, "Done");
+});

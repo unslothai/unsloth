@@ -431,6 +431,9 @@ export function recordToConversation(
   if (messages.length === 0) {
     // Saved Responses API object: turns live under input/output items.
     const turns: unknown[] = [];
+    if (typeof obj.instructions === "string" && obj.instructions.trim()) {
+      turns.push({ role: "system", content: obj.instructions });
+    }
     if (typeof obj.input === "string" && obj.input.trim()) {
       turns.push({ role: "user", content: obj.input });
     }
@@ -465,7 +468,12 @@ export function recordToConversation(
                   arguments:
                     typeof entry.arguments === "string"
                       ? entry.arguments
-                      : JSON.stringify(entry.arguments ?? entry.action ?? {}),
+                      : JSON.stringify(
+                          // custom_tool_call: same {input} wrapping as the backend.
+                          entry.input !== undefined
+                            ? { input: entry.input }
+                            : (entry.arguments ?? entry.action ?? {}),
+                        ),
                 },
               },
             ],
