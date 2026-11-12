@@ -362,6 +362,8 @@ _RACE_LOCK = threading.Lock()
 # (device, N, K, bits, rows bucket) -> "int8" | "dense"
 _RACE: dict = {}
 _CALLS = {"int8": 0, "dense": 0}
+# card index -> whether Studio's tuned int8 GEMM op runs there (probed once, in eager)
+_TUNED: dict = {}
 
 
 def _env(name: str) -> str:
@@ -479,17 +481,17 @@ def grouped_linear_class():
             self.register_buffer("bias", bias)
             h = build_convrot_hadamard(self.rot_group, device = qdata.device, dtype = torch.float32)
             self.register_buffer("rot_h", h.to(self.compute_dtype, copy = True), persistent = False)
-            self._route = (
-                None  # the last eager race verdict, read (not raced) by a compiled forward
-            )
+            # the last eager race verdict, read (not raced) by a compiled forward
+            self._route = None
             try:  # registered here, in eager, so a compiled forward only reads the handle
                 from .diffusion_grouped_int8_triton import decode_int8_op
                 self._decode_op = decode_int8_op()
             except Exception:  # noqa: BLE001 -- no custom ops on this torch: a trace runs the torch decode
                 self._decode_op = None
-            self._mode = (
-                grouped_gemm_mode()
-            )  # read once: a traced forward never reads the environment
+            # read once: a traced forward never reads the environment
+            self._mode = grouped_gemm_mode()
+            # whether Studio's tuned int8 GEMM runs here (decided in eager, per card)
+            self._tuned = None
 
         def _apply(self, fn, *args, **kwargs):
             out = super()._apply(fn, *args, **kwargs)
@@ -562,11 +564,48 @@ def grouped_linear_class():
                 self._rotate(x), w, None if self.bias is None else self.bias.to(x.dtype)
             )
 
+        def _tuned_int8(self, x2: Any, q8: Any) -> Any:
+            """bf16: per-row int8 activations of ``rotate(x2)`` (Studio's fused rotate + quant kernel where it covers
+            the shape) into Studio's int8 GEMM with the fused dequant epilogue (its probed tile for this card)."""
+            from .diffusion_convrot_quant import convrot_act_quant
+
+            q = convrot_act_quant(x2, self.rot_group, True)
+            if q is not None:
+                xq, xs = q
+                xs = xs.reshape(-1)
+            else:
+                xr = self._rotate(x2)
+                xs = torch.linalg.vector_norm(xr, ord = float("inf"), dim = 1, dtype = torch.float32)
+                xs = xs.clamp(min = 1e-12) / 127.0
+                xq = torch.div(xr, xs[:, None]).round_().clamp_(-127, 127).to(torch.int8)
+            ws = self.weight_s_channel.view(torch.float32)
+            bias = None if self.bias is None else self.bias.to(torch.bfloat16)
+            return torch.ops.unsloth_studio.int8_mm_dequant(xq, q8, xs.to(torch.float32), ws, bias)
+
+        def _tuned_ready(self, x: Any) -> bool:
+            """Eager, once per card: the GEMM op is registered and passed its bit-exact probe there."""
+            index = x.device.index
+            hit = _TUNED.get(index)
+            if hit is None:
+                try:
+                    from . import diffusion_int8_gemm as g
+                    hit = (
+                        g.int8_gemm_mode() != "off"
+                        and g._op() is not None
+                        and g.device_config(index) is not None
+                    )
+                except Exception:  # noqa: BLE001 -- the native W8A8 maths below
+                    hit = False
+                _TUNED[index] = bool(hit)
+            return bool(hit)
+
         def _int8(self, x: Any) -> Any:
             from .diffusion_native_quant import _fused_w8a8, _w8a8_rows
 
             x2 = x.reshape(-1, self.in_features)
             q8 = self.decoded_int8()
+            if x.dtype == torch.bfloat16 and self._tuned:
+                return self._tuned_int8(x2, q8).reshape(*x.shape[:-1], self.out_features)
             bias = self.bias
             fn = None
             if not torch.compiler.is_compiling() and not torch.cuda.is_current_stream_capturing():
@@ -613,6 +652,8 @@ def grouped_linear_class():
                 if hit is not None:
                     return hit
                 times = {}
+                if self._tuned is None:
+                    self._tuned = self._tuned_ready(x)
                 try:
                     for route, run in (("int8", self._int8), ("dense", self._dense)):
                         run(x)  # warm-up (and the compiled linear's first build)
@@ -662,6 +703,8 @@ def grouped_linear_class():
                 if route == "int8":
                     if not torch.compiler.is_compiling():
                         _CALLS["int8"] += 1
+                        if self._tuned is None:
+                            self._tuned = self._tuned_ready(x)
                     return self._int8(x)
             if not torch.compiler.is_compiling():
                 _CALLS["dense"] += 1
