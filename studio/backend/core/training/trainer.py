@@ -116,7 +116,12 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
-from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_size_from_env
+from .dataset_bounds import (
+    bound_dataset_rows,
+    slice_dataset_rows,
+    world_size_env_report,
+    world_size_from_env,
+)
 
 logger = get_logger(__name__)
 
@@ -3624,16 +3629,9 @@ class UnslothTrainer:
                 dataset_slice_start is not None or dataset_slice_end is not None
             ):
                 total_rows = len(dataset)
-                start = dataset_slice_start if dataset_slice_start is not None else 0
-                end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
-                if start >= total_rows:
-                    raise ValueError(
-                        f"Train Split Start {start} is past the last row of this dataset "
-                        f"({total_rows} rows)."
-                    )
-                start = max(0, start)
-                end = max(start, min(end, total_rows - 1))
-                dataset = dataset.select(range(start, end + 1))
+                dataset, start, end = slice_dataset_rows(
+                    dataset, dataset_slice_start, dataset_slice_end
+                )
                 logger.info(
                     f"Sliced dataset to rows [{start}, {end}]: {len(dataset)} of {total_rows} rows\n"
                 )
