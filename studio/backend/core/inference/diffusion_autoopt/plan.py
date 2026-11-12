@@ -231,7 +231,15 @@ def build_plan(
         if not is_gguf
         else ("UNSLOTH_DIFFUSION_ROCM_COMPILE=0" if rocm_off else None),
     )
-    add("tf32", mode == SPEED_MAX and on_cuda, None if mode == SPEED_MAX else "max tier only")
+    tf32_tier = mode in (SPEED_DEFAULT, SPEED_MAX)
+    tf32_on = ds.tf32_enabled()
+    add(
+        "tf32",
+        tf32_tier and on_cuda and tf32_on,
+        None
+        if tf32_tier and tf32_on
+        else (f"{ds.TF32_ENV}=0" if tf32_tier else "compiled tiers only"),
+    )
     if not getattr(family, "cudnn_benchmark", True):
         add(
             "cudnn_benchmark",

@@ -33,6 +33,7 @@ const VARIANT = "q4_k_m";
 for (const [key, wire] of [
   ["mlxInt8Prefill", "mlx_int8_prefill"],
   ["mlxAnePrefill", "mlx_ane_prefill"],
+  ["mlxFastVerify", "mlx_fast_verify"],
 ] as const) {
   test(`${key} reaches the server row only when on`, () => {
     const on = { ...DEFAULT_PER_MODEL_CONFIG, [key]: true };

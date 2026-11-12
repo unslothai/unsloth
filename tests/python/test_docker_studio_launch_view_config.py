@@ -107,12 +107,8 @@ def test_the_generator_does_not_interpolate_the_paths_in_the_shell(generator: st
 
 @behavioural
 def test_the_heredoc_form_this_replaced_really_was_broken(tmp_path: Path):
-    """Pin the premise, so the test above is not guarding a hypothetical.
-
-    Reproduces the previous construct exactly: an unquoted heredoc interpolating
-    the value into a Python string literal. With a double quote in the path the
-    generated config does not parse, which is JupyterLab failing to start.
-    """
+    """Pins the premise: the old unquoted heredoc interpolated the path into a Python string
+    literal, so a double quote in the path broke JupyterLab startup."""
     name = 'My "Special" Notebooks'
     script = tmp_path / "old.sh"
     script.write_text(

@@ -82,9 +82,8 @@ def test_frozen_embeddings_stay_out_of_the_optimizer():
 
 
 def test_a_checkpoint_from_before_resumes_with_its_own_moments():
-    # The previous layout put the embeddings in the ordinary decay groups, so the new
-    # groups differ; every parameter must get its own moments back, and the embeddings
-    # their own learning rate at the saved point of the schedule.
+    # Checkpoints from the old layout put embeddings in the ordinary decay groups, so resume must
+    # restore each parameter's moments and the embeddings' own LR at the saved schedule point.
     torch = pytest.importorskip("torch")
     from torch.optim.lr_scheduler import LambdaLR
     from unsloth.trainer import _install_legacy_scheduler_resume

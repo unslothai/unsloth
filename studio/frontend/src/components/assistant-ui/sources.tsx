@@ -7,10 +7,13 @@ import {
   useRef,
   useEffect,
   useCallback,
+  useMemo,
   type ComponentProps,
   type FC,
 } from "react";
-import { useMessage } from "@assistant-ui/react";
+import { useAuiState } from "@assistant-ui/react";
+import { memoOnArray } from "@/components/assistant-ui/message-derived";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { cn } from "@/lib/utils";
 import { Badge, badgeVariants, type BadgeProps } from "./badge";
 import {
@@ -129,23 +132,31 @@ export interface SourceData {
   description?: string;
 }
 
-const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
+const SourceBadge: FC<{
+  source: SourceData;
+  allowRemoteIcons?: boolean;
+  showLinkPreviews: boolean;
+}> = ({
   source,
   allowRemoteIcons = true,
+  showLinkPreviews,
 }) => {
   const domain = extractDomain(source.url);
   const displayTitle = source.title || domain;
+  const badge = (
+    <span className="inline-block">
+      <Source href={source.url}>
+        <SourceIcon url={source.url} allowRemoteIcons={allowRemoteIcons} />
+        <SourceTitle>{displayTitle}</SourceTitle>
+      </Source>
+    </span>
+  );
+
+  if (!showLinkPreviews) return badge;
 
   return (
     <HoverCard openDelay={0} closeDelay={0}>
-      <HoverCardTrigger asChild>
-        <span className="inline-block">
-          <Source href={source.url}>
-            <SourceIcon url={source.url} allowRemoteIcons={allowRemoteIcons} />
-            <SourceTitle>{displayTitle}</SourceTitle>
-          </Source>
-        </span>
-      </HoverCardTrigger>
+      <HoverCardTrigger asChild>{badge}</HoverCardTrigger>
       <HoverCardContent
         side="top"
         align="start"
@@ -176,41 +187,68 @@ const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
   );
 };
 
+const NO_SOURCES: readonly SourceData[] = [];
+
+// A string selector stays equal while streaming rebuilds the content array.
+const urlSourcesKey = memoOnArray((content: readonly unknown[]): string => {
+  const sources: SourceData[] = [];
+  for (const item of content) {
+    const part = item as {
+      type?: unknown;
+      sourceType?: unknown;
+      url?: unknown;
+      id?: unknown;
+      title?: string;
+      metadata?: { description?: string };
+    };
+    if (
+      part.type === "source" &&
+      "sourceType" in part &&
+      part.sourceType === "url" &&
+      "url" in part &&
+      part.url
+    ) {
+      const url = part.url as string;
+      sources.push({
+        id: typeof part.id === "string" ? part.id : url,
+        url,
+        title: part.title || "",
+        description: part.metadata?.description,
+      });
+    }
+  }
+  return sources.length === 0 ? "" : JSON.stringify(sources);
+});
+
 const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> = ({
   sources: suppliedSources,
   allowRemoteIcons = true,
 }) => {
-  const message = useMessage();
+  const key = useAuiState(({ message }) =>
+    suppliedSources || !Array.isArray(message.content)
+      ? ""
+      : urlSourcesKey(message.content),
+  );
+  const messageSources = useMemo<readonly SourceData[]>(
+    () => (key === "" ? NO_SOURCES : (JSON.parse(key) as SourceData[])),
+    [key],
+  );
+  return (
+    <SourcesGroupView
+      sources={suppliedSources ?? messageSources}
+      allowRemoteIcons={allowRemoteIcons}
+    />
+  );
+};
+
+const SourcesGroupView = memo<{
+  sources: readonly SourceData[];
+  allowRemoteIcons: boolean;
+}>(({ sources, allowRemoteIcons }) => {
+  const showLinkPreviews = useChatPreferencesStore((s) => s.showLinkPreviews);
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
-
-  const messageSources: SourceData[] = [];
-  if (!suppliedSources && message.content) {
-    for (const part of message.content) {
-      if (
-        part.type === "source" &&
-        "sourceType" in part &&
-        part.sourceType === "url" &&
-        "url" in part &&
-        part.url
-      ) {
-        const url = part.url as string;
-        const partId =
-          typeof (part as { id?: unknown }).id === "string"
-            ? ((part as { id: string }).id)
-            : url;
-        messageSources.push({
-          id: partId,
-          url,
-          title: (part as { title?: string }).title || "",
-          description: (part as { metadata?: { description?: string } })
-            .metadata?.description,
-        });
-      }
-    }
-  }
-  const sources = suppliedSources ?? messageSources;
 
   const measure = useCallback(() => {
     const container = containerRef.current;
@@ -282,7 +320,12 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
 
       <div className="flex flex-wrap gap-1">
         {displayedSources.map((source) => (
-          <SourceBadge key={source.id} source={source} allowRemoteIcons={allowRemoteIcons} />
+          <SourceBadge
+            key={source.id}
+            source={source}
+            allowRemoteIcons={allowRemoteIcons}
+            showLinkPreviews={showLinkPreviews}
+          />
         ))}
         {shouldCollapse && !expanded && (
           <button
@@ -311,7 +354,9 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
       </div>
     </div>
   );
-};
+});
+
+SourcesGroupView.displayName = "SourcesGroupView";
 
 const SourcesNoop: FC<Record<string, unknown>> = () => null;
 

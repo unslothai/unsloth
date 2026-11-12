@@ -93,9 +93,28 @@ _VIEW_TRANSITION_KILLER_JS = """
 """
 
 
+# Reduce motion Off ignores reduced_motion emulation; System honours it.
+_FOLLOW_OS_MOTION_JS = """
+(() => {
+    try {
+        const key = "unsloth_appearance_customization";
+        if (localStorage.getItem(key) === null) {
+            localStorage.setItem(key, JSON.stringify({ state: { customization: { reduceMotion: "system" } }, version: 9 }));
+        }
+    } catch (e) { /* noop */ }
+})();
+"""
+
+
+def follow_os_reduced_motion(ctx: Any) -> None:
+    """Make Studio honour the context's reduced_motion emulation, as the old System default did."""
+    ctx.add_init_script(_FOLLOW_OS_MOTION_JS)
+
+
 def install_view_transition_killer(ctx: Any) -> None:
     """Inject the CSS view-transition killer into every page in `ctx`."""
     ctx.add_init_script(_VIEW_TRANSITION_KILLER_JS)
+    follow_os_reduced_motion(ctx)
 
 
 # Health pre-flight; /api/health can return 200 while /api/auth still 503s.

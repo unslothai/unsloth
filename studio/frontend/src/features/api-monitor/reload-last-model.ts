@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Reads the durable last-local-load record, not the monitor ring buffer: that one is bounded,
-// clearable and can be disabled.
+// Reads the durable last-local-load record, not the bounded, clearable monitor ring buffer.
 
 export type LastLoadRecord = {
   id: string;

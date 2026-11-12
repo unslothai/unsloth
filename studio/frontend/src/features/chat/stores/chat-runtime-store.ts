@@ -20,6 +20,8 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { persistReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
   loadedContextFields,
   type MlxKvQuant,
@@ -129,7 +131,7 @@ import {
   type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
-import { prefillLabelShown } from "../lib/generation-progress";
+import { prefillLabelShown, withPrefillFit } from "../lib/generation-progress";
 import { adoptFirstTurnConfirmations } from "../utils/adopt-first-turn-confirmations";
 import type { MmprojFallbackReason } from "../types/api";
 import type {
@@ -426,11 +428,15 @@ export type LoadedPlacement = {
   /** Set when every routed expert is in RAM with a GPU cache of the busiest (--moe-cache-mib auto). */
   expertCacheMib: number | null;
 };
+// x = uncached kilotokens, y = server seconds; sums: n, x, x², x³, x⁴, y, xy, x²y.
+export type LivePrefillFit = { first: number; done: number; sums: readonly number[] };
 export type LivePrefillProgress = {
   processed: number;
   total: number | null;
   cached: number | null;
   tokPerS: number | null;
+  elapsedMs: number | null;
+  fit: LivePrefillFit | null;
 };
 export type LiveDecodeProgress = {
   tokens: number;
@@ -444,6 +450,10 @@ export type LiveGenerationProgress = {
   /** Whether "Processing prompt" is up for this pass; see prefillLabelShown. */
   prefillShown: boolean;
   decode: LiveDecodeProgress | null;
+  /** The context fit is evicting turns; ends with this pass's context_truncated or its first prefill sample. */
+  compacting?: boolean;
+  /** This pass's own context_usage has landed: it counts the reply exactly, so live figures step aside. */
+  settled?: boolean;
 };
 export type PendingImageEditReference = {
   threadId: string | null;
@@ -2484,6 +2494,8 @@ type ChatRuntimeStore = {
   loadedMlxInt8PrefillRequested: boolean;
   mlxAnePrefill: boolean;
   loadedMlxAnePrefillRequested: boolean;
+  mlxFastVerify: boolean;
+  loadedMlxFastVerifyRequested: boolean;
   /** MLX offload knobs as chosen (null = Auto), as the resident load asked for them, the
    *  fraction it applied (null = none), and why a request was not applied. */
   mlxPleOffload: MlxOffload;
@@ -2604,7 +2616,7 @@ type ChatRuntimeStore = {
       fromModelDefaults?: boolean;
       maxTokensCap?: number;
       migrateOwnedGlobalQwenDefaults?: boolean;
-      /** A preset pick: not an edit of the loaded model, so its remembered params are dropped
+      /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
     },
@@ -2731,7 +2743,9 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setLivePrefill: (threadId: string | null, prefill: LivePrefillProgress) => void;
   setLiveDecode: (threadId: string | null, decode: LiveDecodeProgress) => void;
+  setLiveCompacting: (threadId: string | null, compacting: boolean) => void;
   clearLiveGenerationForThread: (threadId: string | null) => void;
+  settleLiveGeneration: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
@@ -4272,6 +4286,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedMlxInt8PrefillRequested: false,
   mlxAnePrefill: false,
   loadedMlxAnePrefillRequested: false,
+  mlxFastVerify: false,
+  loadedMlxFastVerifyRequested: false,
   mlxPleOffload: null,
   mlxExpertOffload: null,
   loadedMlxPleOffloadRequested: null,
@@ -5209,6 +5225,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedMlxInt8PrefillRequested: false,
       mlxAnePrefill: false,
       loadedMlxAnePrefillRequested: false,
+      mlxFastVerify: false,
+      loadedMlxFastVerifyRequested: false,
       mlxPleOffload: null,
       mlxExpertOffload: null,
       loadedMlxPleOffloadRequested: null,
@@ -5284,6 +5302,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+        if (
+          state.params.checkpoint &&
+          state.supportsReasoning &&
+          !state.reasoningAlwaysOn &&
+          state.supportsReasoningOff
+        ) {
+          persistReasoningEnabled(state.params.checkpoint, reasoningEnabled);
+        }
       } else {
         noteConstraintSuppressedThreadField("reasoningEnabled");
       }
@@ -5959,7 +5985,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setLivePrefill: (threadId, prefill) =>
     set((state) => {
       const key = threadId || "__default";
-      const prefillShown = prefillLabelShown(state.liveGenerationByThreadId[key], prefill);
+      const previous = state.liveGenerationByThreadId[key];
+      prefill = withPrefillFit(previous, prefill);
+      const prefillShown = prefillLabelShown(previous, prefill);
       // A new prompt pass (the next round of a tool loop) starts over, so its decode figures go too.
       return {
         liveGenerationByThreadId: {
@@ -5979,8 +6007,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             prefill: current?.prefill ?? null,
             prefillShown: current?.prefillShown ?? false,
             decode,
+            ...(current?.settled ? { settled: true } : {}),
           },
         },
+      };
+    }),
+  setLiveCompacting: (threadId, compacting) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (!compacting && !current?.compacting) return state;
+      // A new pass: the last round's prefill and decode figures describe a prompt the fit is replacing.
+      const next: LiveGenerationProgress = compacting
+        ? { prefill: null, prefillShown: false, decode: null, compacting: true }
+        : { ...current!, compacting: false };
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: next },
+      };
+    }),
+  settleLiveGeneration: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (current === undefined || current.settled) return state;
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: { ...current, settled: true } },
       };
     }),
   clearLiveGenerationForThread: (threadId) =>

@@ -267,7 +267,8 @@ def test_a_compile_elsewhere_thaws_a_frozen_compile_instead_of_deadlocking():
     worker.join(30.0)
     assert not worker.is_alive(), "deadlock: the render's compile waited on the frozen trace"
     torch.testing.assert_close(out[0], torch.full((3,), 3.0))
-    assert job.thaws == 1
+    # At least one: a refreeze landing between the frame's lock release and the waiter's next 50 ms poll is thawed again.
+    assert job.thaws >= 1
     # it ran on only to the end of the frame that held the lock, then froze again while the render still runs
     _wait_for(lambda: job._frozen, timeout = 30.0)
     assert job.freezes >= 2

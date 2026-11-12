@@ -75,8 +75,8 @@ PROBE_JS = """
   // permanently and hides it with `invisible` when use-intent-aware-autoscroll reports at-bottom,
   // so this is the state the app is acting on rather than a number the driver computed.
   const jump = document.querySelector(".aui-thread-scroll-to-bottom");
-  // Set on the viewport WHILE the autoscroll is pinning and removed when it settles. A page that
-  // still carries it is mid-pin, whatever its scrollTop currently reads.
+  // Set on the viewport while the autoscroll pins. use-intent-aware-autoscroll keeps the last
+  // value as residual padding until the user scrolls up, so only a changing value is mid-pin.
   const stabilizer = vp
     ? (vp.style.getPropertyValue("--aui-scroll-stabilizer") || "").trim()
     : "";
@@ -120,6 +120,7 @@ PROBE_JS = """
     jump_button_present: Boolean(jump),
     app_says_at_bottom: jump ? jump.classList.contains("invisible") : null,
     pinning: stabilizer !== "",
+    stabilizer: stabilizer,
   };
 }
 """
@@ -208,8 +209,13 @@ def evaluate(probe: dict, previous: Optional[dict], expected_messages: int, mode
         out["anchored_at_end"] = bool(app_bottom) if app_bottom is not None else near_bottom
         # Assert the viewport exists: without it every windowed condition above silently passes.
         out["viewport_present"] = bool(probe.get("viewport_present"))
-        # `--aui-scroll-stabilizer` is present while autoscroll is still pinning.
-        out["pin_settled"] = not probe.get("pinning")
+        # `--aui-scroll-stabilizer` stays on the viewport as residual padding once the pin ends, so
+        # a value unchanged since the last probe of a settled page has finished pinning.
+        out["pin_settled"] = not probe.get("pinning") or bool(
+            settled
+            and previous.get("pinning")
+            and previous.get("stabilizer") == probe.get("stabilizer")
+        )
         out["not_over_mounted"] = (probe.get("mounted") or 0) <= expected_messages
     else:
         out["all_messages_mounted"] = (probe.get("mounted") or 0) >= expected_messages
@@ -339,6 +345,11 @@ async ([toTop, steps, stepPx]) => {
   // step awaits a paint, so a windowed list gets a frame per step to mount what the step exposed.
   const target = toTop ? 0 : vp.scrollHeight;
   const direction = toTop ? -1 : 1;
+  // Upward, a step is at most 3/4 of the viewport so consecutive stops share a row: a windowed
+  // list mounts little beyond the viewport, and a longer step can jump a short row between two
+  // tall ones, which leaves coverage unmeasured. The distance budget (steps * stepPx) is kept.
+  const step = toTop ? Math.max(1, Math.min(stepPx, Math.floor(vp.clientHeight * 0.75))) : stepPx;
+  const maxSteps = Math.ceil((steps * stepPx) / step);
   // WHICH MESSAGES THE TRAVERSAL ACTUALLY SAW, ordinal by ordinal.
   //
   // The marker check at the end of the walk asks one question -- did the FIRST message arrive --
@@ -383,12 +394,12 @@ async ([toTop, steps, stepPx]) => {
     ranges.push([lo, hi]);
   };
   record();
-  for (let i = 0; i < steps; i += 1) {
+  for (let i = 0; i < maxSteps; i += 1) {
     const next = toTop
-      ? Math.max(0, vp.scrollTop - stepPx)
-      : Math.min(vp.scrollHeight, vp.scrollTop + stepPx);
+      ? Math.max(0, vp.scrollTop - step)
+      : Math.min(vp.scrollHeight, vp.scrollTop + step);
     vp.dispatchEvent(
-      new WheelEvent("wheel", { deltaY: direction * stepPx, bubbles: true, cancelable: true }),
+      new WheelEvent("wheel", { deltaY: direction * step, bubbles: true, cancelable: true }),
     );
     vp.scrollTo({ top: next, behavior: "instant" });
     await window.__sbNextPaint();
@@ -414,11 +425,13 @@ async ([toTop, steps, stepPx]) => {
     ordinals_in_window_holes: Array.from(holes).sort((a, b) => a - b),
     sweep_continuous: continuous,
     traversal_stops: ranges.length,
+    step_px: step,
   };
 }
 """
 
-# 400 steps of 2,000px cover the tallest rung; reaching either end breaks early.
+# A 400 x 2,000px distance budget covers the tallest rung; upward steps are capped to 3/4 of the
+# viewport (TRAVERSE_JS) and reaching either end breaks early.
 TRAVERSE_STEPS = 400
 TRAVERSE_STEP_PX = 2000
 
@@ -560,7 +573,7 @@ def probe_thread_completeness(
             # Distinguishes a missing head from a gesture that never left the bottom.
             "reached_top": top.get("reached_target"),
             "scroll_top_after_gesture": top.get("scroll_top"),
-            "traverse_step_px": step_px,
+            "traverse_step_px": top.get("step_px", step_px),
         }
     )
     out.update(coverage)

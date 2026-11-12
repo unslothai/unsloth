@@ -122,6 +122,10 @@ _PROBE_SPECIAL_TOKENS = {
     f"{name}_token": f"UNSLOTH_DATE_PROBE_{name.upper()}"
     for name in ("bos", "eos", "pad", "unk", "sep", "cls", "mask")
 }
+# Names the probe passes itself; a caller's template kwarg of the same name would collide.
+PROBE_RENDER_KEYS = frozenset(
+    {"messages", "tools", "documents", "add_generation_prompt", *_PROBE_SPECIAL_TOKENS}
+)
 # a catalog a tool request's branch can render, for probing the template it selects.
 PROBE_TOOLS = [
     {

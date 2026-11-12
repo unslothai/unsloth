@@ -68,19 +68,14 @@ def api(
 
 
 def normalize(url: str) -> str:
-    """Path only. The query string is part of the dedup identity in the middleware, but a
-    poll declares a PATH, and a cursor or cache-buster would otherwise make every hit look
-    unique and hide the poll entirely."""
+    """Path only: the query string is part of the middleware dedup identity, but a poll declares a
+    PATH, and a cursor or cache-buster would make every hit look unique, hiding the poll."""
     return urlsplit(url).path
 
 
 def studio_path(url: str, base: str) -> str | None:
-    """The path of a request this Studio serves, or None for any other origin.
-
-    The budget is about lines in this server's log. The Hub calls huggingface.co straight from
-    the browser (@huggingface/hub listModels / modelInfo), and Hugging Face's own /api/models
-    shares a path with nothing here; counted by path alone it read as an undeclared Studio poll.
-    """
+    """Path of a request to this Studio, else None; huggingface.co calls go straight from the
+    browser, and counting their /api/models by path read as an undeclared poll."""
     request, studio = urlsplit(url), urlsplit(base)
     if (request.scheme, request.netloc) != (studio.scheme, studio.netloc):
         return None

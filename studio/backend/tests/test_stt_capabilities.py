@@ -80,7 +80,10 @@ def test_qwen3_reports_whether_its_aligner_is_downloaded(hub):
         (f"{REPO}/Qwen3-ASR-0.6B-GGUF", "no-such-engine", None),
     ],
 )
-def test_other_engines_and_unknown_models_are_plain_text(hub, model, engine, expected_engine):
+def test_other_engines_and_unknown_models_are_plain_text(
+    hub, monkeypatch, model, engine, expected_engine
+):
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRANSCRIBE_MAX_MINUTES", raising = False)
     result = caps.capabilities_for(model, engine)
     assert result == {
         "engine": expected_engine,
@@ -89,7 +92,28 @@ def test_other_engines_and_unknown_models_are_plain_text(hub, model, engine, exp
         "speakers": False,
         "aligner": None,
         "cpu_only": False,
+        "max_seconds": 4 * 3600 if expected_engine == "audiocpp" else 30 * 60,
     }
+
+
+@pytest.mark.parametrize(
+    "model, engine, env, seconds",
+    [
+        (f"{REPO}/Qwen3-ASR-0.6B-GGUF", "audiocpp", None, 14400),
+        (f"{REPO}/Qwen3-ASR-0.6B-GGUF", "audiocpp", "90", 5400),
+        ("small", "transformers", "90", 1800),
+        ("small", "gguf", None, 1800),
+    ],
+)
+def test_each_engine_reports_the_longest_audio_it_takes(
+    hub, monkeypatch, model, engine, env, seconds
+):
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_STUDIO_TRANSCRIBE_MAX_MINUTES", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_STUDIO_TRANSCRIBE_MAX_MINUTES", env)
+    assert caps.capabilities_for(model, engine)["max_seconds"] == seconds
+    assert caps.max_seconds_for(engine) == seconds
 
 
 def test_a_failing_lookup_still_answers(hub, monkeypatch):
