@@ -329,6 +329,7 @@ import {
   listDiffusionLoras,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
+  withSettledVramBudget,
   loadDiffusionModel,
   moveDiffusionQueueJob,
   type ImageQueueJob,
@@ -4421,9 +4422,11 @@ export function ImagesPage({
       let incompatible: string | null = null;
       let incompatibleCode: string | null = null;
       try {
-        const plan = retiredSnapshot
-          ? await requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
-          : await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
+        const plan = await withSettledVramBudget(() =>
+          retiredSnapshot
+            ? requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
+            : requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced),
+        );
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);

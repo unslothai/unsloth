@@ -114,3 +114,38 @@ test("image loading also waits for an in-flight reset", async () => {
     "POST /api/inference/images/load",
   ]);
 });
+
+test("a Hub download plan waits for the staged budget save", async () => {
+  const { budget, images, sent, ok } = setup();
+  budget.stageVramBudgetSave(0.9);
+  const planning = images.withSettledVramBudget(() =>
+    images.getDiffusionDownloadPlan({ model_path: "example/image" }),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sent, ["PUT /api/settings/vram-budget"]);
+  ok();
+  await planning;
+  assert.deepEqual(sent, [
+    "PUT /api/settings/vram-budget",
+    "POST /api/inference/images/download-plan",
+  ]);
+});
+
+test("the staged Hub plan settles the budget first", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
+  assert.match(
+    read("features/images/images-page.tsx"),
+    /const plan = await withSettledVramBudget\(\(\) =>\s*retiredSnapshot/,
+  );
+});
+
+test("a dropped retry no longer counts as a staged edit", async () => {
+  const { budget, release } = setup();
+  const saving = budget.updateVramBudgetSettings(0.9);
+  release(Response.json({ detail: "Budget save failed" }, { status: 500 }));
+  await assert.rejects(saving, /Budget save failed/);
+  assert.equal(budget.hasStagedVramBudgetSave(), true);
+  budget.dropVramBudgetRetry();
+  assert.equal(budget.hasStagedVramBudgetSave(), false);
+});

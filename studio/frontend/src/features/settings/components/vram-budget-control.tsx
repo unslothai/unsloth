@@ -15,6 +15,7 @@ import {
 import {
   type VramBudgetSettings,
   flushVramBudgetSave,
+  hasStagedVramBudgetSave,
   isVramBudgetLocked,
   loadVramBudgetSettings,
   stageVramBudgetSave,
@@ -39,13 +40,13 @@ export function VramBudgetControl({
   const [locked, setLocked] = useState(isVramBudgetLocked);
   useEffect(() => subscribeVramBudgetLock(setLocked), []);
 
-  // A queued edit outranks the publish, or a save landing mid-drag would move the slider.
+  // A staged edit outranks the publish; a dropped one does not, or the slider shows a value no load uses.
   useEffect(() => {
     if (isMac) {
       return;
     }
     return subscribeVramBudgetSettings((next) => {
-      if (saveTimer.current) {
+      if (hasStagedVramBudgetSave()) {
         return;
       }
       setSettings(next);

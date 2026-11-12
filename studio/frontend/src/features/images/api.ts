@@ -447,18 +447,27 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
   return parseJson(await authFetch("/api/inference/images/generate-progress"));
 }
 
-export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
-  // Flush a slider edit before the backend snapshots the budget for this load.
+/** Settles a slider edit first: the backend snapshots the budget for a load and its download plan. */
+export async function withSettledVramBudget<T>(run: () => Promise<T>): Promise<T> {
   const budgetSave = settleVramBudgetSave();
-  if (budgetSave) setVramBudgetLocked(true);
+  if (!budgetSave) return run();
+  setVramBudgetLocked(true);
   try {
-    // The refused load repaints the stored budget, so a re-staged retry would load a hidden value.
-    if (budgetSave) await budgetSave.catch((error: unknown) => {
+    // A refused load repaints the stored budget, so a re-staged retry would load a hidden value.
+    await budgetSave.catch((error: unknown) => {
       dropVramBudgetRetry();
       throw error;
     });
-    // This POST only starts the load, so the notice settles from load-progress, not the response.
-    return await withBackgroundLoadNotice(
+    return await run();
+  } finally {
+    setVramBudgetLocked(false);
+  }
+}
+
+export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
+  // This POST only starts the load, so the notice settles from load-progress, not the response.
+  return withSettledVramBudget(() =>
+    withBackgroundLoadNotice(
       "image",
       body.model_path,
       async () =>
@@ -470,10 +479,8 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
           }),
         ),
       async (signal) => (await getDiffusionLoadProgress(signal)).phase,
-    );
-  } finally {
-    if (budgetSave) setVramBudgetLocked(false);
-  }
+    ),
+  );
 }
 
 export interface DiffusionDownloadPlan {

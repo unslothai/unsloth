@@ -147,10 +147,10 @@ test("Run waits for a staged budget save before starting the load", () => {
 test("the row adopts published settings instead of only its own read", () => {
   const row = vramBudgetRowSource();
   assert.match(row, /subscribeVramBudgetSettings\(/);
-  // A queued edit outranks the publish, or a mid-drag save moves the slider.
+  // A staged edit outranks the publish; a dropped one must not keep the slider on a value no load uses.
   const subscribeAt = row.indexOf("subscribeVramBudgetSettings(");
   const guard = row.slice(subscribeAt, subscribeAt + 260);
-  assert.match(guard, /if \(saveTimer\.current\) \{\s*return;/);
+  assert.match(guard, /if \(hasStagedVramBudgetSave\(\)\) \{\s*return;/);
 });
 
 test("Run reports a rejected budget flush instead of voiding it", () => {
