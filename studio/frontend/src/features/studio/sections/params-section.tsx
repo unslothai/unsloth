@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import {
   Combobox,
   ComboboxContent,
@@ -9,6 +10,7 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -22,6 +24,7 @@ import {
   useMaxStepsEpochsToggle,
   useTrainingConfigStore,
 } from "@/features/training";
+import { activationCaptureApplies } from "@/features/training/api/mappers";
 import { useT } from "@/i18n";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -70,9 +73,15 @@ export function ParamsSection({
       setEmbeddingLearningRate: state.setEmbeddingLearningRate,
       setMaxSteps: state.setMaxSteps,
       setSaveSteps: state.setSaveSteps,
+      isAudioModel: state.isAudioModel,
+      isEmbeddingModel: state.isEmbeddingModel,
+      modelType: state.modelType,
+      enableActivationCapture: state.enableActivationCapture,
+      setEnableActivationCapture: state.setEnableActivationCapture,
     })),
   );
   useMlxTrainingConfigPolicy();
+  const isMac = usePlatformStore((state) => state.deviceType === "mac");
 
   const isCpt = store.trainingMethod === "cpt";
   const showAdvanced = mode === "advanced";
@@ -415,6 +424,33 @@ export function ParamsSection({
               className="w-full font-mono"
             />
           </div>
+
+          {/* Neuron Activation Capture: CUDA/ROCm trainer only, the MLX one has none. */}
+          {activationCaptureApplies(store) && !isMac && (
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="enableActivationCapture"
+                checked={store.enableActivationCapture}
+                onCheckedChange={(v) => store.setEnableActivationCapture(!!v)}
+              />
+              <label
+                htmlFor="enableActivationCapture"
+                className="text-xs cursor-pointer text-muted-foreground"
+              >
+                {t("studio.params.activationCapture")}
+              </label>
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button type="button" className="text-foreground/70 hover:text-foreground">
+                    <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {t("studio.params.activationCaptureTooltip")}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )}
 
           {isCpt && (
             <div className="flex flex-col gap-2">

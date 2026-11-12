@@ -17,6 +17,7 @@ export interface RunConfigOverride {
   loraAlpha?: number;
   loraDropout?: number;
   loraVariant?: string;
+  enableActivationCapture?: boolean;
 }
 
 /** Shared by History and Current Run so both read the saved snapshot, not the form store. */
@@ -49,5 +50,6 @@ export function mapRunConfigToOverride(
         : config.use_dora
           ? "dora"
           : "lora",
+    enableActivationCapture: config.enable_activation_capture === true,
   };
 }

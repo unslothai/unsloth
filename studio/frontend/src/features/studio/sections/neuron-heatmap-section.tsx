@@ -1,0 +1,1119 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { type TranslationKey, useT } from "@/i18n";
+import { cn } from "@/lib/utils";
+import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { createPortal } from "react-dom";
+import type { ActivationMetadata, ActivationRecord } from "@/features/training";
+import {
+  computeOverlaySets,
+  computeViewValues,
+  type OverlaySets,
+  type ViewMode,
+} from "./activation-stats";
+import { InterpretabilityInfoDialog } from "./diagnostics-panel";
+
+// ── Overlay key type (exported for diagnostics-panel) ─────────────────────────
+export type OverlayKey = "dead" | "constant" | "onset_dead";
+
+// ── Color palette ─────────────────────────────────────────────────────────────
+// Dark mode:  slate-700 → Unsloth green  |  outliers: red-500
+// Light mode: lime-400  → Unsloth green (mid) → green-900  |  outliers: red-500
+
+const PALETTE_SIZE = 256;
+
+const GREY_DARK:         [number, number, number] = [51,  65,  85];
+const COLOR_HIGH_DARK:   [number, number, number] = [22, 197, 139];
+
+const LIME_LIGHT:        [number, number, number] = [163, 230,  53];
+const COLOR_MID_LIGHT:   [number, number, number] = [22,  197, 139];
+const COLOR_HIGH_LIGHT:  [number, number, number] = [20,   83,  45];
+
+const OUTLIER_COLOR_DARK  = "rgb(239,68,68)";
+const OUTLIER_COLOR_LIGHT = "rgb(239,68,68)";
+const OUTLIER_BLEND_DARK  = `rgb(${COLOR_HIGH_DARK.join(",")})`;
+const OUTLIER_BLEND_LIGHT = `rgb(${COLOR_HIGH_LIGHT.join(",")})`;
+
+function subscribe(cb: () => void): () => void {
+  const observer = new MutationObserver(cb);
+  observer.observe(document.documentElement, { attributeFilter: ["class"] });
+  return () => observer.disconnect();
+}
+function useIsDark(): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => document.documentElement.classList.contains("dark"),
+    () => false,
+  );
+}
+
+// ── Grid layout constants ─────────────────────────────────────────────────────
+const LEFT_MARGIN   = 44;
+const BOTTOM_MARGIN = 28;
+const CELL_SIZE = 8;
+const CELL_GAP  = 1;
+const CELL_SLOT = CELL_SIZE + CELL_GAP;
+const CELL_RADIUS = 2;
+const TOP_MARGIN  = 8;
+
+function buildPalette(
+  low:  [number, number, number],
+  high: [number, number, number],
+): Uint8ClampedArray {
+  const palette = new Uint8ClampedArray(PALETTE_SIZE * 4);
+  for (let i = 0; i < PALETTE_SIZE; i++) {
+    const t = i / (PALETTE_SIZE - 1);
+    palette[i * 4 + 0] = Math.round(low[0] + t * (high[0] - low[0]));
+    palette[i * 4 + 1] = Math.round(low[1] + t * (high[1] - low[1]));
+    palette[i * 4 + 2] = Math.round(low[2] + t * (high[2] - low[2]));
+    palette[i * 4 + 3] = 255;
+  }
+  return palette;
+}
+
+function buildPalette3(
+  low:  [number, number, number],
+  mid:  [number, number, number],
+  high: [number, number, number],
+): Uint8ClampedArray {
+  const palette = new Uint8ClampedArray(PALETTE_SIZE * 4);
+  for (let i = 0; i < PALETTE_SIZE; i++) {
+    const t = i / (PALETTE_SIZE - 1);
+    let r: number, g: number, b: number;
+    if (t <= 0.5) {
+      const u = t / 0.5;
+      r = Math.round(low[0] + u * (mid[0] - low[0]));
+      g = Math.round(low[1] + u * (mid[1] - low[1]));
+      b = Math.round(low[2] + u * (mid[2] - low[2]));
+    } else {
+      const u = (t - 0.5) / 0.5;
+      r = Math.round(mid[0] + u * (high[0] - mid[0]));
+      g = Math.round(mid[1] + u * (high[1] - mid[1]));
+      b = Math.round(mid[2] + u * (high[2] - mid[2]));
+    }
+    palette[i * 4 + 0] = r;
+    palette[i * 4 + 1] = g;
+    palette[i * 4 + 2] = b;
+    palette[i * 4 + 3] = 255;
+  }
+  return palette;
+}
+
+const PALETTE_DARK  = buildPalette(GREY_DARK, COLOR_HIGH_DARK);
+const PALETTE_LIGHT = buildPalette3(LIME_LIGHT, COLOR_MID_LIGHT, COLOR_HIGH_LIGHT);
+const TOOLTIP_PALETTE_DARK  = buildPalette([255, 255, 255], COLOR_HIGH_DARK);
+const TOOLTIP_PALETTE_LIGHT = buildPalette3([55, 65, 81], COLOR_MID_LIGHT, COLOR_HIGH_LIGHT);
+// A sample the backend stored as null (it was NaN or inf).
+const MISSING_COLOR = "rgba(128, 128, 128, 0.25)";
+
+function paletteColor(t: number, palette: Uint8ClampedArray): string {
+  const idx = Math.min(PALETTE_SIZE - 1, Math.max(0, Math.round(t * (PALETTE_SIZE - 1))));
+  return `rgb(${palette[idx * 4]},${palette[idx * 4 + 1]},${palette[idx * 4 + 2]})`;
+}
+
+function niceInterval(minStride: number): number {
+  const steps = [1, 2, 4, 5, 8, 10, 16, 20, 25, 32, 50, 64, 100, 128, 200, 256];
+  for (const s of steps) {
+    if (s >= minStride) return s;
+  }
+  return Math.ceil(minStride / 100) * 100;
+}
+
+// ── Layout type ───────────────────────────────────────────────────────────────
+
+type HeatmapLayout = {
+  cellSlot: number;
+  leftMargin: number;
+  topMargin: number;
+  numLayers: number;
+  numChannels: number;
+  layerKeys: string[];
+  capturedChannels: number[];
+  globalMax: number;
+  clampMax: number;
+  transposed: boolean;
+};
+
+// ── Overlay canvas colors ─────────────────────────────────────────────────────
+
+const OVERLAY_DEFS: Array<[OverlayKey, string]> = [
+  ["dead",       "rgba(96,165,250,0.55)"],
+  ["constant",   "rgba(251,146,60,0.5)"],
+  ["onset_dead", "rgba(147,51,234,0.65)"],
+];
+
+// ── Canvas drawing ────────────────────────────────────────────────────────────
+
+type AxisLabels = { layer: string; neuron: string; channelAxis: string; layerAxis: string };
+
+function drawHeatmap(
+  canvas: HTMLCanvasElement,
+  values: Record<string, number[]>,
+  capturedChannels: number[],
+  outlierColor: string,
+  palette: Uint8ClampedArray,
+  activeOverlays: Set<OverlayKey>,
+  overlaySets: OverlaySets,
+  axisLabels: AxisLabels,
+  transposed = false,
+  scale = 1,
+  pinnedChannels: ReadonlySet<number> = new Set(),
+): HeatmapLayout | null {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const layerKeys = Object.keys(values).sort((a, b) => Number(a) - Number(b));
+  const numLayers = layerKeys.length;
+  if (numLayers === 0) return null;
+
+  const numChannels = capturedChannels.length || values[layerKeys[0]]?.length || 0;
+  if (numChannels === 0) return null;
+
+  const s       = scale;
+  const cSlot   = CELL_SLOT   * s;
+  const cSize   = CELL_SIZE   * s;
+  const cRadius = CELL_RADIUS * s;
+  const lMargin = LEFT_MARGIN   * s;
+  const bMargin = BOTTOM_MARGIN * s;
+  const tMargin = TOP_MARGIN    * s;
+
+  const gridW = (transposed ? numChannels : numLayers)  * cSlot;
+  const gridH = (transposed ? numLayers  : numChannels) * cSlot;
+
+  const newW = Math.round(lMargin + gridW);
+  const newH = Math.round(tMargin + gridH + bMargin);
+  if (canvas.width !== newW || canvas.height !== newH) {
+    canvas.width  = newW;
+    canvas.height = newH;
+  }
+
+  // Collect all values; normalise by p99
+  const allVals: number[] = [];
+  for (const key of layerKeys) {
+    // A non-finite sample is stored as null; it is drawn as missing, not ranked.
+    for (const v of (values[key] ?? [])) if (Number.isFinite(v)) allVals.push(v);
+  }
+  allVals.sort((a, b) => a - b);
+  const globalMax = allVals[allVals.length - 1] || 1;
+  const p99Idx = Math.min(Math.floor(0.99 * allVals.length), allVals.length - 1);
+  const clampMax = allVals[p99Idx] > 0 ? allVals[p99Idx] : globalMax;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // ── Draw squircle cells ──
+  for (let li = 0; li < numLayers; li++) {
+    const layerVals = values[layerKeys[li]] ?? [];
+    for (let ci = 0; ci < layerVals.length; ci++) {
+      const v  = layerVals[ci];
+      const cx = lMargin + (transposed ? ci : li) * cSlot;
+      const cy = tMargin + (transposed ? li : ci) * cSlot;
+      ctx.fillStyle = !Number.isFinite(v)
+        ? MISSING_COLOR
+        : v > clampMax ? outlierColor : paletteColor(v / clampMax, palette);
+      ctx.beginPath();
+      ctx.roundRect(cx, cy, cSize, cSize, cRadius);
+      ctx.fill();
+    }
+  }
+
+  // ── Overlay pass ──
+  if (activeOverlays.size > 0) {
+    const layerIndexMap = new Map<string, number>();
+    layerKeys.forEach((k, i) => layerIndexMap.set(k, i));
+
+    for (const [overlayKey, overlayColor] of OVERLAY_DEFS) {
+      if (!activeOverlays.has(overlayKey)) continue;
+      const cellSet =
+        overlayKey === "dead"       ? overlaySets.dead :
+        overlayKey === "constant"   ? overlaySets.constant :
+                                      overlaySets.onsetDead;
+
+      ctx.fillStyle = overlayColor;
+      for (const id of cellSet) {
+        const colonIdx = id.indexOf(":");
+        const layerKey = id.slice(0, colonIdx);
+        const ci = Number(id.slice(colonIdx + 1));
+        const li = layerIndexMap.get(layerKey) ?? -1;
+        if (li < 0 || ci >= numChannels) continue;
+        const cx = lMargin + (transposed ? ci : li) * cSlot;
+        const cy = tMargin + (transposed ? li : ci) * cSlot;
+        ctx.beginPath();
+        ctx.roundRect(cx, cy, cSize, cSize, cRadius);
+        ctx.fill();
+      }
+    }
+  }
+
+  // ── Pinned-outlier markers above their columns ──
+  if (transposed && pinnedChannels.size > 0) {
+    ctx.fillStyle = outlierColor;
+    capturedChannels.forEach((ch, ci) => {
+      if (!pinnedChannels.has(ch)) return;
+      const mx = lMargin + ci * cSlot + cSize / 2;
+      ctx.beginPath();
+      ctx.moveTo(mx - 3 * s, 1 * s);
+      ctx.lineTo(mx + 3 * s, 1 * s);
+      ctx.lineTo(mx, 6 * s);
+      ctx.closePath();
+      ctx.fill();
+    });
+  }
+
+  const LABEL_COLOR = "rgba(160,160,160,0.9)";
+  const TITLE_COLOR = "rgba(120,120,120,0.75)";
+
+  // ── Y-axis tick labels ──
+  const yCount  = transposed ? numLayers  : numChannels;
+  const yStride = niceInterval(Math.max(1, Math.ceil(yCount / 10)));
+  ctx.fillStyle     = LABEL_COLOR;
+  ctx.font          = `${10 * s}px monospace`;
+  ctx.textAlign     = "right";
+  ctx.textBaseline  = "middle";
+  for (let yi = 0; yi < yCount; yi += yStride) {
+    const label = transposed ? String(layerKeys[yi]) : String(capturedChannels[yi] ?? yi);
+    ctx.fillText(label, lMargin - 4 * s, tMargin + yi * cSlot + cSize / 2);
+  }
+  if ((yCount - 1) % yStride !== 0) {
+    const label = transposed
+      ? String(layerKeys[yCount - 1])
+      : String(capturedChannels[yCount - 1] ?? yCount - 1);
+    ctx.fillText(label, lMargin - 4 * s, tMargin + (yCount - 1) * cSlot + cSize / 2);
+  }
+
+  ctx.save();
+  ctx.translate(8 * s, tMargin + gridH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle    = TITLE_COLOR;
+  ctx.font         = `${11 * s}px sans-serif`;
+  ctx.textAlign    = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(transposed ? axisLabels.layer : axisLabels.neuron, 0, 0);
+  ctx.restore();
+
+  // ── X-axis tick labels ──
+  const xCount  = transposed ? numChannels : numLayers;
+  const xStride = niceInterval(Math.max(1, Math.ceil(xCount / 12)));
+  ctx.fillStyle     = LABEL_COLOR;
+  ctx.font          = `${10 * s}px monospace`;
+  ctx.textAlign     = "center";
+  ctx.textBaseline  = "top";
+  for (let xi = 0; xi < xCount; xi += xStride) {
+    const label = transposed ? String(capturedChannels[xi] ?? xi) : String(layerKeys[xi]);
+    ctx.fillText(label, lMargin + xi * cSlot + cSize / 2, tMargin + gridH + 3 * s);
+  }
+  if ((xCount - 1) % xStride !== 0) {
+    const label = transposed
+      ? String(capturedChannels[xCount - 1] ?? xCount - 1)
+      : String(layerKeys[xCount - 1]);
+    ctx.fillText(label, lMargin + (xCount - 1) * cSlot + cSize / 2, tMargin + gridH + 3 * s);
+  }
+
+  ctx.fillStyle    = TITLE_COLOR;
+  ctx.font         = `${11 * s}px sans-serif`;
+  ctx.textAlign    = "center";
+  ctx.textBaseline = "bottom";
+  ctx.fillText(transposed ? axisLabels.channelAxis : axisLabels.layerAxis, lMargin + gridW / 2, canvas.height);
+
+  return { cellSlot: cSlot, leftMargin: lMargin, topMargin: tMargin, numLayers, numChannels, layerKeys, capturedChannels, globalMax, clampMax, transposed };
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type SectionProps = {
+  isTraining: boolean;
+  records: ActivationRecord[];
+  metadata: ActivationMetadata | null;
+  loading: boolean;
+  record: ActivationRecord | null;
+  stepIndex: number;
+  onStepChange: (idx: number) => void;
+};
+
+type TooltipState = {
+  clientX: number;
+  clientY: number;
+  layerKey: string;
+  channelIdx: number;
+  value: number | null;
+  normalized: number;
+  pinned: boolean;
+};
+
+// ── KaTeX helpers ─────────────────────────────────────────────────────────────
+
+function KatexDisplay({ latex }: { latex: string }): ReactElement {
+  return (
+    <span
+      className="block overflow-x-auto text-ui-11"
+      dangerouslySetInnerHTML={{
+        __html: katex.renderToString(latex, { throwOnError: false, displayMode: true }),
+      }}
+    />
+  );
+}
+
+// ── Mode pill configs ─────────────────────────────────────────────────────────
+
+interface ViewModeConfig {
+  key: ViewMode;
+  label: TranslationKey;
+  latex: string;
+  description: TranslationKey;
+}
+
+const VIEW_MODES: ViewModeConfig[] = [
+  {
+    key: "activations",
+    label: "studio.interpretability.heatmap.activations",
+    latex: String.raw`\bar{a}_c \equiv \frac{1}{N}\sum_{n=1}^{N}|x_{n,c}| \;\equiv\; \texttt{mean\_abs}[c]`,
+    description: "studio.interpretability.heatmap.activationsDescription",
+  },
+];
+
+interface OverlayConfig {
+  key: OverlayKey;
+  label: TranslationKey;
+  color: string;
+  latex: string;
+  description: TranslationKey;
+}
+
+const OVERLAY_CONFIGS: OverlayConfig[] = [
+  {
+    key: "dead",
+    label: "studio.interpretability.dead",
+    color: "rgb(96,165,250)",
+    latex: String.raw`\max_t(\bar{a}_t) < \varepsilon,\quad \varepsilon = 0.01`,
+    description: "studio.interpretability.heatmap.deadDescription",
+  },
+  {
+    key: "constant",
+    label: "studio.interpretability.constant",
+    color: "rgb(251,146,60)",
+    latex: String.raw`CV \equiv \sigma/\mu < 0.05`,
+    description: "studio.interpretability.heatmap.constantDescription",
+  },
+  {
+    key: "onset_dead",
+    label: "studio.interpretability.onsetDead",
+    color: "rgb(147,51,234)",
+    latex: String.raw`\bar{a}_0 \geq \varepsilon \;\wedge\; \max_{t>0}(\bar{a}_t) < \varepsilon`,
+    description: "studio.interpretability.heatmap.onsetDeadDescription",
+  },
+];
+
+// ── ModePill ──────────────────────────────────────────────────────────────────
+
+interface ModePillProps {
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  disabledReason?: string;
+  onClick: () => void;
+  latex: string;
+  description: string;
+  indicatorColor?: string;
+  activeColor?: string;
+}
+
+function ModePill({
+  label,
+  active,
+  disabled,
+  disabledReason,
+  onClick,
+  latex,
+  description,
+  indicatorColor,
+  activeColor,
+}: ModePillProps): ReactElement {
+  const activeBorderColor = activeColor ? `${activeColor.replace("rgb", "rgba").replace(")", ", 0.5)")}` : undefined;
+  const activeBgColor = activeColor ? `${activeColor.replace("rgb", "rgba").replace(")", ", 0.15)")}` : undefined;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={disabled ? undefined : onClick}
+          style={active && activeColor ? { borderColor: activeBorderColor, backgroundColor: activeBgColor, color: activeColor } : undefined}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-ui-10 font-medium transition-colors select-none",
+            active && !activeColor
+              ? "border-primary/60 bg-primary/15 text-primary"
+              : disabled
+                ? "border-border/30 text-muted-foreground/40 cursor-not-allowed"
+                : !active
+                  ? "border-border/50 text-muted-foreground hover:text-foreground hover:border-border cursor-pointer"
+                  : "cursor-pointer",
+          )}
+        >
+          {indicatorColor && (
+            <span
+              className="inline-block h-1.5 w-1.5 rounded-full shrink-0"
+              style={{ backgroundColor: active ? indicatorColor : "currentColor" }}
+            />
+          )}
+          {label}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[calc(300px*var(--ui-space-scale,1))] p-3">
+        {disabled && disabledReason ? (
+          <p className="text-xs text-muted-foreground">{disabledReason}</p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <KatexDisplay latex={latex} />
+            <p className="text-xs text-muted-foreground leading-relaxed">{description}</p>
+          </div>
+        )}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+// ── HeatmapCanvas ─────────────────────────────────────────────────────────────
+
+function HeatmapCanvas({
+  values,
+  capturedChannels,
+  pinnedChannels,
+  activeOverlays,
+  overlaySets,
+  expanded = false,
+  outlierBlend = false,
+}: {
+  values: Record<string, number[]> | null;
+  capturedChannels: number[];
+  pinnedChannels: ReadonlySet<number>;
+  activeOverlays: Set<OverlayKey>;
+  overlaySets: OverlaySets;
+  expanded?: boolean;
+  outlierBlend?: boolean;
+}): ReactElement {
+  const canvasRef         = useRef<HTMLCanvasElement>(null);
+  const wrapperRef        = useRef<HTMLDivElement>(null);
+  const layoutRef         = useRef<HeatmapLayout | null>(null);
+  const imperativeDrawRef = useRef<(() => void) | null>(null);
+  const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const t = useT();
+  const axisLabels = useMemo<AxisLabels>(
+    () => ({
+      layer: t("studio.interpretability.layer"),
+      neuron: t("studio.interpretability.heatmap.axisNeuron"),
+      channelAxis: t("studio.interpretability.heatmap.axisChannel"),
+      layerAxis: t("studio.interpretability.heatmap.axisLayer"),
+    }),
+    [t],
+  );
+  const isDark = useIsDark();
+  const palette        = isDark ? PALETTE_DARK         : PALETTE_LIGHT;
+  const tooltipPalette = isDark ? TOOLTIP_PALETTE_DARK : TOOLTIP_PALETTE_LIGHT;
+  const outlierColor   = outlierBlend
+    ? (isDark ? OUTLIER_BLEND_DARK  : OUTLIER_BLEND_LIGHT)
+    : (isDark ? OUTLIER_COLOR_DARK  : OUTLIER_COLOR_LIGHT);
+
+  useEffect(() => {
+    function draw() {
+      const canvas = canvasRef.current;
+      if (!canvas || !values) return;
+
+      const cw = wrapperRef.current?.offsetWidth ?? 0;
+      let physicalScale = 1;
+      if (cw > 0) {
+        const lKeys   = Object.keys(values);
+        const numLays = lKeys.length;
+        const numCh   = capturedChannels.length || values[lKeys[0]]?.length || 1;
+        const naturalW = LEFT_MARGIN + numCh   * CELL_SLOT;
+        const naturalH = numLays    * CELL_SLOT + BOTTOM_MARGIN + TOP_MARGIN;
+        const maxH     = expanded ? window.innerHeight * 0.65 : window.innerHeight * 0.4;
+        const visualScale = Math.min(cw / naturalW, maxH / naturalH, 8);
+        const dpr         = window.devicePixelRatio || 1;
+        physicalScale     = visualScale * dpr;
+        canvas.style.width  = `${Math.round(naturalW * visualScale)}px`;
+        canvas.style.height = `${Math.round(naturalH * visualScale)}px`;
+      }
+
+      layoutRef.current = drawHeatmap(
+        canvas, values, capturedChannels, outlierColor, palette,
+        activeOverlays, overlaySets, axisLabels, true, physicalScale, pinnedChannels,
+      );
+    }
+    imperativeDrawRef.current = draw;
+    draw();
+  }, [values, capturedChannels, pinnedChannels, outlierColor, palette, activeOverlays, overlaySets, expanded, axisLabels]);
+
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    imperativeDrawRef.current?.();
+    const ro = new ResizeObserver(() => imperativeDrawRef.current?.());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      const canvas = e.currentTarget;
+      const layout = layoutRef.current;
+      if (!layout || !values) return;
+
+      const rect   = canvas.getBoundingClientRect();
+      const scaleX = canvas.width  / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const cx = (e.clientX - rect.left) * scaleX;
+      const cy = (e.clientY - rect.top)  * scaleY - layout.topMargin;
+
+      const li = layout.transposed
+        ? Math.floor(cy / layout.cellSlot)
+        : Math.floor((cx - layout.leftMargin) / layout.cellSlot);
+      const ci = layout.transposed
+        ? Math.floor((cx - layout.leftMargin) / layout.cellSlot)
+        : Math.floor(cy / layout.cellSlot);
+
+      if (li < 0 || li >= layout.numLayers || ci < 0 || ci >= layout.numChannels) {
+        setTooltip(null);
+        return;
+      }
+
+      const layerKey   = layout.layerKeys[li];
+      const layerVals  = values[layerKey];
+      if (!layerVals || ci >= layerVals.length) { setTooltip(null); return; }
+
+      const raw        = layerVals[ci];
+      const value      = Number.isFinite(raw) ? raw : null;
+      const isOutlier  = value !== null && value > layout.clampMax;
+      const normalized = value === null ? 0 : isOutlier ? -1 : value / layout.clampMax;
+      const channelIdx = layout.capturedChannels[ci] ?? ci;
+
+      setTooltip({
+        clientX: e.clientX, clientY: e.clientY, layerKey, channelIdx, value, normalized,
+        pinned: pinnedChannels.has(channelIdx),
+      });
+    },
+    [values, pinnedChannels],
+  );
+
+  const handleMouseLeave = useCallback(() => setTooltip(null), []);
+
+  if (!values) {
+    return (
+      <div className="flex h-[calc(120px*var(--ui-space-scale,1))] w-full items-center justify-center rounded border border-border/40 px-4 text-center">
+        <p className="text-xs text-muted-foreground">{t("studio.interpretability.noDataYet")}</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div ref={wrapperRef} className="w-full overflow-hidden">
+        <canvas
+          ref={canvasRef}
+          className="block cursor-crosshair"
+          style={{ imageRendering: "auto" }}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={handleMouseLeave}
+        />
+      </div>
+
+      {tooltip && createPortal(
+        <div
+          style={{
+            position:      "fixed",
+            left:          tooltip.clientX + 14,
+            top:           tooltip.clientY - 10,
+            pointerEvents: "none",
+            zIndex:        9999,
+          }}
+          className="rounded-lg border border-border/60 bg-popover text-popover-foreground px-2.5 py-1.5 shadow-lg"
+        >
+          <div className="flex flex-col gap-0.5 text-ui-11">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">{t("studio.interpretability.layer")}</span>
+              <span className="font-mono font-medium tabular-nums">{tooltip.layerKey}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">{t("studio.interpretability.heatmap.channel")}</span>
+              <span className="font-mono font-medium tabular-nums">{tooltip.channelIdx}</span>
+            </div>
+            <div className="mt-0.5 border-t border-border/40 pt-1 flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">{t("studio.interpretability.heatmap.value")}</span>
+              <span
+                className="font-mono font-semibold tabular-nums"
+                style={{ color: tooltip.value === null ? undefined : tooltip.normalized < 0 ? outlierColor : paletteColor(tooltip.normalized, tooltipPalette) }}
+              >
+                {tooltip.value === null ? t("studio.interpretability.heatmap.missingValue") : tooltip.value.toFixed(4)}{tooltip.normalized < 0 ? " ↑" : ""}
+              </span>
+            </div>
+            {tooltip.pinned && (
+              <div className="text-ui-10" style={{ color: outlierColor }}>
+                ▼ {t("studio.interpretability.heatmap.pinned")}
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+// ── ColorLegend ───────────────────────────────────────────────────────────────
+
+function ColorLegend({
+  outlierBlend = false,
+  onToggleBlend,
+  showPinned = false,
+}: {
+  outlierBlend?: boolean;
+  onToggleBlend?: () => void;
+  showPinned?: boolean;
+}): ReactElement {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const t = useT();
+  const isDark = useIsDark();
+  const palette = isDark ? PALETTE_DARK : PALETTE_LIGHT;
+  const outlierBody = t("studio.interpretability.heatmap.outlierBody").split("{p99}");
+  const [blendBefore, blendAfter] = t("studio.interpretability.heatmap.outlierBlendHint").split("{click}");
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    canvas.width = canvas.offsetWidth || 200;
+    canvas.height = 8;
+    const grad = ctx.createLinearGradient(0, 0, canvas.width, 0);
+    grad.addColorStop(0, paletteColor(0, palette));
+    grad.addColorStop(1, paletteColor(1, palette));
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }, [isDark, palette]);
+
+  const swatchColor = outlierBlend
+    ? (isDark ? OUTLIER_BLEND_DARK  : OUTLIER_BLEND_LIGHT)
+    : (isDark ? OUTLIER_COLOR_DARK  : OUTLIER_COLOR_LIGHT);
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-ui-10 text-muted-foreground">{t("studio.interpretability.heatmap.low")}</span>
+      <canvas ref={canvasRef} className="h-2 flex-1 rounded-full" />
+      <span className="text-ui-10 text-muted-foreground">{t("studio.interpretability.heatmap.high")}</span>
+      <span className="mx-1 text-ui-10 text-muted-foreground/50">·</span>
+      <span
+        className="inline-block h-2 w-2 rounded-sm flex-shrink-0"
+        style={{ backgroundColor: swatchColor }}
+      />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onToggleBlend}
+            className={cn(
+              "inline-flex cursor-pointer items-center rounded-full border px-1.5 py-0.5 text-ui-10 font-medium select-none transition-colors",
+              outlierBlend
+                ? "border-orange-400/60 bg-orange-400/20 text-orange-400"
+                : "border-current/20 bg-muted text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t("studio.interpretability.heatmap.outlier")}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))]">
+          <p className="font-medium mb-1">{t("studio.interpretability.heatmap.outlierTitle")}</p>
+          <p className="text-xs/relaxed font-normal">
+            {outlierBody.map((part, i) => (
+              <span key={i}>
+                {i > 0 && <code className="font-mono">p99</code>}
+                {part}
+              </span>
+            ))}
+          </p>
+          <p className="text-xs/relaxed font-normal mt-1.5 border-t border-border/40 pt-1.5">
+            {blendBefore}
+            <span className="font-medium">{t("studio.interpretability.heatmap.outlierBlendClick")}</span>
+            {blendAfter}
+          </p>
+        </TooltipContent>
+      </Tooltip>
+      {showPinned && (
+        <>
+          <span className="mx-1 text-ui-10 text-muted-foreground/50">·</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-default whitespace-nowrap text-ui-10 text-muted-foreground select-none">
+                <span style={{ color: swatchColor }}>▼</span> {t("studio.interpretability.heatmap.pinned")}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))]">
+              <p className="text-xs/relaxed font-normal">{t("studio.interpretability.heatmap.pinnedBody")}</p>
+            </TooltipContent>
+          </Tooltip>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── ReplayControls ────────────────────────────────────────────────────────────
+
+const SPEEDS = [0.5, 1, 2, 3, 5, 10] as const;
+type Speed = (typeof SPEEDS)[number];
+
+export function ReplayControls({
+  stepIndex,
+  totalSteps,
+  onStepChange,
+  currentStep,
+}: {
+  stepIndex: number;
+  totalSteps: number;
+  onStepChange: (index: number) => void;
+  currentStep: number;
+}): ReactElement {
+  const t = useT();
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState<Speed>(1);
+  const [loop, setLoop] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPlayback = useCallback(() => {
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    setPlaying(false);
+  }, []);
+
+  const startPlayback = useCallback(() => {
+    if (intervalRef.current !== null) clearInterval(intervalRef.current);
+    setPlaying(true);
+    const ms = Math.round(1000 / speed);
+    intervalRef.current = setInterval(() => {
+      onStepChange(-1);
+    }, ms);
+  }, [speed, onStepChange]);
+
+  useEffect(() => {
+    if (!playing) return;
+    startPlayback();
+    return stopPlayback;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speed]);
+
+  useEffect(() => {
+    if (playing && stepIndex >= totalSteps - 1) {
+      if (loop) {
+        onStepChange(0);
+      } else {
+        stopPlayback();
+      }
+    }
+  }, [playing, stepIndex, totalSteps, loop, stopPlayback, onStepChange]);
+
+  useEffect(() => () => stopPlayback(), [stopPlayback]);
+
+  const handleToggle = () => {
+    if (playing) {
+      stopPlayback();
+    } else {
+      if (stepIndex >= totalSteps - 1) onStepChange(0);
+      startPlayback();
+    }
+  };
+
+  if (totalSteps === 0) return <></>;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" className="h-6 w-16 text-ui-11" onClick={handleToggle}>
+          {playing ? `⏸ ${t("studio.interpretability.replay.pause")}` : `▶ ${t("studio.interpretability.replay.play")}`}
+        </Button>
+        <input
+          type="range"
+          min={0}
+          max={Math.max(0, totalSteps - 1)}
+          value={stepIndex}
+          onChange={(e) => { stopPlayback(); onStepChange(Number(e.target.value)); }}
+          className="h-1 flex-1 cursor-pointer accent-primary"
+        />
+        <span className="min-w-[calc(4rem*var(--ui-space-scale,1))] text-right text-ui-11 tabular-nums text-muted-foreground">
+          {t("studio.interpretability.step", { step: currentStep })}
+        </span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-ui-10 text-muted-foreground">{t("studio.interpretability.replay.speed")}</span>
+        {SPEEDS.map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => setSpeed(s)}
+            className={cn(
+              "rounded px-1.5 py-0.5 text-ui-10 font-medium transition-colors",
+              speed === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {s}×
+          </button>
+        ))}
+        <button
+          type="button"
+          title={loop ? t("studio.interpretability.replay.loopOn") : t("studio.interpretability.replay.loopOff")}
+          aria-pressed={loop}
+          onClick={() => setLoop((l) => !l)}
+          className={cn(
+            "ml-1 rounded p-0.5 text-ui-12 leading-none transition-colors",
+            loop ? "text-primary" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+            <path d="M4 12a6 6 0 1 0 1.5-3.9" />
+            <polyline points="1 6 4 8 5.5 5.5" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── NeuronHeatmapSection ──────────────────────────────────────────────────────
+
+export function NeuronHeatmapSection({
+  isTraining,
+  records,
+  metadata,
+  loading,
+  record,
+  stepIndex,
+  onStepChange,
+}: SectionProps): ReactElement {
+  const t = useT();
+  const numLayers   = metadata?.num_layers ?? (record ? Object.keys(record.layers).length : 0);
+  const numChannels = metadata?.captured_channels?.length ?? 0;
+  const capturedChannels = metadata?.captured_channels ?? [];
+  const pinnedChannels = useMemo(
+    () => new Set(metadata?.pinned_channels ?? []),
+    [metadata?.pinned_channels],
+  );
+  const coverageNote = metadata?.full_coverage
+    ? t("studio.interpretability.heatmap.coverageBadge", { channels: metadata.hidden_size })
+    : null;
+
+  const [expanded,     setExpanded]     = useState(false);
+  const [outlierBlend, setOutlierBlend] = useState(false);
+  const [activeOverlays, setActiveOverlays] = useState<Set<OverlayKey>>(new Set());
+  const [infoOpen,     setInfoOpen]     = useState(false);
+
+  const toggleOutlierBlend = useCallback(() => setOutlierBlend((v) => !v), []);
+  const toggleOverlay = useCallback((key: OverlayKey) => {
+    setActiveOverlays((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }, []);
+
+  // Compute heatmap values for the current view mode + step
+  const computedValues = useMemo(
+    () => (record ? computeViewValues(records, stepIndex, "activations") : null),
+    [records, stepIndex, record],
+  );
+
+  // Compute overlay cell sets (cumulative up to current step)
+  const overlaySets = useMemo(
+    () => computeOverlaySets(records, stepIndex),
+    [records, stepIndex],
+  );
+
+
+  return (
+    <Card size="sm" className="shadow-border border border-border/60 bg-card/90 backdrop-blur-sm">
+      <CardHeader className="pb-2">
+        {/* Row 1: title + meta + controls */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <CardTitle className="text-sm ml-1">{t("studio.interpretability.heatmap.title")}</CardTitle>
+            {records.length > 0 && (
+              <span className="rounded border border-border/60 px-2 py-0.5 text-ui-10 leading-none text-muted-foreground whitespace-nowrap">
+                {t("studio.interpretability.heatmap.sizeShort", { layers: numLayers, channels: numChannels })}
+              </span>
+            )}
+            {records.length > 0 && coverageNote && (
+              <span className="rounded border border-border/60 px-2 py-0.5 text-ui-10 leading-none text-muted-foreground whitespace-nowrap">
+                {coverageNote}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="tabular-nums text-ui-10 text-muted-foreground flex items-center gap-1">
+              {loading && (
+                <svg className="animate-spin h-2.5 w-2.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" strokeLinecap="round"/>
+                </svg>
+              )}
+              {record?.loss != null && <>{t("studio.interpretability.heatmap.loss", { value: record.loss.toFixed(3) })}</>}
+            </span>
+            {isTraining && records.length > 0 && (
+              <span className="flex items-center gap-1 text-ui-10 text-muted-foreground">
+                <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+                {t("studio.interpretability.heatmap.live")}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setInfoOpen(true)}
+              className="rounded border border-border/60 px-1.5 py-0.5 text-ui-10 font-semibold text-muted-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground hover:border-border focus:text-foreground leading-none"
+              title={t("studio.interpretability.heatmap.howToRead")}
+              aria-label={t("studio.interpretability.openGuide")}
+            >
+              ?
+            </button>
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100"
+              title={t("studio.interpretability.expandChart")}
+              aria-label={t("studio.interpretability.heatmap.expandAria")}
+            >
+              <HugeiconsIcon icon={ArrowExpandDiagonal01Icon} className="size-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Row 2: View mode pill + overlay pills on one line */}
+        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+          {VIEW_MODES.map((mode) => (
+            <ModePill
+              key={mode.key}
+              label={t(mode.label)}
+              active={mode.key === "activations"}
+              onClick={() => {}}
+              latex={mode.latex}
+              description={t(mode.description)}
+            />
+          ))}
+          <span className="mx-1 h-3.5 w-px rounded-full bg-border/60 shrink-0" />
+          {OVERLAY_CONFIGS.map((ov) => (
+            <ModePill
+              key={ov.key}
+              label={t(ov.label)}
+              active={activeOverlays.has(ov.key)}
+              onClick={() => toggleOverlay(ov.key)}
+              latex={ov.latex}
+              description={t(ov.description)}
+              indicatorColor={ov.color}
+              activeColor={ov.color}
+            />
+          ))}
+        </div>
+      </CardHeader>
+
+      <CardContent className="flex flex-col gap-3">
+        <HeatmapCanvas
+          values={expanded ? null : computedValues}
+          capturedChannels={capturedChannels}
+          pinnedChannels={pinnedChannels}
+          activeOverlays={activeOverlays}
+          overlaySets={overlaySets}
+          outlierBlend={outlierBlend}
+        />
+
+        {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} showPinned={pinnedChannels.size > 0} />}
+
+        {!loading && records.length === 0 && (
+          <p className="text-center text-ui-11 text-muted-foreground">
+            {t("studio.interpretability.heatmap.emptyHint")}
+          </p>
+        )}
+      </CardContent>
+
+      {/* Expanded dialog */}
+      <Dialog open={expanded} onOpenChange={setExpanded}>
+        <DialogContent className="w-[90vw] max-w-none sm:max-w-none">
+          <DialogHeader>
+            <DialogTitle className="font-bold">
+              {t("studio.interpretability.heatmap.title")}
+              {records.length > 0 && (
+                <span className="ml-2 text-sm font-normal text-muted-foreground">
+                  {t("studio.interpretability.heatmap.size", { layers: numLayers, channels: numChannels })}
+                  {coverageNote && ` · ${coverageNote}`}
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {/* View + overlay pills — same as card header row */}
+          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+            {VIEW_MODES.map((mode) => (
+              <ModePill
+                key={mode.key}
+                label={t(mode.label)}
+                active={mode.key === "activations"}
+                onClick={() => {}}
+                latex={mode.latex}
+                description={t(mode.description)}
+              />
+            ))}
+            <span className="mx-1 h-3.5 w-px rounded-full bg-border/60 shrink-0" />
+            {OVERLAY_CONFIGS.map((ov) => (
+              <ModePill
+                key={ov.key}
+                label={t(ov.label)}
+                active={activeOverlays.has(ov.key)}
+                onClick={() => toggleOverlay(ov.key)}
+                latex={ov.latex}
+                description={t(ov.description)}
+                indicatorColor={ov.color}
+                activeColor={ov.color}
+              />
+            ))}
+          </div>
+          <div className="mt-2 w-full flex flex-col gap-3">
+            <HeatmapCanvas
+              values={computedValues}
+              capturedChannels={capturedChannels}
+              pinnedChannels={pinnedChannels}
+              activeOverlays={activeOverlays}
+              overlaySets={overlaySets}
+              expanded={true}
+              outlierBlend={outlierBlend}
+            />
+            {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} showPinned={pinnedChannels.size > 0} />}
+            {!isTraining && records.length > 1 && (
+              <ReplayControls
+                stepIndex={stepIndex}
+                totalSteps={records.length}
+                onStepChange={onStepChange}
+                currentStep={record?.step ?? 0}
+              />
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Info dialog */}
+      <InterpretabilityInfoDialog open={infoOpen} onOpenChange={setInfoOpen} />
+    </Card>
+  );
+}
