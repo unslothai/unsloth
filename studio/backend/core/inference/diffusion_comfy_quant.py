@@ -501,7 +501,8 @@ def comfy_resident_mib(
             shape = (int(shape[0]), int(shape[1]) * 8 // layer.packed_bits)
         kept[name + ".weight"] = (
             layer.format == INT8_TENSORWISE
-            and keep_int8
+            # a forced packed load keeps W4A8 / W6A8 packed without an int8 runtime
+            and (keep_int8 or bool(grouped_packed and layer.packed_bits))
             and not _excluded(name + ".weight", shape)
             and _fits(shape, 0)
         ) or (
@@ -1496,7 +1497,12 @@ def load_comfy_quant_transformer(
                 if layer.packed_bits
                 else 1
             )
-            if not (backends.get(layer.format) or _stored(layer) or _packed(layer))
+            if not (
+                backends.get(layer.format)
+                or _stored(layer)
+                or _packed(layer)
+                or (layer.packed_bits and grouped_packed)
+            )
             or (layer.format in BLOCK_SIZES and key_map is not None)
             else 0
         )
@@ -1548,8 +1554,12 @@ def load_comfy_quant_transformer(
             if codebook is not None:
                 codebook = codebook.to(torch.float32)
             packed_parts = (codes, s_rel.view(torch.uint8), codebook)
-            # the int8 grid: 1 byte per weight plus the decode's float32 row chunk
-            charge_host_ram(int(codes.shape[0]) * int(s_rel.shape[1]) * layer.group_size)
+            from .diffusion_grouped_int8 import decode_host_bytes
+
+            # the int8 grid plus one decode chunk's int32 / float32 scratch
+            charge_host_ram(
+                decode_host_bytes(int(codes.shape[0]), int(s_rel.shape[1]) * layer.group_size)
+            )
             codes = decode_int8_torch(codes, s_rel, codebook, layer.group_size, layer.packed_bits)
         else:
             scale = state.pop(layer.name + ".weight_scale")

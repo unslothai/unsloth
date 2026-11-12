@@ -33,8 +33,15 @@ DEFAULT_GROUP = 16
 DEFAULT_ROTATION = 256
 GROUPED_SUFFIXES = (".weight_s_rel", ".weight_s_channel", ".weight_codebook")
 _E4M3_MAX = 448.0
-# Rows per decode chunk: bounds the float32 temporaries (about 12 bytes per weight) on the host.
-_DECODE_CHUNK_ELEMS = 1 << 24
+# Weights per decode chunk: bounds the int32 / float32 temporaries of the torch decode (about 20 bytes per weight).
+_DECODE_CHUNK_ELEMS = 1 << 22
+_DECODE_SCRATCH_BYTES = 24
+
+
+def decode_host_bytes(rows: int, k: int) -> int:
+    """Host bytes ``decode_int8_torch`` allocates for a ``rows x k`` layer: the int8 grid plus one chunk's scratch."""
+    step = max(1, _DECODE_CHUNK_ELEMS // max(int(k), 1))
+    return int(rows) * int(k) + min(int(rows), step) * int(k) * _DECODE_SCRATCH_BYTES
 
 
 def grouped_conf(raw: Any) -> tuple:
@@ -259,6 +266,38 @@ def _nearest_codebook(target: Any, table: Any, s_rel32: Any) -> Any:
     return (decoded - target.unsqueeze(-1)).abs_().argmin(dim = -1).to(torch.int32)
 
 
+def check_grouped_config(
+    fmt: str,
+    group_size: Any,
+    rotation: Any,
+    codebook: Any = None,
+) -> None:
+    """Raise unless the reader (``grouped_layer_problem``) accepts this group / rotation / codebook for ``fmt``."""
+    from .diffusion_convrot import is_power_of_four
+
+    bits = GROUPED_BITS.get(fmt)
+    if bits is None:
+        raise ValueError(f"unknown packed format {fmt!r}")
+    if (
+        not isinstance(group_size, int)
+        or isinstance(group_size, bool)
+        or group_size < 4
+        or (16 % group_size and group_size % 16)
+        or (bits == 6 and group_size % 16)
+    ):
+        raise ValueError(
+            f"{fmt}: group_size {group_size!r} (4-bit: a divisor or multiple of 16; 6-bit: a multiple of 16)"
+        )
+    if (
+        not isinstance(rotation, int)
+        or isinstance(rotation, bool)
+        or not is_power_of_four(rotation)
+    ):
+        raise ValueError(f"{fmt}: ConvRot group {rotation!r} is not a power of 4")
+    if codebook is not None and (bits != 4 or int(codebook.numel()) != 16):
+        raise ValueError(f"{fmt}: a codebook is 16 levels and 4-bit only")
+
+
 def quantize_grouped(
     weight: Any,
     fmt: str,
@@ -277,6 +316,7 @@ def quantize_grouped(
     from .diffusion_convrot import build_convrot_hadamard
 
     bits = GROUPED_BITS[fmt]
+    check_grouped_config(fmt, group_size, rotation, codebook)
     if weight.dim() != 2:
         raise ValueError(f"{fmt} needs a 2-D weight, got {tuple(weight.shape)}")
     rows, k = (int(d) for d in weight.shape)
@@ -317,7 +357,7 @@ def quantize_grouped(
         ".weight_s_channel": s_channel.to(torch.float32).contiguous(),
     }
     if codebook is not None:
-        out[".weight_codebook"] = table.contiguous()
+        out[".weight_codebook"] = table.clone()  # own storage: a shared one fails serialization
     return out
 
 
@@ -600,26 +640,51 @@ def grouped_linear_class():
             return bool(hit)
 
         def _int8(self, x: Any) -> Any:
-            from .diffusion_native_quant import _fused_w8a8, _w8a8_rows
+            from .diffusion_native_quant import (
+                _INT_MM_CHUNK_ELEMS,
+                _fused_w8a8,
+                _fused_w8a8_failed,
+                _w8a8_rows,
+            )
 
             x2 = x.reshape(-1, self.in_features)
             q8 = self.decoded_int8()
             if x.dtype == torch.bfloat16 and self._tuned:
+                # the fused epilogue writes bf16 directly: no [rows, N] float32 temporaries to bound
                 return self._tuned_int8(x2, q8).reshape(*x.shape[:-1], self.out_features)
             bias = self.bias
             fn = None
             if not torch.compiler.is_compiling() and not torch.cuda.is_current_stream_capturing():
                 from .diffusion_bg_compile import eager_forced
                 fn = None if eager_forced() else _fused_w8a8(x.device)
-            if fn is not None:
-                try:
-                    out = fn(x2.detach(), self.rot_h, q8, self.weight_s_channel, bias)
-                except torch.cuda.OutOfMemoryError:
-                    raise
-                except Exception:  # noqa: BLE001 -- the eager maths below are the same function
-                    out = _w8a8_rows(x2, self.rot_h, q8, self.weight_s_channel, bias)
+
+            def run(part: Any) -> Any:
+                nonlocal fn
+                if fn is not None:
+                    try:
+                        return fn(part.detach(), self.rot_h, q8, self.weight_s_channel, bias)
+                    except torch.cuda.OutOfMemoryError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 -- the eager maths below are the same function
+                        _fused_w8a8_failed(exc, x.device)
+                        fn = None
+                return _w8a8_rows(part, self.rot_h, q8, self.weight_s_channel, bias)
+
+            rows = x2.shape[0]
+            # the int32 accumulator and float32 epilogue are [rows, N]: chunk rows as the native int8 Linear does
+            chunk = _INT_MM_CHUNK_ELEMS // max(self.in_features, self.out_features)
+            if torch.compiler.is_compiling() or rows <= chunk or chunk < 2 * _MIN_ROWS:
+                out = run(x2)
             else:
-                out = _w8a8_rows(x2, self.rot_h, q8, self.weight_s_channel, bias)
+                out = None
+                start = 0
+                for part in torch.tensor_split(x2, -(-rows // chunk)):
+                    got = run(part)
+                    if out is None:
+                        out = got.new_empty((rows, self.out_features))
+                    out[start : start + part.shape[0]].copy_(got)
+                    start += part.shape[0]
+                    del got
             return out.reshape(*x.shape[:-1], self.out_features)
 
         def _int8_ok(self, x: Any) -> bool:
@@ -654,8 +719,10 @@ def grouped_linear_class():
                 times = {}
                 if self._tuned is None:
                     self._tuned = self._tuned_ready(x)
-                try:
-                    for route, run in (("int8", self._int8), ("dense", self._dense)):
+                errors: dict = {}
+                for route, run in (("int8", self._int8), ("dense", self._dense)):
+                    # each candidate on its own: one that cannot run (or runs out of memory) here just loses
+                    try:
                         run(x)  # warm-up (and the compiled linear's first build)
                         start = torch.cuda.Event(enable_timing = True)
                         end = torch.cuda.Event(enable_timing = True)
@@ -665,11 +732,11 @@ def grouped_linear_class():
                         end.record()
                         end.synchronize()
                         times[route] = start.elapsed_time(end)
-                    hit = "int8" if times["int8"] <= times["dense"] else "dense"
-                except torch.cuda.OutOfMemoryError:
-                    raise
-                except Exception:  # noqa: BLE001 -- a GEMM that cannot run here loses the race
-                    hit = "dense"
+                    except Exception as exc:  # noqa: BLE001
+                        errors[route] = exc
+                if not times:
+                    raise errors["dense"]
+                hit = min(times, key = times.get)
                 _RACE[key] = hit
                 try:
                     from loggers import get_logger
@@ -761,8 +828,7 @@ def export_grouped_file(
     import torch
     from safetensors import safe_open
 
-    if fmt not in GROUPED_BITS:
-        raise ValueError(f"unknown packed format {fmt!r}")
+    check_grouped_config(fmt, group_size, rotation, codebook)
     bits = GROUPED_BITS[fmt]
     if like is not None:
         chosen = set(_declared_layers(like))
@@ -778,6 +844,8 @@ def export_grouped_file(
     skipped: list = []
     count = 0
     with safe_open(str(src), framework = "pt", device = "cpu") as handle:
+        # the source's own header metadata (model config, distillation markers) carries over unchanged
+        source_metadata = dict(handle.metadata() or {})
         for key in handle.keys():
             value = handle.get_tensor(key)
             name = key[: -len(".weight")] if key.endswith(".weight") else None
@@ -808,7 +876,8 @@ def export_grouped_file(
             raise ValueError(
                 f"{src} lacks {len(missing)} layer(s) the reference declares (e.g. {missing[0]})"
             )
-    metadata = {"format": "pt"}
+    metadata = dict(source_metadata)
+    metadata.setdefault("format", "pt")
     if record:
         from .diffusion_comfy_quant import CONVERSION_RECORD_KEY
         metadata[CONVERSION_RECORD_KEY] = json.dumps(record, sort_keys = True)

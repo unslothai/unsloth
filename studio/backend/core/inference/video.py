@@ -693,7 +693,7 @@ def _video_comfy_resident_mib(
         keep_fp8 = keep_fp8,
         fp8_stored = fp8_stored,
         # W4A8 / W6A8 stay packed where the int8 runtime keeps them (the loader's same rule)
-        grouped_packed = keep_int8 and grouped_packed_wanted(target, "int8"),
+        grouped_packed = grouped_packed_wanted(target, "int8" if keep_int8 else None),
         **keep_block,
         target = target,
         keep_key = keep_key,

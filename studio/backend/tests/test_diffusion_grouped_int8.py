@@ -456,3 +456,67 @@ def test_forced_packed_keep_without_an_int8_runtime(grouped_file):
     want = torch.nn.functional.linear(x, _expected_dense(tensors, "blocks.0.out"), layer.bias)
     assert torch.allclose(layer(x), want, atol = 1e-4, rtol = 1e-4)
     assert gi.grouped_call_counts()["dense"] > 0
+
+
+def test_exporter_keeps_source_metadata_and_writes_a_readable_file(tmp_path):
+    src = {
+        "blocks.0.q.weight": torch.randn(32, 512),
+        "blocks.0.k.weight": torch.randn(32, 512),
+        "blocks.0.k.bias": torch.randn(32),
+        "head.weight": torch.randn(8, 100),  # K not a multiple of the rotation: stays as stored
+    }
+    meta = {"config": json.dumps({"transformer": {"pdd_steps": 6}})}
+    path = _save(tmp_path / "src.safetensors", src, meta)
+    out = str(tmp_path / "out.safetensors")
+    # one shared codebook tensor for every layer: each written layer must own its copy
+    res = gi.export_grouped_file(
+        path,
+        out,
+        gi.ASYM_W4A8,
+        layers = lambda n: True,
+        codebook = BOOK,
+        record = {"scheme": "asym_w4a8_int8"},
+    )
+    assert res["quantized"] == 2 and res["kept"] == ["head.weight"]
+    from safetensors import safe_open
+
+    with safe_open(out, framework = "pt") as handle:
+        got_meta = handle.metadata()
+    assert (
+        got_meta["config"] == meta["config"]
+        and json.loads(got_meta[cq.CONVERSION_RECORD_KEY])["scheme"]
+    )
+    scan = cq.refuse_comfy_quant(out)
+    assert scan.counts() == {gi.ASYM_W4A8: 2}
+    raw = safetensors_torch.load_file(out)
+    assert torch.equal(raw["blocks.0.k.bias"], src["blocks.0.k.bias"])
+    assert torch.equal(raw["head.weight"], src["head.weight"])
+
+
+@pytest.mark.parametrize(
+    "fmt, group", [(gi.ASYM_W4A8, 12), (gi.ASYM_W4A8, 2), (gi.W6A8, 8), (gi.W6A8, True)]
+)
+def test_writer_refuses_groups_the_reader_refuses(tmp_path, fmt, group):
+    with pytest.raises(ValueError, match = "group_size"):
+        gi.quantize_grouped(torch.randn(4, 512), fmt, group_size = group)
+    path = _save(tmp_path / "s.safetensors", {"a.weight": torch.randn(4, 512)})
+    with pytest.raises(ValueError, match = "group_size"):
+        gi.export_grouped_file(
+            path, str(tmp_path / "o.safetensors"), fmt, layers = ["a"], group_size = group
+        )
+    with pytest.raises(ValueError, match = "16 levels"):
+        gi.quantize_grouped(torch.randn(4, 512), gi.ASYM_W4A8, codebook = torch.zeros(8))
+
+
+def test_forced_packed_is_priced_packed_without_an_int8_runtime(tmp_path):
+    torch.manual_seed(7)
+    t = gi.quantize_grouped(torch.randn(2048, 2048), gi.W6A8)
+    tensors = {f"a{k or '.weight'}": v for k, v in t.items()}
+    tensors["a.comfy_quant"] = gi.declaration_tensor(gi.grouped_declaration(gi.W6A8))
+    path = _save(tmp_path / "big.safetensors", tensors)
+    kw = dict(keep_int8 = False, keep_fp8 = False, compute_bytes = 4)
+    packed = cq.comfy_resident_mib(path, grouped_packed = True, **kw)
+    dense = cq.comfy_resident_mib(path, **kw)
+    int8 = cq.comfy_resident_mib(path, keep_int8 = True, keep_fp8 = False)
+    assert packed == 4  # 3 MiB of codes + 256 KiB of steps + the row scales, rounded up
+    assert int8 == 5 and dense == 17
