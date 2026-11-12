@@ -7331,8 +7331,7 @@ _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
 
 # llama-server's --cache-ram default (MiB): the host-RAM prompt cache it grows into.
 _LLAMA_CACHE_RAM_DEFAULT_MIB = 8192
-# Host RAM llama-server takes for itself with every layer on a GPU (0.9 GiB measured on a T4,
-# CUDA pinned buffers included). The fit charges such a load to VRAM alone.
+# llama-server's own host RAM with every layer on a GPU (0.9 GiB on a T4); the fit charges VRAM only.
 _LLAMA_SERVER_HOST_MIB = 1024
 
 
