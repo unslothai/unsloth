@@ -372,18 +372,22 @@ def test_abandoned_turn_warns_for_each_dropped_call():
 
 
 def test_abandoned_turn_warns_for_its_dropped_prompt():
-    rows = [
-        _row("u", "user", [*_text("go"), {"type": "file"}], None, 1),
-        _row("a", "assistant", [_call("k", result = None)], "u", 2),
-        _row("u2", "user", _text("again"), "a", 3),
-        _row("a2", "assistant", _text("fine"), "u2", 4),
-    ]
-    trace = session_to_trace({"id": "t"}, rows)
+    def rows(custom):
+        return [
+            _row("u", "user", [*_text("go"), {"type": "file"}], None, 1),
+            _row("a", "assistant", [_call("k", result = None)], "u", 2, metadata = custom),
+            _row("u2", "user", _text("again"), "a", 3),
+            _row("a2", "assistant", _text("fine"), "u2", 4),
+        ]
+
+    trace = session_to_trace({"id": "t"}, rows({}))
     assert _shape(trace) == [("user", "again"), ("assistant", "fine")]
     assert [(w.code, w.message_id) for w in trace.warnings[:2]] == [
         ("unsupported_part", "u"),
         ("unanswered_tool_call_dropped", "a"),
     ]
+    # A refused turn's prompt is dropped with it, with no warning.
+    assert _codes(session_to_trace({"id": "t"}, rows({"anthropicRefusal": True}))) == []
 
 
 def test_pruned_turn_warnings_keep_row_order():
