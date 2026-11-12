@@ -538,7 +538,6 @@ def test_the_roster_touches_no_device_or_accelerator_code():
             for fn in (
                 inference._roster_scopes,
                 inference._roster_name,
-                inference._roster_name_uncached,
                 inference._read_roster,
                 inference._rag_roster_sentence,
                 inference._apply_rag_nudge,

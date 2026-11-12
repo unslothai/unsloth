@@ -6004,25 +6004,9 @@ def _roster_scopes(rag_scope: dict) -> list[str]:
     return scopes
 
 
-# roster_name runs per document (3x per row) every RAG turn; bounded memo, cleared when full.
-_ROSTER_NAME_MEMO: dict[str, str] = {}
-_ROSTER_NAME_MEMO_MAX = 65536
-
-
+# Runs per document, 3x per row, every RAG turn. typed: 1 and 1.0 hash alike but str() differently.
+@functools.lru_cache(maxsize = 65536, typed = True)
 def _roster_name(raw: object) -> str:
-    # str keys only: 1 and 1.0 hash alike but str() them differently.
-    if type(raw) is not str:
-        return _roster_name_uncached(raw)
-    name = _ROSTER_NAME_MEMO.get(raw)
-    if name is None:
-        name = _roster_name_uncached(raw)
-        if len(_ROSTER_NAME_MEMO) >= _ROSTER_NAME_MEMO_MAX:
-            _ROSTER_NAME_MEMO.clear()
-        _ROSTER_NAME_MEMO[raw] = name
-    return name
-
-
-def _roster_name_uncached(raw: object) -> str:
     """Linked-folder names are raw disk paths; newlines, quotes and direction overrides are neutralized."""
     name = _re.sub(r"\s+", " ", str(raw or "").translate(_ROSTER_STRIP)).strip()
     if len(name) > _RAG_ROSTER_MAX_NAME_CHARS:
