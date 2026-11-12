@@ -906,3 +906,30 @@ test("hosted results do not split the assistant run they belong to", () => {
     ["Here is the news.", "completed", "Monday"],
   );
 });
+
+test("string output, id-keyed local shell output and lone screenshots import intact", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [
+        { role: "user", content: "Check" },
+        { type: "local_shell_call", id: "lsc1", call_id: "l1", action: { type: "exec", command: ["date"] } },
+        { type: "local_shell_call_output", id: "l1", output: "Monday" },
+        { type: "computer_call", call_id: "c1", action: { type: "screenshot" } },
+        { type: "computer_call_output", call_id: "c1", output: { type: "computer_screenshot", image_url: "data:image/png;base64,QUJD" } },
+        { type: "web_search_call", id: "ws1", status: "completed", action: { type: "search", query: "q" } },
+      ],
+      output: "All good.",
+    }),
+    "response.json",
+  );
+
+  const results = conversation.messages
+    .flatMap((m) => m.content as ReadonlyArray<{ type?: string; result?: unknown }>)
+    .filter((p) => p.type === "tool-call")
+    .map((p) => p.result);
+  assert.deepEqual(results, ["Monday", { text: "", images: [{ mimeType: "image/png", data: "QUJD" }] }, "completed"]);
+  const last = conversation.messages.at(-1);
+  assert.equal(last?.role, "assistant");
+  assert.ok((last?.content as ReadonlyArray<{ type?: string }>).some((p) => p.type === "tool-call"));
+});

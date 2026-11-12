@@ -377,7 +377,8 @@ const STRUCTURED_RESULT = Symbol("structuredResult");
 // Responses tool outputs may be content-part arrays (text, logs, images).
 function toolTurn(callId: string, output: unknown): Record<string | symbol, unknown> {
   if (typeof output === "string") return { role: "tool", tool_call_id: callId, content: output };
-  const parts = Array.isArray(output) ? (output as Array<Record<string, unknown> | null>) : [];
+  // A lone part (computer_screenshot) normalizes like a one-part list.
+  const parts = (Array.isArray(output) ? output : typeof output === "object" && output !== null ? [output] : []) as Array<Record<string, unknown> | null>;
   const texts: string[] = [];
   const images: { data: string; mimeType: string }[] = [];
   const known = parts.length > 0 && parts.every((part) => {
@@ -443,7 +444,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
   );
   const answered = new Set(
     items.flatMap((item) =>
-      typeof item.type === "string" && item.type.endsWith("_call_output") ? [item.call_id] : [],
+      typeof item.type === "string" && item.type.endsWith("_call_output") ? [item.call_id ?? item.id] : [],
     ),
   );
   for (const entry of items) {
@@ -518,15 +519,18 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
         if (builtin) deferred.push(toolTurn(id, done));
         else push(toolTurn(id, done));
       }
-    } else if (type.endsWith("_call_output") && typeof entry.call_id === "string") {
-      const turn = toolTurn(entry.call_id, entry.output);
-      if (hosted.has(entry.call_id)) deferred.push(turn);
+    } else if (type.endsWith("_call_output")) {
+      // local_shell_call_output names its call in id rather than call_id.
+      const callId = text(entry.call_id) ?? text(entry.id);
+      if (callId === undefined) continue;
+      const turn = toolTurn(callId, entry.output);
+      if (hosted.has(callId)) deferred.push(turn);
       else push(turn);
     }
   }
-  turns.push(...deferred);
   const output = text(obj.output);
-  if (output) turns.push({ role: "assistant", content: output });
+  if (output) assistantTurn().content.push({ type: "text", text: output });
+  turns.push(...deferred);
   return turns;
 }
 
