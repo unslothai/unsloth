@@ -189,8 +189,12 @@ def _dense_per_adapter_loss(
     ids = ml._label_adapter_ids(ids, labels)
     keep = (ids >= 0).float()
     ids = ids.clamp_min(0).reshape(-1)
-    sums = torch.zeros(num_adapters).index_add(0, ids, (token * keep).reshape(-1))
-    counts = torch.zeros(num_adapters).index_add(0, ids, (valid * keep).reshape(-1))
+    sums = torch.zeros(num_adapters, device = logits.device).index_add(
+        0, ids, (token * keep).reshape(-1)
+    )
+    counts = torch.zeros(num_adapters, device = logits.device).index_add(
+        0, ids, (valid * keep).reshape(-1)
+    )
     losses = sums / counts.clamp_min(1)
     return losses.sum(), losses.detach()
 
@@ -329,6 +333,38 @@ def test_chunked_per_adapter_loss_handles_one_token_rows():
     total.backward()
     assert total.item() == 0 and torch.equal(losses, torch.zeros(2))
     assert torch.equal(logits.grad, torch.zeros_like(logits))
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("V", [7, 70000])
+def test_gpu_per_adapter_loss_matches_the_dense_loss(dtype, V):
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("no bf16")
+    g = torch.Generator().manual_seed(0)
+    B, T, U = 4, 9, 3
+    logits = (torch.randn(B, T, V, generator = g) * 3).to(dtype).cuda()
+    labels = torch.randint(0, V, (B, T), generator = g).cuda()
+    labels[1, 4:] = -100
+    ids = torch.randint(-1, U, (B, T), generator = g).cuda()
+    scale = torch.tensor([2.0**10, 1.0, 2.0**4], device = "cuda")[ids.clamp_min(0)]
+
+    def run(fn, **kw):
+        x = logits.clone().requires_grad_()
+        total, losses = fn(x, labels, ids, U, **kw)
+        total.backward()
+        return total.detach(), losses, x.grad
+
+    new = run(ml.per_adapter_loss, grad_scale = scale)
+    # Reference: dense fp32 loss, scaled in fp32, rounded once into the logits dtype.
+    x = logits.float().requires_grad_()
+    x.register_hook(lambda grad: grad * scale[..., None])
+    total, losses = _dense_per_adapter_loss(x, labels, ids, U)
+    total.backward()
+    rtol = {torch.float32: 1e-5, torch.bfloat16: 2**-7, torch.float16: 2**-10}[dtype]
+    torch.testing.assert_close(new[0], total.detach(), rtol = 1e-5, atol = 1e-6)
+    torch.testing.assert_close(new[1], losses, rtol = 1e-5, atol = 1e-6)
+    torch.testing.assert_close(new[2], x.grad.to(dtype), rtol = rtol, atol = 1e-6)
 
 
 def test_per_adapter_loss_is_each_adapters_own_mean():
