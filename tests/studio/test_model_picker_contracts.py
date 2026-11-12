@@ -1209,7 +1209,6 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert "displayValue={isMlx && windowUnknown && !dragging ? unknownLabel : undefined}" in page
     assert 'unknownLabel = "—",' in page
-    assert 'unknownLabel = "—",' in page
     assert (
         "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
         "                npuServedWindow == null\n" in page
