@@ -37,6 +37,7 @@ export {
   OWNER_USERNAME,
   isAccountOwner,
   sessionAccount,
+  useFullAccessAllowed,
   useIsAccountOwner,
   useLoginMode,
 } from "./account-session";

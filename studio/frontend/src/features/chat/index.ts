@@ -112,6 +112,7 @@ export {
   useToolPaneScope,
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
+export { openSubagentPanelForDescription } from "./hooks/use-subagents";
 export {
   FullAccessConfirmDialog,
   PermissionModeDropdown,

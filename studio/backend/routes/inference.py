@@ -29736,6 +29736,17 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
             ui_events = _ui_events,
         )
+    from core.inference.subagents import SUBAGENT_TOOL, subagents_requested
+
+    # Opt-in by name like the browser tools; only a direct provider connection can build a child transport.
+    _subagents_on = (
+        studio_tool_loop
+        and managed is None
+        and _effective_enable_tools(payload) is True
+        and subagents_requested(payload.enabled_tools)
+    )
+    if _subagents_on:
+        external_studio_tools = [*external_studio_tools, SUBAGENT_TOOL]
     run_studio_tool_loop = bool(external_studio_tools)
     _external_fit_tools = external_studio_tools if run_studio_tool_loop else payload.tools
     _refuse_unused_mcp_image(_mcp_image, _catalog_names(external_studio_tools))
@@ -29919,6 +29930,29 @@ async def _proxy_to_external_provider(
                 if not _ui_events:
                     _tool_call_stripper.end_turn()
 
+            _subagent_spawner = None
+            if _subagents_on:
+                from core.inference.subagents import SubagentSpawner
+
+                # Same connection and sampling as the parent; no context fitter or resumed partial.
+                _child_kwargs = {**_provider_kwargs, "compaction_fallback": None}
+
+                def _child_transport(model_override):
+                    return OAICompatTransport(
+                        client,
+                        model = model_override or model,
+                        enabled_tools = loop_hosted_tools or None,
+                        stream = True,
+                        **_child_kwargs,
+                    )
+
+                _subagent_spawner = SubagentSpawner(
+                    make_transport = _child_transport,
+                    parent_model = model,
+                    parent_thread_id = payload.thread_id,
+                    session_id = payload.session_id,
+                )
+
             gen = stream_with_studio_tools(
                 OAICompatTransport(
                     client,
@@ -29963,6 +29997,7 @@ async def _proxy_to_external_provider(
                     # withheld, so only it needs a healed one the wire never carried flagged.
                     on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
                     on_provider_turn_end = _end_provider_turn,
+                    subagent_spawner = _subagent_spawner,
                 ),
                 cancel_event = cancel_event,
                 mcp_image = _mcp_image,

@@ -6364,6 +6364,8 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "search_conversation",
         "read_skill",
         "deep_research",
+        # Runs nothing itself; each of the subagent's own tool calls is gated as usual.
+        "spawn_subagent",
         "mcp_tool_search",
         "view_image",
         # Gated in the chat tab instead, which knows what each ref on the live page is: submits,

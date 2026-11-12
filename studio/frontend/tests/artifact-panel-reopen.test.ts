@@ -76,7 +76,7 @@ test("the browser over the chat is a modal: focus moves in, is trapped, and Esca
 
 test("compare's hidden base view leaves the browser to the overlay, so a page runs once", () => {
   const page = read("../src/features/chat/chat-page.tsx");
-  assert.match(page, /const showBrowserPanel = !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;/);
+  assert.match(page, /const showBrowserPanel =\s*!showSidePanel && !isMobile && !browserOverlaid && browserOpen;/);
   assert.match(page, /<BrowserOverlaidContext\.Provider value=\{baseBackgrounded\}>/);
   assert.match(page, /const showBrowserOverlay =\s*active &&\s*browserOpen &&\s*\(view\.mode === "compare" \|\|\s*isMobile \|\|/);
 });
