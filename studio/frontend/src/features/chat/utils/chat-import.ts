@@ -148,8 +148,7 @@ function oaiMessagesToRecords(
   threadId: string,
   baseTs: number,
 ): MessageRecord[] {
-  // Waiting results, bucketed so every lookup is a cursor step (out-of-order imports stay linear):
-  // id:<id>, name:<name> (any named), bare:<name> (named, no id), anon (neither).
+  // Waiting results under id:, name:, bare: (named, no id) and anon keys; cursors keep lookups linear.
   type Stashed = { result: unknown; used?: boolean };
   const buckets = new Map<string, { items: Stashed[]; start: number }>();
   const stash = (result: unknown, id?: string, name?: string) => {
@@ -245,8 +244,7 @@ function oaiMessagesToRecords(
           argsText: argsStr,
         };
         callParts.push(part);
-        // A result seen before its call binds now (id, else id-less name, else anonymous),
-        // in arrival order, before later fallback matches.
+        // An earlier result binds now (id, else id-less name, else anonymous), in arrival order.
         const early =
           (typeof callId === "string" ? take(`id:${callId}`) : undefined) ??
           take(`bare:${part.toolName}`) ??
@@ -293,7 +291,6 @@ function oaiMessagesToRecords(
         });
         if (!alreadyListed) addCall(fn, fn.id);
       }
-      // A merged Responses run carries its item order: content parts and tool_calls indices.
       const order = (msg as { [ITEM_ORDER]?: unknown[] })[ITEM_ORDER];
       content = order
         ? order.flatMap((item) =>
