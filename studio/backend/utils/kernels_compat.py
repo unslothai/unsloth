@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keeps the Hugging Face ``kernels`` package at a version the installed transformers can import.
-
-transformers before 5.13 builds ``kernels.LayerRepository`` objects with neither a revision nor a version while
-``transformers.integrations.hub_kernels`` imports, and kernels 0.15 and newer refuse that with ``ValueError: Either a
-revision or a version must be specified.`` Every later ``import transformers.activations`` (and so every diffusers
-pipeline import) then fails. Stdlib only, so the hot path stays a metadata lookup."""
+"""Keeps ``kernels`` at a version the installed transformers imports: transformers < 5.13 builds unversioned
+``LayerRepository`` objects at import, which kernels >= 0.15 rejects. Stdlib only."""
 
 from __future__ import annotations
 
@@ -19,8 +15,7 @@ import sys
 import threading
 from typing import Any, Optional
 
-# diffusers' flash_4_hub refuses older kernels; the Studio installer pins exactly this version
-# (requirements/extras-no-deps.txt), and its dependencies are already in the Studio environment.
+# flash_4_hub's floor and the installer's pin (requirements/extras-no-deps.txt).
 KERNELS_FLOOR = "0.12.3"
 # First kernels release that rejects a LayerRepository without a revision or version.
 KERNELS_STRICT = (0, 15)
@@ -47,7 +42,6 @@ def _dist_version(name: str) -> Optional[str]:
 
 
 def _release(text: Optional[str]) -> Optional[tuple[int, ...]]:
-    """Leading release numbers, or None when unparsable."""
     if not text:
         return None
     m = re.match(r"\s*v?(\d+(?:\.\d+)*)", text)
@@ -61,8 +55,7 @@ def _is_prerelease(text: str) -> bool:
 
 
 def transformers_accepts_strict_kernels(transformers_version: Optional[str]) -> bool:
-    """True only for a transformers known to import next to kernels >= 0.15 (a 5.13.0 pre-release or an unknown
-    version is not)."""
+    """Known to import next to kernels >= 0.15 (not a 5.13.0 pre-release or an unknown version)."""
     have = _release(transformers_version)
     if have is None:
         return False
@@ -76,10 +69,8 @@ def transformers_accepts_strict_kernels(transformers_version: Optional[str]) -> 
 def kernels_install_spec(
     transformers_version: Optional[str] = None, hub_version: Optional[str] = None
 ) -> str:
-    """The pip requirement for an on-demand ``--no-deps`` kernels install next to ``transformers_version``.
-
-    Below transformers 5.13 the newest usable release is 0.14.x, and 0.14.0 to 0.16.x import a separate
-    ``kernels-data`` package that ``--no-deps`` leaves out, so the pin is the release the Studio installer ships."""
+    """Pip requirement for the ``--no-deps`` install. Exact below 5.13: 0.14.x needs ``kernels-data``, which
+    ``--no-deps`` leaves out."""
     hub = _release(hub_version)
     if not transformers_accepts_strict_kernels(transformers_version) or (
         hub is not None and hub[:2] < _KERNELS_HUB_FLOOR
@@ -93,7 +84,6 @@ def current_kernels_install_spec() -> str:
 
 
 def predicted_conflict(kernels_version: Optional[str], transformers_version: Optional[str]) -> bool:
-    """kernels >= 0.15 next to a transformers that builds unversioned LayerRepository objects at import."""
     kv = _release(kernels_version)
     if kv is None or transformers_version is None or _release(transformers_version) is None:
         return False
@@ -103,8 +93,7 @@ def predicted_conflict(kernels_version: Optional[str], transformers_version: Opt
 
 
 def verify_transformers_import(timeout: float = _VERIFY_TIMEOUT_S) -> tuple[Optional[bool], str]:
-    """``import transformers.activations`` in a fresh interpreter. ``(True, "")`` imports, ``(False, stderr tail)``
-    fails, ``(None, why)`` could not tell (timeout, no interpreter)."""
+    """Fresh-interpreter import check: True, False (with stderr tail) or None (could not tell)."""
     try:
         proc = subprocess.run(
             [sys.executable, "-c", _VERIFY_CODE],
@@ -126,8 +115,7 @@ def verify_transformers_import(timeout: float = _VERIFY_TIMEOUT_S) -> tuple[Opti
 
 
 def hide_kernels(reason: str) -> None:
-    """Make ``kernels`` unimportable in this process: transformers' hub_kernels catches the ImportError and runs
-    without hub kernels, and the hub attention backends fall back to the default backend."""
+    """Make ``kernels`` unimportable here; transformers' hub_kernels tolerates the ImportError."""
     global _hidden_reason
     for name in [m for m in sys.modules if m == "kernels" or m.startswith("kernels.")]:
         sys.modules.pop(name, None)
@@ -168,7 +156,6 @@ def _pip(args: list[str], timeout: float = 600) -> subprocess.CompletedProcess:
 
 
 def restore_kernels(previous_version: Optional[str]) -> bool:
-    """Put kernels back the way it was before an install: removed, or reinstalled at ``previous_version``."""
     try:
         if previous_version is None:
             _pip(["uninstall", "-y", "kernels"])
@@ -181,8 +168,7 @@ def restore_kernels(previous_version: Optional[str]) -> bool:
 
 
 def check_kernels_install(previous_version: Optional[str], logger: Any = None) -> bool:
-    """After an on-demand kernels install: True when transformers still imports. Otherwise the install is rolled back
-    and kernels is hidden from this process, so the load takes the default attention backend."""
+    """True when transformers still imports after the install; else roll back and hide kernels."""
     if _dist_version("transformers") is None:
         return True
     ok, detail = verify_transformers_import()
@@ -219,9 +205,7 @@ def check_kernels_install(previous_version: Optional[str], logger: Any = None) -
 
 
 def heal_kernels_conflict(logger: Any = None) -> Optional[str]:
-    """Once per process, before diffusers is imported: repair a kernels install transformers cannot import next to
-    (left by an older unpinned on-demand install), or hide it from this process. Returns what was done, or None.
-    The common case is two metadata reads."""
+    """Once per process before diffusers imports: repair or hide a kernels transformers cannot import."""
     global _healed
     if _healed:
         return None
