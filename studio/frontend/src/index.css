@@ -6486,7 +6486,8 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
 }
 .wallpaper-preview-prose { background: var(--background); }
 
-.chat-wallpaper::after {
+/* Plain glass already uses the page colour; only image wallpapers need the header contrast fade. */
+.chat-wallpaper:not([data-glass-backdrop])::after {
   content: "";
   position: absolute;
   inset: 0 0 auto;
