@@ -2610,7 +2610,8 @@ def _place_streamed_dit(
     return streamer
 
 
-# "0": native attention; "1": probe-gated SageAttention on the DiT blocks; unset: as the checkpoint declares
+# "0": native attention; "1": probe-gated SageAttention on the DiT blocks; unset: as the checkpoint declares, kept
+# only where a DiT block's attention times faster with it than with the native backend on the card
 INT8_ATTENTION_ENV = "UNSLOTH_H3_IMAGE_INT8_ATTENTION"
 CHECKPOINT_ATTENTION_ATTR = "_unsloth_checkpoint_attention"
 # the INT8 DiT checkpoint runs INT8 attention on its DiT blocks unless its file says otherwise
@@ -2681,6 +2682,25 @@ def install_checkpoint_attention(
         restore()
         setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
         return None
+    forced = (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
+        "1",
+        "on",
+        "true",
+        "yes",
+    )
+    race = None if forced else race_checkpoint_attention(transformer, saved, dtype)
+    if race is not None and not race["keep"]:
+        restore()
+        setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
+        log.info(
+            "diffusion.minimax_h3_image: INT8 attention (%s) kept off: a DiT block's attention took %.2f ms with it "
+            "against %.2f ms with %s on this card",
+            engaged,
+            race["ms"][1],
+            race["ms"][0],
+            race["native"],
+        )
+        return None
     blocks = {id(m) for b in getattr(transformer, "transformer_blocks", ()) for m in b.modules()}
     restore(only = [m for m in modules if id(m) not in blocks])
     setattr(pipe, ATTENTION_SAVED_ATTR, (saved, tag))
@@ -2690,6 +2710,67 @@ def install_checkpoint_attention(
         sum(1 for m in modules if id(m) in blocks),
     )
     return engaged
+
+
+# Rows of the race's packed sequence: a 2048x2048 canvas (64 x 64 latent patches) plus a prompt.
+_RACE_ROWS = (4096, 300)
+
+
+def race_checkpoint_attention(transformer: Any, saved: dict, dtype: Any) -> Optional[dict]:
+    """Time one resident DiT block's attention module with the engaged INT8 backend against the backend it had
+    (which keeps Studio's strided layout and fused q/k norm + RoPE); ``keep`` when INT8 is more than 2% faster.
+    None when no block's attention is on the card (nothing to time: the caller keeps the INT8 route)."""
+    import torch
+
+    attn = None
+    norm = None
+    for block in getattr(transformer, "transformer_blocks", ()) or ():
+        module = getattr(block, "attn", None)
+        params = list(module.parameters()) if module is not None else []
+        if module in saved and params and all(p.is_cuda for p in params):
+            attn, norm = module, getattr(block, "norm1", None)
+            break
+    rope = getattr(transformer, "rope", None)
+    if attn is None or norm is None or rope is None:
+        return None
+    engaged = attn.processor._attention_backend
+    native = saved[attn]
+    device = next(attn.parameters()).device
+    width = int(norm.normalized_shape[0])
+    image, text = _RACE_ROWS
+    side = int(math.isqrt(image))
+    try:
+        with torch.no_grad(), torch.cuda.device(device):
+            g = torch.Generator(device = "cpu").manual_seed(7)
+            x = torch.randn(1, image + text, width, generator = g).to(device = device, dtype = dtype)
+            idx = torch.arange(image)
+            pos = torch.zeros(image + text, 3, dtype = torch.float64)
+            pos[text:, 1] = (idx // side).double()
+            pos[text:, 2] = (idx % side).double()
+            pos[:text, 0] = torch.arange(text).double()
+            rotary = rope(pos.to(device))
+            ms = []
+            for backend in (native, engaged):
+                attn.processor._attention_backend = backend
+                for _ in range(2):
+                    attn(x, rotary, None)
+                times = []
+                for _ in range(5):
+                    a = torch.cuda.Event(enable_timing = True)
+                    b = torch.cuda.Event(enable_timing = True)
+                    a.record()
+                    attn(x, rotary, None)
+                    b.record()
+                    b.synchronize()
+                    times.append(a.elapsed_time(b))
+                ms.append(sorted(times)[len(times) // 2])
+    except torch.OutOfMemoryError:
+        raise
+    except Exception:  # noqa: BLE001 - untimed: the caller keeps the INT8 route it already engaged
+        return None
+    finally:
+        attn.processor._attention_backend = engaged
+    return {"keep": ms[1] < 0.98 * ms[0], "ms": ms, "native": str(native)}
 
 
 def remove_checkpoint_attention(pipe: Any) -> int:

@@ -1393,6 +1393,44 @@ def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, m
     assert h3i.install_checkpoint_attention(p, "cpu", scheme = "int8") is None
 
 
+def test_int8_attention_stays_off_where_it_loses_the_race(h3i, release, monkeypatch):
+    """A card where the INT8 route times slower than the native one keeps native; UNSLOTH_H3_IMAGE_INT8_ATTENTION=1
+    skips the race and forces it."""
+    from core.inference import diffusion_attention as da
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    mods = h3i._attention_processors(p.transformer)
+    before = {id(m): m.processor._attention_backend for m in mods}
+
+    def fake_apply(
+        pipe,
+        backend,
+        logger = None,
+        target = None,
+    ):
+        for m in h3i._attention_processors(pipe.transformer):
+            m.processor._attention_backend = backend
+        return backend
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    raced = []
+    monkeypatch.setattr(
+        h3i,
+        "race_checkpoint_attention",
+        lambda *a, **k: raced.append(1)
+        or {"keep": False, "ms": [1.0, 1.2], "native": "_native_flash"},
+    )
+    monkeypatch.delenv(h3i.INT8_ATTENTION_ENV, raising = False)
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None
+    assert raced and {id(m): m.processor._attention_backend for m in mods} == before
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "1")
+    raced.clear()
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") == "sage"
+    assert not raced
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+
+
 def test_hosted_metadata_attention_is_recorded(h3i):
     import types
 
