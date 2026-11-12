@@ -1197,7 +1197,11 @@ function firstSetThreadScopedValue(...values: unknown[]): unknown {
   return values.find((value) => value !== undefined);
 }
 
+/** The model-derived params the latest restore laid the open chat's values over. */
+let paramsUnderChatValues: InferenceParams | null = null;
+
 function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
+  paramsUnderChatValues = params;
   const kept: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     const held = firstSetThreadScopedValue(
@@ -2019,9 +2023,9 @@ export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, liv
   if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
   // Every load writes Think from the model (pin, forced gates, default), not from the chat.
   next.reasoningEnabled = live.reasoningEnabled;
-  // Model memory turned off: the load skipped the retained entries, so skip them here too.
-  const replaySource = live.rememberParamsPerModel ? live : { ...live, paramsByModel: {} };
-  const loaded = withoutActiveThreadParams(replaySource, live.params) as unknown as Record<string, unknown>;
+  const loaded = (paramsUnderChatValues?.checkpoint === live.params.checkpoint
+    ? paramsUnderChatValues
+    : live.params) as unknown as Record<string, unknown>;
   const params: Record<string, unknown> = { ...run.params };
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     if (params[key] === undefined) params[key] = loaded[key];

@@ -378,7 +378,7 @@ test("a load that leaves the model in place keeps chat A's effective values", ()
 test("chat A's unowned sampling follows the new model's load; its own stays", () => {
   const store = useChatRuntimeStore;
   const apply = store.getState().applyThreadScopedSettings as (id: string, s: object) => void;
-  const send = (thread: string, stored: object) => {
+  const send = (thread: string, stored: object, recommended = 0.31) => {
     store.setState({
       settingsHydrated: true,
       modelLoading: true,
@@ -391,7 +391,7 @@ test("chat A's unowned sampling follows the new model's load; its own stays", ()
     apply("chat-b", { temperature: 1.1 });
     store.setState({ activeThreadId: "chat-b", modelLoading: false });
     (store.getState().setParams as (p: object, o: object) => void)(
-      { ...store.getState().params, checkpoint: "new-model", temperature: 0.31, topP: 0.41 },
+      { ...store.getState().params, checkpoint: "new-model", temperature: recommended, topP: 0.41 },
       { fromModelDefaults: true },
     );
     const live = store.getState() as unknown as ReturnType<typeof chatState>;
@@ -408,6 +408,8 @@ test("chat A's unowned sampling follows the new model's load; its own stays", ()
   store.setState({ rememberParamsPerModel: false, paramsByModel: { "new-model": { temperature: 1.5 } } });
   assert.equal(send("off-a", { permissionMode: "ask" }).temperature, 0.31);
   store.setState({ rememberParamsPerModel: true, paramsByModel: {} });
+  // Chat B already holds the recommendation, so the load moves no stored default.
+  assert.equal(send("same-a", { permissionMode: "ask" }, 1.1).temperature, 1.1);
   const pinned = send("pinned-a", { permissionMode: "ask", temperature: 0.2 });
   assert.equal(pinned.temperature, 0.2);
   assert.equal(pinned.topP, 0.41);
