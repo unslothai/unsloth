@@ -41,10 +41,11 @@ test("Q4NX shows on an NPU host or with the opt-in, nothing else", () => {
 });
 
 test("the Q4NX convert card renders only behind showQ4nx", () => {
-  const cards = page.match(/^.*<Q4nxConvertCard \/>.*$/gm) ?? [];
+  // Props on the card are fine; the guard is not.
+  const cards = page.match(/^.*<Q4nxConvertCard\b[^>]*\/>.*$/gm) ?? [];
   assert.equal(cards.length, 2);
   for (const line of cards) {
-    assert.equal(line.trim(), "{showQ4nx && <Q4nxConvertCard />}");
+    assert.match(line.trim(), /^\{showQ4nx && <Q4nxConvertCard\b[^>]*\/>\}$/);
   }
 });
 
