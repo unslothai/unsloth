@@ -228,6 +228,7 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -5019,23 +5020,7 @@ export function ImagesPage({
   }, [refreshStatus, dropResidentState]);
 
   const ejecting = useRef(false);
-  const handleEject = useCallback(async () => {
-    if (ejecting.current) {
-      toast.info("Wait for the model to finish unloading.");
-      return;
-    }
-    ejecting.current = true;
-    const toastId = toast.loading("Unloading model");
-    try {
-      if (await handleUnload()) {
-        toast.success("Model unloaded", { id: toastId, duration: 1200 });
-      } else {
-        toast.dismiss(toastId);
-      }
-    } finally {
-      ejecting.current = false;
-    }
-  }, [handleUnload]);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
 
   // The unload cancels the load; it leaves only cache, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {

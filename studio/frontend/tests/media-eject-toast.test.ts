@@ -3,27 +3,85 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { register } from "node:module";
 
-import { readSrc } from "./helpers/kit.ts";
+register("./helpers/toast-resolver.mjs", import.meta.url);
 
-const PAGES = [
-  ["images", "features/images/images-page.tsx"],
-  ["video", "features/video/video-page.tsx"],
-] as const;
+const { calls } = await import("./helpers/toast-stub.mjs");
+const { ejectWithToast } = await import("../src/lib/media-eject.ts");
+const { readSrc } = await import("./helpers/kit.ts");
 
-for (const [name, path] of PAGES) {
-  test(`the ${name} pill eject reports the unload like the chat pill`, () => {
+type Call = { kind: string; title?: string; id?: string; options?: { id?: string } };
+
+function deferred() {
+  let resolve!: (v: boolean) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<boolean>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function shown(): [string, string | undefined][] {
+  return (calls as Call[]).map((c) => [c.kind, c.title ?? c.id]);
+}
+
+test("eject shows Unloading model, then Model unloaded on the same toast", async () => {
+  calls.length = 0;
+  await ejectWithToast({ current: false }, async () => true);
+  const success = (calls as Call[])[1];
+  assert.deepEqual(shown(), [
+    ["loading", "Unloading model"],
+    ["success", "Model unloaded"],
+  ]);
+  assert.equal(success.options?.id, "loading-1");
+});
+
+test("a second eject while unloading sends no unload and says to wait", async () => {
+  calls.length = 0;
+  const inFlight = { current: false };
+  const gate = deferred();
+  let unloads = 0;
+  const unload = () => {
+    unloads++;
+    return gate.promise;
+  };
+  const first = ejectWithToast(inFlight, unload);
+  const second = ejectWithToast(inFlight, unload);
+  const unloadsDuring = unloads;
+  const last = shown().at(-1);
+  gate.resolve(true);
+  await Promise.all([first, second]);
+  assert.equal(unloadsDuring, 1);
+  assert.deepEqual(last, ["info", "Wait for the model to finish unloading."]);
+  calls.length = 0;
+  await ejectWithToast(inFlight, unload);
+  assert.equal(unloads, 2, "the guard clears once the unload ends");
+});
+
+test("a failed or still-loading unload drops the loading toast", async () => {
+  calls.length = 0;
+  const inFlight = { current: false };
+  await ejectWithToast(inFlight, async () => false);
+  assert.deepEqual(shown(), [
+    ["loading", "Unloading model"],
+    ["dismiss", "loading-1"],
+  ]);
+  calls.length = 0;
+  await assert.rejects(
+    ejectWithToast(inFlight, async () => {
+      throw new Error("boom");
+    }),
+  );
+  assert.equal(shown().at(-1)?.[0], "dismiss");
+  assert.equal(inFlight.current, false);
+});
+
+for (const path of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
+  test(`${path} routes the pill eject through ejectWithToast`, () => {
     const page = readSrc(path);
     assert.match(page, /onEject=\{status\?\.loaded \? handleEject : undefined\}/);
-    const start = page.indexOf("const handleEject = useCallback");
-    assert.notEqual(start, -1, "handleEject is not declared");
-    const body = page.slice(start, page.indexOf("}, [handleUnload]);", start));
-    const guard = body.indexOf('toast.info("Wait for the model to finish unloading.")');
-    const loading = body.indexOf('toast.loading("Unloading model")');
-    const unload = body.indexOf("await handleUnload()");
-    assert.ok(guard !== -1 && guard < loading, "a second eject is not turned away before the toast");
-    assert.ok(loading !== -1 && loading < unload, "the toast does not open before the unload starts");
-    assert.match(body, /toast\.success\("Model unloaded", \{ id: toastId/);
-    assert.match(body, /toast\.dismiss\(toastId\)/);
+    assert.match(page, /const handleEject = useCallback\(\(\) => ejectWithToast\(ejecting, handleUnload\), \[handleUnload\]\);/);
   });
 }
