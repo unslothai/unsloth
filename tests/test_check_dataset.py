@@ -334,6 +334,20 @@ def test_text_column_wins_over_messages():
     assert report["over_max_seq_length"] == 1
 
 
+def test_prompt_completion_wins_over_text_and_messages():
+    rows = [
+        {"prompt": "hi", "completion": " hello", "text": LONG},
+        {"prompt": "hi", "completion": " hello", **_chat("hi", LONG)},
+    ]
+    assert _lengths(rows, _tokenizer()) == [3, 3]
+
+
+def test_processor_prompt_completion_gets_inner_eos():
+    tok = _tokenizer()
+    rows = [{"prompt": "hi", "completion": " hello"}]
+    assert _lengths(rows, _ImagesFirstProcessor(tok)) == _lengths(rows, tok) == [3]
+
+
 def test_assistant_tool_call_turn_without_content():
     template = (
         "{% for m in messages %}{{ m['role'] }} "
