@@ -680,7 +680,19 @@ def row_timestep_plan(timesteps: Any, seq_len: int, reference_rows: Any) -> list
     return plan
 
 
+def _close_diffusers_import_window() -> None:
+    """Called before each diffusers import this module makes at import time. The download plan and load preflight
+    import the module before any load closes the window, so a concurrent background diffusers import (the
+    /api/system probe) would otherwise race it through peft's circular imports and leave one side half-initialized."""
+    try:
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(logger)
+    except Exception:  # noqa: BLE001 - ordering only; the import still runs
+        pass
+
+
 def _scheduler_bases() -> tuple:
+    _close_diffusers_import_window()
     try:
         from diffusers.configuration_utils import ConfigMixin, register_to_config
         from diffusers.schedulers.scheduling_utils import SchedulerMixin
@@ -1037,14 +1049,7 @@ def torch_no_grad(fn: Callable) -> Callable:
 
 
 def _pipeline_base() -> Any:
-    # Runs at import, and the download plan and load preflight import this module before any load closes the
-    # window: a concurrent background diffusers import (the /api/system probe) otherwise races this one through
-    # peft's circular imports and one side gets a half-initialized module.
-    try:
-        from utils.torch_warmup import close_dynamo_import_window
-        close_dynamo_import_window(logger)
-    except Exception:  # noqa: BLE001 - ordering only; the import below still runs
-        pass
+    _close_diffusers_import_window()
     try:
         from diffusers import DiffusionPipeline
     except (
