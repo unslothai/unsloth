@@ -47,10 +47,7 @@ import {
 import { modelInfo } from "@huggingface/hub";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import {
-  convertGgufToQ4nx,
-  isRecoverableTransportError,
-} from "../api/export-api";
+import { convertGgufToQ4nx } from "../api/export-api";
 import {
   getCachedLocalModels,
   refreshLocalModels,
@@ -64,6 +61,7 @@ import {
   q4nxBaseModel,
   q4nxIsExpanded,
   q4nxConvertibleFiles,
+  q4nxIsRefusal,
   q4nxMemoryWarning,
   q4nxNpuMemory,
   q4nxPacking,
@@ -609,8 +607,8 @@ export function Q4nxConvertCard({
       setResult({
         ok: false,
         text: error instanceof Error ? error.message : String(error),
-        // A dropped connection can be retried as is; a refusal needs a different file or setting.
-        refused: isRecoverableTransportError(error) ? undefined : request,
+        // A server fault or dropped connection can be retried as is; a refusal needs a different file or setting.
+        refused: q4nxIsRefusal(error) ? request : undefined,
       });
     } finally {
       setRunning(false);
