@@ -1578,6 +1578,7 @@ def load_comfy_quant_transformer(
             or fp16_keep
             or (fp8_storage and layer.format in FP8_FORMATS)
             or (packed and extra is not None and packed_block_runs_on(layer.format, target))
+            or (packed_parts is not None and grouped_packed)
         ) and not (extra is not None and key_map is not None):
             if packed_parts is not None and grouped_packed:
                 grouped_src[len(sources)] = packed_parts
@@ -1793,7 +1794,13 @@ def load_comfy_quant_transformer(
             # Studio's fp8 quant leaves the Linears a DiT keeps in fp32 (require_bf16) at full precision.
             and not (scheme == TQ_FP8 and any(m in fqn.split(".") for m in keep_fp32))
         )
-        if keep and name in grouped_conv and isinstance(module, torch.nn.Linear):
+        if (
+            name in grouped_conv
+            and isinstance(module, torch.nn.Linear)
+            and name.endswith(".weight")
+            # no int8 runtime (a forced packed load on CPU / MPS): the layers the int8 filter would keep
+            and (keep or (backend is None and filters[fmt](module, fqn)))
+        ):
             qdata, s_rel, codebook, bits, group_size = grouped_conv[name]
             bias = converted.get(fqn + ".bias")
             if torch.is_tensor(bias):

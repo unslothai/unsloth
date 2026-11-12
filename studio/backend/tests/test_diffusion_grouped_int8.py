@@ -253,7 +253,7 @@ def test_scan_refuses_a_malformed_grouped_layer(tmp_path, mutate, match):
 # ------------------------------------------------------------------------------------- loading
 @pytest.fixture
 def grouped_file(tmp_path, monkeypatch):
-    """``_Tiny`` as a W6A8 file (fused qkv, as the vendor layout stores it) plus the dense model it came from."""
+    """``_Tiny`` as a W6A8 file (fused qkv, as single files store it) plus the dense model it came from."""
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     torch.manual_seed(5)
     dense = _Tiny()
@@ -443,3 +443,16 @@ def test_text_encoder_loader_decodes_grouped_layers(tmp_path):
     got = down(x)
     assert torch.nn.functional.cosine_similarity(got.flatten(), want.flatten(), dim = 0) > 0.9999
     assert C.resident_bytes(path) > 0
+
+
+def test_forced_packed_keep_without_an_int8_runtime(grouped_file):
+    # UNSLOTH_DIFFUSION_GROUPED_PACKED=1 on CPU / MPS: the same layers stay packed and widen per forward
+    path, _dense, tensors = grouped_file
+    model = _load(path, int8_backend = None, grouped_packed = True)
+    assert model._unsloth_comfy_quant["grouped_packed"] == 8
+    layer = model.blocks[0].to_out
+    assert gi.is_grouped_linear(layer)
+    x = torch.randn(2, DIM)
+    want = torch.nn.functional.linear(x, _expected_dense(tensors, "blocks.0.out"), layer.bias)
+    assert torch.allclose(layer(x), want, atol = 1e-4, rtol = 1e-4)
+    assert gi.grouped_call_counts()["dense"] > 0
