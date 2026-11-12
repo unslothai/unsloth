@@ -902,3 +902,14 @@ test("a legacy copy with a different explicit id stays its own call", () => {
 
   assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
 });
+
+test("a name-only result ahead of its calls keeps arrival order", () => {
+  const [conversation] = parseImportText(
+    '{"role":"tool","name":"f","content":"A"}\n' +
+      '{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"f","arguments":"{}"}}]}\n' +
+      '{"role":"tool","name":"f","content":"B"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
+});

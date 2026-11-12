@@ -238,8 +238,11 @@ function oaiMessagesToRecords(
           argsText: argsStr,
         };
         parts.push(part);
-        // A keyed result seen before its call binds now, before weaker name/anonymous matching.
-        const early = typeof callId === "string" ? takeStashed(stashedBy.id, callId) : undefined;
+        // A result seen before its call (by id, else by name when it has no id) binds now,
+        // in arrival order, before later fallback matches.
+        const early =
+          (typeof callId === "string" ? takeStashed(stashedBy.id, callId) : undefined) ??
+          takeStashed(stashedBy.name, part.toolName, ({ id }) => id === undefined);
         if (early !== undefined) part.result = early;
         else pending.push({ turn: idx, part, hasExplicitId: typeof callId === "string" });
       };
