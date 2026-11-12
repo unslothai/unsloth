@@ -70,3 +70,35 @@ test("SDXL checkpoint choices include both Animagine variants and exclude compon
     { filename: "animagine-xl-4.0-opt.safetensors", bytes: 6938350040 },
   ]);
 });
+
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+test("reopening a model while its canceled metadata lookup settles starts one fresh lookup", async (t) => {
+  const repo = "acme/reopened-sdxl";
+  const first = new AbortController();
+  const canceled = deferredResponse();
+  const fresh = deferredResponse();
+  const requests = [canceled, fresh];
+  const fetch = t.mock.method(globalThis, "fetch", () => {
+    const request = requests.shift();
+    assert.ok(request, "concurrent readers must share the replacement lookup");
+    return request.promise;
+  });
+  const initial = fetchModelSize(repo, undefined, first.signal);
+  first.abort();
+  const reopened = fetchModelSize(repo);
+  assert.equal(await initial, null);
+  // Let the old fetch finish after the replacement has taken ownership of the key.
+  canceled.resolve(Response.json({ siblings: [] }));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const secondReader = fetchModelSize(repo);
+  fresh.resolve(Response.json({ siblings: [{ rfilename: "weights.safetensors", size: 42 }] }));
+  const expected = { totalBytes: 42, weightsBytes: 42 };
+  assert.deepEqual(await reopened, expected);
+  assert.deepEqual(await secondReader, expected);
+  assert.equal(fetch.mock.callCount(), 2);
+});

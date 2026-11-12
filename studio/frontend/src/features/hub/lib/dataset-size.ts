@@ -80,7 +80,7 @@ function fetchCachedSize<T>(
     return Promise.resolve(entry.kind === "value" ? entry.value : null);
   }
   const existing = inflight.get(cacheKey);
-  if (existing) return attachInflight(existing, signal);
+  if (existing && !existing.cancelledByConsumers) return attachInflight(existing, signal);
 
   let timedOut = false;
   const controller = new AbortController();
@@ -99,6 +99,7 @@ function fetchCachedSize<T>(
   inflightEntry.promise = (async (): Promise<T | null> => {
     try {
       const result = await load(controller.signal);
+      if (inflightEntry.cancelledByConsumers) return null;
       if ("value" in result) {
         cache.set(cacheKey, { kind: "value", value: result.value });
         return result.value;
@@ -136,7 +137,7 @@ function fetchCachedSize<T>(
     } finally {
       clearTimeout(timeout);
       inflightEntry.settled = true;
-      inflight.delete(cacheKey);
+      if (inflight.get(cacheKey) === inflightEntry) inflight.delete(cacheKey);
     }
   })();
 
