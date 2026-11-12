@@ -398,7 +398,8 @@ def _cached_model_path(
             if cached is not None:
                 return cached
         return _search_custom_folder_hub_caches(
-            lambda root: _cached_model_path(model_id, hub_cache = root, revision = revision)
+            GGML_STT_REPOS[model_id],
+            lambda root: _cached_model_path(model_id, hub_cache = root, revision = revision),
         )
 
     from huggingface_hub import hf_hub_download

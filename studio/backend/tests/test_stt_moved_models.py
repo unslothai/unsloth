@@ -20,7 +20,7 @@ _SPEC = stt_mtmd_sidecar.MTMD_STT_MODELS[_MODEL_ID]
 
 
 def _forget_custom_folder_memos(monkeypatch):
-    for name in ("_custom_folder_rows_memo", "_custom_folder_dirs_memo"):
+    for name in ("_custom_folder_rows_memo", "_custom_folder_listings_memo"):
         monkeypatch.setattr(stt_sidecar, name, {}, raising = False)
 
 
@@ -34,11 +34,20 @@ def caches(monkeypatch, tmp_path):
     folders: list[dict] = []
     monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: active)
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: list(known))
+    legacy, default = tmp_path / "legacy" / "hub", tmp_path / "default" / "hub"
+    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: legacy)
+    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: default)
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: list(folders))
     # Every test registers its folders before the first lookup, so only a memo from an earlier test can be stale.
     _forget_custom_folder_memos(monkeypatch)
     stt_mtmd_sidecar._forget_downloaded_probe()
-    yield {"active": active, "known": known, "folders": folders}
+    yield {
+        "active": active,
+        "known": known,
+        "folders": folders,
+        "legacy": legacy,
+        "default": default,
+    }
     stt_mtmd_sidecar._forget_downloaded_probe()
 
 
@@ -279,6 +288,8 @@ def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
     active.mkdir()
     monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: active)
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active])
+    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
     _forget_custom_folder_memos(monkeypatch)
     stt_mtmd_sidecar._forget_downloaded_probe()
     from utils.paths.storage_roots import workspace_root
@@ -332,6 +343,7 @@ def test_a_file_probe_that_hangs_after_the_walk_is_bounded(caches, monkeypatch, 
     )
     release = threading.Event()
     if stall == "loose file check":
+        _asr_pair(hung)
         real_pair_in = stt_mtmd_sidecar._pair_in
 
         def pair_in(directory, spec):
@@ -369,3 +381,68 @@ def test_a_file_probe_that_hangs_after_the_walk_is_bounded(caches, monkeypatch, 
     finally:
         release.set()
         local_inventory._custom_folder_scans[str(hung)][1].result(timeout = 5)
+
+
+@pytest.mark.parametrize("root", ["legacy", "default"])
+def test_legacy_and_default_hub_caches_are_searched_like_chat_loads(caches, root):
+    snapshot = _asr_tree(caches[root])
+    assert _paths()[0] == str(snapshot / _SPEC.model_file)
+
+
+def test_a_status_poll_lists_a_custom_folder_once_and_probes_only_candidates(
+    caches, monkeypatch, tmp_path
+):
+    """Every curated model missing, a recursive folder holding other things: one bounded listing per poll window,
+    then no thread and no file probe for the remaining lookups."""
+    from hub.services.models import local_inventory
+
+    folder = tmp_path / "custom"
+    for index in range(30):
+        (folder / f"group{index // 10}" / f"model{index}").mkdir(parents = True)
+    (folder / "group0" / "model0" / _SPEC.model_file).write_bytes(b"GGUF")  # no mmproj beside it
+    caches["folders"].append({"path": str(folder), "recursive": True})
+    bounded, probes = [], []
+    real_bounded = local_inventory.run_custom_folder_bounded_sync
+    monkeypatch.setattr(
+        local_inventory,
+        "run_custom_folder_bounded_sync",
+        lambda raw, work: bounded.append(raw) or real_bounded(raw, work),
+    )
+    monkeypatch.setattr(stt_mtmd_sidecar, "_pair_in", lambda *args: probes.append(args))
+    for _ in range(2):
+        stt_mtmd_sidecar._forget_downloaded_probe()
+        assert [stt_sidecar.is_model_downloaded(m) for m in stt_sidecar.STT_MODELS] == [False] * 5
+        assert not any(
+            stt_mtmd_sidecar.is_model_downloaded(m) for m in stt_mtmd_sidecar.MTMD_STT_MODELS
+        )
+        assert all(
+            stt_ggml_sidecar._cached_model_path(m) is None for m in stt_ggml_sidecar.GGML_STT_MODELS
+        )
+    assert bounded == [str(folder)]
+    assert probes == []
+
+
+def test_openai_translations_checks_the_model_off_the_event_loop(monkeypatch):
+    import routes.inference as inference
+    from fastapi import HTTPException
+
+    on_loop = []
+
+    def can_translate(model):
+        on_loop.append(threading.current_thread() is threading.main_thread())
+        return False
+
+    monkeypatch.setattr(stt_sidecar, "can_translate", can_translate)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference.openai_audio_translations(
+                request = None,
+                file = None,
+                model = None,
+                response_format = "json",
+                provider_id = None,
+                current_subject = "owner",
+            )
+        )
+    assert exc.value.status_code == 400
+    assert on_loop == [False]

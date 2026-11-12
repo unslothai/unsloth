@@ -8,7 +8,6 @@ from __future__ import annotations
 import base64
 import http.client
 import json
-import os
 import secrets
 import socket
 import subprocess
@@ -254,7 +253,8 @@ def _cached_model_paths(
             if cached is not None:
                 return cached
         return _search_custom_folders(
-            lambda directory: _custom_folder_hit(model_id, directory, revision)
+            lambda listing: _custom_folder_candidates(spec, listing, revision),
+            lambda candidate: _custom_folder_hit(model_id, candidate, revision),
         )
     root = hub_cache
 
@@ -293,10 +293,6 @@ def _cached_model_paths(
     return None
 
 
-# Bounds one custom folder's listing, as the Model Hub scan does (_MAX_CUSTOM_FOLDER_ENTRIES).
-_CUSTOM_FOLDER_ENTRY_LIMIT = 2000
-
-
 def _pair_in(directory: Path, spec: MtmdSttModel) -> Optional[tuple[str, str]]:
     model, mmproj = directory / spec.model_file, directory / spec.mmproj_file
     try:
@@ -307,43 +303,26 @@ def _pair_in(directory: Path, spec: MtmdSttModel) -> Optional[tuple[str, str]]:
     return None
 
 
-def _custom_folder_hit(
-    model_id: str, directory: Path, revision: Optional[str]
-) -> Optional[tuple[str, str]]:
-    """The pair in one custom-folder directory: a Hub cache there, then the model and its mmproj loose side by side in
-    the directory or one of its sub-folders, the places the Model Hub lists a loose GGUF from. Loose files are matched
-    by the exact curated names and carry no revision, so a pinned revision never matches them."""
-    from hub.utils.inventory_scan import scan_folder_hf_caches
+def _custom_folder_candidates(
+    spec: MtmdSttModel, listing, revision: Optional[str]
+) -> list[tuple[str, Path]]:
+    """Where a custom folder may hold the pair: a Hub cache holding the repo, then a directory holding both files
+    loose, the places the Model Hub lists a loose GGUF from. Loose files carry no revision, so a pinned revision never
+    matches them."""
+    found = [("cache", hub_cache) for hub_cache in listing.caches_holding(spec.repo)]
+    if revision is None:
+        found += [("loose", d) for d in listing.dirs_holding(spec.model_file, spec.mmproj_file)]
+    return found
 
-    for hub_cache in scan_folder_hf_caches(directory):
-        cached = _cached_model_paths(model_id, hub_cache = hub_cache, revision = revision)
-        if cached is not None:
-            return cached
-    if revision is not None:
-        return None
-    spec = MTMD_STT_MODELS[model_id]
-    pair = _pair_in(directory, spec)
-    if pair is not None:
-        return pair
-    try:
-        with os.scandir(directory) as entries:
-            for index, entry in enumerate(entries):
-                if index >= _CUSTOM_FOLDER_ENTRY_LIMIT:
-                    break
-                # A models--* tree is a Hub cache, already searched by revision.
-                if entry.name.startswith((".", "models--")):
-                    continue
-                try:
-                    if not entry.is_dir():
-                        continue
-                except OSError:
-                    continue
-                pair = _pair_in(Path(entry.path), spec)
-                if pair is not None:
-                    return pair
-    except OSError:
-        pass
-    return None
+
+def _custom_folder_hit(
+    model_id: str, candidate: tuple[str, Path], revision: Optional[str]
+) -> Optional[tuple[str, str]]:
+    kind, directory = candidate
+    if kind == "cache":
+        return _cached_model_paths(model_id, hub_cache = directory, revision = revision)
+    # Matched by the exact curated names.
+    return _pair_in(directory, MTMD_STT_MODELS[model_id])
 
 
 # The panel polls every 750ms and each probe stats the snapshot twice, so memoise briefly.
