@@ -4060,8 +4060,14 @@ def test_blank_tex_source_falls_back(html):
 
 
 @pytest.mark.parametrize("main_content", [False, True])
-def test_formula_cut_off_at_end_of_page_is_kept(main_content):
-    out = html_to_markdown(
-        "<p>Then <math><mi>x</mi><mo>+</mo><mn>1</mn>", main_content = main_content
-    )
-    assert out == "Then $x+1$"
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "<math><mi>x</mi><mo>+</mo><mi>y</mi>",
+        '<math alttext="x+y"><semantics><mi>z</mi><annotation encoding="application/x-tex">x+',
+        "<math><semantics><mi>x</mi><mo>+</mo><mi>y</mi>"
+        '<annotation encoding="application/x-tex">x+',
+    ],
+)
+def test_formula_cut_off_at_end_of_page_is_kept(tail, main_content):
+    assert html_to_markdown(f"<p>Then {tail}", main_content = main_content) == "Then $x+y$"

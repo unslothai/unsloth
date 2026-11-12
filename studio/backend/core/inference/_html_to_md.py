@@ -2138,6 +2138,9 @@ class _MarkdownRenderer(HTMLParser):
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
         if self._math is not None:
+            # an annotation cut off mid-source must not override alttext or the MathML
+            if self._math_tex_at >= 0:
+                self._math[self._math_tex_at].clear()
             self._close_math(0)
         # Headers first: a frame emits into the enclosing link or cell, which must still be open.
         self._flush_header_frames()
