@@ -392,6 +392,86 @@ function pairToRecords(
   ];
 }
 
+// Saved Responses API object: adjacent assistant items share one turn, as in the
+// backend's _normalise_responses_input, so parallel calls precede their outputs.
+function responsesToTurns(obj: Record<string, unknown>): unknown[] {
+  const turns: Record<string, unknown>[] = [];
+  const built = new Set<Record<string, unknown>>();
+  const assistantTurn = () => {
+    const last = turns[turns.length - 1];
+    if (last && built.has(last)) return last as { content: unknown[]; tool_calls: unknown[] };
+    const turn = { role: "assistant", content: [] as unknown[], tool_calls: [] as unknown[] };
+    built.add(turn);
+    turns.push(turn);
+    return turn;
+  };
+  const text = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value : undefined;
+  const instructions = text(obj.instructions);
+  if (instructions) turns.push({ role: "system", content: instructions });
+  const input = text(obj.input);
+  if (input) turns.push({ role: "user", content: input });
+  for (const items of [obj.input, obj.output]) {
+    if (!Array.isArray(items)) continue;
+    for (const item of items) {
+      if (typeof item !== "object" || item === null) continue;
+      const entry = item as Record<string, unknown>;
+      const type = typeof entry.type === "string" ? entry.type : "";
+      if (entry.role === "assistant") {
+        assistantTurn().content.push(
+          ...(Array.isArray(entry.content)
+            ? entry.content
+            : text(entry.content)
+              ? [{ type: "text", text: entry.content }]
+              : []),
+        );
+      } else if (typeof entry.role === "string") {
+        turns.push(entry);
+      } else if (type === "image_generation_call") {
+        const encoded = text(entry.result) ?? text(entry.b64_json);
+        if (encoded) {
+          assistantTurn().content.push({
+            type: "image_url",
+            image_url: /^(?:https?:|data:)/i.test(encoded)
+              ? encoded
+              : `data:image/${text(entry.output_format) ?? "png"};base64,${encoded}`,
+          });
+        }
+      } else if (type.endsWith("_call")) {
+        const name = text(entry.name) ?? type.replace(/_call$/, "");
+        assistantTurn().tool_calls.push({
+          id: text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID(),
+          type: "function",
+          function: {
+            // namespace__name and {input} wrapping match the backend.
+            name: text(entry.namespace) ? `${entry.namespace}__${name}` : name,
+            arguments:
+              typeof entry.arguments === "string"
+                ? entry.arguments
+                : JSON.stringify(
+                    entry.input !== undefined
+                      ? { input: entry.input }
+                      : (entry.arguments ?? entry.action ?? {}),
+                  ),
+          },
+        });
+      } else if (type.endsWith("_call_output") && typeof entry.call_id === "string") {
+        turns.push({
+          role: "tool",
+          tool_call_id: entry.call_id,
+          content:
+            typeof entry.output === "string"
+              ? entry.output
+              : JSON.stringify(entry.output ?? ""),
+        });
+      }
+    }
+  }
+  const output = text(obj.output);
+  if (output) turns.push({ role: "assistant", content: output });
+  return turns;
+}
+
 export function recordToConversation(
   record: unknown,
   fallbackTitle: string,
@@ -429,75 +509,7 @@ export function recordToConversation(
     messages = pairToRecords(obj, threadId, baseTs);
   }
   if (messages.length === 0) {
-    // Saved Responses API object: turns live under input/output items.
-    const turns: unknown[] = [];
-    if (typeof obj.instructions === "string" && obj.instructions.trim()) {
-      turns.push({ role: "system", content: obj.instructions });
-    }
-    if (typeof obj.input === "string" && obj.input.trim()) {
-      turns.push({ role: "user", content: obj.input });
-    }
-    for (const items of [obj.input, obj.output]) {
-      if (!Array.isArray(items)) continue;
-      for (const item of items) {
-        const entry = item as Record<string, unknown> | null;
-        if (typeof entry?.role === "string") {
-          turns.push(entry);
-        } else if (
-          typeof entry?.type === "string" &&
-          entry.type.endsWith("_call")
-        ) {
-          const callId =
-            typeof entry.call_id === "string"
-              ? entry.call_id
-              : typeof entry.id === "string"
-                ? entry.id
-                : crypto.randomUUID();
-          turns.push({
-            role: "assistant",
-            content: [],
-            tool_calls: [
-              {
-                id: callId,
-                type: "function",
-                function: {
-                  name:
-                    typeof entry.name === "string"
-                      ? entry.name
-                      : entry.type.replace(/_call$/, ""),
-                  arguments:
-                    typeof entry.arguments === "string"
-                      ? entry.arguments
-                      : JSON.stringify(
-                          // custom_tool_call: same {input} wrapping as the backend.
-                          entry.input !== undefined
-                            ? { input: entry.input }
-                            : (entry.arguments ?? entry.action ?? {}),
-                        ),
-                },
-              },
-            ],
-          });
-        } else if (
-          typeof entry?.type === "string" &&
-          entry.type.endsWith("_call_output") &&
-          typeof entry.call_id === "string"
-        ) {
-          turns.push({
-            role: "tool",
-            tool_call_id: entry.call_id,
-            content:
-              typeof entry.output === "string"
-                ? entry.output
-                : JSON.stringify(entry.output ?? ""),
-          });
-        }
-      }
-    }
-    if (typeof obj.output === "string" && obj.output.trim()) {
-      turns.push({ role: "assistant", content: obj.output });
-    }
-    messages = oaiMessagesToRecords(turns, threadId, baseTs);
+    messages = oaiMessagesToRecords(responsesToTurns(obj), threadId, baseTs);
   }
 
   if (messages.length === 0) return null;

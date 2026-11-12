@@ -655,3 +655,31 @@ test("a Responses object keeps its instructions and custom tool call input", () 
   assert.deepEqual(call?.args, { input: "*** Begin Patch" });
   assert.equal(call?.result, "Done");
 });
+
+test("a Responses object keeps parallel calls in one turn, namespaces and generated images", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [
+        { role: "user", content: "Weather and a picture?" },
+        { type: "function_call", call_id: "a", namespace: "mcp__weather", name: "get_forecast", arguments: "{}" },
+        { type: "function_call", call_id: "b", name: "get_time", arguments: "{}" },
+        { type: "function_call_output", call_id: "a", output: "Sunny" },
+        { type: "function_call_output", call_id: "b", output: "Noon" },
+      ],
+      output: [{ type: "image_generation_call", id: "ig", result: "QUJD", output_format: "webp" }],
+    }),
+    "response.json",
+  );
+
+  const roles = conversation.messages.map((m) => m.role);
+  assert.deepEqual(roles, ["user", "assistant", "assistant"]);
+  const calls = conversation.messages[1].content as ReadonlyArray<{ toolName?: string; result?: unknown }>;
+  assert.deepEqual(
+    calls.map((p) => [p.toolName, p.result]),
+    [["mcp__weather__get_forecast", "Sunny"], ["get_time", "Noon"]],
+  );
+  assert.deepEqual(conversation.messages[2].content, [
+    { type: "image", image: "data:image/webp;base64,QUJD" },
+  ]);
+});
