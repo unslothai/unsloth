@@ -7569,7 +7569,19 @@ def _monitor_openai_chunk(
             choice_index = idx
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
-        if isinstance(delta, dict) and delta.get("reasoning_content"):
+        raw_content = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(delta, dict) and (
+            delta.get("reasoning_content")
+            or (
+                isinstance(raw_content, list)
+                and any(
+                    isinstance(part, dict)
+                    and part.get("type") == "thinking"
+                    and _delta_text(part.get("thinking"))
+                    for part in raw_content
+                )
+            )
+        ):
             api_monitor.mark_first_token(monitor_id)
 
         streamed_tool_delta = False
@@ -7585,7 +7597,7 @@ def _monitor_openai_chunk(
                     choice_index,
                     delta.get("function_call"),
                 )
-        content = _delta_text(delta.get("content")) if isinstance(delta, dict) else ""
+        content = _delta_text(raw_content)
         if content:
             if streaming:
                 _flush_monitor_stream_tool_calls(

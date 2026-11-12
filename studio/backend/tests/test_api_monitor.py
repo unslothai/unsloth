@@ -1719,3 +1719,17 @@ def test_a_monitor_failure_does_not_abort_the_stream(monkeypatch):
     line = "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": "hi"}}]})
 
     assert inference_route._monitor_openai_sse_line(entry_id, line) is None
+
+
+def test_mistral_thinking_part_starts_token_generation(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = _start(monitor)
+    thinking = [{"type": "thinking", "thinking": [{"type": "text", "text": "Hmm."}]}]
+    line = "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": thinking}}]})
+
+    inference_route._monitor_openai_sse_line(entry_id, line)
+
+    row = monitor.snapshot()[0]
+    assert row["running_phase"] == "token_generation"
+    assert row["reply"] == ""
