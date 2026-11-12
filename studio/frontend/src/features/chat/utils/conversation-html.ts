@@ -93,10 +93,11 @@ function renderMessages(
 ): string {
   return messages
     .filter(({ content }) => content.trim())
-    .map(
-      ({ role, content }) =>
-        `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}</h3>\n<div class="content">\n${markdownToHtml(content)}</div>\n</section>`,
-    )
+    .map(({ role, content }) => {
+      const html =
+        role === "user" ? escapeHtml(content) : `\n${markdownToHtml(content)}`;
+      return `<section class="message ${roleClass(role)}">\n<h3 class="role">${escapeHtml(roleLabel(role))}</h3>\n<div class="content">${html}</div>\n</section>`;
+    })
     .join("\n");
 }
 
@@ -122,6 +123,7 @@ h1 { font-size: 18pt; margin: 0 0 4pt 0; }
 .conversation-title { font-size: 14pt; margin: 18pt 0 8pt 0; }
 .message { margin: 0 0 14pt 0; padding: 8pt 12pt; border-left: 3pt solid #d0d7de; }
 .message.user { background-color: #f6f8fa; border-left-color: #8c959f; }
+.message.user .content { white-space: pre-wrap; }
 .message.system { border-left-color: #bf8700; }
 .message.tool { border-left-color: #8250df; }
 .role { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.04em; color: #57606a; margin: 0 0 4pt 0; }

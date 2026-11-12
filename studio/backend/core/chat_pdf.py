@@ -22,6 +22,7 @@ h1 { font-size: 17pt; margin: 0 0 4pt 0; }
 .conversation-title { font-size: 13.5pt; margin: 16pt 0 8pt 0; }
 .message { margin: 0 0 12pt 0; padding: 6pt 10pt; border-left: 2pt solid #d0d7de; }
 .message.user { background-color: #f6f8fa; border-left: 2pt solid #8c959f; }
+.message.user .content { white-space: pre-wrap; }
 .message.system { border-left: 2pt solid #bf8700; }
 .message.tool { border-left: 2pt solid #8250df; }
 .role { font-size: 8.5pt; font-weight: bold; color: #57606a; margin: 0 0 4pt 0; }
