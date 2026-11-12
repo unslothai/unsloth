@@ -268,10 +268,17 @@ def tile_batch_size(vae: Any, tile: Any, count: int) -> int:
         return 1
     per = _decoder_tile_bytes(vae, tile) * max(1, int(tile.shape[0]))
     fit = int(free * TILE_BATCH_FREE_FRACTION // max(1, per))
+    # The last size that fit stays while it still fits: a steady size keeps one race / recording per tile shape.
+    sizes = vae.__dict__.setdefault("_unsloth_canvas_batches", {})
+    key = (tuple(tile.shape), count)
+    kept = sizes.get(key)
+    if kept is not None and kept <= fit:
+        return kept
     batch = max(1, min(TILE_BATCH_MAX, fit, count))
     # Even groups: the same number of decoder calls, the tail no smaller than needed.
     calls = -(-count // batch)
-    return -(-count // calls)
+    batch = sizes[key] = -(-count // calls)
+    return batch
 
 
 def _is_oom(exc: BaseException) -> bool:
@@ -316,13 +323,14 @@ class TileGraphs:
         n: int,
         sample: Any,
         reference: Any = None,
-    ) -> bool:
+    ) -> Optional[bool]:
         """Capture replicas up to ``n``; each new one is replayed on ``sample`` and must equal ``reference``
-        (the eager output of the same input) bit for bit."""
+        (the eager output of the same input) bit for bit. None: refused for now, nothing recorded."""
         import torch
 
         from .diffusion_cuda_graph import (
             CAPTURE_MODE,
+            CaptureRefused,
             _capturing,
             refuse_if_exhausted,
             retire_failed_capture,
@@ -373,6 +381,9 @@ class TileGraphs:
                     if not torch.equal(static_out, reference):
                         raise RuntimeError("graph replay differs from the eager decode")
                 self.replicas.append(rep)
+            except CaptureRefused:
+                # Another thread is recording, or replica work did not drain: nothing recorded, retry later.
+                return None
             except Exception as exc:  # noqa: BLE001 - the decode stays eager
                 self.failed = f"{type(exc).__name__}: {exc}"[:200]
                 self.drop()
@@ -383,6 +394,11 @@ class TileGraphs:
         del self.replicas[n:]
 
     def drop(self) -> None:
+        if self.replicas:
+            import torch
+
+            # Main waited on every replay; the sync also covers graphs dropped between decodes.
+            torch.cuda.synchronize(self.device)
         self.replicas = []
 
     def launch(self, k: int, inputs: list, ready: Any) -> tuple:
@@ -432,6 +448,7 @@ class _Race:
         self.pending: list = []
         self.prints: Optional[tuple] = None
         self.medians: dict = {}
+        self.per_replica = 0
 
     @staticmethod
     def needed(arm: int) -> int:
@@ -544,7 +561,7 @@ def canvas_decode(
     per = int(z.shape[0])
     stats = _stats(vae)
     stats.update(tiles = len(tiles), batch = batch, graph_replicas = 0, graph_replays = 0)
-    arms = _graph_arms(vae, z.device) if batch > 0 else ()
+    arms = _graph_arms(vae, z.device) if equal else ()
     race: Optional[_Race] = None
     if arms:
         races = vae.__dict__.setdefault("_unsloth_canvas_races", {})
@@ -565,6 +582,9 @@ def canvas_decode(
             # The weights moved (sequential placement re-uploads the VAE per render): a graph would read the old
             # addresses, and recording per render costs more than it saves, so this load decodes eager.
             vae._unsloth_canvas_graphs = False
+            for r in races.values():
+                if r.graphs is not None:
+                    r.graphs.drop()
             races.clear()
             stats["graph_off"] = "weights moved between decodes"
             race = None
@@ -589,30 +609,32 @@ def canvas_decode(
                 if race.graphs is None:
                     shape = (per * len(group), *inputs[0].shape[1:])
                     race.graphs = TileGraphs(fn, shape, inputs[0].dtype, z.device)
-                have = len(race.graphs.replicas)
-                if (
-                    have
-                    and not race.forced
-                    and race.graphs.pool_bytes / have * arm > graph_pool_cap(z.device)
-                ):
+                cap = graph_pool_cap(z.device)
+                if race.per_replica and not race.forced and race.per_replica * arm > cap:
                     race.skip(arm)
                     arm, timed = 0, None
-            if arm:
-                if len(race.graphs.replicas) < arm:
-                    have = len(race.graphs.replicas)
-                    sample, reference = race.reference or (None, None)
-                    if sample is None:
-                        sample = torch.cat(inputs) if len(inputs) > 1 else inputs[0]
-                    if not race.graphs.grow(arm, sample, reference):
-                        stats["graph_failed"] = race.graphs.failed
-                        race.decided = 0
-                        race.graphs = None
-                        arm, timed = 0, None
-                    elif race.forced:
-                        race.decided = arm
-                    elif race.graphs.pool_bytes > graph_pool_cap(z.device):
+            if arm and len(race.graphs.replicas) < arm:
+                have = len(race.graphs.replicas)
+                sample, reference = race.reference or (None, None)
+                if sample is None:
+                    sample = torch.cat(inputs) if len(inputs) > 1 else inputs[0]
+                grown = race.graphs.grow(arm, sample, reference)
+                if grown is None:
+                    arm, timed = 0, None  # capture refused for now: eager, untimed, try again later
+                elif not grown:
+                    stats["graph_failed"] = race.graphs.failed
+                    race.decided = 0
+                    race.graphs = None
+                    arm, timed = 0, None
+                elif race.forced:
+                    race.decided = arm
+                else:
+                    race.per_replica = race.per_replica or race.graphs.pool_bytes // arm
+                    if race.graphs.pool_bytes > cap:
                         if race.decided is None:
-                            race.skip(arm)
+                            for a_ in race.arms:
+                                if a_ >= arm:
+                                    race.skip(a_)
                             race.graphs.keep(have)
                         else:
                             race.decided = 0
@@ -638,6 +660,8 @@ def canvas_decode(
                 raise
             torch.cuda.empty_cache()
             batch = 1
+            if race is not None:
+                race.pending = []  # runs cut by the OOM would join the next decode's runs
             race = None
             continue
         if canvas is None:
@@ -699,13 +723,21 @@ def set_decoder_dtype(vae: Any, dtype: Any) -> int:
     return len(linears)
 
 
-def _bad_output(out: Any) -> bool:
+def _probe(out: Any) -> Optional[str]:
+    """``"nonfinite"`` / ``"flat"`` for an output the fp16 decoder may have broken, else None (one host sync)."""
     import torch
 
     flat = out.detach()
     finite = torch.isfinite(flat).all()
-    spread = flat.amax() - flat.amin()
-    return bool((~finite | (spread.float() < 1e-4)).item())
+    spread = (flat.amax() - flat.amin()).float()
+    code = int(((~finite).int() * 2 + (spread < 1e-4).int()).item())
+    if code >= 2:
+        return "nonfinite"
+    return "flat" if code else None
+
+
+def _bad_output(out: Any) -> bool:
+    return _probe(out) is not None
 
 
 def _decode_entry(vae: Any, z: Any, stock: Any) -> Any:
@@ -715,26 +747,45 @@ def _decode_entry(vae: Any, z: Any, stock: Any) -> Any:
 
 def _image_decode(self: Any, z: Any) -> Any:
     stock = self.__dict__["_unsloth_canvas_stock_decode"]
+    stats = _stats(self)
+    stats.clear()
     if not self.use_tiling:
         out = stock(z)
     else:
         out = _decode_entry(self, z, lambda t: stock(t))
-    stats = _stats(self)
-    stats["dtype"] = "fp16" if self.__dict__.get("_unsloth_canvas_half") else "fp32"
-    if self.__dict__.get("_unsloth_canvas_half"):
-        if _bad_output(out):
-            # A non-finite or flat fp16 decode: fp32 from here on, this image again.
-            set_decoder_dtype(self, self.post_quant_conv.weight.dtype)
-            self._unsloth_canvas_half = False
-            self.__dict__.pop("_unsloth_canvas_races", None)
-            stats["half_fallback"] = True
-            logger = self.__dict__.get("_unsloth_canvas_logger")
-            if logger is not None:
-                logger.warning(
-                    "diffusion.vae_canvas: the fp16 decoder gave a non-finite or flat image; decoding in fp32"
-                )
-            return _image_decode(self, z)
-    return out
+    stats["canvas"] = "tiles" in stats
+    half = bool(self.__dict__.get("_unsloth_canvas_half"))
+    stats["dtype"] = "fp16" if half else "fp32"
+    if not half:
+        return out
+    verdict = _probe(out)
+    if verdict is None:
+        return out
+    # Re-decode in the load dtype (fp32 weights from the fp16 ones; the overflow is in the activations).
+    full = self.post_quant_conv.weight.dtype
+    for r in (self.__dict__.pop("_unsloth_canvas_races", None) or {}).values():
+        if r.graphs is not None:
+            r.graphs.drop()
+    set_decoder_dtype(self, full)
+    self._unsloth_canvas_half = False
+    again = _image_decode(self, z)
+    if verdict == "flat" and _probe(again) == "flat":
+        # A flat image (a solid-colour prompt) decodes flat in fp32 too: fp16 was not the cause, so it stays.
+        import torch
+
+        set_decoder_dtype(self, torch.float16)
+        self._unsloth_canvas_half = True
+        self.__dict__.pop("_unsloth_canvas_races", None)
+        _stats(self)["half_flat_check"] = True
+        return again
+    _stats(self)["half_fallback"] = verdict
+    logger = self.__dict__.get("_unsloth_canvas_logger")
+    if logger is not None:
+        logger.warning(
+            "diffusion.vae_canvas: the fp16 decoder gave a %s image; decoding in fp32 for this load",
+            verdict,
+        )
+    return again
 
 
 def install(
@@ -786,12 +837,15 @@ def uninstall(vae: Any) -> None:
     if stock is not None:
         vae.__dict__.pop("_decode", None)
     if vae.__dict__.pop("_unsloth_canvas_half", False):
-        import torch
-        set_decoder_dtype(vae, torch.float32)
+        set_decoder_dtype(vae, vae.post_quant_conv.weight.dtype)
+    for r in (vae.__dict__.get("_unsloth_canvas_races") or {}).values():
+        if r.graphs is not None:
+            r.graphs.drop()
     for name in (
         "_unsloth_canvas_races",
         "_unsloth_canvas_graphs",
         "_unsloth_canvas_logger",
         "_unsloth_canvas_stats",
+        "_unsloth_canvas_batches",
     ):
         vae.__dict__.pop(name, None)

@@ -265,9 +265,39 @@ def test_half_decoder_falls_back_to_fp32_on_a_bad_decode(monkeypatch):
     with torch.no_grad():
         out = vae.decode(z, return_dict = False)[0]
     assert torch.isfinite(out).all()
-    assert vae._unsloth_canvas_stats["half_fallback"] is True
+    assert vae._unsloth_canvas_stats["half_fallback"] == "nonfinite"
     assert vae._unsloth_canvas_half is False
     assert all(m.weight.dtype == torch.float32 for m in C._block_linears(vae))
+
+
+def test_flat_image_keeps_the_half_decoder_when_fp32_is_flat_too(monkeypatch):
+    """A solid-colour image decodes flat in any dtype: the probe re-checks in fp32 once and keeps fp16."""
+    vae = _tiny_image_vae()
+    C.install(vae, "cpu")
+    vae._unsloth_canvas_half = True
+    monkeypatch.setattr(
+        vae.decoder,
+        "forward",
+        lambda x: torch.full((x.shape[0], 3, x.shape[-2] * 4, x.shape[-1] * 4), 0.3),
+    )
+    with torch.no_grad():
+        out = vae.decode(torch.randn(1, 8, 6, 9), return_dict = False)[0]
+    torch.testing.assert_close(out, torch.full_like(out, 0.3))
+    st = vae._unsloth_canvas_stats
+    assert st.get("half_flat_check") and "half_fallback" not in st
+    assert vae._unsloth_canvas_half is True
+    assert all(m.weight.dtype == torch.float16 for m in C._block_linears(vae))
+
+
+def test_stats_are_per_decode():
+    vae = _tiny_image_vae()
+    C.install(vae, "cpu")
+    with torch.no_grad():
+        vae.decode(torch.randn(1, 8, 6, 9), return_dict = False)
+        assert vae._unsloth_canvas_stats["canvas"] and vae._unsloth_canvas_stats["tiles"] == 6
+        vae.use_tiling = False
+        vae.decode(torch.randn(1, 8, 6, 9), return_dict = False)
+    assert vae._unsloth_canvas_stats == {"canvas": False, "dtype": "fp32"}
 
 
 def test_set_decoder_dtype_touches_only_block_gemms():
