@@ -2297,6 +2297,8 @@ export function ComposerModelPicker({
     // Discover always offers its quants, even with one on disk: that one is ticked, not loaded unasked.
     if (
       target &&
+      // A cached MLX snapshot resolves in pickQuantRow, which loads it whole when it has no precisions.
+      row.kind !== "cached" &&
       (offerAll || (target.remote && (row.kind === "hub" || !row.onDevice)))
     ) {
       await toggleOffer(
@@ -3265,7 +3267,11 @@ export function ComposerModelPicker({
         >
           {rowEl}
           {memoryBar}
-          {quantsOpen ? renderDeviceQuants(row, onDisk) : null}
+          {offerOpen
+            ? renderOffer(row)
+            : quantsOpen
+              ? renderDeviceQuants(row, onDisk)
+              : null}
         </div>
       );
     }

@@ -568,3 +568,17 @@ test("a downloaded MLX repo still resolves its precision folder", () => {
   assert.match(src, /row\.kind === "cached" && row\.format === "mlx"/);
   assert.match(src, /row\.kind === "cached" && !\(mlx && quant\)/);
 });
+
+test("cached MLX snapshots load whole and favorites show quant offers", () => {
+  const src = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // The offer's whole-checkpoint fallback is hub-only, so a cached snapshot must not open one.
+  assert.match(
+    src,
+    /row\.kind !== "cached" &&\s+\(offerAll \|\| \(target\.remote/,
+  );
+  // The Favorites wrapper renders an open offer as the plain list does.
+  const fav = src.slice(src.indexOf("{...drag.rowProps(favoriteKey)}"));
+  assert.match(fav.slice(0, 900), /offerOpen\s+\?\s+renderOffer\(row\)/);
+});
