@@ -228,6 +228,7 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -5018,6 +5019,9 @@ export function ImagesPage({
     }
   }, [refreshStatus, dropResidentState]);
 
+  const ejecting = useRef(false);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
+
   // The unload cancels the load; it leaves only cache, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
     const wasLoading = busy === "loading";
@@ -6256,7 +6260,7 @@ export function ImagesPage({
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
-                onEject={status?.loaded ? handleUnload : undefined}
+                onEject={status?.loaded ? handleEject : undefined}
                 variant="ghost"
                 className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}

@@ -247,6 +247,11 @@ class _Recorder:
         return types.SimpleNamespace(returncode = 0)
 
 
+def _pip_calls(run):
+    # A kernels install is followed by a `python -c "import transformers.activations"` check.
+    return [c for c in run.calls if "pip" in c]
+
+
 def _stub_subprocess(monkeypatch, run):
     import subprocess
     monkeypatch.setattr(subprocess, "run", run)
@@ -283,7 +288,7 @@ def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
-    assert len(run.calls) == 1
+    assert len(_pip_calls(run)) == 1
     cmd = run.calls[0]
     assert "--only-binary" in cmd and ":all:" in cmd
 
@@ -299,7 +304,7 @@ def test_sage_install_never_asks_pypi_for_sageattention(monkeypatch):
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
     assert run.calls and not any("sageattention" in part for cmd in run.calls for part in cmd)
-    assert run.calls[0][-1] == "kernels"
+    assert run.calls[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 _XFORMERS_WHEEL = "https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
@@ -524,8 +529,8 @@ def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
     monkeypatch.setattr(att, "_kernels_hub_compatible", lambda: True)
     att._ensure_attention_backend_installed("sage")
-    assert len(run.calls) == 1
-    assert run.calls[0][-1] == "kernels"
+    assert len(_pip_calls(run)) == 1
+    assert run.calls[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 def test_failed_install_not_retried_in_same_process(monkeypatch):
@@ -658,7 +663,8 @@ def test_kernels_install_allowed_on_supported_hub(monkeypatch):
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("flash_4_hub")
-    assert len(run.calls) == 1 and "kernels" in run.calls[0]
+    pip = _pip_calls(run)
+    assert len(pip) == 1 and pip[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 def test_kernels_gate_also_covers_sage(monkeypatch):

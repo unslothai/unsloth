@@ -931,7 +931,7 @@ export const ru = {
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",
-      api: "API",
+      api: "Монитор API",
       lightMode: "Светлая тема",
       darkMode: "Тёмная тема",
       guidedTour: "Обзор интерфейса",

@@ -573,10 +573,33 @@ def _usable_or_discard_managed(binary: str) -> bool:
     return False
 
 
+# Successful ``--help`` text per (path, size, mtime_ns); a rewritten binary changes the key.
+_HELP_TEXT_CACHE: dict[tuple[str, int, int], str] = {}
+_HELP_TEXT_CACHE_MAX = 8
+_help_text_cache_lock = threading.Lock()
+
+
+def _help_cache_key(binary: str) -> Optional[tuple[str, int, int]]:
+    # A bare name is resolved by the spawn through PATH, not by stat; only explicit paths are cached.
+    if not os.path.dirname(binary):
+        return None
+    try:
+        st = os.stat(binary)
+    except (OSError, ValueError):
+        return None
+    return (os.path.abspath(binary), int(st.st_size), int(st.st_mtime_ns))
+
+
 def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     """Identifying output settles it whatever the exit code (old builds exit 1); else only a clean exit is evidence, and rc 127 from the loader is not."""
     import subprocess
 
+    cache_key = _help_cache_key(str(binary)) if args == ("--help",) else None
+    if cache_key is not None:
+        with _help_text_cache_lock:
+            cached = _HELP_TEXT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
     try:
         with windows_loader_error_boxes_suppressed():
             proc = subprocess.run(
@@ -593,7 +616,16 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
         return None
     if proc.returncode != 0:
         return None
-    return (proc.stdout or "") + (proc.stderr or "")
+    text = (proc.stdout or "") + (proc.stderr or "")
+    # Re-stat: a binary replaced while it ran must not leave this text under the old build's key.
+    if cache_key is not None and _help_cache_key(str(binary)) == cache_key:
+        with _help_text_cache_lock:
+            for stale in [k for k in _HELP_TEXT_CACHE if k[0] == cache_key[0]]:
+                del _HELP_TEXT_CACHE[stale]
+            while len(_HELP_TEXT_CACHE) >= _HELP_TEXT_CACHE_MAX:
+                del _HELP_TEXT_CACHE[next(iter(_HELP_TEXT_CACHE))]
+            _HELP_TEXT_CACHE[cache_key] = text
+    return text
 
 
 # --ref-video arrived with H3 upstream; --version is "unknown" on release prebuilts.

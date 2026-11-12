@@ -557,6 +557,68 @@ def test_auto_scheme_is_bf16_only_when_it_fits(h3i, monkeypatch):
         assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] is None
 
 
+@pytest.mark.parametrize(
+    "vram, host, scheme",
+    [
+        # 48 GB: bf16 beside the encoder would go sequential (refused under ~74 GB RAM).
+        (48.2, 72.0, "int8"),
+        (48.2, 128.0, "int8"),
+        (80.0, 64.0, None),
+        (190.0, 1500.0, None),
+    ],
+)
+def test_auto_takes_bf16_only_when_it_stays_on_the_card_beside_the_encoder(h3i, vram, host, scheme):
+    pytest.importorskip("torchao")
+    te = h3i.te_gb_for("int8")
+    got, reason = h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram, host_gb = host, te_gb = te)
+    assert got == scheme, reason
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram)[0] is None
+
+
+def test_the_plan_sizes_the_encoder_the_request_takes(h3i, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        h3i, "resolve_dit_scheme", lambda req, **kw: seen.append(kw["te_gb"]) or (None, "x")
+    )
+    h3i.planned_dit_scheme(None, "cpu")
+    h3i.planned_dit_scheme(None, "cpu", "none")
+    assert seen == [h3i.H3_IMAGE_TE_INT8_GB, h3i.H3_IMAGE_TE_BF16_GB]
+
+
+def test_the_plan_credits_host_memory_the_unload_frees(h3i, monkeypatch):
+    """Host RAM held by the resident model is credited back, since the load unloads it first."""
+    pytest.importorskip("torchao")
+    import torch
+
+    monkeypatch.delenv(h3i.VRAM_BUDGET_ENV, raising = False)
+    monkeypatch.delenv(h3i.HOST_BUDGET_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (80.0, 20.0))
+    assert h3i.planned_dit_scheme(None, "cuda") == "int8"
+    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) is None
+    monkeypatch.setenv(h3i.HOST_BUDGET_ENV, "20")
+    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) == "int8"
+
+
+def test_the_backend_plan_passes_the_resident_pipeline_host_memory(h3i, monkeypatch):
+    import types
+
+    from core.inference import diffusion as dmod
+
+    seen = []
+    monkeypatch.setattr(
+        h3i, "planned_dit_scheme", lambda *a, **kw: seen.append(kw["reclaimable_host_gb"])
+    )
+    monkeypatch.setattr(dmod, "pipeline_host_mib", lambda pipe: 4096 if pipe == "resident" else 0)
+    backend = dmod.DiffusionBackend()
+    monkeypatch.setattr(
+        backend, "_target_for_ordinal", lambda fam, ordinal: types.SimpleNamespace(device = "cpu")
+    )
+    backend._state = types.SimpleNamespace(pipe = "resident")
+    backend._h3_image_planned_dit_scheme(None, None, None)
+    assert seen == [pytest.approx(4096 * 2**20 / 1e9)]
+
+
 def test_streamer_runs_blocks_from_the_host(h3i):
     import torch
 
@@ -1309,3 +1371,209 @@ def test_hosted_metadata_attention_is_recorded(h3i):
     t = types.SimpleNamespace()
     h3i.h3_image_prepare_prequant_model()(t, {"attention": "INT8"})
     assert getattr(t, h3i.CHECKPOINT_ATTENTION_ATTR) == "int8"
+
+
+def test_a_hub_snapshot_never_loads_the_bundled_encoder_or_the_converted_copy(
+    h3i, release, tmp_path, monkeypatch
+):
+    """A Hub load skips the bundled encoder and *_diffusers/ copy, even if a snapshot already holds them."""
+    import copy
+
+    import transformers
+
+    root, _ref, te = release
+    snap = _release_copy(root, tmp_path / "snap", with_encoder = False)
+    te.save_pretrained(str(snap / "text_encoder"))
+    fetched = []
+    monkeypatch.setattr(
+        h3i, "_hub_files", lambda repo, patterns, **kw: fetched.extend(patterns) or snap
+    )
+    loaded = []
+    monkeypatch.setattr(
+        h3i,
+        "load_h3_image_text_encoder",
+        lambda scheme, **kw: loaded.append(scheme) or (copy.deepcopy(te), scheme),
+    )
+
+    def _no_local_encoder(*a, **k):
+        raise AssertionError(f"the bundled encoder was loaded: {a}")
+
+    monkeypatch.setattr(
+        transformers.Qwen3VLForConditionalGeneration, "from_pretrained", _no_local_encoder
+    )
+    pipe = h3i.load_minimax_h3_image_pipeline(
+        h3i.H3_IMAGE_BASE_REPO, device = "cpu", text_encoder_quant = "int8"
+    )
+    assert pipe._unsloth_h3_report.te_scheme == "int8"
+    assert loaded in ([], ["int8"])
+    assert not [p for p in fetched if "text_encoder" in p or "_diffusers" in p]
+    assert "transformer/*" in fetched
+    pipe.release()
+
+
+def test_a_local_folder_still_brings_its_own_encoder(h3i, release, tmp_path, monkeypatch):
+    import transformers
+
+    root, _ref, te = release
+    rel = _release_copy(root, tmp_path / "rel", with_encoder = False)
+    te.save_pretrained(str(rel / "text_encoder"))
+    monkeypatch.setattr(
+        h3i,
+        "load_h3_image_text_encoder",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("the hosted encoder was fetched")),
+    )
+    sized = _bf16_sized(h3i, monkeypatch, transformers.Qwen3VLForConditionalGeneration)
+    pipe = h3i.load_minimax_h3_image_pipeline(str(rel), device = "cpu", text_encoder_quant = "int8")
+    assert pipe._unsloth_h3_report.te_scheme is None
+    assert sized[-1] == h3i.H3_IMAGE_TE_BF16_GB
+    pipe.release()
+
+
+@pytest.mark.parametrize(
+    "native, converted, reads_native",
+    [(True, True, True), (True, False, True), (False, True, False), (False, False, True)],
+)
+def test_the_native_layout_wins_when_both_are_present(
+    h3i, tmp_path, native, converted, reads_native
+):
+    for name, present in (("transformer", native), ("transformer_diffusers", converted)):
+        if present:
+            (tmp_path / name).mkdir()
+            (tmp_path / name / "config.json").write_text("{}")
+    assert h3i._native_layout(tmp_path, "transformer", "transformer_diffusers") is reads_native
+
+
+@pytest.mark.parametrize(
+    "request_value, scheme",
+    [
+        (None, "int8"),
+        ("", "int8"),
+        ("auto", "int8"),
+        ("int8", "int8"),
+        ("none", None),
+        ("Off", None),
+        ("bf16", None),
+    ],
+)
+def test_the_encoder_scheme_follows_the_raw_request(h3i, request_value, scheme):
+    assert h3i.h3_image_te_scheme(request_value) == scheme
+
+
+def test_explicit_dit_schemes_are_honored_or_refused(h3i, monkeypatch):
+    import torch
+
+    from core.inference import diffusion_precision
+
+    monkeypatch.setattr(diffusion_precision, "torchao_quantize_importable", lambda: True)
+    assert h3i.explicit_scheme_refusal("int8", "cpu") is None
+    assert h3i.explicit_scheme_refusal("fp8", "cpu") is None
+    assert "not nvfp4" in h3i.explicit_scheme_refusal("nvfp4", "cpu")
+    assert "not mxfp8" in h3i.explicit_scheme_refusal("mxfp8", "cpu")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: (8, 0))
+    assert "8.9 or newer" in h3i.explicit_scheme_refusal("fp8", "cuda")
+    assert h3i.explicit_scheme_refusal("int8", "cuda") is None
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: (8, 9))
+    assert h3i.explicit_scheme_refusal("fp8", "cuda") is None
+
+
+def test_the_plan_scheme_plans_the_whole_card(h3i, monkeypatch):
+    """The plan uses the whole card (the load evicts chat first); a VRAM budget still wins."""
+    import torch
+
+    monkeypatch.delenv(h3i.VRAM_BUDGET_ENV, raising = False)
+    seen = []
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (20.0, 500.0))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev = None: (20e9, 80e9))
+    monkeypatch.setattr(
+        h3i,
+        "resolve_dit_scheme",
+        lambda req, *, device, vram_gb, **kw: seen.append(vram_gb) or (None, "x"),
+    )
+    assert h3i.planned_dit_scheme(None, "cuda") is None
+    monkeypatch.setenv(h3i.VRAM_BUDGET_ENV, "24")
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (24.0, 500.0))
+    h3i.planned_dit_scheme(None, "cuda")
+    assert seen == [pytest.approx(80.0), pytest.approx(24.0)]
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_the_preflight_passes_explicit_h3_schemes_without_a_compile(h3i, monkeypatch, scheme):
+    """int8 / fp8 bypass the torchao compile gate; other schemes are refused before eviction."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    from core.inference import diffusion_precision
+
+    fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda target, **kw: False)
+    monkeypatch.setattr(diffusion_precision, "torchao_quantize_importable", lambda: True)
+    backend = dmod.DiffusionBackend()
+    import dataclasses
+
+    target = dataclasses.replace(resolve_diffusion_device_target(), device = "cpu")
+    kwargs = {"model_kind": "pipeline", "te_mode": None, "memory_mode": None, "cpu_offload": False}
+    backend._assert_precision_for_target(fam, target, pinned = scheme, **kwargs)
+    with pytest.raises(RuntimeError, match = "MiniMax-H3-Image runs int8 or fp8"):
+        backend._assert_precision_for_target(fam, target, pinned = "mxfp8", **kwargs)
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_an_explicit_scheme_without_torchao_is_refused_not_run_as_bf16(h3i, monkeypatch, scheme):
+    """Without torchao an explicit int8 / fp8 is refused, not silently run as bf16."""
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_precision
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    monkeypatch.setattr(diffusion_precision, "torchao_quantize_importable", lambda: False)
+    assert "torchao is not importable" in h3i.explicit_scheme_refusal(scheme, "cpu")
+    fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
+    target = dataclasses.replace(resolve_diffusion_device_target(), device = "cpu")
+    with pytest.raises(RuntimeError, match = "torchao is not importable"):
+        dmod.DiffusionBackend()._assert_precision_for_target(
+            fam,
+            target,
+            model_kind = "pipeline",
+            pinned = scheme,
+            te_mode = None,
+            memory_mode = None,
+            cpu_offload = False,
+        )
+
+
+def test_a_dit_scheme_the_plan_cannot_settle_marks_the_plan_partial(h3i, monkeypatch):
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    def _broken(*a, **k):
+        raise RuntimeError("no device answer")
+
+    monkeypatch.setattr(h3i, "planned_dit_scheme", _broken)
+    fam = detect_family_for_pick("MiniMaxAI/MiniMax-H3-Image", None, None)
+    failures = []
+    assert dmod.DiffusionBackend()._h3_image_planned_dit_scheme(fam, None, None, failures) is None
+    assert [str(e) for e in failures] == ["no device answer"]
+    monkeypatch.setattr(h3i, "planned_dit_scheme", lambda *a, **k: "int8")
+    failures.clear()
+    assert dmod.DiffusionBackend()._h3_image_planned_dit_scheme(fam, None, None, failures) == "int8"
+    assert failures == []
+
+
+def test_the_request_ceiling_admits_every_family_side(h3i):
+    """The request used to cap sides at 2752, rejecting every 16 MP size."""
+    from pydantic import ValidationError
+
+    from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
+    from core.inference.diffusion_families import _FAMILIES
+    from models.inference import DiffusionGenerateRequest
+
+    assert MAX_REQUEST_SIDE == max(int(f.max_output_side) for f in _FAMILIES)
+    for width, height in h3i.H3_IMAGE_16MP_SIZES:
+        DiffusionGenerateRequest(prompt = "x", width = width, height = height)
+    with pytest.raises(ValidationError):
+        DiffusionGenerateRequest(prompt = "x", width = MAX_REQUEST_SIDE + 16, height = 1024)

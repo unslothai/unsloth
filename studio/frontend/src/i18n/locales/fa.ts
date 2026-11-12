@@ -1024,7 +1024,7 @@ export const fa = {
       showMore: "نمایش بیشتر",
       showLess: "نمایش کمتر",
       settings: "تنظیمات",
-      api: "API",
+      api: "پایش API",
       lightMode: "حالت روشن",
       darkMode: "حالت تیره",
       guidedTour: "تور راهنما",
