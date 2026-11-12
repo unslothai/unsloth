@@ -1380,8 +1380,7 @@ async def list_provider_models(
             denylist = info.get("model_id_denylist")
             if denylist is not None:
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
-        # Optional cap after filtering to keep large catalogs picker-sized. The server does not sort, so catalog
-        # models go first.
+        # Cap after filtering; the server does not sort, so catalog models go first.
         if shared_models is not None:
             models = [m for m in models if m.get("id", "") in shared_models]
         limit = info.get("model_id_limit")
