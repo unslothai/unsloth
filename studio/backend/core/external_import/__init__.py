@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -341,6 +342,9 @@ def _import_project(
     for path in project.sessions:
         try:
             imported += _import_session(source, path, project_id, summary)
+        except sqlite3.Error:
+            # Storage failures must propagate after rollback, not look like a corrupt file.
+            raise
         except Exception as exc:
             # A corrupt file costs only its own chat; the rest of the import still runs.
             summary.warnings.append(f"{path.name}: could not be imported ({exc}).")

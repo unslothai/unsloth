@@ -103,6 +103,23 @@ def test_first_import_rolls_back_messages_when_checkpoint_fails(source_path):
     assert _messages() == rows
 
 
+@pytest.mark.parametrize("error_type", [sqlite3.OperationalError, sqlite3.ProgrammingError])
+def test_database_errors_propagate_after_checkpoint_rollback(source_path, monkeypatch, error_type):
+    def reject_checkpoint(conn, mark):
+        raise error_type("checkpoint database failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(studio_db, "_record_external_import_mark", reject_checkpoint)
+        with pytest.raises(error_type, match = "checkpoint database failure"):
+            run_import(claude.SOURCE)
+
+    assert _messages() == []
+    assert _mark() is None
+    assert run_import(claude.SOURCE).messages == 1
+    assert _texts(_messages()) == ["first"]
+    assert _mark() == (1, "")
+
+
 def test_incremental_import_rolls_back_and_preserves_studio_changes(source_path):
     _write(source_path, [_turn("assistant", "a1", "reply", parent = "u1", second = 1)], mode = "a")
     assert run_import(claude.SOURCE).messages == 2
