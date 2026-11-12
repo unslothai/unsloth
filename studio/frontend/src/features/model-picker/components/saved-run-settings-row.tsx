@@ -12,24 +12,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { cn } from "@/lib/utils";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { TrashIcon } from "@/lib/hugeicons-derived";
-import {
-  Edit03Icon,
-} from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { cn } from "@/lib/utils";
+import { Edit03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  type MouseEvent,
-  type PointerEvent,
-  useEffect,
-  useState,
-} from "react";
+import { type MouseEvent, type PointerEvent, useEffect, useState } from "react";
 import {
   SAVED_RUN_SETTINGS_NAME_MAX,
   type SavedRunSettings,
   normalizeSavedRunSettingsName,
 } from "../model-config/saved-run-settings";
-import { Tick02Icon } from "@/lib/tick-icon";
 
 /** ``target`` is the set being renamed. */
 export type RunSettingsNaming =
@@ -53,6 +47,7 @@ interface RunSettingsPickerProps {
   onPick: (name: string | null) => void;
   onNamingChange: (naming: RunSettingsNaming | null) => void;
   onNamingSubmit: () => void;
+  onDuplicate: (name: string) => void;
   onDelete: (name: string) => void;
 }
 
@@ -93,6 +88,7 @@ export function RunSettingsPicker({
   onPick,
   onNamingChange,
   onNamingSubmit,
+  onDuplicate,
   onDelete,
 }: RunSettingsPickerProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -247,6 +243,25 @@ export function RunSettingsPicker({
                   Always
                 </span>
               )}
+              <button
+                type="button"
+                aria-label={`Duplicate ${entry.name}`}
+                title="Duplicate"
+                tabIndex={-1}
+                className={ROW_ICON}
+                onPointerDown={keepRow}
+                onPointerUp={keepRow}
+                onClick={(event) => {
+                  keepRow(event);
+                  onDuplicate(entry.name);
+                }}
+              >
+                <HugeiconsIcon
+                  icon={Copy01Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
               <button
                 type="button"
                 aria-label={`Rename ${entry.name}`}

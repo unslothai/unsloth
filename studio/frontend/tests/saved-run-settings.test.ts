@@ -113,6 +113,23 @@ test("saving under an existing name replaces it, and delete drops only that one"
   );
 });
 
+test("duplicating a saved set copies its config under a unique name", () => {
+  assert.ok(saved.saveRunSettings(MODEL, "Fast", config(4096)));
+  assert.equal(saved.duplicateSavedRunSettings(MODEL, "Fast"), "Fast copy");
+  assert.equal(saved.duplicateSavedRunSettings(MODEL, "Fast"), "Fast copy 2");
+  const list = saved.listSavedRunSettings(MODEL);
+  assert.equal(list.length, 3);
+  assert.equal(
+    saved.findSavedRunSettings(list, "Fast copy")?.config.customContextLength,
+    4096,
+  );
+  assert.equal(
+    saved.findSavedRunSettings(list, "Fast copy 2")?.config.customContextLength,
+    4096,
+  );
+  assert.equal(saved.duplicateSavedRunSettings(MODEL, "Missing"), null);
+});
+
 test("blank names and a full list are refused", () => {
   assert.equal(saved.saveRunSettings(MODEL, "   ", config(4096)), false);
   for (let i = 0; i < saved.SAVED_RUN_SETTINGS_PER_MODEL_MAX; i++) {
@@ -378,6 +395,11 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
   );
   assert.match(
     page,
+    /const duplicateSet = \(name: string\) => \{[\s\S]{0,220}duplicateSavedRunSettings\(configId, name\)[\s\S]{0,240}pickSet\(duplicate\);/,
+  );
+  assert.match(page, /onDuplicate=\{duplicateSet\}/);
+  assert.match(
+    page,
     /if \(loadSet !== null && !saveSharedSet\(loadSet, effectiveRuntimeConfig\)\)/,
   );
   assert.match(
@@ -412,8 +434,10 @@ test("row icons never pick their row", () => {
     "utf8",
   );
   // Radix clicks the item on pointerup when it missed the pointerdown.
-  assert.equal(row.match(/onPointerDown=\{keepRow\}/g)?.length, 2);
-  assert.equal(row.match(/onPointerUp=\{keepRow\}/g)?.length, 2);
+  assert.equal(row.match(/onPointerDown=\{keepRow\}/g)?.length, 3);
+  assert.equal(row.match(/onPointerUp=\{keepRow\}/g)?.length, 3);
+  assert.match(row, /aria-label=\{`Duplicate \$\{entry\.name\}`\}/);
+  assert.match(row, /onDuplicate\(entry\.name\)/);
   // New settings come from editing Default, so the menu has no create entry.
   assert.doesNotMatch(row, /Save as new/);
 });

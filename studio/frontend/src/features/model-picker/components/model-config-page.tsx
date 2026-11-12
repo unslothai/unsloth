@@ -11,6 +11,7 @@ import { type RunSettingsNaming, RunSettingsPicker } from "./saved-run-settings-
 import {
   adoptRememberedRunSettings,
   deleteSavedRunSettings,
+  duplicateSavedRunSettings,
   findSavedRunSettings,
   getPinnedRunSettings,
   getRunSettingsLoadedOnce,
@@ -3746,6 +3747,16 @@ export function ModelConfigPage({
     toast.success(`Deleted "${name}".`);
   };
 
+  const duplicateSet = (name: string) => {
+    const duplicate = duplicateSavedRunSettings(configId, name);
+    if (duplicate === null) {
+      toast.error(saveSetError(name));
+      return;
+    }
+    pickSet(duplicate);
+    toast.success(`Duplicated "${name}" as "${duplicate}".`);
+  };
+
   const setAlwaysLoad = (on: boolean) => {
     if (!on) {
       setPinnedRunSettings(configId, target.ggufVariant, null);
@@ -4185,6 +4196,7 @@ export function ModelConfigPage({
           onPick={(name) => pickSet(name)}
           onNamingChange={setNaming}
           onNamingSubmit={submitNaming}
+          onDuplicate={duplicateSet}
           onDelete={setPendingDelete}
         />
         {/* Always rendered so a status change never moves the buttons; the sidebar's name box already does. */}
