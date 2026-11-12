@@ -11,6 +11,7 @@ import {
   saveExternalProviders,
   type ExternalProviderConfig,
 } from "../external-providers";
+import { forgetServedContextWindows } from "../model-catalog";
 
 interface ExternalProvidersState {
   providers: ExternalProviderConfig[];
@@ -19,14 +20,27 @@ interface ExternalProvidersState {
   setConnectionsEnabled: (enabled: boolean) => void;
 }
 
+// A saved Base URL change makes the old server's windows wrong for a persistent clamp.
+function forgetMovedConnections(
+  before: readonly ExternalProviderConfig[],
+  after: readonly ExternalProviderConfig[],
+): void {
+  const was = new Map(before.map((p) => [p.id, p.baseUrl]));
+  for (const p of after) {
+    const old = was.get(p.id);
+    if (old !== undefined && old !== p.baseUrl) forgetServedContextWindows(p.id);
+  }
+}
+
 /** Connection ids whose settings save is awaiting the backend; auto reload holds its writes. */
 export const providerSavesInFlight = new Set<string>();
 
 export const useExternalProvidersStore = create<ExternalProvidersState>(
-  (set) => ({
+  (set, get) => ({
     providers: loadExternalProviders(),
     connectionsEnabled: loadConnectionsEnabled(),
     setProviders: (providers) => {
+      forgetMovedConnections(get().providers, providers);
       set({ providers });
       saveExternalProviders(providers);
     },
@@ -41,7 +55,9 @@ export const useExternalProvidersStore = create<ExternalProvidersState>(
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === EXTERNAL_PROVIDERS_KEY || event.key === null) {
-      useExternalProvidersStore.setState({ providers: loadExternalProviders() });
+      const providers = loadExternalProviders();
+      forgetMovedConnections(useExternalProvidersStore.getState().providers, providers);
+      useExternalProvidersStore.setState({ providers });
     }
     if (event.key === CONNECTIONS_ENABLED_KEY || event.key === null) {
       useExternalProvidersStore.setState({

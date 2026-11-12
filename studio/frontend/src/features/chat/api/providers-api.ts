@@ -71,6 +71,8 @@ export interface ProviderModelInfo {
   vision?: boolean | null;
   /** Only Ollama's /api/tags reports these; absent is not the same as none. */
   capabilities?: string[] | null;
+  /** vLLM max_model_len / llama-server meta.n_ctx; hosted context_length is not an output bound. */
+  served_context_window?: number | null;
 }
 
 export interface ProviderModelReasoningInfo {

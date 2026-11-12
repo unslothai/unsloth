@@ -24,7 +24,7 @@ test("all max-output cap callers pass the selected connection override", () => {
   assert.match(
     runtime,
     // No optional chain: an unresolved provider must not clamp at all.
-    /if \(provider\) \{[\s\S]*?getExternalMaxOutputTokens\([\s\S]*?provider\.maxOutputTokens/,
+    /if \(provider && externalMaxTokensCapSettled\(provider\)\) \{[\s\S]*?getExternalMaxOutputTokens\([\s\S]*?provider\.maxOutputTokens/,
   );
   assert.match(
     adapter,

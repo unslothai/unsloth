@@ -4722,10 +4722,12 @@ export function createOpenAIStreamAdapter(
                     researchExternalProvider.providerType,
                     researchExternalSelection.modelId,
                     researchExternalProvider.maxOutputTokens,
+                    researchExternalProvider.id,
                   ),
                   maxOutputTokensFromSavedCap: externalMaxOutputTokensNeedsConnectionCap(
                     researchExternalProvider.providerType,
                     researchExternalSelection.modelId,
+                    researchExternalProvider.id,
                   ),
                   maxOutputTokensPublished: getPublishedExternalMaxOutputTokens(
                     researchExternalProvider.providerType,
@@ -6751,6 +6753,7 @@ export function createOpenAIStreamAdapter(
                   externalProvider?.providerType,
                   externalSelection?.modelId,
                   externalProvider?.maxOutputTokens,
+                  externalProvider?.id,
                 ),
               ),
 

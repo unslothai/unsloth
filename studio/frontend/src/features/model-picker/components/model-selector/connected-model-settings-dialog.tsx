@@ -27,6 +27,7 @@ import type { ProviderApiType } from "@/features/chat/api/providers-api";
 import type { CustomReasoningConfig } from "@/features/chat/custom-reasoning";
 import {
   modelCatalogVersion,
+  parseExternalModelId,
   reconcilePinnedReasoningEffort,
   subscribeModelCatalog,
   useChatRuntimeStore,
@@ -111,6 +112,7 @@ export function ConnectedModelSettingsDialog({
     providerType,
     modelId,
     connectionMaxOutputTokens,
+    parseExternalModelId(checkpointId)?.providerId,
   );
   const clampCap = (value: number) =>
     Math.min(Math.max(value, minCap), maxCap);

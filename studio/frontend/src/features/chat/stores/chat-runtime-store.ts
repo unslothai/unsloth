@@ -68,6 +68,7 @@ import {
 import {
   type ExternalReasoningCapabilities,
   externalReasoningTakesEffort,
+  externalMaxTokensCapSettled,
   getExternalMaxOutputTokens,
   kimiSearchExcludesThinking,
   resolveExternalReasoningEffort,
@@ -4887,12 +4888,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               .getState()
               .providers.find((p) => p.id === parsed.providerId)
           : null;
-        // Only when the provider is known: the 32,768 fallback would lower a value permanently.
-        if (provider) {
+        // Only when the cap is known: the 32,768 fallback would lower a value permanently.
+        if (provider && externalMaxTokensCapSettled(provider)) {
           const cap = getExternalMaxOutputTokens(
             provider.providerType,
             parsed?.modelId,
             provider.maxOutputTokens,
+            provider.id,
           );
           if (nextMaxTokens > cap) {
             nextMaxTokens = cap;

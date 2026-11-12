@@ -401,7 +401,7 @@ test("the cap offers the bounds every request is clamped to", () => {
   );
   assert.match(
     settingsDialog,
-    /const maxCap = getExternalMaxOutputTokens\(\s*providerType,\s*modelId,\s*connectionMaxOutputTokens,\s*\)/,
+    /const maxCap = getExternalMaxOutputTokens\(\s*providerType,\s*modelId,\s*connectionMaxOutputTokens,\s*parseExternalModelId\(checkpointId\)\?\.providerId,\s*\)/,
   );
   assert.match(
     settingsDialog,
