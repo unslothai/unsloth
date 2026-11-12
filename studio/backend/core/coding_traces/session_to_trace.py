@@ -447,7 +447,8 @@ def _prune(chain: list[dict], warnings: list[TraceWarning]) -> list[dict]:
     empty stopped turn its label, as fillStoppedAssistantReplay does. An unsettled run's row gets no
     "Response interrupted" label: the UI asks the server if the run is live, and rows lack that.
     Each part an abandoned or labelled turn drops, and the prompt an abandoned turn takes with it,
-    gets the warning it would get in a kept turn."""
+    gets the warning it would get in a kept turn. A refused turn and its prompt get none: the UI
+    drops that exchange by design, not because a run failed, so the trace loses nothing it needs."""
 
     meta = [_as_dict(m.get("metadata")) for m in chain]  # runtime-provider.tsx: metadata.custom
     assistant = [m.get("role") != "user" for m in chain]
