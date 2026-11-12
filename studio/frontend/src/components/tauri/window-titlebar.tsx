@@ -321,6 +321,7 @@ export function WindowTitlebar({
     setRevealFullscreen(fullscreen);
     setRevealed(false);
   }
+  const titlebarRef = useRef<HTMLElement | null>(null);
   const hideTimer = useRef<number | null>(null);
   const cancelHide = useCallback(() => {
     if (hideTimer.current !== null) {
@@ -336,6 +337,7 @@ export function WindowTitlebar({
     cancelHide();
     hideTimer.current = window.setTimeout(() => {
       hideTimer.current = null;
+      if (titlebarRef.current?.matches(":hover, :focus-within")) return;
       setRevealed(false);
     }, FULLSCREEN_TITLEBAR_HIDE_DELAY_MS);
   }, [cancelHide]);
@@ -551,6 +553,7 @@ export function WindowTitlebar({
         </div>
       )}
       <header
+        ref={titlebarRef}
         className={cn(
           "modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
