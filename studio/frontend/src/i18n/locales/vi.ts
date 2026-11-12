@@ -6101,4 +6101,8 @@ export const vi = {
       inRam: "{amount} trong RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Truyền phát khuếch tán",
+    diffusionStreamingDescription: "Hiển thị câu trả lời trực tiếp trên canvas trong khi khử nhiễu lúc đang truyền. Chỉ dành cho endpoint khuếch tán của Inception Mercury, vốn trả về toàn bộ văn bản ở mỗi bước; với endpoint khác, chỉ phần cuối của câu trả lời được giữ lại. Tin nhắn đã lưu là câu trả lời cuối cùng.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

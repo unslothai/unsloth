@@ -6103,4 +6103,8 @@ export const id = {
       inRam: "{amount} di RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Streaming difusi",
+    diffusionStreamingDescription: "Tampilkan jawaban secara langsung di kanvas saat derau dihilangkan selama streaming. Hanya untuk endpoint difusi Inception Mercury, yang mengembalikan teks lengkap di setiap langkah; pada endpoint lain hanya potongan terakhir balasan yang disimpan. Pesan tersimpan adalah jawaban akhir.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

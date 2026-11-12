@@ -5777,4 +5777,8 @@ export const fr = {
       inRam: "{amount} en RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Streaming par diffusion",
+    diffusionStreamingDescription: "Afficher la réponse en direct sur un canevas pendant son débruitage en streaming. Uniquement pour les endpoints de diffusion Inception Mercury, qui renvoient le texte complet à chaque étape ; avec tout autre endpoint, seul le dernier fragment de la réponse est conservé. Le message enregistré est la réponse finale.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

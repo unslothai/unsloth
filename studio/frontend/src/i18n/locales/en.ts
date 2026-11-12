@@ -5744,4 +5744,9 @@ export const en = {
       inRam: "{amount} in RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Diffusion streaming",
+    diffusionStreamingDescription:
+      "Show the answer denoising live as a canvas while it streams. Only for Inception Mercury diffusion endpoints, which return the full text at every step; on any other endpoint only the last piece of the reply is kept. The saved message is the final answer.",
+  },
 } as const;

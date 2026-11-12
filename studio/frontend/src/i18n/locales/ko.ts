@@ -5684,4 +5684,8 @@ export const ko = {
       inRam: "RAM에 {amount}",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "확산 스트리밍",
+    diffusionStreamingDescription: "스트리밍 중 답변이 디노이징되는 과정을 캔버스에 실시간으로 표시합니다. 각 단계마다 전체 텍스트를 반환하는 Inception Mercury 확산 엔드포인트 전용입니다. 다른 엔드포인트에서는 답변의 마지막 조각만 남습니다. 저장된 메시지가 최종 답변입니다.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

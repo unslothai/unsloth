@@ -5644,4 +5644,8 @@ export const ja = {
       inRam: "RAM に {amount}",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "拡散ストリーミング",
+    diffusionStreamingDescription: "ストリーミング中に、回答がデノイズされていく様子をキャンバスにライブ表示します。各ステップで全文を返す Inception Mercury の拡散エンドポイント専用です。それ以外のエンドポイントでは回答の最後の断片しか残りません。保存されるメッセージは最終的な回答です。",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

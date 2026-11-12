@@ -703,6 +703,8 @@ export interface OpenAIChatCompletionsRequest {
   /** Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the backend also accepts
    *  a cached-content resource name, forwarded as `generationConfig.cachedContent`. */
   enable_prompt_caching?: boolean | string | null;
+  /** Inception Labs Mercury diffusion streaming: full-text denoising chunks. */
+  diffusing?: boolean;
   /** OpenAI cloud and gpt-5.5 family only; unset means a fresh container. */
   openai_code_exec_container_id?: string | null;
   /** Anthropic code_execution container id from the prior response in this thread. When set and the

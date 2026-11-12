@@ -538,6 +538,25 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "hidden": True,
         "managed": True,
     },
+    "inception": {
+        "display_name": "Inception",
+        "base_url": "https://api.inceptionlabs.ai/v1",
+        # Inception Labs Mercury diffusion LLMs; OpenAI-compatible chat completions.
+        # Docs: https://docs.inceptionlabs.ai/capabilities/streaming
+        "default_models": [
+            "mercury-3",
+            "mercury-2.5",
+            "mercury-2",
+        ],
+        "supports_streaming": True,
+        "supports_vision": False,
+        "supports_tool_calling": False,
+        "studio_tools": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "Inception Labs Mercury diffusion LLMs. OpenAI-compatible API. Diffusion streaming shows the answer denoising live.",
+        "model_list_mode": "curated",
+    },
     "typesafe": {
         "display_name": "TypeSafe",
         "base_url": "https://api.typesafe.ai/v1",

@@ -6098,4 +6098,8 @@ export const tr = {
       inRam: "{amount} RAM'de",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Difüzyon akışı",
+    diffusionStreamingDescription: "Akış sırasında yanıtı gürültüsü giderilirken bir tuvalde canlı göster. Yalnızca her adımda tam metni döndüren Inception Mercury difüzyon uç noktaları içindir; başka bir uç noktada yanıtın yalnızca son parçası korunur. Kaydedilen mesaj nihai yanıttır.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

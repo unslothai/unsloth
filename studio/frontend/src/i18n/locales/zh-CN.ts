@@ -5595,4 +5595,8 @@ export const zhCN = {
       inRam: "{amount} 位于 RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "扩散流式输出",
+    diffusionStreamingDescription: "在流式输出时，以画布实时显示答案逐步去噪的过程。仅适用于 Inception Mercury 扩散端点，它们在每一步都返回完整文本；用于其他端点时只会保留回复的最后一段。保存的消息即最终答案。",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -5823,4 +5823,8 @@ export const th = {
       inRam: "{amount} ใน RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "สตรีมมิ่งแบบดิฟฟิวชัน",
+    diffusionStreamingDescription: "แสดงคำตอบสดบนแคนวาสขณะกำลังลดสัญญาณรบกวนระหว่างสตรีม ใช้ได้เฉพาะเอนด์พอยต์ดิฟฟิวชันของ Inception Mercury ซึ่งส่งข้อความเต็มในทุกขั้นตอน หากใช้กับเอนด์พอยต์อื่นจะเหลือเพียงส่วนสุดท้ายของคำตอบ ข้อความที่บันทึกไว้คือคำตอบสุดท้าย",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

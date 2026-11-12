@@ -5937,4 +5937,8 @@ export const sv = {
       inRam: "{amount} i RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Diffusionsströmning",
+    diffusionStreamingDescription: "Visa svaret live på en canvas medan brus tas bort under strömningen. Endast för Inception Mercurys diffusionsendpoints, som returnerar hela texten i varje steg; med andra endpoints sparas bara den sista delen av svaret. Det sparade meddelandet är det slutgiltiga svaret.",
+  },
 } as const;

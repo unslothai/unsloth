@@ -5767,4 +5767,8 @@ export const de = {
       inRam: "{amount} im RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Diffusions-Streaming",
+    diffusionStreamingDescription: "Zeigt die Antwort beim Streamen live als Canvas, während sie entrauscht wird. Nur für Inception-Mercury-Diffusionsendpunkte, die bei jedem Schritt den vollständigen Text liefern; bei anderen Endpunkten bleibt nur das letzte Stück der Antwort erhalten. Die gespeicherte Nachricht ist die endgültige Antwort.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

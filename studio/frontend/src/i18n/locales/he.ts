@@ -5792,4 +5792,8 @@ export const he = {
       inRam: "{amount} ב-RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "סטרימינג דיפוזיה",
+    diffusionStreamingDescription: "הצג את התשובה בשידור חי על קנבס בזמן הסרת הרעש במהלך הזרמה. מיועד רק לנקודות קצה של דיפוזיה של Inception Mercury, שמחזירות את הטקסט המלא בכל שלב; בכל נקודת קצה אחרת יישמר רק החלק האחרון של התשובה. ההודעה השמורה היא התשובה הסופית.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

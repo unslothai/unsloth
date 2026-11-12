@@ -6160,4 +6160,8 @@ export const nl = {
       inRam: "{amount} in RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Diffusiestreaming",
+    diffusionStreamingDescription: "Toon het antwoord live op een canvas terwijl het tijdens het streamen wordt ontruist. Alleen voor Inception Mercury-diffusie-endpoints, die bij elke stap de volledige tekst teruggeven; bij elk ander endpoint blijft alleen het laatste stuk van het antwoord bewaard. Het opgeslagen bericht is het definitieve antwoord.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

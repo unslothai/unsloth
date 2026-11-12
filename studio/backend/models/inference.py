@@ -3084,6 +3084,15 @@ class ChatCompletionRequest(BaseModel):
         description = "[Anthropic-compatible] Thinking configuration. "
         "Use {type: 'disabled'} to disable thinking, {type: 'enabled'} to enable.",
     )
+    diffusing: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Inception Labs Mercury diffusion streaming: with stream=true, the "
+            "provider sends the FULL text so far in every SSE delta.content instead of a delta. "
+            "Studio relays those as `_diffusionReplace` control frames and emits the final full text "
+            "once at stream end."
+        ),
+    )
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",

@@ -5722,4 +5722,8 @@ export const ptBR = {
       inRam: "{amount} na RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Streaming de difusão",
+    diffusionStreamingDescription: "Mostra a resposta ao vivo em um canvas enquanto o ruído é removido durante o streaming. Apenas para endpoints de difusão da Inception Mercury, que retornam o texto completo a cada etapa; com qualquer outro endpoint, só o último trecho da resposta é mantido. A mensagem salva é a resposta final.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

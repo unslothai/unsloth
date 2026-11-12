@@ -6146,4 +6146,8 @@ export const uk = {
       inRam: "{amount} у RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Стрімінг дифузії",
+    diffusionStreamingDescription: "Показувати відповідь наживо на полотні під час усунення шуму в стримінгу. Лише для дифузійних ендпоінтів Inception Mercury, які на кожному кроці повертають повний текст; з будь-яким іншим ендпоінтом збережеться лише останній фрагмент відповіді. Збережене повідомлення — остаточна відповідь.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

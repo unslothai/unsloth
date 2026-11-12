@@ -185,6 +185,10 @@ import {
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
 import {
+  createDiffusionReplace,
+  recoveredDiffusionStart,
+} from "./utils/diffusion-replace";
+import {
   beginSavedHistoryReconciliation,
   isSavedHistoryReconciliationSuperseded,
   reconcileOrdinarySavedMessagesInView,
@@ -1533,6 +1537,12 @@ function scheduleGenerationRecovery(
     // Settled before disarmAll so an arm cannot land after the run is over.
     let seededApprovals: Promise<void> | null = null;
     let { raw, reasoningOpen } = stored;
+    // Mercury diffusion streaming: the same replace semantics as the live stream.
+    const diffusion = createDiffusionReplace();
+    // Only the first recovered turn can start inside the checkpoint; later ones start at the end.
+    let diffusionInCheckpoint = true;
+    // Captured before the follow adds this run's cards: the checkpoint's turn starts after them.
+    const checkpointCarriedAts = carried.map((entry) => entry.at);
     let parseThink = metadata.parseThinkTags !== false;
     let completionTokens: number | undefined;
     let recoveryUsage:
@@ -1766,6 +1776,9 @@ function scheduleGenerationRecovery(
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
+                _diffusionReplace?: unknown;
+                _toolEvent?: { tool_name?: unknown };
+                _toolStatus?: unknown;
                 _generationProgress?: unknown;
                 _reasoningDurationMs?: unknown;
                 usage?: {
@@ -1885,8 +1898,21 @@ function scheduleGenerationRecovery(
                 typeof deltaRecord?.reasoning_content === "string"
                   ? deltaRecord.reasoning_content
                   : "";
+              // Unsloth tool events and an empty status end the provider turn, as in the live stream.
+              if (
+                (chunk._toolEvent !== undefined &&
+                  !chunk.choices &&
+                  chunk._toolEvent.tool_name !== "studio_load_skill") ||
+                chunk._toolStatus === ""
+              ) {
+                diffusion.endTurn();
+                diffusionInCheckpoint = false;
+              }
+              const diffusionReplace = chunk._diffusionReplace;
               const { text: delta, hasStructuredReasoning } = extractDeltaText(
-                deltaRecord?.content,
+                typeof diffusionReplace === "string"
+                  ? diffusionReplace
+                  : deltaRecord?.content,
               );
               if (!parseThink && (reasoning || hasStructuredReasoning)) {
                 parseThink = true;
@@ -1899,8 +1925,34 @@ function scheduleGenerationRecovery(
               }
               if (delta) {
                 if (reasoningOpen) raw += "</think>";
-                raw += delta;
                 reasoningOpen = false;
+                // Once diffusing, every text (the closing delta.content too) is the whole turn so far.
+                if (
+                  typeof diffusionReplace === "string" ||
+                  diffusion.active ||
+                  update.run.requestPayload.diffusing === true
+                ) {
+                  let firstStart: number | undefined;
+                  if (!diffusion.active && diffusionInCheckpoint) {
+                    const requestMessages = update.run.requestPayload.messages;
+                    const continued = Array.isArray(requestMessages)
+                      ? requestMessages.at(-1)
+                      : undefined;
+                    firstStart = recoveredDiffusionStart(
+                      raw,
+                      checkpointCarriedAts,
+                      continued?.role === "assistant" &&
+                        typeof continued.content === "string"
+                        ? continued.content
+                        : undefined,
+                    );
+                  }
+                  diffusionInCheckpoint = false;
+                  const cut = diffusion.cutAt(raw.length, delta, firstStart);
+                  if (cut !== null) raw = raw.slice(0, cut) + delta;
+                } else {
+                  raw += delta;
+                }
               }
             }
           }

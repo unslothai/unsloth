@@ -5704,4 +5704,8 @@ export const hi = {
       inRam: "{amount} RAM में",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "डिफ्यूज़न स्ट्रीमिंग",
+    diffusionStreamingDescription: "स्ट्रीम होते समय उत्तर को कैनवास पर लाइव डीनॉइज़ होते हुए दिखाएँ। केवल Inception Mercury डिफ़्यूज़न एंडपॉइंट के लिए, जो हर चरण में पूरा टेक्स्ट लौटाते हैं; किसी अन्य एंडपॉइंट पर उत्तर का केवल अंतिम हिस्सा रखा जाता है। सहेजा गया संदेश अंतिम उत्तर है।",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

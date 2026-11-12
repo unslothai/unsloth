@@ -6069,4 +6069,8 @@ export const fa = {
       inRam: "{amount} در RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "پخش جریان انتشار",
+    diffusionStreamingDescription: "پاسخ را هنگام پخش، به‌صورت زنده روی بوم و در حال حذف نویز نشان دهید. فقط برای نقاط پایانی انتشار Inception Mercury که در هر مرحله متن کامل را برمی‌گردانند؛ با هر نقطهٔ پایانی دیگر فقط آخرین بخش پاسخ نگه داشته می‌شود. پیام ذخیره‌شده پاسخ نهایی است.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

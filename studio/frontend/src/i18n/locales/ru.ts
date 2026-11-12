@@ -5721,4 +5721,8 @@ export const ru = {
       inRam: "{amount} в RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Стриминг диффузии",
+    diffusionStreamingDescription: "Показывать ответ вживую на холсте по мере удаления шума во время стриминга. Только для диффузионных эндпоинтов Inception Mercury, которые на каждом шаге возвращают полный текст; с любым другим эндпоинтом сохранится лишь последний фрагмент ответа. Сохранённое сообщение — итоговый ответ.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

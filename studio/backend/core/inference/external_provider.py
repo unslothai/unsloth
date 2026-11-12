@@ -48,7 +48,17 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
 # custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
-    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
+    {
+        "vllm",
+        "llama_cpp",
+        "ollama",
+        "openrouter",
+        "kimi",
+        "lemonade",
+        "qwen",
+        "qwencloud",
+        "inception",
+    }
 )
 
 
@@ -1728,6 +1738,7 @@ class ExternalProviderClient:
         preserve_thinking: Optional[bool] = None,
         thread_id: Optional[str] = None,
         compaction_fallback: Optional[CompactionFallback] = None,
+        diffusing: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
         self.set_header_context(thread_id, model)
@@ -1864,6 +1875,10 @@ class ExternalProviderClient:
             "presence_penalty": presence_penalty,
             **_continue_body,
         }
+        # Inception Labs Mercury diffusion streaming: the request carries `diffusing: true`
+        # (only alongside stream=true), and every SSE delta.content is the FULL text so far.
+        if diffusing and stream:
+            body["diffusing"] = True
         if top_p is not None:
             body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.
@@ -2074,6 +2089,30 @@ class ExternalProviderClient:
                     }
                     return f"data: {_json.dumps(chunk)}"
 
+                # Inception Mercury diffusion streaming: replace semantics. Each upstream chunk's
+                # delta.content is the FULL text so far, so relay it as a `_diffusionReplace` the
+                # client swaps into the reply in place, and emit the final full text once as normal
+                # content (the only text an OpenAI-API caller sees).
+                diffusion_last_text: Optional[str] = None
+                diffusion_final_yielded = False
+
+                def _diffusion_final_chunk(text: str) -> str:
+                    chunk = {
+                        "id": f"chatcmpl-{uuid.uuid4().hex}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": text},
+                                # Only reached when the upstream sent no finish chunk; never invent one.
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    return f"data: {_json.dumps(chunk)}"
+
                 def _record_or_url_citation(payload: Any) -> None:
                     if not isinstance(payload, dict):
                         return
@@ -2144,6 +2183,15 @@ class ExternalProviderClient:
                                 ):
                                     yield _build_web_search_tool_end()
                                     web_search_tool_ended = True
+                                # Diffusion streaming: [DONE] without a finish chunk; emit the final full
+                                # text once before it (no invented finish_reason, as on the normal path).
+                                if (
+                                    diffusing
+                                    and not diffusion_final_yielded
+                                    and diffusion_last_text is not None
+                                ):
+                                    yield _diffusion_final_chunk(diffusion_last_text)
+                                    diffusion_final_yielded = True
                             elif data_str:
                                 try:
                                     parsed = _json.loads(data_str)
@@ -2180,6 +2228,68 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
+                                    # Diffusion streaming: every upstream delta.content is the FULL text so
+                                    # far. Relay it as a `_diffusionReplace` chunk, strip it from the upstream
+                                    # chunk, and relay the rest (reasoning, usage, tool_calls, finish_reason)
+                                    # normally; the finish chunk carries the final full text once.
+                                    if diffusing:
+                                        choices = parsed.get("choices")
+                                        if (
+                                            isinstance(choices, list)
+                                            and choices
+                                            and isinstance(choices[0], dict)
+                                        ):
+                                            choice = choices[0]
+                                            delta = choice.get("delta")
+                                            had_content = (
+                                                isinstance(delta, dict) and "content" in delta
+                                            )
+                                            text = (
+                                                delta.pop("content", None) if had_content else None
+                                            )
+                                            if isinstance(text, str) and text:
+                                                diffusion_last_text = text
+                                                frame = {
+                                                    "id": parsed.get("id")
+                                                    or f"chatcmpl-{uuid.uuid4().hex}",
+                                                    "object": "chat.completion.chunk",
+                                                    "created": parsed.get("created")
+                                                    or int(time.time()),
+                                                    "model": parsed.get("model") or model,
+                                                    "choices": [
+                                                        {
+                                                            "index": 0,
+                                                            "delta": {},
+                                                            "finish_reason": None,
+                                                        }
+                                                    ],
+                                                    # Replaces the live reply's text in place; the client never appends it.
+                                                    "_diffusionReplace": text,
+                                                }
+                                                yield f"data: {_json.dumps(frame)}"
+                                            finished = choice.get("finish_reason") is not None
+                                            modified = had_content
+                                            if (
+                                                finished
+                                                and not diffusion_final_yielded
+                                                and diffusion_last_text is not None
+                                            ):
+                                                if not isinstance(delta, dict):
+                                                    delta = choice["delta"] = {}
+                                                delta["content"] = diffusion_last_text
+                                                diffusion_final_yielded = True
+                                                modified = True
+                                            # A chunk that only carried the stripped full text has nothing left to relay.
+                                            if (
+                                                had_content
+                                                and not delta
+                                                and not finished
+                                                and parsed.get("usage") is None
+                                                and len(choices) == 1
+                                            ):
+                                                continue
+                                            if modified:
+                                                line = f"data: {_json.dumps(parsed)}"
                         if self.provider_type == "lemonade":
                             if line.startswith("{"):
                                 line = _bare_json_error_as_sse(line) or line
@@ -2194,6 +2304,15 @@ class ExternalProviderClient:
                     if web_search_active and web_search_tool_started and not web_search_tool_ended:
                         yield _build_web_search_tool_end()
                         web_search_tool_ended = True
+                    # Diffusion streaming: upstream closed with neither a finish chunk nor [DONE];
+                    # flush the final text unterminated so a truncated reply is not saved as complete.
+                    if (
+                        diffusing
+                        and not diffusion_final_yielded
+                        and diffusion_last_text is not None
+                    ):
+                        yield _diffusion_final_chunk(diffusion_last_text)
+                        diffusion_final_yielded = True
                 except GeneratorExit:
                     await response.aclose()  # set PoolByteStream._closed=True FIRST
                     await lines_gen.aclose()  # now safe — aclose() is a no-op

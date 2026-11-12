@@ -143,6 +143,7 @@ import {
   FINISHED_TEXT_REMEND,
   IncrementalMarkdownCache,
   LITERAL_LINK_REMEND,
+  TextRewriteCounter,
   hasIncompleteLinkRepair,
   markdownRenderKey,
   parseMarkdownIntoRenderableBlocks,
@@ -1622,14 +1623,17 @@ function MarkdownTextRenderer({
   const incrementalCacheRef = useRef({
     messageId,
     cache: new IncrementalMarkdownCache(),
+    rewrites: new TextRewriteCounter(),
   });
   if (incrementalCacheRef.current.messageId !== messageId) {
     incrementalCacheRef.current = {
       messageId,
       cache: new IncrementalMarkdownCache(),
+      rewrites: new TextRewriteCounter(),
     };
   }
   const incrementalCache = incrementalCacheRef.current.cache;
+  const rewriteGeneration = incrementalCacheRef.current.rewrites.update(displayText);
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
@@ -1647,7 +1651,7 @@ function MarkdownTextRenderer({
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={statusType} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${cut}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${rewriteGeneration}:${renderKey}:${sandboxScopeKey}:${cut}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
             remend={

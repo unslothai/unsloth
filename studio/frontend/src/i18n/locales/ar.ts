@@ -5693,4 +5693,8 @@ export const ar = {
       inRam: "{amount} في RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "بث التنقية",
+    diffusionStreamingDescription: "اعرض الإجابة مباشرةً على لوحة أثناء إزالة التشويش خلال البث. مخصص فقط لنقاط نهاية الانتشار في Inception Mercury، التي تُرجع النص الكامل في كل خطوة؛ مع أي نقطة نهاية أخرى لا يُحفظ إلا آخر جزء من الرد. الرسالة المحفوظة هي الإجابة النهائية.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -5774,4 +5774,8 @@ export const zhTW = {
       inRam: "{amount} 位於 RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "擴散串流",
+    diffusionStreamingDescription: "在串流輸出時，以畫布即時顯示答案逐步去噪的過程。僅適用於 Inception Mercury 擴散端點，它們在每個步驟都回傳完整文字；用於其他端點時只會保留回覆的最後一段。儲存的訊息即為最終答案。",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

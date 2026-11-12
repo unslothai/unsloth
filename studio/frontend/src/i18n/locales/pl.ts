@@ -6154,4 +6154,8 @@ export const pl = {
       inRam: "{amount} w RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Strumieniowanie dyfuzyjne",
+    diffusionStreamingDescription: "Pokazuj odpowiedź na żywo na kanwie podczas odszumiania w trakcie strumieniowania. Tylko dla endpointów dyfuzyjnych Inception Mercury, które na każdym kroku zwracają pełny tekst; przy każdym innym endpoincie zostanie zachowany tylko ostatni fragment odpowiedzi. Zapisana wiadomość to ostateczna odpowiedź.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

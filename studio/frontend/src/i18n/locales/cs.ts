@@ -6117,4 +6117,8 @@ export const cs = {
       inRam: "{amount} v RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Streamování difúze",
+    diffusionStreamingDescription: "Zobrazit odpověď živě na plátně během odšumování při streamování. Pouze pro difuzní endpointy Inception Mercury, které v každém kroku vracejí celý text; u jiného endpointu se zachová jen poslední část odpovědi. Uložená zpráva je konečná odpověď.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;
