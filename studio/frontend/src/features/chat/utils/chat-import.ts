@@ -142,21 +142,29 @@ function oaiMessagesToRecords(
 ): MessageRecord[] {
   type Stashed = { id?: string; name?: string; result: string; used?: boolean };
   const stashedResults: Stashed[] = [];
-  // Indexed so out-of-order imports stay linear.
-  const stashedBy = { id: new Map<string, Stashed[]>(), name: new Map<string, Stashed[]>() };
+  // Indexed buckets with a cursor past the used prefix keep out-of-order imports linear.
+  type Bucket = { items: Stashed[]; start: number };
+  const stashedBy = { id: new Map<string, Bucket>(), name: new Map<string, Bucket>() };
   const stash = (entry: Stashed) => {
     stashedResults.push(entry);
     for (const [map, key] of [[stashedBy.id, entry.id], [stashedBy.name, entry.name]] as const) {
       if (key === undefined) continue;
-      const list = map.get(key);
-      if (list) list.push(entry);
-      else map.set(key, [entry]);
+      const bucket = map.get(key);
+      if (bucket) bucket.items.push(entry);
+      else map.set(key, { items: [entry], start: 0 });
     }
   };
-  const takeStashed = (map: Map<string, Stashed[]>, key: string, ok: (e: Stashed) => boolean = () => true) => {
-    const entry = map.get(key)?.find((e) => !e.used && ok(e));
-    if (entry) entry.used = true;
-    return entry?.result;
+  const takeStashed = (map: Map<string, Bucket>, key: string, ok: (e: Stashed) => boolean = () => true) => {
+    const bucket = map.get(key);
+    if (!bucket) return undefined;
+    while (bucket.start < bucket.items.length && bucket.items[bucket.start].used) bucket.start++;
+    for (let at = bucket.start; at < bucket.items.length; at++) {
+      const entry = bucket.items[at];
+      if (entry.used || !ok(entry)) continue;
+      entry.used = true;
+      return entry.result;
+    }
+    return undefined;
   };
   const pending: Array<{
     turn: number;
