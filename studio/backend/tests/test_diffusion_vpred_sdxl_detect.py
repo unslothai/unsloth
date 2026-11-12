@@ -1044,3 +1044,37 @@ def test_the_marker_read_overlaps_only_a_staged_snapshot():
     assert "_base_local_dir" in gate
     first = calls[0].body.args[0]
     assert ast.unparse(first) == "_base_local_dir"
+
+
+def test_a_managed_account_reads_checkpoint_headers_without_the_installation_token(monkeypatch):
+    import huggingface_hub
+    from fastapi import HTTPException
+
+    from hub.routes import inventory
+    from hub.services.models import account_access
+
+    tokens = []
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        tokens.append(token)
+        return types.SimpleNamespace(
+            tensors = {k: types.SimpleNamespace(shape = [0]) for k in SDXL_UNET_KEYS},
+            metadata = {},
+        )
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    for managed in (False, True):
+        monkeypatch.setattr(account_access, "managed_account", lambda managed = managed: managed)
+        assert inventory.is_sdxl_checkpoint("example/ckpt", "a.safetensors", None, None, "u")
+    assert tokens == [None, False]
+
+    monkeypatch.setattr(account_access, "model_allowlist", lambda: ["allowed/*"])
+    with pytest.raises(HTTPException):
+        inventory.is_sdxl_checkpoint("example/ckpt", "a.safetensors", None, None, "u")
+    assert len(tokens) == 2

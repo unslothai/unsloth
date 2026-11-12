@@ -31,6 +31,7 @@ from hub.schemas.downloads import (
     DownloadStartResponse,
     TransportStatusResponse,
 )
+from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg
 from hub.schemas.inventory import (
     AddScanFolderRequest,
@@ -164,6 +165,10 @@ def is_sdxl_checkpoint(
         validate_repo_id(repo_id)
     except HFValidationError:
         raise HTTPException(status_code = 422, detail = "Invalid repository ID") from None
+    # A managed account must never read through the installation's ambient token.
+    if account_access.managed_account():
+        account_access.require_model_allowed(repo_id)
+    hf_token = account_access.account_hf_token(hf_token)
     try:
         return read_hub_checkpoint_family(repo_id, filename, hf_token, revision) == "sdxl"
     except Exception:
