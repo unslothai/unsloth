@@ -152,6 +152,11 @@ def _run(
         "utils.datasets.online_tokenization.resolve_worker_count",
         lambda desired = None: 4,
     )
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.host_memory_snapshot",
+        lambda: (1 << 30, 64 << 30),
+        raising = False,
+    )
     trainer = _fake_self(**(self_overrides or {}))
     config_args = _config_args(**(config_overrides or {}))
     wrapper = {"dataset": _dataset()} if wrapper is None else wrapper
@@ -285,6 +290,16 @@ def test_an_already_tokenized_split_takes_the_old_path(monkeypatch):
     original = _dataset(columns = {"input_ids": [[1, 2]] * ROWS})
     decision, config_args, wrapper, trainer = _run(monkeypatch, wrapper = {"dataset": original})
     assert not decision.enabled and "input_ids" in decision.reason
+    _assert_untouched(config_args, wrapper, trainer, original)
+
+
+def test_a_block_swap_run_takes_the_old_path(monkeypatch):
+    """The trainer's offload setting reaches the gate: Block Swap runs keep their layers in host RAM."""
+    original = _dataset()
+    decision, config_args, wrapper, trainer = _run(
+        monkeypatch, wrapper = {"dataset": original}, self_overrides = {"_offload_layers": 28}
+    )
+    assert not decision.enabled and "Block Swap" in decision.reason
     _assert_untouched(config_args, wrapper, trainer, original)
 
 

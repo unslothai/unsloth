@@ -4173,6 +4173,7 @@ class UnslothTrainer:
                 max_steps = config_args.get("max_steps"),
                 grad_accum = config_args.get("gradient_accumulation_steps", 1),
                 resolved_max_steps_epochs = resolved_epochs,
+                offload_layers = getattr(self, "_offload_layers", 0),
             )
         except Exception as exc:  # noqa: BLE001 - a gating failure must not fail a run
             logger.warning(f"Online tokenization gating failed, using eager path: {exc}")
@@ -4696,6 +4697,12 @@ class UnslothTrainer:
                 f"[DEBUG] learning_rate from training_args: {lr_value} (type: {type(lr_value).__name__})\n"
             )
 
+            from utils.datasets.online_tokenization import host_memory_fork_veto
+
+            # A tokenizer pool forked off a trainer this size can OOM the host; UNSLOTH_DATASET_NUM_PROC still wins.
+            fork_veto = host_memory_fork_veto(getattr(self, "_offload_layers", 0))
+            if fork_veto:
+                logger.info(f"Tokenizing in process: {fork_veto}\n")
             config_args = {
                 "per_device_train_batch_size": training_args.get("batch_size", 2),
                 "gradient_accumulation_steps": training_args.get("gradient_accumulation_steps", 4),
@@ -4718,6 +4725,7 @@ class UnslothTrainer:
                         or self.is_audio_vlm
                         or self._cuda_audio_used
                         or _tokenizer_blocks_map_workers(self.tokenizer)
+                        or fork_veto
                     )
                     else None,
                     serial_as_none = False,
