@@ -138,7 +138,28 @@ def prefetch_for_pick(
         family = read_hub_checkpoint_family(repo_id, filename, hf_token)
     except Exception:  # noqa: BLE001 - evidence is best effort; validation and the load still decide
         return
+    _remember(repo_id, filename, family)
+
+
+def _remember(repo_id: str, filename: str, family: Optional[str]) -> None:
     with _LOCK:
         if len(_HEADER_VERDICTS) >= _MAX_VERDICTS:
             _HEADER_VERDICTS.clear()
         _HEADER_VERDICTS[_key(repo_id, filename)] = (time.monotonic(), family)
+
+
+def hub_checkpoint_loads_as_sdxl(
+    repo_id: str,
+    filename: str,
+    hf_token: Any,
+    revision: Optional[str] = None,
+) -> bool:
+    """A whole-SDXL header AND the loader's own verdict, so name-vetoed variants (inpaint, edit) are not offered."""
+    from .diffusion_families import detect_family_for_pick
+
+    family = read_hub_checkpoint_family(repo_id, filename, hf_token, revision)
+    if family != "sdxl":
+        return False
+    _remember(repo_id, filename, family)
+    fam = detect_family_for_pick(repo_id, filename, None)
+    return fam is not None and fam.name == "sdxl"

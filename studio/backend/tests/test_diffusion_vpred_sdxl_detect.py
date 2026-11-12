@@ -1078,3 +1078,16 @@ def test_a_managed_account_reads_checkpoint_headers_without_the_installation_tok
     with pytest.raises(HTTPException):
         inventory.is_sdxl_checkpoint("example/ckpt", "a.safetensors", None, None, "u")
     assert len(tokens) == 2
+
+
+def test_the_catalog_never_offers_a_checkpoint_the_loader_vetoes_by_name(monkeypatch):
+    from core.inference.diffusion import get_diffusion_backend
+    from hub.routes.inventory import is_sdxl_checkpoint
+
+    _stub_header(monkeypatch, [SDXL_UNET_KEYS])
+    repo = "example/neutral-mix"
+    assert is_sdxl_checkpoint(repo, "edition.safetensors", None, False, "u")
+    assert not is_sdxl_checkpoint(repo, "edition-inpaint.safetensors", None, False, "u")
+    get_diffusion_backend().validate_load_request(
+        repo, gguf_filename = "edition.safetensors", family_override = None, model_kind = "single_file"
+    )

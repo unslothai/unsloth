@@ -158,7 +158,7 @@ def is_sdxl_checkpoint(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    from core.inference.diffusion_hub_evidence import read_hub_checkpoint_family
+    from core.inference.diffusion_hub_evidence import hub_checkpoint_loads_as_sdxl
     from huggingface_hub.utils import HFValidationError, validate_repo_id
 
     try:
@@ -170,7 +170,7 @@ def is_sdxl_checkpoint(
         account_access.require_model_allowed(repo_id)
     hf_token = account_access.account_hf_token(hf_token)
     try:
-        return read_hub_checkpoint_family(repo_id, filename, hf_token, revision) == "sdxl"
+        return hub_checkpoint_loads_as_sdxl(repo_id, filename, hf_token, revision)
     except Exception:
         raise HTTPException(
             status_code = 502, detail = "Could not read the checkpoint header"
