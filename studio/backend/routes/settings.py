@@ -1829,9 +1829,7 @@ def _q4nx_export_response() -> Q4nxExportResponse:
 
 
 @_shared_settings_router.get("/q4nx-export", response_model = Q4nxExportResponse)
-def get_q4nx_export(
-    current_subject: str = Depends(get_current_subject),
-) -> Q4nxExportResponse:
+def get_q4nx_export(current_subject: str = Depends(get_current_subject)) -> Q4nxExportResponse:
     return _q4nx_export_response()
 
 

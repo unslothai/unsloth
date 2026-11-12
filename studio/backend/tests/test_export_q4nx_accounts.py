@@ -126,6 +126,7 @@ def test_managed_account_and_owner_reach_the_converter_for_allowed_paths(convert
 
 def test_no_npu_and_no_opt_in_refuses_before_anything(monkeypatch, authorized):
     from utils import q4nx_export_settings
+
     monkeypatch.setattr(q4nx_export_settings, "q4nx_export_allowed", lambda: False)
     with pytest.raises(HTTPException) as exc:
         _convert(ALICE, repo_id = "org/private-GGUF", filename = "m.Q4_1.gguf")
