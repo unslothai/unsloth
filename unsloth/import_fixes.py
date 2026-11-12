@@ -8215,8 +8215,8 @@ def _sdpa_flash_backward(q, k, v):
     import torch
 
     aten = torch.ops.aten
-    out, lse, cum_q, cum_k, max_q, max_k, seed, offset, _ = aten._scaled_dot_product_flash_attention(
-        q, k, v, 0.0, True
+    out, lse, cum_q, cum_k, max_q, max_k, seed, offset, _ = (
+        aten._scaled_dot_product_flash_attention(q, k, v, 0.0, True)
     )
     return aten._scaled_dot_product_flash_attention_backward(
         torch.ones_like(out), q, k, v, out, lse, cum_q, cum_k, max_q, max_k, 0.0, True, seed, offset
@@ -8231,7 +8231,18 @@ def _sdpa_efficient_backward(q, k, v):
         q, k, v, None, True, 0.0, True
     )
     return aten._scaled_dot_product_efficient_attention_backward(
-        torch.ones_like(out), q, k, v, None, out, lse, seed, offset, 0.0, [True, True, True, False], True
+        torch.ones_like(out),
+        q,
+        k,
+        v,
+        None,
+        out,
+        lse,
+        seed,
+        offset,
+        0.0,
+        [True, True, True, False],
+        True,
     )[:3]
 
 
@@ -8241,7 +8252,11 @@ _SDPA_BACKWARD_PROBES = {
 }
 
 
-def _sdpa_backward_layout_mismatches(device, dtype, probes = None):
+def _sdpa_backward_layout_mismatches(
+    device,
+    dtype,
+    probes = None,
+):
     """SDPA backends whose real backward returns gradient strides other than PyTorch's fake kernel.
 
     Inductor asserts the fake strides on the real outputs, so a compiled backward through such a
@@ -8298,6 +8313,7 @@ def _rocm_sdpa_backward_layout_mismatches():
             return []
         device = torch.device("cuda", torch.cuda.current_device())
         from .device_type import arch_lacks_bf16
+
         arch = torch.cuda.get_device_properties(device).gcnArchName
     except Exception:
         return []

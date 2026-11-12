@@ -132,7 +132,9 @@ def test_opt_out_skips_the_probe(monkeypatch):
     fixes.fix_rocm_sdpa_backward_layout()
 
 
-@pytest.mark.parametrize("key", ["TORCHDYNAMO_DISABLE", "TORCH_COMPILE_DISABLE", "UNSLOTH_COMPILE_DISABLE"])
+@pytest.mark.parametrize(
+    "key", ["TORCHDYNAMO_DISABLE", "TORCH_COMPILE_DISABLE", "UNSLOTH_COMPILE_DISABLE"]
+)
 def test_nothing_is_probed_without_torch_compile(monkeypatch, key):
     """Eager backward never checks fake strides, so there is nothing to fix."""
     monkeypatch.setenv(key, "1")
