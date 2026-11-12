@@ -752,6 +752,8 @@ export const es419 = {
       "Cerrar esto no detiene la configuración. El resultado aparece en Configuración > Seguridad.",
   },
   composerSettings: {
+    shareDraft: "Compartir borradores entre chats",
+    shareDraftDescription: "Usa un borrador para los chats y las comparaciones. Desactivado por defecto; cada chat conserva su propio borrador.",
     title: "Redactor",
     plainText: "Redactor de texto sin formato",
     plainTextDescription:
@@ -1034,7 +1036,7 @@ export const es419 = {
       showMore: "Mostrar más",
       showLess: "Mostrar menos",
       settings: "Configuración",
-      api: "API",
+      api: "Monitor de API",
       lightMode: "Modo claro",
       darkMode: "Modo oscuro",
       guidedTour: "Recorrido guiado",
@@ -1845,6 +1847,13 @@ export const es419 = {
         audioUploadCancel: "Cancelar transcripción",
         audioUploadTranscribing: "Transcribiendo audio…",
         sectionTitle: "Dictado",
+        micTargetLabel: "Botón del micrófono",
+        micTargetAsr: "Transcribir con ASR",
+        micTargetModel: "Enviar audio al modelo",
+        micTargetAsrDescription: "El botón del micrófono escribe lo que dices en el cuadro de mensaje.",
+        micTargetModelDescription: "Con un modelo con entrada de audio cargado, el micrófono graba un clip y lo adjunta a tu mensaje. Los demás modelos siguen usando dictado.",
+        micTargetModelUnavailable: "Carga un modelo que acepte entrada de audio (por ejemplo, LFM3-Omni) para enviarle tu voz.",
+        micRecordForModel: "Grabar audio para el modelo",
         engineLabel: "Motor de dictado",
         engineBrowser: "Navegador",
         engineBrowserDescription:
@@ -1870,6 +1879,13 @@ export const es419 = {
         sttQuantDescription:
           "Elige o busca un modelo STT para ejecutarlo de forma local y luego su cuantización.",
         sttDeviceLabel: "Cargar en",
+        sttContextLabel: "Contexto de voz",
+        sttContextAuto: "Automático (recomendado)",
+        sttContextAutoDescription:
+          "Se ajusta a cada grabación y usa más memoria para audios más largos. Los entornos de ejecución más antiguos pueden necesitar un tamaño fijo para reducir la memoria. Se aplica a Qwen3-ASR en Voz y Transcribir.",
+        sttContextFixedDescription:
+          "Los límites más pequeños usan menos memoria. Las grabaciones que no caben necesitan un límite mayor o Automático. Se aplica a Qwen3-ASR en Voz y Transcribir.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU cuando esté disponible",
         sttDeviceCpu: "RAM de la CPU",
         sttDeviceAutoDescription:
@@ -3321,11 +3337,11 @@ export const es419 = {
         "Muestra debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora reloj fecha cuándo terminó llegó respuesta mensaje timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Información detallada de velocidad y carga",
+      showGenerationDetails: "Información detallada de velocidad",
       showGenerationDetailsDescription:
-        "Agrega a las lecturas en vivo la velocidad de lectura del prompt, el conteo de tokens y la aceptación de borradores, y muestra dónde se cargaron las capas del modelo.",
+        "Agrega a las lecturas en vivo la velocidad de lectura del prompt, el conteo de tokens y la aceptación de borradores.",
       showGenerationDetailsKeywords:
-        "detallado desarrollador estadísticas velocidad capas trasladar expertos verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "detallado desarrollador estadísticas velocidad verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Estadísticas de velocidad y contexto",
       generationStatsUpdatesDescription:
         "En tiempo real cuenta los tokens por segundo y el uso del contexto mientras se transmite una respuesta. Al terminar los actualiza cuando termina cada respuesta.",
@@ -3487,12 +3503,10 @@ export const es419 = {
       exportingAction: "Exportando...",
       exportConversations: "Exportar Recientes y Proyectos",
       exportConversationsDescription:
-        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, CSV, ShareGPT JSONL o Markdown, combinados o por chat. Message JSONL está disponible por chat.",
+        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML o PDF, combinados o por chat. Message JSONL está disponible por chat.",
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recientes",
       exportScopeAll: "Recientes + Proyectos",
-      exportCombinedSuffix: "(combinado)",
-      exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
         "Importa archivos JSON, JSONL, NDJSON, CSV o Markdown a Recientes.",
@@ -3929,7 +3943,7 @@ export const es419 = {
       mcp: {
         title: "Acceso de agentes (MCP)",
         description:
-          "Permite que agentes de programación como Claude Code y Codex usen Unsloth mediante MCP. Los agentes inician sesión con una clave de API de Unsloth de esta página.",
+          "Permite que agentes de programación como Claude Code y Codex usen Unsloth mediante MCP.",
         enable: "Permitir conexiones de agentes",
         enableDescription:
           "Sirve /mcp/ a las solicitudes que incluyen una clave de API de Unsloth.",
@@ -3938,10 +3952,93 @@ export const es419 = {
         saveError: "No se pudo guardar la opción de acceso de agentes.",
         agent: "Agente",
         exportKeyHint:
-          "Define {name} con una clave de API de Unsloth de esta página antes de iniciar el agente.",
+          "Define {name} con una clave de API de Unsloth antes de iniciar el agente.",
         configFileHint: "Agrega esto a {path}.",
         keywords:
           "mcp protocolo de contexto de modelo agentes agente herramientas model context protocol agents claude codex tools",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "Los agentes inician sesión con una clave de API de Unsloth.",
+      createKey: "Crear una clave de API",
+      tools: {
+        title: "Herramientas",
+        count: "{on} de {total} activadas",
+        choose: "Elegir herramientas",
+        dialogTitle: "Herramientas de Unsloth MCP",
+        allTools: "Todas las herramientas",
+        selectAll: "Seleccionar todo",
+        selectNone: "No seleccionar nada",
+        description:
+          "Cada herramienta activada se suma a lo que los agentes leen antes de empezar, así que desactiva las que no necesites. Los agentes nunca ven una herramienta desactivada y sus llamadas se rechazan. Los agentes ya conectados ven el cambio al volver a conectarse.",
+        saveError: "No se pudo guardar la configuración de herramientas de Unsloth MCP.",
+        chatNote: "El chat nunca recibe {tools}.",
+        groups: {
+          models: "Modelos",
+          generate: "Generar",
+          training: "Entrenamiento y exportación",
+          library: "Datos y biblioteca",
+          jobs: "Tareas",
+          other: "Otras",
+        },
+      },
+      status: {
+        on: "Activado",
+        off: "Desactivado",
+      },
+      apiKeysRow: {
+        open: "Abrir en Agentes",
+      },
+      toolLabels: {
+        studioStatus: "Estado",
+        listModels: "Listar modelos",
+        loadModel: "Cargar modelo",
+        unloadModel: "Descargar de memoria",
+        planLoad: "Planificar una carga",
+        downloadModel: "Descargar modelo",
+        chat: "Chat",
+        embed: "Incrustar texto",
+        systemOne: "Modelo de decisión",
+        generateImage: "Generar imágenes",
+        generateAudio: "Generar audio",
+        transcribe: "Transcribir",
+        analyzeAudio: "Analizar audio",
+        generateVideo: "Generar video",
+        runRecipe: "Ejecutar Data Recipe",
+        getJob: "Estado de la tarea",
+        datasets: "Conjuntos de datos",
+        startTraining: "Iniciar entrenamiento",
+        listTrainingRuns: "Entrenamientos",
+        exportModel: "Exportar modelo",
+        listMedia: "Contenido guardado",
+        voices: "Voces",
+        cancel: "Cancelar trabajo",
+      },
+      toolDescriptions: {
+        studioStatus: "Ver qué está cargado, en marcha y libre en esta computadora.",
+        listModels: "Listar los modelos que los agentes pueden cargar.",
+        loadModel: "Cargar un modelo para que los agentes chateen o generen con él.",
+        unloadModel: "Descargar un modelo de la memoria para liberarla.",
+        planLoad: "Ver el tamaño de descarga y la memoria de una carga sin cargar.",
+        downloadModel: "Descargar un modelo de Hugging Face.",
+        chat: "Chatear con el modelo cargado.",
+        embed: "Convertir texto en vectores u ordenar textos por similitud.",
+        systemOne: "Hacer al modelo de decisión preguntas de sí o no, de opción o de puntuación.",
+        generateImage: "Generar imágenes y guardarlas en la galería.",
+        generateAudio: "Generar voz u otro audio.",
+        transcribe: "Convertir voz en texto.",
+        analyzeAudio: "Comprobar los hablantes, los tiempos y el ajuste de un clip a un guion.",
+        generateVideo: "Generar un video.",
+        runRecipe: "Ejecutar una Data Recipe para crear un dataset.",
+        getJob: "Seguir una tarea larga hasta que termine.",
+        datasets: "Listar y subir datasets.",
+        startTraining: "Iniciar un fine-tuning.",
+        listTrainingRuns: "Listar los entrenamientos y sus resultados.",
+        exportModel: "Exportar un modelo entrenado, por ejemplo a GGUF.",
+        listMedia: "Ver las imágenes, audios y videos guardados.",
+        voices: "Listar, guardar, renombrar o eliminar voces.",
+        cancel: "Detener un trabajo en curso, como un entrenamiento o una exportación.",
       },
     },
     about: {

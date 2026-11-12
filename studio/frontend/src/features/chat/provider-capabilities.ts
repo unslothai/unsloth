@@ -1382,6 +1382,7 @@ export function providerModelReplaysReasoning(
 ): boolean {
   return (
     providerType === "minimax" ||
+    providerType === "deepseek" ||
     (providerType === "kimi" && isKimiK3(modelId))
   );
 }

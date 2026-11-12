@@ -44,6 +44,8 @@ export interface ManagedDownload {
   details?: string[];
   /** Folder this job downloads into; null means the Models folder. */
   downloadDir?: string | null;
+  /** A failure kept in the panel for retry, no longer a live inventory row. */
+  retained?: boolean;
 }
 
 export interface DownloadRequest {

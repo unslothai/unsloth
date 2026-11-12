@@ -116,17 +116,25 @@ function oaiContentToParts(raw: unknown): unknown[] {
   return raw.flatMap((value): unknown[] => {
     if (typeof value !== "object" || value === null) return [];
     const part = value as Record<string, unknown>;
-    if (part.type === "text" && typeof part.text === "string") {
+    if (
+      (part.type === "text" ||
+        part.type === "input_text" ||
+        part.type === "output_text") &&
+      typeof part.text === "string"
+    ) {
       return [{ type: "text", text: part.text }];
     }
     if (part.type === "refusal" && typeof part.refusal === "string") {
       return [{ type: "text", text: part.refusal }];
     }
-    if (part.type === "image_url") {
+    if (part.type === "image_url" || part.type === "input_image") {
+      // Chat Completions nests {image_url:{url}}; Responses input_image is a string.
       const imageUrl =
-        typeof part.image_url === "object" && part.image_url !== null
-          ? (part.image_url as Record<string, unknown>).url
-          : undefined;
+        typeof part.image_url === "string"
+          ? part.image_url
+          : typeof part.image_url === "object" && part.image_url !== null
+            ? (part.image_url as Record<string, unknown>).url
+            : undefined;
       return typeof imageUrl === "string" && imageUrl
         ? [{ type: "image", image: imageUrl }]
         : [];
@@ -142,9 +150,9 @@ function oaiMessagesToRecords(
 ): MessageRecord[] {
   // Waiting results, bucketed so every lookup is a cursor step (out-of-order imports stay linear):
   // id:<id>, name:<name> (any named), bare:<name> (named, no id), anon (neither).
-  type Stashed = { result: string; used?: boolean };
+  type Stashed = { result: unknown; used?: boolean };
   const buckets = new Map<string, { items: Stashed[]; start: number }>();
-  const stash = (result: string, id?: string, name?: string) => {
+  const stash = (result: unknown, id?: string, name?: string) => {
     const entry: Stashed = { result };
     const keys =
       id === undefined && name === undefined
@@ -168,11 +176,11 @@ function oaiMessagesToRecords(
   const pending: Array<{
     turn: number;
     hasExplicitId: boolean;
-    part: { toolCallId: string; toolName: string; result?: string };
+    part: { toolCallId: string; toolName: string; result?: unknown };
   }> = [];
   const bindResult = (
     pred: (entry: (typeof pending)[number]) => boolean,
-    result: string,
+    result: unknown,
   ) => {
     for (let at = pending.length - 1; at >= 0; at--) {
       if (!pred(pending[at])) continue;
@@ -195,9 +203,8 @@ function oaiMessagesToRecords(
     const role = msg.role as string;
     if (role === "tool" || role === "function") {
       const result =
-        typeof msg.content === "string"
-          ? msg.content
-          : JSON.stringify(msg.content ?? "");
+        (msg as { [STRUCTURED_RESULT]?: unknown })[STRUCTURED_RESULT] ??
+        (typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
       const idKey =
         typeof msg.tool_call_id === "string" ? msg.tool_call_id : undefined;
       const nameKey = typeof msg.name === "string" ? msg.name : undefined;
@@ -227,16 +234,17 @@ function oaiMessagesToRecords(
         // _raw matches what the stream adapter and backend keep for invalid JSON arguments.
         try { return JSON.parse(argsStr); } catch { return { _raw: argsStr }; }
       };
+      const callParts: unknown[] = [];
       const addCall = (fn: Record<string, unknown>, callId: unknown) => {
         const argsStr = argumentsText(fn);
-        const part: { type: string; toolCallId: string; toolName: string; args: unknown; argsText: string; result?: string } = {
+        const part: { type: string; toolCallId: string; toolName: string; args: unknown; argsText: string; result?: unknown } = {
           type: "tool-call",
           toolCallId: typeof callId === "string" ? callId : crypto.randomUUID(),
           toolName: typeof fn.name === "string" ? fn.name : "unknown",
           args: parseArgs(argsStr),
           argsText: argsStr,
         };
-        parts.push(part);
+        callParts.push(part);
         // A result seen before its call binds now (id, else id-less name, else anonymous),
         // in arrival order, before later fallback matches.
         const early =
@@ -275,7 +283,7 @@ function oaiMessagesToRecords(
         const name = typeof fn.name === "string" ? fn.name : "unknown";
         const args = JSON.stringify(parseArgs(argumentsText(fn)));
         // Converters that upgraded the call to tool_calls sometimes leave the copy, maybe reserialized.
-        const alreadyListed = parts.some((part) => {
+        const alreadyListed = callParts.some((part) => {
           const p = part as { type?: string; toolName?: string; toolCallId?: string; args?: unknown };
           return (
             p.type === "tool-call" &&
@@ -285,7 +293,13 @@ function oaiMessagesToRecords(
         });
         if (!alreadyListed) addCall(fn, fn.id);
       }
-      content = parts;
+      // A merged Responses run carries its item order: content parts and tool_calls indices.
+      const order = (msg as { [ITEM_ORDER]?: unknown[] })[ITEM_ORDER];
+      content = order
+        ? order.flatMap((item) =>
+            typeof item === "number" ? callParts.slice(item, item + 1) : oaiContentToParts([item]),
+          )
+        : [...parts, ...callParts];
     } else {
       content = oaiContentToParts(msg.content);
     }
@@ -317,8 +331,11 @@ function oaiMessagesToRecords(
 const SHAREGPT_ROLES = new Map<string, MessageRecord["role"]>([
   ["human", "user"],
   ["user", "user"],
+  ["input", "user"],
   ["gpt", "assistant"],
   ["assistant", "assistant"],
+  ["output", "assistant"],
+  ["developer", "system"],
   ["system", "system"],
 ]);
 
@@ -331,11 +348,24 @@ function sharegptToRecords(
   let prevId: string | null = null;
   let idx = 0;
   for (const c of conversations) {
+    if (typeof c !== "object" || c === null) continue;
     const conv = c as Record<string, unknown>;
-    const from = typeof conv.from === "string" ? conv.from : "";
-    const value = typeof conv.value === "string" ? conv.value : "";
+    // role/content beats from/value (backend formatter order); an unmapped role key is skipped, not mislabeled.
+    const roleKey =
+      typeof conv.role === "string" && conv.role.trim() ? conv.role : "";
+    const from =
+      roleKey || (typeof conv.from === "string" ? conv.from : "");
+    const value =
+      typeof conv.content === "string" && conv.content.trim()
+        ? conv.content
+        : typeof conv.value === "string"
+          ? conv.value
+          : "";
     if (!value.trim()) continue;
-    const role = SHAREGPT_ROLES.get(from.trim().toLowerCase()) ?? "assistant";
+    const role =
+      SHAREGPT_ROLES.get(from.trim().toLowerCase()) ??
+      (roleKey ? null : "assistant");
+    if (role === null) continue;
     const id = crypto.randomUUID();
     records.push({
       id,
@@ -364,11 +394,11 @@ function markdownToRecords(
     if (!content.trim()) continue;
     const normalizedRole = role.trim().toLowerCase();
     const validRole =
-      normalizedRole === "user" ||
-      normalizedRole === "assistant" ||
-      normalizedRole === "system"
-        ? normalizedRole
-        : normalizedRole.length > 0
+      normalizedRole === "developer"
+        ? "system"
+        : normalizedRole === "user" ||
+            normalizedRole === "assistant" ||
+            normalizedRole === "system"
           ? normalizedRole
           : "user";
     const id = crypto.randomUUID();
@@ -414,6 +444,197 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
   return records;
 }
 
+// Alpaca input follows the instruction, as in the backend's dataset formatter.
+function pairToTurns(obj: Record<string, unknown>): unknown[] {
+  const isAlpaca =
+    typeof obj.instruction === "string" && typeof obj.output === "string";
+  const isPair =
+    typeof obj.prompt === "string" && typeof obj.completion === "string";
+  if (!isAlpaca && !isPair) return [];
+  // Trim only to test emptiness: completion prompts can end in meaningful whitespace.
+  const input = typeof obj.input === "string" && obj.input.trim() ? obj.input : "";
+  const userText = isAlpaca
+    ? input ? `${obj.instruction}\n\n${input}` : (obj.instruction as string)
+    : (obj.prompt as string);
+  const assistantText = (isAlpaca ? obj.output : obj.completion) as string;
+  if (!userText.trim() || !assistantText.trim()) return [];
+  return [
+    ...(typeof obj.system === "string" ? [{ role: "system", content: obj.system }] : []),
+    { role: "user", content: userText },
+    { role: "assistant", content: assistantText },
+  ];
+}
+
+// Live parser's {text, images} tool result; symbol-keyed so imported JSON cannot set it.
+const STRUCTURED_RESULT = Symbol("structuredResult");
+// Item order of a merged Responses assistant run: content parts and tool_calls indices.
+const ITEM_ORDER = Symbol("itemOrder");
+
+function toolTurn(callId: string, output: unknown): Record<string | symbol, unknown> {
+  if (typeof output === "string") return { role: "tool", tool_call_id: callId, content: output };
+  const parts = (Array.isArray(output) ? output : typeof output === "object" && output !== null ? [output] : []) as Array<Record<string, unknown> | null>;
+  const texts: string[] = [];
+  const images: { data: string; mimeType: string }[] = [];
+  const known = parts.length > 0 && parts.every((part) => {
+    const source = part?.image_url ?? part?.url;
+    const url =
+      typeof source === "string" ? source : (source as { url?: unknown } | undefined)?.url;
+    const value = typeof part?.text === "string" ? part.text : part?.logs;
+    if (typeof value === "string") texts.push(value);
+    else if (typeof url !== "string") return false;
+    else {
+      const inline = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+      if (inline) images.push({ mimeType: inline[1], data: inline[2] });
+      else texts.push(url);
+    }
+    return true;
+  });
+  const text = known ? texts.join("\n") : JSON.stringify(output ?? "");
+  return {
+    role: "tool",
+    tool_call_id: callId,
+    content: text,
+    ...(images.length > 0 ? { [STRUCTURED_RESULT]: { text, images } } : {}),
+  };
+}
+
+// Studio's names for provider-run Responses tools (chat-adapter SERVER_SIDE_BUILTIN_TOOL_NAMES).
+const BUILTIN_TOOL_NAMES: Record<string, string> = {
+  web_search_call: "web_search",
+  code_interpreter_call: "code_execution",
+  shell_call: "code_execution",
+};
+// Executed by the client, so neither hosted nor answered on its own.
+const CLIENT_RUN_CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call", "computer_call"]);
+
+// Adjacent assistant items share one turn, as in the backend's _normalise_responses_input.
+function responsesToTurns(obj: Record<string, unknown>): unknown[] {
+  // A lone typed item (a raw function_call_output line) is not a transcript.
+  if (typeof obj.type === "string") return [];
+  const turns: Record<string | symbol, unknown>[] = [];
+  const built = new Set<Record<string | symbol, unknown>>();
+  type Built = { content: unknown[]; tool_calls: unknown[]; [ITEM_ORDER]: unknown[] };
+  const assistantTurn = (): Built => {
+    const last = turns[turns.length - 1];
+    if (last && built.has(last)) return last as unknown as Built;
+    const turn = { role: "assistant", content: [], tool_calls: [], [ITEM_ORDER]: [] };
+    built.add(turn);
+    turns.push(turn);
+    return turn;
+  };
+  const addContent = (...parts: unknown[]) => {
+    const turn = assistantTurn();
+    turn.content.push(...parts);
+    turn[ITEM_ORDER].push(...parts);
+  };
+  // Hosted results flush after the run: mid-run they split it and replay prunes the tool-only half.
+  const hosted = new Set<string>();
+  const deferred: Record<string | symbol, unknown>[] = [];
+  const push = (turn: Record<string | symbol, unknown>) => turns.push(...deferred.splice(0), turn);
+  const text = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value : undefined;
+  const instructions = text(obj.instructions);
+  if (instructions) turns.push({ role: "system", content: instructions });
+  const input = text(obj.input);
+  if (input) turns.push({ role: "user", content: input });
+  const items = [obj.input, obj.output].flatMap((list) =>
+    Array.isArray(list)
+      ? list.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+      : [],
+  );
+  const answered = new Set(
+    items.flatMap((item) =>
+      typeof item.type === "string" && item.type.endsWith("_call_output") ? [item.call_id ?? item.id] : [],
+    ),
+  );
+  for (const entry of items) {
+    const type = typeof entry.type === "string" ? entry.type : "";
+    if (entry.role === "assistant") {
+      addContent(
+        ...(Array.isArray(entry.content)
+          ? entry.content
+          : text(entry.content)
+            ? [{ type: "text", text: entry.content }]
+            : []),
+      );
+    } else if (typeof entry.role === "string") {
+      push(entry);
+    } else if (type === "image_generation_call") {
+      const encoded = text(entry.result) ?? text(entry.b64_json);
+      if (encoded) {
+        addContent({
+          type: "image_url",
+          image_url: /^(?:https?:|data:)/i.test(encoded)
+            ? encoded
+            : `data:image/${text(entry.output_format) ?? "png"};base64,${encoded}`,
+        });
+      }
+    } else if (type.endsWith("_call")) {
+      const id = text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID();
+      const builtin = !CLIENT_RUN_CALLS.has(type);
+      if (builtin) hosted.add(id);
+      const commands = (entry.action as { commands?: unknown } | undefined)?.commands;
+      const name =
+        BUILTIN_TOOL_NAMES[type] ??
+        text(entry.name) ??
+        (type === "function_call" || type === "custom_tool_call" ? "unknown" : type.replace(/_call$/, ""));
+      // mcp_call names its server in server_label.
+      const namespace = text(entry.namespace) ?? text(entry.server_label);
+      // Hosted tools use the shapes Studio's own cards render (code_execution reads command).
+      const payload =
+        typeof entry.code === "string"
+          ? { command: entry.code }
+          : type === "shell_call" && Array.isArray(commands)
+            ? { kind: "bash", command: commands.join("\n") }
+            : Array.isArray(entry.queries)
+              ? { queries: entry.queries }
+              : entry.input !== undefined
+                ? { input: entry.input }
+                : (entry.arguments ?? entry.action ?? {});
+      const turn = assistantTurn();
+      turn[ITEM_ORDER].push(turn.tool_calls.length);
+      turn.tool_calls.push({
+        id,
+        type: "function",
+        function: {
+          // namespace__name and {input} wrapping match the backend.
+          name: namespace ? `${namespace}__${name}` : name,
+          arguments:
+            typeof entry.arguments === "string"
+              ? entry.arguments
+              : JSON.stringify(
+                  // Marked like Studio's own hosted-tool cards, so replay strips them.
+                  builtin && typeof payload === "object" && payload !== null
+                    ? { ...payload, _server_tool: true }
+                    : payload,
+                ),
+        },
+      });
+      const done =
+        entry.output ??
+        (Array.isArray(entry.outputs) && entry.outputs.length > 0 ? entry.outputs : undefined) ??
+        (Array.isArray(entry.results) && entry.results.length > 0 ? entry.results : undefined) ??
+        entry.error ??
+        (builtin && !answered.has(id) ? (text(entry.status) ?? "completed") : undefined);
+      if (done != null) {
+        if (builtin) deferred.push(toolTurn(id, done));
+        else push(toolTurn(id, done));
+      }
+    } else if (type.endsWith("_call_output")) {
+      // local_shell_call_output names its call in id rather than call_id.
+      const callId = text(entry.call_id) ?? text(entry.id);
+      if (callId === undefined) continue;
+      const turn = toolTurn(callId, entry.output);
+      if (hosted.has(callId)) deferred.push(turn);
+      else push(turn);
+    }
+  }
+  const output = text(obj.output);
+  if (output) addContent({ type: "text", text: output });
+  turns.push(...deferred);
+  return turns;
+}
+
 export function recordToConversation(
   record: unknown,
   fallbackTitle: string,
@@ -428,13 +649,30 @@ export function recordToConversation(
   // Fresh ID: reusing the exported thread_id would clobber an existing thread.
   const threadId = crypto.randomUUID();
   const title = typeof obj.title === "string" ? obj.title : fallbackTitle;
-  const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now();
+  // Saved Response objects stamp created_at in seconds; chats use ms.
+  const createdAt = typeof obj.created_at === "number" ? obj.created_at : NaN;
+  const baseTs = Number.isNaN(createdAt)
+    ? Date.now()
+    : createdAt < 1e12
+      ? createdAt * 1000
+      : createdAt;
 
   let messages: MessageRecord[] = [];
-  if (Array.isArray(obj.messages)) {
+  if (Array.isArray(obj.messages) && obj.messages.length > 0) {
     messages = oaiMessagesToRecords(obj.messages, threadId, baseTs);
-  } else if (Array.isArray(obj.conversations)) {
+  }
+  if (
+    messages.length === 0 &&
+    Array.isArray(obj.conversations) &&
+    obj.conversations.length > 0
+  ) {
     messages = sharegptToRecords(obj.conversations, threadId, baseTs);
+  }
+  if (messages.length === 0) {
+    messages = oaiMessagesToRecords(pairToTurns(obj), threadId, baseTs);
+  }
+  if (messages.length === 0) {
+    messages = oaiMessagesToRecords(responsesToTurns(obj), threadId, baseTs);
   }
 
   if (messages.length === 0) return null;

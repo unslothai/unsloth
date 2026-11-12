@@ -1,0 +1,28 @@
+{
+  "_class_name": "MiniMaxH3DiTModel",
+  "_diffusers_version": "0.32.2",
+  "hidden_size": 5376,
+  "num_layers": 50,
+  "token_refiner_num_layers": 2,
+  "num_attention_heads": 56,
+  "attention_head_dim": 128,
+  "ffn_hidden_size": 14336,
+  "latents_dim": 24,
+  "audio_latents_dim": 32,
+  "patch_size": [
+    1,
+    2,
+    2
+  ],
+  "text_dim": 5120,
+  "timestep_input_dim": 256,
+  "time_embed_hidden_size": 5376,
+  "time_embed_dim": 2688,
+  "adaln_out_features": 96768,
+  "final_adaln_out_features": 10752,
+  "rope_inv_freq_len": 16,
+  "norm_eps": 1e-05,
+  "qk_norm_eps": 1e-05,
+  "final_norm_eps": 1e-05,
+  "audio_enabled": false
+}
