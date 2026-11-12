@@ -399,7 +399,7 @@ def test_the_summary_reads_a_video_keyed_metadata_caption(tmp_path):
     assert len(discover_clip_caption_pairs(folder)) == 2
 
 
-@pytest.mark.parametrize("separator", [" ", " ", "\u0085"])
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
 def test_a_caption_holding_a_unicode_line_separator_is_not_dropped(tmp_path, separator):
     """metadata.jsonl rows keep U+2028, U+2029 and U+0085 raw inside the JSON string, so cutting
     rows with splitlines() split the row mid-string and the caption was skipped without an error."""
