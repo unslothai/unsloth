@@ -144,7 +144,7 @@ def _spawn(mode, world = 2):
             for r in range(world)
         ]
     if "skip" in results[0]:
-        pytest.skip(f"unsloth_zoo expert factor swap unavailable: {results[0]['skip']}")
+        pytest.skip(reason = f"unsloth_zoo without the expert factor swap: {results[0]['skip']}")
     return results
 
 
