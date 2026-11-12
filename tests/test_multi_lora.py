@@ -234,7 +234,7 @@ def _assert_chunked_matches(new, old, dtype):
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-@pytest.mark.parametrize("chunk_elements", [1, 7 * 3, 1 << 25])
+@pytest.mark.parametrize("chunk_elements", [1, 7 * 3, 7 * 8 * 2, 1 << 25])
 @pytest.mark.parametrize("per_token_ids", [False, True])
 def test_chunked_per_adapter_loss_matches_the_dense_loss(
     monkeypatch, dtype, chunk_elements, per_token_ids
@@ -295,6 +295,41 @@ def test_chunked_per_adapter_loss_saves_no_full_vocab_fp32_copy(monkeypatch):
     chunked = saved_bytes(ml.per_adapter_loss)
     assert dense >= 8 * full  # the fp32 copy and cross_entropy's fp32 log-softmax
     assert chunked < full // 100, (chunked, dense)
+
+
+@pytest.mark.parametrize("per_token_ids", [False, True])
+def test_grad_scale_matches_scaling_an_fp32_copy_of_the_logits(per_token_ids):
+    # The fp16 loss-scale path used to scale the gradient of a full fp32 copy of the logits.
+    g = torch.Generator().manual_seed(1)
+    B, T, V, U = 3, 6, 11, 2
+    logits = (torch.randn(B, T, V, generator = g) * 3).half()
+    labels = torch.randint(0, V, (B, T), generator = g)
+    labels[0, 3:] = -100
+    ids = torch.randint(-1, U, (B, T), generator = g) if per_token_ids else torch.tensor([1, 0, 1])
+    scales = torch.tensor([2.0**16, 2.0**10])
+    per = scales[ids.clamp_min(0)]
+
+    x = logits.clone().requires_grad_()
+    up = x.float()
+    up.register_hook(lambda grad: grad * (per[:, None, None] if per.dim() == 1 else per[..., None]))
+    old_total, old_losses = ml.per_adapter_loss(up, labels, ids, U)
+    old_total.backward()
+
+    y = logits.clone().requires_grad_()
+    total, losses = ml.per_adapter_loss(y, labels, ids, U, grad_scale = per)
+    total.backward()
+    assert torch.equal(total, old_total) and torch.equal(losses, old_losses)
+    assert torch.equal(y.grad, x.grad)
+
+
+def test_chunked_per_adapter_loss_handles_one_token_rows():
+    logits = torch.randn(2, 1, 5, requires_grad = True)
+    total, losses = ml.per_adapter_loss(
+        logits, torch.zeros(2, 1, dtype = torch.long), torch.tensor([0, 1]), 2
+    )
+    total.backward()
+    assert total.item() == 0 and torch.equal(losses, torch.zeros(2))
+    assert torch.equal(logits.grad, torch.zeros_like(logits))
 
 
 def test_per_adapter_loss_is_each_adapters_own_mean():

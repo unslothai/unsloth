@@ -1579,15 +1579,23 @@ def per_adapter_loss(
     process_group = None,
     model: Optional[nn.Module] = None,
     num_items_in_batch: Optional[torch.Tensor] = None,
+    grad_scale: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Causal LM loss averaged within each adapter, summed over adapters.
 
     ``row_adapter_ids``: (B,) or per token (B, T). Pass ``model`` for ``drop_absent_adapter_grads_``, and under
     gradient accumulation ``num_items_in_batch`` = per-adapter ``adapter_token_counts`` summed over the window.
+    ``grad_scale``: per-row (B,) or per-token (B, T) fp32 factor on each logit's gradient (fp16 loss
+    scaling), applied before the gradient is rounded to the logits dtype; values stay unscaled.
     Returns (total, this rank's per-adapter losses).
     """
     shift_labels = labels[:, 1:]
     token_loss = _token_cross_entropy(logits, shift_labels.to(logits.device), ignore_index)
+    if grad_scale is not None:
+        scale = grad_scale.to(token_loss)
+        scale = scale[:, :-1] if scale.dim() == 2 else scale[:, None]
+        # Same value, gradient times scale.
+        token_loss = token_loss.detach() + (token_loss - token_loss.detach()) * scale
     valid = (shift_labels != ignore_index).float()
     ids = _label_adapter_ids(row_adapter_ids, labels)
     # Tokens with no adapter add zero to slot 0 instead of being masked out: no host sync under compile.
