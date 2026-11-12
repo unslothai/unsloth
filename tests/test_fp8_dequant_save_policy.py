@@ -220,9 +220,6 @@ def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit, monkeypatc
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkeypatch):
-    # Two submodels whose converters share a type and target but differ in sources: only the
-    # `.weight`-sourced one gets the fp8 dequant prepended. The other one is kept as loaded and must
-    # not gain a second copy, or save_pretrained would reverse it twice.
     import transformers.conversion_mapping as cm
     from types import SimpleNamespace
     from transformers.core_model_loading import (
@@ -232,6 +229,7 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
         WeightConverter,
     )
     from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
+    from transformers.quantizers.base import HfQuantizer
 
     target = "mlp.experts.gate_up_proj"
 
@@ -252,8 +250,13 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
         FineGrainedFP8Config(dequantize = True, weight_block_size = [BLOCK, BLOCK])
     )
     quantizer.pre_quantized = True
-    loaded = quantizer.update_weight_conversions(plain())
-    model = SimpleNamespace(_weight_conversions = loaded)
+    model = SimpleNamespace(named_parameters = lambda: iter(()))
+    # Zoo's subclass wrapper hides the model argument; the base interface retains it.
+    if "model" in inspect.signature(HfQuantizer.update_weight_conversions).parameters:
+        loaded = quantizer.update_weight_conversions(plain(), model)
+    else:
+        loaded = quantizer.update_weight_conversions(plain())
+    model._weight_conversions = loaded
     monkeypatch.setattr(cm, "get_model_conversion_mapping", lambda *a, **k: plain())
     assert _helper()(model) > 0
 

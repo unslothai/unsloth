@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""fp32 VAE runs that leave a 16-bit VAE's stored weights in place."""
-
 from __future__ import annotations
 
 import contextlib
 from typing import Any, Iterable, Optional
 
-# Marks the instance-level ``to`` below; the kept offload hook's pinned onload passes device moves through it.
 DTYPE_ONLY_TO_ATTR = "_unsloth_dtype_only_to"
 _KEEP_ATTR = "_unsloth_offload_keep_cpu"
 
@@ -21,7 +18,6 @@ def _first_param(module: Any) -> Any:
 
 
 def _onload_through_kept_hook(owner: Any) -> None:
-    """Onload via the kept hook (pinned chunks) so the upcast happens on device, not on the host weights."""
     hook = getattr(owner, "_hf_hook", None)
     if not getattr(hook, _KEEP_ATTR, False) or not callable(getattr(hook, "pre_forward", None)):
         return
@@ -35,8 +31,7 @@ def _onload_through_kept_hook(owner: Any) -> None:
 
 
 def _float_tensors(parts: Iterable[Any], dtype: Any) -> tuple[list, list]:
-    """``(module, name)`` of every floating parameter and buffer not already in ``dtype``. Keyed by registration, not
-    object: sequential offload's leaf hooks register a new Parameter on every onload and offload."""
+    """Track registrations: sequential offload replaces Parameter objects."""
     params, buffers, seen = [], [], set()
     for part in parts:
         for module in part.modules():
@@ -56,7 +51,6 @@ def _float_tensors(parts: Iterable[Any], dtype: Any) -> tuple[list, list]:
 
 
 def _kept_state(owner: Any) -> Optional[dict]:
-    """The kept offload hook's state on ``owner`` (diffusion_memory._wrap_cpu_offload_hook), else None."""
     if not getattr(getattr(owner, "_hf_hook", None), _KEEP_ATTR, False):
         return None
     state = getattr(owner, "__dict__", {}).get(_KEEP_ATTR)
@@ -71,7 +65,6 @@ def _names(owner: Any) -> dict:
 
 
 def _host_backed(state: Optional[dict], kind: str, full: Optional[str], current: Any) -> Any:
-    """The pinned host tensor ``current`` is an untouched onload of (the hook would re-point it on offload), else None."""
     if state is None or full is None or current.device.type in ("cpu", "meta"):
         return None
     import torch
@@ -111,7 +104,6 @@ def _version(t: Any) -> Optional[int]:
 def _mark_onloaded(
     state: Optional[dict], kind: str, full: Optional[str], m: Any, name: str
 ) -> None:
-    """Mark the cast-back tensor as the hook's untouched onload, so offload re-points it at the pinned host tensor."""
     if state is None or full is None:
         return
     table = state.get("version" if kind == "p" else "buffer_version")
@@ -145,8 +137,6 @@ def upcast_keeping_storage(
     parts: Optional[list] = None,
     dtype: Any = None,
 ) -> list:
-    """Cast ``parts`` to ``dtype`` one tensor at a time (never both copies on device); host tensors are kept for
-    ``restore_storage``. Kept-hook onloads are re-pointed at their pinned host tensor first, freeing the shared chunk."""
     import torch
 
     dtype = torch.float32 if dtype is None else dtype
@@ -168,16 +158,18 @@ def upcast_keeping_storage(
             how, ref = "orig", data
         else:
             how, ref = "dev", (data.device, data.dtype, full, state, None)
-        # [kind, module, name, how, ref, cast data_ptr, cast _version]; the cast fields stay None until it lands.
+        # [kind, module, name, storage source, original, cast pointer, cast version]
         records.append([kind, m, name, how, ref, None, None])
         del current, data
     token: list = []
     try:
-        # Host-backed weights first, all of them: they share one device chunk, which frees only once none points into it.
+        # Every host-backed view must leave the shared device chunk before it can be freed.
         for rec in records:
             if rec[3] == "host":
                 token.append(rec)
                 _set(rec[0], rec[1], rec[2], rec[4][4])
+                if rec[0] == "b":
+                    rec[4][3]["buffer_version"][rec[4][2]] = None
         for rec in records:
             kind, m, name, how, ref = rec[:5]
             if how != "host":
@@ -188,18 +180,16 @@ def upcast_keeping_storage(
             del data
             _set(kind, m, name, cast)
             del cast
-            current = _get(kind, m, name)
+            current = (m._parameters if kind == "p" else m._buffers)[name]
             rec[5], rec[6] = current.data_ptr(), _version(current)
             del current
     except BaseException:
-        # A failed upcast (OOM) puts every tensor back in its original dtype before the error propagates.
         restore_storage(token)
         raise
     return token
 
 
 def _restorable(current: Any, orig: Any, cast_ptr: Any) -> bool:
-    """``current`` holds ``orig``'s values (diffusers < 0.37 ``upcast_vae`` casts some submodules back)."""
     import torch
 
     if current.device != orig.device or current.shape != orig.shape:
@@ -227,33 +217,77 @@ def _restore_one(rec: list) -> None:
     device, load_dtype, full, state, kept = ref
     if how == "host" and rec[5] is None:
         if data.data_ptr() == kept.data_ptr():
-            # Never cast: back on the device, as the hook's onload of the pinned host tensor.
             _set(kind, m, name, kept.to(device, non_blocking = kept.is_pinned()))
             _mark_onloaded(state, kind, full, m, name)
         return
-    untouched = data.data_ptr() == cast_ptr and _version(data) == cast_version
+    current = (m._parameters if kind == "p" else m._buffers)[name]
+    untouched = data.data_ptr() == cast_ptr and _version(current) == cast_version
     if cast_ptr is None:
-        # Never cast (a "dev" tensor the failed upcast had not reached): still the original.
         return
     if data.dtype != load_dtype:
-        _set(kind, m, name, data.to(load_dtype))
+        try:
+            cast = data.to(load_dtype)
+        except RuntimeError as exc:
+            from .diffusion_vae_oom import is_oom
+            if is_oom(exc) and untouched and cast_version is not None and how == "host":
+                _set(kind, m, name, kept)
+                rec[5], rec[6] = None, None
+            raise
+        _set(kind, m, name, cast)
         if untouched and how == "host":
-            # fp16 / bf16 -> fp32 -> back is exact, so this is the pinned host tensor's onload again.
             _mark_onloaded(state, kind, full, m, name)
     elif how == "host" and data.device.type != "cpu":
-        # Cast back meanwhile by a submodule ``to`` (diffusers < 0.37 ``upcast_vae``): still the host tensor's values?
         if data.shape == kept.shape and bool(torch.equal(data, kept.to(data.device))):
             _mark_onloaded(state, kind, full, m, name)
 
 
+def _release_restore_memory(token: list, exc: Optional[BaseException] = None) -> None:
+    import torch
+    import traceback
+
+    errors, seen = [exc], set()
+    while errors:
+        error = errors.pop()
+        if error is None or id(error) in seen:
+            continue
+        seen.add(id(error))
+        traceback.clear_frames(error.__traceback__)
+        errors.extend((error.__cause__, error.__context__))
+        errors.extend(getattr(error, "exceptions", ()))
+    backends = dict.fromkeys(rec[4][0].type for rec in token if rec[3] in ("dev", "host"))
+    for backend in backends:
+        clear = getattr(getattr(torch, backend, None), "empty_cache", None)
+        if callable(clear):
+            try:
+                clear()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def restore_storage(token: list) -> None:
-    """Put back the original dtype: a kept host tensor itself, a device tensor by an exact cast back; one since moved
-    or changed is cast back to its load dtype, as the stock cast does."""
-    for rec in token:
-        try:
-            _restore_one(rec)
-        except Exception:  # noqa: BLE001 - best effort; leaves that tensor as the cast made it
-            pass
+    import sys
+
+    pending = list(reversed(token))
+    exc = sys.exc_info()[1]
+    if exc is not None:
+        from .diffusion_vae_oom import is_oom
+        if is_oom(exc):
+            _release_restore_memory(pending, exc)
+    while pending:
+        failed = []
+        released = False
+        for rec in pending:
+            cast_ptr = rec[5]
+            try:
+                _restore_one(rec)
+            except Exception:  # noqa: BLE001 - retried below; a later cast back can free the room it needs
+                failed.append(rec)
+                released |= cast_ptr is not None and rec[5] is None
+        if released:
+            _release_restore_memory(failed)
+        elif len(failed) == len(pending):
+            break
+        pending = failed
     token.clear()
 
 
@@ -273,7 +307,6 @@ def _is_16bit(dtype: Any) -> bool:
 
 @contextlib.contextmanager
 def pipeline_upcasts_keep_storage(pipe: Any):
-    """Route diffusers' fp32 / load-dtype round trip through ``upcast_keeping_storage``; other ``to`` calls run as is."""
     vae = getattr(pipe, "vae", None)
     first = _first_param(vae) if vae is not None else None
     config = getattr(vae, "config", None)
@@ -315,5 +348,4 @@ def pipeline_upcasts_keep_storage(pipe: Any):
         if vae.__dict__.get("to") is to:
             vae.__dict__.pop("to", None)
         if state["token"] is not None:
-            # A raise between the upcast and the cast back: leave the VAE in its load dtype, as the next call expects.
             restore_storage(state["token"])

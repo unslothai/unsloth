@@ -137,8 +137,7 @@ def _lean_lora_forward(self, x, *args, **kwargs):
         )
     ):
         return self._unsloth_peft_forward(x, *args, **kwargs)
-    # PEFT's maths without its per-call checks, its round trip of x through the fp32 adapter
-    # dtype, and the multiply when scaling is 1.
+    # PEFT math without per-call checks, the fp32 round trip of x, and the scale-1 multiply.
     lora = self.lora_B[adapter](self.lora_A[adapter](x))
     scaling = self.scaling[adapter]
     return self.base_layer(x) + (lora if scaling == 1 else lora * scaling)
@@ -365,11 +364,49 @@ class ClefDecisionModel(torch.nn.Module):
         return padded, None
 
 
+class _TokenIds:
+    __slots__ = ("input_ids",)
+
+    def __init__(self, input_ids):
+        self.input_ids = input_ids
+
+
+class _MemoTokenizer:
+    """encode_record tokenizes ~70 short, mostly repeated strings per row one call at a time.
+    Shared token ints stop every stored id from holding its own int object."""
+
+    MAX_CACHED_CHARS = 512
+    MAX_ENTRIES = 16384
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.cache, self.ints = {}, {}
+
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+        **kwargs,
+    ):
+        if add_special_tokens or kwargs or not isinstance(text, str):
+            return self.tokenizer(text, add_special_tokens = add_special_tokens, **kwargs)
+        ids = self.cache.get(text)
+        if ids is None:
+            raw = self.tokenizer(text, add_special_tokens = False).input_ids
+            ids = tuple(map(self.ints.setdefault, raw, raw))
+            if len(text) <= self.MAX_CACHED_CHARS:
+                if len(self.cache) >= self.MAX_ENTRIES:
+                    self.cache.clear()
+                self.cache[text] = ids
+        # A fresh list every call: encode_record extends the first one it gets.
+        return _TokenIds(list(ids))
+
+
 def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
     from .clef import QUESTION_TYPES as CLEF_TYPES, encode_record, question_options
 
     processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
-    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    tokenizer = _MemoTokenizer(getattr(tokenizer, "tokenizer", tokenizer))
     items = []
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
@@ -587,7 +624,7 @@ def _laya_decide(
     max_len = int(config.get("max_len", 512))
     items, keys = [], []
     for name, question in questions.items():
-        internal = _internal(question)
+        internal = _internal(question, name)
         ids, markers = common.build_sequence(
             tokenizer, _parsed(state), internal, max_len, int(config.get("head_max_len", 192))
         )
@@ -714,9 +751,8 @@ def _load_clef(
         if load_in_4bit and not full_finetuning and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         _pin_device_map(kwargs)
-        # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path:
-        # float16 linear weights, float32 activations, no autocast (the gated delta net NaNs in pure float16).
-        # An adapter folder loads its base and the adapters through Unsloth's own PEFT path.
+        # float16 or no bfloat16 sends Qwen3.5 to a float32 path (float16 linear weights, float32
+        # activations, no autocast): pure float16 NaNs in its gated delta net
         backbone, processor = FastModel.from_pretrained(
             str(folder),
             max_seq_length = max_len,
@@ -848,8 +884,7 @@ def _staging(output: Path):
 
 
 def _fold_temperature(state: dict, temperature: float) -> bool:
-    # logits / T == prior / T + gate * (joint_scale / T * cosine + residual / T): exact while the
-    # rescaled log-scales stay under the head's clamp(max = log 100).
+    # Folding T is exact while the rescaled log scales stay under the clamp at log 100.
     cap = math.log(100.0)
     scales = {}
     for name in ("prior_logit_scale", "joint_logit_scale"):
@@ -896,8 +931,7 @@ def _clef_head_weights(self, exact = False) -> tuple:
             config["head_temperature"] = temperature
     weights = {}
     for name, value in state.items():
-        # The logit scales stay float32: a folded temperature moves them, and bfloat16's 8 bit
-        # mantissa would turn that into a few percent on every logit.
+        # Logit scales stay float32: bfloat16 would blur a folded temperature in every logit.
         value = value.to(torch.float32 if value.dim() == 0 else torch.bfloat16).contiguous()
         if not torch.isfinite(value).all():
             raise ValueError(
@@ -1229,6 +1263,8 @@ class DecisionTrainer(Trainer):
             # Trainer would call model.gradient_checkpointing_enable, which only the encoder has.
             # Clef's backbone already got Unsloth's checkpointing when it loaded.
             args.gradient_checkpointing = False
+            if hasattr(args, "activation_checkpointing"):
+                args.activation_checkpointing = False
             if not clef and not model.encoder.is_gradient_checkpointing:
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:
@@ -1757,7 +1793,7 @@ class FastDecisionModel:
                 try:
                     if validate is not None:
                         validate(name, question)
-                    internal = _internal(question)
+                    internal = _internal(question, name)
                     target, label = _target(internal, _parsed(gold[name]))
                     ids, markers = common.build_sequence(
                         tokenizer, state, internal, max_len, head_max_len
@@ -1793,6 +1829,8 @@ class FastDecisionModel:
                 "max_seq_length to train on all of it."
             )
         return items, report
+
+    rows_problem = staticmethod(_rows_problem)
 
     @staticmethod
     def split_holdout(

@@ -26,6 +26,7 @@ const chip = loadWithStubs<typeof ChipModule>(
     "@/components/ui/spinner": { Spinner: Nothing },
     "@/lib/utils": { cn: (...parts: unknown[]) => parts.filter(Boolean).join(" ") },
     "@hugeicons/core-free-icons": {},
+    "@/lib/folder-icons": {},
     "@hugeicons/react": { HugeiconsIcon: Nothing },
     "lucide-react": { XIcon: Nothing },
   },

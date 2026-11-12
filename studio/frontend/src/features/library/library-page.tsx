@@ -26,17 +26,15 @@ import { toast } from "@/lib/toast";
 import {
   Cancel01Icon,
   FlimSlateIcon,
-  Delete02Icon,
   Download01Icon,
-  Folder01Icon,
-  FolderExportIcon,
   ImageIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon, FolderClosedIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -107,7 +105,7 @@ type EmptyCopy = [icon: typeof Folder01Icon, title: TranslationKey, description:
 const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
   suggested: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
   favorites: [StarPointedIcon, "library.empty.favoritesTitle", "library.empty.favoritesDescription"],
-  folders: [Folder01Icon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
+  folders: [FolderClosedIcon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
   images: [ImageIcon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
   videos: [FlimSlateIcon, "library.empty.videosTitle", "library.empty.videosDescription"],
   audio: [AiSpeechIcon, "library.empty.audioTitle", "library.empty.audioDescription"],
@@ -1134,7 +1132,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                 "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
               )}
             >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
               {t("common.delete")}
             </button>
             <DropdownMenu>
@@ -1160,7 +1158,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                     </DropdownMenuItem>
                     {bulkDestinations().map((folder) => (
                       <DropdownMenuItem key={folder.id} onSelect={() => bulkMove(folder.id)}>
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.75} className="size-icon" />
                         <span className="truncate">{folder.name}</span>
                       </DropdownMenuItem>
                     ))}

@@ -36,6 +36,8 @@ type ResidentRuntime = Pick<
   | "cache_type_kv"
   | "mlx_kv_quant_requested"
   | "mlx_int8_prefill_requested"
+  | "mlx_ane_prefill_requested"
+  | "mlx_fast_verify_requested"
   | "mlx_offload"
   | "speculative_type"
   | "spec_draft_n_max"
@@ -238,6 +240,18 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s) =>
       Boolean(c.mlxInt8Prefill) === (s.mlx_int8_prefill_requested === true),
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      Boolean(c.mlxAnePrefill) === (s.mlx_ane_prefill_requested === true),
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      Boolean(c.mlxFastVerify) === (s.mlx_fast_verify_requested === true),
   },
   {
     // The request, not the applied fraction: Auto stays Auto whatever it picked.

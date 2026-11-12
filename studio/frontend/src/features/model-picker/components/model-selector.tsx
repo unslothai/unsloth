@@ -147,6 +147,8 @@ interface ModelSelectorProps {
   /** The one opaque on-device artifact kind this task runtime may load. */
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
+  /** Audio's "Load model into: CPU RAM": audio.cpp variants skip their GPU estimate. */
+  cpuLoad?: boolean;
   /** A second Recommended group under its own label, e.g. "More models". */
   moreModels?: {
     label: string;
@@ -387,6 +389,7 @@ function ModelSelectorContent({
   communityModelPolicy,
   opaqueKind,
   rowFilter,
+  cpuLoad,
   moreModels,
 }: {
   open: boolean;
@@ -421,6 +424,7 @@ function ModelSelectorContent({
   communityModelPolicy?: CommunityModelPolicy;
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
+  cpuLoad?: boolean;
   moreModels?: {
     label: string;
     models: (ModelOption & { sizeBytes?: number | null })[];
@@ -707,6 +711,7 @@ function ModelSelectorContent({
         ) : (
           <>
             <HubModelPicker
+              open={open}
               models={models}
               additionalOnDeviceModels={additionalOnDeviceModels}
               loadedModelIdOverride={loadedModelIdOverride}
@@ -730,6 +735,7 @@ function ModelSelectorContent({
               communityModelPolicy={communityModelPolicy}
               opaqueKind={opaqueKind}
               rowFilter={rowFilter}
+              cpuLoad={cpuLoad}
               moreModels={moreModels}
               npu={npu}
               onDeviceInventoryChange={setHasDeviceModels}
@@ -798,6 +804,7 @@ export function ModelSelector({
   communityModelPolicy = "none",
   opaqueKind,
   rowFilter,
+  cpuLoad,
   moreModels,
   hubCapability,
   hubTask,
@@ -1018,6 +1025,7 @@ export function ModelSelector({
         communityModelPolicy={communityModelPolicy}
         opaqueKind={opaqueKind}
         rowFilter={rowFilter}
+        cpuLoad={cpuLoad}
         moreModels={moreModels}
       />
     </Popover>

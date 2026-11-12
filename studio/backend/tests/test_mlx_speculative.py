@@ -144,6 +144,37 @@ def test_cached_drafters_are_matched_by_shape_and_weights_then_marked_by_name(ca
     assert spec._stem("g/gemma-4-31B-it-qat-q4_0-unquantized-assistant") == "gemma431bit"
 
 
+@pytest.mark.parametrize("decision", [None, False, True])
+def test_a_drafter_build_hears_fast_verify_only_from_a_zoo_that_takes_it(monkeypatch, decision):
+    drafters = pytest.importorskip("unsloth_zoo.mlx.speculative")
+    told = []
+    factory = lambda path, target, **kw: told.append(kw) or SimpleNamespace(max_depth = 8)
+    monkeypatch.setattr(drafters, "companion_drafter", factory)
+    monkeypatch.setattr(drafters, "native_mtp_drafter", factory)
+    sources = (spec.DrafterSource("dflash", "a", False), spec.DrafterSource("mtp", "b", True))
+    for source in sources:
+        resolution = spec.SpecResolution("dflash", (source,))
+        spec.build_draft(None, resolution, fits = lambda _: (True, None), fast_verify = decision)
+    assert told == [{} if decision is None else {"fast_verify": decision}] * 2
+
+
+def test_the_installed_zoo_refuses_a_fast_verify_flip_or_reports_no_support():
+    import inspect
+
+    from core.inference import mlx_inference as mi
+
+    zoo = pytest.importorskip("unsloth_zoo.mlx.inference")
+    if "fast_verify" not in inspect.signature(zoo.inference_scopes).parameters:
+        assert mi._fast_verify_status(True, object())["reason"] == "unsupported_zoo"
+        assert mi.mlx_fast_verify_checkpoint_status("/none") == (False, "unsupported_zoo")
+        return
+    assert mi._fast_verify_zoo() is zoo
+    target = SimpleNamespace()
+    zoo.pin_fast_verify(target, True)
+    with pytest.raises(ValueError):
+        zoo.pin_fast_verify(target, False)
+
+
 def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeypatch):
     drafters = pytest.importorskip("unsloth_zoo.mlx.speculative")
 
@@ -167,11 +198,36 @@ def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeyp
     assert (draft.controller.max_depth, draft.controller.max_copy) == (6, 0)
     for d, n, e in ((object(), 3, True), (object(), 4, False), (draft.drafter, 15, True)):
         assert spec._draft(d, False, n).controller.fixed_depth is e
-    draft, kind, reason, _ = spec.build_draft(
-        None, spec.SpecResolution("dflash", sources[:1], copies = True), fits = fits
+
+    def chosen(
+        picked,
+        fit,
+        stretch = lambda _: (None, None),
+    ):
+        built.clear()
+        result = spec.build_draft(
+            None, spec.SpecResolution("dflash", picked, copies = True), fits = fit, stretch = stretch
+        )
+        return result[1:] + (built[:],)
+
+    assert chosen(sources[::2], fits) == ("dflash", spec.DRAFTER_NO_MEMORY, 4096, ["ok"])
+    assert chosen(sources[:1], fits) == ("dflash", None, None, ["big"])
+    assert chosen(sources[:1], lambda _: (None, None)) == ("dflash", None, None, ["big"])
+    assert chosen(sources[:1], fits, lambda _: (True, 2048)) == ("dflash", None, 2048, ["big"])
+    # Past MLX's own cap a chosen drafter is still passed over, as is one nothing can stretch.
+    for stretch in (lambda _: (False, None), None):
+        assert chosen(sources[:1], fits, stretch) == ("ngram", spec.DRAFTER_NO_MEMORY, None, [])
+    assert chosen(sources[:2], fits) == ("dflash", spec.DRAFTER_INCOMPATIBLE, None, ["big"])
+    assert chosen(sources[1:2], lambda _: (False, 4096)) == (
+        "ngram",
+        spec.DRAFTER_INCOMPATIBLE,
+        None,
+        [],
     )
-    assert (draft.drafter, kind, reason) == (None, "ngram", spec.DRAFTER_NO_MEMORY)
-    assert (draft.controller.max_depth, draft.controller.max_copy) == (0, 16)
+    draft, *_ = spec.build_draft(
+        None, spec.SpecResolution("dflash", sources[1:2], copies = True), fits = lambda _: (False, 4096)
+    )
+    assert (draft.drafter, draft.controller.max_depth, draft.controller.max_copy) == (None, 0, 16)
     auto = spec.SpecResolution("auto", sources[:1], copies = True)
     unfit = [spec.build_draft(None, auto, fits = lambda _: (ok, None)) for ok in (False, None)]
     assert unfit == [(None, None, spec.AUTO_CONTEXT_COST, None), (None,) * 4]

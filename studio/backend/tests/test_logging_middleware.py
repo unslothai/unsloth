@@ -644,8 +644,7 @@ def test_verbose_off_by_default_keeps_the_polls_quiet(logs):
 
 
 def test_chat_thread_detail_polls_heartbeat_instead_of_one_line_each(logs, monkeypatch):
-    """Streaming drives these on a loop: 25 thread and 21 fork reads in 20s over one
-    four-tab session, 34% of the access log."""
+    """Looping streaming polls flood the access log, so heartbeat rather than a line each."""
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
 
@@ -659,8 +658,7 @@ def test_chat_thread_detail_polls_heartbeat_instead_of_one_line_each(logs, monke
 
 
 def test_four_tabs_share_one_bucket_per_template(logs, monkeypatch):
-    """Four tabs polling four different threads ask one question. Keying the bucket on the
-    real path would emit four lines per window."""
+    """Four tabs share one question; key the bucket on the route template, not the real path."""
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
 
@@ -694,8 +692,7 @@ def test_message_reads_are_not_collapsed_into_the_detail_bucket(logs, monkeypatc
 
 
 def test_the_thread_list_is_untouched_by_the_normaliser():
-    """The list path is handled by _CHAT_LIST_PATHS and must not be dragged into the
-    heartbeat class by a trailing-segment rule."""
+    """The list path is _CHAT_LIST_PATHS only; a trailing-segment rule must not heartbeat it."""
     assert hmod.normalize_poll_path("/api/chat/threads") == "/api/chat/threads"
     assert hmod.normalize_poll_path("/api/chat/threads/") == "/api/chat/threads/"
 

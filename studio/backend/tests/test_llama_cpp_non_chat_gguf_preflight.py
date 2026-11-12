@@ -271,8 +271,7 @@ def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
 
 
 def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
-    # The header says "wan" for an unpaired A14B expert and Wan 2.1 I2V alike: the refusal must consult
-    # family resolution, not the arch.
+    # Wan arch covers unpaired A14B and I2V alike; refuse via family resolution, not arch.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
@@ -359,9 +358,8 @@ def test_a_split_placeholder_media_gguf_is_still_refused(tmp_path):
 
 
 def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
-    # A family that resolves is not enough for the arch branches, nor here: routes.models
-    # drops an MoE the loader cannot assemble, so the Video page lists a Wan 2.2 A14B GGUF only
-    # when its name pairs the other expert.
+    # A resolving family is not enough: Video lists Wan 2.2 A14B only if its name pairs the other
+    # expert.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
@@ -380,6 +378,15 @@ def test_speech_arch_names_the_audio_page(tmp_path):
     _, message = _refusal(tmp_path, arch = "llama-csm", name = "sesame-csm-backbone.gguf")
     assert message is not None
     assert "Audio page" in message
+    assert "Images page" not in message
+
+
+def test_a_parakeet_cpp_gguf_is_refused_without_blaming_llama_cpp(tmp_path):
+    _, message = _refusal(tmp_path, arch = "parakeet", name = "parakeet-tdt-0.6b-q8_0.gguf")
+    assert message is not None
+    assert "parakeet" in message.lower()
+    assert "updating llama.cpp will not help" in message.lower()
+    assert "Parakeet-TDT-0.6B-v3-GGUF" in message
     assert "Images page" not in message
 
 

@@ -183,3 +183,43 @@ test("unknown download totals never fabricate a percentage", () => {
       download_progress: { bytes_done: 1, bytes_total: total } }).percent, null);
   }
 });
+
+
+test("successful tensor loading gives measured progress and explains 4-bit conversion", () => {
+  const progress = diffusionTrainingProgress({ ...running,
+    model_load_stage: "quantizing",
+    model_load_progress: { done: 28, total: 62, unit: "tensors", label: "Training model weights" },
+  });
+  assert.equal(progress.title, "Loading model and converting to 4-bit");
+  assert.equal(progress.percent, 28 / 62 * 100);
+  assert.equal(progress.count, "45%");
+  assert.equal(progress.detail,
+    "28 of 62 weight tensors processed. Downloaded files are reused; 4-bit conversion runs in memory each time.");
+});
+
+test("loading counts yield to downloads, preparation, training and terminal states", () => {
+  const loaded = { ...running, model_load_stage: "quantizing" as const,
+    model_load_progress: { done: 28, total: 62, unit: "tensors" as const, label: "Weights" },
+  };
+  assert.equal(diffusionTrainingProgress({ ...loaded,
+    download_progress: { bytes_done: 1, bytes_total: 10 },
+  }).percent, null);
+  assert.equal(diffusionTrainingProgress({ ...loaded,
+    preparation: { stage: "cache_latents", done: 2, total: 5 },
+  }).percent, 40);
+  assert.equal(diffusionTrainingProgress({ ...loaded, in_model_load: false, step: 10 }).percent, 10);
+  assert.equal(diffusionTrainingProgress({ ...loaded, status: "stopped" }).preparing, false);
+});
+
+test("unmeasured and invalid loader counts never fabricate a percentage or hide warnings", () => {
+  for (const [done, total] of [[0, 0], [-1, 20], [21, 20], [NaN, 20], [1, Infinity]]) {
+    const progress = diffusionTrainingProgress({ ...running, model_load_stage: "conditioning",
+      model_load_progress: { done, total, unit: "tensors", label: "Weights" },
+    });
+    assert.equal(progress.percent, null);
+  }
+  const message = "Cancel requested; finishing the current step...";
+  assert.equal(diffusionTrainingProgress({ ...running, message,
+    model_load_stage: "quantizing",
+  }).detail, message);
+});

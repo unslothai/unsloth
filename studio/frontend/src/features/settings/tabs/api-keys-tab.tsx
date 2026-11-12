@@ -10,7 +10,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { cn } from "@/lib/utils";
 import { translate, useT } from "@/i18n";
@@ -22,11 +21,6 @@ import {
   fetchApiKeys,
   revokeApiKey,
 } from "../api/api-keys";
-import {
-  type KeylessApiAccessExposure,
-  type KeylessApiAccessScope,
-  loadKeylessApiAccess,
-} from "../api/keyless-api-access";
 import { apiKeyActionMessage } from "../components/api-key-action-message";
 import {
   ApiKeyRow,
@@ -36,14 +30,15 @@ import {
 import { CreateKeyForm } from "../components/create-key-form";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { KeylessApiAccessLink } from "../components/keyless-api-access-link";
-import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { MonitorLink } from "../components/monitor-link";
 import { SettingsSection } from "../components/settings-section";
+import { UnslothStudioMcpRow } from "../components/unsloth-studio-mcp-row";
 import { ApiExamplesPanel } from "../components/api-example-tabs";
 import { useApiTunnelPref } from "../components/usage-examples";
+import { useKeylessExampleAccess } from "../hooks/use-keyless-example-access";
 import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
 import { useFreshApiKeyStore } from "../stores/fresh-api-key-store";
 
@@ -74,34 +69,7 @@ export function ApiKeysTab() {
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
   // Owner-only routes, as the Remote & LAN tab is.
   usePublishAccessUrls(isOwner);
-  const [keyless, setKeyless] = useState<{
-    scope: KeylessApiAccessScope;
-    tools: boolean;
-    exposure: KeylessApiAccessExposure | null;
-  }>({ scope: "off", tools: false, exposure: null });
-  // Read for the examples' placeholder key; a tunnel coming or going changes exposure.
-  const cloudflareUrl = usePlatformStore((state) => state.cloudflareUrl);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cloudflareUrl is a trigger, not an input
-  useEffect(() => {
-    if (!isOwner) {
-      return;
-    }
-    let cancelled = false;
-    loadKeylessApiAccess()
-      .then((next) => {
-        if (!cancelled) {
-          setKeyless({
-            scope: next.suspendedByAccounts ? "off" : next.scope,
-            tools: next.tools,
-            exposure: next.exposure,
-          });
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [isOwner, cloudflareUrl]);
+  const keyless = useKeylessExampleAccess(isOwner);
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
@@ -294,7 +262,7 @@ export function ApiKeysTab() {
 
       {/* Installation-wide, so owner-only routes. */}
       <SettingsSection title="Access & monitoring">
-        {isOwner ? <McpAccessSection apiKey={freshKey} /> : null}
+        {isOwner ? <UnslothStudioMcpRow /> : null}
         {isOwner ? <KeylessApiAccessLink /> : null}
         <MonitorLink hideHeading={true} />
       </SettingsSection>

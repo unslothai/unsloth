@@ -22,6 +22,8 @@ import {
 } from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
+// Its own: the chat renderers that also import this are not loaded before the Hub.
+import "katex/dist/katex.min.css";
 import { mermaid as streamdownMermaid } from "@/components/assistant-ui/mermaid-plugin";
 import {
   createContext,
@@ -41,6 +43,7 @@ import {
   stripFrontmatter,
 } from "../lib/hf-readme";
 import { rehypeReadmeUrls } from "../lib/rehype-readme-urls";
+import { badgeRowsRef } from "../lib/badge-rows";
 
 type ReadmePlugins = NonNullable<ComponentProps<typeof Streamdown>["plugins"]>;
 
@@ -542,7 +545,7 @@ export function ModelReadme({
   }
 
   return (
-    <div className={cn("hub-readme-prose", PROSE)}>
+    <div ref={badgeRowsRef} className={cn("hub-readme-prose", PROSE)}>
       <ReadmeOnlineContext.Provider value={online}>
         <Streamdown
           mode="static"

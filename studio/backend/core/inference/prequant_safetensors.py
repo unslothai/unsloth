@@ -86,6 +86,39 @@ def safetensors_prequant_supported() -> bool:
     return True
 
 
+# Torchao subclasses for schemes added to its safetensors allowlist after the 0.16 floor (0.16 lists
+# neither, 0.17 lists both); fp8 and int8 are in every release at the floor.
+_SCHEME_SUBCLASS = {"nvfp4": "NVFP4Tensor", "mxfp8": "MXTensor"}
+
+
+def _torchao_safetensors_subclasses() -> Optional[frozenset]:
+    """Subclass names this torchao's safetensors unflatten can rebuild; None when it cannot be read."""
+    try:
+        from torchao.prototype.safetensors import safetensors_utils
+    except Exception:  # noqa: BLE001 - module moved or absent: the feature import elsewhere decides
+        return None
+    names = getattr(safetensors_utils, "ALLOWED_TENSORS_SUBCLASSES", None)
+    if not isinstance(names, (list, tuple, set, frozenset)):
+        return None
+    return frozenset(str(n) for n in names)
+
+
+def safetensors_scheme_supported(scheme: Optional[str] = None) -> bool:
+    """Whether this install can rebuild a ``scheme`` safetensors pre-quant checkpoint.
+
+    torchao 0.16 ships the flatten helpers but cannot unflatten ``NVFP4Tensor`` / ``MXTensor``
+    ("Unsupported tensor type"), so answering the scheme-free question would pick the twin over a
+    loadable ``.pt`` and then fail the read. An unreadable allowlist keeps the scheme-free answer.
+    """
+    if not safetensors_prequant_supported():
+        return False
+    wanted = _SCHEME_SUBCLASS.get((scheme or "").strip().lower())
+    if wanted is None:
+        return True
+    names = _torchao_safetensors_subclasses()
+    return names is None or wanted in names
+
+
 def plain_safetensors_supported() -> bool:
     """The layerwise-cast encoder format stores plain tensors, without torchao subclasses."""
     try:
@@ -95,15 +128,28 @@ def plain_safetensors_supported() -> bool:
     return True
 
 
+def _unviewed(tensor: Any) -> Any:
+    """``tensor`` as a base-less alias of the same storage (no copy). safetensors hands back views of one whole-file
+    mapping; a view keeps that base alive through ``.data =`` (which is how a streamed buffer is re-pointed at its
+    pinned copy), so one buffer would keep the full file mapped for the life of the model."""
+    if getattr(tensor, "_base", None) is None or type(tensor).__name__ != "Tensor":
+        return tensor
+    import torch
+
+    out = torch.empty(0, dtype = tensor.dtype, device = tensor.device)
+    return out.set_(
+        tensor.untyped_storage(), tensor.storage_offset(), tensor.size(), tensor.stride()
+    )
+
+
 def load_plain_prequant_safetensors(
     path: str,
     *,
     device: str = "cpu",
     skip_names: Iterable[str] = (),
 ) -> dict:
-    """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors.
-
-    ``skip_names`` are validated but never read."""
+    """Reads plain-tensor prequant file without torchao; refuses subclass metadata and unlisted
+    tensors; skip_names are validated but never read."""
     from safetensors import safe_open
 
     with safe_open(path, framework = "pt", device = device) as handle:
@@ -135,9 +181,11 @@ def load_plain_prequant_safetensors(
             if json.loads(raw.get(name) or "null") != {"_type": "Tensor"}:
                 raise ValueError(f"{path} requires a tensor-subclass reader for {name!r}")
         skip = frozenset(skip_names)
-        state_dict = {name: handle.get_tensor(name) for name in names if name not in skip}
+        state_dict = {
+            name: _unviewed(handle.get_tensor(name)) for name in names if name not in skip
+        }
         state_dict.update(
-            (key[len(UNSLOTH_ROOT_PREFIX) :], handle.get_tensor(key)) for key in roots
+            (key[len(UNSLOTH_ROOT_PREFIX) :], _unviewed(handle.get_tensor(key))) for key in roots
         )
     return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
 

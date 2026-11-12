@@ -148,7 +148,7 @@ import {
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
-import { useInt8PrefillAvailable } from "../hooks/use-int8-prefill-available";
+import { usePrefillOptionAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,
   fromApiOverride,
@@ -644,6 +644,26 @@ function GgufContextLengthSetting({
         {renderWarning(shown)}
       </div>
     </div>
+  );
+}
+
+function DiffusionContextNote({
+  value,
+  requested,
+  loadedContext,
+}: {
+  value: number;
+  requested: number | null;
+  loadedContext: number | null;
+}) {
+  if (loadedContext == null || value !== requested || value === loadedContext) {
+    return null;
+  }
+  return (
+    <p className="text-ui-11 text-amber-500">
+      DiffusionGemma did not apply this value. It sized the context to fit
+      memory and is running with {loadedContext.toLocaleString()} tokens.
+    </p>
   );
 }
 
@@ -1454,11 +1474,15 @@ function MlxSpeculativeRows({
   update,
   speculativeFallback,
   modelPath,
+  fastVerifyAvailable,
+  onFastVerifyChange,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   speculativeFallback: string;
   modelPath: string;
+  fastVerifyAvailable: boolean;
+  onFastVerifyChange: (checked: boolean) => void;
 }) {
   const [drafters, setDrafters] = useState<MlxDrafter[]>([]);
   useEffect(() => {
@@ -1595,6 +1619,27 @@ function MlxSpeculativeRows({
           </Select>
         </div>
       )}
+      {/* Only a drafter runs it; stays visible while on so it can be turned off. */}
+      {((fastVerifyAvailable && DRAFTER_MODEL_SPEC_TYPES.has(mode)) || config.mlxFastVerify) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Fast Verify</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Speeds up speculative decoding with faster checks of the drafter's
+              tokens. Answers can change slightly from plain decoding, the same way
+              on every run. Applies only when a drafter loads; changing it reloads.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxFastVerify ?? false}
+            onCheckedChange={onFastVerifyChange}
+          />
+        </div>
+      )}
     </>
   );
 }
@@ -1606,6 +1651,10 @@ function MlxAdvancedSettings({
   servedByMlx,
   int8PrefillAvailable,
   onInt8PrefillChange,
+  anePrefillAvailable,
+  onAnePrefillChange,
+  fastVerifyAvailable,
+  onFastVerifyChange,
   offloadable,
   offloadDecided,
   offloadNotes,
@@ -1620,6 +1669,10 @@ function MlxAdvancedSettings({
   servedByMlx: boolean;
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
+  anePrefillAvailable: boolean;
+  onAnePrefillChange: (checked: boolean) => void;
+  fastVerifyAvailable: boolean;
+  onFastVerifyChange: (checked: boolean) => void;
   offloadable: readonly MlxOffloadablePart[];
   offloadDecided: Record<MlxOffloadablePart, number | null> | null;
   offloadNotes: Record<MlxOffloadablePart, string | null>;
@@ -1691,12 +1744,34 @@ function MlxAdvancedSettings({
           />
         </div>
       )}
+      {servedByMlx && (anePrefillAvailable || config.mlxAnePrefill) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Neural Engine Prefill</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Reads long prompts faster by running part of each layer on the
+              Neural Engine beside the GPU. Answers can change slightly. Loading
+              takes longer the first time while it measures this Mac.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxAnePrefill ?? false}
+            onCheckedChange={onAnePrefillChange}
+          />
+        </div>
+      )}
       {servedByMlx && (
         <MlxSpeculativeRows
           config={config}
           update={update}
           speculativeFallback={speculativeFallback}
           modelPath={modelPath}
+          fastVerifyAvailable={fastVerifyAvailable}
+          onFastVerifyChange={onFastVerifyChange}
         />
       )}
       {servedByMlx && (
@@ -1845,9 +1920,13 @@ function GgufAdvancedSettings({
       : N_BATCH_LLAMA_DEFAULT;
   const ubatchExceedsBatch =
     config.nUbatch != null && config.nUbatch > effectiveBatch;
+  const showGpuPicker =
+    (pinnableGpuContext(gpuDevices, isDiffusion).ids?.length ?? 0) > 1;
   return (
     <>
+      {(!isDiffusion || showGpuPicker) && (
       <AdvancedGroup title="Memory">
+      {!isDiffusion && (
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
@@ -1882,6 +1961,7 @@ function GgufAdvancedSettings({
           </SelectContent>
         </Select>
       </div>
+      )}
 
       <GpuMemorySettings
         config={config}
@@ -1913,7 +1993,9 @@ function GgufAdvancedSettings({
         </div>
       )}
       </AdvancedGroup>
+      )}
 
+      {!isDiffusion && (
       <AdvancedGroup title="Speed">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
@@ -2151,6 +2233,7 @@ function GgufAdvancedSettings({
         </div>
       )}
       </AdvancedGroup>
+      )}
 
       <AdvancedGroup title="Output">
       {!isDiffusion && (
@@ -2664,14 +2747,29 @@ export function ModelConfigPage({
     platformDeviceType,
     platformChatOnlyReason,
   );
-  const int8PrefillAvailable = useInt8PrefillAvailable(
+  const prefillOptionPath =
     servedByMlx &&
-      !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
+    !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
       ? target.id
-      : null,
+      : null;
+  const int8PrefillAvailable = usePrefillOptionAvailable(
+    "int8",
+    prefillOptionPath,
+    hfToken || null,
+  );
+  const anePrefillAvailable = usePrefillOptionAvailable(
+    "ane",
+    prefillOptionPath,
     hfToken || null,
   );
   const [int8PrefillConfirmOpen, setInt8PrefillConfirmOpen] = useState(false);
+  const [anePrefillConfirmOpen, setAnePrefillConfirmOpen] = useState(false);
+  const fastVerifyAvailable = usePrefillOptionAvailable(
+    "fast-verify",
+    prefillOptionPath,
+    hfToken || null,
+  );
+  const [fastVerifyConfirmOpen, setFastVerifyConfirmOpen] = useState(false);
   // Read live: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -2695,6 +2793,10 @@ export function ModelConfigPage({
   const [initialMlxInt8Prefill] = useState(
     () => configState.mlxInt8Prefill ?? false,
   );
+  const [initialMlxAnePrefill] = useState(
+    () => configState.mlxAnePrefill ?? false,
+  );
+  const [initialMlxFastVerify] = useState(() => configState.mlxFastVerify ?? false);
   const [initialMlxOffload] = useState(
     () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
   );
@@ -2702,6 +2804,8 @@ export function ModelConfigPage({
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
+  const autoOpenForMlxAnePrefill = servedByMlx && initialMlxAnePrefill;
+  const autoOpenForMlxFastVerify = servedByMlx && initialMlxFastVerify;
   const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
   // Opened to change one field: show its section for this visit, leaving the saved switch alone.
   const [revealForFocus, setRevealForFocus] = useState(focusField != null);
@@ -2711,6 +2815,8 @@ export function ModelConfigPage({
       (autoOpenAdvanced ||
         autoOpenForMlxKvQuant ||
         autoOpenForMlxInt8Prefill ||
+        autoOpenForMlxAnePrefill ||
+        autoOpenForMlxFastVerify ||
         autoOpenForMlxOffload));
   const toggleAdvanced = (open: boolean) => {
     setRevealForFocus(false);
@@ -3258,10 +3364,9 @@ export function ModelConfigPage({
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
-          // The same substitution applyPerModelConfigToRuntime makes at load: a model with no per-model
-          // override sends null, which the backend reads as Auto, while the selector has been showing
-          // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
-          // charged the sidecar for a load that disables it.
+          // Same substitution as applyPerModelConfigToRuntime: no per-model override sends null
+          // (read as Auto) while the selector shows the global fallback, so a global Off row
+          // charged an 11 GB DSpark sidecar.
           speculativeType: resolveSpeculativeType(
             runtimeConfig.speculativeType,
             speculativeFallback,
@@ -3674,11 +3779,10 @@ export function ModelConfigPage({
       : forgets
         ? deletePerModelConfig(configId, target.ggufVariant)
         : true;
-    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
-    // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
-    // native-path lease is the same.
-    // A forget also drops the local records for every other spelling the server reports clearing.
+    // Best-effort mirror for API loads, skipped if the localStorage write failed (they would
+    // disagree); gated on auto-switch reach, not GGUF-ness, since the resolver skips materialized
+    // Ollama links and native-path leases; a forget also clears local records for every other
+    // spelling the server reports.
     if (
       saved &&
       (keep || forgets) &&
@@ -4085,6 +4189,12 @@ export function ModelConfigPage({
             <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
+            <div
+              className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground"
+              aria-live="polite"
+            >
+              {saveStatus || "\u00a0"}
+            </div>
           </div>
         </div>
       )}
@@ -4152,7 +4262,7 @@ export function ModelConfigPage({
         {isActiveModel && target.isGguf && !audioRuntimeGguf ? (
           // The same pool the estimate above names: "Unified" on Apple Silicon, "Shared" on other one-pool machines.
           <LoadedPlacementRow
-            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified memory" : "shared memory") : null}
+            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified" : "shared") : null}
           />
         ) : null}
         {target.isGguf && !audioRuntimeGguf && (
@@ -4173,7 +4283,13 @@ export function ModelConfigPage({
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
               renderWarning={(v) =>
-                isActiveModel &&
+                resolvedIsDiffusion ? (
+                  <DiffusionContextNote
+                    value={v}
+                    requested={loadedConfig?.customContextLength ?? null}
+                    loadedContext={activeLoadedContext}
+                  />
+                ) : isActiveModel &&
                 loadedMaxContextLength != null &&
                 v > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">
@@ -4265,6 +4381,18 @@ export function ModelConfigPage({
                       checked
                         ? setInt8PrefillConfirmOpen(true)
                         : update({ mlxInt8Prefill: false })
+                    }
+                    anePrefillAvailable={anePrefillAvailable}
+                    onAnePrefillChange={(checked) =>
+                      checked
+                        ? setAnePrefillConfirmOpen(true)
+                        : update({ mlxAnePrefill: false })
+                    }
+                    fastVerifyAvailable={fastVerifyAvailable}
+                    onFastVerifyChange={(checked) =>
+                      checked
+                        ? setFastVerifyConfirmOpen(true)
+                        : update({ mlxFastVerify: false })
                     }
                     offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
                     offloadDecided={mlxOffloadDecidedNow}
@@ -4404,7 +4532,7 @@ export function ModelConfigPage({
             }
             onClick={() => pickSet(pinnedSet)}
           >
-            Reset
+            Reset all
           </Button>
           {target.isGguf && (
             <SharedRunConfigControls
@@ -4454,6 +4582,62 @@ export function ModelConfigPage({
               onClick={() => {
                 update({ mlxInt8Prefill: true });
                 setInt8PrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={anePrefillConfirmOpen}
+        onOpenChange={setAnePrefillConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Neural Engine Prefill?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Long prompts are read faster, but the model&apos;s answers will
+              change slightly. The first load on this Mac takes longer while it
+              measures whether this helps; when it does not, the model runs as
+              before. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                update({ mlxAnePrefill: true });
+                setAnePrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={fastVerifyConfirmOpen}
+        onOpenChange={setFastVerifyConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Fast Verify?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Speculative decoding runs faster, but the model&apos;s answers will
+              change slightly from plain decoding, the same way on every run. It
+              applies only when a drafter loads, and changing it reloads the
+              model. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                update({ mlxFastVerify: true });
+                setFastVerifyConfirmOpen(false);
               }}
             >
               Turn on

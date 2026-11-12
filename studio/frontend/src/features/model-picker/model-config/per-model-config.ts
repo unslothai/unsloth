@@ -35,6 +35,8 @@ export interface PerModelConfig {
   kvCacheDtype: string | null;
   mlxKvQuant?: MlxKvQuant | null;
   mlxInt8Prefill?: boolean;
+  mlxAnePrefill?: boolean;
+  mlxFastVerify?: boolean;
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlxPleOffload?: MlxOffload;
   mlxExpertOffload?: MlxOffload;
@@ -84,6 +86,8 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   kvCacheDtype: null,
   mlxKvQuant: null,
   mlxInt8Prefill: false,
+  mlxAnePrefill: false,
+  mlxFastVerify: false,
   mlxPleOffload: null,
   mlxExpertOffload: null,
   speculativeType: null,
@@ -407,9 +411,11 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair. v8 is skipped: nightly builds stamped it for the reverted custom
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair, v13 mlxAnePrefill, v14 mlxFastVerify. v8 is skipped: nightly builds stamped it for the reverted custom
 // llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 12;
+const STORAGE_SCHEMA_VERSION = 14;
+const PRE_MLX_FAST_VERIFY_SCHEMA_VERSION = 13;
+const PRE_MLX_ANE_PREFILL_SCHEMA_VERSION = 12;
 const PRE_MLX_OFFLOAD_SCHEMA_VERSION = 11;
 const PRE_MLX_DRAFTER_SCHEMA_VERSION = 10;
 const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;
@@ -457,6 +463,8 @@ const STORED_CONFIG_FIELDS = new Set([
   "kvCacheDtype",
   "mlxKvQuant",
   "mlxInt8Prefill",
+  "mlxAnePrefill",
+  "mlxFastVerify",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadIn4bit",
@@ -1081,6 +1089,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
     mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
     mlxInt8Prefill: partial.mlxInt8Prefill === true,
+    mlxAnePrefill: partial.mlxAnePrefill === true,
+    mlxFastVerify: partial.mlxFastVerify === true,
     mlxPleOffload: normalizeMlxOffload(partial.mlxPleOffload),
     mlxExpertOffload: normalizeMlxOffload(partial.mlxExpertOffload),
     kvCacheDtype:
@@ -1167,8 +1177,14 @@ function storedSchemaVersion(normalized: PerModelConfig): number {
   const mode = normalized.speculativeType;
   // A kept Auto and the MLX-only modes are values an older client folds back to unset.
   const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
-  if (normalized.mlxPleOffload != null || normalized.mlxExpertOffload != null) {
+  if (normalized.mlxFastVerify) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.mlxAnePrefill) {
+    return PRE_MLX_FAST_VERIFY_SCHEMA_VERSION;
+  }
+  if (normalized.mlxPleOffload != null || normalized.mlxExpertOffload != null) {
+    return PRE_MLX_ANE_PREFILL_SCHEMA_VERSION;
   }
   if (normalized.specDraftModel != null || mlxMode) {
     return PRE_MLX_OFFLOAD_SCHEMA_VERSION;
@@ -1361,6 +1377,8 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
     !config.mlxInt8Prefill &&
+    !config.mlxAnePrefill &&
+    !config.mlxFastVerify &&
     config.mlxPleOffload == null &&
     config.mlxExpertOffload == null &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
@@ -1431,7 +1449,13 @@ export function savePerModelConfig(
   if (!enforceStorageBudget(map, new Set([key]), evictedKeys)) {
     return false;
   }
+  // Stamp first: a forget's cleanup in another tab between the two writes then keeps
+  // an identical re-save instead of reading it as the record it snapshotted.
+  const previousStamps = stampWrite(key, map);
   const written = writeMap(map);
+  if (!written) {
+    restoreStamps(previousStamps);
+  }
   if (written && evicted) {
     for (const evictedKey of evictedKeys) {
       const id = modelIdFromStorageKey(evictedKey);
@@ -1476,8 +1500,21 @@ export function listPerModelConfigs(): {
 export function deletePerModelConfig(
   modelId: string,
   ggufVariant?: string | null,
+  /** Keep the record under `storageKey` if it was saved after `since`. */
+  unchanged?: { storageKey: string; since: PerModelConfigSnapshot },
 ): boolean {
   const map = readMap();
+  // Checked against the map this delete writes back, records then stamps, so the only
+  // window left is the store's own synchronous read-modify-write.
+  if (
+    unchanged &&
+    perModelConfigChangedSince(unchanged.storageKey, unchanged.since, {
+      records: map,
+      stamps: readStamps(),
+    })
+  ) {
+    return true;
+  }
   if (hasFutureConfigForModelVariant(map, modelId, ggufVariant)) {
     return false;
   }
@@ -1490,10 +1527,14 @@ export function deletePerModelConfig(
 /** Matched, not split: a colon is legal in a path, and two records can spell one key. */
 function findModelOverrideKeyOwners(
   overrideKey: string,
-): { modelId: string; ggufVariant: string | null }[] {
+): { modelId: string; ggufVariant: string | null; storageKey: string }[] {
   const key = overrideKey.trim();
   const foldedKey = normalizeModelIdentity(key);
-  const owners: { modelId: string; ggufVariant: string | null }[] = [];
+  const owners: {
+    modelId: string;
+    ggufVariant: string | null;
+    storageKey: string;
+  }[] = [];
   for (const storageKey of Object.keys(readMap())) {
     const modelId = modelIdFromStorageKey(storageKey);
     if (!modelId) {
@@ -1505,7 +1546,7 @@ function findModelOverrideKeyOwners(
     );
     if (!variant) {
       if (foldedKey === normalizeModelIdentity(modelId)) {
-        owners.push({ modelId, ggufVariant: null });
+        owners.push({ modelId, ggufVariant: null, storageKey });
       }
       continue;
     }
@@ -1517,27 +1558,110 @@ function findModelOverrideKeyOwners(
       normalizeModelIdentity(key.slice(0, cut)) ===
         normalizeModelIdentity(modelId)
     ) {
-      owners.push({ modelId, ggufVariant: variant });
+      owners.push({ modelId, ggufVariant: variant, storageKey });
     }
   }
   return owners;
 }
 
+// A unique mark per save, beside the records, so another tab's identical re-save still reads as new.
+const WRITE_STAMPS_KEY = "unsloth_model_config_stamps";
+
+function readStamps(): Record<string, string> {
+  if (!canUseStorage()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WRITE_STAMPS_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function stampWrite(key: string, map: StoredMap): string | null {
+  let previous: string | null = null;
+  try {
+    previous = canUseStorage() ? localStorage.getItem(WRITE_STAMPS_KEY) : null;
+  } catch {
+    // Unreadable storage: the record write fails next and there is nothing to restore.
+  }
+  const stamps: Record<string, string> = {};
+  for (const [k, v] of Object.entries(readStamps())) {
+    if (k in map) {
+      stamps[k] = v;
+    }
+  }
+  stamps[key] = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  try {
+    localStorage.setItem(WRITE_STAMPS_KEY, JSON.stringify(stamps));
+  } catch {
+    // Best-effort: without it a forget's cleanup falls back to comparing contents.
+  }
+  return previous;
+}
+
+function restoreStamps(previous: string | null): void {
+  try {
+    if (previous === null) {
+      localStorage.removeItem(WRITE_STAMPS_KEY);
+    } else {
+      localStorage.setItem(WRITE_STAMPS_KEY, previous);
+    }
+  } catch {
+    // Best-effort, as in stampWrite.
+  }
+}
+
+export type PerModelConfigSnapshot = {
+  readonly records: Readonly<Record<string, unknown>>;
+  readonly stamps: Readonly<Record<string, string>>;
+};
+
+// A save writes its stamp before its record. The baseline reads stamps first and the
+// re-read records first, so a save landing between two reads always shows as a change.
+export function perModelConfigSnapshot(): PerModelConfigSnapshot {
+  const stamps = readStamps();
+  return { records: readMapRaw(), stamps };
+}
+
+function currentPerModelConfigSnapshot(): PerModelConfigSnapshot {
+  const records = readMapRaw();
+  return { records, stamps: readStamps() };
+}
+
 export function modelOverrideKeyOwners(
   overrideKeys: readonly string[],
-): { modelId: string; ggufVariant: string | null }[] {
+): { modelId: string; ggufVariant: string | null; storageKey: string }[] {
   return overrideKeys.flatMap(findModelOverrideKeyOwners);
 }
 
+/** True when the record under ``storageKey`` was written after ``since`` (in any tab). */
+export function perModelConfigChangedSince(
+  storageKey: string,
+  since: PerModelConfigSnapshot,
+  current: PerModelConfigSnapshot = currentPerModelConfigSnapshot(),
+): boolean {
+  return (
+    current.stamps[storageKey] !== since.stamps[storageKey] ||
+    JSON.stringify(current.records[storageKey]) !==
+      JSON.stringify(since.records[storageKey])
+  );
+}
+
+/** Delete the records the server keys name; false when one was left behind. With
+ *  `unchangedSince`, a record written after that snapshot is kept. */
 export function deletePerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
+  unchangedSince?: PerModelConfigSnapshot,
 ): boolean {
   let deleted = true;
-  for (const overrideKey of overrideKeys) {
-    for (const owner of findModelOverrideKeyOwners(overrideKey)) {
-      if (!deletePerModelConfig(owner.modelId, owner.ggufVariant)) {
-        deleted = false;
-      }
+  for (const owner of modelOverrideKeyOwners(overrideKeys)) {
+    const unchanged = unchangedSince
+      ? { storageKey: owner.storageKey, since: unchangedSince }
+      : undefined;
+    if (!deletePerModelConfig(owner.modelId, owner.ggufVariant, unchanged)) {
+      deleted = false;
     }
   }
   return deleted;

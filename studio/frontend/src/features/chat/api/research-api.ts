@@ -2,6 +2,7 @@
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the auth barrel's React login page.
 import { authFetch } from "@/features/auth/api";
+import { watchStreamSilence } from "@/lib/stream-silence";
 import type {
   CreateResearchRunInput,
   ResearchEvent,
@@ -165,6 +166,7 @@ export async function* streamResearchEvents(
   id: string,
   after: number,
   signal?: AbortSignal,
+  silenceTimeoutMs?: number,
 ): AsyncGenerator<StreamResearchEvent> {
   // POST, not GET: proxies hold a streamed GET until it closes. The route accepts both.
   const response = await authFetch(
@@ -180,9 +182,11 @@ export async function* streamResearchEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const silence = watchStreamSilence(reader, silenceTimeoutMs);
   try {
     while (true) {
       const { done, value } = await reader.read();
+      silence.touch();
       buffer += decoder.decode(value, { stream: !done });
       // Normalize on the whole buffer so a CRLF split across chunks still frames.
       buffer = buffer.replace(/\r\n/g, "\n");
@@ -223,6 +227,7 @@ export async function* streamResearchEvents(
       }
     }
   } finally {
+    silence.stop();
     await reader.cancel().catch(() => undefined);
   }
 }
@@ -265,6 +270,7 @@ export async function* followResearchRun(
     initialRun?: ResearchRun;
     signal?: AbortSignal;
     replayFrom?: number;
+    silenceTimeoutMs?: number;
   } = {},
 ): AsyncGenerator<ResearchRunUpdate> {
   const { signal, replayFrom } = options;
@@ -302,7 +308,12 @@ export async function* followResearchRun(
   let cursor = replayFrom ?? run.lastEventSeq;
   while (!signal?.aborted) {
     try {
-      for await (const event of streamResearchEvents(id, cursor, signal)) {
+      for await (const event of streamResearchEvents(
+        id,
+        cursor,
+        signal,
+        options.silenceTimeoutMs,
+      )) {
         cursor = Math.max(cursor, event.id);
         // Delta-only events carry no run; reuse ours so ~12 deltas/s do not re-render every subscriber.
         const eventRun: ResearchRun = event.run ?? currentRun;

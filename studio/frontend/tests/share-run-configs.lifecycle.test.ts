@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type { ChatSearch } from "../src/features/chat/chat-page.tsx";
+import type { ChatSearch } from "../src/features/chat/chat-search.ts";
 import type * as ImportConfig from "../src/features/model-picker/sharing/import-config.ts";
 import type * as Lifecycle from "../src/features/model-picker/sharing/link-lifecycle.ts";
 import {

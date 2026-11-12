@@ -3,7 +3,7 @@
 
 import { createRoute, redirect } from "@tanstack/react-router";
 import { getPostAuthRoute } from "@/features/auth";
-import { useSettingsDialogStore } from "@/features/settings";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
@@ -11,7 +11,7 @@ import { Route as rootRoute } from "./__root";
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
-  staticData: { title: "Settings" },
+  staticData: { titleKey: "settings.title" },
   beforeLoad: async () => {
     await requireAuth();
     useSettingsDialogStore.getState().openDialog();

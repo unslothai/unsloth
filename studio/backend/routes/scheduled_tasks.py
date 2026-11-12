@@ -12,8 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
-from core.scheduled_tasks.schedule import InvalidSchedule, Schedule
-from core.scheduled_tasks.scheduler import next_run_for
+from core.scheduled_tasks.schedule import InvalidSchedule, Schedule, next_run_after, parse_schedule
 from storage import scheduled_tasks_db as db
 
 router = APIRouter()
@@ -156,7 +155,8 @@ def _existing_project(project_id: Optional[str]) -> Optional[str]:
 
 def _next_run(task: dict, now: int) -> Optional[int]:
     try:
-        following = next_run_for(task, now)
+        # Creation, a timing change, or resume starts a fresh hourly interval from now.
+        following = next_run_after(parse_schedule(task["schedule"]), task["timezone"], now)
     except InvalidSchedule as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     if following is None and task["enabled"]:

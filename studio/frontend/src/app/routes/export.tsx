@@ -20,7 +20,7 @@ export type ExportSearch = {
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/export",
-  staticData: { title: "Export" },
+  staticData: { titleKey: "shell.navigation.export" },
   beforeLoad: () => requireAuth(),
   validateSearch: (search: Record<string, unknown>): ExportSearch => ({
     run: typeof search.run === "string" ? search.run : undefined,

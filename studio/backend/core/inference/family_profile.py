@@ -29,7 +29,8 @@ class ConvRotSpec:
     artifacts still validate. ``filename`` / ``repo`` name the hosted rotated build (only ``repo`` gets the rotated
     name prepended), ``variant_repos`` the variant repos that host one under their own name, ``default_on`` whether
     int8 rotates unless ``UNSLOTH_DIFFUSION_INT8_CONVROT`` turns it off (the rest are opt-in with ``=1``). ``group`` 0
-    means no runtime rotation: the entry only names a hosted build whose rotation is baked into the file."""
+    means no runtime rotation: the entry only names a hosted build whose rotation is baked into the file.
+    ``hosted_plain``: older hosted int8 files are unrotated, so with ConvRot on only ``filename`` is read."""
 
     group: int
     suffixes: tuple[str, ...]
@@ -37,6 +38,7 @@ class ConvRotSpec:
     repo: Optional[str] = None
     variant_repos: tuple[str, ...] = ()
     default_on: bool = False
+    hosted_plain: bool = False
 
 
 @dataclass(frozen = True)
@@ -57,6 +59,10 @@ class FamilyProfile:
     # int8 name tokens left dense on top of the generic M = 1 tokens (``_int_mm`` needs M > 16, or a measured quality
     # lever). Baked into published int8 artifacts.
     int8_exclude_tokens: tuple[str, ...] = ()
+    # Subset of ``int8_exclude_tokens`` a STREAMED build quantises anyway (``int8_text_stream_scope``).
+    int8_runtime_quant_tokens: tuple[str, ...] = ()
+    # Generic-excluded Linears a STREAMED build stores int8 weight-only.
+    int8_streamed_weight_only_tokens: tuple[str, ...] = ()
     # Name tokens left dense for EVERY transformer-quant scheme (int8 / fp8 / mxfp8 / nvfp4), on top of the int8
     # tokens above. For layers whose quantisation error is measured to dominate the image delta regardless of the
     # scheme (FLUX.3: per-token modulations, the 20480-wide text projection, the text-stream per-mode blocks).
@@ -76,6 +82,8 @@ class FamilyProfile:
     auto_scheme_skip: frozenset[str] = frozenset()
     # Reason auto keeps bf16 while bf16 fits (INT8 still picked once bf16 would offload); None = not this family.
     auto_bf16_when_resident: Optional[str] = None
+    # ROCm RDNA AUTO W8A8 evidence (gfx1151); None = bf16. Kill switch UNSLOTH_NATIVE_INT8_ACT=0.
+    rdna_auto_w8a8: Optional[str] = None
     # Video: prequant DiT schemes AUTO seeds even where bf16 fits resident (else auto keeps resident bf16).
     auto_prequant_when_resident: frozenset[str] = frozenset()
     # Text-encoder int8 keep-bf16 schedule (skip_first, skip_last) decoder blocks; None = int8 falls back to fp8.

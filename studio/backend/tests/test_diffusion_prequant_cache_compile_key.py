@@ -108,7 +108,7 @@ def test_an_fp8_or_unknown_read_back_still_installs_the_dispatcher(tmp_path, mon
     import core.inference.prequant_safetensors as PS
 
     calls = []
-    monkeypatch.setattr(P, "_install_fp8_unit_scale", lambda: calls.append(1))
+    monkeypatch.setattr(P, "_install_fp8_unit_scale", lambda **_: calls.append(1))
     monkeypatch.setattr(PS, "is_safetensors_checkpoint", lambda path: True)
     fp8 = type("Float8Tensor", (), {})()
     int8 = type("Int8Tensor", (), {})()

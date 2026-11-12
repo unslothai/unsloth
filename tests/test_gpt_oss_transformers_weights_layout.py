@@ -119,3 +119,24 @@ def test_hub_probe_reads_the_explicit_file(monkeypatch, tmp_path):
     cfg = _cfg("chosen.safetensors")
     assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, "org/repo") is True
     assert asked == ["chosen.safetensors"]
+
+
+@pytest.mark.parametrize("subfolder", [None, "sub"])
+def test_absolute_explicit_name_inside_the_model_dir_decides_the_layout(tmp_path, subfolder):
+    # transformers accepts an absolute name inside the real model dir (+ subfolder).
+    path = _repo(tmp_path, SPLIT, SPLIT)
+    root = tmp_path / "ckpt" / subfolder if subfolder else tmp_path / "ckpt"
+    root.mkdir(exist_ok = True)
+    _save(root / "model.safetensors", SPLIT)
+    _save(root / "chosen.safetensors", FUSED)
+    cfg = _cfg(str(root / "chosen.safetensors"))
+    probe = loader_utils.gpt_oss_checkpoint_has_fused_experts
+    assert probe(cfg, path, subfolder = subfolder) is True
+    _save(tmp_path / "outside.safetensors", FUSED)
+    outside = str(tmp_path / "outside.safetensors")
+    assert (
+        loader_utils._checkpoint_tensor_dtypes(
+            path, subfolder = subfolder, transformers_weights = outside
+        )
+        is None
+    )

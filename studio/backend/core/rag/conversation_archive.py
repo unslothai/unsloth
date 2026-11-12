@@ -6,9 +6,12 @@ never reset per compaction; entry points no-op on failure."""
 
 from __future__ import annotations
 
+import bisect
+import contextvars
+import dataclasses
+import functools
 import hashlib
 import logging
-import bisect
 import json
 import os
 import re
@@ -29,16 +32,14 @@ logger = logging.getLogger(__name__)
 _ARCHIVE_EMBED_BATCH = 64
 # Per call; the rest is archived by later requests, which re-evict the same turns.
 _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT = 256
-# Background pre-embedding runs only while no inference runs (tool calls, between turns); small batches so
-# a new generation waits at most one of them.
+# Background embedding waits for idle inference; small batches bound a new generation's wait.
 _PREWARM_BATCH = 16
 _PREWARM_MAX_CHUNKS = 2048
 _VECTOR_CACHE_MAX = 8192
 _NOTED_MAX = 8
 _PAUSE_JOIN_S = 10.0
 
-# Instructions, not conversation. An archived system prompt could come back quoted as an "earlier turn" and read as
-# user-authored text.
+# Skip system roles: an archived prompt quoted back would read as user-authored text.
 _SKIP_ROLES = frozenset({"system", "developer"})
 
 # Auto-inject/recall call ids: their results are retrieved passages, so archiving them would self-feed the index.
@@ -53,6 +54,97 @@ _MAX_TOOL_ARGS_CHARS = 1000
 _BRANCH_FILTER_OVERFETCH = 4
 # Long abandoned branches can fill any fixed window, so widen and re-ask, up to this bound: a chat request, not a crawl.
 _BRANCH_FILTER_MAX_CANDIDATES = 256
+
+# Bumped after every archive write in this process; a recall session drops its memos when it moves.
+_write_generation = 0
+_write_generation_lock = threading.Lock()
+
+
+def _writes(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        global _write_generation
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            with _write_generation_lock:
+                _write_generation += 1
+
+    return wrapper
+
+
+class _RecallSession:
+    """Lexical results, transcripts and branch decisions shared by the recalls of one compaction."""
+
+    __slots__ = ("generation", "lexical", "matching", "transcripts")
+
+    def __init__(self):
+        self.generation = _write_generation
+        self.lexical: dict = {}
+        self.matching: dict = {}
+        self.transcripts: dict = {}
+
+    def current(self) -> "_RecallSession":
+        if self.generation != _write_generation:
+            self.__init__()
+        return self
+
+
+_session: contextvars.ContextVar[Optional[_RecallSession]] = contextvars.ContextVar(
+    "rag_recall_session", default = None
+)
+
+
+@contextmanager
+def recall_session():
+    """Recalls inside share one session; a nested entry joins the outer one."""
+    if _session.get() is not None:
+        yield
+        return
+    token = _session.set(_RecallSession())
+    try:
+        yield
+    finally:
+        _session.reset(token)
+
+
+def _active_session() -> Optional[_RecallSession]:
+    session = _session.get()
+    return session.current() if session is not None else None
+
+
+class _TranscriptIndex:
+    """Which messages contain a probe, from one C-level scan of the joined transcript."""
+
+    __slots__ = ("texts", "joined", "offsets", "found")
+
+    def __init__(self, texts: list[str]):
+        self.texts = texts
+        self.joined = "\0".join(texts)
+        self.offsets = []
+        at = 0
+        for text in texts:
+            self.offsets.append(at)
+            at += len(text) + 1
+        self.found: dict = {}
+
+    def containing(self, probe: str) -> list[int]:
+        hit = self.found.get(probe)
+        if hit is not None:
+            return hit
+        if "\0" in probe:
+            hit = [i for i, text in enumerate(self.texts) if probe in text]
+        else:
+            hit = []
+            at = self.joined.find(probe)
+            while at >= 0:
+                index = bisect.bisect_right(self.offsets, at) - 1
+                hit.append(index)
+                if index + 1 >= len(self.offsets):
+                    break
+                at = self.joined.find(probe, self.offsets[index + 1])
+        self.found[probe] = hit
+        return hit
 
 
 def _text_of(content, *, include_tool_calls: bool = False) -> str:
@@ -89,9 +181,7 @@ def _probe_text(message: dict) -> str:
         results.clear()
 
     def rendered(value) -> list[str]:
-        """A structured value as the strings a wire-format copy of it could look like. The store
-        keeps tool arguments as an object; the archived copy is the model's raw string, with its
-        own spacing. This is a haystack, so offering both is free."""
+        """Spellings a wire-format copy of a structured value could take; the store keeps an object."""
         if isinstance(value, str):
             return [value]
         try:
@@ -142,9 +232,7 @@ def _is_injected(message: dict) -> bool:
 
 
 def render_turn(group: list[dict]) -> str:
-    """Render one evicted turn group as the text that gets indexed and quoted back. Both sides go in
-    one document on purpose, so retrieval returns the question with its answer rather than a
-    floating fragment."""
+    """One indexed document per evicted turn group, question and answer together for retrieval."""
     lines: list[str] = []
     for message in group:
         role = str(message.get("role") or "")
@@ -358,9 +446,8 @@ def _embed_pending_chunks(
     cached: Optional[list] = None,
     max_encode: Optional[int] = None,
 ):
-    """``(vectors, identity, cancelled, error)``, partial after a cancel or a late failure:
-    write only groups ``vectors`` fully covers. A failing first batch raises. Only cache misses
-    are encoded."""
+    """Returns (vectors, identity, cancelled, error), partial after a cancel or late failure; a
+    failing first batch raises; only cache misses are encoded."""
     # `cached` is the lookup the caller's cap was computed from; a second lookup could see a later eviction.
     vectors = list(cached) if cached is not None else _cached_vectors(expected_identity, texts)
     identity = expected_identity if any(v is not None for v in vectors) else None
@@ -538,8 +625,7 @@ def _gap_closed() -> bool:
 
 
 def _requeue(jobs: list) -> None:
-    """Put back what a closed gap interrupted, behind nothing newer: a fresh note for the same chat wins, and a
-    stopped request stays dropped."""
+    """Requeue interrupted jobs; a newer note for the chat wins, and stopped ones stay gone."""
     with _gap:
         kept = {
             (job[0].account_id, job[1]): job
@@ -678,18 +764,8 @@ def archive_turns(
     branch: Optional[list[dict]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> int:
-    """Index the evicted turns for ``thread_id``. Returns how many were newly written.
-
-    Idempotent by content hash: the same turns are evicted again on every later request in the
-    session, so re-archiving has to be free. After the first write each repeat costs one indexed
-    SELECT and writes nothing.
-
-    ``live`` is the fitted conversation, i.e. what the model can still see. It bounds how many
-    copies of a repeated turn the archive is allowed to hold right now; see ``_write_budget``.
-    Optional, and omitting it keeps the previous behaviour.
-
-    ``cancel_check`` (Chat Stop) is polled before chunking and between embedding batches.
-    """
+    """Indexes evicted turns for thread_id and returns how many were newly written; idempotent by
+    content hash; live bounds repeat copies; cancel_check is polled."""
     if not thread_id or not evicted or not enabled():
         return 0
     # Incognito and API-only threads are skipped (see can_archive); compacted chats are always persisted.
@@ -702,6 +778,7 @@ def archive_turns(
         return _archive_turns(thread_id, evicted, live, branch, cancel_check)
 
 
+@_writes
 def _archive_turns(
     thread_id: str,
     evicted: list[dict],
@@ -709,8 +786,7 @@ def _archive_turns(
     branch: Optional[list[dict]],
     cancel_check: Optional[Callable[[], bool]],
 ) -> int:
-    # The evictor's own grouper, so an archived unit is exactly the unit the window drops. Imported lazily because the
-    # inference layer imports this module.
+    # Same grouper as the evictor so units match the window; lazy import avoids a cycle.
     from core.inference.context_window import group_turns
 
     # Track the turn's span separately: _archivable may drop messages, and the branch check needs it.
@@ -728,6 +804,10 @@ def _archive_turns(
     positions = _transcript_positions(thread_id, branch or live)
     live_positions = _live_positions(live)
     written = 0
+    # Only an embedder failure falls back to keyword copies; a failing store would refuse those too.
+    dense_failed = False
+    embedded = False
+    embed_error = None
     conn = None
     try:
         if cancel_check is not None and cancel_check():
@@ -827,8 +907,7 @@ def _archive_turns(
             len(texts),
             _ARCHIVE_EMBED_BATCH,
         )
-        # Identity from the encode that produced these vectors: a concurrent embedder swap would otherwise label them
-        # with a space they were never in.
+        # Identity from the encode; a concurrent embedder swap would mislabel them.
         vectors, identity, cancelled, embed_error = _embed_pending_chunks(
             texts,
             model_name = model,
@@ -847,6 +926,7 @@ def _archive_turns(
         )
         if not vectors:
             return 0
+        embedded = True
 
         # Only fully embedded groups; a partial one is left for the next request.
         complete: list = []
@@ -963,10 +1043,12 @@ def _archive_turns(
             raise embed_error
     except embeddings.EmbeddingModelDownloadRequiredError as exc:
         globals()["_INGEST_FAILED"] = True
+        dense_failed = True
         _log_embedder_pending(model, exc)
-    except Exception:
+    except Exception as exc:
         # Failing to archive must not raise; what was written before the failure stays searchable.
         globals()["_INGEST_FAILED"] = True
+        dense_failed = not embedded or exc is embed_error
         logger.warning("conversation_archive.ingest_failed thread_id=%s", thread_id, exc_info = True)
     finally:
         if conn is not None:
@@ -975,12 +1057,115 @@ def _archive_turns(
             except Exception:
                 pass
 
+    if dense_failed and not (cancel_check is not None and cancel_check()):
+        # Without any copy there is no archive, so search_conversation is never offered (#16706).
+        # degraded() stays set: dense recall is still down.
+        written += _archive_turns_lexically(
+            thread_id, scope, groups, positions, live_positions, cancel_check
+        )
+
     # Re-check after commit: a concurrent delete sweep could strand deleted content. Delete drops rows first, sweeps archives last, so either order converges.
     if written and not can_archive(thread_id):
         logger.info("conversation_archive.thread_deleted_mid_ingest thread_id=%s", thread_id)
         delete_for_thread(thread_id)
         return 0
     return written
+
+
+# Matches no embedder, so `_stale_document` re-embeds the copy in place once one works.
+LEXICAL_ONLY_IDENTITY = rag_db.VECTORS_DROPPED + "none"
+
+
+def _rough_token_count(text: str) -> int:
+    return max(1, len(text or "") // 4)
+
+
+@_writes
+def _archive_turns_lexically(
+    thread_id: str,
+    scope: str,
+    groups: list,
+    positions: Optional[list[list[str]]],
+    live_positions: Optional[list[list[str]]],
+    cancel_check: Optional[Callable[[], bool]],
+) -> int:
+    """Keyword-only copies of evicted turns, one per evicted occurrence (``_write_budget``); returns how many were written."""
+    written = 0
+    conn = None
+    try:
+        conn = rag_db.get_connection()
+        for group, span in groups:
+            if cancel_check is not None and cancel_check():
+                break
+            text = render_turn(group)
+            if not text:
+                continue
+            digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
+            seats = _occurrences(positions, group)
+            budget = _write_budget(positions, seats, live_positions, group)
+            if len(store.documents_by_hash(conn, scope, digest)) >= budget:
+                # As the dense pre-check: re-seat, retire surplus copies after a rewind, widen the span.
+                _restamp(conn, scope, digest, seats[:budget], commit = True)
+                _widen_span(conn, scope, digest, span)
+                continue
+            chunks = _turn_chunks(text, max(1, int(config.CHUNK_TOKENS)), _rough_token_count)
+            if not chunks:
+                continue
+            roles = " + ".join(
+                dict.fromkeys(str(message.get("role") or "message") for message in group)
+            )
+            _write_lock = False
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                _write_lock = True
+            except Exception:
+                logger.debug("conversation_archive.no_write_lock", exc_info = True)
+            # Re-counted under the lock: a concurrent compaction may have written some.
+            have = len(store.documents_by_hash(conn, scope, digest))
+            if have >= budget:
+                if _write_lock:
+                    conn.rollback()
+                continue
+            try:
+                for n in range(have, budget):
+                    document_id = store.create_document(
+                        conn,
+                        scope = scope,
+                        thread_id = thread_id,
+                        filename = f"earlier turn ({roles})",
+                        sha256 = digest,
+                        status = "completed",
+                        embedding_model = LEXICAL_ONLY_IDENTITY,
+                        archive_messages = span,
+                        archive_ordinal = seats[n]
+                        if n < len(seats)
+                        else _fallback_ordinal(conn, scope, positions),
+                        commit = False,
+                    )
+                    store.add_lexical_chunks(conn, scope, document_id, chunks)
+            except Exception:
+                conn.rollback()
+                raise
+            conn.commit()
+            written += budget - have
+        if written:
+            logger.info(
+                "conversation_archive.archived_without_vectors thread_id=%s turns=%s",
+                thread_id,
+                written,
+            )
+        return written
+    except Exception:
+        logger.warning(
+            "conversation_archive.lexical_ingest_failed thread_id=%s", thread_id, exc_info = True
+        )
+        return written
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # A Settings pick whose download has not finished is not a fault; logged once, not per compaction.
@@ -1203,8 +1388,7 @@ def _active_chain(
 _EMPTY_TOOL_RESULT = '{"result":""}'
 
 
-# Mirrors SERVER_SIDE_BUILTIN_TOOL_NAMES (chat-adapter.ts); name alone never decides, as the frontend also
-# requires.
+# Mirrors SERVER_SIDE_BUILTIN_TOOL_NAMES (chat-adapter.ts); the name alone never decides.
 _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
 # `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._FILE_SENTINEL_TOOLS`. Only these wrap.
 _SANDBOX_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
@@ -1302,9 +1486,7 @@ def _sanitised_assistant_text(text: str) -> str:
 
 
 def _sanitised_assistant_content(content):
-    """`content` with every part `_probe_text` reads as text sanitised, others untouched. Keyed on
-    the `text` field rather than on the type, as `_probe_text` is, so a part shape it renders
-    cannot slip past this one."""
+    """Sanitises each part `_probe_text` reads as text, keyed on the text field so no shape slips past."""
     if isinstance(content, str):
         return _sanitised_assistant_text(content)
     if not isinstance(content, list):
@@ -1545,16 +1727,8 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     calls = [bool(message.get("tool_calls")) for message in group]
 
     def _same(stored: str, live: str, is_call: bool) -> bool:
-        # A tool call is compared as needle in haystack, never for equality: the store keeps arguments as an OBJECT
-        # and the request carries the model's raw string, so `_probe_text` offers both JSON spellings for the stored
-        # copy and one for the live one. Every other message is compared exactly.
-        # In two pieces when the whole needle does not fit, since the second spelling is inserted BETWEEN the
-        # arguments and what followed them: a call with a preamble renders live as name/args/text and stored as
-        # name/args/args/text, so the live string is no longer contiguous. One split point, so this tolerates exactly
-        # the one insertion `_probe_text` makes.
-        # Space offsets keep split(" ") semantics. Head presence only falls and tail presence only rises as the cut
-        # moves right, so both bounds are binary-searched; the ordered match is not monotone, so every cut between
-        # them is still checked against the earliest head and the latest tail.
+        # Tool calls are matched as a needle in a haystack, never by equality; other messages
+        # compare exactly; one split point is tolerated.
         if not is_call:
             return stored == live
 
@@ -1706,6 +1880,7 @@ def _retire_surplus(
         return False
 
 
+@_writes
 def _restamp(
     conn,
     scope: str,
@@ -1767,6 +1942,7 @@ def _archived_under(
     return _stale_document(conn, scope, digest, identity, occurrences = occurrences) is _ARCHIVED
 
 
+@_writes
 def _widen_span(conn, scope: str, digest: str, span: int) -> None:
     """Only widens: a stored window is a maximum, so a longer span still matches the shorter turn."""
     try:
@@ -1843,9 +2019,7 @@ def branch_message_texts(
 
 
 def message_text(content) -> str:
-    """One stored message's content, normalised the way the branch check normalises it. Exposed so
-    the rolling window compares stored messages on exactly these terms rather than inventing a
-    second notion of "same text"."""
+    """Normalises stored content the way the branch check does, so the rolling window agrees with it."""
     return _normalise(_probe_text({"content": content}))
 
 
@@ -2003,7 +2177,13 @@ def _rendered_message_count(rows) -> int:
     return total
 
 
-def _document_on_live_branch(conn, document_id: str, transcript: list[str], cache: dict) -> bool:
+def _document_on_live_branch(
+    conn,
+    document_id: str,
+    transcript: list[str],
+    cache: dict,
+    index: Optional[_TranscriptIndex] = None,
+) -> bool:
     """Every chunk must still be on the branch: an edit to any part of a turn retires the whole copy."""
     if document_id in cache:
         return cache[document_id]
@@ -2021,7 +2201,7 @@ def _document_on_live_branch(conn, document_id: str, transcript: list[str], cach
         # Never fail a recall on the strictness pass: fall back to what the candidate chunk itself said.
         cache[document_id] = True
         return True
-    cache[document_id] = _document_matches_one_run(rows, transcript, message_count)
+    cache[document_id] = _document_matches_one_run(rows, transcript, message_count, index)
     return cache[document_id]
 
 
@@ -2029,6 +2209,7 @@ def _document_matches_one_run(
     rows,
     transcript: Optional[list[str]],
     message_count: Optional[int] = None,
+    index: Optional[_TranscriptIndex] = None,
 ) -> bool:
     """Every chunk must match within one run of adjacent messages, not be assembled from scattered parts."""
     if not rows or not transcript:
@@ -2068,7 +2249,19 @@ def _document_matches_one_run(
             return False
         return partial_tail or cursor >= len(transcript[position])
 
-    return any(_one_run_from(start) for start in range(len(transcript)))
+    # A run opens on the first message at or after its start that holds the first probe, and must open inside
+    # its window, so only starts within one window before such a message can succeed.
+    first = probe_lists[0][0][0]
+    if index is not None and index.texts is transcript:
+        holders = index.containing(first)
+    else:
+        holders = [i for i, text in enumerate(transcript) if first in text]
+    starts = []
+    previous = -1
+    for holder in holders:
+        starts.extend(range(max(previous + 1, holder - window + 1), holder + 1))
+        previous = holder
+    return any(_one_run_from(start) for start in starts)
 
 
 def _order_key(ordinal, created_at, document_rowid, chunk_index) -> tuple:
@@ -2147,6 +2340,46 @@ def _lexical_pass(
     newest_first: bool = False,
     oldest_first: bool = False,
 ) -> list:
+    session = _active_session()
+    if session is None:
+        return _lexical_pass_uncached(
+            conn,
+            scope,
+            query,
+            model,
+            k,
+            expression,
+            newest_first = newest_first,
+            oldest_first = oldest_first,
+        )
+    key = (scope, query, k, expression, newest_first, oldest_first)
+    hits = session.lexical.get(key)
+    if hits is None:
+        hits = session.lexical[key] = _lexical_pass_uncached(
+            conn,
+            scope,
+            query,
+            model,
+            k,
+            expression,
+            newest_first = newest_first,
+            oldest_first = oldest_first,
+        )
+    # Callers re-rank and refill these lists; hand out copies.
+    return [dataclasses.replace(hit) for hit in hits]
+
+
+def _lexical_pass_uncached(
+    conn,
+    scope: str,
+    query: str,
+    model,
+    k: int,
+    expression,
+    *,
+    newest_first: bool = False,
+    oldest_first: bool = False,
+) -> list:
     if newest_first or oldest_first:
         # Archive legs are always "lexical", so this is the same call with the tie-break reversed.
         return _ends_first_within_ties(
@@ -2179,6 +2412,19 @@ def _both_ends(oldest: list, newest: list) -> list:
     """One candidate list from a run fetched from each end, oldest side first, no repeats."""
     seen = {hit.chunk_id for hit in oldest}
     return oldest + [hit for hit in newest if hit.chunk_id not in seen]
+
+
+def _lexical_matching_ids(conn, chunk_ids: list, expression) -> set:
+    session = _active_session()
+    if session is None:
+        return store.lexical_matching_ids(conn, chunk_ids, expression)
+    key = (tuple(chunk_ids), expression)
+    found = session.matching.get(key)
+    if found is None:
+        found = session.matching[key] = frozenset(
+            store.lexical_matching_ids(conn, chunk_ids, expression)
+        )
+    return set(found)
 
 
 def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
@@ -2235,9 +2481,7 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     # Ask the index for eligibility: the strict pass is capped and arbitrarily ordered.
     eligible = {hit.chunk_id for hit in strict}
     try:
-        eligible |= store.lexical_matching_ids(
-            conn, [hit.chunk_id for hit in loose], expressions[0]
-        )
+        eligible |= _lexical_matching_ids(conn, [hit.chunk_id for hit in loose], expressions[0])
     except Exception:
         # Exact membership is an improvement, not a dependency; on failure the strict rows alone stand.
         logger.warning("conversation_archive.eligibility_probe_failed", exc_info = True)
@@ -2247,6 +2491,26 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     already |= {hit.chunk_id for hit in strict}
     ranked += [hit for hit in loose if hit.chunk_id not in already]
     return ranked
+
+
+def _recall_transcript(branch_messages, thread_id: str):
+    """(transcript, its index, branch decisions per document), shared across a session's recalls."""
+    session = _active_session()
+    if session is None:
+        transcript = branch_message_texts(branch_messages) or _live_transcript(thread_id)
+        return transcript, (_TranscriptIndex(transcript) if transcript else None), {}
+    # Keyed on message identity: the session holds the messages, so ids stay theirs.
+    key = (tuple(map(id, branch_messages or ())), thread_id)
+    entry = session.transcripts.get(key)
+    if entry is None:
+        transcript = branch_message_texts(branch_messages) or _live_transcript(thread_id)
+        entry = session.transcripts[key] = (
+            transcript,
+            _TranscriptIndex(transcript) if transcript else None,
+            {},
+            list(branch_messages or ()),
+        )
+    return entry[0], entry[1], entry[2]
 
 
 def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str) -> list:
@@ -2262,8 +2526,17 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
     if len(hits) < fetch:
         try:
             seen = {hit.chunk_id for hit in hits}
+            # Legs sized to the fetch: at the default 30 each, widening past 60 reads as an exhausted archive.
+            legs = max(fetch, config.TOP_K_LEXICAL, config.TOP_K_DENSE)
             for hit in retrieval.retrieve_hybrid(
-                conn, scope, query, k = fetch, model_name = model, mode = "hybrid"
+                conn,
+                scope,
+                query,
+                k = fetch,
+                model_name = model,
+                mode = "hybrid",
+                lexical_k = legs,
+                dense_k = legs,
             ):
                 if hit.chunk_id not in seen:
                     hits.append(hit)
@@ -2290,6 +2563,26 @@ def recall(
     forced: bool = False,
 ) -> Optional[tuple[str, list[dict]]]:
     """Lexical first, since recall is mostly exact match; no relevance floor, as weak matches beat none."""
+    with retrieval.query_vector_memo(), recall_session():
+        return _recall(
+            thread_id,
+            query,
+            top_k = top_k,
+            branch_messages = branch_messages,
+            extra_queries = extra_queries,
+            forced = forced,
+        )
+
+
+def _recall(
+    thread_id: str,
+    query: str,
+    *,
+    top_k: Optional[int] = None,
+    branch_messages: Optional[list[dict]] = None,
+    extra_queries: Optional[list[str]] = None,
+    forced: bool = False,
+) -> Optional[tuple[str, list[dict]]]:
     query = (query or "").strip()
     if not thread_id or not query or not enabled():
         return None
@@ -2350,11 +2643,10 @@ def recall(
         conn = rag_db.get_connection()
         model = config.effective_embedding_model()
         # Request's branch first; stored rows are the whole DAG, a fallback that still beats no filtering.
-        transcript = branch_message_texts(branch_messages) or _live_transcript(thread_id)
+        transcript, index, live_documents = _recall_transcript(branch_messages, thread_id)
         fetch = limit * _BRANCH_FILTER_OVERFETCH
         rows: dict = {}
         hits: list = []
-        live_documents: dict = {}
         while True:
             fetched = _candidates(conn, scope, query, model, fetch, thread_id)
             if not fetched:
@@ -2381,7 +2673,7 @@ def recall(
                 for hit in candidates
                 if hit.chunk_id in rows
                 and _document_on_live_branch(
-                    conn, rows[hit.chunk_id]["document_id"], transcript, live_documents
+                    conn, rows[hit.chunk_id]["document_id"], transcript, live_documents, index
                 )
             ]
             if len(hits) != len(candidates):
@@ -2430,6 +2722,7 @@ def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
     )
 
 
+@_writes
 def _delete_scope_without_vec(
     scope: str,
     thread_id: str,
@@ -2442,15 +2735,7 @@ def _delete_scope_without_vec(
     try:
         conn = rag_db.get_metadata_connection()
         documents = conn.execute(*_scope_select(scope, created_before)).fetchall()
-        for row in documents:
-            conn.execute(
-                "DELETE FROM chunks_fts WHERE chunk_id IN "
-                "(SELECT id FROM chunks WHERE document_id=?)",
-                (row["id"],),
-            )
-            conn.execute("DELETE FROM chunks WHERE document_id=?", (row["id"],))
-            conn.execute("DELETE FROM documents WHERE id=?", (row["id"],))
-        conn.commit()
+        store.delete_documents(conn, [row["id"] for row in documents], vec = False)
         removed = [row["stored_path"] for row in documents]
     except Exception:
         logger.warning(
@@ -2486,6 +2771,7 @@ def delete_thread_documents(thread_id: str, *, created_before: Optional[str] = N
     return len(removed)
 
 
+@_writes
 def copy_thread_documents(
     source_thread_id: str,
     thread_id: str,
@@ -2554,6 +2840,7 @@ def thread_has_documents(thread_id: str) -> bool:
         conn.close()
 
 
+@_writes
 def _delete_scope(
     scope: str,
     thread_id: str,
@@ -2568,9 +2855,9 @@ def _delete_scope(
         except Exception:
             # No vec0 here. Delete what can be deleted rather than nothing at all.
             return _delete_scope_without_vec(scope, thread_id, created_before = created_before)
-        for row in conn.execute(*_scope_select(scope, created_before)).fetchall():
-            store.delete_document(conn, row["id"])
-            removed.append(row["stored_path"])
+        documents = conn.execute(*_scope_select(scope, created_before)).fetchall()
+        store.delete_documents(conn, [row["id"] for row in documents])
+        removed = [row["stored_path"] for row in documents]
     except Exception:
         logger.warning("conversation_archive.delete_failed thread_id=%s", thread_id, exc_info = True)
     finally:

@@ -29,6 +29,8 @@ _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
 _ENV_SYNC = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC"
 _ENV_MAX_GB = "UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB"
+# "0": keep torch's process-wide artifact collector, so each bundle also carries earlier models' artifacts.
+_ENV_ISOLATE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_ISOLATE"
 _DEFAULT_MAX_GB = 20.0
 
 _LEGACY_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
@@ -204,8 +206,9 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
-        # torch keys artifacts on this tag (set by diffusion_fp8_unit_scale); a bundle from another tag would load,
-        # miss, recompile and never be rewritten. Only a set tag joins the key, so untagged bundles stay valid.
+        from .diffusion_compile_config import apply
+
+        apply()
         tag = getattr(getattr(torch, "compiler", None), "config", None)
         tag = getattr(tag, "cache_key_tag", None)
         if isinstance(tag, str) and tag:
@@ -225,6 +228,11 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT": "auto",
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED": "auto",
     "UNSLOTH_DIFFUSION_INT8_FUSED": "on",
+    "UNSLOTH_DIFFUSION_INT8_TEXT_STREAM": "on",
+    "UNSLOTH_DIFFUSION_INT8_MODULATION": "on",
+    # Keyed on the clamped count the reader uses (0 = none).
+    "UNSLOTH_DIFFUSION_INT8_MOD_OUTLIERS": "count:8",
+    "UNSLOTH_DIFFUSION_INT8_GEMV": "on",
     "UNSLOTH_DIFFUSION_ZIMAGE_FUSED": "on",
     "UNSLOTH_DIFFUSION_Q21_REAL_ROPE": "on",
     "UNSLOTH_DIFFUSION_QWEN_REAL_ROPE": "on",
@@ -237,9 +245,10 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
+    "UNSLOTH_DIFFUSION_TF32": "on",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
-    # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
-    "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
+    # Keyed against the card's unset default (auto on sm_100-class, else off); a bare "0" protects step 0, not off.
+    "UNSLOTH_NVFP4_PROTECT_STEPS": "protect",
 }
 _OFF_WORDS = ("0", "off", "false", "no", "none")
 _ON_WORDS = ("1", "on", "true", "yes", "force")
@@ -257,6 +266,16 @@ def _switch_value(name: str, default: str) -> Optional[str]:
         except ValueError:
             return None
         return None if rows == default.partition(":")[2] else rows
+    if default.startswith("count:"):
+        try:
+            count = str(max(0, min(16, int(raw))))
+        except ValueError:
+            return None
+        return None if count == default.partition(":")[2] else count
+    if default == "protect":
+        from .diffusion_nvfp4_protect import default_model_spec, protect_steps_env
+        value = protect_steps_env() or "off"
+        return None if value == (default_model_spec() or "off") else value
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
@@ -450,14 +469,14 @@ def model_fingerprint(
         dynamic_text = None
     if dynamic_text:
         fp["dynamic_text"] = dynamic_text
-    # Inductor keys graphs on dynamic_scale_rblock: an old bundle would hit, miss every graph, and never be rewritten.
     from .diffusion_compile_config import reduction_blocks_pinned, reduction_config_filter_available
 
     if reduction_blocks_pinned():
         fp["inductor"] = {"dynamic_scale_rblock": False}
-        # Only for a family whose compile pins the reduction-config filter, so every other bundle keeps its key.
         if reduction_filter and reduction_config_filter_available():
             fp["inductor"]["force_filter_reduction_configs"] = True
+            if compile_kwargs.get("mode") in ("max-autotune", "max-autotune-no-cudagraphs"):
+                fp["inductor"]["coordinate_descent_tuning"] = False
     return fp
 
 
@@ -492,6 +511,7 @@ class CacheContext:
     # Recompiled artifacts often hash the same, so overwrite instead of the exists() shortcut.
     rejected_bundle: Optional[str] = None
     last_touch: float = 0.0
+    forwards: frozenset = frozenset()
 
 
 def begin(
@@ -543,14 +563,18 @@ def begin(
         env_fp = env_fp,
         model_fp = model_fp,
         mode = mode,
+        forwards = _module_forwards(transformer),
     )
 
     # Same reason as restore(): the previous load's save reads the inductor dir that is about to be repointed.
-    if not wait_for_saves():
+    drained = wait_for_saves()
+    if not drained:
         _warn(
             logger,
             f"compile-cache: background save still running after {_SAVE_JOIN_TIMEOUT:.0f}s; continuing",
         )
+    else:
+        _fresh_collector(logger, ctx.forwards)
 
     try:
         cdir.mkdir(parents = True, exist_ok = True)
@@ -576,6 +600,11 @@ def begin(
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = inductor_dir
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
+    try:
+        from .diffusion_aot_cache import pin_autotune_key
+        pin_autotune_key(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, f"compile-cache: autotune key not pinned: {exc}")
 
     # The manifest is the commit point and only names a fully written bundle.
     published = _read_manifest(ctx.manifest_path)
@@ -813,6 +842,208 @@ def _compile_lock() -> Any:
         return contextlib.nullcontext()
 
 
+def _isolation_off() -> bool:
+    return (os.environ.get(_ENV_ISOLATE) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _module_forwards(transformer: Any) -> frozenset:
+    """``forward`` codes of ``transformer``'s module classes; Dynamo shares compiled code per code object."""
+    codes = set()
+    try:
+        modules = transformer.modules() if callable(getattr(transformer, "modules", None)) else ()
+        for module in modules:
+            code = getattr(getattr(type(module), "forward", None), "__code__", None)
+            if code is not None:
+                codes.add(code)
+    except Exception:  # noqa: BLE001
+        pass
+    return frozenset(codes)
+
+
+def _dynamo_entries() -> Optional[dict[int, tuple[Any, tuple]]]:
+    """``id(code) -> (code, each cache entry's compiled code)``; None when torch does not expose them."""
+    try:
+        from torch._dynamo import convert_frame  # noqa: PLC0415
+        from torch._dynamo.eval_frame import _debug_get_cache_entry_list  # noqa: PLC0415
+
+        entries = {}
+        for ref in list(convert_frame.input_codes.seen):
+            code = ref()
+            if code is None:
+                continue
+            compiled = tuple(entry.code for entry in _debug_get_cache_entry_list(code))
+            if compiled:
+                entries[id(code)] = (code, compiled)
+        return entries
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_RESUME_RE = re.compile(r"torch_dynamo_resume_in_(.+)_at_\d+")
+
+
+def _serves(code: Any, forwards: Any) -> bool:
+    """``code`` is one of ``forwards`` or a graph-break resume function of one (matched by name and file)."""
+    if code in forwards:
+        return True
+    name = code.co_name
+    resumed = False
+    while (match := _RESUME_RE.fullmatch(name)) is not None:
+        name, resumed = match.group(1), True
+    return resumed and any(
+        f.co_name == name and f.co_filename == code.co_filename for f in forwards
+    )
+
+
+def _still_compiled(collection: "_Collection") -> bool:
+    """Dynamo still holds an entry compiled during ``collection``."""
+    try:
+        from torch._dynamo.eval_frame import _debug_get_cache_entry_list  # noqa: PLC0415
+        ids = {id(c) for c in collection.compiled}
+        return any(
+            id(entry.code) in ids
+            for code in collection.codes
+            for entry in _debug_get_cache_entry_list(code)
+        )
+    except Exception:  # noqa: BLE001 - cannot tell, so keep it
+        return True
+
+
+@dataclasses.dataclass
+class _Collection:
+    """Artifacts torch collected between two resets, kept while Dynamo can still run what was compiled then."""
+
+    data: bytes
+    codes: frozenset
+    compiled: tuple
+    # some compiled code is no forward of the models served, so any model may run it
+    any_model: bool
+
+
+_collections_lock = threading.Lock()
+_collections: list[_Collection] = []
+# the open collection: Dynamo's entries at its start, and the forwards it serves
+_collecting_since: Optional[dict[int, tuple[Any, tuple]]] = None
+_collecting_forwards: set = set()
+# past this the collector just keeps accumulating, as torch does
+_COLLECTIONS_MAX_BYTES = 2 << 30
+
+
+def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
+    """Reset torch's artifact collector so this model's bundle holds its own artifacts. A Dynamo in-memory hit
+    records nothing, so the previous collection is kept for ``save`` to add back; skipped while another bundle is live."""
+    global _collecting_since
+    with _collections_lock:
+        _collecting_forwards.update(forwards)
+    if _isolation_off():
+        return False
+    with _live_lock:
+        if _live_dirs:
+            return False
+    try:
+        import torch  # noqa: PLC0415
+
+        # _merge_groups needs these (torch 2.8+), not just AppendingByteSerializer
+        from torch.compiler._cache import (  # noqa: F401, PLC0415
+            CacheArtifactManager,
+            _deserialize_single_cache,
+            _serialize_single_cache,
+        )
+        from torch.utils._appending_byte_serializer import AppendingByteSerializer  # noqa: F401, PLC0415
+    except ImportError:
+        # torch 2.7 bundles are a flat list that cannot be merged
+        return False
+    lock = _compile_lock()
+    acquire = getattr(lock, "acquire", None)
+    # never wait: a running compile's artifacts are not this model's to drop
+    if acquire is not None and not acquire(blocking = False):
+        return False
+    try:
+        entries = _dynamo_entries()
+        if entries is None:
+            return False
+        with _collections_lock:
+            since = _collecting_since if _collecting_since is not None else {}
+            # by identity: a reset then recompile keeps the count; ``since`` keeps the ids alive
+            new = {}
+            for key, (code, compiled) in entries.items():
+                before = {id(c) for c in since.get(key, (None, ()))[1]}
+                fresh = tuple(c for c in compiled if id(c) not in before)
+                if fresh:
+                    new[code] = fresh
+            grown = frozenset(new)
+            _collections[:] = [c for c in _collections if _still_compiled(c)]
+            if grown:
+                result = torch.compiler.save_cache_artifacts()
+                data = result[0] if result else None
+                if data:
+                    if sum(len(c.data) for c in _collections) + len(data) > _COLLECTIONS_MAX_BYTES:
+                        return False
+                    _collections.append(
+                        _Collection(
+                            data = data,
+                            codes = grown,
+                            compiled = tuple(c for fresh in new.values() for c in fresh),
+                            any_model = not all(
+                                _serves(code, _collecting_forwards) for code in grown
+                            ),
+                        )
+                    )
+            # no new entry: nothing from this collection runs without recompiling, which records again
+            CacheArtifactManager.clear()
+            _collecting_since = entries
+            _collecting_forwards.clear()
+            _collecting_forwards.update(forwards)
+        return True
+    except Exception as exc:  # noqa: BLE001 - keep torch's collector as it is
+        _warn(logger, f"compile-cache: could not reset the artifact collector: {exc}")
+        return False
+    finally:
+        if acquire is not None:
+            lock.release()
+
+
+def _with_reused_collections(
+    ctx: CacheContext, data: Optional[bytes], logger: Any
+) -> Optional[bytes]:
+    """``data`` plus each kept collection ``ctx``'s model may run, merged; None when there is nothing."""
+    with _collections_lock:
+        reused = [
+            c.data
+            for c in _collections
+            if (c.any_model or any(_serves(code, ctx.forwards) for code in c.codes))
+            and _still_compiled(c)
+        ]
+    if not reused:
+        return None if data is None else _one_group_per_type(data, logger)
+    return _merge_groups(reused + ([data] if data else []), logger)
+
+
+def _merge_groups(bundles: list[bytes], logger: Any) -> Optional[bytes]:
+    """Serialized collections, oldest first, as one bundle."""
+    try:
+        from torch.compiler._cache import (  # noqa: PLC0415
+            CacheArtifactManager,
+            _deserialize_single_cache,
+            _serialize_single_cache,
+        )
+        from torch.utils._appending_byte_serializer import AppendingByteSerializer  # noqa: PLC0415
+
+        CacheArtifactManager._ensure_cache_artifacts_registered()
+        out = AppendingByteSerializer(serialize_fn = _serialize_single_cache)
+        for data in bundles:
+            out.extend(
+                AppendingByteSerializer.to_list(data, deserialize_fn = _deserialize_single_cache)
+            )
+        return _one_group_per_type(out.to_bytes(), logger)
+    except Exception as exc:  # noqa: BLE001
+        _warn(
+            logger,
+            f"compile-cache: could not merge earlier collections ({exc}); saving this one alone",
+        )
+        return _one_group_per_type(bundles[-1], logger) if bundles else None
+
+
 def _one_group_per_type(data: bytes, logger: Any) -> bytes:
     """One ``(type, artifacts)`` group per type: torch appends a group per save and loads them with ``dict(...)``,
     so a re-saved bundle kept only the newest group of each type."""
@@ -874,11 +1105,10 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"compile-cache: save_cache_artifacts failed: {exc}")
         return False
-    if not result or result[0] is None:
+    data = _with_reused_collections(ctx, result[0] if result else None, logger)
+    if data is None:
         _warn(logger, "compile-cache: nothing to save (empty artifacts)")
         return False
-
-    data = _one_group_per_type(result[0], logger)
     try:
         ctx.dir.mkdir(parents = True, exist_ok = True)
         digest = hashlib.sha256(data).hexdigest()

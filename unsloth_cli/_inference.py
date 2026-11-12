@@ -143,11 +143,9 @@ _cache_env_seeded = False
 
 
 def _seed_cache_env() -> None:
-    """Pin the cache locations the backend pins, for in-process CLI commands.
-
-    Otherwise they inherit unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION, resolved against the
-    working directory, leaving an unsloth_compiled_cache cache_cleanup will not remove (#8865).
-    """
+    """Pin cache locations as the backend does: unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION
+    would resolve against the cwd, leaving unsloth_compiled_cache that cache_cleanup misses
+    (issue 8865)."""
     global _cache_env_seeded
     if _cache_env_seeded:
         return
@@ -338,21 +336,35 @@ def stream_to_stdout(stream, show_thinking: bool) -> str:
     return raw
 
 
+class _LatestMarkdown:
+    # visible_text() and Markdown() each scan the whole reply: run them per drawn frame, not per chunk.
+    def __init__(self, show_thinking: bool):
+        self.state = ("", False)  # (raw, final), swapped whole so the Live thread never sees a mix
+        self._show_thinking = show_thinking
+        self._built = None
+
+    def __rich_console__(self, console, options):
+        from rich.markdown import Markdown
+        from rich.text import Text
+
+        state = self.state
+        if self._built is None or self._built[0] is not state:
+            text = visible_text(state[0], self._show_thinking, final = state[1])
+            self._built = (state, Markdown(text) if text.strip() else Text(""))
+        yield self._built[1]
+
+
 def stream_markdown(stream, show_thinking: bool, *, console) -> str:
     from rich.live import Live
-    from rich.markdown import Markdown
-    from rich.text import Text
 
     raw = ""
-    with Live(console = console, refresh_per_second = 12, vertical_overflow = "visible") as live:
+    view = _LatestMarkdown(show_thinking)
+    with Live(view, console = console, refresh_per_second = 12, vertical_overflow = "visible"):
         for chunk in stream:
-            if not isinstance(chunk, str):
-                continue
-            raw = chunk
-            visible = visible_text(chunk, show_thinking)
-            live.update(Markdown(visible) if visible.strip() else Text(""))
-        visible = visible_text(raw, show_thinking, final = True)
-        live.update(Markdown(visible) if visible.strip() else Text(""))
+            if isinstance(chunk, str):
+                raw = chunk
+                view.state = (raw, False)
+        view.state = (raw, True)
     return raw
 
 
@@ -397,13 +409,107 @@ def render_columns(
 
 
 def stats_hit_token_limit(stats) -> bool:
-    """Whether a backend's end-of-generation stats say the reply ran out of budget.
-
-    Safetensors reports ``truncated``; MLX and llama-server report a finish reason.
-    """
+    """Whether end-of-generation stats show the reply ran out of budget: safetensors sets truncated;
+    MLX and llama-server set finish_reason to length."""
     if not isinstance(stats, dict):
         return False
     return bool(stats.get("truncated")) or stats.get("finish_reason") == "length"
+
+
+_IMAGE_MIME_TYPES = {
+    "BMP": "image/bmp",
+    "GIF": "image/gif",
+    "JPEG": "image/jpeg",
+    "MPO": "image/jpeg",
+    "PNG": "image/png",
+    "TIFF": "image/tiff",
+    "WEBP": "image/webp",
+}
+
+
+def image_part(path) -> dict:
+    """An OpenAI image_url part carrying the file as a data URL, the shape Studio's chat sends."""
+    import base64
+    import io
+
+    file = Path(path).expanduser()
+    try:
+        data = file.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"can't read image {file}: {exc.strerror or exc}") from None
+    # Without Pillow nothing could tell a real picture from a renamed text file.
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ValueError("reading images needs Pillow: pip install pillow") from None
+    try:
+        with Image.open(io.BytesIO(data)) as picture:
+            image_format = picture.format
+            picture.verify()
+    except Exception:
+        raise ValueError(f"{file} is not an image file Unsloth can read") from None
+    mime = _IMAGE_MIME_TYPES.get(image_format) or Image.MIME.get(image_format, "image/png")
+    encoded = base64.b64encode(data).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
+
+
+def user_turn(text: str, images: Optional[list] = None) -> dict:
+    """A user message; attached images go ahead of the text, as Studio orders them."""
+    if not images:
+        return {"role": "user", "content": text}
+    return {"role": "user", "content": [*images, {"type": "text", "text": text}]}
+
+
+def _image_payload(part) -> Optional[str]:
+    if not isinstance(part, dict) or part.get("type") != "image_url":
+        return None
+    url = (part.get("image_url") or {}).get("url") or ""
+    if not url.startswith("data:"):
+        return None
+    return url.partition(",")[2] or None
+
+
+def _local_image_request(messages: list, several: bool):
+    """Studio's local route shape: an image marker where each image stood, plus the payloads in order.
+
+    A model that reads one image per conversation gets only the newest turn's, like the app.
+    """
+    owners = []  # (message index, user ordinal, payloads)
+    ordinal = 0
+    for index, message in enumerate(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            payloads = [p for p in map(_image_payload, content) if p]
+            if payloads:
+                owners.append((index, ordinal, payloads))
+        ordinal += 1
+    if not owners:
+        return messages, None, None
+    if not several:
+        if len(owners[-1][2]) > 1:
+            raise ValueError("this model reads one image per message; attach one image at a time")
+        owners = owners[-1:]
+    kept = {index: len(payloads) for index, _, payloads in owners}
+    rebuilt = []
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if not isinstance(content, list):
+            rebuilt.append(message)
+            continue
+        text = "\n".join(
+            part.get("text") or ""
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+        if index in kept:
+            markers = [{"type": "image"} for _ in range(kept[index])]
+            rebuilt.append({**message, "content": [*markers, {"type": "text", "text": text}]})
+        else:
+            rebuilt.append({**message, "content": text})
+    images = [payload for _, _, payloads in owners for payload in payloads]
+    return rebuilt, images, owners[-1][1]
 
 
 class ChatBackend:
@@ -413,6 +519,18 @@ class ChatBackend:
         self._kind = kind  # "gguf" | "unsloth"
         self._backend = backend
         self.reply_hit_token_limit = False
+
+    def _model_entry(self) -> dict:
+        backend = self._backend
+        return (getattr(backend, "models", None) or {}).get(
+            getattr(backend, "active_model_name", None)
+        ) or {}
+
+    @property
+    def supports_images(self) -> bool:
+        if self._kind == "gguf":
+            return bool(getattr(self._backend, "is_vision", False))
+        return bool(self._model_entry().get("is_vision"))
 
     def stream(
         self,
@@ -490,6 +608,10 @@ class ChatBackend:
                 )
             )
         holder: dict = {}
+        several = bool(
+            (self._model_entry().get("chat_template_info") or {}).get("accepts_multiple_images")
+        )
+        messages, images, image_ordinal = _local_image_request(messages, several)
         gen_kwargs = dict(
             messages = messages,
             system_prompt = system_prompt,
@@ -498,6 +620,8 @@ class ChatBackend:
             stats_holder = holder,
             **sampling,
         )
+        if images:
+            gen_kwargs.update(images = images, image_ordinal = image_ordinal)
         if use_adapter is not None:
             stream = self._backend.generate_with_adapter_control(
                 use_adapter = use_adapter, **gen_kwargs
@@ -639,11 +763,8 @@ def load_chat_backend(
     model_config = None,
     fresh_backend: bool = False,
 ):
-    """Load `model` in-process: GGUF via llama-server, else the orchestrator.
-
-    fresh_backend uses a private orchestrator so a second model (compare's
-    base column) can run alongside the main one.
-    """
+    """Load model in-process, GGUF via llama-server else the orchestrator; fresh_backend uses a
+    private orchestrator so a second model (compare's base column) runs alongside."""
     from unsloth_cli._studio_deps import studio_backend_imports
 
     with studio_backend_imports("unsloth inference", studio_only = True), quiet_if_nonzero_mlx_rank():
@@ -738,8 +859,7 @@ _STUDIO_SERVICE_MARKER = "Unsloth UI Backend"
 
 
 def _recorded_loopback_bases(address: Optional[str], port: str) -> list:
-    """Loopback bases for a server recorded at *address*. The wrong family reaches whoever else
-    holds that port number."""
+    """Loopback bases for a recorded address; the wrong family hits whoever holds that port."""
     import ipaddress
 
     loopback, parsed_any = set(), False
@@ -804,8 +924,7 @@ def _answers_as_studio(base: str, timeout: float) -> bool:
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     candidates = _loopback_candidate_bases(base)
-    # Try the concrete loopback addresses in order and return the first that answers, so the rest of
-    # the flow talks to that exact address.
+    # Use the first loopback address that answers, so the flow talks to that exact address.
     found = next((c for c in candidates if _answers_as_studio(c, timeout)), None)
     if os.environ.get("UNSLOTH_STUDIO_URL"):
         return found
@@ -883,8 +1002,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
 
 
 def _studio_token() -> Optional[str]:
-    """Self-issue a JWT: the CLI runs as the same OS user as the server, so it
-    signs with the same stored secret the server validates against."""
+    """Signs a JWT with the server's stored secret, since the CLI runs as the same OS user."""
     try:
         import studio.backend.core  # noqa: F401  puts studio/backend on sys.path
 
@@ -916,6 +1034,7 @@ class HttpChatBackend:
         self._token = token
         self.reply_hit_token_limit = False
         self.gguf_variant: Optional[str] = None
+        self.supports_images = False
 
     def _request(
         self,
@@ -973,13 +1092,14 @@ class HttpChatBackend:
         self.gguf_variant = resident_variant
         try:
             # Read the whole body, not just headers: closing early discards the only in-band report of a late load failure.
-            read_json_checking_deferred_error(
+            loaded = read_json_checking_deferred_error(
                 self._base + "/api/inference/load",
                 self._request("POST", "/api/inference/load", payload),
             )
         except Exception as exc:
             typer.echo(f"Model load failed: {exc}", err = True)
             raise typer.Exit(code = 1)
+        self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
 
     def _resident_gguf_variant(self, model: str) -> Optional[str]:
         if model.lower().endswith(".gguf"):
@@ -1048,6 +1168,7 @@ class HttpChatBackend:
             # Accumulate SSE deltas into the full-text-so-far form; re-wrap delta.reasoning_content in think tags for visible_text.
             text = ""
             thinking = False
+            saw_finish = False
             with resp:
                 for raw_line in resp:
                     line = raw_line.decode("utf-8", "replace").strip()
@@ -1055,7 +1176,7 @@ class HttpChatBackend:
                         continue
                     data = line[len("data:") :].strip()
                     if data == "[DONE]":
-                        break
+                        return
                     try:
                         parsed = json.loads(data)
                     except ValueError:
@@ -1070,6 +1191,7 @@ class HttpChatBackend:
                         continue
                     # Read before the delta: the finish-reason chunk may carry no content.
                     if choice.get("finish_reason") is not None:
+                        saw_finish = True
                         self.reply_hit_token_limit = choice["finish_reason"] == "length"
                     try:
                         reasoning = choice["delta"].get("reasoning_content")
@@ -1092,6 +1214,8 @@ class HttpChatBackend:
                     if "\ud800" <= visible[-1] <= "\udbff":
                         visible = visible[:-1]
                     yield visible.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+            if not saw_finish:
+                raise RuntimeError("Stream ended before the reply completed.")
 
         return cumulative()
 
