@@ -386,18 +386,10 @@ def _cached_model_path(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a fully downloaded GGML file in *hub_cache*, else None. Without one, the caches Studio knows, then the
-    caches inside custom folders."""
+    """Path of a fully downloaded GGML file in *hub_cache*, else None. Without one, wherever find_in_hub_caches looks."""
     if hub_cache is None:
-        from core.inference.stt_sidecar import (
-            _search_custom_folder_hub_caches,
-            _stt_hub_cache_roots,
-        )
-        for root in _stt_hub_cache_roots():
-            cached = _cached_model_path(model_id, hub_cache = root, revision = revision)
-            if cached is not None:
-                return cached
-        return _search_custom_folder_hub_caches(
+        from core.inference.model_cache_search import find_in_hub_caches
+        return find_in_hub_caches(
             GGML_STT_REPOS[model_id],
             lambda root: _cached_model_path(model_id, hub_cache = root, revision = revision),
         )

@@ -1691,7 +1691,9 @@ def test_an_override_still_beats_a_cached_quant(fake_hub, monkeypatch, tmp_path)
 def test_no_repo_download_beside_an_override(routes, monkeypatch):
     client, backend, saved = routes
     started = []
-    monkeypatch.setattr(pup, "status", lambda: {"override": True})
+    monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, "/models/pup.gguf")
+    # The route answers from the override alone; a full status read would search every cache on the event loop.
+    monkeypatch.setattr(pup, "status", lambda: pytest.fail("status() read on the download route"))
     monkeypatch.setattr(pup, "start_download", lambda token: started.append(token) or "dl")
     r = client.post("/api/inference/images/prompt-upsampler/download")
     assert r.status_code == 409 and "UNSLOTH_FLUX3_UPSAMPLER_GGUF" in r.text and started == []

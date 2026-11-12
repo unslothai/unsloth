@@ -247,12 +247,12 @@ def _cached_model_paths(
     custom folders (_custom_folder_hit)."""
     spec = MTMD_STT_MODELS[model_id]
     if hub_cache is None:
-        from core.inference.stt_sidecar import _search_custom_folders, _stt_hub_cache_roots
-        for root in _stt_hub_cache_roots():
+        from core.inference.model_cache_search import known_hub_caches, search_custom_folders
+        for root in known_hub_caches():
             cached = _cached_model_paths(model_id, hub_cache = root, revision = revision)
             if cached is not None:
                 return cached
-        return _search_custom_folders(
+        return search_custom_folders(
             lambda listing: _custom_folder_candidates(spec, listing, revision),
             lambda candidate: _custom_folder_hit(model_id, candidate, revision),
         )
@@ -349,9 +349,9 @@ def _forget_downloaded_probe(model_id: Optional[str] = None) -> None:
 def is_model_downloaded(model_id: str) -> bool:
     if model_id not in MTMD_STT_MODELS:
         return False
-    from core.inference.stt_sidecar import _account_scope
+    from core.inference.model_cache_search import account_scope
 
-    key = (model_id, _account_scope())
+    key = (model_id, account_scope())
     with _downloaded_probe_lock:
         cached = _downloaded_probe.get(key)
         if cached is not None and time.monotonic() - cached[0] < _DOWNLOADED_PROBE_TTL_SECONDS:

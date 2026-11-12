@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dictation models moved out of the active Hub cache: into a custom folder, or left behind by a Models folder change."""
+"""Curated side models (dictation, the FLUX.3 prompt upsampler, the mask segmenter) moved out of the active Hub cache:
+into a custom folder, or left behind by a Models folder change."""
 
 import asyncio
 import json
@@ -11,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+from core.inference import diffusion_segment, stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+from core.inference import flux3_prompt_upsampler as pup
 from utils import hidden_models
 
 _SHA = "a" * 40
@@ -20,8 +22,9 @@ _SPEC = stt_mtmd_sidecar.MTMD_STT_MODELS[_MODEL_ID]
 
 
 def _forget_custom_folder_memos(monkeypatch):
+    from core.inference import model_cache_search
     for name in ("_custom_folder_rows_memo", "_custom_folder_listings_memo"):
-        monkeypatch.setattr(stt_sidecar, name, {}, raising = False)
+        monkeypatch.setattr(model_cache_search, name, {})
 
 
 @pytest.fixture
@@ -446,3 +449,127 @@ def test_openai_translations_checks_the_model_off_the_event_loop(monkeypatch):
         )
     assert exc.value.status_code == 400
     assert on_loop == [False]
+
+
+# ── FLUX.3 prompt upsampler ─────────────────────────────────────────────────────────────────────────────────────
+_UD, _Q4 = pup.UPSAMPLER_MODEL_FILES["UD-Q4_K_XL"], pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+
+
+@pytest.fixture
+def upsampler(caches, monkeypatch):
+    for name in (pup.ENV_MODEL_OVERRIDE, pup.ENV_MMPROJ_OVERRIDE):
+        monkeypatch.delenv(name, raising = False)
+    return caches
+
+
+def _upsampler_tree(
+    hub: Path,
+    model_file: str,
+    *,
+    mmproj: bool = True,
+) -> Path:
+    files = {model_file: b"GGUF"}
+    if mmproj:
+        files[pup.UPSAMPLER_MMPROJ_FILE] = b"GGUF"
+    return _hub_tree(hub, pup.UPSAMPLER_REPO, files)
+
+
+def test_upsampler_moved_into_a_custom_folder_is_found(upsampler, tmp_path):
+    snapshot = _upsampler_tree(tmp_path / "custom", _UD)
+    upsampler["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
+    assert pup.model_path() == str(snapshot / _UD)
+    assert pup.mmproj_path() == str(snapshot / pup.UPSAMPLER_MMPROJ_FILE)
+    status = pup.status()
+    assert status["downloaded"] is True and status["current_downloaded"] is True
+
+
+def test_upsampler_current_quant_elsewhere_beats_an_older_one_in_the_active_cache(
+    upsampler, tmp_path
+):
+    _upsampler_tree(upsampler["active"], _Q4)
+    previous = tmp_path / "previous" / "hub"
+    snapshot = _upsampler_tree(previous, _UD)
+    upsampler["known"].append(previous)
+    assert pup.model_path() == str(snapshot / _UD)
+    assert pup.status()["current_downloaded"] is True
+
+
+def test_upsampler_download_size_counts_only_the_active_cache(upsampler, tmp_path):
+    """The download writes to the active cache, so a copy elsewhere saves no bytes."""
+    previous = tmp_path / "previous" / "hub"
+    _upsampler_tree(previous, _UD, mmproj = False)
+    upsampler["known"].append(previous)
+    status = pup.status()
+    assert status["downloaded"] is True and status["current_downloaded"] is False
+    assert status["current_missing_bytes"] == (
+        pup.UPSAMPLER_FILE_SIZES[_UD] + pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MMPROJ_FILE]
+    )
+
+
+def test_upsampler_loose_files_are_not_matched(upsampler, tmp_path):
+    """mmproj-F16.gguf is the name many models give their projector."""
+    folder = tmp_path / "custom"
+    folder.mkdir()
+    for name in (_UD, pup.UPSAMPLER_MMPROJ_FILE):
+        (folder / name).write_bytes(b"GGUF")
+    upsampler["folders"].append({"path": str(folder), "recursive": False})
+    assert pup.model_path() is None
+
+
+def test_upsampler_override_projector_is_searched_too(upsampler, monkeypatch, tmp_path):
+    model = tmp_path / "local.gguf"
+    model.write_bytes(b"GGUF")
+    monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, str(model))
+    snapshot = _upsampler_tree(tmp_path / "custom", _UD)
+    upsampler["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
+    assert pup.mmproj_path() == str(snapshot / pup.UPSAMPLER_MMPROJ_FILE)
+
+
+def test_upsampler_download_check_reads_only_the_cache_it_wrote(upsampler, tmp_path):
+    _upsampler_tree(tmp_path / "custom", _UD)
+    upsampler["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
+    assert (
+        pup._cached_download_paths(pup.UPSAMPLER_ID, hub_cache = upsampler["active"], revision = _SHA)
+        is None
+    )
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID, hub_cache = upsampler["active"]) is None
+
+
+# ── mask segmenter ────────────────────────────────────────────────────────────────────────────────────────────────
+@pytest.fixture
+def segmenter(caches, monkeypatch):
+    for name in (diffusion_segment.ENV_PATH_OVERRIDE, diffusion_segment.ENV_VARIANT):
+        monkeypatch.delenv(name, raising = False)
+    return caches
+
+
+def _segmenter_tree(hub: Path, variant_id: str) -> Path:
+    variant = diffusion_segment.SEGMENTER_VARIANTS[variant_id]
+    return _hub_tree(hub, variant.repo, {name: b"{}" for name in variant.files})
+
+
+def test_segmenter_moved_into_a_custom_folder_is_found(segmenter, tmp_path):
+    snapshot = _segmenter_tree(tmp_path / "custom", diffusion_segment.DEFAULT_VARIANT)
+    segmenter["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
+    assert diffusion_segment.model_dir() == str(snapshot)
+
+
+def test_segmenter_in_a_previous_models_folder_keeps_the_default_variant(segmenter, tmp_path):
+    """The default is used whenever it is downloaded; another variant only stands in when the default is not."""
+    _segmenter_tree(segmenter["active"], "sam3")
+    previous = tmp_path / "previous" / "hub"
+    snapshot = _segmenter_tree(previous, diffusion_segment.DEFAULT_VARIANT)
+    segmenter["known"].append(previous)
+    variant, path = diffusion_segment._resolve_active()
+    assert variant.id == diffusion_segment.DEFAULT_VARIANT and path == str(snapshot)
+
+
+def test_segmenter_download_check_reads_only_the_cache_it_wrote(segmenter, tmp_path):
+    _segmenter_tree(tmp_path / "custom", diffusion_segment.DEFAULT_VARIANT)
+    segmenter["folders"].append({"path": str(tmp_path / "custom"), "recursive": False})
+    assert (
+        diffusion_segment._cached_download_paths(
+            diffusion_segment.DEFAULT_VARIANT, hub_cache = segmenter["active"], revision = _SHA
+        )
+        is None
+    )
