@@ -393,26 +393,48 @@ async ([toTop, steps, stepPx]) => {
     }
     ranges.push([lo, hi]);
   };
+  const moveTo = async (top, deltaY) => {
+    vp.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true }));
+    vp.scrollTo({ top, behavior: "instant" });
+    await window.__sbNextPaint();
+    record();
+  };
+  // Ordinals between two stops that no stop has mounted yet.
+  const unseenBetween = (lo, hi) => {
+    for (let k = lo; k <= hi; k += 1) if (!seen.has(k)) return true;
+    return false;
+  };
   record();
   for (let i = 0; i < maxSteps; i += 1) {
+    const prev = ranges.length ? ranges[ranges.length - 1] : null;
     const next = toTop
       ? Math.max(0, vp.scrollTop - step)
       : Math.min(vp.scrollHeight, vp.scrollTop + step);
-    vp.dispatchEvent(
-      new WheelEvent("wheel", { deltaY: direction * step, bubbles: true, cancelable: true }),
-    );
-    vp.scrollTo({ top: next, behavior: "instant" });
-    await window.__sbNextPaint();
-    record();
+    await moveTo(next, direction * step);
+    // A step shorter than the viewport can still open a gap: the list re-anchors scrollTop when
+    // rows above mount at their real height. Step back down in half steps until the rows between
+    // the two stops have mounted, then resume from where the step landed.
+    const here = ranges.length ? ranges[ranges.length - 1] : null;
+    if (toTop && prev && here && here !== prev && here[1] + 1 < prev[0]) {
+      const resume = vp.scrollTop;
+      let pos = resume;
+      for (let k = 0; k < 16 && unseenBetween(here[1] + 1, prev[0] - 1); k += 1) {
+        pos = Math.min(vp.scrollHeight, pos + Math.max(1, Math.floor(step / 2)));
+        await moveTo(pos, Math.max(1, Math.floor(step / 2)));
+      }
+      await moveTo(resume, -1);
+    }
     if (toTop && vp.scrollTop <= 0) break;
     if (!toTop && vp.scrollTop >= vp.scrollHeight - vp.clientHeight - 1) break;
   }
-  let continuous = ranges.length > 0;
-  for (let i = 1; i < ranges.length; i += 1) {
-    const a = ranges[i - 1];
-    const b = ranges[i];
-    // Touching counts as continuous: rows 1-6 followed by rows 7-12 leaves nothing between them.
-    if (b[0] > a[1] + 1 || a[0] > b[1] + 1) { continuous = false; break; }
+  // Continuous when the stops' spans, taken together, leave no gap: touching counts, so rows 1-6
+  // and rows 7-12 leave nothing between them.
+  const spans = ranges.slice().sort((a, b) => a[0] - b[0]);
+  let continuous = spans.length > 0;
+  let reach = spans.length ? spans[0][1] : 0;
+  for (let i = 1; i < spans.length; i += 1) {
+    if (spans[i][0] > reach + 1) { continuous = false; break; }
+    reach = Math.max(reach, spans[i][1]);
   }
   const sorted = Array.from(seen).sort((a, b) => a - b);
   return {
