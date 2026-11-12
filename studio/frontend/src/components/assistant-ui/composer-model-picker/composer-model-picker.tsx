@@ -267,6 +267,7 @@ const MLX_PATH_SEGMENT = /(^|[-_/])mlx([-_/]|$)/i;
 function loraFormat(lora: LoraModelOption): FormatTone {
   if (
     lora.isDirectGguf ||
+    lora.isGguf ||
     lora.exportType === "gguf" ||
     LOOKS_GGUF.test(lora.id)
   ) {
@@ -293,7 +294,9 @@ function loraDetail(lora: LoraModelOption): string {
 function loraNeedsQuant(lora: LoraModelOption): boolean {
   return (
     !lora.isDirectGguf &&
-    (lora.exportType === "gguf" || LOOKS_GGUF.test(`${lora.id} ${lora.name}`))
+    (lora.isGguf === true ||
+      lora.exportType === "gguf" ||
+      LOOKS_GGUF.test(`${lora.id} ${lora.name}`))
   );
 }
 

@@ -56,7 +56,8 @@ export function chatLocalModelOptions(
       baseModel: baseModelLabel(model.source),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
-      isGguf: isDirectGguf ? true : undefined,
+      // A GGUF directory needs no `gguf` in its name: the scan's format says so.
+      isGguf: isDirectGguf || model.model_format === "gguf" ? true : undefined,
       isDirectGguf: isDirectGguf ? true : undefined,
       // Lets the chat pickers drop speech checkpoints, as they do cached ones.
       audioType: model.audio_type ?? undefined,

@@ -822,3 +822,11 @@ test("Compare and the API page always show the picker's dropdown chevron", () =>
     2,
   );
 });
+
+test("a folder row the scan calls GGUF lists its quants", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /!lora\.isDirectGguf &&\s*\(lora\.isGguf === true \|\|/);
+  assert.match(picker, /lora\.isDirectGguf \|\|\s*lora\.isGguf \|\|/);
+});
