@@ -4,7 +4,9 @@
 """MiniMax-H3-Image speed levers, reusing the MiniMax-H3 video ones (same attention layout).
 ``UNSLOTH_H3_IMAGE_SPEED=0`` disables all; each also honours its video switch.
 
-Exact: h3_int8_gemm, h3_fused_qkv, h3_strided_attn, h3_shared_qkv_quant,
+Exact: h3_int8_gemm, h3_fused_qkv, h3_strided_attn, h3_shared_qkv_quant, h3_row_mod (AdaLN rows read through the
+row index instead of gathered, eager roundings kept, checked per device; every tier unless the opt-in compile is on,
+UNSLOTH_H3_ROW_MOD=0 turns it off),
 h3_qk_rope (bit-identical to the eager norm + rope, checked per device; on for every tier, UNSLOTH_H3_IMAGE_QK_ROPE=0
 turns it off), the _native_flash pin on sm80 / sm89.
 Tolerance-level: h3_fused_swiglu, h3_compiled (opt-in via UNSLOTH_H3_IMAGE_COMPILE=1: workspace
@@ -163,6 +165,10 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
             levers.append("h3_qk_rope")
         if shared_qkv_count(transformer):
             levers.append("h3_shared_qkv_quant")
+    if not compile_enabled():
+        from .video_minimax_h3_rowmod import install as install_row_mod
+        if install_row_mod(transformer, logger = logger):
+            levers.append("h3_row_mod")
     if "h3_int8_gemm" in levers:
         from .video_minimax_h3_ffn import install as install_ffn
         if install_ffn(transformer, device = dev, logger = logger):
