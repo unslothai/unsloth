@@ -5,6 +5,7 @@ import { useCallback, useEffect } from "react";
 import { isNpuModelId } from "./api";
 import { npuDisplayNameOf } from "./display-name";
 import { refreshNpuModels, useNpuCatalogStore } from "./npu-catalog-store";
+import { useNpuStatus } from "./use-npu-status";
 
 let listed = false;
 
@@ -13,12 +14,15 @@ export function useNpuDisplayNames(
   npuInUse: boolean,
 ): (idOrPath: string | null | undefined) => string | null {
   const models = useNpuCatalogStore((state) => state.models);
+  const wantsListing = npuInUse && models === null && !listed;
+  const [status] = useNpuStatus(wantsListing);
   useEffect(() => {
-    // A model loaded on an earlier visit is named before any picker has listed the catalog.
-    if (!npuInUse || models !== null || listed) return;
+    // A model loaded on an earlier visit is named before any picker lists the catalog.
+    // Listing starts lemond, so only on a validated runtime.
+    if (!wantsListing || status?.ready !== true) return;
     listed = true;
     void refreshNpuModels();
-  }, [npuInUse, models]);
+  }, [wantsListing, status?.ready]);
   return useCallback(
     (idOrPath: string | null | undefined) => npuDisplayNameOf(models, idOrPath),
     [models],
