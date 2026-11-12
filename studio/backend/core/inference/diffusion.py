@@ -15547,6 +15547,7 @@ class DiffusionBackend:
                     _BOUNDARY_MARK_RETRY_SECONDS,
                     _CompletedStepTicker,
                     _completed_step_poller,
+                    _hold_for_device,
                     _hold_off_cuda_graph_capture,
                 )
 
@@ -15598,6 +15599,7 @@ class DiffusionBackend:
                         if clear:
                             chunk_ticker[0].record(step_index + 1)
                             _report(chunk_ticker[0].completed())
+                    _hold_for_device(chunk_ticker[0], cancel)
                     if cancel.is_set():
                         pipe._interrupt = True
                     cross_forward_step(pipe, step_index)
