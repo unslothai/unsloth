@@ -711,3 +711,24 @@ test("alpaca system, text-part tool outputs and bundled call outputs survive imp
   assert.equal(response.messages.at(-1)?.role, "assistant");
   assert.deepEqual(response.messages.at(-1)?.content, [{ type: "text", text: "Done." }]);
 });
+
+test("a finished web_search_call imports as an answered call", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [{ role: "user", content: "News?" }],
+      output: [
+        { type: "web_search_call", id: "ws1", status: "completed", action: { type: "search", query: "news" } },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Here is the news." }] },
+      ],
+    }),
+    "response.json",
+  );
+
+  const call = conversation.messages
+    .flatMap((m) => m.content as ReadonlyArray<{ type?: string; toolName?: string; result?: unknown }>)
+    .find((p) => p.type === "tool-call");
+  assert.equal(call?.toolName, "web_search");
+  assert.equal(call?.result, "completed");
+  assert.deepEqual(conversation.messages.at(-1)?.content, [{ type: "text", text: "Here is the news." }]);
+});

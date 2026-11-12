@@ -445,9 +445,12 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
                   ),
           },
         });
-        // Completed builtin calls (shell_call, ...) can carry their own output.
-        if (entry.output != null) {
-          turns.push({ role: "tool", tool_call_id: id, content: toolOutputText(entry.output) });
+        // Provider-run builtin calls (web_search_call, shell_call, ...) already finished:
+        // answer them with their bundled output or status so none replays as unanswered.
+        const builtin = type !== "function_call" && type !== "custom_tool_call";
+        const done = entry.output ?? (builtin ? (text(entry.status) ?? "completed") : undefined);
+        if (done != null) {
+          turns.push({ role: "tool", tool_call_id: id, content: toolOutputText(done) });
         }
       } else if (type.endsWith("_call_output") && typeof entry.call_id === "string") {
         turns.push({
