@@ -212,13 +212,15 @@ def heal_kernels_conflict(logger: Any = None) -> Optional[str]:
     with _heal_lock:
         if _healed:
             return None
-        _healed = True
         try:
             return _heal(logger)
         except Exception as exc:  # noqa: BLE001 - must never break an import
             if logger is not None:
                 logger.debug("kernels compatibility check failed: %r", exc)
             return None
+        finally:
+            # Set only once the repair is done, so a concurrent caller waits on the lock instead of importing.
+            _healed = True
 
 
 def _heal(logger: Any) -> Optional[str]:

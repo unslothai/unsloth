@@ -292,3 +292,31 @@ def test_hidden_kernels_lets_real_transformers_import(tmp_path):
         timeout = 300,
     )
     assert hidden.returncode == 0, hidden.stderr.decode()[-800:]
+
+
+def test_a_concurrent_caller_waits_for_the_repair_in_flight(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(kc, "_healed", False)
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def slow_heal(logger):
+        calls.append(1)
+        started.set()
+        release.wait(5)
+        return "repaired"
+
+    monkeypatch.setattr(kc, "_heal", slow_heal)
+    first = threading.Thread(target = kc.heal_kernels_conflict)
+    first.start()
+    assert started.wait(5)
+    second_done = threading.Event()
+    second = threading.Thread(target = lambda: (kc.heal_kernels_conflict(), second_done.set()))
+    second.start()
+    # The second caller must not return (and import diffusers) while the repair is still running.
+    assert not second_done.wait(0.3)
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert second_done.is_set() and calls == [1]
