@@ -1,24 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused per-head q/k RMSNorm + partial rotate-half RoPE, bit-identical to the stock eager chain
-(``nn.RMSNorm`` then ``_apply_rotary_emb`` + ``.contiguous()``). Off with ``UNSLOTH_H3_QK_ROPE=0``.
+"""Fused per-head q/k RMSNorm + partial RoPE, bit-identical to the stock eager chain. Off with ``UNSLOTH_H3_QK_ROPE=0``.
 
-Two Triton forms, NVIDIA CUDA only, each engaged only after it matched the eager chain bit for bit on the device
-(per device, dtype, head dim and rotary dim; cached for the process):
-
-* ``fused``: one kernel. The norm reproduces torch's CUDA ``_fused_rms_norm`` row kernel (the vectorized path:
-  thread ``l`` of warp ``g`` sums the squares of elements ``4 * (32 g + l) .. + 3`` in order, the warp folds its
-  lanes by shuffles 16, 8, 4, 2, 1, the warps fold last; ``rsqrt(sum / D + eps)``; ``w * (rstd * x)`` rounded
-  once); the reduction is written so Triton's own layout follows that order, which the device check proves.
-* ``rope``: the stock ``F.rms_norm`` call, then the same rotation kernel (exact on any torch whose norm takes
-  another path, e.g. the composite one).
-
-The rotation rounds each product and the sum to the activation dtype as eager does (explicit-rounding PTX: with fp
-fusion on, plain ops become one bf16 FMA). The check also races the passing forms against the stock chain and keeps
-only those more than 2% faster, fastest first. ``UNSLOTH_H3_QK_ROPE_MODE=fused|rope`` forces one form (when exact).
-Shapes, dtypes or alignments a form was not checked for take the stock math, and so does a first call made during
-CUDA graph capture.
+Forms (NVIDIA CUDA, each engaged only after a per-device bit-exact check that also races it vs stock):
+``fused`` reproduces torch's ``_fused_rms_norm`` row-kernel reduction order; ``rope`` keeps ``F.rms_norm`` and
+fuses only the rotation. ``UNSLOTH_H3_QK_ROPE_MODE=fused|rope`` forces one. Unchecked shapes / alignments and a
+first call during CUDA graph capture take the stock math.
 """
 
 from __future__ import annotations
@@ -84,10 +72,8 @@ def _kernel() -> Any:
     _div = libdevice.div_rn
     _add = libdevice.add_rn
 
-    # The rotation's roundings to the activation dtype must stay: with fp fusion on, LLVM narrows
-    # fptrunc(fmul(fpext a, fpext b)) to a bf16 / fp16 mul and contracts it with the add into one
-    # fma.rn.bf16, skipping eager's rounding of each product. An explicit-rounding PTX mul / add is never
-    # contracted, and unlike libdevice's *_rn (ftz builds) keeps subnormals, as eager does.
+    # Explicit-rounding PTX: plain ops get contracted into one bf16 FMA (skips eager's per-product rounding),
+    # and libdevice *_rn flushes subnormals.
     @triton.jit
     def _mul_rn(a, b):
         return tl.inline_asm_elementwise(
@@ -134,10 +120,8 @@ def _kernel() -> Any:
             tl.float32
         )
         if NORM:
-            # Vector v = 32 g + l (elements 4v .. 4v + 3, zero past D // 4) is lane l of warp g. Its 4 squares are
-            # summed in element order with explicit adds (a within-thread tl.sum may reassociate), then each warp's
-            # 32 lanes by tl.sum over a [ROWS, 32] tile whose lanes are the warp's threads (xor shuffles 16, 8, 4,
-            # 2, 1: the pairs shuffle-down gives lane 0), then the warps in order. The device check proves the layout.
+            # torch's order: lane l of warp g sums elements 4(32g+l)..+3 with explicit adds (tl.sum may
+            # reassociate), tl.sum folds the 32 lanes, then warps in order. The device check proves the layout.
             lane = tl.arange(0, 32)
             for g in tl.static_range(G):
                 vec = 32 * g + lane
@@ -268,10 +252,7 @@ def torch_fused_rms_norm_on_cuda() -> bool:
 
 
 def _fused_row_path(x: Any, weight: Any) -> bool:
-    """The inputs take torch's vectorized ``_fused_rms_norm`` row kernel (the order ``fused`` reproduces): weight in
-    the activation dtype, both 4-element aligned (a strided ``x`` is copied to a fresh, aligned buffer first). And
-    the kernel gets the specialization the device check compiled: ``x`` 16-byte aligned with token and head strides
-    divisible by 16, so its loads keep the layout whose reduction order was proven."""
+    """Inputs hit torch's vectorized row kernel and the 16-byte-aligned specialization the device check proved."""
     align = 4 * x.element_size()
     if weight.dtype != x.dtype or weight.data_ptr() % align or not weight.is_contiguous():
         return False
