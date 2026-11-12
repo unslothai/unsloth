@@ -47,7 +47,10 @@ import {
 import { modelInfo } from "@huggingface/hub";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { convertGgufToQ4nx } from "../api/export-api";
+import {
+  convertGgufToQ4nx,
+  isRecoverableTransportError,
+} from "../api/export-api";
 import {
   getCachedLocalModels,
   refreshLocalModels,
@@ -235,9 +238,12 @@ export function Q4nxConvertCard({
   const [baseModel, setBaseModel] = useState<string | null>(null);
   const [saveDirectory, setSaveDirectory] = useState(DEFAULT_SAVE_DIRECTORY);
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(
-    null,
-  );
+  const [result, setResult] = useState<{
+    ok: boolean;
+    text: string;
+    /** The request the backend refused; asking again would get the same answer. */
+    refused?: string;
+  } | null>(null);
 
   const debouncedHubQuery = useDebouncedValue(hubQuery);
   const { results: hubResults, isLoading: searchingHub } = useHubModelSearch(
@@ -496,9 +502,16 @@ export function Q4nxConvertCard({
         : null;
   const sourceReady =
     source === "hub" ? !!(repoId && selectedVariant) : !!ggufPath;
+  const request = JSON.stringify([
+    source === "hub" ? [repoId, filename] : ggufPath,
+    effectiveBase.trim(),
+    saveDirectory.trim(),
+    accessToken ?? null,
+  ]);
   const canConvert =
     !running &&
     sourceReady &&
+    result?.refused !== request &&
     archFit?.status !== "unsupported" &&
     !!effectiveBase.trim() &&
     !!saveDirectory.trim();
@@ -596,6 +609,8 @@ export function Q4nxConvertCard({
       setResult({
         ok: false,
         text: error instanceof Error ? error.message : String(error),
+        // A dropped connection can be retried as is; a refusal needs a different file or setting.
+        refused: isRecoverableTransportError(error) ? undefined : request,
       });
     } finally {
       setRunning(false);
