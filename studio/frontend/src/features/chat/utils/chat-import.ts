@@ -116,7 +116,6 @@ function oaiContentToParts(raw: unknown): unknown[] {
   return raw.flatMap((value): unknown[] => {
     if (typeof value !== "object" || value === null) return [];
     const part = value as Record<string, unknown>;
-    // input_text/output_text are the Responses API's names for chat text parts.
     if (
       (part.type === "text" ||
         part.type === "input_text" ||
@@ -254,9 +253,7 @@ function sharegptToRecords(
   for (const c of conversations) {
     if (typeof c !== "object" || c === null) continue;
     const conv = c as Record<string, unknown>;
-    // Normalized exports mix in ChatML-keyed entries; a non-empty role/content
-    // wins over from/value. A role-keyed turn whose role we do not map (tool,
-    // function, observation) is skipped rather than mislabeled.
+    // role/content beats from/value (backend formatter order); an unmapped role key is skipped, not mislabeled.
     const roleKey =
       typeof conv.role === "string" && conv.role.trim() ? conv.role : "";
     const from =
@@ -350,8 +347,7 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
   return records;
 }
 
-// Alpaca rows and prompt/completion pairs each hold one user/assistant turn;
-// the backend's dataset formatter renders alpaca input after the instruction.
+// Alpaca input follows the instruction, as in the backend's dataset formatter.
 function pairToRecords(
   obj: Record<string, unknown>,
   threadId: string,
@@ -433,7 +429,7 @@ export function recordToConversation(
     messages = pairToRecords(obj, threadId, baseTs);
   }
   if (messages.length === 0) {
-    // A saved Responses API object carries turns under input/output items.
+    // Saved Responses API object: turns live under input/output items.
     const turns: unknown[] = [];
     if (typeof obj.input === "string" && obj.input.trim()) {
       turns.push({ role: "user", content: obj.input });
@@ -448,8 +444,6 @@ export function recordToConversation(
           typeof entry?.type === "string" &&
           entry.type.endsWith("_call")
         ) {
-          // function_call plus builtin items like web_search_call carry their
-          // payload under name/arguments or action; outputs join via call_id.
           const callId =
             typeof entry.call_id === "string"
               ? entry.call_id
