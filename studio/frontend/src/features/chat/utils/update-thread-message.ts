@@ -182,8 +182,7 @@ export async function updateThreadMessage(args: {
     const originalContent = m.message.content;
     const finalContent: any[] = [];
 
-    // Append to the previous text part so a save never multiplies parts.
-    // Only parts this save created merge: a restored card keeps its own payload.
+    // Merge into the previous text part this save made, so parts never multiply; restored cards keep their payload.
     const ownTextParts = new Set<object>();
     const pushText = (text: string) => {
       const last = finalContent[finalContent.length - 1];
@@ -235,8 +234,7 @@ export async function updateThreadMessage(args: {
     const previousText = extractTaggedText(previousContent);
     const unchanged = extractTaggedText(finalContent) === previousText
       && JSON.stringify(finalContent.filter((part) => part && !isEditablePart(part))) === JSON.stringify(previousTools);
-    // An untouched save writes back the stored parts so invisible fields survive. Not `unchanged`:
-    // tagged text trims reasoning, so that would drop a whitespace-only reasoning edit.
+    // Not `unchanged`: tagged text trims reasoning, which would drop a whitespace-only reasoning edit.
     const untouched = newText === previousText && Array.isArray(previousContent);
 
     return {
