@@ -806,6 +806,24 @@ def _rebind_class(cls):
             setattr(cls, key, new)
 
 
+def _relax_strict_dynamic(obj):
+    """Alias tensors that carry a caller's strict mark_dynamic so the block only sees its own maybe marks.
+
+    unsloth_zoo marks input_ids dim 1 for its loss bookkeeping, and Qwen4Exp passes input_ids into every
+    block as ple_input_ids. A length the block specializes then raised ConstraintViolationError and demoted
+    the layer kind to the stock forward. A view drops the mark (it lives on the tensor object), not the data.
+    """
+    if isinstance(obj, torch.Tensor):
+        return obj.view(obj.shape) if getattr(obj, "_dynamo_dynamic_indices", None) else obj
+    if type(obj) in (tuple, list):
+        new = [_relax_strict_dynamic(o) for o in obj]
+        return obj if all(a is b for a, b in zip(new, obj)) else type(obj)(new)
+    if type(obj) is dict:
+        new = {k: _relax_strict_dynamic(v) for k, v in obj.items()}
+        return obj if all(new[k] is obj[k] for k in obj) else new
+    return obj
+
+
 def _mark_seq_dynamic(seq_len, obj):
     if isinstance(obj, torch.Tensor):
         # A float tensor's last dim is a width even when it equals seq_len (mrope ids are int).
@@ -1649,6 +1667,7 @@ def _wrap(
         if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
+            hidden_states, args, kwargs = _relax_strict_dynamic((hidden_states, args, kwargs))
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
             if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
                 _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
