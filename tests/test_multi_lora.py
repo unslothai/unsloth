@@ -367,6 +367,30 @@ def test_gpu_per_adapter_loss_matches_the_dense_loss(dtype, V):
     torch.testing.assert_close(new[2], x.grad.to(dtype), rtol = rtol, atol = 1e-6)
 
 
+def test_the_loss_follows_the_triton_switch(monkeypatch):
+    # Off = the PyTorch loss, as for the layers; on CUDA / XPU = the fused Triton cross entropy.
+    import unsloth.kernels.cross_entropy_loss as ce
+
+    calls = []
+    monkeypatch.setattr(ce.Fast_CrossEntropyLoss, "apply", lambda *a: calls.append(1) or 1 / 0)
+    monkeypatch.setattr(ml, "_use_triton", lambda x: ml._TRITON_ENABLED)
+    logits = torch.randn(2, 4, 5)
+    labels = torch.randint(0, 5, (2, 4))
+    ml.set_multi_lora_triton(False)
+    try:
+        ml.per_adapter_loss(logits, labels, torch.tensor([0, 1]), 2)
+        assert calls == []
+        ml.set_multi_lora_triton(True)
+        if ml._TRITON_ENABLED:
+            with pytest.raises(ZeroDivisionError):
+                ml.per_adapter_loss(logits, labels, torch.tensor([0, 1]), 2)
+            assert calls == [1]
+    finally:
+        ml.set_multi_lora_triton(
+            ml.HAS_TRITON and os.environ.get("UNSLOTH_MULTI_LORA_TRITON", "1") != "0"
+        )
+
+
 def test_per_adapter_loss_is_each_adapters_own_mean():
     logits = torch.randn(3, 5, 7)
     labels = torch.randint(0, 7, (3, 5))

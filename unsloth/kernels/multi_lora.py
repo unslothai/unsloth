@@ -1571,7 +1571,7 @@ class _ChunkedTokenCrossEntropy(torch.autograd.Function):
 
 
 def _token_cross_entropy(logits, shift_labels, ignore_index):
-    if HAS_TRITON and ignore_index == -100 and logits.device.type in ("cuda", "xpu"):
+    if ignore_index == -100 and _use_triton(logits):
         from .cross_entropy_loss import Fast_CrossEntropyLoss
 
         # Full rows, no logits[:, :-1] copy: the last position's -100 label gives it zero loss and gradient.
