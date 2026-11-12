@@ -100,6 +100,7 @@ function withoutCode(text: string): string {
   return prose + text.slice(cursor);
 }
 
+const TEX_COMMENT = /(?<!\\)%[^\n]*/g;
 const UNNUMBERED = /\\(?:notag|nonumber|tag)\b/;
 const ENV_EDGE = /\\(begin|end)\{[^}]*\}/y;
 
@@ -146,7 +147,9 @@ export function numberedEquations(
     if (!shown || !part.text?.includes("\\begin{")) continue;
     const prose = withoutCode(part.text);
     for (const [, dollars, brackets] of prose.matchAll(DISPLAY_MATH)) {
-      for (const [, env, body] of (dollars ?? brackets).matchAll(NUMBERED_ENV)) {
+      for (const [, env, source] of (dollars ?? brackets).matchAll(NUMBERED_ENV)) {
+        // KaTeX drops a comment to the end of its line, `\notag` in it included.
+        const body = source.replace(TEX_COMMENT, "");
         const rows = env === "equation" || env === "multline" ? [body] : topLevelRows(body);
         total += rows.filter((row) => row.trim() !== "" && !UNNUMBERED.test(row)).length;
       }

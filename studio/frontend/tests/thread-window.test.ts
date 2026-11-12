@@ -533,6 +533,9 @@ test("numbered equations are counted where KaTeX's page-wide counters would coun
   assert.equal(numberedEquations(text("$$\\begin{equation}a=b\\end{equation}$$")), 1);
   assert.equal(numberedEquations(text("\\[\\begin{align}a\\\\b \\notag\\\\c\\end{align}\\]")), 2);
   assert.equal(numberedEquations(text("$$\\begin{equation}a\\tag{*}\\end{equation}$$")), 0);
+  // A comment is not a tag: KaTeX drops it to the end of the line.
+  assert.equal(numberedEquations(text("$$\\begin{equation}a % \\notag\n\\end{equation}$$")), 1);
+  assert.equal(numberedEquations(text("$$\\begin{equation}a = 5\\%\\notag\\end{equation}$$")), 0);
   // A nested environment's or a group's rows are not the outer one's.
   assert.equal(
     numberedEquations(text("$$\\begin{align}f &= \\begin{cases}1\\\\0\\end{cases}\\\\ g &= 2\\end{align}$$")),
