@@ -2019,7 +2019,9 @@ export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, liv
   if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
   // Every load writes Think from the model (pin, forced gates, default), not from the chat.
   next.reasoningEnabled = live.reasoningEnabled;
-  const loaded = withoutActiveThreadParams(live, live.params) as unknown as Record<string, unknown>;
+  // Model memory turned off: the load skipped the retained entries, so skip them here too.
+  const replaySource = live.rememberParamsPerModel ? live : { ...live, paramsByModel: {} };
+  const loaded = withoutActiveThreadParams(replaySource, live.params) as unknown as Record<string, unknown>;
   const params: Record<string, unknown> = { ...run.params };
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     if (params[key] === undefined) params[key] = loaded[key];

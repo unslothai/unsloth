@@ -404,6 +404,10 @@ test("chat A's unowned sampling follows the new model's load; its own stays", ()
   const legacy = send("legacy-a", { permissionMode: "ask" });
   assert.equal(legacy.temperature, 0.31);
   assert.equal(legacy.topP, 0.41);
+  // Remembered per-model values are not the load's when model memory is off.
+  store.setState({ rememberParamsPerModel: false, paramsByModel: { "new-model": { temperature: 1.5 } } });
+  assert.equal(send("off-a", { permissionMode: "ask" }).temperature, 0.31);
+  store.setState({ rememberParamsPerModel: true, paramsByModel: {} });
   const pinned = send("pinned-a", { permissionMode: "ask", temperature: 0.2 });
   assert.equal(pinned.temperature, 0.2);
   assert.equal(pinned.topP, 0.41);
