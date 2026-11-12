@@ -1430,6 +1430,17 @@ def _list_stream_refusal(device: Any) -> Optional[str]:
     return None
 
 
+def _end_stream_forward(pf: Any, release_after_forward: bool) -> None:
+    """End a streamed forward; with ``release_after_forward`` hand the copy stream's cached blocks back, never inside a
+    CUDA graph capture. ``end()`` clears ``capturing``, so it is read first, and CUDA is asked as well."""
+    import torch
+
+    capturing = bool(getattr(pf, "capturing", False))
+    pf.end()
+    if release_after_forward and not capturing and not torch.cuda.is_current_stream_capturing():
+        torch.cuda.empty_cache()
+
+
 def stream_module_list(
     owner: Any,
     blocks: Any,
@@ -1567,9 +1578,7 @@ def stream_module_list(
             pf.kick()  # the first streamed members copy while the resident ones run
 
         def _end(*_a: Any, **_k: Any) -> None:
-            pf.end()
-            if release_after_forward and not getattr(pf, "capturing", False):
-                torch.cuda.empty_cache()
+            _end_stream_forward(pf, release_after_forward)
 
         streamer.handles.append(owner.register_forward_pre_hook(_eager(_begin)))
         streamer.handles.append(owner.register_forward_hook(_eager(_end), always_call = True))

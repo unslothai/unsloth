@@ -490,3 +490,33 @@ def test_an_encoder_stream_hands_its_cache_back_after_each_forward(monkeypatch, 
         assert torch.equal(stack(x), want)
     assert len(calls) == (4 if release else 0)
     streamer.remove()
+
+
+class _CapturingPrefetcher:
+    def __init__(self, capturing):
+        self.capturing = capturing
+        self.ended = 0
+
+    def end(self):
+        self.ended += 1
+        self.capturing = False  # as GroupPrefetcher.end() does
+
+
+@pytest.mark.parametrize(
+    "release, pf_capturing, cuda_capturing, want",
+    [
+        (True, False, False, 1),
+        (True, True, False, 0),  # end() clears the flag: it must be read before end()
+        (True, False, True, 0),
+        (False, False, False, 0),
+    ],
+)
+def test_the_end_of_a_streamed_forward_never_empties_the_cache_inside_a_capture(
+    monkeypatch, release, pf_capturing, cuda_capturing, want
+):
+    calls = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(1))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: cuda_capturing)
+    pf = _CapturingPrefetcher(pf_capturing)
+    op._end_stream_forward(pf, release)
+    assert pf.ended == 1 and len(calls) == want
