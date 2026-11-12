@@ -47,6 +47,17 @@ def test_nested_anchor_empty_outer_emits_nothing():
     assert html_to_markdown(html) == "[inner](/i)"
 
 
+def test_hidden_nested_anchor_still_closes_outer():
+    nested = '<p><a href="/o">outer <a hidden href="/i">inner</a> tail</p>'
+    closed = '<p><a href="/o">outer </a><a hidden href="/i">inner</a> tail</p>'
+    assert html_to_markdown(nested) == html_to_markdown(closed) == "[outer](/o) tail"
+
+
+def test_nested_anchor_under_hidden_ancestor_closes_outer():
+    html = '<p><a href="/o">outer <span hidden><a href="/i">inner</a></span> tail</p>'
+    assert html_to_markdown(html) == "[outer](/o) tail"
+
+
 def test_sibling_anchors_unchanged():
     html = '<p><a href="/o">outer</a> mid <a href="/i">inner</a></p>'
     assert html_to_markdown(html) == "[outer](/o) mid [inner](/i)"

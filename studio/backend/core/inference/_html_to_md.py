@@ -1702,6 +1702,11 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag == "form":
             self._form_pointer = True
+        # a nested <a> implicitly closes the open one, even when hidden, like its </a> arriving here
+        if tag == "a" and self._in_link:
+            if self._header_stack:
+                self._header_stack[-1].link_chars += self._link_header_chars
+            self._finish_link()
         if not self._enter_tag(tag, attr_dict, hidden, aria_heading):
             return
 
@@ -1710,11 +1715,6 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n" + "#" * level + " ")
 
         elif tag == "a":
-            # a nested <a> implicitly closes the open anchor, like its </a> arriving here
-            if self._in_link:
-                if self._header_stack:
-                    self._header_stack[-1].link_chars += self._link_header_chars
-                self._finish_link()
             self._link_href = attr_dict.get("href")
             self._link_text_parts = []
             self._link_heading_parts = []
