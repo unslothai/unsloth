@@ -3,6 +3,7 @@
 
 import type { LocalModelInfo } from "@/features/hub";
 import type { LoraModelOption } from "@/features/model-picker";
+import { isDiffusionTask } from "@/features/model-picker/components/model-selector/model-capabilities";
 
 /** Same set as `PICKER_LOCAL_SOURCES`. Ollama ids are resolved to a `.gguf` link by /load. */
 const CHAT_LOCAL_SOURCES: ReadonlySet<LocalModelInfo["source"]> = new Set([
@@ -38,7 +39,12 @@ export function chatLocalModelOptions(
   const options: LoraModelOption[] = [];
   const seen = new Set<string>();
   for (const model of rows) {
-    if (!CHAT_LOCAL_SOURCES.has(model.source) || seen.has(model.id)) {
+    // Image and video checkpoints in a scanned folder belong to Images / Video, not the chat loader.
+    if (
+      !CHAT_LOCAL_SOURCES.has(model.source) ||
+      seen.has(model.id) ||
+      isDiffusionTask(model.task)
+    ) {
       continue;
     }
     seen.add(model.id);
@@ -52,6 +58,8 @@ export function chatLocalModelOptions(
       source: "local" as const,
       isGguf: isDirectGguf ? true : undefined,
       isDirectGguf: isDirectGguf ? true : undefined,
+      // Lets the chat pickers drop speech checkpoints, as they do cached ones.
+      audioType: model.audio_type ?? undefined,
     });
   }
   return options;
