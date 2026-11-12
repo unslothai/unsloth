@@ -546,16 +546,18 @@ def test_user_attachments_are_model_input():
 def test_user_turns_with_no_typed_text():
     code = [{"content": _text("def f(): pass")}]
     image = [{"content": [{"type": "image", "image": "x"}]}]
-    rows = [
-        {**_row("u1", "user", None, None, 1), "attachments": code},
-        _row("a1", "assistant", _text("ok"), "u1", 2),
-        {**_row("u2", "user", [], "a1", 3), "attachments": image},
-        _row("a2", "assistant", _text("ok"), "u2", 4),
-        _row("u3", "user", [], "a2", 5),
-    ]
+    stored = [None, "hi", _text(""), [], []]
+    rows, parent = [], None
+    for n, content in enumerate(stored):
+        attached = image if n == len(stored) - 1 else code
+        rows.append({**_row(f"u{n}", "user", content, parent, 2 * n), "attachments": attached})
+        rows.append(_row(f"a{n}", "assistant", _text("ok"), f"u{n}", 2 * n + 1))
+        parent = f"a{n}"
     trace = session_to_trace({"id": "t"}, rows)
-    # Only stored [] comes from a send; other content replays as "" and a "\n".
-    assert [m.text for m in trace.messages] == ["\ndef f(): pass", "ok", "", "ok", ""]
+    # Of these, only [] comes from a send; the rest replay as "" joined by a "\n".
+    replayed, sent = "\ndef f(): pass", "def f(): pass"
+    users = [m.text for m in trace.messages if m.role == "user"]
+    assert users == [replayed, replayed, replayed, sent, ""]
     assert _codes(trace) == ["unsupported_part"]
 
 

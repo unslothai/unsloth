@@ -120,9 +120,9 @@ def _model_parts(message: dict) -> list:
     parts = message.get("content")
     if message.get("role") == "user":
         # The trace follows the live session: a send with nothing typed stores [], and the
-        # model gets the attachment text alone. A resumed thread loads "" there instead
-        # (toThreadMessage) and adds a leading "\n". Content that is not a list never comes
-        # from a send, so only that replay form exists for it.
+        # model gets only the attachment parts. A resumed thread loads "" there instead
+        # (toThreadMessage), and the "\n" join in chat-adapter.ts adds a leading "\n".
+        # Content that is not a list never comes from a send, so only that replay form exists.
         loaded = parts if isinstance(parts, list) else [{"type": "text", "text": ""}]
         parts = _with_attachments({**message, "content": loaded})
     if not isinstance(parts, list):
