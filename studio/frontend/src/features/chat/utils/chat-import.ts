@@ -143,6 +143,7 @@ function oaiMessagesToRecords(
   const stashedResults: Array<{ id?: string; name?: string; result: string }> = [];
   const pending: Array<{
     turn: number;
+    hasExplicitId: boolean;
     part: { toolCallId: string; toolName: string; result?: string };
   }> = [];
   const bindResult = (
@@ -222,7 +223,7 @@ function oaiMessagesToRecords(
           argsText: argsStr,
         };
         parts.push(part);
-        pending.push({ turn: idx, part });
+        pending.push({ turn: idx, part, hasExplicitId: typeof callId === "string" });
       };
       // LangChain-style exports nest both call shapes under additional_kwargs.
       const additional =
@@ -286,10 +287,11 @@ function oaiMessagesToRecords(
     );
     if (at !== -1) part.result = stashedResults.splice(at, 1)[0].result;
   }
-  for (const { part } of pending) {
+  for (const { part, hasExplicitId } of pending) {
     if (part.result !== undefined) continue;
     const at = stashedResults.findIndex(
-      ({ name }) => name !== undefined && name === part.toolName,
+      ({ id, name }) =>
+        (id === undefined || !hasExplicitId) && name !== undefined && name === part.toolName,
     );
     if (at !== -1) part.result = stashedResults.splice(at, 1)[0].result;
   }

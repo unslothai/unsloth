@@ -806,6 +806,26 @@ test("a keyed result for a call that never appears drops instead of lying", () =
   assert.deepEqual(toolCallResults(conversation), ["undefined"]);
 });
 
+for (const role of ["tool", "function"]) {
+  for (const resultFirst of [false, true]) {
+    test(`a ${role} result with an unmatched id cannot bind by name (${resultFirst ? "early" : "late"})`, () => {
+      const call = {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "real-call", type: "function", function: { name: "lookup", arguments: "{}" } }],
+      };
+      const result = { role, tool_call_id: "missing-call", name: "lookup", content: "WRONG RESULT" };
+      const messages = resultFirst ? [result, call] : [call, result];
+      const [conversation] = parseImportText(
+        messages.map((message) => JSON.stringify(message)).join("\n"),
+        "conversation-messages.jsonl",
+      );
+
+      assert.deepEqual(toolCallResults(conversation), ["undefined"]);
+    });
+  }
+}
+
 test("a null tool_calls entry does not lose the other calls", () => {
   const [conversation] = parseImportText(
     '{"role":"assistant","content":null,"tool_calls":[null,{"id":"t1","type":"function","function":{"name":"f","arguments":"{}"}}]}\n' +
