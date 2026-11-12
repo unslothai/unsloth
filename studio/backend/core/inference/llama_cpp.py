@@ -12502,6 +12502,59 @@ class LlamaCppBackend:
         except Exception:
             return False
 
+    def _windows_rocm_apu_host_resident_bytes(
+        self,
+        model_size: int,
+        *,
+        gpu_indices,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+        gpu_memory_mode: Optional[str] = None,
+        gpu_layers: Optional[int] = None,
+    ) -> int:
+        """Price a Windows ROCm APU's reserved GPU pool separately from host RAM.
+
+        Strix Halo systems can reserve a large WDDM/HIP pool (for example 96 GiB) while
+        leaving only the remainder available to Windows.  The generic APU guard treats
+        that pool as host RAM, which is safe for shared UMA but incorrectly rewrites a
+        full, explicit GPU placement to ``mmap``.  Only use the driver-reported pool
+        when the user has disabled the fitter and the launch is proven to offload every
+        layer; partial or unknown placements keep the conservative host-RAM price.
+        """
+        if sys.platform != "win32" or model_size <= 0:
+            return max(1, int(model_size))
+        if not self._amd_apu_wants_unified_memory(gpu_indices):
+            return max(1, int(model_size))
+
+        argv = [str(arg) for arg in extra_args or ()]
+        if gpu_memory_mode == "manual":
+            argv = [
+                "--gpu-layers",
+                str(gpu_layers if gpu_layers is not None else -1),
+                "--fit",
+                "off",
+                *argv,
+            ]
+        if not self._launch_forces_full_offload(argv, env):
+            return max(1, int(model_size))
+        try:
+            pool_mib = self._rocm_selected_pool_mib(gpu_indices)
+        except Exception:
+            pool_mib = None
+        if not pool_mib or pool_mib <= 0:
+            return max(1, int(model_size))
+        pool_bytes = int(pool_mib) * 1024 * 1024
+        resident = max(1, int(model_size) - pool_bytes)
+        if resident < model_size:
+            logger.info(
+                "Windows ROCm APU full-offload launch: pricing %.1f GiB of the "
+                "%.1f GiB model against host RAM after reserving the %.1f GiB GPU pool.",
+                resident / (1024**3),
+                model_size / (1024**3),
+                pool_bytes / (1024**3),
+            )
+        return resident
+
     # PHYSICAL integrated ids, keyed per visibility mask; integratedness cannot change under a fixed mask.
     _INTEGRATED_CUDA_IDS: dict[tuple, set[int]] = {}
 
@@ -28859,6 +28912,14 @@ class LlamaCppBackend:
                             ),
                         ),
                     )
+                    _apu_resident_model_size = self._windows_rocm_apu_host_resident_bytes(
+                        _apu_resident_model_size,
+                        gpu_indices = _apu_child_order,
+                        extra_args = _apu_lazy_extras,
+                        env = _apu_lazy_env,
+                        gpu_memory_mode = gpu_memory_mode,
+                        gpu_layers = gpu_layers,
+                    )
                     _ram_msg = self._apu_ram_shortfall_message(
                         # A pinned projector left model_size but not system RAM, and
                         # this guard exists to stop an oversize load being OOM-killed
@@ -32354,6 +32415,12 @@ class LlamaCppBackend:
                                         env = env,
                                     ),
                                 ),
+                            )
+                            _apu_resident_model_size = self._windows_rocm_apu_host_resident_bytes(
+                                _apu_resident_model_size,
+                                gpu_indices = _remaining,
+                                extra_args = cmd,
+                                env = env,
                             )
                             _retry_apu_msg = self._apu_ram_shortfall_message(
                                 _apu_resident_model_size + _mmproj_pinned_bytes,

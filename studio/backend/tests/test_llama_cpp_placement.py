@@ -2633,6 +2633,52 @@ def _apu_backend(tmp_path, *, gguf_gb, avail_mib, monkeypatch):
     return backend, gguf
 
 
+def test_windows_rocm_apu_full_offload_prices_only_host_resident_bytes(monkeypatch):
+    """A reserved Strix Halo GPU pool must not be counted as Windows host RAM."""
+    backend = LlamaCppBackend()
+    backend._n_layers = 48
+    backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: True
+    monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_rocm_selected_pool_mib",
+        staticmethod(lambda _gpu_indices: 96 * 1024),
+    )
+
+    model_size = 62 * 1024**3
+    resident = backend._windows_rocm_apu_host_resident_bytes(
+        model_size,
+        gpu_indices = [0],
+        extra_args = ["--gpu-layers", "49", "--fit", "off"],
+        env = {},
+    )
+
+    assert resident == 1
+
+
+def test_windows_rocm_apu_partial_offload_keeps_conservative_host_price(monkeypatch):
+    """Partial placement cannot assume the reserved pool holds all model weights."""
+    backend = LlamaCppBackend()
+    backend._n_layers = 48
+    backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: True
+    monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_rocm_selected_pool_mib",
+        staticmethod(lambda _gpu_indices: 96 * 1024),
+    )
+
+    model_size = 62 * 1024**3
+    resident = backend._windows_rocm_apu_host_resident_bytes(
+        model_size,
+        gpu_indices = [0],
+        extra_args = ["--gpu-layers", "24", "--fit", "off"],
+        env = {},
+    )
+
+    assert resident == model_size
+
+
 @pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
 def test_an_oversized_unmapped_apu_load_is_paged_before_it_launches(
     tmp_path, monkeypatch, extra_args
