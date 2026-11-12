@@ -17,6 +17,7 @@ import {
   isServedByMlx,
   loadedContextFields,
   modelConfigHandoffForDestination,
+  resolveInitialConfig,
   resolveResidentInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
@@ -1583,7 +1584,16 @@ function GeneralCompareHeader({
       loraModels,
       externalModels,
       onPick: (id, meta) => {
-        onValueChange(id, meta);
+        // As the header picker did: a plain pick runs with the model's saved settings, not whatever
+        // the resident was loaded with; Run settings' own config wins.
+        const remembered =
+          meta.config || meta.source === "external"
+            ? null
+            : resolveInitialConfig(id, meta.ggufVariant);
+        onValueChange(
+          id,
+          remembered?.remembered ? { ...meta, config: remembered.config } : meta,
+        );
         setSelectorOpen(false);
       },
       eject: () => undefined,

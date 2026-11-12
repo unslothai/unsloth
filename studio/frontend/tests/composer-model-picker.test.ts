@@ -767,7 +767,10 @@ test("Compare panes pick through the composer picker, with no reasoning or eject
     page.indexOf("function GeneralCompareHeader"),
     page.indexOf("function generalCompareLabels"),
   );
-  assert.match(header, /<ComposerModelPicker\s+side="bottom"\s+align=\{side === "left" \? "start" : "end"\}/);
+  assert.match(
+    header,
+    /<ComposerModelPicker\s+side="bottom"\s+align=\{side === "left" \? "start" : "end"\}/,
+  );
   assert.match(
     header,
     /selection: \{\s*id: value,\s*ggufVariant: selectedGgufVariant \?\? null,\s*config: selectedConfig \?\? null,\s*\}/,
@@ -786,5 +789,24 @@ test("Compare panes pick through the composer picker, with no reasoning or eject
   );
   assert.match(picker, /const chosenLoaded = pane\s*\? pane\.loaded === true/);
   // Reopened Run settings start from the pane's own config, not the saved one.
-  assert.match(picker, /initialConfig=\{\s*pane\?\.config &&\s*modelConfigTargetIsResident\(\{\s*target: configTarget,\s*selectedId: pane\.id,/);
+  assert.match(
+    picker,
+    /initialConfig=\{\s*pane\?\.config &&\s*modelConfigTargetIsResident\(\{\s*target: configTarget,\s*selectedId: pane\.id,/,
+  );
+});
+
+test("a plain Compare pick runs with the model's saved settings", () => {
+  const page = readSrc("features/chat/chat-page.tsx");
+  const header = page.slice(
+    page.indexOf("function GeneralCompareHeader"),
+    page.indexOf("function generalCompareLabels"),
+  );
+  assert.match(
+    header,
+    /meta\.config \|\| meta\.source === "external"\s*\? null\s*: resolveInitialConfig\(id, meta\.ggufVariant\);/,
+  );
+  assert.match(
+    header,
+    /remembered\?\.remembered \? \{ \.\.\.meta, config: remembered\.config \} : meta,/,
+  );
 });
