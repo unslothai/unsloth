@@ -149,9 +149,26 @@ def _path_is_whisper_model(value: str) -> bool:
     return any(_config_is_whisper(candidate) for candidate in candidates)
 
 
+# Weight suffixes the Model Hub folder scan reads (local_inventory._PAYLOAD_SUFFIXES), and the configs that make a
+# folder a model on their own.
+_MODEL_PAYLOAD_SUFFIXES = (
+    ".safetensors",
+    ".gguf",
+    ".bin",
+    ".pt",
+    ".pth",
+    ".ckpt",
+    ".h5",
+    ".msgpack",
+    ".npz",
+)
+_MODEL_CONFIG_NAMES = frozenset({"config.json", "adapter_config.json", "model_index.json"})
+
+
 def _path_is_curated_stt_gguf_dir(value: str) -> bool:
-    """A local folder whose only GGUFs are the curated Qwen3-ASR files: a pair moved into its own sub-folder of a
-    custom folder, which the inventory lists as one folder row."""
+    """A local folder whose only model is the curated Qwen3-ASR pair: a pair moved into its own sub-folder of a
+    custom folder, which the inventory lists as one folder row. Any other weights or a model config keep the folder,
+    since its row then stands for that model too."""
     path = Path(value).expanduser()
     # Absolute only: a bare id must not be listed against the working directory.
     if not path.is_absolute():
@@ -161,11 +178,10 @@ def _path_is_curated_stt_gguf_dir(value: str) -> bool:
         with os.scandir(path) as entries:
             for entry in entries:
                 name = entry.name.lower()
-                if not name.endswith(".gguf"):
-                    continue
-                if name not in _HIDDEN_STT_FILENAMES_LOWER:
+                if name in _HIDDEN_STT_FILENAMES_LOWER:
+                    found = True
+                elif name in _MODEL_CONFIG_NAMES or name.endswith(_MODEL_PAYLOAD_SUFFIXES):
                     return False
-                found = True
     except OSError:
         return False
     return found

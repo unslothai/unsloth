@@ -338,27 +338,32 @@ def _custom_folder_pair(spec: MtmdSttModel) -> Optional[tuple[str, str]]:
 # The panel polls every 750ms and each probe stats the snapshot twice, so memoise briefly.
 _DOWNLOADED_PROBE_TTL_SECONDS = 2.0
 _downloaded_probe_lock = threading.Lock()
-_downloaded_probe: dict[str, tuple[float, bool]] = {}
+# Keyed by (model id, account): a copy in one account's custom folder is not another account's download.
+_downloaded_probe: dict[tuple[str, str], tuple[float, bool]] = {}
 # Bumped on every invalidation so an in-flight probe cannot overwrite a cleared entry.
 _downloaded_probe_generation = 0
 
 
 def _forget_downloaded_probe(model_id: Optional[str] = None) -> None:
-    """Drop memoised answers, for one model or all of them."""
+    """Drop memoised answers, for one model (every account) or all of them."""
     global _downloaded_probe_generation
     with _downloaded_probe_lock:
         _downloaded_probe_generation += 1
         if model_id is None:
             _downloaded_probe.clear()
         else:
-            _downloaded_probe.pop(model_id, None)
+            for key in [key for key in _downloaded_probe if key[0] == model_id]:
+                del _downloaded_probe[key]
 
 
 def is_model_downloaded(model_id: str) -> bool:
     if model_id not in MTMD_STT_MODELS:
         return False
+    from core.inference.stt_sidecar import _account_scope
+
+    key = (model_id, _account_scope())
     with _downloaded_probe_lock:
-        cached = _downloaded_probe.get(model_id)
+        cached = _downloaded_probe.get(key)
         if cached is not None and time.monotonic() - cached[0] < _DOWNLOADED_PROBE_TTL_SECONDS:
             return cached[1]
         generation = _downloaded_probe_generation
@@ -366,7 +371,7 @@ def is_model_downloaded(model_id: str) -> bool:
     with _downloaded_probe_lock:
         # Timestamp now, not before the probe: a slow cache would store a near-expired entry.
         if generation == _downloaded_probe_generation:
-            _downloaded_probe[model_id] = (time.monotonic(), downloaded)
+            _downloaded_probe[key] = (time.monotonic(), downloaded)
     return downloaded
 
 

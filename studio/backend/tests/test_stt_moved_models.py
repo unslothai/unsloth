@@ -3,7 +3,10 @@
 
 """Dictation models moved out of the active Hub cache: into a custom folder, or left behind by a Models folder change."""
 
+import asyncio
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -28,7 +31,7 @@ def caches(monkeypatch, tmp_path):
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: list(known))
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: list(folders))
     # Every test registers its folders before the first lookup, so only a memo from an earlier test can be stale.
-    monkeypatch.setattr(stt_sidecar, "_custom_folder_dirs_memo", None, raising = False)
+    monkeypatch.setattr(stt_sidecar, "_custom_folder_dirs_memo", {}, raising = False)
     stt_mtmd_sidecar._forget_downloaded_probe()
     yield {"active": active, "known": known, "folders": folders}
     stt_mtmd_sidecar._forget_downloaded_probe()
@@ -204,3 +207,105 @@ def test_folder_with_another_gguf_stays_visible(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     assert hidden_models.is_hidden_model(str(empty)) is False
+
+
+def test_folder_with_a_safetensors_model_beside_the_pair_stays_visible(tmp_path):
+    folder = tmp_path / "chat-model"
+    _asr_pair(folder)
+    (folder / "config.json").write_text("{}")
+    (folder / "model.safetensors").write_bytes(b"weights")
+    assert hidden_models.is_hidden_model(str(folder)) is False
+
+
+def test_payload_suffixes_match_the_model_hub_scan():
+    from hub.services.models import local_inventory
+    assert set(hidden_models._MODEL_PAYLOAD_SUFFIXES) == set(local_inventory._PAYLOAD_SUFFIXES)
+
+
+def test_a_model_in_the_active_cache_never_reads_custom_folders(caches, monkeypatch):
+    _asr_tree(caches["active"])
+    reads = []
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: reads.append(1) or [])
+    assert _paths() is not None
+    assert reads == [], "a hit in the active cache read the custom folders"
+    assert stt_sidecar._find_complete_cached_snapshot("tiny") is None
+    assert reads == [1], "a miss reads them once"
+
+
+def test_a_hung_custom_folder_is_skipped_within_the_hub_budget(caches, monkeypatch, tmp_path):
+    from hub.services.models import local_inventory
+
+    monkeypatch.setattr(local_inventory, "_CUSTOM_FOLDER_SCAN_TIMEOUT_S", 0.2)
+    hung, good = tmp_path / "hung", tmp_path / "good"
+    hung.mkdir()
+    _asr_pair(good)
+    caches["folders"].extend(
+        [{"path": str(hung), "recursive": True}, {"path": str(good), "recursive": False}]
+    )
+    release = threading.Event()
+
+    def nested(path):
+        if path == hung:
+            release.wait(10)
+        return []
+
+    monkeypatch.setattr(local_inventory, "nested_scan_roots", nested)
+    try:
+        started = time.monotonic()
+        assert _paths()[0] == str(good / _SPEC.model_file)
+        assert time.monotonic() - started < 2
+        # Still stuck: the next lookup skips the folder without waiting again.
+        monkeypatch.setattr(stt_sidecar, "_custom_folder_dirs_memo", {})
+        started = time.monotonic()
+        assert _paths()[0] == str(good / _SPEC.model_file)
+        assert time.monotonic() - started < 0.15
+    finally:
+        release.set()
+        local_inventory._custom_folder_scans[str(hung)][1].result(timeout = 5)
+
+
+def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
+    from storage import studio_db
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("a" * 32, "alice")
+    bob = AccountContext("b" * 32, "bob")
+    active = tmp_path / "active"
+    active.mkdir()
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: active)
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active])
+    monkeypatch.setattr(stt_sidecar, "_custom_folder_dirs_memo", {}, raising = False)
+    stt_mtmd_sidecar._forget_downloaded_probe()
+    from utils.paths.storage_roots import workspace_root
+
+    # A member may register only folders inside their own workspace.
+    folder = run_as(alice, workspace_root) / "models"
+    _asr_pair(folder)
+    run_as(alice, studio_db.add_scan_folder, str(folder))
+    try:
+        assert run_as(alice, stt_mtmd_sidecar.is_model_downloaded, _MODEL_ID) is True
+        # Both memos are warm for alice now; bob must not read them.
+        assert run_as(bob, stt_mtmd_sidecar.is_model_downloaded, _MODEL_ID) is False
+        assert run_as(bob, stt_mtmd_sidecar._cached_model_paths, _MODEL_ID) is None
+    finally:
+        stt_mtmd_sidecar._forget_downloaded_probe()
+
+
+def test_stt_status_looks_up_downloads_off_the_event_loop(monkeypatch):
+    import routes.inference as inference
+
+    on_loop = []
+
+    def probe(*_args):
+        on_loop.append(threading.current_thread() is threading.main_thread())
+        return False
+
+    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", probe)
+    monkeypatch.setattr(stt_mtmd_sidecar, "is_model_downloaded", probe)
+    monkeypatch.setattr(stt_ggml_sidecar, "_cached_model_path", lambda model_id: probe() or None)
+    monkeypatch.setattr(inference, "_audio_cpp_runtime_status", lambda: {"available": False})
+    monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
+    response = asyncio.run(inference.stt_status(model = None, current_subject = "owner"))
+    body = json.loads(response.body)
+    assert body["mtmd"]["downloaded_models"] == [] and body["gguf"]["downloaded_models"] == []
+    assert on_loop and not any(on_loop)

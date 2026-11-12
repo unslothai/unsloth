@@ -21,7 +21,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from loggers import get_logger
 
@@ -452,19 +452,34 @@ def _repo_cache_dir(repo: str, *, hub_cache: Optional[Path] = None) -> Path:
 # One status poll runs a dozen lookups and a recursive folder's walk can take a few hundred ms, so memoise briefly.
 _CUSTOM_FOLDER_DIRS_TTL_SECONDS = 2.0
 _custom_folder_dirs_lock = threading.Lock()
-_custom_folder_dirs_memo: Optional[tuple[float, tuple[Path, ...]]] = None
+# Keyed by account: each account registers its own custom folders.
+_custom_folder_dirs_memo: dict[str, tuple[float, tuple[Path, ...]]] = {}
+_CUSTOM_FOLDER_DIRS_MEMO_MAX = 64
+
+
+def _account_scope() -> str:
+    """The acting account's storage root. Custom folders live in its studio.db, so whatever is found through them
+    is cached per account."""
+    try:
+        from utils.paths.storage_roots import workspace_root
+        return str(workspace_root())
+    except Exception:  # noqa: BLE001 - no account context reads as the owner's
+        return ""
 
 
 def _custom_folder_dirs() -> list[Path]:
-    """Registered custom folders, plus the nested folders of a recursive one: the directories the Model Hub scans."""
-    global _custom_folder_dirs_memo
+    """The acting account's custom folders, plus the nested folders of a recursive one: the directories the Model Hub
+    scans. A folder that does not answer within the Model Hub's scan budget is skipped."""
+    scope = _account_scope()
     with _custom_folder_dirs_lock:
-        memo = _custom_folder_dirs_memo
+        memo = _custom_folder_dirs_memo.get(scope)
         if memo is not None and time.monotonic() - memo[0] < _CUSTOM_FOLDER_DIRS_TTL_SECONDS:
             return list(memo[1])
     dirs = _list_custom_folder_dirs()
     with _custom_folder_dirs_lock:
-        _custom_folder_dirs_memo = (time.monotonic(), tuple(dirs))
+        if len(_custom_folder_dirs_memo) >= _CUSTOM_FOLDER_DIRS_MEMO_MAX:
+            _custom_folder_dirs_memo.clear()
+        _custom_folder_dirs_memo[scope] = (time.monotonic(), tuple(dirs))
     return dirs
 
 
@@ -475,44 +490,71 @@ def _list_custom_folder_dirs() -> list[Path]:
     except Exception as exc:  # noqa: BLE001 - an unreadable folder list must not fail a lookup
         logger.debug("STT: could not list custom folders: %s", exc)
         return []
+    if not folders:
+        return []
+    from hub.services.models.local_inventory import (
+        nested_scan_roots,
+        run_custom_folder_bounded_sync,
+    )
+    from hub.utils.paths import normalize_path
+    from utils.paths.scan_folder_health import STATUS_SLOW, scan_folder_status
+
     dirs: list[Path] = []
     for folder in folders:
-        raw = str(folder.get("path") or "").strip()
-        if not raw:
+        raw = str(folder.get("path") or "")
+        # An earlier scan is still stuck on this folder: touching it again would only stall here as well.
+        if not raw.strip() or scan_folder_status(raw) == STATUS_SLOW:
             continue
-        path = Path(raw)
-        dirs.append(path)
-        if folder.get("recursive"):
-            try:
-                from hub.services.models.local_inventory import nested_scan_roots
-                dirs.extend(nested_scan_roots(path))
-            except Exception as exc:  # noqa: BLE001 - the folder itself is still searched
-                logger.debug("STT: could not list nested folders: %s", exc)
+        path = Path(normalize_path(raw)).expanduser()
+        recursive = bool(folder.get("recursive"))
+
+        def reach(path = path, recursive = recursive) -> list[Path]:
+            if not path.is_dir():
+                return []
+            return [path, *(nested_scan_roots(path) if recursive else ())]
+
+        try:
+            # The Model Hub's per-folder budget and stuck-thread record, shared with its own scans.
+            dirs.extend(run_custom_folder_bounded_sync(raw, reach) or ())
+        except Exception as exc:  # noqa: BLE001 - one unreadable folder must not hide the others
+            logger.debug("STT: could not read a custom folder: %s", exc)
     return dirs
 
 
-def _stt_hub_cache_roots() -> list[Path]:
-    """Hub caches a downloaded dictation model may sit in: the active one first (downloads write only there), then
-    every other cache Studio knows and the caches inside custom folders, the roots chat model loads search too."""
-    roots = [_active_hf_hub_cache()]
+def _stt_hub_cache_roots() -> Iterator[Path]:
+    """Hub caches a downloaded dictation model may sit in, the roots chat model loads search too: the active one
+    (downloads write only there), every other cache Studio knows, then the caches inside custom folders. Lazy, so a
+    model found early never waits on a custom folder."""
+    seen: set[str] = set()
+
+    def first_time(root: Path) -> bool:
+        key = os.path.normcase(os.path.normpath(str(root)))
+        if key in seen:
+            return False
+        seen.add(key)
+        return True
+
+    active = Path(_active_hf_hub_cache())
+    first_time(active)
+    yield active
     try:
         from utils.hf_cache_settings import known_hf_hub_caches
-        roots.extend(known_hf_hub_caches())
-    except Exception as exc:  # noqa: BLE001 - the active cache still answers
+        known = known_hf_hub_caches()
+    except Exception as exc:  # noqa: BLE001 - the active cache still answered
         logger.debug("STT: could not list known Hub caches: %s", exc)
+        known = []
+    for root in known:
+        if first_time(Path(root)):
+            yield Path(root)
     folders = _custom_folder_dirs()
-    if folders:
-        from hub.utils.inventory_scan import scan_folder_hf_caches
-        for folder in folders:
-            roots.extend(scan_folder_hf_caches(folder))
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = os.path.normcase(os.path.normpath(str(root)))
-        if key not in seen:
-            seen.add(key)
-            unique.append(Path(root))
-    return unique
+    if not folders:
+        return
+    from hub.utils.inventory_scan import scan_folder_hf_caches
+
+    for folder in folders:
+        for root in scan_folder_hf_caches(folder):
+            if first_time(root):
+                yield root
 
 
 def _revision_record_path(repo: str) -> Path:
