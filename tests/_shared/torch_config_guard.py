@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 import threading
 import traceback
+from contextvars import ContextVar
 from typing import Any
 
 CONFIG_MODULES = (
@@ -31,19 +32,17 @@ _DELETES: dict[tuple[str, str], tuple[Any, str]] = {}
 _installed = False
 
 
-class _ContextVarValue:
-    """Saved ContextVar ``user_override`` value (torch 2.12+): torch resets the var on delete, so the object would restore the default."""
-
-    __slots__ = ("value",)
-
-    def __init__(self, value: Any) -> None:
-        self.value = value
+def _read_override(entry: Any) -> Any:
+    # torch 2.12+ keeps user_override in a ContextVar that __delattr__ resets, so save its value, not the var.
+    override = entry.user_override
+    return override.get() if isinstance(override, ContextVar) else override
 
 
-def _snapshot_override(override: Any) -> Any:
-    if hasattr(override, "get") and hasattr(override, "set"):
-        return _ContextVarValue(override.get())
-    return override
+def _write_override(entry: Any, value: Any) -> None:
+    if isinstance(entry.user_override, ContextVar):
+        entry.user_override.set(value)
+    else:
+        entry.user_override = value
 
 
 def _entries(module_name: str) -> dict[str, Any] | None:
@@ -70,7 +69,7 @@ def install_delete_recorder() -> bool:
         if entry is not None:
             with _LOCK:
                 _DELETES[(self.__name__, name)] = (
-                    _snapshot_override(entry.user_override),
+                    _read_override(entry),
                     "".join(traceback.format_stack(limit = 16)[:-1]),
                 )
         return original(self, name)
@@ -156,10 +155,7 @@ def restore(hidden: list[tuple[str, str]]) -> str:
         with _LOCK:
             prior = _DELETES.pop((module_name, key), None)
         if prior is not None:
-            if isinstance(prior[0], _ContextVarValue):
-                entry.user_override.set(prior[0].value)
-            else:
-                entry.user_override = prior[0]
+            _write_override(entry, prior[0])
         entry.hide = False
         module = sys.modules.get(module_name)
         if module is not None:
