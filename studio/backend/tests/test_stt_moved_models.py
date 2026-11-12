@@ -28,7 +28,7 @@ def caches(monkeypatch, tmp_path):
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: list(known))
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: list(folders))
     # Every test registers its folders before the first lookup, so only a memo from an earlier test can be stale.
-    monkeypatch.setattr(stt_sidecar, "_custom_folder_dirs_memo", None)
+    monkeypatch.setattr(stt_sidecar, "_custom_folder_dirs_memo", None, raising = False)
     stt_mtmd_sidecar._forget_downloaded_probe()
     yield {"active": active, "known": known, "folders": folders}
     stt_mtmd_sidecar._forget_downloaded_probe()
