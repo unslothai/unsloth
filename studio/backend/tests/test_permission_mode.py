@@ -4,6 +4,7 @@
 """Permission modes in the tool loop: only high-risk calls pause in auto; full never pauses."""
 
 import os
+import shlex
 import time
 import uuid
 
@@ -1620,6 +1621,64 @@ def test_file_delete_function_passed_by_reference_is_high_risk(code, high_risk):
 )
 def test_terminal_python_file_delete_by_reference_is_high_risk(command, high_risk):
     assert is_high_risk_tool_call("terminal", {"command": command}) is high_risk
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git reset --hard && git clean -fdx",
+        "git push --force",
+        "crontab -r",
+        "truncate -s 0 notes.txt",
+        "shred notes.txt",
+        "find . -name '*.log' -delete",
+        "docker system prune -af",
+        "pip uninstall -y numpy",
+    ],
+)
+@pytest.mark.parametrize(
+    "template",
+    [
+        "import os\nos.system({cmd!r})",
+        "import subprocess\nsubprocess.run({cmd!r}, shell=True)",
+        "import subprocess\nsubprocess.check_output(['sh', '-c', {cmd!r}])",
+        "import subprocess\nsubprocess.run({argv!r})",
+        "import asyncio\nasyncio.run(asyncio.create_subprocess_exec(*{argv!r}))",
+        "import psutil\npsutil.Popen({cmd!r}, shell=True)",
+    ],
+)
+def test_python_shell_command_terminal_asks_about_is_high_risk(command, template):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is True
+    code = template.format(cmd = command, argv = shlex.split(command))
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+@pytest.mark.parametrize(
+    "code, high_risk",
+    [
+        (
+            "import timeit\ntimeit.timeit(\"import os; os.system('git push --force')\", number=1)",
+            True,
+        ),
+        (
+            "from timeit import timeit\ntimeit(\"__import__('shutil').rmtree('junk_dir')\", number=1)",
+            True,
+        ),
+        ("import timeit\ntimeit.Timer(\"os.remove('x')\", setup='import os').timeit(1)", True),
+        ("import cProfile\ncProfile.run(\"import os; os.system('rm -rf junk_dir')\")", True),
+        ("import pdb\npdb.run(\"import shutil; shutil.rmtree('junk_dir')\")", True),
+        ("import anyio\nanyio.run(anyio.run_process, 'rm -rf junk_dir')", True),
+        ("import timeit\nprint(timeit.timeit('sum(range(100))', number=1000))", False),
+        ("import timeit\nprint(timeit.timeit(lambda: sorted([3, 1, 2]), number=10))", False),
+        ("import cProfile\ncProfile.run('sum(range(100))')", False),
+        ("import psutil\nprint(psutil.cpu_percent())", False),
+        ("import subprocess\nsubprocess.run(['git', 'status', '--short'])", False),
+        ("import subprocess\nsubprocess.run('git log --oneline -5', shell=True)", False),
+        ("import os\nos.system('pip install numpy')", False),
+    ],
+)
+def test_python_code_string_and_spawn_apis_are_screened(code, high_risk):
+    assert is_high_risk_tool_call("python", {"code": code}) is high_risk
 
 
 @pytest.mark.parametrize("code", ["value = " + "+".join(["1"] * 400), "value = data" + "[0]" * 400])

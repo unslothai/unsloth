@@ -2663,6 +2663,12 @@ _PY_DESTRUCTIVE_FS_ATTRS = frozenset({"unlink", "rmtree", "rmdir", "removedirs"}
 # psutil ends a process exactly as os.kill does, which is already gated.
 _PY_PROCESS_KILL_ATTRS = frozenset({"kill", "terminate", "send_signal", "suspend"})
 _PY_PROCESS_MODULES = frozenset({"psutil"})
+_PY_CODE_STRING_RUNNERS = {
+    "timeit": frozenset({"timeit", "repeat", "Timer"}),
+    "cProfile": frozenset({"run", "runctx"}),
+    "profile": frozenset({"run", "runctx"}),
+    "pdb": frozenset({"run", "runeval", "runctx"}),
+}
 # Gated only on the os module or an alias so same-named methods stay out; os.truncate zeroes a file, os.kill and os.killpg terminate processes
 _PY_DESTRUCTIVE_FS_OS_ATTRS = frozenset({"remove", "truncate", "ftruncate", "kill", "killpg"})
 _PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
@@ -8302,7 +8308,10 @@ def _python_is_high_risk(code: str) -> bool:
     if not code or not code.strip():
         return False
     # A confirmation beats a silent refusal at execution time.
-    if _check_code_safety(code) is not None:
+    analysis = _check_signal_escape_patterns(code)
+    if _check_code_safety(code, analysis = analysis) is not None:
+        return True
+    if any(_terminal_is_high_risk(command) for command in analysis[1].get("shell_commands", ())):
         return True
     tree, _parse_error = _parse_python(code)
     if _parse_error is not None:
@@ -8594,6 +8603,19 @@ def _python_is_high_risk(code: str) -> bool:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            runs_code_string = func.attr in _PY_CODE_STRING_RUNNERS.get(func.value.id, ())
+        else:
+            runs_code_string = (
+                isinstance(func, ast.Name) and func.id in _PY_CODE_STRING_RUNNERS["timeit"]
+            )
+        if runs_code_string and any(
+            isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and _python_is_high_risk(arg.value)
+            for arg in [*node.args, *(kw.value for kw in node.keywords)]
+        ):
+            return True
         name = None
         if isinstance(func, ast.Name):
             name = func.id
@@ -17949,6 +17971,7 @@ def _check_signal_escape_patterns(code: str):
     signal_tampering = []
     exception_catching = []
     shell_escapes = []
+    shell_commands = []
     warnings = []
 
     def _ast_name_matches(node, names):
@@ -18002,6 +18025,9 @@ def _check_signal_escape_patterns(code: str):
             "asyncio.create_subprocess_shell",
             "asyncio.create_subprocess_exec",
             "pty.spawn",
+            "psutil.Popen",
+            "anyio.run_process",
+            "anyio.open_process",
             "loop.subprocess_shell",
             "loop.subprocess_exec",
         }
@@ -18252,7 +18278,7 @@ def _check_signal_escape_patterns(code: str):
                     name = "asyncio"
                 # __import__("os.path") returns the top-level os package.
                 top = (name or "").split(".")[0]
-                if top in ("os", "subprocess", "asyncio", "pty"):
+                if top in ("os", "subprocess", "asyncio", "pty", "psutil", "anyio"):
                     modules.add(top)
                 elif top in ("posix", "nt") and not isinstance(value, ast.Name):
                     modules.add("os")
@@ -18417,6 +18443,13 @@ def _check_signal_escape_patterns(code: str):
                 positional = node.args[1:] if shell_func.startswith("loop.") else node.args
                 all_call_args = list(positional) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
+                literal_args = [_extract_string_from_node(a) for a in all_call_args]
+                shell_commands.extend(a for a in literal_args if a is not None)
+                if len(literal_args) > 1 and None not in literal_args:
+                    shell_commands.append(shlex.join(literal_args))
+                for a in all_call_args:
+                    if isinstance(a, (ast.List, ast.Tuple)):
+                        shell_commands.append(shlex.join(_extract_strings_from_list(a)))
 
                 if has_opaque_kwargs:
                     # Can't inspect dynamic **kwargs; flag as unsafe.
@@ -20872,16 +20905,22 @@ def _check_signal_escape_patterns(code: str):
         "signal_tampering": signal_tampering,
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
+        "shell_commands": shell_commands,
         "network_calls": network_calls,
         "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
     }
 
 
-def _check_code_safety(code: str, *, host_approved: bool = False) -> str | None:
+def _check_code_safety(
+    code: str,
+    *,
+    host_approved: bool = False,
+    analysis: "tuple | None" = None,
+) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
-    safe, info = _check_signal_escape_patterns(code)
+    safe, info = analysis or _check_signal_escape_patterns(code)
     if not safe:
         # Let SyntaxError through so the child reports a normal traceback.
         if info.get("error"):
