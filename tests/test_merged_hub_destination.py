@@ -146,6 +146,7 @@ def saving(monkeypatch, tmp_path):
 
     env = dict(
         os = os,
+        json = json,
         sys = sys,
         gc = gc,
         Path = Path,
@@ -197,6 +198,11 @@ def saving(monkeypatch, tmp_path):
         "_cast_state_dict_16bit",
         "_requests_float32",
         "_collect_garbage",
+        # Real code: a non-LFM3-Audio save leaves config.json alone and pushes nothing extra.
+        "_base_config_dicts",
+        "_restore_lfm3_audio_release_config",
+        "_release_layout_for_merged_save",
+        "_push_lfm3_audio_release_config",
     }
     nodes = []
     for node in tree.body:
@@ -284,6 +290,19 @@ def test_default_push_keeps_streaming_merger(saving):
     assert records["merges"][0]["push_to_hub"] is True
     assert records["uploads"] == []
     assert records["repos"] == []
+
+
+def test_a_merged_push_of_another_model_resolves_no_extra_repo_id(saving):
+    env, records, _ = saving
+
+    def no_whoami(*args):
+        raise AssertionError("a non LFM3-Audio merged push resolved the repo id again")
+
+    env["_determine_username"] = no_whoami
+    env["unsloth_generic_save"](
+        PeftModel(), None, "model", push_to_hub = True, save_method = "merged_16bit"
+    )
+    assert records["merges"][0]["push_to_hub"] is True
 
 
 def test_non_main_rank_does_not_create_or_upload(saving):

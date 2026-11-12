@@ -245,13 +245,9 @@ test("a denied grant sends nothing and does not reject", async () => {
   assert.deepEqual(mod.control.sent, [], "sent a notification after a denial");
 });
 
-// tauri_plugin_notification replaces window.Notification with its own shim, so
-// these are the shim's states, not hypothetical browser ones: Linux and macOS
-// report "granted" with no prompt (desktop request_permission is hardcoded to
-// Granted), Windows reports "denied" because the shim short-circuits its own
-// bootstrap (tauri-apps/plugins-workspace#3512) while the backend still grants,
-// so the backend's answer wins. Moving the prime off the chat path must not
-// change what training does.
+// tauri_plugin_notification's shim reports granted with no prompt on Linux and macOS, but denied on
+// Windows because it short-circuits its own bootstrap (tauri-apps/plugins-workspace issue 3512);
+// the backend still grants, so its answer wins, and moving the chat prime must not change training.
 test("each desktop platform's shim state behaves the same with and without a chat prime", async () => {
   const platforms = [
     { name: "linux/macOS", webview: "granted" as const, expected: ["Training finished"] },

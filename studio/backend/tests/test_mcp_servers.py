@@ -806,8 +806,7 @@ def test_mcp_specs_visibility_shapes(visibility, visible):
 
 @pytest.mark.parametrize("schema_key", ["inputSchema", "input_schema"])
 def test_mcp_specs_keep_the_tool_arguments(schema_key):
-    """Reading one spelling only would leave every tool argument-less after an
-    mcp 2.x bump."""
+    """Reading one schema spelling only drops every tool's arguments after an mcp 2.x bump."""
     from core.inference.tools import _mcp_specs_for_server
 
     schema = {"type": "object", "properties": {"q": {"type": "string"}}}
@@ -944,8 +943,7 @@ def test_delete_server_skips_oauth_cleanup_when_oauth_off(tmp_path, monkeypatch)
 
 
 def test_update_server_clears_oauth_on_url_change(tmp_path, monkeypatch):
-    """Changing the URL on an OAuth server must drop the old URL's tokens
-    so the new URL doesn't inherit credentials."""
+    """Changing an OAuth server's URL must drop the old tokens, or the new URL inherits them."""
     from core.inference import mcp_client
     from models.mcp_servers import McpServerUpdate
     import asyncio
@@ -1033,8 +1031,7 @@ def test_changes_from_payload_rejects_null_use_oauth():
 
 
 def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
-    """POST /api/mcp/servers/test must 400 on invalid URL like create/update;
-    it previously returned 200 with {"ok": false}."""
+    """POST /api/mcp/servers/test must return 400 on an invalid URL, as create and update do."""
     import asyncio
 
     _reset_db(tmp_path, monkeypatch)
@@ -1070,8 +1067,7 @@ def test_tool_xml_parser_handles_hyphenated_parameter_names():
 
 
 def test_tool_healing_strip_handles_hyphenated_function_names():
-    """core/tool_healing.py has its own copy of the XML strip regex that the
-    shared-parser fix missed."""
+    """core/tool_healing.py keeps its own XML strip regex, which the shared-parser fix missed."""
     from core.tool_healing import strip_tool_call_markup
 
     out = strip_tool_call_markup(
@@ -1123,8 +1119,7 @@ def test_tool_healing_json_parser_preserves_literal_gemma_quote_token():
 
 
 def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
-    """A tool call not in the per-request list must be refused by the GGUF
-    agentic loop (mirroring the safetensors path)."""
+    """An unadvertised tool call must be refused by the GGUF agentic loop, as on safetensors."""
     from core.inference import tools as tools_mod
 
     captured: list[str] = []
@@ -1162,8 +1157,7 @@ def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
 
 
 def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
-    """Pre-set cancel_event -> no HTTP request (task used to open a transport
-    before the cancel check)."""
+    """A pre-set cancel_event must skip the HTTP request, not open a transport first."""
     from core.inference import mcp_client
     import threading
 
@@ -1470,9 +1464,8 @@ def test_update_display_name_keeps_tool_cache(tmp_path, monkeypatch):
 
 
 def test_update_rename_keeps_stdio_session(tmp_path, monkeypatch):
-    """The edit dialog resends url/headers/oauth unchanged on a rename, so gating
-    the close on field presence would drop the live stdio session. Only a real
-    endpoint/auth change may close it."""
+    """The edit dialog resends url/headers/oauth on a rename, so only a real endpoint or auth change
+    may close the live stdio session."""
     from models.mcp_servers import McpServerUpdate
     import asyncio
     import routes.mcp_servers as routes_mcp
@@ -1750,8 +1743,7 @@ def test_update_headers_evicts_tool_cache(tmp_path, monkeypatch):
 
 
 def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(tmp_path, monkeypatch):
-    """A config edit landing during an in-flight probe must not be clobbered
-    by the now-stale probe result (TOCTOU on the cache write)."""
+    """A config edit during a probe must not be clobbered by the stale probe result (a race)."""
     from core.inference import mcp_client
     from core.inference import tools as tools_mod
     import asyncio
@@ -1780,9 +1772,8 @@ def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(tmp_pat
 def test_get_enabled_mcp_tools_no_cooloff_when_config_changes_mid_failed_probe(
     tmp_path, monkeypatch
 ):
-    """An edit landing while a probe of the OLD config is failing must not park
-    a cool-off on the now-fresh config -- else the re-pointed server the user
-    just fixed is needlessly skipped for the whole cool-off window."""
+    """An edit made while a probe of the old config fails must not park a cool-off on the new
+    config, which would skip the fixed server."""
     from core.inference import mcp_client
     from core.inference import tools as tools_mod
     import asyncio
@@ -1811,8 +1802,7 @@ def test_get_enabled_mcp_tools_no_cooloff_when_config_changes_mid_failed_probe(
 def test_get_enabled_mcp_tools_no_cooloff_when_server_deleted_mid_failed_probe(
     tmp_path, monkeypatch
 ):
-    """A delete landing while a probe fails must not leave an orphan cool-off
-    entry keyed by the since-removed server id."""
+    """A delete during a failing probe must not leave an orphan cool-off for the removed id."""
     from core.inference import mcp_client
     from core.inference import tools as tools_mod
     import asyncio
@@ -1839,8 +1829,7 @@ def test_get_enabled_mcp_tools_no_cooloff_when_server_deleted_mid_failed_probe(
 
 
 def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(tmp_path, monkeypatch):
-    """A down server is probed once, then skipped during the cool-off instead
-    of being re-probed (and re-hung) on every send."""
+    """A down server is probed once, then skipped during the cool-off, not re-hung per send."""
     from core.inference import mcp_client
     from core.inference import tools as tools_mod
     import asyncio
@@ -1907,8 +1896,7 @@ def test_invalidate_clears_failure_cooloff(monkeypatch):
 
 
 def test_refresh_failure_records_cooloff(tmp_path, monkeypatch):
-    """A failed manual refresh starts the cool-off so the next chat send does
-    not immediately hang on the down server."""
+    """A failed manual refresh starts the cool-off so the next chat send does not hang."""
     from core.inference import mcp_client
     import asyncio
     import routes.mcp_servers as routes_mcp
@@ -1934,8 +1922,7 @@ def test_refresh_failure_records_cooloff(tmp_path, monkeypatch):
 
 
 def test_refresh_drops_result_when_config_changes_mid_probe(tmp_path, monkeypatch):
-    """A manual refresh must not warm the chat cache with tools discovered
-    under an old config if the server is edited while the probe is in flight."""
+    """A refresh must not cache tools from an old config if the server is edited mid-probe."""
     from core.inference import mcp_client
     import asyncio
     import routes.mcp_servers as routes_mcp
@@ -1961,8 +1948,7 @@ def test_refresh_drops_result_when_config_changes_mid_probe(tmp_path, monkeypatc
 
 
 def test_refresh_failure_no_cooloff_when_config_changes_mid_probe(tmp_path, monkeypatch):
-    """A manual refresh failure for an old config must not cool off the freshly
-    edited server."""
+    """A refresh failure for an old config must not cool off the freshly edited server."""
     from core.inference import mcp_client
     import asyncio
     import routes.mcp_servers as routes_mcp
@@ -1989,9 +1975,8 @@ def test_refresh_failure_no_cooloff_when_config_changes_mid_probe(tmp_path, monk
 
 
 def test_get_enabled_mcp_tools_drops_result_when_server_deleted_mid_probe(tmp_path, monkeypatch):
-    """A delete landing while a probe is in flight must drop the now-orphan
-    result -- the `fresh is None` arm of the mid-probe TOCTOU guard. The
-    result is neither served nor cached under the since-removed id."""
+    """A delete during a probe must drop the orphan result (the `fresh is None` arm of the mid-probe
+    TOCTOU guard), which is neither served nor cached."""
     from core.inference import mcp_client
     from core.inference import tools as tools_mod
     import asyncio
@@ -2019,9 +2004,8 @@ def test_get_enabled_mcp_tools_drops_result_when_server_deleted_mid_probe(tmp_pa
 
 
 def test_oauth_probe_failure_in_chat_path_uses_long_cooloff(tmp_path, monkeypatch):
-    """When an OAuth server fails discovery during a send, the chat path must
-    record the OAuth (long) cool-off, not the plain one -- otherwise its
-    multi-minute browser hang recurs every minute."""
+    """An OAuth server failing discovery in chat must record the long OAuth cool-off, not the plain
+    one, or its browser hang recurs every minute."""
     from core.inference import mcp_client
     from core.inference import tools as tools_mod
     import asyncio
@@ -2110,8 +2094,7 @@ def test_provisional_tool_provenance_stamps_mcp_display_name(tmp_path, monkeypat
 
 
 def test_display_names_never_reach_the_callable_tool_name(tmp_path, monkeypatch):
-    """Routing, approvals and replay all key off mcp__<serverId>__<tool>, so the
-    display name must stay presentation only."""
+    """Routing, approvals and replay key off mcp__<serverId>__<tool>, never a display name."""
     from core.inference.tools import _mcp_specs_for_server
 
     _reset_db(tmp_path, monkeypatch)
@@ -2189,7 +2172,7 @@ def _cache_server_tools(tmp_path, monkeypatch, tools):
     _reset_db(tmp_path, monkeypatch)
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(tools_mod, "_MCP_LOADED_THREADS", OrderedDict())
-    monkeypatch.setattr(tools_mod, "_MCP_RANKED_THREADS", OrderedDict())
+    monkeypatch.setattr(tools_mod, "_MCP_HELD_THREADS", OrderedDict())
     mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a.example/mcp")
     mcp_client.cache_tools("srv1", tools)
 
@@ -2517,6 +2500,60 @@ def test_mcp_listing_reranks_when_no_held_tool_still_fits(tmp_path, monkeypatch,
     assert _thread_listing(tools_mod, searching, chat) == second
 
 
+def test_mcp_listing_keeps_its_order_when_a_listed_tool_runs(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    ping, create, move = (f"mcp__srv1__{name}" for name in ("ping", "create-pages", "move-pages"))
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    monkeypatch.setattr(
+        tools_mod, "_mcp_ranked", lambda specs, query: ([names.index(ping), names.index(create)], 0)
+    )
+    chat = [{"role": "user", "content": "first"}]
+    first = _thread_listing(tools_mod, searching, chat)
+    assert _names(first) == ["mcp_tool_search", ping, create]
+
+    for ran in ([create], [ping], [create, ping]):
+        tools_mod.mcp_record_loaded_tools("thread-1", ran)
+        assert _thread_listing(tools_mod, searching, chat) == first
+
+    tools_mod.mcp_record_loaded_tools("thread-1", [move])
+    assert _names(_thread_listing(tools_mod, searching, chat)) == [*_names(first), move]
+
+
+def test_mcp_listing_token_count_leaves_the_held_listing_alone(tmp_path, monkeypatch, searching):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    a, b, c = (f"mcp__srv1__{name}" for name in ("ping", "create-pages", "move-pages"))
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    rankings = {"ab": [a, b], "cb": [c, b]}
+    monkeypatch.setattr(
+        tools_mod,
+        "_mcp_ranked",
+        lambda specs, query: ([names.index(name) for name in rankings[query]], 0),
+    )
+
+    def count(messages):
+        ctx = contextvars.copy_context()
+        ctx.run(
+            tools_mod.set_mcp_listing_context_tokens,
+            searching,
+            "thread-1",
+            messages,
+            remember = False,
+        )
+        return ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0]))
+
+    chat = [{"role": "user", "content": "ab"}]
+    first = _thread_listing(tools_mod, searching, chat)
+    assert _names(first) == ["mcp_tool_search", a, b]
+    assert count([{"role": "user", "content": "cb"}]) == ["mcp_tool_search", b, c]
+    assert _thread_listing(tools_mod, searching, chat) == first
+
+
 def test_mcp_listing_holds_when_the_best_match_cannot_fit(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
 
@@ -2623,6 +2660,25 @@ def test_mcp_tool_search_never_finds_an_app_only_tool(tmp_path, monkeypatch, sea
     assert "widget_refresh" not in json.dumps(specs)
     assert tools_mod.mcp_tool_search_specs({"query": "refresh the widget"}) == []
     assert tools_mod.mcp_tool_spec("mcp__srv1__widget_refresh") is None
+
+
+def test_mcp_tool_search_finds_cjk_descriptions(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(
+        tmp_path,
+        monkeypatch,
+        [
+            _PING,
+            {"name": "refund", "description": "处理退款申请"},
+            {"name": "henkin", "description": "返金を処理します"},
+            {"name": "hwanbul", "description": "환불 처리"},
+        ],
+    )
+    search = tools_mod.mcp_tool_search_specs
+    assert _names(search({"query": "退款"})) == ["mcp__srv1__refund"]
+    assert _names(search({"query": "返金"})) == ["mcp__srv1__henkin"]
+    assert _names(search({"query": "환불"})) == ["mcp__srv1__hwanbul"]
 
 
 def test_mcp_tool_search_finds_an_alias_by_its_raw_name(tmp_path, monkeypatch):
@@ -2853,6 +2909,54 @@ def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monk
     decision = controller.prepare_call({"function": {"name": "mcp__srv1__ping", "arguments": "{}"}})
     assert decision.action == "disabled"
     assert controller.active_tools() == []
+
+
+STUDIO_TOOLS_URL = "http://127.0.0.1/mcp/studio-tools"
+
+
+@pytest.mark.parametrize("credential", ["via_api_key", "no_credential"])
+def test_only_the_ui_can_add_or_repoint_the_studio_tools_row(tmp_path, monkeypatch, credential):
+    import asyncio
+    import routes.mcp_servers as routes
+    from models.mcp_servers import McpServerCreate, McpServerImportRequest, McpServerUpdate
+
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "web", display_name = "Web", url = "https://a/mcp")
+    add = McpServerCreate(display_name = "Unsloth Studio", url = STUDIO_TOOLS_URL)
+    studio = asyncio.run(routes.create_mcp_server(add, current_subject = "u")).id
+    key = {"current_subject": "u", credential: True}
+    for refused in (
+        routes.create_mcp_server(add, **key),
+        routes.update_mcp_server("web", McpServerUpdate(url = STUDIO_TOOLS_URL), **key),
+        routes.update_mcp_server(studio, McpServerUpdate(url = "https://b/mcp"), **key),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(refused)
+        assert exc.value.status_code == 403
+    config = {"mcpServers": {"studio": {"url": "http://localhost:8888/mcp/studio-tools"}}}
+    result = asyncio.run(routes.import_mcp_servers(McpServerImportRequest(config = config), **key))
+    assert result.created == [] and len(result.errors) == 1
+    off = asyncio.run(routes.update_mcp_server(studio, McpServerUpdate(is_enabled = False), **key))
+    assert off.is_enabled is False and off.url == STUDIO_TOOLS_URL
+
+
+def test_the_studio_tools_row_is_reprobed_every_send_and_never_falls_back(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from core.inference import mcp_client, tools as tools_mod
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    for id, url in (("web", "https://x"), ("studio", STUDIO_TOOLS_URL)):
+        mcp_servers_db.create_server(id = id, display_name = id, url = url, is_enabled = True)
+    answers = [_one_tool(), _one_tool("a"), _one_tool("b"), RuntimeError("listing failed")]
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake := AsyncMock(side_effect = answers))
+    for studio_tools in (["mcp__studio__a"], ["mcp__studio__b"], []):
+        listed = asyncio.run(tools_mod.get_enabled_mcp_tools())
+        assert [t["function"]["name"] for t in listed] == ["mcp__web__echo", *studio_tools]
+    assert [c.kwargs["url"] for c in fake.call_args_list] == ["https://x", *[STUDIO_TOOLS_URL] * 3]
 
 
 @pytest.mark.parametrize("searched", [False, True])

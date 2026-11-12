@@ -93,9 +93,7 @@ class TestProjectorIncompatibilityDetector:
 
 
 class TestSignalCrashDetector:
-    """_is_signal_crash flags a hard fault (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS
-    or a Windows 0xC0000000+ fault); not a clean exit, hung (None), or an
-    external kill (SIGKILL/SIGTERM/SIGINT) that an OOM/unload would cause."""
+    """Only hard faults count; clean exits, hangs (None) and SIGKILL/SIGTERM/SIGINT are not crashes."""
 
     @pytest.mark.parametrize("rc", [-11, -6, -4, -7, -8, 0xC0000005, 0xC000001D])
     def test_program_faults_are_hard_crashes(self, rc):
@@ -508,9 +506,7 @@ class TestDropEnvQuantizedVCache:
 
 
 class TestNonProjectorDiagnostic:
-    """_output_has_nonprojector_diagnostic gates the signal-only text-only retry:
-    a hard crash that already names OOM / a bad arch / a TP limit must surface
-    that error, not be silently downgraded to a non-vision session."""
+    """A hard crash naming OOM, a bad arch or a TP limit must surface that error, not a text-only retry."""
 
     @pytest.mark.parametrize(
         "out",

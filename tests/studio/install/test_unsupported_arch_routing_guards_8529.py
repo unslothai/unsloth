@@ -60,9 +60,8 @@ _ROUTABLE_ARCHES = [("gfx1030", "gfx103X-all"), ("gfx1100", "gfx110X-all")]
 
 @pytest.fixture(autouse = True)
 def _no_index_mirror():
-    """Both resolvers honour a mirror override, and a host that has one set would
-    answer with its URL instead of repo.amd.com. Clear them so the assertions below
-    are about the arch tables and not about the environment running the suite."""
+    """Both resolvers honour a mirror override that would return its URL, not repo.amd.com; clear
+    UNSLOTH_AMD_ROCM_MIRROR and UNSLOTH_ROCM_WINDOWS_MIRROR so tests check arch tables only."""
     with patch.dict(os.environ, {}, clear = False):
         for _v in ("UNSLOTH_AMD_ROCM_MIRROR", "UNSLOTH_ROCM_WINDOWS_MIRROR"):
             os.environ.pop(_v, None)
@@ -165,9 +164,8 @@ class TestRdna1RoutesOnWindowsOnly:
 
 
 def _sh_function_body(source: str, name: str) -> str:
-    """Same extraction as test_rdna1_unsupported_message_8529.py: take the function
-    verbatim from the installer so the shell evaluates the shipped text, not a
-    Python re-implementation of it."""
+    """Same extraction as test_rdna1_unsupported_message_8529.py: take the function verbatim from
+    the installer so the shell evaluates the shipped text, not a Python copy."""
     needle = f"{name}() {{"
     start = source.find(needle)
     assert start != -1, f"{name}() not found"
@@ -328,9 +326,8 @@ class TestInstallShIndexSelectorRuns:
             ), f"{arch} reaches the per-arch handoff, which reroutes to repo.amd.com"
 
     def test_the_selector_still_reaches_its_amd_branch(self):
-        """Second positive control: on the same stubbed host with a readable ROCm
-        version the selector returns a ROCm index, which it can only do by running the
-        AMD branch the test above depends on."""
+        """Second positive control: with a readable ROCm version on the same stubbed host the
+        selector returns a ROCm index, which requires the AMD branch the tests above rely on."""
         url, _err = _run_sh_get_torch_index_url("gfx1030", rocm_tag = "rocm6.4")
         assert url.endswith("/rocm6.4"), f"the AMD branch was not reached: {url!r}"
 
@@ -734,9 +731,8 @@ class TestSetupShReportBlamesTheRightCard:
         ids = ["kfd-no-name", "generic-name", "vendor-only"],
     )
     def test_an_unmapped_market_name_still_reaches_the_lspci_scan(self, tmp_path, mkt):
-        """rocminfo can hand back a nonempty name that maps to nothing. Returning that
-        failure ended the lookup, so the lspci scan never ran and the report fell back to
-        the plain "AMD ROCm" line this change exists to replace."""
+        """rocminfo can return a nonempty name that maps to nothing; returning that failure ended
+        the lookup before the lspci scan, falling back to the plain AMD ROCm line."""
         assert _run_setup_report(tmp_path, [_RX_5700], mkt).startswith(
             "UNCOVERED"
         ), f"an unmapped market name ({mkt!r}) hides an uncovered card lspci can see"
@@ -768,9 +764,8 @@ class TestSetupShReportBlamesTheRightCard:
         ids = ["5700-first", "7900-first"],
     )
     def test_a_named_hit_is_guarded_by_the_peers_too(self, tmp_path, lines):
-        """amd-smi reports ONE market name, the first device's, so on a mixed host the
-        name itself is the uncovered card. Accepting it before the peer scan put the
-        false verdict back through the other door."""
+        """amd-smi reports ONE market name, the first device's, so on a mixed host that name may be
+        the uncovered card; accepting it before the peer scan reintroduces the false verdict."""
         verdict = _run_setup_report(tmp_path, lines, "AMD Radeon RX 5700 XT")
         assert verdict == "GENERIC", f"a named hit skipped the covered-peer guard: {verdict!r}"
 
@@ -941,11 +936,8 @@ def _ps_unsupported(path: Path, names):
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX shell only")
 @pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh on this host")
 def test_the_five_unsupported_tables_agree_on_every_name():
-    """Five hand-kept copies of one table is the standing risk in this area, and the
-    supported tables are already pinned to each other. The unsupported ones were not:
-    a row added to a single file (RX 540 -> gfx803 in one of the five) passed the whole
-    suite. Compare by EVALUATION, in each source's own language, so a copy that spells
-    the same rule differently still counts as agreeing."""
+    """Five hand-kept copies of the unsupported-arch table; compare by evaluation in each source's
+    language, so a row added to one copy is caught (RX 540 -> gfx803)."""
     names = _PARITY_NAMES
     answers = {
         "install_python_stack.py": _py_unsupported(names),

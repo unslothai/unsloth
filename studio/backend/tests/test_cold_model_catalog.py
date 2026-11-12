@@ -171,7 +171,7 @@ def test_local_gguf_listing_defers_the_device_probe_until_hardware_is_known(
     monkeypatch.setattr(
         diffusion_engine_router,
         "family_buildable_here",
-        lambda family, **kwargs: probed.append(family) or False,
+        lambda family, provisional = False, **kwargs: provisional or probed.append(family) or False,
     )
     classify = lambda: catalog_classification._arch_to_task(arch, ("model",))
     assert classify() == "text-to-image"

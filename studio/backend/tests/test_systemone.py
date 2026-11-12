@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import json
 import os
 import sys
 import threading
@@ -223,14 +224,14 @@ def test_question_without_instructions_is_asked_by_its_id(client, runtime, instr
 
 
 @pytest.mark.parametrize("instructions", [{}, [], {"prompt": "Refund?"}, ["Refund?"]])
-def test_structured_question_instructions_are_forwarded_unchanged(client, instructions):
+def test_structured_question_instructions_are_sent_as_json_text(client, instructions):
     response = _post(
         client,
         questions = {"refund": {"type": "noul", "instructions": instructions}},
     )
     assert response.status_code == 200, response.text
     _, questions = laya_runtime._agent.calls[-1]
-    assert questions["refund"]["instructions"] == instructions
+    assert questions["refund"]["instructions"] == json.dumps(instructions, ensure_ascii = False)
 
 
 def test_named_checkpoint_swaps_the_resident_model(client, runtime):
@@ -1393,6 +1394,7 @@ class WordTokenizer:
 
     def __init__(self):
         self.calls = []
+        self.texts = []
 
     def __call__(
         self,
@@ -1400,6 +1402,7 @@ class WordTokenizer:
         add_special_tokens = False,
     ):
         self.calls.append(len(text))
+        self.texts.append(text)
         return {"input_ids": [len(word) for word in text.split()]}
 
 
@@ -1497,6 +1500,13 @@ def test_choice_instructions_laya_would_cut_are_refused(
     message = response.json()["detail"]["message"]
     assert "'route'" in message and refusal in message
     assert "answers" not in response.json()
+
+
+@pytest.mark.parametrize("instructions", [{"ask": "これは緊急ですか"}, ["これは緊急ですか"]])
+def test_structured_instructions_reach_laya_as_written(client, word_laya, instructions):
+    question = {"type": "noul", "instructions": instructions}
+    assert _post(client, questions = {"urgent": question}).status_code == 200
+    assert any("これは緊急ですか" in text for text in word_laya.tok.texts)
 
 
 @pytest.mark.parametrize("words, cut", [(900, False), (901, True), (5000, True)])

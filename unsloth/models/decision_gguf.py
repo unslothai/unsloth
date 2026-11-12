@@ -604,9 +604,7 @@ def export_decision_gguf(
     source_folder = None,
     print_output = False,
 ) -> dict:
-    """Converts a merged decision checkpoint (Clef or Laya layout) to GGUF in output_dir
-    (default <checkpoint_folder>/gguf): model-<QUANT>.gguf, mmproj-<QUANT>.gguf for a Clef
-    vision tower, and export.json, written last. Returns export.json's content."""
+    """Writes model-<QUANT>.gguf (and mmproj for vision), then export.json last; returns its content."""
     with _exit_on_sigterm():
         return _export_decision_gguf(
             checkpoint_folder, quantization_method, output_dir, source_folder, print_output

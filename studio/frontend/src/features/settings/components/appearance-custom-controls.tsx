@@ -25,7 +25,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { useChatPreferencesStore } from "@/features/chat";
 import { Switch } from "@/components/ui/switch";
+import { useSliderDraft } from "@/hooks/use-slider-draft";
 import { NumericValueInput } from "@/features/model-picker/components/numeric-value-input";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -67,6 +69,10 @@ import {
   useTheme,
 } from "../stores/theme-store";
 import { COLOR_THEMES } from "../lib/color-themes";
+import {
+  GLASS_ELEMENT_OUTLINE,
+  useThemeElementOutline,
+} from "../lib/element-outline-default";
 import { ColorPickerSwatch } from "./color-picker";
 import { normalizeSizeInputDraft } from "./size-input-value";
 
@@ -959,24 +965,59 @@ export function ContrastSliderRow() {
   const t = useT();
   const contrast = useAppearanceCustomStore((s) => s.customization.contrast);
   const patch = useAppearanceCustomStore((s) => s.patch);
+  const { draft, sliderProps } = useSliderDraft(contrast, (value) => patch({ contrast: value }));
   return (
     <div className="flex w-64 items-center gap-3">
       <Slider
         className="contrast-slider"
-        value={[contrast]}
+        {...sliderProps}
         min={0}
         max={100}
         step={1}
-        onValueChange={(values: number[]) => patch({ contrast: values[0] })}
         aria-label={t("settings.appearance.custom.contrast.label")}
       />
       <NumericValueInput
-        value={contrast}
+        value={draft ?? contrast}
         min={0}
         max={100}
         step={1}
         onChange={(value) => patch({ contrast: value })}
         ariaLabel={t("settings.appearance.custom.contrast.label")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
+export function ElementOutlineSliderRow() {
+  const t = useT();
+  const { resolved } = useTheme();
+  const outline = useAppearanceCustomStore((s) => s.customization.elementOutline);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  // Unset starts at the theme's own strength, so the first drag does not jump.
+  const themeOutline = useThemeElementOutline(outline === null);
+  const value = outline ?? themeOutline ?? GLASS_ELEMENT_OUTLINE[resolved];
+  const set = (next: number) => patch({ elementOutline: next });
+  const label = t("settings.appearance.custom.elementOutline.label");
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={label}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={label}
         className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
         fixedWidth={true}
         size={4}
@@ -1009,6 +1050,35 @@ export function ComposerOutlineSliderRow() {
         step={1}
         onChange={set}
         ariaLabel={t("chatBackground.outline")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
+export function ComposerPositionSliderRow() {
+  const t = useT();
+  const value = useChatPreferencesStore((s) => s.newChatComposerPosition);
+  const set = useChatPreferencesStore((s) => s.setNewChatComposerPosition);
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={t("settings.chat.composerPosition")}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={t("settings.chat.composerPosition")}
         className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
         fixedWidth={true}
         size={4}

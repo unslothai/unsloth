@@ -32,6 +32,17 @@ export function betweenToolRounds(
   return false;
 }
 
+/** After a running reply's parts: 0 nothing, 1 assistant-ui's empty text part, 2 that and the next-round status. */
+export function runningReplyTail(
+  running: boolean,
+  content: readonly { type: string; result?: unknown }[],
+): 0 | 1 | 2 {
+  if (!running || content.length === 0) return 0;
+  const last = content[content.length - 1].type;
+  if (last === "text" || last === "reasoning") return 0;
+  return betweenToolRounds(running, content) ? 2 : 1;
+}
+
 export type GenerationProgressUpdate =
   | { phase: "prefill"; prefill: LivePrefillProgress }
   | { phase: "decode"; decode: LiveDecodeProgress }
@@ -91,8 +102,7 @@ export function readGenerationProgress(
   return null;
 }
 
-/** "9,216 / 23,700 tokens · 1,326 tok/s" for the Generation details setting, counted past the
- *  cached prefix like the percent. */
+/** Counted past the cached prefix, like the percent. */
 export function formatPrefillDetails(
   prefill: LivePrefillProgress,
   t: Translate,
