@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Imported chats can carry a system message (the chat importers preserve the
-// role; the backup importer deliberately downgrades it, see
-// studio-backup-import.ts). Every record<->ThreadMessage converter must keep
-// the role: loading must produce a system ThreadMessage, saving must write
-// the system role back, and the token-count reader must not recount it as an
-// assistant turn.
+// Chat importers keep system records (backup import downgrades them on purpose); every converter must too.
 
 import assert from "node:assert/strict";
 import test from "node:test";
