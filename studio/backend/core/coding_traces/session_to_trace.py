@@ -462,6 +462,8 @@ def _prune(chain: list[dict], warnings: list[TraceWarning]) -> list[dict]:
                 # An abandoned turn replays nothing, so this adds only the warnings it would get.
                 _convert([message], warnings)
             if (refused[index] or index < last) and kept and kept[-1].get("role") == "user":
+                if not refused[index]:
+                    _convert([kept[-1]], warnings)  # its prompt goes with it
                 kept.pop()
             continue
         # The UI never replays the reasoning of a stopped turn with no text and no calls.
