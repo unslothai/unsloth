@@ -2676,10 +2676,11 @@ def _sage_usable(
 
 
 # PyPI has only SageAttention 1 (diffusers refuses it), so sage uses the kernels-hub build.
-# Version 2 first: the version 1 builds diffusers asks for stop at torch 2.10.
+# Version 2 first (it also covers sm100), then 3; the model-type mirror's version 1 builds stop at torch 2.10.
 SAGE_HUB_BACKEND = "sage_hub"
 _SAGE_HUB_REPO = "kernels-community/sage-attention"
 _SAGE_HUB_VERSIONS = (2, 1)
+_SAGE_HUB_DIRECT_VERSIONS = (2, 3)
 _SAGE_HUB_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 _SAGE_HUB_LOCK = threading.Lock()
 # A failed fetch, remembered so the in-lock apply does not repeat it. Cleared by a restart, like _INSTALL_ATTEMPTED.
@@ -2718,10 +2719,17 @@ def _load_sage_hub_kernel() -> tuple[Any, str]:
         if _SAGE_HUB_FAILED:
             return None, _SAGE_HUB_FAILED[0]
         try:
+            # diffusers' sage_hub backend refuses to engage without an importable kernels.
             from kernels import get_kernel
         except Exception as exc:  # noqa: BLE001
             return None, f"the kernels package is not importable ({type(exc).__name__}: {exc})"
-        errors = []
+        # Studio's own loader first: the kernels release transformers < 5.13 imports next to (0.12.3) reads only
+        # the hub's model-type mirror, which has no build for current torch.
+        fn, direct_why = _load_sage_hub_direct()
+        if callable(fn):
+            config.kernel_fn = fn
+            return fn, ""
+        errors = [f"direct: {direct_why}"]
         versions = list(_SAGE_HUB_VERSIONS)
         default = getattr(config, "version", None)
         if isinstance(default, int) and default not in versions:
@@ -2738,6 +2746,11 @@ def _load_sage_hub_kernel() -> tuple[Any, str]:
             errors.append(f"version {ver}: no sageattn in the build")
         _SAGE_HUB_FAILED.append(f"no {_SAGE_HUB_REPO} build loads here ({'; '.join(errors)})")
         return None, _SAGE_HUB_FAILED[0]
+
+
+def _load_sage_hub_direct() -> tuple[Any, str]:
+    from .diffusion_sage_hub import load_sageattn
+    return load_sageattn(_SAGE_HUB_DIRECT_VERSIONS, repo = _SAGE_HUB_REPO)
 
 
 def _sage_hub_kernel_runs(
