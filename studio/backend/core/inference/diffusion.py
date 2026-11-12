@@ -4560,6 +4560,10 @@ class DiffusionBackend:
                 base_repo = nvfp4_gated_base(family_name)
             if not dense_quant_supported_kind(model_kind):
                 reason = dense_quant_unsupported_kind_reason(model_kind)
+            elif family_name == MINIMAX_H3_IMAGE_FAMILY_NAME and model_kind == "pipeline":
+                # Own loader, no torch.compile: the torchao gates below do not apply.
+                from .diffusion_minimax_h3_image import explicit_scheme_refusal
+                reason = explicit_scheme_refusal(pinned, target.device)
             elif getattr(fam, "denoiser_attr", "transformer") != "transformer":
                 # Refuse from the family table, before eviction and download.
                 reason = (
@@ -6331,6 +6335,91 @@ class DiffusionBackend:
         )
 
     @staticmethod
+    def _h3_image_te_plan_files(
+        text_encoder_quant: Optional[str],
+        hf_token: Optional[str],
+        failures_out: Optional[list] = None,
+    ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
+        """H3-Image encoder files (hosted int8 + H3 config, or H3 bf16), never the bundled copy."""
+        from huggingface_hub import HfApi
+
+        from .diffusion_minimax_h3_image import H3_IMAGE_TEXT_ENCODER_REPO, h3_image_te_scheme
+        from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
+
+        scheme = h3_image_te_scheme(text_encoder_quant)
+        if scheme:
+            wanted = {
+                "text_encoder": (
+                    h3_te_quant_source(scheme),
+                    lambda name: name == h3_te_quant_filename(scheme),
+                ),
+                "text_encoder_config": (
+                    H3_IMAGE_TEXT_ENCODER_REPO,
+                    lambda name: name == "text_encoder/config.json",
+                ),
+            }
+        else:
+            wanted = {
+                "text_encoder": (
+                    H3_IMAGE_TEXT_ENCODER_REPO,
+                    lambda name: name.startswith("text_encoder/"),
+                )
+            }
+        planned: dict[str, tuple[str, list[tuple[str, int]]]] = {}
+        for component, (repo, keep) in wanted.items():
+            try:
+                info = hub_reachability.model_info(
+                    HfApi(token = hf_token or None),
+                    repo,
+                    files_metadata = True,
+                    skip_when_unreachable = False,
+                )
+                files = [
+                    (s.rfilename, int(s.size))
+                    for s in getattr(info, "siblings", None) or ()
+                    if keep(s.rfilename) and getattr(s, "size", None) is not None
+                ]
+                if not files:
+                    raise FileNotFoundError(f"{repo} lists no MiniMax-H3-Image {component}")
+            except Exception as exc:  # noqa: BLE001 -- unlisted: the load fetches it inline
+                logger.warning("diffusion.h3_image_te_plan_failed: %s", exc)
+                if failures_out is not None:
+                    failures_out.append(exc)
+                files = []
+            planned[component] = (repo, files)
+        return planned
+
+    def _h3_image_planned_dit_scheme(
+        self,
+        fam: Any,
+        transformer_quant: Optional[str],
+        gpu_ordinal: Optional[int],
+        failures_out: Optional[list] = None,
+        text_encoder_quant: Optional[str] = None,
+    ) -> Optional[str]:
+        """Hosted DiT scheme the H3-Image load would take, or None for bf16 shards."""
+        try:
+            from .diffusion_minimax_h3_image import QUANT_SCHEMES, planned_dit_scheme
+            with diffusion_device_scope(gpu_ordinal):
+                target = self._target_for_ordinal(fam, gpu_ordinal)
+                scheme = planned_dit_scheme(
+                    transformer_quant,
+                    target.device,
+                    text_encoder_quant,
+                    reclaimable_host_gb = pipeline_host_mib(
+                        getattr(getattr(self, "_state", None), "pipe", None)
+                    )
+                    * 2**20
+                    / 1e9,
+                )
+            return scheme if scheme in QUANT_SCHEMES else None
+        except Exception as exc:  # noqa: BLE001 -- unplannable: stage the bf16 shards, as before
+            logger.warning("diffusion.h3_image_dit_plan_failed: %s", exc)
+            if failures_out is not None:
+                failures_out.append(exc)
+            return None
+
+    @staticmethod
     def _te_prequant_plan_files(
         fam: Any,
         text_encoder_quant: Optional[str],
@@ -7234,8 +7323,16 @@ class DiffusionBackend:
         te_quant_planned, _ = resolve_te_quant_request(
             "none" if te_bf16_auto else text_encoder_quant, getattr(fam, "te_quant_auto", None)
         )
+        h3_image = (
+            kind == "pipeline"
+            and getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME
+            and not Path(repo_id).expanduser().exists()
+        )
+        plan_failures: list = []
         te_files = (
-            {
+            self._h3_image_te_plan_files(text_encoder_quant, hf_token, plan_failures)
+            if h3_image
+            else {
                 c: v
                 for c, v in self._te_prequant_plan_files(
                     fam,
@@ -7258,7 +7355,15 @@ class DiffusionBackend:
         )
         # Settled before the listing: only a checkpoint that resolves on the Hub may drop the released shards.
         pipeline_planned = (
-            self._pipeline_planned_denoiser_scheme(
+            self._h3_image_planned_dit_scheme(
+                fam,
+                load_kwargs.get("transformer_quant"),
+                load_kwargs.get("gpu_ordinal"),
+                plan_failures,
+                text_encoder_quant,
+            )
+            if h3_image and allow_device_probe
+            else self._pipeline_planned_denoiser_scheme(
                 fam,
                 base = base,
                 kind = kind,
@@ -7276,8 +7381,6 @@ class DiffusionBackend:
             if allow_device_probe
             else None
         )
-        # Declared before the prequant lookup so a repo missing both artifacts marks the plan partial; the dense shards are already dropped.
-        plan_failures: list = []
         dit_prequant = (
             self._dit_prequant_plan_source(
                 fam,
@@ -11796,12 +11899,12 @@ class DiffusionBackend:
         from .diffusion_minimax_h3_image import (
             PLACE_RESIDENT,
             PLACE_SEQUENTIAL,
+            h3_image_te_scheme,
             load_minimax_h3_image_pipeline,
         )
 
         # Unset = Studio's hosted int8 encoder (the bf16 one is 66.7 GB); only an explicit dense ask keeps bf16.
-        requested_te = str(text_encoder_quant or "").strip().lower()
-        te_scheme = None if requested_te in ("none", "off", "bf16", "dense", "bfloat16") else "int8"
+        te_scheme = h3_image_te_scheme(text_encoder_quant)
         pipe = load_minimax_h3_image_pipeline(
             fetch_base,
             dtype = target.dtype,
@@ -16767,6 +16870,9 @@ def _explicit_pipeline_components(fam: Any) -> Optional[tuple[str, ...]]:
         return ANIMA_COMPONENTS
     if name in (KREA2_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME):
         return ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
+    if name == MINIMAX_H3_IMAGE_FAMILY_NAME:
+        # Encoder comes from download_plan's te_files, never the bundled text_encoder/.
+        return ("processor", "tokenizer", "transformer", "vae")
     if name == IDEOGRAM4_FAMILY_NAME:
         return (
             "scheduler",
