@@ -48,9 +48,7 @@ _BLEND_SHA = frozenset({"2b6df9fb4c3a9c96"})
 _STITCH_SHA = frozenset({"ae481626afa30528"})
 
 TILE_BATCH_MAX = 16
-# Fraction of free VRAM a tile batch may take.
 TILE_BATCH_FREE_FRACTION = 0.5
-# Fallback working set per tile for a decoder the estimate cannot read.
 TILE_BYTES_FALLBACK = 256 * 2**20
 
 # Replica counts raced on CUDA (concurrent replay can hang on ROCm: one replica there).
@@ -650,7 +648,6 @@ def canvas_decode(
                             race.graphs.drop()
                         arm, timed = 0, None
                     elif timed is not None:
-                        # Capture took host time: restart the clock.
                         timed[0].record()
             if arm:
                 if ready is None or ready[0] != arm:
@@ -698,9 +695,6 @@ def canvas_decode(
         if getattr(race, "medians", None):
             stats["graph_race_ms"] = {str(k): round(v, 3) for k, v in race.medians.items()}
     return canvas.out
-
-
-# ---- fp16 ViT decoder ------------------------------------------------------------------------------------------
 
 
 def half_decoder_ok(vae: Any) -> bool:

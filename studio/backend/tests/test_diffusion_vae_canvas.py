@@ -437,9 +437,6 @@ def test_global_cuda_graph_kill_switches_turn_tile_graphs_off(monkeypatch, env, 
     assert C._graph_arms(vae, cuda) == (), "the global switch wins over a forced tile setting"
 
 
-# ---- H3 video: the clip loop composites into the canvas ---------------------------------------------------------
-
-
 def _tiny_video_vae():
     diffusers = pytest.importorskip("diffusers")
     cls = getattr(diffusers, "AutoencoderKLMiniMaxH3", None)
