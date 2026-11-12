@@ -90,8 +90,7 @@ function getServerModalBlock(): boolean {
 
 function TooltipProvider({
   delayDuration = 0,
-  // Off by default so moving between neighbouring icons shows the hovered one's label at once;
-  // a tooltip holding a link passes `disableHoverableContent={false}` to stay open under the pointer.
+  // Off, so neighbouring icons switch labels at once; link tooltips pass `false` to stay hoverable.
   disableHoverableContent = true,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
