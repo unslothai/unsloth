@@ -32,32 +32,13 @@ def _module(name, **attrs):
     return module
 
 
-@pytest.mark.parametrize(
-    "spelling, expected",
-    [
-        ("unsloth", "unsloth"),
-        ("Unsloth", "unsloth"),
-        ("", "unsloth"),
-        ("true", True),
-        ("True", True),
-        ("1", True),
-        ("yes", True),
-        ("false", False),
-        ("False", False),
-        ("0", False),
-        ("no", False),
-        ("none", False),
-        ("off", False),
-    ],
-)
-def test_gradient_checkpointing_reaches_get_peft_model_as_a_supported_value(
-    monkeypatch, spelling, expected
-):
+def _setup(monkeypatch, spelling):
     seen = {}
 
     class FastLanguageModel:
         @staticmethod
         def from_pretrained(**kwargs):
+            seen["loaded"] = True
             return object(), types.SimpleNamespace(eos_token = "</s>")
 
         @staticmethod
@@ -83,7 +64,6 @@ def test_gradient_checkpointing_reaches_get_peft_model_as_a_supported_value(
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 
-    legacy_cli = _load_legacy_cli()
     args = types.SimpleNamespace(
         model_name = "unsloth/llama-3-8b",
         max_seq_length = 2048,
@@ -99,7 +79,40 @@ def test_gradient_checkpointing_reaches_get_peft_model_as_a_supported_value(
         use_rslora = False,
         loftq_config = None,
     )
+    return _load_legacy_cli(), args, seen
+
+
+@pytest.mark.parametrize(
+    "spelling, expected",
+    [
+        ("unsloth", "unsloth"),
+        ("Unsloth", "unsloth"),
+        ("", "unsloth"),
+        ("mlx", "unsloth"),
+        ("true", True),
+        ("True", True),
+        ("1", True),
+        ("yes", True),
+        ("false", False),
+        ("False", False),
+        ("0", False),
+        ("no", False),
+        ("none", False),
+        ("off", False),
+    ],
+)
+def test_gradient_checkpointing_reaches_get_peft_model_as_a_supported_value(
+    monkeypatch, spelling, expected
+):
+    legacy_cli, args, seen = _setup(monkeypatch, spelling)
     with pytest.raises(_Stop):
         legacy_cli.run(args)
     got = seen["use_gradient_checkpointing"]
     assert type(got) is type(expected) and got == expected
+
+
+def test_unknown_gradient_checkpointing_fails_before_the_model_loads(monkeypatch):
+    legacy_cli, args, seen = _setup(monkeypatch, "flase")
+    with pytest.raises(ValueError, match = "unsloth, true or false"):
+        legacy_cli.run(args)
+    assert "loaded" not in seen

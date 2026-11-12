@@ -33,16 +33,17 @@ def _normalize_dtype(dtype):
 
 
 def _normalize_gradient_checkpointing(value):
-    # The flag is a string, but get_peft_model only takes True, False or "unsloth".
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in {"", "unsloth"}:
-            return "unsloth"
-        if text in {"true", "1", "yes"}:
-            return True
-        if text in {"false", "0", "no", "none", "off"}:
-            return False
-    return value
+    # get_peft_model asserts the value is True, False or "unsloth"; checked before the model loads.
+    text = str(value).strip().lower()
+    if text in {"", "unsloth", "mlx"}:
+        return "unsloth"
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no", "none", "off"}:
+        return False
+    raise ValueError(
+        f"Unsloth: --use_gradient_checkpointing must be unsloth, true or false, got {value!r}."
+    )
 
 
 def _prepare_device_map(is_mlx):
@@ -225,6 +226,7 @@ def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
 
 
 def run(args):
+    use_gradient_checkpointing = _normalize_gradient_checkpointing(args.use_gradient_checkpointing)
     import unsloth
     from unsloth import FastLanguageModel
     from datasets import load_dataset
@@ -266,9 +268,7 @@ def run(args):
         lora_alpha = args.lora_alpha,
         lora_dropout = args.lora_dropout,
         bias = args.bias,
-        use_gradient_checkpointing = _normalize_gradient_checkpointing(
-            args.use_gradient_checkpointing
-        ),
+        use_gradient_checkpointing = use_gradient_checkpointing,
         random_state = args.random_state,
         use_rslora = args.use_rslora,
         loftq_config = args.loftq_config,
