@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 import routes.inference as ri
@@ -592,6 +593,38 @@ def test_an_ollama_connection_compacts_to_the_window_ollama_loaded():
     assert _fits(sent, 4_096)
     [truncation] = _truncations(chunks)
     assert truncation["fits"] is True
+
+
+def test_a_message_larger_than_the_window_ollama_loaded_is_refused():
+    with pytest.raises(HTTPException) as refused:
+        _proxy(
+            "ollama",
+            [{"role": "user", "content": "word " * 8_000 + "What is the code?"}],
+            handler = _ollama(),
+            model = "qwen3:1.7b",
+            context_overflow = "truncate_oldest",
+            compaction_threshold = 30_720,
+            context_window = 40_960,
+        )
+    assert refused.value.status_code == 400
+    error = refused.value.detail["error"]
+    assert error["code"] == "context_length_exceeded"
+    assert error["message"].startswith("Message too long:")
+    assert "4096-token context window" in error["message"]
+
+
+def test_a_message_within_the_window_ollama_loaded_is_still_sent():
+    message = "word " * 3_000 + "What is the code?"
+    _, sent = _proxy(
+        "ollama",
+        [{"role": "user", "content": message}],
+        handler = _ollama(),
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert sent["messages"][-1]["content"] == message
 
 
 def test_an_ollama_window_above_the_catalogued_one_does_not_raise_it():

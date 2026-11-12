@@ -29898,6 +29898,21 @@ async def _proxy_to_external_provider(
             payload,
             tools = _external_fit_tools,
         )
+        _window = payload.context_window
+        # Ollama cuts an oversized prompt without an error instead of refusing it.
+        if (
+            provider_type == "ollama"
+            and _window
+            and _external_truncation
+            and not _external_truncation.get("fits")
+            and _external_truncation["irreducible_tokens"] >= _window
+        ):
+            context_refusal.record_fit({**_external_truncation, "context_length": _window})
+            raise _context_budget_http_error(
+                context_refusal.ContextBudgetExceeded(
+                    _external_truncation["irreducible_tokens"], _window
+                )
+            )
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
 
     cancel_event = threading.Event()
