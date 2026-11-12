@@ -8508,6 +8508,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
+        npu_context_fit = None,
         speaks = False,
         mlx_kv_quant = None,
         mlx_kv_quant_requested = None,
