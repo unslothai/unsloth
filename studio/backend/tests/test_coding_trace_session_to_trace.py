@@ -364,6 +364,9 @@ def test_abandoned_turn_warns_for_each_dropped_call():
     assert _codes(trace) == [*codes, "unsupported_part"]
     assert [w.message_id for w in trace.warnings[:4]] == ["a", "a", "a", "a"]
     assert "'a-0'" in trace.warnings[0].message
+    # A stopped turn shown as its label warns for the call the label replaces.
+    stopped = _turn({"incomplete": {"reason": "length"}}, [_call("k", result = None)])
+    assert _codes(stopped) == ["unanswered_tool_call_dropped"]
     # A refused turn is dropped whole, with no warning for its calls.
     assert _codes(_turn({"anthropicRefusal": True}, [_call("k", result = None)])) == []
 

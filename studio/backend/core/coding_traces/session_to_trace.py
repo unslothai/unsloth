@@ -443,7 +443,7 @@ def _prune(chain: list[dict], warnings: list[TraceWarning]) -> list[dict]:
     """Drop refused and abandoned turns as pruneOutboundHistory (chat-adapter.ts) does, and give an
     empty stopped turn its label, as fillStoppedAssistantReplay does. An unsettled run's row gets no
     "Response interrupted" label: the UI asks the server if the run is live, and rows lack that.
-    Each part an abandoned turn drops gets the warning it would get in a kept turn."""
+    Each part an abandoned or labelled turn drops gets the warning it would get in a kept turn."""
 
     meta = [_as_dict(m.get("metadata")) for m in chain]  # runtime-provider.tsx: metadata.custom
     assistant = [m.get("role") != "user" for m in chain]
@@ -467,6 +467,7 @@ def _prune(chain: list[dict], warnings: list[TraceWarning]) -> list[dict]:
         # The UI never replays the reasoning of a stopped turn with no text and no calls.
         if assistant[index] and stopped[index] and not _replayed(message, reasoning = False):
             label = _STOP_LABELS[reasons[index]]
+            _convert([message], warnings)  # the label replaces parts that would warn if kept
             message = {**message, "content": [{"type": "text", "text": label}], "attachments": []}
         kept.append(message)
     return kept
