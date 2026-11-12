@@ -1,18 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""fast_linear_forward with a LoRA adapter at decode (q_len 1) hands back the caller's `out` tensor,
-strides intact. The MLP decode writes down_proj into a strided buffer (temp_up[..., :hd]); a [bsz, 1, N]
-re-view of it got the stride N for its size-1 dim, so torch.matmul on the next layer's input (norms
-write in place into it) and on the LM head could not fold to one mm and ran bmm over the weight
-expanded to the batch (Llama 1B LoRA, A100, CUDA graphs: 33.4 ms per step at batch 64, 6.4 without
-LoRA)."""
+"""LoRA decode returns the caller's strided `out` as is, so torch.matmul on it still folds to one mm."""
 
 import pytest
 import torch
 
 if not torch.cuda.is_available():
-    pytest.skip("needs a CUDA GPU", allow_module_level = True)
+    pytest.skip(
+        reason = "real bnb 4-bit / CUDA decode path: needs a CUDA GPU", allow_module_level = True
+    )
 peft = pytest.importorskip("peft")
 bnb = pytest.importorskip("bitsandbytes")
 
@@ -59,6 +56,6 @@ def test_lora_decode_returns_out_with_its_strides(load_in_4bit, bsz):
         y = fast_linear_forward(proj, X, out = out)
         ref = proj(X)
     assert y.data_ptr() == out.data_ptr() and y.shape == out.shape and y.stride() == out.stride()
-    # The precondition torch.matmul checks before folding a 3-D input into one mm.
+    # torch.matmul's fold precondition for a 3-D input.
     assert y.stride(0) == y.stride(1) * y.shape[1]
     torch.testing.assert_close(y.float(), ref.float(), rtol = 2e-2, atol = 2e-2)

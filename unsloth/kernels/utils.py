@@ -1854,12 +1854,8 @@ def fast_linear_forward(
         else:
             A, B = _fast_lora_weights(lora_A, lora_B, dtype)
 
-        # The update goes in place through a 1-D / 2-D view and the caller gets `out` itself back. A
-        # [bsz, 1, N] view re-made from the 2-D one gets the stride N for its size-1 dim, which differs
-        # from the row stride of a strided decode buffer (the MLP writes down_proj into temp_up[..., :hd]);
-        # the next layer's norm writes in place into that tensor, so every later torch.matmul on it (the
-        # next projections, the LM head) could not fold to one mm and ran a batched bmm over the weight
-        # expanded to the batch: +27 ms per step at batch 64 on Llama 1B LoRA (A100, CUDA graphs).
+        # Update through a 1-D / 2-D view but return `out` itself: a re-view of a strided buffer
+        # (down_proj writes into temp_up[..., :hd]) breaks torch.matmul's fold to one mm downstream.
         if bsz == 1:
             temp_lora = torch_mv(A, X.ravel(), out = temp_lora)
             # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
@@ -1871,7 +1867,7 @@ def fast_linear_forward(
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
             res = out.view(bsz, out_dim).addmm_(temp_lora, B.t(), alpha = lora_S)
-        # A subclass adapter makes the in-place method return its type (#16249): keep it on `out`'s strides.
+        # A subclass operand makes the in-place method return its type (#16249).
         if type(res) is not type(out):
             out = out.as_subclass(type(res))
 
