@@ -327,7 +327,6 @@ def test_text_column_wins_over_conversations():
 
 
 def test_text_column_wins_over_messages():
-    # sft_prepare_dataset trains on dataset_text_field ("text") whenever the column exists.
     rows = [{"messages": _chat("hi", "hello")["messages"], "text": LONG}]
     report = check_dataset(rows, _tokenizer(), max_seq_length = 8)
     assert report["lengths"] == _lengths([{"text": LONG}], _tokenizer())
