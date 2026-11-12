@@ -3004,8 +3004,8 @@ export function ComposerModelPicker({
             ) : null}
             {soleQuant ? <QuantPill quant={soleQuant} /> : null}
             {row.kind === "hub" ? (
-              // The warning hugs its chip, about 6px of ink apart.
-              <span className="flex shrink-0 items-center gap-[calc(5px*var(--ui-space-scale,1))]">
+              // The warning hugs its chip, about 6px of ink apart, and sits as close to a long name.
+              <span className="-ml-[calc(2.75px*var(--ui-space-scale,1))] flex shrink-0 items-center gap-[calc(5px*var(--ui-space-scale,1))]">
                 {offering ? (
                   <FitBadge
                     status={fit}
