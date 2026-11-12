@@ -739,6 +739,17 @@ class LemonadeNpuBackend:
                 replaced = True
                 self._loaded = None
                 self._raise_if_load_cancelled(model_id)
+                # lemond answers a load of the model it holds with the same options without
+                # restarting FastFlowLM, so a Reload model would leave the old process serving.
+                if self._resident_context(server, model.id) is not None:
+                    response = server.request(
+                        "POST", "/v1/unload", json_body = {"model_name": model.id}, timeout = 60.0
+                    )
+                    if _failed(response):
+                        raise NpuError(
+                            f"Reloading {model.id} failed: {_error_message(response)}"
+                        )
+                    self._raise_if_load_cancelled(model_id)
                 # Held to the context this load resolved, which only the load knows under Auto.
                 flm_args = clamp_prefill_chunk(flm_args, ctx)
                 json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False}

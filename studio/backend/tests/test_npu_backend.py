@@ -1001,3 +1001,25 @@ def test_model_id_from_path_rejects_non_ids(path):
 def test_other_model_paths_are_not_npu():
     assert not nb.is_npu_model_path("unsloth/Qwen3-0.6B-GGUF")
     assert not nb.is_npu_model_path(None)
+
+
+def test_reloading_the_resident_model_restarts_it_in_lemond(npu):
+    # lemond treats a load of what it already holds as done, so Reload model must unload first.
+    npu.enable()
+    list(npu.download("qwen3-0.6b-FLM"))
+    npu.load("qwen3-0.6b-FLM")
+    assert not [r for r in _requests(npu) if r["path"] == "/v1/unload"]
+    npu.load("qwen3-0.6b-FLM")
+    paths = [r["path"] for r in _requests(npu) if r["path"] in ("/v1/load", "/v1/unload")]
+    assert paths == ["/v1/load", "/v1/unload", "/v1/load"]
+    assert npu.is_loaded
+
+
+def test_a_failed_reload_unload_leaves_nothing_recorded(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_LEMOND_UNLOAD_FAILS", "1")
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
+    npu.enable()
+    npu.load("qwen3-0.6b-FLM")
+    with pytest.raises(nb.NpuError, match = "Reloading qwen3-0.6b-FLM failed"):
+        npu.load("qwen3-0.6b-FLM")
+    assert not npu.is_loaded
