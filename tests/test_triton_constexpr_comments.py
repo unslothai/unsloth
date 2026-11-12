@@ -13,7 +13,6 @@ import tokenize
 ROOT = pathlib.Path(__file__).resolve().parents[1] / "unsloth"
 SKIP_DIRS = {"_vendor", "__pycache__"}
 KERNEL_DECORATORS = {"jit", "autotune", "heuristics"}
-# Names that only ever mean a per-call size in this codebase.
 PER_CALL_NAMES = {
     "M",
     "T",
