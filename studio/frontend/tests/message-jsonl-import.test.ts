@@ -913,3 +913,14 @@ test("a name-only result ahead of its calls keeps arrival order", () => {
 
   assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
 });
+
+test("an anonymous result ahead of its calls keeps arrival order", () => {
+  const [conversation] = parseImportText(
+    '{"role":"tool","content":"A"}\n' +
+      '{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"g","arguments":"{}"}}]}\n' +
+      '{"role":"tool","content":"B"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
+});

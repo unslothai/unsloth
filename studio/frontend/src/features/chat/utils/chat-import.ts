@@ -140,31 +140,30 @@ function oaiMessagesToRecords(
   threadId: string,
   baseTs: number,
 ): MessageRecord[] {
-  type Stashed = { id?: string; name?: string; result: string; used?: boolean };
-  const stashedResults: Stashed[] = [];
-  // Indexed buckets with a cursor past the used prefix keep out-of-order imports linear.
-  type Bucket = { items: Stashed[]; start: number };
-  const stashedBy = { id: new Map<string, Bucket>(), name: new Map<string, Bucket>() };
-  const stash = (entry: Stashed) => {
-    stashedResults.push(entry);
-    for (const [map, key] of [[stashedBy.id, entry.id], [stashedBy.name, entry.name]] as const) {
-      if (key === undefined) continue;
-      const bucket = map.get(key);
+  // Waiting results, bucketed so every lookup is a cursor step (out-of-order imports stay linear):
+  // id:<id>, name:<name> (any named), bare:<name> (named, no id), anon (neither).
+  type Stashed = { result: string; used?: boolean };
+  const buckets = new Map<string, { items: Stashed[]; start: number }>();
+  const stash = (result: string, id?: string, name?: string) => {
+    const entry: Stashed = { result };
+    const keys =
+      id === undefined && name === undefined
+        ? ["anon"]
+        : [id !== undefined && `id:${id}`, name !== undefined && `name:${name}`, id === undefined && `bare:${name}`];
+    for (const key of keys) {
+      if (!key) continue;
+      const bucket = buckets.get(key);
       if (bucket) bucket.items.push(entry);
-      else map.set(key, { items: [entry], start: 0 });
+      else buckets.set(key, { items: [entry], start: 0 });
     }
   };
-  const takeStashed = (map: Map<string, Bucket>, key: string, ok: (e: Stashed) => boolean = () => true) => {
-    const bucket = map.get(key);
+  const take = (key: string) => {
+    const bucket = buckets.get(key);
     if (!bucket) return undefined;
     while (bucket.start < bucket.items.length && bucket.items[bucket.start].used) bucket.start++;
-    for (let at = bucket.start; at < bucket.items.length; at++) {
-      const entry = bucket.items[at];
-      if (entry.used || !ok(entry)) continue;
-      entry.used = true;
-      return entry.result;
-    }
-    return undefined;
+    const entry = bucket.items[bucket.start];
+    if (entry) entry.used = true;
+    return entry?.result;
   };
   const pending: Array<{
     turn: number;
@@ -209,7 +208,7 @@ function oaiMessagesToRecords(
           : nameKey !== undefined
             ? bindResult((entry) => entry.part.toolName === nameKey, result)
             : bindResult(() => true, result);
-      if (!bound) stash({ id: idKey, name: nameKey, result });
+      if (!bound) stash(result, idKey, nameKey);
       continue;
     }
 
@@ -238,11 +237,12 @@ function oaiMessagesToRecords(
           argsText: argsStr,
         };
         parts.push(part);
-        // A result seen before its call (by id, else by name when it has no id) binds now,
+        // A result seen before its call binds now (id, else id-less name, else anonymous),
         // in arrival order, before later fallback matches.
         const early =
-          (typeof callId === "string" ? takeStashed(stashedBy.id, callId) : undefined) ??
-          takeStashed(stashedBy.name, part.toolName, ({ id }) => id === undefined);
+          (typeof callId === "string" ? take(`id:${callId}`) : undefined) ??
+          take(`bare:${part.toolName}`) ??
+          take("anon");
         if (early !== undefined) part.result = early;
         else pending.push({ turn: idx, part, hasExplicitId: typeof callId === "string" });
       };
@@ -305,23 +305,10 @@ function oaiMessagesToRecords(
     idx++;
   }
 
+  // A keyed result binds by name only to a call without its own id; keyed leftovers drop.
   for (const { part, hasExplicitId } of pending) {
     if (part.result !== undefined) continue;
-    part.result = takeStashed(
-      stashedBy.name,
-      part.toolName,
-      ({ id }) => id === undefined || !hasExplicitId,
-    );
-  }
-  // Keyed leftovers belong to calls that never appeared, so they drop rather than mislabel.
-  const anonymous = stashedResults.filter(
-    ({ id, name, used }) => !used && id === undefined && name === undefined,
-  );
-  let next = 0;
-  for (const { part } of pending) {
-    if (part.result === undefined && next < anonymous.length) {
-      part.result = anonymous[next++].result;
-    }
+    part.result = take(`${hasExplicitId ? "bare" : "name"}:${part.toolName}`);
   }
 
   return records;
