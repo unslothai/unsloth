@@ -1285,6 +1285,34 @@ def test_the_conditioning_cache_keys_on_the_reference_pixels(h3i, release, monke
     assert len(seen) == 2
 
 
+def test_a_repeated_reference_samples_the_cached_posterior_bitwise(h3i, release, monkeypatch):
+    """Same picture, new seed / prompt: the VAE encoder runs once and the latents match a cache-off render bit for
+    bit (only the sample draws from the generator)."""
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    if p.processor is None:
+        pytest.skip("tiny release has no processor")
+    calls = []
+    real = p.vae.encode
+    monkeypatch.setattr(p.vae, "encode", lambda *a, **k: calls.append(1) or real(*a, **k))
+    pic = Image.fromarray((np.random.RandomState(3).rand(128, 160, 3) * 255).astype("uint8"))
+    first = _latents(p, "<Picture 1> at night", 1, image = [pic])
+    second = _latents(p, "<Picture 1> at dawn", 2, image = [pic.copy()])
+    assert len(calls) == 1 and p._unsloth_h3_last_stats["reference_cached"] == 1
+    _latents(p, "<Picture 1> at dawn", 2, image = [pic.transpose(Image.FLIP_LEFT_RIGHT)])
+    assert len(calls) == 2 and p._unsloth_h3_last_stats["reference_cached"] == 0
+    monkeypatch.setenv(h3i.REF_CACHE_ENV, "0")
+    assert torch.equal(_latents(p, "<Picture 1> at night", 1, image = [pic]), first)
+    assert torch.equal(_latents(p, "<Picture 1> at dawn", 2, image = [pic]), second)
+    assert len(calls) == 4
+    p.release()
+    assert not p._unsloth_h3_ref_posteriors
+
+
 def test_every_backend_loader_installs_the_prompt_cache():
     """Each DiffusionBackend method that commits a load (builds a _LoadState) installs the conditioning cache."""
     import ast

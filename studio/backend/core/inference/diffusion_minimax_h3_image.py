@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import functools
 import gc
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -27,6 +28,7 @@ import os
 import sys
 import time
 import types
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
@@ -125,6 +127,15 @@ VRAM_BUDGET_ENV = "UNSLOTH_H3_IMAGE_VRAM_GB"
 HOST_BUDGET_ENV = "UNSLOTH_H3_IMAGE_HOST_GB"
 # "0": stream from pageable memory (ModuleListStreamer) instead of the pinned prefetch streamer
 PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
+# "0": run every reference through the VAE encoder on every render (no posterior cache)
+REF_CACHE_ENV = "UNSLOTH_H3_IMAGE_REF_CACHE"
+# Posteriors kept per pipeline (a 2720x1536 reference is about 3 MB of mean / log-variance on the device)
+REF_CACHE_ENTRIES = 8
+
+
+def ref_cache_enabled() -> bool:
+    return (os.environ.get(REF_CACHE_ENV) or "1").strip().lower() not in ("0", "off", "false", "no")
+
 
 QUANT_SCHEMES = ("int8", "fp8")
 # ConvRot group: the one the H3 video denoiser and its hosted encoder use (divides 5376, 7168 and 14336).
@@ -1104,6 +1115,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         self._unsloth_h3_te_loader: Optional[Callable[[], Any]] = None
         self._unsloth_h3_streamers: list = []
         self._unsloth_h3_last_stats: dict = {}
+        # reference posteriors by image content: an edit re-run on the same picture samples the cached
+        # distribution with its own generator instead of encoding the picture again
+        self._unsloth_h3_ref_posteriors: "OrderedDict[tuple, Any]" = OrderedDict()
+        self._unsloth_h3_ref_stats: dict = {"hits": 0, "misses": 0}
 
     @property
     def interrupt(self) -> bool:
@@ -1162,6 +1177,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             streamer._host.clear()
         self._unsloth_h3_streamers.clear()
         self._unsloth_h3_te_loader = None
+        self.__dict__.get("_unsloth_h3_ref_posteriors", OrderedDict()).clear()
         owned = getattr(self, "_unsloth_h3_owned", ())
         for name in ("transformer", "text_encoder", "vae"):
             module = getattr(self, name, None)
@@ -1185,7 +1201,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         vision_images: Optional[list] = None,
     ) -> tuple:
         """(prompt_embeds, per-row text tags). Named like diffusers' encoder entry point so ``diffusion_prompt_cache``
-        wraps it; VAE reference latents are never cached (seeded sample)."""
+        wraps it; the VAE reference latents are sampled per render from a cached posterior (``_encode_references``)."""
         import torch
 
         tokenizer = self.tokenizer
@@ -1262,10 +1278,27 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             out = []
             r = H3_IMAGE_VAE_SCALE
             for image in images:
-                pixels = torch.from_numpy(np.array(image)).to(device).permute(2, 0, 1)[None]
-                pixels = pixels[..., : pixels.shape[-2] // r * r, : pixels.shape[-1] // r * r]
-                pixels = (pixels.to(torch.float32).div(255.0) - mean) / std
-                posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                array = np.array(image)
+                key = None
+                if ref_cache_enabled():
+                    digest = hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
+                    key = (id(vae), str(vae_dtype), str(device), tuple(array.shape), digest)
+                cache = self.__dict__.setdefault("_unsloth_h3_ref_posteriors", OrderedDict())
+                stats = self.__dict__.setdefault("_unsloth_h3_ref_stats", {"hits": 0, "misses": 0})
+                posterior = cache.get(key) if key is not None else None
+                if posterior is not None:
+                    cache.move_to_end(key)
+                    stats["hits"] += 1
+                else:
+                    pixels = torch.from_numpy(array).to(device).permute(2, 0, 1)[None]
+                    pixels = pixels[..., : pixels.shape[-2] // r * r, : pixels.shape[-1] // r * r]
+                    pixels = (pixels.to(torch.float32).div(255.0) - mean) / std
+                    posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                    if key is not None:
+                        stats["misses"] += 1
+                        cache[key] = posterior
+                        while len(cache) > REF_CACHE_ENTRIES:
+                            cache.popitem(last = False)
                 latents = posterior.sample(generator = generator).to(torch.float16).float()
                 latents = latents[..., : latents.shape[-2] // 2 * 2, : latents.shape[-1] // 2 * 2]
                 out.append((latents - lmean) / lstd)
@@ -1409,7 +1442,12 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         else:
             noise = latents.to(device, torch.float32).reshape(shape)
         target_rows = patchify(noise, patch)
+        ref_hits = int(self.__dict__.get("_unsloth_h3_ref_stats", {}).get("hits", 0))
         reference_latents = self._encode_references(vae_refs, generator) if vae_refs else []
+        if vae_refs:
+            stats["reference_cached"] = (
+                int(self.__dict__.get("_unsloth_h3_ref_stats", {}).get("hits", 0)) - ref_hits
+            )
         grids = [tuple(r.shape[-2:]) for r in reference_latents]
         pos, tags, image_idx, text_idx, n_ref = build_packed_layout(text_tags, grids, lh, lw, patch)
         if reference_latents:
