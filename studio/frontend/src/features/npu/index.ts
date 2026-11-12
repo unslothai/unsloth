@@ -5,11 +5,16 @@ export {
   isNpuModelId,
   NPU_DEFAULT_CONTEXT_LENGTH,
   NPU_MODEL_PREFIX,
+  type NpuLocalModel,
   type NpuModel,
   type NpuStatus,
+  npuDeleteDescription,
   npuDownloadLabel,
   npuResumeLabel,
+  npuRowDetails,
+  npuRowLabel,
   npuRowsFor,
+  npuRowTooltip,
   npuSizeLabel,
 } from "./api";
 export { NpuRuntimeVersions, NpuSetupNotice } from "./npu-setup-notice";

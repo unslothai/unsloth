@@ -58,6 +58,17 @@ export interface NpuModel {
   supports_tools: boolean;
   max_context_length: number | null;
   resume_percent: number | null;
+  /** A Q4NX folder converted on the Export page; absent from servers that predate them. */
+  local?: NpuLocalModel | null;
+}
+
+export interface NpuLocalModel {
+  /** Path under the account's exports folder. */
+  folder: string;
+  /** FastFlowLM catalog tag whose NPU kernels run it. */
+  base: string | null;
+  /** Why it cannot load, e.g. a missing tokenizer file. */
+  problem: string | null;
 }
 
 export function npuRowsFor(
@@ -75,7 +86,9 @@ export function npuRowsFor(
     (model) =>
       (!onDevice || model.downloaded) &&
       (!needle ||
-        `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
+        `${model.id} ${model.checkpoint} ${model.local?.folder ?? ""}`
+          .toLowerCase()
+          .includes(needle)),
   );
 }
 
@@ -104,6 +117,33 @@ export function npuResumeLabel(model: NpuModel): string | null {
   return model.resume_percent == null
     ? null
     : `${model.resume_percent}% downloaded`;
+}
+
+export function npuRowLabel(model: NpuModel): string {
+  return model.local ? model.local.folder.split("/").pop() || model.id : model.id;
+}
+
+export function npuRowDetails(model: NpuModel): string[] {
+  return [
+    "NPU",
+    model.local ? "Converted" : null,
+    npuSizeLabel(model.size_gb),
+    npuResumeLabel(model),
+  ].filter((part): part is string => Boolean(part));
+}
+
+export function npuRowTooltip(model: NpuModel): string | null {
+  if (!model.local) return null;
+  const { folder, problem } = model.local;
+  return problem
+    ? `Can't load ${folder}: ${problem}`
+    : `Converted in Unsloth Studio, from exports/${folder}`;
+}
+
+export function npuDeleteDescription(model: NpuModel): string {
+  return model.local
+    ? "This removes the model from the NPU list. Your exported folder stays on disk."
+    : "This removes the model's NPU files from this device.";
 }
 
 export function npuDownloadLabel(

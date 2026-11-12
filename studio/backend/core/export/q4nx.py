@@ -28,6 +28,9 @@ TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jin
 # No config.json is written: without FLM's flm_version, FLM deletes the weights and re-pulls.
 CONFIG_FILES = ("config.json", "generation_config.json")
 CONVERTER_MODULES = ("torch", "gguf", "einops", "safetensors", "numpy", "mpmath")
+# The source GGUF's architecture and geometry, which the NPU picker matches to FastFlowLM kernels.
+SOURCE_FILE = "q4nx_source.json"
+_GEOMETRY_KEYS = frozenset({"block_count", "embedding_length", "expert_count", "nextn_predict_layers"})
 
 
 def _installer():
@@ -92,7 +95,7 @@ def staged_output(out_dir: Path):
         refuse_symlink()
         # The last model's companions must not survive beside the new weights (REAP's report
         # included: a pruned conversion stages a fresh one).
-        for name in ("model.q4nx", "config.json", "reap_report.json", *TOKENIZER_FILES):
+        for name in ("model.q4nx", "config.json", "reap_report.json", SOURCE_FILE, *TOKENIZER_FILES):
             (out_dir / name).unlink(missing_ok = True)
         for path in staging.iterdir():
             os.replace(path, out_dir / path.name)
@@ -100,12 +103,21 @@ def staged_output(out_dir: Path):
         shutil.rmtree(staging, ignore_errors = True)
 
 
+def write_source_record(gguf_path: str, out_dir: Path, architecture: str) -> None:
+    from utils.models.gguf_metadata import _parse_gguf_arch_uints
+
+    geometry = _parse_gguf_arch_uints(gguf_path, _GEOMETRY_KEYS) or {}
+    record = {"architecture": architecture, "gguf": os.path.basename(gguf_path), **geometry}
+    (out_dir / SOURCE_FILE).write_text(json.dumps(record, indent = 2) + "\n", encoding = "utf-8")
+
+
 def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     from utils.paths.storage_roots import studio_root
 
     require_converter_deps()
     installer = _installer()
-    name = installer.converter_for_architecture(_gguf_architecture(gguf_path))
+    architecture = _gguf_architecture(gguf_path)
+    name = installer.converter_for_architecture(architecture)
     script = installer.install(studio_root() / "q4nx_converter", name = name)
     out_dir.mkdir(parents = True, exist_ok = True)
     logger.info(
@@ -138,6 +150,7 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
         )
     if not (out_dir / "model.q4nx").is_file():
         raise RuntimeError(f"The Q4NX converter wrote no model.q4nx to {out_dir}")
+    write_source_record(gguf_path, out_dir, architecture)
 
 
 def _fetch_base_file(base_model: str, name: str, token) -> Optional[Path]:

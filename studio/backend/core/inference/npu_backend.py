@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 import sys
 import threading
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from core.inference import npu_local_models as local_q4nx
 from core.inference.flm_files import (
     FlmDownloadError,
     FlmModelFiles,
@@ -82,6 +84,8 @@ class NpuModel:
     labels: tuple[str, ...]
     max_context_length: Optional[int]
     resume_percent: Optional[int] = None
+    # Set on a Q4NX folder converted in Unsloth Studio: {"folder", "base", "problem"}.
+    local: Optional[dict[str, Any]] = None
 
     @property
     def vision(self) -> bool:
@@ -112,6 +116,7 @@ class NpuModel:
             "supports_tools": self.tools,
             "max_context_length": self.max_context_length,
             "resume_percent": self.resume_percent,
+            "local": self.local,
         }
 
 
@@ -425,7 +430,34 @@ class LemonadeNpuBackend:
             cache_dir = self.root / "cache",
             config_dir = self.root / "config",
             flm_model_dir = self._flm_model_dir,
+            flm_config_path = self._write_flm_list(),
         )
+
+    @property
+    def _local_dir(self) -> Path:
+        return self.root / "local_q4nx"
+
+    def _write_flm_list(self) -> Optional[Path]:
+        """FastFlowLM's own catalog plus the registered converted model, or None to use it as is."""
+        overlay = self._local_dir / "model_list.json"
+        binary = self._flm_binary()
+        listing_path = local_q4nx.find_flm_list(binary) if binary is not None else None
+        try:
+            registered = json.loads((self._local_dir / "registered.json").read_text("utf-8"))
+            listing = json.loads(listing_path.read_text("utf-8")) if listing_path else None
+        except (OSError, ValueError):
+            registered = listing = None
+        if not isinstance(registered, dict) or not isinstance(listing, dict):
+            overlay.unlink(missing_ok = True)
+            return None
+        # Rebuilt from the installed catalog every start, so a FastFlowLM update is never shadowed.
+        listing.setdefault("models", {})[registered["family"]] = {
+            local_q4nx.LOCAL_SIZE: registered["entry"]
+        }
+        tmp = overlay.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(listing, indent = 2) + "\n", encoding = "utf-8")
+        tmp.replace(overlay)
+        return overlay
 
     def _require_supported(self) -> None:
         hardware = self.hardware()
@@ -600,6 +632,9 @@ class LemonadeNpuBackend:
         for row in response.json().get("data") or []:
             if not isinstance(row, dict) or row.get("recipe") != "flm":
                 continue
+            # A registered conversion is listed from the acting account's exports below.
+            if local_q4nx.is_local_checkpoint(str(row.get("checkpoint") or "")):
+                continue
             labels = tuple(str(label) for label in row.get("labels") or ())
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
                 continue
@@ -620,7 +655,124 @@ class LemonadeNpuBackend:
                     resume_percent = files.resume_percent() if files else None,
                 )
             )
+        models.extend(self._local_rows(models))
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
+
+    def _local_rows(self, catalog: list[NpuModel]) -> list[NpuModel]:
+        by_checkpoint = {model.checkpoint: model for model in catalog}
+        rows = []
+        for local in local_q4nx.account_local_models():
+            base = by_checkpoint.get(local.base or "")
+            labels = tuple(
+                label
+                for label in (base.labels if base else ("chat",))
+                if local.vision or label != "vision"
+            )
+            rows.append(
+                NpuModel(
+                    id = local.id,
+                    checkpoint = local.checkpoint,
+                    size_gb = base.size_gb if base else round(local.size_bytes / 1e9, 2),
+                    downloaded = True,
+                    labels = labels,
+                    max_context_length = base.max_context_length if base else None,
+                    local = {
+                        "folder": local.display,
+                        "base": local.base,
+                        "problem": local.problem,
+                    },
+                )
+            )
+        return rows
+
+    def _local_model(self, model_id: str) -> local_q4nx.LocalQ4nx:
+        for local in local_q4nx.account_local_models():
+            if local.id == model_id:
+                return local
+        raise NpuError(f"{model_id} is not a converted model in this account's exports.")
+
+    def _register_local(self, local: local_q4nx.LocalQ4nx) -> bool:
+        """Link the folder in as a FastFlowLM model; True when lemond must restart to list it."""
+        if local.problem:
+            raise NpuError(local.problem)
+        binary = self._flm_binary()
+        if binary is None:
+            raise NpuError("The NPU runtime is not installed. Enable it first.")
+        listing_path = local_q4nx.find_flm_list(binary)
+        try:
+            listing = json.loads(listing_path.read_text("utf-8")) if listing_path else None
+        except (OSError, ValueError):
+            listing = None
+        if not isinstance(listing, dict):
+            raise NpuError("FastFlowLM's model list could not be read; enable the NPU again.")
+        base = local_q4nx.base_entry(listing, local.base or "")
+        if base is None:
+            raise NpuError(
+                f"This FastFlowLM version does not ship {local.base}, which this model needs."
+            )
+        staged = local_q4nx.staged_folder(self._flm_model_dir, listing, local)
+        config = self._base_config(binary, listing, local.base or "", base)
+        try:
+            local_q4nx.link_files(local, staged)
+            config = local_q4nx.local_config(config, local)
+            (staged / "config.json").write_text(
+                json.dumps(config, indent = 2) + "\n", encoding = "utf-8"
+            )
+        except OSError as exc:
+            raise NpuError(f"Preparing {local.display} for the NPU failed: {exc}") from exc
+        version = config.get("flm_version")
+        registered = {
+            "family": local.family,
+            "folder": str(local.folder),
+            "entry": local_q4nx.local_entry(base, local, str(version) if version else None),
+        }
+        path = self._local_dir / "registered.json"
+        try:
+            previous = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            previous = None
+        if previous == registered and (self._local_dir / "model_list.json").is_file():
+            return False
+        self._local_dir.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps(registered, indent = 2) + "\n", encoding = "utf-8")
+        return True
+
+    def _base_config(
+        self, binary: Path, listing: dict[str, Any], tag: str, base: dict[str, Any]
+    ) -> dict[str, Any]:
+        """The base model's config.json: from its download, else fetched alone and kept."""
+        models = self._flm_model_dir / str(listing.get("model_path") or "models")
+        cached = self._local_dir / "configs" / base["name"]
+        for folder in (models / base["name"], cached):
+            try:
+                config = json.loads((folder / "config.json").read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(config, dict) and config.get("flm_version"):
+                return config
+        files = read_model_files(binary, self._flm_model_dir, tag)
+        wanted = [f for f in files.files if f.name == "config.json"] if files else []
+        if not wanted:
+            raise NpuError(f"FastFlowLM's file list has no config.json for {tag}.")
+        try:
+            for _ in download_files(FlmModelFiles(folder = cached, files = tuple(wanted))):
+                pass
+            return json.loads((cached / "config.json").read_text("utf-8"))
+        except (FlmDownloadError, OSError, ValueError) as exc:
+            raise NpuError(f"Fetching {tag}'s config.json failed: {exc}") from exc
+
+    def _unregister_local(self, local: local_q4nx.LocalQ4nx) -> None:
+        """Drop the linked copy FastFlowLM reads; the export folder itself is left alone."""
+        path = self._local_dir / "registered.json"
+        try:
+            registered = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            registered = None
+        if isinstance(registered, dict) and registered.get("family") == local.family:
+            path.unlink(missing_ok = True)
+        for staged in self._flm_model_dir.glob(f"*/{local.family}"):
+            if staged.is_dir() and not staged.is_symlink():
+                shutil.rmtree(staged, ignore_errors = True)
 
     def _model_files(self, checkpoint: str, flm_binary: Optional[Path]) -> Optional[FlmModelFiles]:
         return read_model_files(flm_binary, self._flm_model_dir, checkpoint)
@@ -637,6 +789,8 @@ class LemonadeNpuBackend:
             model = self._model(model_id)
         except LemonadeUnavailable as exc:
             raise NpuError(str(exc)) from exc
+        if model.local and model.local.get("problem"):
+            raise NpuError(str(model.local["problem"]))
         if not model.downloaded:
             raise NpuError(f"{model.id} is not downloaded yet.")
         return model
@@ -644,6 +798,8 @@ class LemonadeNpuBackend:
     def download(self, model_id: str) -> Iterator[dict[str, Any]]:
         """Raises unless lemond sends its complete event, since a cut-short stream leaves a partial
         model."""
+        if local_q4nx.is_local_id(model_id):
+            raise NpuError(f"{model_id} is a converted model already on this device.")
         model = self._model(model_id)
         server = self._ensure_running()
         files = (
@@ -705,6 +861,9 @@ class LemonadeNpuBackend:
             resident = self.resident()
             if resident is not None and resident.model.id == model_id:
                 raise NpuError("Unload the model before deleting it.")
+            if local_q4nx.is_local_id(model_id):
+                self._unregister_local(self._local_model(model_id))
+                return
             server = self._ensure_running()
             response = server.request("POST", "/v1/delete", json_body = {"model_name": model_id})
             if _failed(response):
@@ -724,7 +883,15 @@ class LemonadeNpuBackend:
             replaced = False
             loaded = False
             try:
+                if local_q4nx.is_local_id(model_id):
+                    local = self._local_model(model_id)
+                    self._require_supported()
+                    if self._register_local(local) and self._server is not None:
+                        # lemond reads FastFlowLM's catalog at start; a restart lists the new entry.
+                        self._server.stop()
                 model = self._model(model_id)
+                if model.local and model.local.get("problem"):
+                    raise NpuError(str(model.local["problem"]))
                 if not model.downloaded:
                     raise NpuError(f"{model.id} is not downloaded yet.")
                 limit = model.max_context_length
