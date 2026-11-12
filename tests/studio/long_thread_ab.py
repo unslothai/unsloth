@@ -46,8 +46,7 @@ METRICS = (
     "elements",
     "longest_task_ms",
 )
-# Renderer main thread only: raster and compositor threads swing with the runner. Values are floors
-# (ms) below which a difference is noise.
+# Renderer main thread only (raster/compositor swing with the runner); floors in ms.
 GATES = {"main_ms": 50.0, "blocked_ms": 100.0}
 
 
@@ -153,7 +152,6 @@ def lengthen_stream(chars: int) -> None:
     )
 
 
-# Share of the viewport real rows fill; a spacer left where rows belong reads below 1.
 COVERAGE = """() => {
   const v = document.querySelector('.aui-thread-viewport');
   if (!v) return null;
@@ -191,8 +189,7 @@ STREAM_DONE = (
 COVERAGE_MIN = 0.5
 WHEEL_STEPS, WHEEL_PX, WHEEL_GAP_MS = 12, -600, 60
 
-# The reader wheels away while a reply streams, then reads: the window must move under the stream
-# (#17504: every chunk restarted its low-priority commit). Runs alone, on a page no stream has used.
+# #17504: every chunk restarted the window's transition commit. Runs on a page no stream has used.
 areas.AREAS["stream_scroll"] = {
     "setup": ("compose", areas.STREAM_PROMPT),
     "open": ("stream_scroll", None),
@@ -448,7 +445,6 @@ def main() -> int:
     if args.tall > 1:
         tall_turns(args.tall)
     if "stream_scroll" in wanted and not args.stream_chars:
-        # About 8 s of stream, past the wheel and the reading after it.
         args.stream_chars = max(20000, 8000 // areas.STREAM_MS * 60)
     if args.stream_chars:
         lengthen_stream(args.stream_chars)

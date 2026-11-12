@@ -255,10 +255,7 @@ jobs:
         timeout-minutes: 15
         run: python3 tests/studio/playwright_long_thread_gate.py
 
-      # The gate above compares the PR's build with itself; this compares it with the base build
-      # (tests/studio/long_thread_ab.py): stream, type, scroll, and a reply streaming while the
-      # reader wheels away, which must keep the viewport filled. Exit 3 (base cannot build with this
-      # node_modules) is a warning.
+      # Exit 3 = base cannot build with this node_modules: a warning, not a failure.
       - name: Long-chat cost against the base build
         if: github.event_name == 'pull_request'
         working-directory: ${{ github.workspace }}
@@ -275,7 +272,6 @@ jobs:
             [ "$rc" = 0 ] || exit "$rc"
           }
           ab --areas stream,type,thread_scroll
-          # Rows slower to render than the chunk gap: what kept #17504's window commits from landing.
           ab --areas stream_scroll --tall 6 --stream-ms 10
 
       # Fetch the base commit with an explicit refspec so origin/<base> exists.

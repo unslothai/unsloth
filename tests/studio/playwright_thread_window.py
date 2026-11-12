@@ -58,11 +58,9 @@ ENGINES = [e for e in os.environ.get("SMOKE_ENGINES", "chromium").split(",") if 
 SMALL = 80
 LARGE = 400
 STREAM_CHUNKS = 20
-# A reply long enough to still be streaming once the reader has wheeled away from it.
 LONG_STREAM_CHUNKS = 600
 AWAY_WHEEL_STEPS = 12
-# Replies a couple of viewports tall: the wheel passes several, and one takes longer to render
-# than the gap between two streamed chunks.
+# Rows slower to render than the gap between two streamed chunks.
 AWAY_SEED = {"agent": {"rounds": 5, "compactionEvery": 10, "sources": True, "rich": True}}
 # Frames, not a time: a row the reader reaches is committed inside the frame that shows it.
 AWAY_FRAMES = 20
@@ -137,7 +135,6 @@ COVERED = """(min) => {
   return covered / box.height >= min;
 }"""
 
-# The same, `frames` frames from now.
 COVERED_AFTER = """async ([frames, min]) => {
   for (let frame = 0; frame < frames; frame += 1) {
     await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -726,7 +723,7 @@ def check_engine(playwright, engine: str) -> None:
         ], f"the fork chord posted {forks!r} with the last row unmounted, not one fork of {last}"
         page.close()
 
-        # 14. Scrolling away from a streaming reply: rows are under the reader before it ends.
+        # 14. Scrolling away from a streaming reply.
         page, errors = open_thread(
             context, TALL_MESSAGES, windowed = True, stream = LONG_STREAM_CHUNKS, seed = AWAY_SEED
         )

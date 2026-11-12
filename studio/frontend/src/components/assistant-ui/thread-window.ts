@@ -545,11 +545,7 @@ export const sameWindow = (a: RowWindow | null, b: RowWindow | null): boolean =>
 /** A slow local model writes a token a second: anything faster is one stream, not a pause. */
 export const STREAM_QUIET_MS = 1000;
 
-/**
- * Whether the reply is being written right now. Every chunk is a synchronous store update, and
- * React restarts a transition render from the root on each one, so a transition commit issued
- * while chunks arrive renders for as long as the reply runs and lands only after it.
- */
+/** Whether a reply is streaming: React restarts a transition render on every chunk. */
 export class TailPulse {
   private revision: unknown;
   private changedAt = Number.NEGATIVE_INFINITY;
