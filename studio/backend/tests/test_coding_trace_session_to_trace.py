@@ -546,18 +546,23 @@ def test_user_attachments_are_model_input():
 def test_user_turns_with_no_typed_text():
     code = [{"content": _text("def f(): pass")}]
     image = [{"content": [{"type": "image", "image": "x"}]}]
-    stored = [None, "hi", _text(""), [], []]
+    two = [{"content": _text("a")}, {"content": _text("b")}]
+    # (stored content, attachments, trace text)
+    cases = [
+        (None, code, "\ndef f(): pass"),  # loaded "" joined by a "\n"
+        ("hi", code, "\ndef f(): pass"),  # toThreadMessage drops a string too
+        (_text(""), code, "\ndef f(): pass"),  # a stored "" is joined the same way
+        ([], code, "def f(): pass"),  # the live send
+        ([], two, "a\nb"),
+        ([], image, ""),
+    ]
     rows, parent = [], None
-    for n, content in enumerate(stored):
-        attached = image if n == len(stored) - 1 else code
+    for n, (content, attached, _) in enumerate(cases):
         rows.append({**_row(f"u{n}", "user", content, parent, 2 * n), "attachments": attached})
         rows.append(_row(f"a{n}", "assistant", _text("ok"), f"u{n}", 2 * n + 1))
         parent = f"a{n}"
     trace = session_to_trace({"id": "t"}, rows)
-    # Of these, only [] comes from a send; the rest replay as "" joined by a "\n".
-    replayed, sent = "\ndef f(): pass", "def f(): pass"
-    users = [m.text for m in trace.messages if m.role == "user"]
-    assert users == [replayed, replayed, replayed, sent, ""]
+    assert [m.text for m in trace.messages if m.role == "user"] == [c[2] for c in cases]
     assert _codes(trace) == ["unsupported_part"]
 
 

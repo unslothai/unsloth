@@ -119,10 +119,11 @@ def _model_parts(message: dict) -> list:
     """Parts minus mcpToolOnly ones (modelVisibleMessage); only user rows keep attachments."""
     parts = message.get("content")
     if message.get("role") == "user":
-        # The trace follows the live session: a send with nothing typed stores [], and the
-        # model gets only the attachment parts. A resumed thread loads "" there instead
-        # (toThreadMessage), and the "\n" join in chat-adapter.ts adds a leading "\n".
-        # Content that is not a list never comes from a send, so only that replay form exists.
+        # Content of [] (a send with nothing typed, or a restored backup) follows the live
+        # first send, where the model gets only the attachment parts. This is a choice: after a
+        # reload, toThreadMessage loads "" there and the "\n" join in chat-adapter.ts adds a
+        # leading "\n". Content that is not a list never comes from a send, so it takes that
+        # replay form.
         loaded = parts if isinstance(parts, list) else [{"type": "text", "text": ""}]
         parts = _with_attachments({**message, "content": loaded})
     if not isinstance(parts, list):
@@ -209,8 +210,8 @@ def _convert_row(
     # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
     pending: list[TraceMessage] = []
     pending_round = reasoned = imaged = None
-    # collectTextParts joins all user text parts with "\n", so an empty stored part still
-    # adds one.
+    # collectTextParts joins all user text parts with "\n", so an empty text part (stored or
+    # loaded) still adds one.
     pieces, texted, split = 0, None, False
     for position, part in enumerate(_model_parts(message)):
         kind = part.get("type") if isinstance(part, dict) else None
