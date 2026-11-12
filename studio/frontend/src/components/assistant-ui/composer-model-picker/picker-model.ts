@@ -35,7 +35,7 @@ export const SECTION_LABEL: Record<ListSection, string> = {
   unsloth: "Unsloth",
   other: "Other models",
   npu: "NPU",
-  fineTuned: "Fine-tuned",
+  fineTuned: "Trained",
   custom: "Custom folders",
   lmstudio: "LM Studio",
   modelsDir: "Local models",
@@ -74,6 +74,14 @@ export function orderBySection<T extends { section?: ListSection }>(
     .map((row, i) => ({ row, i }))
     .sort((a, b) => rank(a.row) - rank(b.row) || a.i - b.i)
     .map(({ row }) => row);
+}
+
+/** Custom-folder rows count too: a search that finds only one must not also say "No models found". */
+export function sectionsHaveRows(
+  sections: readonly ListSection[],
+  rows: readonly { section?: ListSection }[],
+): boolean {
+  return rows.some((row) => row.section && sections.includes(row.section));
 }
 
 export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter";

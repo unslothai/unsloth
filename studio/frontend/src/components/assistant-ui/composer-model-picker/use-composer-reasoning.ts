@@ -162,15 +162,17 @@ export function useComposerReasoning(): ComposerReasoning {
     }
   };
 
-  const chipLabel = supports
-    ? isEffort
-      ? value === OFF_LEVEL
-        ? null
-        : effortLabel(value, externalSelection?.modelId)
-      : enabled
-        ? "Thinking"
-        : null
-    : null;
+  // Not while loading: the store still holds the previous model's reasoning until the new one lands.
+  const chipLabel =
+    supports && modelLoaded
+      ? isEffort
+        ? value === OFF_LEVEL
+          ? null
+          : effortLabel(value, externalSelection?.modelId)
+        : enabled
+          ? "Thinking"
+          : null
+      : null;
 
   return {
     disabled: !modelLoaded,

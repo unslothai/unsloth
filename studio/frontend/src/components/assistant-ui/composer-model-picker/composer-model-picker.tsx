@@ -13,6 +13,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -50,7 +51,9 @@ import {
   detectHubCapabilities,
   downloadManager,
   formatBytes,
+  formatParamCount,
   hfApiToken,
+  isHiddenModelId,
   jobKeyOf,
   listGgufVariants,
   matchesRecommendedBrowse,
@@ -76,6 +79,9 @@ import {
   type PickerFitStatus,
   VRAM_VERDICT,
   chatGgufFit,
+  describeVariantListingError,
+  ggufVariantPickerLabel,
+  pickerOrderedGgufVariants,
   estimateQuantBytes,
   isMediaCatalogRepo,
   isOverBudget,
@@ -116,6 +122,7 @@ import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Folder02Icon } from "@/lib/folder-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { classifyVariantFitOnCard } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -139,8 +146,10 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   Fragment,
   type CSSProperties,
-  type KeyboardEvent,
+  type InputHTMLAttributes,
   type ReactNode,
+  type Ref,
+  memo,
   useCallback,
   useEffect,
   useId,
@@ -173,6 +182,7 @@ import {
   localSection,
   matchesFormat,
   orderBySection,
+  sectionsHaveRows,
   pinCoversId,
   repoSection,
   sortDeviceRows,
@@ -322,6 +332,7 @@ function ggufMeta(
   variant: GgufVariantDetail,
   onDisk: boolean,
   isGguf = true,
+  hasVision: boolean | undefined = row.gguf?.has_vision,
 ): ModelSelectorChangeMeta {
   return {
     source: rowSource(row),
@@ -332,6 +343,8 @@ function ggufMeta(
     isDownloaded: onDisk,
     expectedBytes: quantBytes(variant),
     isGguf,
+    // Only a known text-only verdict: Chat warns that earlier images may be ignored.
+    isVision: hasVision === false ? false : undefined,
     pipelineTag: row.gguf?.task ?? null,
   };
 }
@@ -341,6 +354,8 @@ interface QuantTarget {
   localPath: string | null;
   local: boolean;
   remote: boolean;
+  /** Skip the cache-first listing: for a repo with a quant on disk it lists only that one. */
+  everyQuant?: boolean;
 }
 
 function quantTarget(row: Row): QuantTarget | null {
@@ -365,18 +380,23 @@ function quantTarget(row: Row): QuantTarget | null {
   return null;
 }
 
-async function rowQuants(target: QuantTarget): Promise<{
+async function rowQuants(
+  target: QuantTarget,
+  signal?: AbortSignal,
+): Promise<{
   quants: GgufVariantDetail[];
   defaultVariant: string | null;
   mlx: boolean;
+  hasVision: boolean | undefined;
 }> {
   // The user's token, as search sends it: a gated or private repo lists nothing anonymously.
   const token = useHfTokenStore.getState().token || undefined;
   const res = await listGgufVariants(target.id, token, {
     localOnly: !target.remote,
-    preferLocalCache: target.remote,
+    preferLocalCache: target.remote && !target.everyQuant,
     localPath: target.localPath,
     includeCacheLocations: true,
+    signal,
   });
   // A partial quant cannot load, but a download offer must keep it so the download resumes.
   const variants = (Array.isArray(res?.variants) ? res.variants : []).filter(
@@ -390,6 +410,8 @@ async function rowQuants(target: QuantTarget): Promise<{
         ? res.default_variant
         : null,
     mlx: res?.variant_format === "mlx",
+    hasVision:
+      typeof res?.has_vision === "boolean" ? res.has_vision : undefined,
   };
 }
 
@@ -622,9 +644,12 @@ function TabButton({
 function FitBadge({
   status,
   revealOnHover = false,
+  compact = false,
 }: {
   status: PickerFitStatus | null | undefined;
   revealOnHover?: boolean;
+  /** Box the size of the glyph, for use inline beside a name. */
+  compact?: boolean;
 }) {
   const verdict = status ? VRAM_VERDICT[status] : null;
   if (!verdict) {
@@ -637,7 +662,10 @@ function FitBadge({
           role="img"
           aria-label={verdict.label}
           className={cn(
-            "grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center",
+            "grid shrink-0 place-items-center",
+            compact
+              ? "size-[calc(14px*var(--ui-space-scale,1))]"
+              : "size-[calc(20px*var(--ui-space-scale,1))]",
             verdict.tone,
             revealOnHover &&
               "opacity-0 transition-opacity group-hover/row:opacity-100 group-data-[active=true]/row:opacity-100",
@@ -661,8 +689,14 @@ function FitBadge({
 const ACTION =
   "relative flex h-[calc(20px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-none text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground dark:hover:bg-transparent before:pointer-events-none before:absolute before:top-1/2 before:left-1/2 before:size-[calc(20px*var(--ui-space-scale,1))] before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:transition-colors before:content-[''] hover:before:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:before:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] data-[state=open]:before:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[state=open]:before:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [&>svg]:relative";
 const ACTION_ROUND = `${ACTION} w-[calc(20px*var(--ui-space-scale,1))]`;
-// The ⋮ ink sits left of its box's centre: the circle moves 1px and the glyph 0.5px to meet.
-const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))] before:left-[calc(50%-1px)] [&>svg]:-translate-x-[0.5px]`;
+// A set star stays readable without outshining the names: grey in both themes, darker on hover.
+const FAVORITE_STAR =
+  "text-[rgb(0_0_0_/_0.42)] hover:text-[rgb(0_0_0_/_0.62)] dark:text-[rgb(255_255_255_/_0.5)] dark:hover:text-[rgb(255_255_255_/_0.72)]";
+// The ⋮ ink sits 0.3px below its icon's centre; lift it so the hover circle centres on it.
+const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))] [&>svg]:-translate-y-[0.3px]`;
+// Red-tinted hover for the Eject pills: the theme's muted and accent fills match under glass.
+const EJECT_PILL_HOVER =
+  "hover:bg-[color-mix(in_srgb,#dc4848_14%,transparent)] focus-visible:bg-[color-mix(in_srgb,#dc4848_14%,transparent)] dark:hover:bg-[color-mix(in_srgb,#ed7878_18%,transparent)] dark:focus-visible:bg-[color-mix(in_srgb,#ed7878_18%,transparent)]";
 
 const FAVORITE_DROP_CUE_BASE =
   "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
@@ -682,6 +716,27 @@ function QuantPill({ quant }: { quant: string }) {
   );
 }
 
+/** The header picker's parameter chip: an outline, so it reads apart from the filled quant pill. */
+function ParamChip({ label }: { label: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-border px-1.5 text-ui-10 font-medium text-muted-foreground",
+        // A point already opens a gap, so "7.5B" stays tight while "27B" breathes a little.
+        label.includes(".") ? "tracking-[-0.02em]" : "tracking-[0.02em]",
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+const JUMP_LABEL: Partial<Record<ListSection, string>> = {
+  other: "Go to other models",
+  fineTuned: "Go to trained models",
+  custom: "Go to custom folders",
+};
+
 function AmberTag({ label, hint }: { label: string; hint: string }) {
   return (
     <Hint label={hint}>
@@ -690,6 +745,98 @@ function AmberTag({ label, hint }: { label: string; hint: string }) {
       </span>
     </Hint>
   );
+}
+
+const STATUS_TONE = {
+  green:
+    "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300",
+  amber:
+    "bg-amber-500/12 text-amber-800 dark:bg-amber-400/15 dark:text-amber-300",
+  accent: "bg-primary/10 text-primary dark:bg-primary/15",
+} as const;
+
+/** A quant's state as a small tinted tag, the Hub's capability tones at row scale. */
+function StatusTag({
+  tone,
+  label,
+  hint,
+  lead,
+}: {
+  tone: keyof typeof STATUS_TONE;
+  label: string;
+  hint?: string;
+  lead?: ReactNode;
+}) {
+  const tag = (
+    <span
+      className={cn(
+        "inline-flex h-[calc(16px*var(--ui-space-scale,1))] shrink-0 items-center gap-1 rounded-[calc(5px*var(--ui-space-scale,1))] px-1.5 font-sans text-ui-10 font-medium leading-none",
+        STATUS_TONE[tone],
+      )}
+    >
+      {lead}
+      {label}
+    </span>
+  );
+  return hint ? <Hint label={hint}>{tag}</Hint> : tag;
+}
+
+function QuantStatus({
+  variant,
+  loaded,
+  recommended,
+}: {
+  variant: GgufVariantDetail;
+  loaded: boolean;
+  recommended: boolean;
+}) {
+  const tags: ReactNode[] = [];
+  if (loaded) {
+    tags.push(
+      <StatusTag
+        key="loaded"
+        tone="green"
+        label="Loaded"
+        lead={
+          <span className="size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-current" />
+        }
+      />,
+    );
+  } else if (variant.downloaded) {
+    tags.push(
+      <StatusTag
+        key="downloaded"
+        tone="green"
+        label="Downloaded"
+        lead={
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2.25}
+            className="size-[calc(10px*var(--ui-space-scale,1))]"
+          />
+        }
+      />,
+    );
+  } else if (variant.partial === true) {
+    tags.push(
+      <StatusTag
+        key="partial"
+        tone="amber"
+        label="Partial"
+        hint={PARTIAL_HINT.variant}
+      />,
+    );
+  } else if (recommended) {
+    tags.push(
+      <StatusTag key="recommended" tone="accent" label="Recommended" />,
+    );
+  }
+  if ((loaded || variant.downloaded) && variant.update_available) {
+    tags.push(
+      <StatusTag key="update" tone="amber" label="Update" hint={UPDATE_HINT} />,
+    );
+  }
+  return tags.length > 0 ? <>{tags}</> : null;
 }
 
 const PARTIAL_HINT = {
@@ -821,6 +968,24 @@ function ModelFacts({ facts }: { facts: readonly [string, ReactNode][] }) {
   );
 }
 
+// Scaled to the Vision eye's visual weight (sqrt of ink width x height, 16.7 of 24): the speech
+// bubble, wrench and bulb fill their box, the eye and code brackets only a band of it.
+const GLYPH_SCALE: Partial<Record<Capability["key"], string>> = {
+  conversational: "scale-[0.86]",
+  audio: "scale-[0.95]",
+  tools: "scale-[0.88]",
+  embedding: "scale-[0.88]",
+  diffusion: "scale-[0.88]",
+  multilingual: "scale-[0.91]",
+  reasoning: "scale-[0.86]",
+};
+function glyphScale(key: Capability["key"], label: string): string | undefined {
+  // Video gen draws a film slate (18 x 20 ink) under the diffusion key.
+  return key === "diffusion" && label === "Video gen"
+    ? "scale-[0.88]"
+    : GLYPH_SCALE[key];
+}
+
 function modelFacts(
   row: Row,
   onDisk: readonly GgufVariantDetail[],
@@ -829,17 +994,18 @@ function modelFacts(
   const facts: [string, ReactNode][] = [];
   const format =
     row.kind === "npu" ? "NPU" : row.format ? FORMAT_NAME[row.format] : null;
-  if (format) {
-    facts.push(["Format", format]);
-  }
+  // The format rides on the quant ("UD-Q4_K_XL GGUF"); only a model with no quant names it alone.
+  const withFormat = (text: string) => (format ? `${text} ${format}` : text);
   if (onDisk.length === 1) {
-    facts.push(["Quant", onDisk[0].quant]);
+    facts.push(["Quant", withFormat(onDisk[0].quant)]);
   } else if (onDisk.length > 1) {
-    facts.push(["Quants", `${onDisk.length} on disk`]);
+    facts.push(["Quants", `${withFormat(String(onDisk.length))} on disk`]);
+  } else if (format) {
+    facts.push(["Format", format]);
   }
   const size = onDisk.length === 1 ? quantBytes(onDisk[0]) : row.sizeBytes;
   if (size && size > 0) {
-    facts.push(["Size", formatBytes(size)]);
+    facts.push(["Disk space", formatBytes(size)]);
   }
   const params = extractParamLabel(row.lora?.baseModel ?? row.id);
   if (params) {
@@ -879,10 +1045,17 @@ function modelFacts(
   // Every glyph is the Model Hub's own: text as Conversational, video as its Video gen slate,
   // speech as Audio.
   const hub = (key: Capability["key"], label: string) => (
-    <CapabilityGlyph capability={{ key, label }} />
+    <CapabilityGlyph
+      capability={{ key, label }}
+      className={glyphScale(key, label)}
+    />
   );
   const pill = (c: Capability) =>
-    mark(c.key, <CapabilityGlyph capability={c} />, c.label);
+    mark(
+      c.key,
+      <CapabilityGlyph capability={c} className={glyphScale(c.key, c.label)} />,
+      c.label,
+    );
   const inputs = new Set<Capability["key"]>(["vision", "audio"]);
   // What it reads, what it says, then what it does.
   const supports: ReactNode[] = [
@@ -897,9 +1070,6 @@ function modelFacts(
     ...found.filter((c) => !inputs.has(c.key)).map(pill),
   ];
   facts.push(["Supports", supports]);
-  if (row.section) {
-    facts.push(["From", SECTION_LABEL[row.section]]);
-  }
   if (row.partial) {
     facts.push(["Download", "Incomplete"]);
   } else if (row.loaded) {
@@ -937,22 +1107,28 @@ const SECTION_ICON: Partial<Record<ListSection, ReactNode>> = {
 };
 
 function SectionHeader({
+  section,
   label,
   icon,
   divider,
   collapsed,
   onToggle,
   actions,
+  trailing,
 }: {
+  section: ListSection;
   label: string;
   icon?: ReactNode;
   divider: boolean;
   collapsed: boolean;
   onToggle: () => void;
   actions?: ReactNode;
+  /** Right-aligned beside the chevron, as the header picker placed its section jumps. */
+  trailing?: ReactNode;
 }) {
   return (
     <div
+      data-section={section}
       className={cn(
         "flex shrink-0 flex-col",
         divider && "mt-[calc(10px*var(--ui-space-scale,1))]",
@@ -972,12 +1148,18 @@ function SectionHeader({
         {actions ? (
           <span className="flex shrink-0 items-center">{actions}</span>
         ) : null}
+        {trailing ? (
+          <span className="ml-auto flex shrink-0 items-center">{trailing}</span>
+        ) : null}
         <Hint label={collapsed ? "Expand" : "Collapse"}>
           <button
             type="button"
             onClick={onToggle}
             aria-label={`${collapsed ? "Expand" : "Collapse"} ${label}`}
-            className="ml-auto grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+            className={cn(
+              trailing ? null : "ml-auto",
+              "grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground",
+            )}
           >
             <HugeiconsIcon
               icon={
@@ -990,6 +1172,90 @@ function SectionHeader({
         </Hint>
       </div>
     </div>
+  );
+}
+
+const OPTION_ID = "composer-model-option";
+const NO_QUANTS: GgufVariantDetail[] = [];
+
+/**
+ * Re-renders a row only when `deps` change: the panel re-renders on every inventory, probe and
+ * store tick, and 600 rows of menus and tooltips each time made typing and scrolling lag.
+ * `deps` must cover everything the row's markup and handlers read.
+ */
+const MemoRow = memo(
+  function MemoRow({ render }: { render: () => ReactNode; deps: unknown[] }) {
+    return render();
+  },
+  (prev, next) =>
+    prev.deps.length === next.deps.length &&
+    prev.deps.every((dep, i) => Object.is(dep, next.deps[i])),
+);
+const SEARCH_DEBOUNCE_MS = 250;
+type NavKey = "ArrowDown" | "ArrowUp" | "Enter";
+
+/** Holds the typed text, so a keystroke re-renders this field and not every row; the list filters once typing pauses. */
+function SearchField({
+  value,
+  onCommit,
+  onNavKey,
+  inputRef,
+  ...rest
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  onNavKey: (key: NavKey) => void;
+  inputRef: Ref<HTMLInputElement>;
+} & Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  "value" | "onChange" | "onKeyDown"
+>) {
+  const [draft, setDraft] = useState(value);
+  const committed = useRef(value);
+  // A reset from outside (a new tab, a pick) replaces the draft; the echo of our own commit does not.
+  if (value !== committed.current) {
+    committed.current = value;
+    if (draft !== value) {
+      setDraft(value);
+    }
+  }
+  const commit = (next: string) => {
+    committed.current = next;
+    onCommit(next);
+  };
+  const commitLatest = useRef(commit);
+  commitLatest.current = commit;
+  useEffect(() => {
+    if (draft === committed.current) {
+      return;
+    }
+    const id = window.setTimeout(
+      () => commitLatest.current(draft),
+      SEARCH_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(id);
+  }, [draft]);
+  return (
+    <input
+      ref={inputRef}
+      {...rest}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={(event) => {
+        const key = event.key;
+        if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Enter") {
+          return;
+        }
+        event.preventDefault();
+        if (draft !== committed.current) {
+          commit(draft);
+          // After the list re-filters, so the key acts on the rows the user sees.
+          window.setTimeout(() => onNavKey(key), 0);
+          return;
+        }
+        onNavKey(key);
+      }}
+    />
   );
 }
 
@@ -1080,7 +1346,12 @@ export function ComposerModelPicker({
     defaultVariant: string | null;
     failed: boolean;
     mlx?: boolean;
+    hasVision?: boolean;
+    error?: string;
+    target?: QuantTarget;
   } | null>(null);
+  // The open offer's listing, aborted when the offer closes or another opens.
+  const offerAbort = useRef<AbortController | null>(null);
   const [quants, setQuants] = useState<{
     key: string;
     list: GgufVariantDetail[];
@@ -1124,7 +1395,11 @@ export function ComposerModelPicker({
   const hfToken = useHfTokenStore((s) => s.token);
   const quantFormats = useGpuInfo().checkpointQuantFormats;
   const isMac = usePlatformStore((s) => s.deviceType === "mac");
-  const hubQuery = useDebouncedValue(onRecommended ? query.trim() : "");
+  // The field already waits SEARCH_DEBOUNCE_MS; together they keep the Hub's 300 ms.
+  const hubQuery = useDebouncedValue(
+    onRecommended ? query.trim() : "",
+    300 - SEARCH_DEBOUNCE_MS,
+  );
   const hubSearch = useHubModelSearch(hubQuery, {
     ownerScope: hubQuery ? "all" : "unsloth",
     sortBy: "fresh",
@@ -1139,6 +1414,10 @@ export function ComposerModelPicker({
   const inferenceGpu = useInferenceGpuInfo();
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  // Settings > Chat > Model selection, shared with the header picker and the Hub.
+  const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
+  const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
+  const showMemoryBar = useChatRuntimeStore((s) => s.showMemoryBar);
   const loadFreesResident =
     !keepModelsLoaded &&
     typeof checkpoint === "string" &&
@@ -1151,6 +1430,17 @@ export function ComposerModelPicker({
         loadFreesResident,
       }),
     [inferenceGpu, budgetFraction, loadFreesResident],
+  );
+  // The header picker's quant budget: no verdict means it fits.
+  const quantBudget = useMemo(
+    () => ({
+      fitOf: (sizeBytes: number) => fitOf(sizeBytes) ?? "fits",
+      anyBudget:
+        inferenceGpu.memoryTotalGb > 0 || inferenceGpu.systemRamAvailableGb > 0,
+      budgetKnown: inferenceGpu.budgetKnown,
+      cardGb: 0,
+    }),
+    [fitOf, inferenceGpu],
   );
   const hubFit = useMemo(() => {
     const map = new Map<string, ReturnType<typeof fitOf>>();
@@ -1169,6 +1459,19 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults, fitOf]);
+  // Rounded as the Model Hub rounds it (27.3B reads 27B); else the id's "27B".
+  const hubParams = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of hubResults) {
+      const label = r.totalParams
+        ? formatParamCount(r.totalParams)
+        : extractParamLabel(r.id);
+      if (label) {
+        map.set(r.id.toLowerCase(), label);
+      }
+    }
+    return map;
+  }, [hubResults]);
   const noGpu = !(inferenceGpu.memoryTotalGb > 0);
   const { scrollRef: hubScrollRef, sentinelRef: hubSentinelRef } =
     useHubInfiniteScroll(hubSearch.fetchMore, hubSearch.scannedCount, {
@@ -1191,10 +1494,14 @@ export function ComposerModelPicker({
                 !hubQuery,
               ))) &&
           isChatTask(r.pipelineTag) &&
-          !isMediaCatalogRepo(r.id),
+          !isMediaCatalogRepo(r.id) &&
+          // The RAG embedder, STT and probe repos: never chat models, as the header picker hides them.
+          !isHiddenModelId(r.id),
       )
       .map((r) => ({ id: r.id, name: r.id, isGguf: r.isGguf }));
-    return fromHub.length > 0 ? fromHub : [...(source?.models ?? [])];
+    return fromHub.length > 0
+      ? fromHub
+      : (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
   }, [hubResults, quantFormats, hubQuery, isMac, source?.models]);
   const loraModels = source?.loraModels;
   const externalModels = source?.externalModels;
@@ -1507,6 +1814,7 @@ export function ComposerModelPicker({
   }, [externalModels, makerTabs]);
 
   const chosen = findChosenRow(rows, checkpoint);
+  const chosenId = chosen?.id;
   // A pick names the chip at once; the checkpoint follows only once its load lands.
   const [pending, setPending] = useState<Row | null>(null);
   useEffect(() => {
@@ -1575,6 +1883,16 @@ export function ComposerModelPicker({
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
   const foundRows = useMemo(() => {
     const found = filterRows(rows, viewed, query, isFavorite);
+    if (viewed === RECOMMENDED_TAB && fitOnDeviceOnly) {
+      // "Only show models that fit": what is on disk or chosen stays, as in the Hub.
+      return found.filter((row) => {
+        if (row.kind !== "hub" || row.onDevice || row.id === chosenId) {
+          return true;
+        }
+        const fit = hubFit.get(row.id.toLowerCase());
+        return !isOverBudget(fit) || (fit === "ram" && noGpu);
+      });
+    }
     if (viewed !== DEVICE_TAB) {
       return found;
     }
@@ -1583,7 +1901,19 @@ export function ComposerModelPicker({
       deviceSort,
       (row) => loadedAt(loadTimes, row.id),
     );
-  }, [rows, viewed, query, isFavorite, formatFilter, deviceSort, loadTimes]);
+  }, [
+    rows,
+    viewed,
+    query,
+    isFavorite,
+    formatFilter,
+    deviceSort,
+    loadTimes,
+    fitOnDeviceOnly,
+    hubFit,
+    noGpu,
+    chosenId,
+  ]);
   const [collapsedSections, setCollapsedSections] = useState<
     ReadonlySet<string>
   >(() => new Set());
@@ -1597,6 +1927,21 @@ export function ComposerModelPicker({
       }
       return next;
     });
+  };
+  const jumpTo = (section: ListSection) => {
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      next.delete(sectionKey(section));
+      return next;
+    });
+    // Two frames, so an expanded section has rendered before it scrolls into view.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() =>
+        listRef.current
+          ?.querySelector(`[data-section="${section}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      ),
+    );
   };
   const listSections = useMemo<ListSection[]>(() => {
     if (viewed === DEVICE_TAB) {
@@ -1712,14 +2057,21 @@ export function ComposerModelPicker({
   }, [open, chosenQuantKey]);
 
   const resetView = useCallback(() => {
+    offerAbort.current?.abort();
+    offerAbort.current = null;
     setTabState(null);
     setOffer(null);
     setQuery("");
     setQuantsOpen(false);
   }, []);
 
+  // Before the inventory lands there is no row: trust residency, since an image load can release the model.
   const chosenLoaded = Boolean(
-    chosen?.loaded || (!chosen && checkpoint && !isExternalModelId(checkpoint)),
+    chosen?.loaded ||
+      (!chosen &&
+        checkpoint &&
+        !isExternalModelId(checkpoint) &&
+        source?.loaded !== false),
   );
   const eject = (row: Row) => {
     source?.eject(row.loadedId ?? row.id);
@@ -1740,7 +2092,12 @@ export function ComposerModelPicker({
     if (!source) {
       return;
     }
-    const { quants: list, defaultVariant, mlx } = await rowQuants(target);
+    const {
+      quants: list,
+      defaultVariant,
+      mlx,
+      hasVision,
+    } = await rowQuants(target);
     if (pickSeq.current !== seq) {
       return;
     }
@@ -1758,20 +2115,36 @@ export function ComposerModelPicker({
     }
     source.onPick(
       row.id,
-      ggufMeta(row, quant, target.local || quant.downloaded === true, !mlx),
+      ggufMeta(
+        row,
+        quant,
+        target.local || quant.downloaded === true,
+        !mlx,
+        hasVision ?? row.gguf?.has_vision,
+      ),
     );
   };
 
-  const toggleOffer = async (row: Row, target: QuantTarget, seq: number) => {
-    if (offer?.key === row.key) {
+  const toggleOffer = async (
+    row: Row,
+    target: QuantTarget,
+    seq: number,
+    retry = false,
+  ) => {
+    offerAbort.current?.abort();
+    offerAbort.current = null;
+    if (offer?.key === row.key && !retry) {
       setOffer(null);
       return;
     }
+    const abort = new AbortController();
+    offerAbort.current = abort;
     setOffer({
       key: row.key,
       quants: null,
       defaultVariant: null,
       failed: false,
+      target,
     });
     const mlxRepo = row.kind === "hub" && !row.hub?.isGguf;
     // An MLX repo with no variant listing loads as one checkpoint.
@@ -1787,7 +2160,12 @@ export function ComposerModelPicker({
       resetView();
     };
     try {
-      const { quants: list, defaultVariant, mlx } = await rowQuants(target);
+      const {
+        quants: list,
+        defaultVariant,
+        mlx,
+        hasVision,
+      } = await rowQuants(target, abort.signal);
       if (mlxRepo && !(mlx && list.length > 0)) {
         pickWhole();
         return;
@@ -1795,30 +2173,54 @@ export function ComposerModelPicker({
       if (list.length === 1) {
         if (pickSeq.current === seq) {
           setOffer(null);
-          pickOfferQuant(row, list[0], !mlx);
+          pickOfferQuant(row, list[0], !mlx, hasVision);
         }
         return;
       }
       setOffer((now) =>
         now?.key === row.key
-          ? { key: row.key, quants: list, defaultVariant, failed: false, mlx }
+          ? {
+              key: row.key,
+              quants: list,
+              defaultVariant,
+              failed: false,
+              mlx,
+              hasVision,
+              target,
+            }
           : now,
       );
-    } catch {
+    } catch (err) {
+      if (abort.signal.aborted) {
+        return;
+      }
       if (mlxRepo) {
         pickWhole();
         return;
       }
       setOffer((now) =>
-        now?.key === row.key ? { ...now, quants: [], failed: true } : now,
+        now?.key === row.key
+          ? {
+              ...now,
+              quants: [],
+              failed: true,
+              error: describeVariantListingError(err),
+            }
+          : now,
       );
+    } finally {
+      if (offerAbort.current === abort) {
+        offerAbort.current = null;
+      }
     }
   };
+  useEffect(() => () => offerAbort.current?.abort(), []);
 
   const pickOfferQuant = (
     row: Row,
     variant: GgufVariantDetail,
     isGguf = true,
+    hasVision?: boolean,
   ) => {
     if (!source) {
       return;
@@ -1829,7 +2231,13 @@ export function ComposerModelPicker({
     supersede();
     source.onPick(
       row.id,
-      ggufMeta(row, variant, variant.downloaded === true, isGguf),
+      ggufMeta(
+        row,
+        variant,
+        variant.downloaded === true,
+        isGguf,
+        hasVision ?? row.gguf?.has_vision,
+      ),
     );
     resetView();
   };
@@ -1876,8 +2284,23 @@ export function ComposerModelPicker({
       return;
     }
     const target = quantTarget(row);
-    if (target?.remote && !row.onDevice) {
-      await toggleOffer(row, target, seq);
+    // Settings > Chat "Show all quantizations": an on-device repo offers every quant, as Discover does.
+    const offerAll =
+      target !== null &&
+      row.kind === "gguf" &&
+      useChatRuntimeStore.getState().showAllQuantizations;
+    // Discover always offers its quants, even with one on disk: that one is ticked, not loaded unasked.
+    if (
+      target &&
+      (offerAll || (target.remote && (row.kind === "hub" || !row.onDevice)))
+    ) {
+      await toggleOffer(
+        row,
+        offerAll || row.onDevice
+          ? { ...target, remote: true, everyQuant: true }
+          : target,
+        seq,
+      );
       return;
     }
     if ((deviceQuants.get(row.key)?.length ?? 0) > 1) {
@@ -2025,25 +2448,29 @@ export function ComposerModelPicker({
       ?.scrollIntoView({ block: "nearest" });
   }, [active, isExpanded]);
 
-  const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
+  // Through a ref: a key pressed before the search commits runs after the re-render.
+  const navKeyRef = useRef<(key: NavKey) => void>(() => undefined);
+  navKeyRef.current = (key) => {
+    if (key === "ArrowDown" || key === "ArrowUp") {
       if (highlightRef.current) {
         setActive((i) =>
-          event.key === "ArrowDown"
+          key === "ArrowDown"
             ? Math.min(shownRows.length - 1, i + 1)
             : Math.max(0, i - 1),
         );
       }
       setHighlight(true);
-    } else if (event.key === "Enter") {
-      event.preventDefault();
+    } else {
       const row = shownRows[active];
       if (row) {
         pick(row);
       }
     }
   };
+  const onSearchNavKey = useCallback(
+    (key: NavKey) => navKeyRef.current(key),
+    [],
+  );
 
   const expand = () => {
     setExpanded(true);
@@ -2051,15 +2478,20 @@ export function ComposerModelPicker({
   };
 
   const quantChoices =
-    quants && chosen && quants.key === chosen.key ? quants.list : [];
+    quants && chosen && quants.key === chosen.key
+      ? pickerOrderedGgufVariants(quants.list, null, quantBudget).ordered
+      : [];
   const showQuantRow = quantChoices.length > 1;
   const showEffort = reasoning.isEffort && reasoning.levels.length > 1;
   const showThinkingSwitch = reasoning.supportsReasoning && !showEffort;
+  // Without the slider there is nowhere to hang the Flash button, so it gets a row.
+  const showFastSwitch = reasoning.supportsFast && !showEffort;
   const hasFoot =
     showQuantRow ||
     showThinkingSwitch ||
     reasoning.supportsPreserve ||
-    showEffort;
+    showEffort ||
+    showFastSwitch;
 
   const emptyCopy = (): { title: string; hint?: string } => {
     if (query) {
@@ -2074,7 +2506,7 @@ export function ComposerModelPicker({
     if (viewed === DEVICE_TAB) {
       return {
         title: "No models on this device",
-        hint: "Download one from Recommended.",
+        hint: "Download one from Discover models.",
       };
     }
     return { title: "No models" };
@@ -2082,10 +2514,15 @@ export function ComposerModelPicker({
 
   const chipLabel = chosenName ?? "Select model";
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
-  const chipDetail =
+  const formatDetail =
     activeVariant && chosenLoaded && !pending
       ? `${loadedIsMlx ? "MLX" : "GGUF"} · ${activeVariant}`
       : null;
+  // The header trigger used to say this; with several resident, memory is shared.
+  const loadedDetail =
+    loadedModels.length > 1 ? `${loadedModels.length} models loaded` : null;
+  const chipDetail =
+    [formatDetail, loadedDetail].filter(Boolean).join(" · ") || null;
   const ejectsAll = loadedModels.length > 1;
 
   const settingsMeta = async (
@@ -2410,10 +2847,14 @@ export function ComposerModelPicker({
     // No GPU: every load runs from RAM, so `ram` is no overage.
     const dimmed = isOverBudget(fit) && !(fit === "ram" && noGpu) && !isChosen;
     const offerOpen = offer?.key === row.key;
-    const onDisk = deviceQuants.get(row.key) ?? [];
+    const paramLabel =
+      row.kind === "hub" ? (hubParams.get(row.id.toLowerCase()) ?? null) : null;
+    const onDisk = deviceQuants.get(row.key) ?? NO_QUANTS;
     const soleQuant = onDisk.length === 1 ? onDisk[0].quant : null;
     const manyQuants = onDisk.length > 1;
-    const quantsOpen = manyQuants && !foldedQuants.has(row.key);
+    // `foldedQuants` holds the rows toggled away from the "Expand quantizations" setting.
+    const quantsOpen =
+      manyQuants && expandQuantizations !== foldedQuants.has(row.key);
     // A GGUF is favorited by its quant, never the whole repo.
     const canStar = !(
       quiet ||
@@ -2422,273 +2863,354 @@ export function ComposerModelPicker({
     );
     const actionClass =
       "opacity-0 transition-opacity group-hover/row:opacity-100 group-data-[active=true]/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100";
+    const rowActive = highlight && index === active;
     const rowEl = (
-      <div
+      <MemoRow
         key={row.key}
-        // biome-ignore lint/a11y/useSemanticElements: rows carry their own buttons, which <option> cannot.
-        role="option"
-        aria-expanded={offering ? offerOpen : undefined}
-        tabIndex={-1}
-        aria-selected={isChosen}
-        data-row-index={index}
-        data-active={highlight && index === active ? "true" : undefined}
-        onMouseMove={() => {
-          setActive(index);
-          setHighlight(true);
-        }}
-        onClick={() => pick(row)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            pick(row);
-          }
-        }}
-        className={cn(
-          "group/row flex h-[calc(32px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-2 rounded-full pr-[calc(6px*var(--ui-space-scale,1))] pl-3 text-ui-14 transition-colors",
-          highlight && index === active && "bg-sidebar-accent",
-        )}
-      >
-        {resolving === row.key || npuProgress ? (
-          <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-        ) : (
-          <span className={cn("text-foreground", dimmed && DIM_CLASS)}>
-            <RowMark row={row} />
-          </span>
-        )}
-        <span
-          className={cn(
-            "flex min-w-0 flex-1 items-center gap-1.5",
-            dimmed && DIM_CLASS,
-          )}
-        >
-          <span className="truncate">{row.label}</span>
-          {manyQuants ? (
-            <HugeiconsIcon
-              icon={ChevronRightStandardIcon}
-              strokeWidth={1.75}
-              className={cn(
-                "size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground opacity-0 transition-[transform,opacity] duration-150 group-hover/row:opacity-100 group-data-[active=true]/row:opacity-100",
-                quantsOpen && "rotate-90",
-              )}
-            />
-          ) : null}
-          {row.loaded ? (
-            <LoadedDot label={row.label} onEject={() => eject(row)} />
-          ) : null}
-        </span>
-        {row.partial ? (
-          <AmberTag
-            label="Partial"
-            hint={row.resumable ? PARTIAL_HINT.resumable : PARTIAL_HINT.restart}
-          />
-        ) : onDisk.some((v) => v.update_available) ? (
-          <AmberTag label="Update" hint={UPDATE_HINT} />
-        ) : null}
-        {soleQuant ? <QuantPill quant={soleQuant} /> : null}
-        {npuProgress || (npuOffer && row.npu?.size_gb != null) ? (
-          <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
-            {npuProgress ?? npuSizeLabel(row.npu?.size_gb ?? null)}
-          </span>
-        ) : row.kind === "npu" ? (
-          <QuantPill quant="NPU" />
-        ) : null}
-        {isChosen && !row.loaded ? (
-          <HugeiconsIcon
-            icon={Tick02Icon}
-            strokeWidth={2}
-            className="size-4 shrink-0 text-muted-foreground"
-          />
-        ) : null}
-        <span
-          role="toolbar"
-          aria-label={`${row.label} actions`}
-          className="flex shrink-0 items-center"
-          // Menus portal out but bubble through React: keep their clicks off the row.
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => event.stopPropagation()}
-        >
-          {offering ? (
-            <FitBadge status={fit} revealOnHover={!isChosen} />
-          ) : null}
-          {row.kind !== "external" && !npuOffer ? (
-            <>
-              <ModelRowMenu
-                ariaLabel={`More options for ${row.label}`}
-                cachePath={
-                  row.gguf || row.cached ? { repoId: row.id } : undefined
+        deps={[
+          row,
+          index,
+          isChosen,
+          favorite,
+          rowActive,
+          offerOpen,
+          onDisk,
+          resolving === row.key,
+          npuProgress,
+          fit,
+          noGpu,
+          quantsOpen,
+          viewed,
+          source,
+          chosen,
+          activeVariant,
+          localInfo,
+          chatModels,
+          row.npu ? npuCatalog : null,
+          paramLabel,
+        ]}
+        render={() => (
+          <div
+            // biome-ignore lint/a11y/useSemanticElements: rows carry their own buttons, which <option> cannot.
+            role="option"
+            aria-expanded={
+              offering || (row.kind === "hub" && row.hub?.isGguf) || offerOpen
+                ? offerOpen
+                : undefined
+            }
+            tabIndex={-1}
+            id={`${OPTION_ID}-${index}`}
+            aria-selected={isChosen}
+            data-row-index={index}
+            data-active={rowActive ? "true" : undefined}
+            // Shared with the header picker's rows: the Playwright drivers select by these.
+            data-model-picker-option=""
+            data-model-picker-active-option={rowActive ? "true" : undefined}
+            onMouseMove={() => {
+              setActive(index);
+              setHighlight(true);
+            }}
+            onClick={() => pick(row)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                pick(row);
+                return;
+              }
+              // A focused row (Tab, a drop, a screen reader) steps to its neighbour, as header rows do.
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                const next = index + (event.key === "ArrowDown" ? 1 : -1);
+                const el = listRef.current?.querySelector<HTMLElement>(
+                  `[data-row-index="${next}"]`,
+                );
+                if (el) {
+                  el.focus();
+                  setActive(next);
+                  setHighlight(true);
                 }
-                onReveal={revealFor(row)}
-                details={
-                  row.tab === DEVICE_TAB ? (
-                    <ModelFacts
-                      facts={modelFacts(
-                        row,
-                        onDisk,
-                        chatModels.find(
-                          (m) =>
-                            m.id.toLowerCase() ===
-                            (row.loadedId ?? row.id).toLowerCase(),
-                        ),
-                      )}
-                    />
-                  ) : undefined
-                }
-                update={soleQuant ? updateFor(row, onDisk[0]) : undefined}
-                pin={
-                  canStar
-                    ? {
-                        pinned: favorite,
-                        pinLabel: "Favorite",
-                        unpinLabel: "Remove favorite",
-                        onToggle: () => toggleFavorite(row),
-                      }
-                    : undefined
-                }
-                items={[
-                  ...(row.loaded
-                    ? [
-                        {
-                          key: "eject",
-                          label: "Eject",
-                          icon: (
-                            <HugeiconsIcon
-                              icon={RemoveCircleIcon}
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                          ),
-                          onSelect: () => eject(row),
-                          destructive: true,
-                        },
-                      ]
-                    : []),
-                  {
-                    key: "run-settings",
-                    label: "Run settings",
-                    icon: (
-                      <HugeiconsIcon
-                        icon={Settings02Icon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                    ),
-                    onSelect: () => openSettings(row),
-                  },
-                  ...(hubParts(row.id)
-                    ? [
-                        {
-                          key: "model-card",
-                          label: "Open model card",
-                          icon: (
-                            <HugeiconsIcon
-                              icon={DashboardCircleIcon}
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                          ),
-                          onSelect: () => openModelCard(row),
-                        },
-                      ]
-                    : []),
-                ]}
-                del={deleteFor(row)}
-                buttonClassName={cn(ACTION_DOTS, actionClass)}
-                iconClassName="composer-row-dots"
-                contentClassName="composer-row-menu"
-              />
-              <ModelLoadSettingsAction
-                ariaLabel={`Run settings for ${row.label}`}
-                tooltip="Load settings"
-                onConfigure={() => openSettings(row)}
-                className={cn(ACTION_ROUND, actionClass)}
-                iconClassName="composer-row-icon"
-              />
-            </>
-          ) : null}
-          {row.kind === "external" ? (
-            <>
-              <ModelRowMenu
-                ariaLabel={`More options for ${row.label}`}
-                items={[
-                  {
-                    key: "model-settings",
-                    label: "Model settings",
-                    icon: (
-                      <HugeiconsIcon
-                        icon={Settings02Icon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                    ),
-                    onSelect: () => openConnectedSettings(row),
-                  },
-                  {
-                    key: "model-info",
-                    label: "Model info",
-                    icon: (
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                    ),
-                    onSelect: () => openConnectedSettings(row, "info"),
-                  },
-                  {
-                    key: "copy-id",
-                    label: "Copy model ID",
-                    icon: (
-                      <HugeiconsIcon
-                        icon={Copy01Icon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                    ),
-                    onSelect: () => void copyModelId(row),
-                  },
-                ]}
-                buttonClassName={cn(ACTION_DOTS, actionClass)}
-                iconClassName="composer-row-dots"
-                contentClassName="composer-row-menu"
-              />
-              <ModelLoadSettingsAction
-                ariaLabel={`Settings for ${row.label}`}
-                tooltip="Model settings"
-                onConfigure={() => openConnectedSettings(row)}
-                className={cn(ACTION_ROUND, actionClass)}
-                iconClassName="composer-row-icon"
-              />
-            </>
-          ) : null}
-          {canStar ? (
-            <Hint label={favorite ? "Remove favorite" : "Favorite"}>
-              <button
-                type="button"
-                aria-label={
-                  favorite
-                    ? `Remove ${row.label} from favorites`
-                    : `Favorite ${row.label}`
-                }
-                aria-pressed={favorite}
-                onClick={() => toggleFavorite(row)}
-                className={cn(
-                  ACTION_ROUND,
-                  favorite ? "text-foreground" : actionClass,
-                )}
-              >
+              }
+            }}
+            className={cn(
+              "group/row flex h-[calc(32px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-2 rounded-full pr-[calc(6px*var(--ui-space-scale,1))] pl-3 text-ui-14 transition-colors",
+              rowActive && "bg-sidebar-accent",
+            )}
+          >
+            {resolving === row.key || npuProgress ? (
+              <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
+            ) : (
+              <span className={cn("text-foreground", dimmed && DIM_CLASS)}>
+                <RowMark row={row} />
+              </span>
+            )}
+            <span className="flex min-w-0 flex-1 items-center gap-1.5">
+              <span className={cn("truncate", dimmed && DIM_CLASS)}>
+                {row.label}
+              </span>
+              {/* Right after the name, at full tone, so the warning reads as the model's. */}
+              {offering ? (
+                <span className="-ml-0.5 flex shrink-0">
+                  <FitBadge
+                    status={fit}
+                    revealOnHover={!isChosen}
+                    compact={true}
+                  />
+                </span>
+              ) : null}
+              {manyQuants ? (
                 <HugeiconsIcon
-                  icon={StarIcon}
+                  icon={ChevronRightStandardIcon}
                   strokeWidth={1.75}
                   className={cn(
-                    "composer-row-icon",
-                    favorite && "[&_path]:fill-current",
+                    "size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground opacity-0 transition-[transform,opacity] duration-150 group-hover/row:opacity-100 group-data-[active=true]/row:opacity-100",
+                    quantsOpen && "rotate-90",
                   )}
                 />
-              </button>
-            </Hint>
-          ) : null}
-        </span>
-      </div>
+              ) : null}
+              {row.loaded ? (
+                <LoadedDot label={row.label} onEject={() => eject(row)} />
+              ) : null}
+            </span>
+            {row.partial ? (
+              <AmberTag
+                label="Partial"
+                hint={
+                  row.resumable ? PARTIAL_HINT.resumable : PARTIAL_HINT.restart
+                }
+              />
+            ) : onDisk.some((v) => v.update_available) ? (
+              <AmberTag label="Update" hint={UPDATE_HINT} />
+            ) : null}
+            {soleQuant ? <QuantPill quant={soleQuant} /> : null}
+            {paramLabel ? (
+              <span className={cn("flex shrink-0", dimmed && DIM_CLASS)}>
+                <ParamChip label={paramLabel} />
+              </span>
+            ) : null}
+            {npuProgress || (npuOffer && row.npu?.size_gb != null) ? (
+              <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
+                {npuProgress ?? npuSizeLabel(row.npu?.size_gb ?? null)}
+              </span>
+            ) : row.kind === "npu" ? (
+              <QuantPill quant="NPU" />
+            ) : null}
+            {isChosen && !row.loaded ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="size-4 shrink-0 text-muted-foreground"
+              />
+            ) : null}
+            <span
+              role="toolbar"
+              aria-label={`${row.label} actions`}
+              className="flex shrink-0 items-center"
+              // Menus portal out but bubble through React: keep their clicks off the row.
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              {row.kind !== "external" && !npuOffer ? (
+                <>
+                  <ModelRowMenu
+                    ariaLabel={`More options for ${row.label}`}
+                    cachePath={
+                      row.gguf || row.cached ? { repoId: row.id } : undefined
+                    }
+                    onReveal={revealFor(row)}
+                    details={
+                      row.tab === DEVICE_TAB ? (
+                        <ModelFacts
+                          facts={modelFacts(
+                            row,
+                            onDisk,
+                            chatModels.find(
+                              (m) =>
+                                m.id.toLowerCase() ===
+                                (row.loadedId ?? row.id).toLowerCase(),
+                            ),
+                          )}
+                        />
+                      ) : undefined
+                    }
+                    update={soleQuant ? updateFor(row, onDisk[0]) : undefined}
+                    pin={
+                      canStar
+                        ? {
+                            pinned: favorite,
+                            pinLabel: "Favorite",
+                            unpinLabel: "Remove favorite",
+                            onToggle: () => toggleFavorite(row),
+                          }
+                        : undefined
+                    }
+                    items={[
+                      ...(row.loaded
+                        ? [
+                            {
+                              key: "eject",
+                              label: "Eject",
+                              icon: (
+                                <HugeiconsIcon
+                                  icon={RemoveCircleIcon}
+                                  strokeWidth={1.75}
+                                  className="size-icon"
+                                />
+                              ),
+                              onSelect: () => eject(row),
+                              destructive: true,
+                            },
+                          ]
+                        : []),
+                      {
+                        key: "run-settings",
+                        label: "Run settings",
+                        icon: (
+                          <HugeiconsIcon
+                            icon={Settings02Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                        ),
+                        onSelect: () => openSettings(row),
+                      },
+                      ...(hubParts(row.id)
+                        ? [
+                            {
+                              key: "model-card",
+                              label: "Open model card",
+                              icon: (
+                                <HugeiconsIcon
+                                  icon={DashboardCircleIcon}
+                                  strokeWidth={1.75}
+                                  className="size-icon"
+                                />
+                              ),
+                              onSelect: () => openModelCard(row),
+                            },
+                          ]
+                        : []),
+                    ]}
+                    del={deleteFor(row)}
+                    buttonClassName={cn(ACTION_DOTS, actionClass)}
+                    iconClassName="composer-row-dots"
+                    contentClassName="composer-row-menu"
+                  />
+                  <ModelLoadSettingsAction
+                    ariaLabel={`Run settings for ${row.label}`}
+                    tooltip="Load settings"
+                    onConfigure={() => openSettings(row)}
+                    className={cn(ACTION_ROUND, actionClass)}
+                    iconClassName="composer-row-icon"
+                  />
+                </>
+              ) : null}
+              {row.kind === "external" ? (
+                <>
+                  <ModelRowMenu
+                    ariaLabel={`More options for ${row.label}`}
+                    items={[
+                      {
+                        key: "model-settings",
+                        label: "Model settings",
+                        icon: (
+                          <HugeiconsIcon
+                            icon={Settings02Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                        ),
+                        onSelect: () => openConnectedSettings(row),
+                      },
+                      {
+                        key: "model-info",
+                        label: "Model info",
+                        icon: (
+                          <HugeiconsIcon
+                            icon={InformationCircleIcon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                        ),
+                        onSelect: () => openConnectedSettings(row, "info"),
+                      },
+                      {
+                        key: "copy-id",
+                        label: "Copy model ID",
+                        icon: (
+                          <HugeiconsIcon
+                            icon={Copy01Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                        ),
+                        onSelect: () => void copyModelId(row),
+                      },
+                    ]}
+                    buttonClassName={cn(ACTION_DOTS, actionClass)}
+                    iconClassName="composer-row-dots"
+                    contentClassName="composer-row-menu"
+                  />
+                  <ModelLoadSettingsAction
+                    ariaLabel={`Settings for ${row.label}`}
+                    tooltip="Model settings"
+                    onConfigure={() => openConnectedSettings(row)}
+                    className={cn(ACTION_ROUND, actionClass)}
+                    iconClassName="composer-row-icon"
+                  />
+                </>
+              ) : null}
+              {canStar ? (
+                <Hint label={favorite ? "Remove favorite" : "Favorite"}>
+                  <button
+                    type="button"
+                    aria-label={
+                      favorite
+                        ? `Remove ${row.label} from favorites`
+                        : `Favorite ${row.label}`
+                    }
+                    aria-pressed={favorite}
+                    onClick={() => toggleFavorite(row)}
+                    className={cn(
+                      ACTION_ROUND,
+                      favorite ? FAVORITE_STAR : actionClass,
+                    )}
+                  >
+                    <HugeiconsIcon
+                      icon={StarIcon}
+                      strokeWidth={1.75}
+                      className={cn(
+                        "composer-row-icon",
+                        favorite && "[&_path]:fill-current",
+                      )}
+                    />
+                  </button>
+                </Hint>
+              ) : null}
+            </span>
+          </div>
+        )}
+      />
     );
+    // "VRAM usage bar": the chosen GGUF's weights, context and draft, as the header picker charted it.
+    const memoryQuant = isChosen
+      ? (row.loadedQuant ?? activeVariant ?? soleQuant)
+      : null;
+    const memoryVariant = memoryQuant
+      ? onDisk.find((v) => v.quant.toLowerCase() === memoryQuant.toLowerCase())
+      : undefined;
+    const memoryBar =
+      showMemoryBar && row.kind === "gguf" && memoryQuant ? (
+        // Draws nothing where VRAM is not a ceiling (Apple, shared iGPU memory), so no wrapper.
+        <ModelMemoryBarFor
+          key={`memory:${row.key}`}
+          repoId={row.id}
+          quant={memoryQuant}
+          sizeBytes={memoryVariant ? quantBytes(memoryVariant) : null}
+          loadId={row.gguf?.load_id ?? null}
+          gpuGb={inferenceGpu.memoryTotalGb}
+          compact={true}
+          className="mt-0.5 mr-3 mb-1.5 ml-[calc(40px*var(--ui-space-scale,1))] w-auto shrink-0"
+        />
+      ) : null;
     const favoriteKey =
       viewed === FAVORITES_TAB && !query ? favoriteKeyOf(row) : null;
     if (favoriteKey) {
@@ -2708,16 +3230,18 @@ export function ComposerModelPicker({
           }
         >
           {rowEl}
+          {memoryBar}
           {quantsOpen ? renderDeviceQuants(row, onDisk) : null}
         </div>
       );
     }
-    if (!(offerOpen || quantsOpen)) {
+    if (!(offerOpen || quantsOpen || memoryBar)) {
       return rowEl;
     }
     return (
       <Fragment key={row.key}>
         {rowEl}
+        {memoryBar}
         {offerOpen ? renderOffer(row) : renderDeviceQuants(row, onDisk)}
       </Fragment>
     );
@@ -2777,7 +3301,7 @@ export function ComposerModelPicker({
               }
               aria-pressed={starred}
               onClick={() => togglePinned(row.id, variant.quant)}
-              className={cn(button, starred ? "text-foreground" : reveal)}
+              className={cn(button, starred ? FAVORITE_STAR : reveal)}
             >
               <HugeiconsIcon
                 icon={StarIcon}
@@ -2794,51 +3318,91 @@ export function ComposerModelPicker({
     );
   };
 
+  // The header picker's quant row: a mono label with its state in words, no pill.
+  const renderQuantRow = (
+    variant: GgufVariantDetail,
+    {
+      loaded,
+      recommended,
+      onPick,
+      actions,
+    }: {
+      loaded: boolean;
+      recommended: boolean;
+      onPick: () => void;
+      actions: ReactNode;
+    },
+  ) => {
+    const fit = classifyVariantFitOnCard(quantBudget.fitOf, variant, 0);
+    return (
+      <div
+        key={variant.filename || variant.quant}
+        className="group/row flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center rounded-full pr-[calc(6px*var(--ui-space-scale,1))] transition-colors hover:bg-sidebar-accent"
+      >
+        <button
+          type="button"
+          data-model-picker-option=""
+          onClick={onPick}
+          className="flex h-full min-w-0 flex-1 items-center gap-2 pr-2 pl-[calc(40px*var(--ui-space-scale,1))] text-left"
+        >
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span
+              className={cn(
+                "truncate font-mono text-xs",
+                fit === "oom" && "!text-gray-500 dark:!text-gray-400",
+              )}
+            >
+              {ggufVariantPickerLabel(variant)}
+            </span>
+            <QuantStatus
+              variant={variant}
+              loaded={loaded}
+              recommended={recommended}
+            />
+          </span>
+          <span className="flex shrink-0 items-center gap-1.5">
+            <FitBadge status={fit} />
+            <span className="font-mono text-ui-10 tabular-nums text-muted-foreground">
+              {formatBytes(quantBytes(variant))}
+            </span>
+          </span>
+        </button>
+        {actions}
+      </div>
+    );
+  };
+
   const renderDeviceQuants = (row: Row, list: GgufVariantDetail[]) => {
     const loadedQuant = (
       row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null)
     )?.toLowerCase();
+    const { ordered, recommended } = pickerOrderedGgufVariants(
+      list,
+      null,
+      quantBudget,
+    );
     return (
-      <div className="flex shrink-0 flex-col gap-0.5">
-        {list.map((variant) => {
-          const inMemory =
-            Boolean(row.loaded) && variant.quant.toLowerCase() === loadedQuant;
-          return (
-            <div
-              key={variant.quant}
-              className="group/row flex h-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center rounded-full pr-[calc(6px*var(--ui-space-scale,1))] transition-colors hover:bg-sidebar-accent"
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  if (!source) {
-                    return;
-                  }
-                  if (row.id !== chosen?.id) {
-                    setPending(row);
-                  }
-                  supersede();
-                  source.onPick(row.id, ggufMeta(row, variant, true));
-                  resetView();
-                }}
-                className="flex h-full min-w-0 flex-1 items-center gap-2 pr-2 pl-[calc(40px*var(--ui-space-scale,1))] text-left"
-              >
-                <QuantPill quant={variant.quant} />
-                {variant.update_available ? (
-                  <AmberTag label="Update" hint={UPDATE_HINT} />
-                ) : null}
-                {inMemory ? (
-                  <span className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success" />
-                ) : null}
-                <span className="flex-1" />
-                <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
-                  {formatBytes(quantBytes(variant))}
-                </span>
-              </button>
-              {renderQuantActions(row, variant, true)}
-            </div>
-          );
-        })}
+      <div className="flex shrink-0 flex-col">
+        {ordered.map((variant) =>
+          renderQuantRow(variant, {
+            loaded:
+              Boolean(row.loaded) &&
+              variant.quant.toLowerCase() === loadedQuant,
+            recommended: recommended.has(variant.quant),
+            onPick: () => {
+              if (!source) {
+                return;
+              }
+              if (row.id !== chosen?.id) {
+                setPending(row);
+              }
+              supersede();
+              source.onPick(row.id, ggufMeta(row, variant, true));
+              resetView();
+            },
+            actions: renderQuantActions(row, variant, true),
+          }),
+        )}
       </div>
     );
   };
@@ -2856,72 +3420,46 @@ export function ComposerModelPicker({
       );
     }
     if (offer.failed || offer.quants.length === 0) {
+      const target = offer.target;
       return (
-        <div className="flex h-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center pl-[calc(40px*var(--ui-space-scale,1))] text-ui-13 text-muted-foreground">
-          Couldn't list quantizations
+        <div className="flex min-h-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 pr-[calc(6px*var(--ui-space-scale,1))] pl-[calc(40px*var(--ui-space-scale,1))] text-ui-13 text-muted-foreground">
+          <span className="min-w-0 flex-1">
+            {offer.error ?? "Couldn't list quantizations"}
+          </span>
+          {offer.failed && target ? (
+            <button
+              type="button"
+              onClick={() => void toggleOffer(row, target, supersede(), true)}
+              className="shrink-0 rounded-full px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-sidebar-accent"
+            >
+              Retry
+            </button>
+          ) : null}
         </div>
       );
     }
-    const recommendedQuant = offer.defaultVariant?.toLowerCase();
+    const { ordered, recommended } = pickerOrderedGgufVariants(
+      offer.quants,
+      offer.defaultVariant,
+      quantBudget,
+    );
+    const loadedQuant = row.loaded ? row.loadedQuant?.toLowerCase() : null;
     return (
-      <div className="flex shrink-0 flex-col gap-0.5">
-        {offer.quants.map((variant) => {
-          const variantFit = fitOf(quantBytes(variant));
-          const variantDimmed =
-            isOverBudget(variantFit) && !(variantFit === "ram" && noGpu);
-          return (
-            <div
-              key={variant.quant}
-              className="group/row flex h-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center rounded-full pr-[calc(6px*var(--ui-space-scale,1))] transition-colors hover:bg-sidebar-accent"
-            >
-              <button
-                type="button"
-                onClick={() => pickOfferQuant(row, variant, !offer.mlx)}
-                className="flex h-full min-w-0 flex-1 items-center gap-2 pr-2 pl-[calc(40px*var(--ui-space-scale,1))] text-left text-ui-13"
-              >
-                <span
-                  className={cn(
-                    "flex min-w-0 items-center gap-2",
-                    variantDimmed && DIM_CLASS,
-                  )}
-                >
-                  <QuantPill quant={variant.quant} />
-                  {variant.partial ? (
-                    <AmberTag label="Partial" hint={PARTIAL_HINT.variant} />
-                  ) : null}
-                  {variant.quant.toLowerCase() === recommendedQuant ? (
-                    <span className="shrink-0 text-ui-11 text-muted-foreground">
-                      Recommended
-                    </span>
-                  ) : null}
-                </span>
-                <span className="flex-1" />
-                {variant.downloaded ? (
-                  <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                    className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
-                  />
-                ) : null}
-                <FitBadge status={variantFit} />
-                <span
-                  className={cn(
-                    "shrink-0 text-ui-12 tabular-nums text-muted-foreground",
-                    variantDimmed && DIM_CLASS,
-                  )}
-                >
-                  {formatBytes(quantBytes(variant))}
-                </span>
-              </button>
-              {renderQuantActions(
-                row,
-                variant,
-                variant.downloaded === true,
-                !offer.mlx,
-              )}
-            </div>
-          );
-        })}
+      <div className="flex shrink-0 flex-col">
+        {ordered.map((variant) =>
+          renderQuantRow(variant, {
+            loaded: variant.quant.toLowerCase() === loadedQuant,
+            recommended: recommended.has(variant.quant),
+            onPick: () =>
+              pickOfferQuant(row, variant, !offer.mlx, offer.hasVision),
+            actions: renderQuantActions(
+              row,
+              variant,
+              variant.downloaded === true,
+              !offer.mlx,
+            ),
+          }),
+        )}
       </div>
     );
   };
@@ -3008,17 +3546,34 @@ export function ComposerModelPicker({
     return renderSections();
   };
 
+  // The first header jumps to the sections below it, as the header picker's Unsloth label did.
+  const renderJumps = (below: readonly ListSection[]) => {
+    const targets = below.filter((s) => JUMP_LABEL[s] && SECTION_ICON[s]);
+    if (targets.length === 0) {
+      return undefined;
+    }
+    return targets.map((target) => (
+      <Hint key={target} label={JUMP_LABEL[target] ?? ""}>
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={() => jumpTo(target)}
+          aria-label={JUMP_LABEL[target]}
+          className="grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+        >
+          {SECTION_ICON[target]}
+        </button>
+      </Hint>
+    ));
+  };
+
   const renderSections = () => {
     if (listSections.length === 0) {
       return shownRows.length === 0 ? renderEmpty() : shownRows.map(renderRow);
     }
     const indexOf = new Map(shownRows.map((row, i) => [row.key, i]));
     const out: ReactNode[] = [];
-    const anyRows = listSections.some(
-      (section) =>
-        section !== "custom" &&
-        foundRows.some((row) => row.section === section),
-    );
+    const anyRows = sectionsHaveRows(listSections, foundRows);
     if (!anyRows) {
       out.push(renderEmpty());
     }
@@ -3027,12 +3582,14 @@ export function ComposerModelPicker({
       out.push(
         <SectionHeader
           key={`section:${section}`}
+          section={section}
           label={SECTION_LABEL[section]}
           icon={SECTION_ICON[section]}
           divider={i > 0 || !anyRows}
           collapsed={collapsed}
           onToggle={() => toggleSection(section)}
           actions={section === "custom" ? customFolders.actions : undefined}
+          trailing={i === 0 ? renderJumps(listSections.slice(1)) : undefined}
         />,
       );
       if (collapsed) {
@@ -3301,24 +3858,36 @@ export function ComposerModelPicker({
                   />
                 ))}
               </div>
-              {chosenLoaded && !pending && !modelLoading ? (
+              {(chosenLoaded || loadedModels.length > 0) &&
+              !pending &&
+              !modelLoading ? (
                 <button
                   type="button"
                   aria-label={
                     ejectsAll
                       ? "Eject all models"
-                      : `Eject ${chosenName ?? "model"}`
+                      : `Eject ${
+                          chosenLoaded
+                            ? (chosenName ?? "model")
+                            : modelDisplayName(loadedModels[0]?.id ?? "model")
+                        }`
                   }
                   onClick={() => {
                     if (ejectsAll) {
                       source?.ejectAll();
+                    } else if (!chosenLoaded && loadedModels[0]) {
+                      // Another chat's model holds memory while this one's is released.
+                      source?.eject(loadedModels[0].id);
                     } else if (chosen) {
                       eject(chosen);
                     } else {
                       source?.eject(checkpoint ?? undefined);
                     }
                   }}
-                  className="ml-auto flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors hover:bg-sidebar-accent"
+                  className={cn(
+                    "ml-auto flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors",
+                    EJECT_PILL_HOVER,
+                  )}
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -3352,11 +3921,11 @@ export function ComposerModelPicker({
                 strokeWidth={1.75}
                 className="size-4 shrink-0 text-muted-foreground"
               />
-              <input
-                ref={searchRef}
+              <SearchField
+                inputRef={searchRef}
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={onSearchKeyDown}
+                onCommit={setQuery}
+                onNavKey={onSearchNavKey}
                 placeholder={
                   viewed === RECOMMENDED_TAB
                     ? "Search models to download"
@@ -3368,6 +3937,12 @@ export function ComposerModelPicker({
                 }
                 aria-label="Search models"
                 aria-controls="composer-model-picker-list"
+                aria-activedescendant={
+                  highlight && active >= 0 && active < shownRows.length
+                    ? `${OPTION_ID}-${active}`
+                    : undefined
+                }
+                data-model-picker-search-input=""
                 className="min-w-0 flex-1 bg-transparent text-ui-14 outline-none placeholder:text-muted-foreground"
               />
               {viewed === DEVICE_TAB ? (
@@ -3498,6 +4073,7 @@ export function ComposerModelPicker({
                 hubScrollRef.current = node;
               }}
               id="composer-model-picker-list"
+              data-model-picker-list=""
               onMouseLeave={() => setHighlight(false)}
               // biome-ignore lint/a11y/useSemanticElements: a <select> cannot hold each row's buttons.
               role="listbox"
@@ -3550,7 +4126,10 @@ export function ComposerModelPicker({
                     : source?.eject(checkpoint ?? undefined)
                 }
                 // A wash, since this bar is already the muted tone.
-                className="flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+                className={cn(
+                  "flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))]",
+                  EJECT_PILL_HOVER,
+                )}
               >
                 <HugeiconsIcon
                   icon={RemoveCircleIcon}
@@ -3611,10 +4190,21 @@ export function ComposerModelPicker({
                       key={variant.quant}
                       type="button"
                       onClick={() => pickQuant(variant)}
-                      className="flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2 rounded-full px-3 text-left text-ui-14 transition-colors hover:bg-sidebar-accent"
+                      className="flex h-[calc(28px*var(--ui-space-scale,1))] items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-sidebar-accent"
                     >
-                      <span className="flex-1 truncate">{variant.quant}</span>
-                      <span className="text-ui-12 tabular-nums text-muted-foreground">
+                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                        <span className="truncate font-mono text-xs">
+                          {ggufVariantPickerLabel(variant)}
+                        </span>
+                        {variant.update_available ? (
+                          <StatusTag
+                            tone="amber"
+                            label="Update"
+                            hint={UPDATE_HINT}
+                          />
+                        ) : null}
+                      </span>
+                      <span className="font-mono text-ui-10 tabular-nums text-muted-foreground">
                         {formatBytes(quantBytes(variant))}
                       </span>
                       <HugeiconsIcon
@@ -3634,7 +4224,13 @@ export function ComposerModelPicker({
             {showThinkingSwitch ? (
               <SwitchRow
                 label="Thinking"
-                hint={reasoning.lockedOn ? "Always on" : undefined}
+                hint={
+                  reasoning.lockedOn
+                    ? "Always on"
+                    : reasoning.disabled
+                      ? "Load a model first"
+                      : undefined
+                }
                 checked={reasoning.enabled}
                 disabled={reasoning.lockedOn || reasoning.disabled}
                 onChange={reasoning.setEnabled}
@@ -3646,6 +4242,13 @@ export function ComposerModelPicker({
                 checked={reasoning.preserve}
                 disabled={reasoning.disabled}
                 onChange={reasoning.setPreserve}
+              />
+            ) : null}
+            {showFastSwitch ? (
+              <SwitchRow
+                label="Fast mode"
+                checked={reasoning.fast}
+                onChange={reasoning.setFast}
               />
             ) : null}
             {showEffort ? (

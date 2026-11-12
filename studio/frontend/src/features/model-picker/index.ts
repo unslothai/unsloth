@@ -125,3 +125,6 @@ export {
 export type { PickerFitStatus } from "./components/model-selector/media-picker-fit";
 export { pinDropAnchor } from "./components/model-selector/pinned-models";
 export { usePinnedRowDrag } from "./components/model-selector/use-pinned-row-drag";
+export { describeVariantListingError } from "./components/model-selector/variant-listing-error";
+export { pickerOrderedGgufVariants } from "./components/model-selector/variant-order";
+export { ggufVariantPickerLabel } from "./components/model-selector/variant-presentation";

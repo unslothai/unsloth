@@ -22,6 +22,7 @@ import {
   orderBySection,
   pinCoversId,
   repoSection,
+  sectionsHaveRows,
   sliderLevels,
   sliderValue,
 } from "../src/components/assistant-ui/composer-model-picker/picker-model.ts";
@@ -477,9 +478,12 @@ test("on-device row menus open with the model's details", () => {
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /<ModelFacts\s+facts=\{modelFacts\(/);
-  for (const label of ["Format", "Size", "Parameters", "From"]) {
+  for (const label of ["Quant", "Disk space", "Parameters", "Supports"]) {
     assert.match(picker, new RegExp(`\\["${label}"`));
   }
+  // The format rides on the quant ("UD-Q4_K_XL GGUF"); the section is not repeated.
+  assert.match(picker, /\["Quant", withFormat\(onDisk\[0\]\.quant\)\]/);
+  assert.doesNotMatch(picker, /\["From"/);
   const menu = readSrc(
     "features/model-picker/components/model-selector/model-row-menu.tsx",
   );
@@ -490,7 +494,10 @@ test("the details menu shows modalities with the Model Hub's coloured icons", ()
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /<CapabilityGlyph capability=\{c\} \/>/);
+  assert.match(
+    picker,
+    /<CapabilityGlyph\s+capability=\{c\}\s+className=\{glyphScale\(c\.key, c\.label\)\}/,
+  );
   assert.match(picker, /detectHubCapabilities\(undefined, task, id\)/);
 });
 
@@ -515,4 +522,35 @@ test("the details menu lists every modality, preferring the backend's flags", ()
   assert.match(picker, /known\?\.speaks/);
   assert.match(picker, /known\?\.hasAudioInput \|\| known\?\.isAudio/);
   assert.match(picker, /"diffusion",\s+"embedding",/);
+});
+
+test("a search that finds only a custom-folder model is not reported empty", () => {
+  const cedar = row({
+    id: "/models/Cedar-7B",
+    kind: "local",
+    section: "custom",
+  });
+  const sections = ["unsloth", "fineTuned", "custom"] as const;
+  assert.equal(sectionsHaveRows([...sections], [cedar]), true);
+  assert.equal(sectionsHaveRows([...sections], []), false);
+  // A row outside the listed sections does not count.
+  assert.equal(sectionsHaveRows(["unsloth"], [cedar]), false);
+});
+
+test("the composer picker follows Settings > Chat > Model selection", () => {
+  const src = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  for (const setting of [
+    "expandQuantizations",
+    "showAllQuantizations",
+    "fitOnDeviceOnly",
+    "showMemoryBar",
+  ]) {
+    assert.match(
+      src,
+      new RegExp(`(?:\\bs|getState\\(\\))\\.${setting}\\b`),
+      `${setting} is not read`,
+    );
+  }
 });

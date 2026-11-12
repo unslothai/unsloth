@@ -223,7 +223,6 @@ import {
   curatedSizeBytesFor,
   curatedTotalParamsFor,
   groupForRepoId,
-  recommendedQuantForDevice,
 } from "./model-catalog";
 import {
   curatedPickerFit,
@@ -318,8 +317,11 @@ import {
   ggufVariantContextLength,
   groupGgufVariantsForPicker,
   h3PickerHasOnlyPrunedBuilds,
-  preferredGgufVariantByGroup,
 } from "./variant-presentation";
+import {
+  orderGgufVariantsForPicker,
+  recommendedQuantByGroup,
+} from "./variant-order";
 import {
   shouldMountVariantExpander,
   toggleAutoExpandedRow,
@@ -2933,26 +2935,17 @@ function GgufVariantExpander({
     () => groupGgufVariantsForPicker(variants ?? []),
     [variants],
   );
-  const preferredByGroup = useMemo(
-    () => preferredGgufVariantByGroup(variantGroups, defaultVariant),
-    [variantGroups, defaultVariant],
+  // Shared with the composer picker (variant-order.ts), so both lists recommend the same quant.
+  const effectiveRecommendedByGroup = useMemo(
+    () =>
+      recommendedQuantByGroup(variantGroups, defaultVariant, {
+        fitOf: getGgufFit,
+        anyBudget: anyBudgetGb,
+        budgetKnown,
+        cardGb,
+      }),
+    [variantGroups, defaultVariant, anyBudgetGb, budgetKnown, getGgufFit, cardGb],
   );
-
-  const effectiveRecommendedByGroup = useMemo(() => {
-    const recommended = new Map<string, string>();
-    for (const group of variantGroups) {
-      const preferred = preferredByGroup.get(group.key) ?? null;
-      if (!anyBudgetGb && !budgetKnown) {
-        if (preferred) recommended.set(group.key, preferred.quant);
-        continue;
-      }
-      const pick =
-        recommendedQuantForDevice(group.variants, getGgufFit, preferred, cardGb) ??
-        preferred;
-      if (pick) recommended.set(group.key, pick.quant);
-    }
-    return recommended;
-  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit, cardGb]);
   // Keyed by presentation group while footprints bucket by dependency_key, so ask via the variant.
   const recommendedQuantForVariant = useMemo(() => {
     const byVariant = new Map<GgufVariantDetail, string>();
@@ -2964,34 +2957,17 @@ function GgufVariantExpander({
     return byVariant;
   }, [variantGroups, effectiveRecommendedByGroup]);
 
-  const sortedVariants = useMemo(() => {
-    if (!variants) return variants;
-    // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight, 4 = OOM
-    const tierOf = (v: GgufVariantDetail) => {
-      const f = getVariantFit(v);
-      if (f === "oom") return 4;
-      const base = f === "fits" ? 0 : 1;
-      return v.downloaded ? base : base + 2;
-    };
-    return variantGroups.flatMap((group) => {
-      const recommended = effectiveRecommendedByGroup.get(group.key);
-      return [...group.variants].sort((a, b) => {
-        const aTier = tierOf(a);
-        const bTier = tierOf(b);
-        if (aTier !== bTier) return aTier - bTier;
-
-        const aIsRec = a.quant === recommended;
-        const bIsRec = b.quant === recommended;
-        if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
-
-        // fits: largest first; tight/OOM: smallest first (closest to fitting).
-        const fitsInGpu = aTier === 0 || aTier === 2;
-        return fitsInGpu
-          ? b.size_bytes - a.size_bytes
-          : a.size_bytes - b.size_bytes;
-      });
-    });
-  }, [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit]);
+  const sortedVariants = useMemo(
+    () =>
+      variants
+        ? orderGgufVariantsForPicker(
+            variantGroups,
+            getVariantFit,
+            effectiveRecommendedByGroup,
+          )
+        : variants,
+    [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit],
+  );
 
   const displayVariants = useMemo(() => {
     if (!sortedVariants) return sortedVariants;

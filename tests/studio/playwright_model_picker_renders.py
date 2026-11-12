@@ -3,6 +3,9 @@
 
 """Render counts in the chat model picker's On Device tab with 600 models.
 
+Chat's picker is the composer's model chip. Each of its rows renders one ModelRowMenu, so that is
+the per-row component counted here.
+
 Each quant probe answer must re-render only the row it describes, and a search keystroke must not
 re-render every row it leaves in place. Then the rows still work: arrow keys move focus between
 them, a row's menu opens, and a click picks the model. Counts come from a React DevTools hook
@@ -186,7 +189,9 @@ class MockApi:
         route.fulfill(status = 200, content_type = "application/json", body = json.dumps(payload))
 
 
-# Head 750; re-rendering every row per probe answer is tens of thousands.
+# One ModelRowMenu per row: the component whose re-renders stand for the row's.
+ROW = "ModelRowMenu"
+# Head 1350; re-rendering every row per probe answer is tens of thousands.
 SETTLE_BOUND = 3000
 # Rows that move must re-render (their option id carries the position): at most ~400 here.
 TYPING_BOUND = 1500
@@ -207,21 +212,21 @@ def wait_quiet(
     quiet_ms: int = 1500,
     limit_ms: int = 60_000,
 ) -> None:
-    """Waits until no React commit has rendered a ModelRow for `quiet_ms`."""
+    """Waits until no React commit has rendered a row (ROW) for `quiet_ms`."""
     page.evaluate(
-        """([quiet, limit]) => new Promise((resolve) => {
+        """([quiet, limit, row]) => new Promise((resolve) => {
           const start = performance.now();
           let last = -1, since = performance.now();
           const tick = () => {
             const now = performance.now();
-            const seen = window.__renders ? (window.__renders.ModelRow || 0) : 0;
+            const seen = window.__renders ? (window.__renders[row] || 0) : 0;
             if (seen !== last) { last = seen; since = now; }
             if (now - since >= quiet || now - start >= limit) return resolve();
             setTimeout(tick, 100);
           };
           tick();
         })""",
-        [quiet_ms, limit_ms],
+        [quiet_ms, limit_ms, ROW],
     )
 
 
@@ -236,8 +241,18 @@ def reload(page) -> None:
 
 
 def open_on_device(page) -> None:
-    page.get_by_text("Select model").first.click()
-    page.get_by_text("On Device").first.click()
+    tab = page.get_by_role("tab", name = "On Device").first
+    # A dependency-optimizing reload can close the picker between the two clicks: reopen once.
+    for attempt in range(2):
+        page.locator('[data-tour="chat-model-selector"]').first.click()
+        try:
+            # The tabs are icons; their names live in aria-label.
+            tab.wait_for(timeout = 15_000)
+            break
+        except PlaywrightTimeoutError:
+            if attempt == 1:
+                raise
+    tab.click()
     page.wait_for_function("() => /cached-gguf-0000/.test(document.body.innerText)", timeout = 60_000)
 
 
@@ -315,10 +330,8 @@ def main() -> int:
                         {
                             "rows": rows,
                             "variant_probes": api.variant_probes,
-                            "settle_ModelRow": settle.get("ModelRow", 0),
-                            "settle_ModelRowMenu": settle.get("ModelRowMenu", 0),
-                            "typing_ModelRow": typing.get("ModelRow", 0),
-                            "typing_ModelRowMenu": typing.get("ModelRowMenu", 0),
+                            "settle_rows": settle.get(ROW, 0),
+                            "typing_rows": typing.get(ROW, 0),
                             "matches": matches,
                             "quant_chips": chips,
                         }
@@ -356,14 +369,14 @@ def main() -> int:
         unexpected = [error for error in errors if "404" not in error]
         assert not unexpected, unexpected
         problems = []
-        if settle.get("ModelRow", 0) > SETTLE_BOUND:
+        if settle.get(ROW, 0) > SETTLE_BOUND:
             problems.append(
-                f"ModelRow re-rendered {settle['ModelRow']} times while {api.variant_probes} "
+                f"{ROW} re-rendered {settle[ROW]} times while {api.variant_probes} "
                 f"quant probes settled (bound {SETTLE_BOUND}): each answer re-renders every row"
             )
-        if typing.get("ModelRow", 0) > TYPING_BOUND:
+        if typing.get(ROW, 0) > TYPING_BOUND:
             problems.append(
-                f"ModelRow re-rendered {typing['ModelRow']} times while typing {QUERY!r} "
+                f"{ROW} re-rendered {typing[ROW]} times while typing {QUERY!r} "
                 f"(bound {TYPING_BOUND}): each keystroke re-renders every row"
             )
         assert not problems, "; ".join(problems)
