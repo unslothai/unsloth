@@ -7965,12 +7965,9 @@ const GeneratingIndicator: FC = () => {
   return <GeneratingStatus />;
 };
 
-// The parts plus what trails them while a pass waits on a tool or the model: assistant-ui's empty text part
-// (rendered here, with its fallback turned off) and GeneratingIndicator's status for the gap after a tool
-// result, until the next pass streams its first part. Both sit in one display:contents box that is this
-// component's own child, so React drops it before it appends that part: the reply's children only change
-// at the end. Removing one mid-list instead restyled the whole reply (Chromium's MathML UA :nth-child rules
-// flag every parent), every tool round.
+// The parts, then assistant-ui's empty text part (its fallback is off) and, after a tool result, the
+// next-round status. One display:contents box owned here, so React removes it before appending the next
+// part: a mid-list removal restyles the whole reply (Chromium's MathML UA :nth-child rules).
 const PartsWithRoundTail: FC<{ children: ReactNode }> = ({ children }) => {
   const tail = useAuiState(({ message }) =>
     runningReplyTail(message.status?.type === "running", message.content),
