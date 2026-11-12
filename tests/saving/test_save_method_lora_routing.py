@@ -388,6 +388,43 @@ def test_the_fsdp2_gather_placement_reads_the_canonical_method(spelling, canonic
     assert ns["_merged_save_method"]((), {"save_method": None}) is None
 
 
+@pytest.mark.parametrize("spelling", ["merged-4bit-forced", "Merged 4bit", "forced-merged-4bit"])
+def test_a_respelled_in_place_merge_is_refused_under_tensor_parallel(spelling):
+    refuse = _load(
+        "_refuse_tp_in_place_merge",
+        _TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit"),
+    )["_refuse_tp_in_place_merge"]
+
+    def fn(
+        save_directory,
+        tokenizer = None,
+        save_method = "merged_16bit",
+    ):
+        pass
+
+    for args, kwargs in ((("d", None, spelling), {}), (("d",), {"save_method": spelling})):
+        with pytest.raises(RuntimeError, match = "tensor parallel"):
+            refuse(fn, "save_pretrained_merged", args, kwargs)
+    refuse(fn, "save_pretrained_merged", ("d",), {"save_method": "merged-16bit"})
+
+
+@pytest.mark.parametrize("spelling", ["Merged_4bit", "merged-4bit", " MERGED 4BIT "])
+def test_unsloth_save_model_guards_a_respelled_merged_4bit(spelling):
+    """unsloth_save_model checked the guard before lowercasing, then merged into 4bit anyway."""
+    save_model = _load(
+        "unsloth_save_model",
+        torch = types.SimpleNamespace(save = None),
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        PreTrainedTokenizerBase = type("T", (), {}),
+        ProcessorMixin = type("P", (), {}),
+        _normalize_safe_serialization = lambda value: True,
+        get_token = lambda: None,
+    )["unsloth_save_model"]
+    with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
+        save_model(object(), None, "d", save_method = spelling)
+
+
 @pytest.mark.parametrize("spelling", ["Merged_4bit", "merged-4bit", " MERGED 4BIT "])
 def test_a_respelled_merged_4bit_still_hits_the_accuracy_guard(monkeypatch, tmp_path, spelling):
     model = _PeftModel()

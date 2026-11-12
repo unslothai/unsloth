@@ -1496,7 +1496,10 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
         )
     except (TypeError, ValueError):
         save_method = kwargs.get("save_method")
-    if isinstance(save_method, str) and save_method.lower().strip() in _TP_IN_PLACE_MERGES:
+    if (
+        isinstance(save_method, str)
+        and save_method.lower().strip().replace("-", "_").replace(" ", "_") in _TP_IN_PLACE_MERGES
+    ):
         raise RuntimeError(
             f'Unsloth: `{method}(save_method = "{save_method}")` merges the LoRA weights into the 4-bit base in '
             "place (merge_and_unload). On a tensor parallel model only rank 0 would end up with that merged "
@@ -1610,6 +1613,8 @@ def unsloth_save_model(
     elif "Unsloth 2x faster" not in commit_description:
         commit_description += " (Trained with Unsloth 2x faster)"
 
+    if isinstance(save_method, str):
+        save_method = save_method.lower().strip().replace("-", "_").replace(" ", "_")
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
@@ -1646,7 +1651,6 @@ def unsloth_save_model(
 
     _collect_garbage(before = clean_gpu_cache)
 
-    save_method = save_method.lower().replace(" ", "_")
     raise_if_merging_mistral_format_view(model, save_method)
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
