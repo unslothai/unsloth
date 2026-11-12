@@ -119,9 +119,10 @@ def _model_parts(message: dict) -> list:
     """Parts minus mcpToolOnly ones (modelVisibleMessage); only user rows keep attachments."""
     parts = message.get("content")
     if message.get("role") == "user":
-        # [] (nothing typed, or a restored backup) follows the live send: only the attachments.
-        # A reload adds a leading "\n" (toThreadMessage loads "", chat-adapter.ts joins with "\n").
-        # Content that is not a list never comes from a send, so it keeps that replay form.
+        # By choice, [] (nothing typed, or a restored backup) takes the live first send: only the
+        # attachments. A reload, and so every restored row, sends a leading "\n" instead
+        # (toThreadMessage loads "" and chat-adapter.ts joins with "\n"). Content that is not a
+        # list never comes from a send, so it keeps that replay form.
         loaded = parts if isinstance(parts, list) else [{"type": "text", "text": ""}]
         parts = _with_attachments({**message, "content": loaded})
     if not isinstance(parts, list):
