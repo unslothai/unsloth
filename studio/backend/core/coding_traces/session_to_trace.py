@@ -209,7 +209,7 @@ def _convert_row(
     # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
     pending: list[TraceMessage] = []
     pending_round = reasoned = imaged = None
-    # toOpenAIMessages joins collectTextParts with "\n", so an empty part before another adds one.
+    # collectTextParts and pendingTextParts join with "\n": an empty part beside another adds one.
     pieces, texted, split = 0, None, False
     for position, part in enumerate(_model_parts(message)):
         kind = part.get("type") if isinstance(part, dict) else None
