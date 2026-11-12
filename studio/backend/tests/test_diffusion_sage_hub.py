@@ -243,3 +243,125 @@ def test_no_download_while_kernels_is_not_importable(monkeypatch, hub_slot):
     fn, why = att._load_sage_hub_kernel()
     assert fn is None and "kernels package is not importable" in why
     assert att._SAGE_HUB_FAILED == []
+
+
+# sm89 route without the per-call device sync: same ops and arguments as the build's own sm89 route.
+
+
+def _fake_sm89_build(calls):
+    import torch
+
+    def per_thread_int8(q, k, km, **kw):
+        calls.append(("quant_qk", km.shape, kw))
+        return q.to(torch.int8), torch.ones(1), k.to(torch.int8), torch.ones(1)
+
+    def per_channel_fp8(v, **kw):
+        calls.append(("quant_v", kw))
+        return v, torch.ones(1), None
+
+    def attn_op(qi, ki, vf, o, qs, ks, vs, layout, causal, gran, scale, lse):
+        calls.append(("attn", layout, causal, gran, scale, lse))
+        o.fill_(3.0)
+        return torch.empty(0)
+
+    core = types.SimpleNamespace(
+        SM89_ENABLED = True,
+        per_thread_int8_triton = per_thread_int8,
+        per_channel_fp8 = per_channel_fp8,
+        sm89_qk_int8_sv_f8_accum_f16_fuse_v_scale_attn_inst_buf = attn_op,
+    )
+    stock = []
+
+    def sageattn(
+        q,
+        k,
+        v,
+        tensor_layout = "HND",
+        **kw,
+    ):
+        stock.append((tensor_layout, kw))
+        return "stock"
+
+    return types.SimpleNamespace(core = core), sageattn, stock
+
+
+@pytest.fixture
+def sm89(monkeypatch):
+    monkeypatch.setattr(hub, "_on_sm89", lambda t: True)
+    monkeypatch.delenv(hub.SM89_NO_SYNC_ENV, raising = False)
+
+
+def _qkv(shape = (1, 40, 4, 128), kv_heads = None):
+    import torch
+
+    q = torch.randn(*shape, dtype = torch.bfloat16)
+    kshape = list(shape)
+    if kv_heads is not None:
+        kshape[2] = kv_heads
+    return q, torch.randn(*kshape, dtype = torch.bfloat16), torch.randn(*kshape, dtype = torch.bfloat16)
+
+
+@pytest.mark.parametrize("layout, seq_dim", [("NHD", 1), ("HND", 2)])
+def test_sm89_route_runs_the_builds_ops_without_the_stock_call(sm89, layout, seq_dim):
+    import torch
+
+    calls: list = []
+    module, stock_fn, stock = _fake_sm89_build(calls)
+    fn = hub.without_sm89_sync(module, stock_fn)
+    assert fn.__wrapped__ is stock_fn
+    q, k, v = _qkv()
+    out = fn(q, k, v, tensor_layout = layout, is_causal = False)
+    assert stock == [] and torch.equal(out, torch.full_like(q, 3.0))
+    (_, km_shape, qk_kw), (_, v_kw), attn = calls
+    want_km = list(k.shape)
+    want_km[seq_dim] = 1
+    assert list(km_shape) == want_km
+    assert qk_kw == {"tensor_layout": layout, "BLKQ": 128, "WARPQ": 32, "BLKK": 64, "WARPK": 64}
+    assert v_kw == {"tensor_layout": layout, "scale_max": 2.25, "smooth_v": False}
+    assert attn == ("attn", 0 if layout == "NHD" else 1, 0, 3, 128**-0.5, 0)
+
+
+@pytest.mark.parametrize(
+    "kwargs, shape, kv_heads",
+    [
+        ({"is_causal": True}, (1, 40, 4, 128), None),
+        ({"return_lse": True}, (1, 40, 4, 128), None),
+        ({"smooth_k": False}, (1, 40, 4, 128), None),
+        ({}, (1, 40, 4, 96), None),
+        ({}, (1, 40, 4, 128), 2),
+    ],
+)
+def test_sm89_route_leaves_other_calls_to_the_stock_function(sm89, kwargs, shape, kv_heads):
+    calls: list = []
+    module, stock_fn, stock = _fake_sm89_build(calls)
+    fn = hub.without_sm89_sync(module, stock_fn)
+    q, k, v = _qkv(shape, kv_heads)
+    assert fn(q, k, v, tensor_layout = "NHD", **kwargs) == "stock"
+    assert calls == [] and len(stock) == 1
+
+
+def test_sm89_route_kill_switch(sm89, monkeypatch):
+    monkeypatch.setenv(hub.SM89_NO_SYNC_ENV, "0")
+    calls: list = []
+    module, stock_fn, stock = _fake_sm89_build(calls)
+    q, k, v = _qkv()
+    assert hub.without_sm89_sync(module, stock_fn)(q, k, v, tensor_layout = "NHD") == "stock"
+    assert calls == []
+
+
+def test_other_cards_take_the_stock_function(monkeypatch):
+    monkeypatch.setattr(hub, "_on_sm89", lambda t: False)
+    calls: list = []
+    module, stock_fn, stock = _fake_sm89_build(calls)
+    q, k, v = _qkv()
+    assert hub.without_sm89_sync(module, stock_fn)(q, k, v, tensor_layout = "NHD") == "stock"
+    assert calls == []
+
+
+def test_a_build_without_the_sm89_parts_is_returned_unwrapped():
+    def stock_fn(*a, **k):
+        return None
+
+    core = types.SimpleNamespace(SM89_ENABLED = False)
+    assert hub.without_sm89_sync(types.SimpleNamespace(core = core), stock_fn) is stock_fn
+    assert hub.without_sm89_sync(types.SimpleNamespace(), stock_fn) is stock_fn
