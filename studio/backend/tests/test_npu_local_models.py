@@ -38,7 +38,12 @@ _BASE_ENTRY = {
 }
 
 
-def _converted(name = "Qwen3-0.6B-ft.Q4_0-q4nx", *, source = _QWEN3_06B, skip = ()) -> Path:
+def _converted(
+    name = "Qwen3-0.6B-ft.Q4_0-q4nx",
+    *,
+    source = _QWEN3_06B,
+    skip = (),
+) -> Path:
     folder = exports_root() / "q4nx" / name
     folder.mkdir(parents = True)
     for file in ("model.q4nx", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja"):
@@ -70,7 +75,11 @@ def test_converted_folders_are_listed_with_their_kernel_base():
     [
         (("tokenizer_config.json",), _QWEN3_06B, "tokenizer_config.json is missing"),
         ((), None, "Convert the GGUF to Q4NX again"),
-        ((), {"architecture": "qwen3", "block_count": 30, "embedding_length": 999}, "no AMD NPU kernels"),
+        (
+            (),
+            {"architecture": "qwen3", "block_count": 30, "embedding_length": 999},
+            "no AMD NPU kernels",
+        ),
     ],
 )
 def test_an_unloadable_folder_is_listed_with_the_reason(skip, source, problem):
@@ -114,7 +123,9 @@ def test_the_registered_entry_runs_on_the_base_kernels_and_cannot_be_pulled():
 def test_a_text_only_conversion_drops_the_vision_tower():
     _converted()
     [local] = nlm.account_local_models()
-    config = nlm.local_config({"flm_version": "1.0.12", "vision_model_weight": "vision_weight.q4nx"}, local)
+    config = nlm.local_config(
+        {"flm_version": "1.0.12", "vision_model_weight": "vision_weight.q4nx"}, local
+    )
     assert "vision_model_weight" not in config
 
 
@@ -142,7 +153,11 @@ class _Installer:
     def installed_lemond(self, root):
         return self.binary
 
-    def install(self, root, cancel = None):
+    def install(
+        self,
+        root,
+        cancel = None,
+    ):
         return self.binary
 
 
@@ -221,9 +236,7 @@ def test_delete_drops_the_registration_and_keeps_the_export(runtime):
 
     assert not (runtime._flm_model_dir / "models" / local.family).exists()
     assert not (runtime.root / "local_q4nx" / "registered.json").exists()
-    assert sorted(p.name for p in folder.iterdir()) == sorted(
-        [*local.files, q4nx.SOURCE_FILE]
-    )
+    assert sorted(p.name for p in folder.iterdir()) == sorted([*local.files, q4nx.SOURCE_FILE])
     assert (folder / "model.q4nx").read_bytes() == b"weights"
     assert not any(r["path"] == "/v1/delete" for r in _requests(runtime))
 

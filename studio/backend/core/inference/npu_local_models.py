@@ -131,7 +131,9 @@ def _base_for(folder: Path) -> tuple[Optional[str], Optional[str]]:
 
 def _describe(folder: Path, root: Path) -> LocalQ4nx:
     present = tuple(
-        name for name in (*REQUIRED_FILES, *OPTIONAL_FILES, *VISION_FILES) if (folder / name).is_file()
+        name
+        for name in (*REQUIRED_FILES, *OPTIONAL_FILES, *VISION_FILES)
+        if (folder / name).is_file()
     )
     size = sum((folder / name).stat().st_size for name in present)
     missing = [name for name in REQUIRED_FILES if name not in present]
@@ -185,7 +187,6 @@ def _is_junction(path: Path) -> bool:
 def account_local_models() -> list[LocalQ4nx]:
     """The acting account's converted folders; another account's exports root is never read."""
     from utils.paths.storage_roots import exports_root
-
     return find_local_models(exports_root())
 
 
@@ -245,7 +246,9 @@ def local_config(base_config: dict[str, Any], model: LocalQ4nx) -> dict[str, Any
     return config
 
 
-def local_entry(base: dict[str, Any], model: LocalQ4nx, flm_version: Optional[str]) -> dict[str, Any]:
+def local_entry(
+    base: dict[str, Any], model: LocalQ4nx, flm_version: Optional[str]
+) -> dict[str, Any]:
     entry = copy.deepcopy(base)
     for key in ("preferred_source", "file_sources", "base_model", "ms_url", "modified_at"):
         entry.pop(key, None)

@@ -30,7 +30,9 @@ CONFIG_FILES = ("config.json", "generation_config.json")
 CONVERTER_MODULES = ("torch", "gguf", "einops", "safetensors", "numpy", "mpmath")
 # The source GGUF's architecture and geometry, which the NPU picker matches to FastFlowLM kernels.
 SOURCE_FILE = "q4nx_source.json"
-_GEOMETRY_KEYS = frozenset({"block_count", "embedding_length", "expert_count", "nextn_predict_layers"})
+_GEOMETRY_KEYS = frozenset(
+    {"block_count", "embedding_length", "expert_count", "nextn_predict_layers"}
+)
 
 
 def _installer():
@@ -95,7 +97,13 @@ def staged_output(out_dir: Path):
         refuse_symlink()
         # The last model's companions must not survive beside the new weights (REAP's report
         # included: a pruned conversion stages a fresh one).
-        for name in ("model.q4nx", "config.json", "reap_report.json", SOURCE_FILE, *TOKENIZER_FILES):
+        for name in (
+            "model.q4nx",
+            "config.json",
+            "reap_report.json",
+            SOURCE_FILE,
+            *TOKENIZER_FILES,
+        ):
             (out_dir / name).unlink(missing_ok = True)
         for path in staging.iterdir():
             os.replace(path, out_dir / path.name)
