@@ -21,6 +21,7 @@ const PROVIDER = readSrc("features/chat/runtime-provider.tsx");
 const SYNC = readSrc("features/chat/utils/delete-thread-message.ts");
 const REFRESH = readSrc("features/chat/utils/refresh-context-usage.ts");
 const IMPORT = readSrc("features/chat/utils/chat-import.ts");
+const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
 function slice(source: string, startMarker: string, endMarker: string): string {
   const start = source.indexOf(startMarker);
@@ -182,4 +183,36 @@ test("an unrecognized markdown role imports as user, not a folded assistant", ()
     0,
   );
   assert.equal(records[0].role, "user");
+});
+
+type Outbound = { role: string; content: unknown };
+const SECOND_SYSTEM_UNSHIFT =
+  /outboundMessages\.unshift\(\{\s*role: "system",\s*content: combinedSystemPrompt/;
+
+test("the Studio prompt merges into an imported leading system turn instead of adding a second", () => {
+  const prepend = run<(messages: Outbound[], text: string) => void>(
+    slice(
+      ADAPTER,
+      "function prependSystemPrompt",
+      "function toOpenAIMessages(",
+    ),
+    "globalThis.__fn = prependSystemPrompt;",
+    {},
+  );
+  const imported: Outbound[] = [
+    { role: "system", content: "Imported." },
+    { role: "user", content: "Hi" },
+  ];
+  prepend(imported, "Studio.");
+  assert.deepEqual(JSON.parse(JSON.stringify(imported)), [
+    { role: "system", content: "Studio.\n\nImported." },
+    { role: "user", content: "Hi" },
+  ]);
+  const plain: Outbound[] = [{ role: "user", content: "Hi" }];
+  prepend(plain, "Studio.");
+  assert.deepEqual(JSON.parse(JSON.stringify(plain)), [
+    { role: "system", content: "Studio." },
+    { role: "user", content: "Hi" },
+  ]);
+  assert.doesNotMatch(ADAPTER, SECOND_SYSTEM_UNSHIFT);
 });

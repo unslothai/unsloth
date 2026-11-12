@@ -1718,6 +1718,19 @@ function serializeAssistantReplayMessages(
   return messages;
 }
 
+/** Strict templates (Qwen3.5) reject a second system turn; the backend joins system parts with "\n\n", so merging is byte-identical there. */
+function prependSystemPrompt<T extends { role: string; content: unknown }>(
+  messages: T[],
+  text: string,
+): void {
+  const first = messages[0];
+  if (first?.role === "system" && typeof first.content === "string") {
+    messages[0] = { ...first, content: `${text}\n\n${first.content}` };
+    return;
+  }
+  messages.unshift({ role: "system", content: text } as T);
+}
+
 function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -2212,10 +2225,7 @@ export async function buildLocalTokenCountHistory(
     systemPrompt: safeSystemPrompt,
   });
   if (combinedSystemPrompt) {
-    outboundMessages.unshift({
-      role: "system",
-      content: combinedSystemPrompt,
-    });
+    prependSystemPrompt(outboundMessages, combinedSystemPrompt);
   }
 
   return {
@@ -5392,10 +5402,7 @@ export function createOpenAIStreamAdapter(
         { agentsMd: true },
       );
       if (combinedSystemPrompt) {
-        outboundMessages.unshift({
-          role: "system",
-          content: combinedSystemPrompt,
-        });
+        prependSystemPrompt(outboundMessages, combinedSystemPrompt);
       }
       let disabledToolGuard: string | null = null;
       const disabledToolGuardProviderType = externalProvider?.providerType;
