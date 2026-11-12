@@ -249,10 +249,10 @@ import {
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import {
-  betweenToolRounds,
   formatPrefillDetails,
   formatPrefillTimeLeft,
   prefillPercent,
+  runningReplyTail,
 } from "@/features/chat";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
@@ -461,6 +461,7 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
+  TextMessagePartProvider,
   ThreadPrimitive,
   useAui,
   useAuiEvent,
@@ -8054,18 +8055,28 @@ const GeneratingIndicator: FC = () => {
   return <GeneratingStatus />;
 };
 
-// GeneratingIndicator's status for the gap after a tool result, until the next pass streams its first part.
-const NextRoundIndicator: FC = () => {
-  const show = useAuiState(({ message }) =>
-    betweenToolRounds(message.status?.type === "running", message.content),
+// assistant-ui's empty text part (fallback off) and the next-round status, in a box owned here so React removes
+// it before appending the next part: a mid-list removal restyles the whole reply (MathML UA :nth-child rules).
+const PartsWithRoundTail: FC<{ children: ReactNode }> = ({ children }) => {
+  const tail = useAuiState(({ message }) =>
+    runningReplyTail(message.status?.type === "running", message.content),
   );
-  if (!show) {
-    return null;
-  }
   return (
-    <div data-slot="next-round-indicator" className="mt-2">
-      <GeneratingStatus />
-    </div>
+    <>
+      {children}
+      {tail !== 0 && (
+        <div data-slot="round-tail" className="contents">
+          <TextMessagePartProvider text="" isRunning={true}>
+            <MarkdownText />
+          </TextMessagePartProvider>
+          {tail === 2 && (
+            <div data-slot="next-round-indicator" className="mt-2">
+              <GeneratingStatus />
+            </div>
+          )}
+        </div>
+      )}
+    </>
   );
 };
 
@@ -8681,8 +8692,12 @@ const AssistantMessage: FC = () => {
                 <CancelledIndicator />
                 <DiffusionCanvas />
 
-                <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
-                <NextRoundIndicator />
+                <PartsWithRoundTail>
+                  <MessagePrimitive.Parts
+                    components={ASSISTANT_PART_COMPONENTS}
+                    unstable_showEmptyOnNonTextEnd={false}
+                  />
+                </PartsWithRoundTail>
                 <SourcesGroup />
                 <MessageHtmlArtifacts />
                 <ContinueMessageBar />

@@ -4529,6 +4529,17 @@ html[data-chat-font] .aui-root {
 		margin-top: 0;
 	}
 
+	/* thread.tsx PartsWithRoundTail is display:contents: the two rules above and the trailing reset, one level down. */
+	:where(.aui-assistant-message-content > [data-slot="round-tail"] > *) {
+		margin-top: calc(1rem * var(--ui-space-scale, 1));
+	}
+	:where(.aui-assistant-message-content > .h-0 + [data-slot="round-tail"] > *) {
+		margin-top: 0;
+	}
+	.aui-assistant-message-content > [data-slot="round-tail"]:last-child > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child {
+		margin-bottom: 0 !important;
+	}
+
 	/* Margin collapsing keeps the gap before a following block, so this only affects a trailing code
 	   block, matching a text-trailing message. */
 	.aui-assistant-message-content [data-streamdown="code-block"] {
