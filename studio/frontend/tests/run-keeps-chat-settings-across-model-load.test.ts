@@ -274,7 +274,6 @@ test("chat A's tools follow its choice, not the clamp the outgoing model left", 
   call("setPermissionMode", "ask");
   call("setToolsEnabled", true);
   call("setCodeToolsEnabled", true);
-  // A model without tools is loaded, then chat A sends while a tool model loads.
   store.setState({
     params: { ...store.getState().params, checkpoint: "plain-model" },
     supportsTools: false,
@@ -295,7 +294,6 @@ test("chat A's tools follow its choice, not the clamp the outgoing model left", 
   assert.equal(run.toolsEnabled, true);
   assert.equal(codeToolsOn(run), true);
 
-  // The model that loaded has no tools: the run's pills are off however the chat set them.
   const plain = { ...loaded, supportsTools: false } as typeof loaded;
   const offRun = runAfterWait(plain, atSend as never, "chat-a", withLoadedModelOverrides as never) as unknown as StoreState;
   assert.equal(offRun.toolsEnabled, false);
@@ -339,9 +337,7 @@ test("chat A runs at its own effort, not the outgoing model's pin", () => {
   const run = (live: ReturnType<typeof chatState>) =>
     runAfterWait(live, atSend as never, "chat-a", withLoadedModelOverrides as never, chatOwned) as unknown as StoreState;
   assert.equal(run(loaded("unsloth/local-model", "high")).reasoningEffort, "low");
-  // A pin on the model that loaded still outranks the chat, as it would on screen.
   assert.equal(run(loaded("other-pinned-model", "medium")).reasoningEffort, "medium");
-  // The same model is still pinned.
   assert.equal(run(loaded("pinned-model", "low")).reasoningEffort, "high");
   store.setState({ modelLoading: false });
 });
