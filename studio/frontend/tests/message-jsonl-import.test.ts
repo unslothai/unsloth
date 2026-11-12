@@ -774,7 +774,7 @@ test("hosted Responses calls import as server-side tool cards with their code an
     calls.map((p) => [p.toolName, p.args?._server_tool, p.result]),
     [["web_search", true, "completed"], ["code_execution", true, "1"]],
   );
-  assert.equal(calls[1].args?.code, "print(1)");
+  assert.equal(calls[1].args?.command, "print(1)");
 });
 
 test("a Responses mcp_call keeps its server and tool name", () => {
@@ -858,4 +858,28 @@ test("images in Responses tool outputs and code interpreter outputs stay images"
     { text: "shot", images: [{ mimeType: "image/png", data: "QUJD" }] },
     "ok\nhttps://example.com/p.png",
   ]);
+});
+
+test("file search results and whitespace-sensitive prompts survive import", () => {
+  const [search] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [{ role: "user", content: "Find it" }],
+      output: [
+        { type: "file_search_call", id: "fs1", status: "completed", queries: ["refund policy"], results: [{ file_id: "f", filename: "p.md", text: "30 days" }] },
+      ],
+    }),
+    "response.json",
+  );
+  const call = search.messages
+    .flatMap((m) => m.content as ReadonlyArray<{ type?: string; args?: unknown; result?: unknown }>)
+    .find((p) => p.type === "tool-call");
+  assert.deepEqual(call?.args, { queries: ["refund policy"], _server_tool: true });
+  assert.equal(call?.result, "30 days");
+
+  const [pair] = parseImportText(
+    JSON.stringify({ prompt: "def f():\n    ", completion: "return 1" }),
+    "pairs.jsonl",
+  );
+  assert.deepEqual(pair.messages[0].content, [{ type: "text", text: "def f():\n    " }]);
 });

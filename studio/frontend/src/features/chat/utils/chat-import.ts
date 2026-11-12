@@ -356,13 +356,13 @@ function pairToTurns(obj: Record<string, unknown>): unknown[] {
   const isPair =
     typeof obj.prompt === "string" && typeof obj.completion === "string";
   if (!isAlpaca && !isPair) return [];
-  const userText = (
-    isAlpaca
-      ? `${obj.instruction}\n\n${typeof obj.input === "string" ? obj.input : ""}`
-      : (obj.prompt as string)
-  ).trim();
+  // Trim only to test emptiness: completion prompts can end in meaningful whitespace.
+  const input = typeof obj.input === "string" && obj.input.trim() ? obj.input : "";
+  const userText = isAlpaca
+    ? input ? `${obj.instruction}\n\n${input}` : (obj.instruction as string)
+    : (obj.prompt as string);
   const assistantText = (isAlpaca ? obj.output : obj.completion) as string;
-  if (!userText || !assistantText.trim()) return [];
+  if (!userText.trim() || !assistantText.trim()) return [];
   return [
     ...(typeof obj.system === "string" ? [{ role: "system", content: obj.system }] : []),
     { role: "user", content: userText },
@@ -473,14 +473,17 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
         (type === "function_call" || type === "custom_tool_call" ? "unknown" : type.replace(/_call$/, ""));
       // mcp_call names its server in server_label.
       const namespace = text(entry.namespace) ?? text(entry.server_label);
+      // Hosted tools use the shapes Studio's own cards render (code_execution reads command).
       const payload =
         typeof entry.code === "string"
-          ? { code: entry.code }
+          ? { command: entry.code }
           : type === "shell_call" && Array.isArray(commands)
             ? { kind: "bash", command: commands.join("\n") }
-            : entry.input !== undefined
-              ? { input: entry.input }
-              : (entry.arguments ?? entry.action ?? {});
+            : Array.isArray(entry.queries)
+              ? { queries: entry.queries }
+              : entry.input !== undefined
+                ? { input: entry.input }
+                : (entry.arguments ?? entry.action ?? {});
       assistantTurn().tool_calls.push({
         id,
         type: "function",
@@ -502,6 +505,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
       const done =
         entry.output ??
         (Array.isArray(entry.outputs) && entry.outputs.length > 0 ? entry.outputs : undefined) ??
+        (Array.isArray(entry.results) && entry.results.length > 0 ? entry.results : undefined) ??
         entry.error ??
         (builtin && !answered.has(id) ? (text(entry.status) ?? "completed") : undefined);
       if (done != null) {
