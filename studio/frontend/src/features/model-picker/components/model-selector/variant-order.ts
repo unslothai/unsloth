@@ -20,7 +20,6 @@ type OrderableVariant = GgufVariantSizes & {
   downloaded?: boolean;
 };
 
-/** The quant each presentation group recommends on this device; the default when the budget is unknown. */
 export function recommendedQuantByGroup<T extends OrderableVariant>(
   groups: readonly GgufVariantPresentationGroup<T>[],
   defaultVariant: string | null,
@@ -56,10 +55,7 @@ export function recommendedQuantByGroup<T extends OrderableVariant>(
   return recommended;
 }
 
-/**
- * Downloaded before not, fitting before tight before out of memory, the recommended quant first in
- * its tier; fitting tiers largest first, the rest smallest first (closest to fitting).
- */
+/** Downloaded first, then fits / tight / OOM; recommended leads its tier; fits largest first, else smallest. */
 export function orderGgufVariantsForPicker<T extends OrderableVariant>(
   groups: readonly GgufVariantPresentationGroup<T>[],
   fitOfVariant: (variant: T) => GgufFitClass,
@@ -94,7 +90,6 @@ export function orderGgufVariantsForPicker<T extends OrderableVariant>(
   });
 }
 
-/** One call for a flat list: group, recommend and order as the header picker's quant list does. */
 export function pickerOrderedGgufVariants<T extends OrderableVariant>(
   variants: readonly T[],
   defaultVariant: string | null,

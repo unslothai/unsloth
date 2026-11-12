@@ -2935,7 +2935,6 @@ function GgufVariantExpander({
     () => groupGgufVariantsForPicker(variants ?? []),
     [variants],
   );
-  // Shared with the composer picker (variant-order.ts), so both lists recommend the same quant.
   const effectiveRecommendedByGroup = useMemo(
     () =>
       recommendedQuantByGroup(variantGroups, defaultVariant, {

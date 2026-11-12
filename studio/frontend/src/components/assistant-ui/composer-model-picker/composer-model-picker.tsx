@@ -655,7 +655,6 @@ function FitBadge({
 }: {
   status: PickerFitStatus | null | undefined;
   revealOnHover?: boolean;
-  /** Box the size of the glyph, for use inline beside a name. */
   compact?: boolean;
 }) {
   const verdict = status ? VRAM_VERDICT[status] : null;
@@ -696,7 +695,6 @@ function FitBadge({
 const ACTION =
   "relative flex h-[calc(20px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-none text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground dark:hover:bg-transparent before:pointer-events-none before:absolute before:top-1/2 before:left-1/2 before:size-[calc(20px*var(--ui-space-scale,1))] before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:transition-colors before:content-[''] hover:before:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:before:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] data-[state=open]:before:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[state=open]:before:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [&>svg]:relative";
 const ACTION_ROUND = `${ACTION} w-[calc(20px*var(--ui-space-scale,1))]`;
-// A set star stays readable without outshining the names: grey in both themes, darker on hover.
 const FAVORITE_STAR =
   "text-[rgb(0_0_0_/_0.42)] hover:text-[rgb(0_0_0_/_0.62)] dark:text-[rgb(255_255_255_/_0.5)] dark:hover:text-[rgb(255_255_255_/_0.72)]";
 // The ⋮ ink sits 0.3px below its icon's centre; lift it so the hover circle centres on it.
@@ -723,13 +721,11 @@ function QuantPill({ quant }: { quant: string }) {
   );
 }
 
-/** The header picker's parameter chip: an outline, so it reads apart from the filled quant pill. */
 function ParamChip({ label }: { label: string }) {
   return (
     <span
       className={cn(
         "inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-border px-1.5 text-ui-10 font-medium text-muted-foreground",
-        // A point already opens a gap, so "7.5B" stays tight while "27B" breathes a little.
         label.includes(".") ? "tracking-[-0.02em]" : "tracking-[0.02em]",
       )}
     >
@@ -762,7 +758,6 @@ const STATUS_TONE = {
   accent: "bg-primary/10 text-primary dark:bg-primary/15",
 } as const;
 
-/** A quant's state as a small tinted tag, the Hub's capability tones at row scale. */
 function StatusTag({
   tone,
   label,
@@ -975,8 +970,7 @@ function ModelFacts({ facts }: { facts: readonly [string, ReactNode][] }) {
   );
 }
 
-// Scaled to the Vision eye's visual weight (sqrt of ink width x height, 16.7 of 24): the speech
-// bubble, wrench and bulb fill their box, the eye and code brackets only a band of it.
+// Scaled to the Vision eye's visual weight (sqrt of ink width x height, 16.7 of 24).
 const GLYPH_SCALE: Partial<Record<Capability["key"], string>> = {
   conversational: "scale-[0.86]",
   audio: "scale-[0.95]",
@@ -987,7 +981,6 @@ const GLYPH_SCALE: Partial<Record<Capability["key"], string>> = {
   reasoning: "scale-[0.86]",
 };
 function glyphScale(key: Capability["key"], label: string): string | undefined {
-  // Video gen draws a film slate (18 x 20 ink) under the diffusion key.
   return key === "diffusion" && label === "Video gen"
     ? "scale-[0.88]"
     : GLYPH_SCALE[key];
@@ -1001,7 +994,6 @@ function modelFacts(
   const facts: [string, ReactNode][] = [];
   const format =
     row.kind === "npu" ? "NPU" : row.format ? FORMAT_NAME[row.format] : null;
-  // The format rides on the quant ("UD-Q4_K_XL GGUF"); only a model with no quant names it alone.
   const withFormat = (text: string) => (format ? `${text} ${format}` : text);
   if (onDisk.length === 1) {
     facts.push(["Quant", withFormat(onDisk[0].quant)]);
@@ -1130,7 +1122,6 @@ function SectionHeader({
   collapsed: boolean;
   onToggle: () => void;
   actions?: ReactNode;
-  /** Right-aligned beside the chevron, as the header picker placed its section jumps. */
   trailing?: ReactNode;
 }) {
   return (
@@ -1185,11 +1176,7 @@ function SectionHeader({
 const OPTION_ID = "composer-model-option";
 const NO_QUANTS: GgufVariantDetail[] = [];
 
-/**
- * Re-renders a row only when `deps` change: the panel re-renders on every inventory, probe and
- * store tick, and 600 rows of menus and tooltips each time made typing and scrolling lag.
- * `deps` must cover everything the row's markup and handlers read.
- */
+/** Re-renders a row only when `deps` change, which must cover everything its markup and handlers read. */
 const MemoRow = memo(
   function MemoRow({ render }: { render: () => ReactNode; deps: unknown[] }) {
     return render();
@@ -1201,7 +1188,7 @@ const MemoRow = memo(
 const SEARCH_DEBOUNCE_MS = 250;
 type NavKey = "ArrowDown" | "ArrowUp" | "Enter";
 
-/** Holds the typed text, so a keystroke re-renders this field and not every row; the list filters once typing pauses. */
+/** Holds the draft, so a keystroke re-renders this field and not every row. */
 function SearchField({
   value,
   onCommit,
@@ -1357,7 +1344,6 @@ export function ComposerModelPicker({
     error?: string;
     target?: QuantTarget;
   } | null>(null);
-  // The open offer's listing, aborted when the offer closes or another opens.
   const offerAbort = useRef<AbortController | null>(null);
   const [quants, setQuants] = useState<{
     key: string;
@@ -1421,7 +1407,6 @@ export function ComposerModelPicker({
   const inferenceGpu = useInferenceGpuInfo();
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
-  // Settings > Chat > Model selection, shared with the header picker and the Hub.
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const showMemoryBar = useChatRuntimeStore((s) => s.showMemoryBar);
@@ -1466,7 +1451,6 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults, fitOf]);
-  // Rounded as the Model Hub rounds it (27.3B reads 27B); else the id's "27B".
   const hubParams = useMemo(() => {
     const map = new Map<string, string>();
     for (const r of hubResults) {
@@ -1502,7 +1486,6 @@ export function ComposerModelPicker({
               ))) &&
           isChatTask(r.pipelineTag) &&
           !isMediaCatalogRepo(r.id) &&
-          // The RAG embedder, STT and probe repos: never chat models, as the header picker hides them.
           !isHiddenModelId(r.id),
       )
       .map((r) => ({ id: r.id, name: r.id, isGguf: r.isGguf }));
@@ -1891,7 +1874,6 @@ export function ComposerModelPicker({
   const foundRows = useMemo(() => {
     const found = filterRows(rows, viewed, query, isFavorite);
     if (viewed === RECOMMENDED_TAB && fitOnDeviceOnly) {
-      // "Only show models that fit": what is on disk or chosen stays, as in the Hub.
       return found.filter((row) => {
         if (row.kind !== "hub" || row.onDevice || row.id === chosenId) {
           return true;
@@ -2302,7 +2284,6 @@ export function ComposerModelPicker({
       return;
     }
     const target = quantTarget(row);
-    // Settings > Chat "Show all quantizations": an on-device repo offers every quant, as Discover does.
     const offerAll =
       target !== null &&
       row.kind === "gguf" &&
@@ -2508,7 +2489,6 @@ export function ComposerModelPicker({
   const showQuantRow = quantChoices.length > 1;
   const showEffort = reasoning.isEffort && reasoning.levels.length > 1;
   const showThinkingSwitch = reasoning.supportsReasoning && !showEffort;
-  // Without the slider there is nowhere to hang the Flash button, so it gets a row.
   const showFastSwitch = reasoning.supportsFast && !showEffort;
   const hasFoot =
     showQuantRow ||
@@ -2542,7 +2522,6 @@ export function ComposerModelPicker({
     activeVariant && chosenLoaded && !pending
       ? `${loadedIsMlx ? "MLX" : "GGUF"} · ${activeVariant}`
       : null;
-  // The header trigger used to say this; with several resident, memory is shared.
   const loadedDetail =
     loadedModels.length > 1 ? `${loadedModels.length} models loaded` : null;
   const chipDetail =
@@ -2948,7 +2927,6 @@ export function ComposerModelPicker({
                 pick(row);
                 return;
               }
-              // A focused row (Tab, a drop, a screen reader) steps to its neighbour, as header rows do.
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
                 const next = index + (event.key === "ArrowDown" ? 1 : -1);
@@ -2978,7 +2956,6 @@ export function ComposerModelPicker({
               <span className={cn("truncate", dimmed && DIM_CLASS)}>
                 {row.label}
               </span>
-              {/* Right after the name, at full tone, so the warning reads as the model's. */}
               {offering ? (
                 <span className="-ml-0.5 flex shrink-0">
                   <FitBadge
@@ -3222,7 +3199,6 @@ export function ComposerModelPicker({
         )}
       />
     );
-    // "VRAM usage bar": the chosen GGUF's weights, context and draft, as the header picker charted it.
     const memoryQuant = isChosen
       ? (row.loadedQuant ?? activeVariant ?? soleQuant)
       : null;
@@ -3350,7 +3326,6 @@ export function ComposerModelPicker({
     );
   };
 
-  // The header picker's quant row: a mono label with its state in words, no pill.
   const renderQuantRow = (
     variant: GgufVariantDetail,
     {
@@ -3578,7 +3553,6 @@ export function ComposerModelPicker({
     return renderSections();
   };
 
-  // The first header jumps to the sections below it, as the header picker's Unsloth label did.
   const renderJumps = (below: readonly ListSection[]) => {
     const targets = below.filter((s) => JUMP_LABEL[s] && SECTION_ICON[s]);
     if (targets.length === 0) {
@@ -3908,7 +3882,6 @@ export function ComposerModelPicker({
                     if (ejectsAll) {
                       source?.ejectAll();
                     } else if (!chosenLoaded && loadedModels[0]) {
-                      // Another chat's model holds memory while this one's is released.
                       source?.eject(loadedModels[0].id);
                     } else if (chosen) {
                       eject(chosen);
