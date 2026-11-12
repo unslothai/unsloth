@@ -432,9 +432,7 @@ function keepPinned(
 }
 
 /** WAI-ARIA ordinals for a windowed list. Written here, not by the rows: the total changes on
- *  every append, and a row must not re-render for it. The role the ordinals need (article) is
- *  rendered by the rows themselves: written here after mount, it restyled every row a second
- *  time, which scrolling paid for on each row it mounted. */
+ *  every append, and a row must not re-render for it. */
 function publishOrdinals(viewport: HTMLElement, lookup: Metas, windowed: boolean): void {
   const total = String(lookup.metas.length);
   for (const child of viewport.children) {
@@ -445,8 +443,11 @@ function publishOrdinals(viewport: HTMLElement, lookup: Metas, windowed: boolean
     if (index === undefined) {
       child.removeAttribute("aria-posinset");
       child.removeAttribute("aria-setsize");
+      if (child.getAttribute("role") === "article") child.removeAttribute("role");
       continue;
     }
+    // Ordinals need a role that supports them: a focusable message in a feed is an article.
+    if (!child.hasAttribute("role")) child.setAttribute("role", "article");
     const position = String(index + 1);
     if (child.getAttribute("aria-posinset") !== position) {
       child.setAttribute("aria-posinset", position);
@@ -759,6 +760,19 @@ function useThreadWindow(
     spacer("top")?.style.setProperty("height", `${leading}px`);
     spacer("bottom")?.style.setProperty("height", `${spacers.bottom}px`);
   }, [atFirstRow, spacers, viewportRef]);
+
+  // The rows this commit inserted get their role and ordinals here, before anything has read
+  // their style: written in the layout effect below, after the anchor reads, the role restyled
+  // every row a second time (the stylesheet has selectors on [role]), and scrolling mounts rows
+  // on almost every step.
+  useInsertionEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const windowed = win != null;
+    if (!windowed && !ordinalsRef.current) return;
+    publishOrdinals(viewport, readMetas(), windowed);
+    ordinalsRef.current = windowed;
+  }, [win, count, readMetas, viewportRef]);
 
   useLayoutEffect(() => {
     winRef.current = win;

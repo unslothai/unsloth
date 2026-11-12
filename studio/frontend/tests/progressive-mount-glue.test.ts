@@ -636,13 +636,16 @@ test("a copy from a field leaves the window alone", () => {
   assert.match(GLUE, /const EDITABLE = "input, textarea, \[contenteditable=true\]";/);
 });
 
-test("rows render the role their ordinals need; the window never writes it", () => {
-  // Written after mount, the role restyled every row a second time as the window mounted it:
-  // style recalculation while scrolling rose from 1.8 s to 2.5 s over the window gate's sweep.
-  const publish = section(GLUE, "function publishOrdinals(", "\n}\n");
-  assert.doesNotMatch(publish, /"role"/);
-  assert.doesNotMatch(GLUE, /setAttribute\("role"/);
-  const roots = [...THREAD.matchAll(/<MessagePrimitive\.Root\b[^>]*>/g)].map((match) => match[0]);
-  assert.ok(roots.length >= 3, `expected the user, assistant and edit roots, found ${roots.length}`);
-  for (const root of roots) assert.match(root, /role="article"/, root.slice(0, 120));
+test("rows get their role and ordinals before anything reads their style", () => {
+  // Written in the commit's layout effect, after the anchor reads had computed the new rows'
+  // style, the role restyled every row a second time as the window mounted it: style
+  // recalculation while scrolling rose from 1.7 s to 2.5 s over the window gate's sweep.
+  const early = section(GLUE, "useInsertionEffect(() => {\n    const viewport = viewportRef.current;\n    if (!viewport) return;\n    const windowed", "}, [win, count, readMetas, viewportRef]);");
+  assert.match(early, /publishOrdinals\(viewport, readMetas\(\), windowed\);/);
+  assert.match(early, /ordinalsRef\.current = windowed;/);
+  assert.ok(
+    GLUE.indexOf("publishOrdinals(viewport, readMetas(), windowed);") <
+      GLUE.indexOf("useLayoutEffect(() => {\n    winRef.current = win;"),
+    "the ordinals go on before the layout effect's anchor reads",
+  );
 });
