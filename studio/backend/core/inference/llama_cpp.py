@@ -4775,8 +4775,6 @@ def _scale_diffusion_required_gb(required_gb: float, ngl: int, n_layers: Optiona
 _DIFFUSION_RUNNER_OVERHEAD_MIB = 512.0
 # Context the fitted split leaves room for when the runner auto-sizes (maxtok 0).
 _DIFFUSION_FIT_CTX = 4096
-# Mirrors unsloth_zoo's _canvas_maxtok: a larger request is auto-sized by the runner.
-_DIFFUSION_EXPLICIT_CTX_MAX = 8192
 
 
 def _diffusion_auto_ngl(
@@ -4804,7 +4802,8 @@ def _diffusion_auto_ngl(
     file_mib = file_bytes / (1024 * 1024)
     if file_mib <= usable:
         return None
-    n_ctx = maxtok if 0 < maxtok <= _DIFFUSION_EXPLICIT_CTX_MAX else _DIFFUSION_FIT_CTX
+    # Mirrors unsloth_zoo's _canvas_maxtok: larger requests are sent as 0 (auto-size).
+    n_ctx = maxtok if 0 < maxtok <= 8192 else _DIFFUSION_FIT_CTX
     scores_mib = max(1, n_head or 1) * n_ctx * n_ctx * 4 / (1024 * 1024)
     ctx_reserve = 1.75 * scores_mib + 0.08 * (total_mib if total_mib > 0 else free_mib)
     # The whole file over the block count also charges token_embd, which stays on the CPU.
@@ -19696,7 +19695,7 @@ class LlamaCppBackend:
             # Pin the context the split was sized for. Left to auto-size, the runner's second
             # probe pass sizes against host RAM, which on Windows the driver backs with
             # shared memory instead of refusing.
-            if fit_ngl is not None and not 0 < maxtok <= _DIFFUSION_EXPLICIT_CTX_MAX:
+            if fit_ngl is not None and not 0 < maxtok <= 8192:
                 maxtok = _DIFFUSION_FIT_CTX
             # Nothing fits: run on the CPU like a manual zero-layer split, not on a
             # GPU context the card may not have room for.
