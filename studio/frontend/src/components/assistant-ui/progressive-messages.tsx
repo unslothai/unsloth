@@ -902,9 +902,8 @@ function useThreadWindow(
     });
     const resize = new ResizeObserver(schedule);
     resize.observe(viewport);
-    // A mounted row that shrinks (a code block collapsed) can bare a spacer with no scroll to
-    // wake the window, and a new column width (Chat width setting) re-wraps every row. Not a
-    // growth: a streamed reply grows on every chunk.
+    // A row that shrinks (a block collapsed) or re-wraps can bare a spacer with no scroll to wake
+    // the window. Not a growth: a streamed reply grows on every chunk.
     const rowSizes = new WeakMap<Element, { width: number; height: number }>();
     const rowResize = new ResizeObserver((entries) => {
       let wake = false;
@@ -1049,7 +1048,6 @@ function useThreadWindow(
     [readMetas, heights],
   );
 
-  /** Equation counter increments of rows `[from, to)`, for the spacer standing in for them. */
   const counterIncrement = useCallback(
     (from: number, to: number): string | undefined => {
       const { html, mathml } = heights.equationsIn(readMetas().metas, from, to);

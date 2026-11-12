@@ -25,7 +25,6 @@ export type RowMeta = {
   /** Expected rendered lines; only its proportion to height matters. */
   weight: number;
   renders: boolean;
-  /** Numbered equations the text is expected to render (see numberedEquations). */
   equations?: number;
   /** The content measured: an edit (another tab, a reload) voids what was read off the page. */
   revision?: unknown;
@@ -158,7 +157,6 @@ export function numberedEquations(
   return total;
 }
 
-/** KaTeX's HTML and MathML equation counters. */
 export type Equations = { html: number; mathml: number };
 
 type Density = { lines: number; px: number };
@@ -173,8 +171,7 @@ export class RowHeights {
   private counted = new Map<string, { role: string; lines: number; px: number }>();
   private layout: string | null = null;
 
-  /** A new column width or typography re-wraps every row, so every height is forgotten. True
-   *  when they were. */
+  /** A new width or typography re-wraps every row: forget every height. True when it did. */
   relayout(layout: string): boolean {
     if (layout === this.layout) return false;
     const was = this.layout;
