@@ -554,6 +554,10 @@ def canvas_decode(
             if len(races) >= 4:
                 races.clear()
             race = races[key] = _Race(arms, forced = tile_graphs_setting() is not None)
+        for other in races.values():
+            # Graphs of one tile shape at a time: another shape's pools go (its decision stays; a return re-records).
+            if other is not race and other.graphs is not None and other.graphs.replicas:
+                other.graphs.drop()
         prints = _weights_print(vae)
         if race.prints is None:
             race.prints = prints
@@ -607,8 +611,12 @@ def canvas_decode(
                     elif race.forced:
                         race.decided = arm
                     elif race.graphs.pool_bytes > graph_pool_cap(z.device):
-                        race.skip(arm)
-                        race.graphs.keep(have)
+                        if race.decided is None:
+                            race.skip(arm)
+                            race.graphs.keep(have)
+                        else:
+                            race.decided = 0
+                            race.graphs.drop()
                         arm, timed = 0, None
                     elif timed is not None:
                         # Capture took host time: restart the clock.
