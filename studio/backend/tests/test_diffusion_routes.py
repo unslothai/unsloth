@@ -2954,8 +2954,7 @@ def test_generate_schema_bounds_for_unified_editing(client):
     ten = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 10)
     assert ten.status_code == 422
     assert _post_generate(client, prompt = "p", workflow = "inpaint").status_code == 422
-    # The transport ceiling admits every family's largest side (MiniMax-H3-Image's 16 MP sizes); the loaded family
-    # enforces its own bound.
+    # The transport ceiling admits every family's largest side; the loaded family enforces its own.
     from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
 
     assert _post_generate(client, prompt = "p", width = 2752, height = 1536).status_code == 200
