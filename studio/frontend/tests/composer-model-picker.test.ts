@@ -810,3 +810,15 @@ test("a plain Compare pick runs with the model's saved settings", () => {
     /remembered\?\.remembered \? \{ \.\.\.meta, config: remembered\.config \} : meta,/,
   );
 });
+
+test("Compare and the API page always show the picker's dropdown chevron", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.equal(
+    picker.match(
+      /\{\(chosenName \|\| modelLoading \|\| pending\) && !pane \? null : \(\s*<HugeiconsIcon\s*icon=\{ChevronDownStandardIcon\}/g,
+    )?.length,
+    2,
+  );
+});

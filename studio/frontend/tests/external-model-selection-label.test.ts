@@ -375,7 +375,7 @@ test("the chat page feeds the picker the connections behind the options", () => 
   );
   // Compare panes hand them to the composer picker through its source.
   const header = page.slice(page.indexOf("function GeneralCompareHeader"));
-  assert.match(header, /onValueChange\(id, meta\);[\s\S]*?externalConnections,/);
+  assert.match(header, /onValueChange\([\s\S]*?setSelectorOpen\(false\);[\s\S]*?externalConnections,/);
 });
 
 test("the compare and audio toasts use the external-aware labels", () => {

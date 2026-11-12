@@ -3838,7 +3838,7 @@ export function ComposerModelPicker({
                 <span className="unsloth-thinking-label composer-model-chip-name truncate">
                   {chipLabel}
                 </span>
-                {chosenName || modelLoading || pending ? null : (
+                {(chosenName || modelLoading || pending) && !pane ? null : (
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}
                     strokeWidth={1.75}
@@ -3906,7 +3906,7 @@ export function ComposerModelPicker({
             <span className="unsloth-thinking-label composer-model-chip-name truncate">
               {chipLabel}
             </span>
-            {chosenName || modelLoading || pending ? null : (
+            {(chosenName || modelLoading || pending) && !pane ? null : (
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
                 strokeWidth={1.75}
