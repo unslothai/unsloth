@@ -584,7 +584,6 @@ def test_explicit_slice_start_past_the_last_row_is_refused(monkeypatch, slice_st
     from hub.utils import dataset_cache
 
     trainer = _cached_only_loader(monkeypatch, _SizedDataset(10))
-    # The cache returns the whole 10-row split even when the slice asks for more.
     monkeypatch.setattr(
         dataset_cache,
         "load_cached_hf_dataset",
