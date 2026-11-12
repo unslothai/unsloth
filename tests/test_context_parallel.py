@@ -159,6 +159,69 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
     assert seen[-1][1].dtype == torch.int64
 
 
+def test_training_step_installs_the_idle_expert_hook_once(monkeypatch):
+    # Under CP every-expert MoE blocks get the optimizer pre-hook that drops globally idle experts'
+    # zero gradients; through accelerate's wrapper, once, and not for a model without such blocks.
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+
+    class Experts(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = torch.nn.ModuleList(torch.nn.Linear(2, 2) for _ in range(3))
+
+        def forward(self, x):
+            return x
+
+    Experts.forward._unsloth_remote_moe_shim = True
+
+    class Wrapped:  # accelerate's AcceleratedOptimizer steps the optimizer it wraps
+        def __init__(self, optimizer):
+            self.optimizer = optimizer
+
+    class Trainer:
+        def __init__(self):
+            pass
+
+        def training_step(
+            self,
+            model,
+            inputs,
+            num_items_in_batch = None,
+        ):
+            pass
+
+        def prediction_step(self, model, inputs, prediction_loss_only):
+            return (None, None, None)
+
+        def train(self):
+            pass
+
+        def evaluate(self):
+            pass
+
+        def evaluation_loop(self, *a, **k):
+            pass
+
+    import trl
+
+    monkeypatch.setattr(trl, "SFTTrainer", Trainer)
+    cp.patch_sft_trainer(install_cp_methods = True)
+    trainer = Trainer()
+    trainer.model = torch.nn.Sequential(Experts())
+    inner = torch.optim.AdamW(trainer.model.parameters())
+    trainer.optimizer = Wrapped(inner)
+    manager = _manager(size = 2)
+    manager.mesh = None
+    trainer._context_parallel_manager = manager
+    for _ in range(2):
+        trainer.training_step(None, {"input_ids": torch.ones(1, 4, dtype = torch.long)}, 4)
+    assert len(inner._optimizer_step_pre_hooks) == 1
+    plain = torch.optim.AdamW(torch.nn.Linear(2, 2).parameters())
+    trainer.model, trainer.optimizer = torch.nn.Linear(2, 2), plain
+    trainer.training_step(None, {"input_ids": torch.ones(1, 4, dtype = torch.long)}, 4)
+    assert not plain._optimizer_step_pre_hooks
+
+
 def test_shift_labels_is_not_an_eval_label_name():
     # A named shift_labels made find_labels treat it as a required eval label.
     from transformers.utils import find_labels
@@ -264,10 +327,19 @@ def _patched_trainer(
         def compute_loss_context_manager(self):
             return contextlib.nullcontext()
 
-        def compute_loss(self, model, inputs):
+        def compute_loss(
+            self,
+            model,
+            inputs,
+            num_items_in_batch = None,
+        ):
+            # Like TRL's SFTTrainer: a per-token loss of 1 over this shard's targets, divided by the
+            # num_items_in_batch argument (an inputs["num_items_in_batch"] key is not read).
             assert inputs["use_cache"] is False
             targets = inputs["shift_labels"].ne(-100).sum()
-            return targets.float() / inputs["num_items_in_batch"]
+            if num_items_in_batch is None:
+                num_items_in_batch = targets.clamp_min(1)
+            return targets.float() / num_items_in_batch
 
         def train(self, *a, **k):
             return "trained"
@@ -299,7 +371,7 @@ def test_eval_loss_is_the_token_mean_even_with_an_empty_shard(monkeypatch, world
     monkeypatch.setattr(cp, "context_parallel", first_half)
     monkeypatch.setattr(cp.dist, "get_world_size", lambda: world_size)
     Trainer = _patched_trainer(monkeypatch)
-    trainer = object.__new__(Trainer)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
     manager = _manager(size = 2)
     manager.mesh = types.SimpleNamespace(get_group = lambda: "cp")
     trainer._context_parallel_manager = manager
@@ -318,6 +390,71 @@ def test_eval_loss_is_the_token_mean_even_with_an_empty_shard(monkeypatch, world
     assert logits is None and labels_out is None
     with pytest.raises(NotImplementedError, match = "loss-only"):
         trainer.prediction_step(None, batch(), False)
+
+
+def _model_normalised_loss(
+    self,
+    model,
+    inputs,
+    num_items_in_batch = None,
+):
+    # TRL < 1 hands inputs to the model: sum / inputs["num_items_in_batch"] when the key is there, else
+    # transformers' token mean over this shard, 0 / 0 on a shard without targets.
+    targets = inputs["shift_labels"].ne(-100).sum().float()
+    count = inputs.get("num_items_in_batch")
+    return targets / (targets if count is None else count)
+
+
+@pytest.mark.parametrize("compute_loss", ["trl", "model"])
+def test_eval_loss_is_not_multiplied_by_the_cp_size(monkeypatch, compute_loss):
+    import types
+
+    @contextlib.contextmanager
+    def first_half(mesh, buffers, buffer_seq_dims, no_restore_buffers):
+        for buffer in buffers:
+            buffer.data = buffer[:, : buffer.shape[1] // 2].clone()
+        yield
+
+    monkeypatch.setattr(cp, "context_parallel", first_half)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    Trainer = _patched_trainer(monkeypatch)
+    if compute_loss == "model":
+        monkeypatch.setattr(Trainer, "compute_loss", _model_normalised_loss)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
+    manager = _manager(size = 2)
+    manager.mesh = types.SimpleNamespace(get_group = lambda: "cp")
+    trainer._context_parallel_manager = manager
+    # Two ranks holding 2 of the 4 targets each, with the same per-token loss: the sum is 1, not 2.
+    monkeypatch.setattr(cp.dist, "all_reduce", lambda tensor, group = None: tensor.mul_(2))
+    labels = torch.tensor([[-100, 1, 1, -100, -100, -100, -100, 1, 1]])  # padded to 12, halves of 6
+    batch = {"input_ids": torch.ones(1, 9, dtype = torch.long), "labels": labels}
+    loss, _, _ = trainer.prediction_step(None, batch, True)
+    assert loss.item() == pytest.approx(1.0)
+
+
+def test_eval_loss_of_a_shard_without_targets_is_zero_even_when_its_mean_is_nan(monkeypatch):
+    import types
+
+    @contextlib.contextmanager
+    def first_half(mesh, buffers, buffer_seq_dims, no_restore_buffers):
+        for buffer in buffers:
+            buffer.data = buffer[:, : buffer.shape[1] // 2].clone()
+        yield
+
+    monkeypatch.setattr(cp, "context_parallel", first_half)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    Trainer = _patched_trainer(monkeypatch)
+    monkeypatch.setattr(Trainer, "compute_loss", _model_normalised_loss)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
+    manager = _manager(size = 2)
+    manager.mesh = types.SimpleNamespace(get_group = lambda: "cp")
+    trainer._context_parallel_manager = manager
+    # This rank holds the prompt (no targets), the other rank's share is the whole mean, 1.
+    monkeypatch.setattr(cp.dist, "all_reduce", lambda tensor, group = None: tensor.add_(1.0))
+    labels = torch.tensor([[-100] * 7 + [1, 1]])
+    batch = {"input_ids": torch.ones(1, 9, dtype = torch.long), "labels": labels}
+    loss, _, _ = trainer.prediction_step(None, batch, True)
+    assert loss.item() == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize(
@@ -446,19 +583,25 @@ def test_fsdp2_shards_over_dp_shard_cp_and_a_later_trainer_restores_the_config(m
     user_pc = types.SimpleNamespace(dp_replicate_size = 1, tp_size = 1, sp_size = 1, cp_size = 1)
     accelerator = _fsdp2_accelerator(user_pc)
     Trainer, _, built = _gated_trainer(monkeypatch, accelerator = accelerator)
-    Trainer()
+    trainer = Trainer()
     assert built == [(2, "ulysses", "allgather", "fsdp2")]  # the default backend: auto
-    pc = accelerator.state.parallelism_config
-    # What accelerate's fsdp2_prepare_model indexes the mesh with; cp stays Unsloth's own.
-    assert pc.fsdp_dim_names == ["dp_shard_cp"]
-    assert (pc.dp_shard_size, pc.cp_size, pc.non_data_parallel_size) == (4, 1, 1)
-    assert accelerator.state.device_mesh is not None
-    later = _patched_trainer(
-        monkeypatch,
-        args = types.SimpleNamespace(context_parallel_size = 1),
-        accelerator = accelerator,
-    )
-    later()
+    # Installed only while a CP entry point (train / evaluate / predict / save_model) runs.
+    assert accelerator.state.parallelism_config is user_pc
+    assert accelerator.state.device_mesh is None
+    with cp._cp_state_scope(trainer):
+        pc = accelerator.state.parallelism_config
+        # What accelerate's fsdp2_prepare_model indexes the mesh with; cp stays Unsloth's own.
+        assert pc.fsdp_dim_names == ["dp_shard_cp"]
+        assert (pc.dp_shard_size, pc.cp_size, pc.non_data_parallel_size) == (4, 1, 1)
+        assert accelerator.state.device_mesh is not None
+        later = _patched_trainer(
+            monkeypatch,
+            args = types.SimpleNamespace(context_parallel_size = 1),
+            accelerator = accelerator,
+        )
+        later()
+        assert accelerator.state.parallelism_config is user_pc
+        assert accelerator.state.device_mesh is None
     assert accelerator.state.parallelism_config is user_pc
     assert accelerator.state.device_mesh is None
 
@@ -516,7 +659,7 @@ def test_iterable_eval_dataset_passed_to_evaluate_is_refused(monkeypatch):
             return iter(())
 
     Trainer = _patched_trainer(monkeypatch)
-    trainer = object.__new__(Trainer)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
     trainer._context_parallel_manager = _manager()
     with pytest.raises(NotImplementedError, match = "iterable datasets"):
         trainer.evaluate(Stream())
@@ -532,7 +675,7 @@ def test_iterable_predict_dataset_is_refused(monkeypatch):
             return iter(())
 
     Trainer = _patched_trainer(monkeypatch)
-    trainer = object.__new__(Trainer)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
     trainer._context_parallel_manager = _manager()
     with pytest.raises(NotImplementedError, match = "iterable datasets"):
         trainer.predict(Stream())
@@ -701,15 +844,21 @@ def test_cp_state_is_reinstalled_at_train_after_another_trainer(monkeypatch):
     mesh = object()
     state = types.SimpleNamespace(device_mesh = None)
     Trainer = _patched_trainer(monkeypatch, args = types.SimpleNamespace(context_parallel_size = 1))
-    trainer = object.__new__(Trainer)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
     trainer.accelerator = types.SimpleNamespace(state = state)
     trainer.args = types.SimpleNamespace(ddp_find_unused_parameters = None)
     trainer._context_parallel_manager = types.SimpleNamespace(
         size = 2, backend = "ring", device_mesh = mesh
     )
-    # A later non-CP trainer cleared the shared state; train() must put the CP mesh back.
+    # A later non-CP trainer cleared the shared state; train() must put the CP mesh back while it runs.
+    seen = []
+    release = cp._release_accelerator_state
+    monkeypatch.setattr(
+        cp, "_release_accelerator_state", lambda s: (seen.append(s.device_mesh), release(s))
+    )
     assert trainer.train() == "trained"
-    assert state.device_mesh is mesh
+    assert seen == [mesh]
+    assert state.device_mesh is None
     assert trainer.args.ddp_find_unused_parameters is False
 
 
@@ -719,6 +868,50 @@ def test_attention_hooks_are_not_stacked_by_a_second_manager():
     for _ in range(2):
         _manager().attach_attention_hooks(model)
     assert len(model.self_attn._forward_pre_hooks) == 1
+
+
+def test_decoder_layers_see_no_mask_inside_a_cp_step_only():
+    class Layer(torch.nn.Module):
+        def __init__(self, linear = False):
+            super().__init__()
+            self.self_attn = torch.nn.Identity()
+            if linear:
+                self.linear_attn = torch.nn.Identity()
+            self.seen = []
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            self.seen.append(attention_mask)
+            return hidden_states
+
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([Layer(), Layer(linear = True)])
+    for _ in range(2):
+        _manager().attach_attention_hooks(model)
+    assert len(model.layers[0]._forward_pre_hooks) == 1
+    assert (
+        len(model.layers[1]._forward_pre_hooks) == 0
+    )  # a linear attention scan reads the padding mask
+    x, mask = torch.ones(1, 4, 2), torch.ones(1, 1, 4, 4, dtype = torch.bool)
+
+    def run(masks):
+        for layer in model.layers:
+            layer.seen.clear()
+            for m in masks:
+                layer(x, attention_mask = m)
+        return [layer.seen for layer in model.layers]
+
+    # No CP manager: the exact same object passes through.
+    plain = run([mask, None])
+    assert plain[0][0] is mask and plain[0][1] is None and plain[1][0] is mask
+    with cp._manager_scope(_manager()):
+        inside = run([mask, None])
+    assert inside[0] == [None, None]
+    assert inside[1][0] is mask
+    assert run([mask])[0][0] is mask
 
 
 def test_sdpa_is_restored_when_the_cp_step_raises(monkeypatch):
@@ -752,7 +945,7 @@ def test_eval_gather_keeps_one_loss_per_cp_group(monkeypatch, remainder):
         gradient_state = types.SimpleNamespace(end_of_dataloader = True, remainder = remainder),
     )
     Trainer = _patched_trainer(monkeypatch)
-    trainer = object.__new__(Trainer)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
     trainer.accelerator = accelerator
     trainer._context_parallel_manager = _manager(size = 2)
     out = trainer.evaluation_loop()
@@ -766,7 +959,7 @@ def test_replaced_iterable_train_dataset_is_refused_at_train(monkeypatch):
             return iter(())
 
     Trainer = _patched_trainer(monkeypatch)
-    trainer = object.__new__(Trainer)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
     trainer._context_parallel_manager = _manager()
     trainer.train_dataset = Stream()
     with pytest.raises(NotImplementedError, match = "iterable datasets"):
@@ -785,7 +978,7 @@ def test_replaced_iterable_eval_dataset_is_refused_at_evaluate(monkeypatch):
             return iter(())
 
     Trainer = _patched_trainer(monkeypatch)
-    trainer = object.__new__(Trainer)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
     trainer._context_parallel_manager = _manager()
     trainer.eval_dataset = Stream()
     with pytest.raises(NotImplementedError, match = "iterable datasets"):
@@ -882,8 +1075,11 @@ _CP_METHODS = (
 )
 
 
-def test_cp_methods_are_wrapped_only_once_a_trainer_enables_cp(monkeypatch):
-    # With CP off the wrappers slowed torch 2.10 LoRA steps by ~35%, so only __init__ is patched.
+def test_cp_methods_are_bound_only_on_the_trainer_that_enables_cp(monkeypatch):
+    import inspect
+
+    # With CP off class wrappers slowed torch 2.10 LoRA steps by ~35%, so only __init__ is patched on the
+    # class and the CP wrappers are bound per trainer that enables CP.
     import types
 
     Trainer = _patched_trainer(monkeypatch, install_cp_methods = False)
@@ -892,14 +1088,16 @@ def test_cp_methods_are_wrapped_only_once_a_trainer_enables_cp(monkeypatch):
     trainer = Trainer(args = types.SimpleNamespace(context_parallel_size = 1))
     assert trainer._context_parallel_manager is None
     assert trainer.train() == "trained"
-    assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)
+    assert not any(name in vars(trainer) for name in _CP_METHODS)
 
     Trainer, _, built = _gated_trainer(monkeypatch, install_cp_methods = False)
     plain = {name: Trainer.__dict__[name] for name in _CP_METHODS}
-    Trainer()
+    cp_trainer = Trainer()
     assert built == [(2, "ulysses", "allgather")]  # the default backend: auto
     for name in _CP_METHODS:
-        assert Trainer.__dict__[name].__wrapped__ is plain[name]
+        assert Trainer.__dict__[name] is plain[name]
+        # Bound per instance (train is wrapped again by the flash attention scope).
+        assert inspect.unwrap(vars(cp_trainer)[name]) is plain[name]
 
 
 @pytest.mark.parametrize(
@@ -1030,7 +1228,7 @@ def test_flash_attention_impl_is_scoped_to_train_without_packing(monkeypatch):
 def test_training_step_refuses_a_missing_token_count_with_labels(monkeypatch):
     monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
     Trainer = _patched_trainer(monkeypatch)
-    trainer = object.__new__(Trainer)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
     manager = _manager()
     manager.mesh = None
     trainer._context_parallel_manager = manager
@@ -1333,7 +1531,7 @@ def test_total_train_batch_size_counts_cp_groups_not_ranks(monkeypatch, fsdp2):
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
     cp.patch_sft_trainer(install_cp_methods = True)
-    trainer = object.__new__(Trainer)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
     pc = types.SimpleNamespace(cp_size = 1, sp_size = 1, tp_size = 1) if fsdp2 else None
     trainer.accelerator = types.SimpleNamespace(parallelism_config = pc)
     trainer.model = types.SimpleNamespace()
@@ -1356,9 +1554,9 @@ def test_instance_wrappers_made_in_init_capture_the_cp_methods(monkeypatch):
 
     def on_init(self):
         for name in ("train", "training_step"):
-            method = getattr(type(self), name)
+            method = getattr(self, name)
             captured[name] = method
-            setattr(self, name, functools.partial(method, self))
+            setattr(self, name, functools.partial(method))
 
     import types
 
@@ -1379,7 +1577,9 @@ def test_instance_wrappers_made_in_init_capture_the_cp_methods(monkeypatch):
             )  # SFTTrainer(model, args = SFTConfig(context_parallel_size = 2))
         assert built == [(2, "ulysses", "allgather")]  # the default backend: auto
         for name, method in captured.items():
-            assert method is not plain[name] and method.__wrapped__ is plain[name]
+            assert method.__func__ is not plain[name] and method.__func__.__wrapped__ is plain[name]
+        # The class keeps its own methods.
+        assert {name: Trainer.__dict__[name] for name in plain} == plain
 
 
 @pytest.mark.parametrize("unhashable", [False, True])
@@ -1406,16 +1606,16 @@ def test_a_trainer_built_before_cp_still_restores_the_accelerator_state(monkeypa
             on_init_plain(self)
 
     Trainer, args, built = _gated_trainer(monkeypatch, install_cp_methods = False, on_init = on_init)
-    restored = []
-    monkeypatch.setattr(cp, "_restore_parallelism_config", lambda state: restored.append(state))
+    plain_train = Trainer.__dict__["train"]
     early = Trainer(None, args = types.SimpleNamespace(context_parallel_size = 1))
     assert early._context_parallel_manager is None
-    early.accelerator = types.SimpleNamespace(state = types.SimpleNamespace(device_mesh = None))
-    Trainer(None, args = args)  # enables CP: installs the class wrappers
+    Trainer(None, args = args)  # enables CP: binds the wrappers on that trainer only
     assert built == [(2, "ulysses", "allgather")]  # the default backend: auto
-    restored.clear()
+    # The CP trainer put the shared state back at the end of its __init__ ...
+    assert early.accelerator.state.device_mesh is None
+    # ... and the earlier trainer runs the class's own train.
+    assert Trainer.__dict__["train"] is plain_train and early.train.func is plain_train
     assert early.train() == "trained"
-    assert restored == [early.accelerator.state]
 
 
 @pytest.mark.parametrize("forwarded", [1, None])
@@ -1431,3 +1631,70 @@ def test_a_forwarded_cp_size_of_one_installs_no_wrappers(monkeypatch, forwarded)
     Trainer(None, args = args, context_parallel_size = forwarded)
     assert built == []
     assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)
+
+
+@pytest.mark.parametrize("rope", ["dynamic", "longrope"])
+def test_ulysses_seq_len_rope_uses_the_whole_sequence(monkeypatch, rope):
+    # dynamic / longrope choose frequencies from max(position_ids) + 1: rank 0 of 2 sees positions
+    # 0..15 (within the original 16), the whole sequence 0..31 (beyond it).
+    import copy
+    import types
+    from transformers import LlamaConfig, LlamaForCausalLM, Phi3Config, Phi3ForCausalLM
+
+    small = dict(
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        vocab_size = 64,
+    )
+    if rope == "dynamic":
+        config = LlamaConfig(
+            max_position_embeddings = 16,
+            rope_scaling = {"rope_type": "dynamic", "factor": 2.0},
+            **small,
+        )
+        model = LlamaForCausalLM(config)
+    else:
+        factors = [1.0 + i for i in range(4)]
+        config = Phi3Config(
+            max_position_embeddings = 64,
+            original_max_position_embeddings = 16,
+            rope_scaling = {"type": "longrope", "short_factor": [1.0] * 4, "long_factor": factors},
+            pad_token_id = 0,
+            **small,
+        )
+        model = Phi3ForCausalLM(config)
+    rotary = model.model.rotary_emb
+    # rope_scaling: the form transformers 4.57 reads and 5.x converts, so neither corner falls back to default.
+    assert rotary.rope_type == rope
+    x = torch.ones(1, 32, 8)
+    full = torch.arange(32)[None]
+    # A copy: dynamic NTK caches the frequencies it last computed.
+    expected = [t[:, :16] for t in copy.deepcopy(rotary)(x, full)]
+    manager = _manager(size = 2)
+    manager.backend = "ulysses"
+    manager.attach_attention_hooks(model)
+    manager.mesh = types.SimpleNamespace(get_local_rank = lambda: 0)
+    manager.full_position_ids = full
+    monkeypatch.setattr(cp, "_ACTIVE_MANAGER", manager)
+    for got, want in zip(rotary(x[:, :16], full[:, :16]), expected):
+        torch.testing.assert_close(got, want)
+
+
+@pytest.mark.parametrize(
+    "model_type, blocker",
+    [
+        ("kimi_linear", "KimiDeltaAttention"),
+        ("kimi_k3", "KimiDeltaAttention"),
+        ("minimax", "MiniMaxLightningAttention"),
+        ("deepseek_v32", "DeepseekV32Attention"),
+        ("llama", None),
+        ("minimax_m2", None),
+    ],
+)
+def test_ulysses_packing_blocker_classifies_model_id_strings(model_type, blocker):
+    # A model ID string has no modules yet: its config's model type must give the instance outcome,
+    # so SFT also turns eval_packing off for hybrids whose Ulysses mixers refuse packed batches.
+    assert cp.ulysses_packing_blocker("some/model-id", model_types = (model_type,)) == blocker

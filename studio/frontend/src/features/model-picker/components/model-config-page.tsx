@@ -647,6 +647,26 @@ function GgufContextLengthSetting({
   );
 }
 
+function DiffusionContextNote({
+  value,
+  requested,
+  loadedContext,
+}: {
+  value: number;
+  requested: number | null;
+  loadedContext: number | null;
+}) {
+  if (loadedContext == null || value !== requested || value === loadedContext) {
+    return null;
+  }
+  return (
+    <p className="text-ui-11 text-amber-500">
+      DiffusionGemma did not apply this value. It sized the context to fit
+      memory and is running with {loadedContext.toLocaleString()} tokens.
+    </p>
+  );
+}
+
 function clampMaxSeqLength(value: number, max: number): number {
   const normalized = normalizeMaxSeqLength(value) ?? MAX_SEQ_LENGTH_MIN;
   return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(max, normalized));
@@ -1900,9 +1920,13 @@ function GgufAdvancedSettings({
       : N_BATCH_LLAMA_DEFAULT;
   const ubatchExceedsBatch =
     config.nUbatch != null && config.nUbatch > effectiveBatch;
+  const showGpuPicker =
+    (pinnableGpuContext(gpuDevices, isDiffusion).ids?.length ?? 0) > 1;
   return (
     <>
+      {(!isDiffusion || showGpuPicker) && (
       <AdvancedGroup title="Memory">
+      {!isDiffusion && (
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
@@ -1937,6 +1961,7 @@ function GgufAdvancedSettings({
           </SelectContent>
         </Select>
       </div>
+      )}
 
       <GpuMemorySettings
         config={config}
@@ -1968,7 +1993,9 @@ function GgufAdvancedSettings({
         </div>
       )}
       </AdvancedGroup>
+      )}
 
+      {!isDiffusion && (
       <AdvancedGroup title="Speed">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
@@ -2206,6 +2233,7 @@ function GgufAdvancedSettings({
         </div>
       )}
       </AdvancedGroup>
+      )}
 
       <AdvancedGroup title="Output">
       {!isDiffusion && (
@@ -3336,10 +3364,9 @@ export function ModelConfigPage({
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
-          // The same substitution applyPerModelConfigToRuntime makes at load: a model with no per-model
-          // override sends null, which the backend reads as Auto, while the selector has been showing
-          // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
-          // charged the sidecar for a load that disables it.
+          // Same substitution as applyPerModelConfigToRuntime: no per-model override sends null
+          // (read as Auto) while the selector shows the global fallback, so a global Off row
+          // charged an 11 GB DSpark sidecar.
           speculativeType: resolveSpeculativeType(
             runtimeConfig.speculativeType,
             speculativeFallback,
@@ -3752,11 +3779,10 @@ export function ModelConfigPage({
       : forgets
         ? deletePerModelConfig(configId, target.ggufVariant)
         : true;
-    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
-    // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
-    // native-path lease is the same.
-    // A forget also drops the local records for every other spelling the server reports clearing.
+    // Best-effort mirror for API loads, skipped if the localStorage write failed (they would
+    // disagree); gated on auto-switch reach, not GGUF-ness, since the resolver skips materialized
+    // Ollama links and native-path leases; a forget also clears local records for every other
+    // spelling the server reports.
     if (
       saved &&
       (keep || forgets) &&
@@ -4163,6 +4189,12 @@ export function ModelConfigPage({
             <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
+            <div
+              className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground"
+              aria-live="polite"
+            >
+              {saveStatus || "\u00a0"}
+            </div>
           </div>
         </div>
       )}
@@ -4251,7 +4283,13 @@ export function ModelConfigPage({
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
               renderWarning={(v) =>
-                isActiveModel &&
+                resolvedIsDiffusion ? (
+                  <DiffusionContextNote
+                    value={v}
+                    requested={loadedConfig?.customContextLength ?? null}
+                    loadedContext={activeLoadedContext}
+                  />
+                ) : isActiveModel &&
                 loadedMaxContextLength != null &&
                 v > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">
@@ -4494,7 +4532,7 @@ export function ModelConfigPage({
             }
             onClick={() => pickSet(pinnedSet)}
           >
-            Reset
+            Reset all
           </Button>
           {target.isGguf && (
             <SharedRunConfigControls

@@ -150,14 +150,11 @@ def _get_flash_adamw_class():
                 )
             super().__init__(params, *args, master_weight_bits = master_weight_bits, **kwargs)
 
-        # flashoptim stores unquantized moments in the param dtype, so an fp16 variance
-        # (grad**2 * (1 - beta2)) underflows to 0 for small grads and the update becomes
-        # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales.
-        # Checked per group after flashoptim fills its defaults (so positional and per-group
-        # quantize both count), for groups added at construction and by add_param_group later.
+        # Unquantized fp16 variance underflows to 0 for small grads; quantize=True stores it as sqrt
+        # with per-group scales; checked per group after flashoptim fills its defaults, including
+        # add_param_group groups.
         def _group_quantizes(self, group):
-            # flashoptim resolves a group without the key (a vanilla AdamW state dict) to the
-            # optimizer-wide setting.
+            # A group without `quantize` takes the optimizer-wide setting, like flashoptim.
             return group.get("quantize", getattr(self, "_quantize", True))
 
         def add_param_group(self, param_group):

@@ -5,6 +5,7 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from datasets import Dataset
@@ -15,7 +16,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from hub.utils import dataset_format  # noqa: E402
 from utils.datasets import format_detection  # noqa: E402
-from utils.datasets.dataset_utils import format_dataset  # noqa: E402
+from utils.datasets.dataset_utils import format_and_template_dataset, format_dataset  # noqa: E402
 
 
 def _text_dataset(column: str = "text"):
@@ -115,3 +116,45 @@ def test_auto_leaves_a_mapped_dataset_alone():
     )
 
     assert info["final_format"] != "raw_text"
+
+
+@pytest.mark.parametrize("column", ["text", "content"], ids = ["text", "content"])
+def test_auto_raw_text_rows_end_in_eos(column):
+    tokenizer = SimpleNamespace(eos_token = "</s>")
+    train = format_and_template_dataset(
+        _text_dataset(column), model_name = "unsloth/test", tokenizer = tokenizer
+    )
+    eval_split = format_and_template_dataset(
+        _text_dataset(column),
+        model_name = "unsloth/test",
+        tokenizer = tokenizer,
+        split_name = "eval",
+        raw_text_column = train["raw_text_column"],
+    )
+
+    for info in (train, eval_split):
+        assert info["final_format"] == "raw_text"
+        assert info["dataset"]["text"] == [
+            "## What happened\nWrote the fix.</s>",
+            "## What happened\nReviewed the diff.</s>",
+        ]
+
+
+def test_auto_raw_text_reads_eos_from_a_processors_tokenizer():
+    processor = SimpleNamespace(tokenizer = SimpleNamespace(eos_token = "<|im_end|>"))
+    info = format_and_template_dataset(
+        _text_dataset(), model_name = "unsloth/test", tokenizer = processor
+    )
+
+    assert all(text.endswith("<|im_end|>") for text in info["dataset"]["text"])
+
+
+def test_explicit_raw_leaves_eos_to_the_trainer():
+    info = format_and_template_dataset(
+        _text_dataset(),
+        model_name = "unsloth/test",
+        tokenizer = SimpleNamespace(eos_token = "</s>"),
+        format_type = "raw",
+    )
+
+    assert not any(text.endswith("</s>") for text in info["dataset"]["text"])

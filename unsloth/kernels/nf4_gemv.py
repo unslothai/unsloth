@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Batch-1 NF4 GEMV for decoding, out[1, 1, N] = X[1, 1, K] @ dequant(W).T, in one Triton launch
-# (nested absmax decode, NF4 lookup and dot product fused) on torch's current stream. Registered
-# as unsloth::gemv_nf4 so torch.compile traces it and CUDA graphs capture it. Each quantization
-# block is summed before scaling, so it matches bitsandbytes to fp32 accumulation noise, not bitwise.
-# Every weight row must start a new quantization block (K % blocksize == 0); callers check.
+# Batch-1 NF4 GEMV for decoding, out[1, 1, N] = X @ dequant(W).T in one launch, registered as
+# unsloth::gemv_nf4 for torch.compile and CUDA graphs; each block is summed before scaling, matching
+# bitsandbytes to fp32 noise, not bitwise; every row must start a quant block (K % blocksize == 0).
 
 import functools
 import os
@@ -16,7 +14,7 @@ import triton
 import triton.language as tl
 
 from .nf4 import _HAS_MUL_RN, _HAS_TL_GATHER, _mul, _nf4_lut
-from .triton_launch import jit_any_alignment, launch, relaunch, tag_compile_cache
+from .triton_launch import launch, relaunch, tag_compile_cache
 
 __all__ = [
     "gemv_nf4",
@@ -27,8 +25,9 @@ __all__ = [
 ]
 
 
-# M keeps the == 1 binary (fully unspecialized cost bsz 1 up to 5% on T4); every M > 1 shares one.
-@jit_any_alignment("M")
+# M stays specialized: M == 1 folds the row split (unspecialized 0.5-0.9% slower on T4), and M == 1
+# vs 2..4 are separate call sites, so no extra variants.
+@triton.jit
 def _gemv_nf4_kernel(
     X,
     W,
@@ -40,16 +39,16 @@ def _gemv_nf4_kernel(
     OUT,
     N,
     K,
-    M,
+    M,  # specialized on == 1 (see above)
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,  # NF4 quant block (absmax group, 64)
-    BLOCKSIZE2: tl.constexpr,  # absmax blocks per second-level scale (1 if not nested)
-    NESTED: tl.constexpr,  # absmax is itself 8-bit quantized
-    USE_MUL_RN: tl.constexpr,  # unfused libdevice mul_rn (off on HIP / interpreter)
-    BLOCK_N: tl.constexpr,  # output rows per program, from the N / K config
-    BLOCK_K: tl.constexpr,  # K per step: next pow2 of K, capped at 1024 or 2048
-    EVEN_K: tl.constexpr,  # K % BLOCK_K == 0, so K masks are skipped
-    LUT_MODE: tl.constexpr,  # NF4 table lookup: 0 load, 2 tl.gather (see _nf4_lut)
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, from N
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
+    EVEN_K: tl.constexpr,  # K % BLOCK_K == 0, per weight
+    LUT_MODE: tl.constexpr,  # codebook lookup, from BLOCK_K
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
@@ -97,8 +96,7 @@ def _gemv_nf4_kernel(
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
 
 
-# M: same specialization as _gemv_nf4_kernel.
-@jit_any_alignment("M")
+@triton.jit
 def _gemv_nf4_words_kernel(
     X,
     W,
@@ -110,14 +108,14 @@ def _gemv_nf4_words_kernel(
     OUT,
     N,
     K,
-    M,
+    M,  # specialized on == 1 (see above)
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,  # NF4 quant block (absmax group, 64)
-    BLOCKSIZE2: tl.constexpr,  # absmax blocks per second-level scale (1 if not nested)
-    NESTED: tl.constexpr,  # absmax is itself 8-bit quantized
-    USE_MUL_RN: tl.constexpr,  # unfused libdevice mul_rn (off on HIP / interpreter)
-    BLOCK_N: tl.constexpr,  # output rows per program (1)
-    BLOCK_K: tl.constexpr,  # K per step: next pow2 of K, capped at 2048
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, 1 here
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))
@@ -287,7 +285,6 @@ def _launch(
             8,
             constexprs,
             X.device.index,
-            unaligned = _UNALIGNED_M,
             num_warps = num_warps,
             enable_fp_fusion = True,
         )
@@ -346,18 +343,6 @@ def _gemv_nf4_op(
 
 
 _KERNELS = (_gemv_nf4_kernel, _gemv_nf4_words_kernel)
-# Key M without % 16 only if Triton dropped it, else a binary built for a divisible M gets reused.
-_UNALIGNED_M = (
-    (10,)
-    if all(
-        any(
-            p.name == "M" and getattr(p, "do_not_specialize_on_alignment", False)
-            for p in getattr(k, "params", ())
-        )
-        for k in _KERNELS
-    )
-    else ()
-)
 tag_compile_cache(__file__)
 _is_compiling = torch.compiler.is_compiling
 _current_device = torch.cuda.current_device
@@ -377,14 +362,10 @@ def gemv_nf4(
     dtype,
     out = None,
 ):
-    """X @ dequant(W).T for a single token; returns (1, 1, shape[0]) in X's dtype.
-
-    ``code2/absmax2/offset`` are None for a quant state without double quantization, and
-    ``offset`` is bitsandbytes' 0-dim device tensor (read in the kernel, so no host sync).
-    Eager calls launch the kernel directly: the torch.library dispatcher costs about 20us
-    per call, as much as the kernel itself at decode sizes. Compiled code goes through
-    the registered op so Dynamo sees it.
-    """
+    """X @ dequant(W).T for one token, returning (1, 1, shape[0]) in X's dtype; code2, absmax2 and
+    offset are None without double quant (offset is a 0-dim device tensor, so no host sync);
+    eager calls skip the torch.library dispatcher (costly at decode sizes), compiled code uses
+    the registered op."""
     out_features, in_features = int(shape[0]), int(shape[1])
     if not X.is_contiguous():
         X = X.contiguous()

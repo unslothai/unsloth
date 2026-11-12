@@ -62,8 +62,7 @@ def test_resolve_family_repo_by_scheme():
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"), ("int8", "org/hosted-int8")))
     src = resolve_prequant_source(fam, "int8")
     assert src.kind == "repo" and src.location == "org/hosted-int8"
-    # Model-name convention first (repo scheme suffix stripped), its ComfyUI-format twin ahead of it,
-    # safetensors ahead of the pickle, legacy name last.
+    # Order: ComfyUI twin, then model name, safetensors before the pickle, legacy name last.
     assert src.candidate_filenames == (
         "hosted-INT8-ComfyUI.safetensors",
         "hosted-INT8.safetensors",
@@ -187,8 +186,7 @@ def test_local_prequant_path_ready(tmp_path, monkeypatch):
 
 @pytest.fixture
 def restricted_load_available(monkeypatch):
-    """Whether this install could open a checkpoint depends on the host's torchao. The resolution
-    tests below are not about that, so pin it on."""
+    """Pins restricted-load support on: resolution tests do not depend on the host's torchao."""
     monkeypatch.setattr(
         pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
@@ -641,7 +639,16 @@ def _load(
         monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
     else:
         monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
-    path = tmp_path / "ckpt.pt"
+    path = tmp_path / ("ckpt.safetensors" if scheme == "nvfp4" else "ckpt.pt")
+    if scheme == "nvfp4":
+        # nvfp4 is read from safetensors only; the stand-in container returns the fake checkpoint.
+        import core.inference.prequant_safetensors as pst
+        def _st_load(_path, **_kwargs):
+            if load_raises:
+                raise RuntimeError("load failed")
+            return ckpt
+
+        monkeypatch.setattr(pst, "load_prequant_safetensors", _st_load)
     if exists:
         path.write_bytes(b"x")
     source = PrequantSource(kind = "path", location = str(path), filename = None)
@@ -935,7 +942,6 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(
     required = {
         # every TQ_SCHEME the builder can bake, not just the hosted ones
         "torchao.prototype.mx_formats.mx_tensor.MXTensor",
-        "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
         "torchao.dtypes.affine_quantized_tensor.AffineQuantizedTensor",
         "torchao.dtypes.uintx.plain_layout.PlainAQTTensorImpl",
         "torchao.dtypes.utils.PlainLayout",
@@ -951,6 +957,10 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(
         "torch.torch_version.TorchVersion",
     }
     assert required <= listed, sorted(required - listed)
+    # nvfp4 is never unpickled by Studio: its checkpoints load from safetensors only
+    assert not any(
+        "nvfp4" in f"{module}.{name}".lower() for module, name in pq._PREQUANT_SAFE_GLOBALS
+    )
     # nothing outside torch/torchao, so no general-purpose callable is allowed
     assert all(
         module.split(".")[0] in ("torch", "torchao") for module, _ in pq._PREQUANT_SAFE_GLOBALS
@@ -1173,7 +1183,8 @@ def test_support_is_answered_per_scheme(monkeypatch):
 
     assert pq.restricted_prequant_load_supported("fp8") is True
     assert pq.restricted_prequant_load_supported("int8") is False
-    assert pq.restricted_prequant_load_supported("nvfp4") is False
+    # nvfp4 never reads a pickle, whatever the allowlist resolves
+    assert pq.restricted_prequant_load_supported("nvfp4", "x-NVFP4.pt") is False
     assert pq.restricted_prequant_load_supported() is True
     assert pq.restricted_prequant_load_supported("something-else") is True
     fam = _fam(prequant_repos = (("int8", "org/hosted-int8"), ("fp8", "org/hosted-fp8")))
@@ -1707,9 +1718,8 @@ def test_prequant_checkpoint_cached_never_raises(monkeypatch):
 
 
 def test_a_cached_legacy_file_does_not_pre_empt_the_canonical_one(monkeypatch, tmp_path):
-    """fallback_filename is primary-first by contract, reached only once the canonical name is
-    absent remotely. Short-circuiting on a cached legacy artifact would pin a stale
-    transformer_<scheme>.pt forever, even after the repo publishes the real name."""
+    """fallback_filename is tried only once the canonical name is absent remotely, so a cached
+    legacy .pt cannot pin a stale file."""
     from core.inference.diffusion_prequant import _resolve_checkpoint_path
 
     legacy = tmp_path / "transformer_fp8.pt"
@@ -1740,8 +1750,7 @@ def test_a_cached_legacy_file_does_not_pre_empt_the_canonical_one(monkeypatch, t
 
 
 def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypatch, tmp_path):
-    """The other direction, which is what fallback_filename exists for: a repo that only ever
-    shipped the legacy artifact must still load."""
+    """A repo shipping only the legacy artifact must still load through fallback_filename."""
     from huggingface_hub.errors import EntryNotFoundError
 
     from core.inference.diffusion_prequant import _resolve_checkpoint_path
@@ -1769,9 +1778,8 @@ def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypa
 
 
 def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkeypatch, tmp_path):
-    """Once the primary is absent remotely the legacy name IS the artifact, so it needs the same
-    other-root treatment: revalidate through the root holding the copy rather than re-fetch multiple
-    GB into the live one, or pin a stale file by returning it raw."""
+    """A legacy copy in the other root is revalidated there after the primary 404s, not re-fetched
+    or returned raw."""
     from huggingface_hub.errors import EntryNotFoundError
 
     default_root = tmp_path / "default-hub"
@@ -1811,9 +1819,8 @@ def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkey
 
 
 def test_a_primary_404_during_revalidation_still_reaches_the_legacy_fallback(monkeypatch, tmp_path):
-    """The other-root revalidation must not swallow the primary's 404: when the live root misses
-    but the import-time root still holds an OLD canonical checkpoint, a blanket catch returns that
-    stale file and the fallback-name branch is never reached."""
+    """Other-root revalidation must not swallow the primary's 404, or an old canonical copy is
+    returned and the fallback name is never reached."""
     from huggingface_hub.errors import EntryNotFoundError
 
     default_root = tmp_path / "default-hub"
@@ -2259,10 +2266,10 @@ def test_pinning_the_fp8_kernel_leaves_the_4_bit_weights_alone(monkeypatch):
     assert not hasattr(sd["layers.0.attention.to_q.weight"], "kernel_preference")
 
 
-def test_an_nvfp4_install_must_be_able_to_open_the_fp8_weights_too():
-    required = pq._SCHEME_REQUIRED_GLOBALS["nvfp4"]
-    assert pq._SCHEME_REQUIRED_GLOBALS["fp8"] <= required
-    assert "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor" in required
+def test_nvfp4_has_no_pickle_requirements_because_it_is_never_unpickled():
+    assert "nvfp4" not in pq._SCHEME_REQUIRED_GLOBALS
+    # fp8 / int8 keep their pickle requirements unchanged
+    assert {"int8", "fp8", "mxfp8"} <= set(pq._SCHEME_REQUIRED_GLOBALS)
 
 
 def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path):
@@ -2398,9 +2405,8 @@ def test_the_runtime_resolver_applies_the_same_capability_filter_as_the_plan(mon
 
 
 def test_a_cached_pickle_is_not_evidence_for_a_safetensors_artifact(monkeypatch):
-    """The derived safetensors name is a guess, and the cache probe walks every candidate, so a
-    cached legacy ``.pt`` would satisfy the evidence gate for an install that cannot open one.
-    Planning would then drop the dense shards and resolve neither file."""
+    """A cached legacy .pt must not count as evidence for a safetensors artifact, or planning drops
+    the dense shards and resolves neither file."""
     fam = DiffusionFamily(
         name = "probe-fam",
         pipeline_class = "ProbePipeline",
@@ -2512,7 +2518,7 @@ def _nvfp4_repo_source():
     return PrequantSource(
         kind = "repo",
         location = "unsloth/Z-Image-Turbo-NVFP4",
-        filename = "Z-Image-Turbo-NVFP4.pt",
+        filename = "Z-Image-Turbo-NVFP4.safetensors",
     )
 
 
@@ -2606,9 +2612,8 @@ _NVFP4_PREFETCH_KWARGS = {"transformer_quant": "nvfp4", "hf_token": "hf_user_tok
 
 
 def test_an_unreachable_prequant_does_not_suppress_the_dense_shards(monkeypatch):
-    """The candidate is PREQUANT because the family table names a checkpoint, whether or not this user
-    can read it. Private, the load falls back to the dense build, so the plan must stage the dense
-    shards rather than let the load pull ~25 GB inline after the phase switched to finalizing."""
+    """PREQUANT is chosen from the family table even when this user cannot read it, so the dense
+    shards must still be staged, not pulled ~25 GB inline."""
     from huggingface_hub import errors as hub_errors
 
     def _refuse(repo_id):
@@ -2643,7 +2648,7 @@ def test_a_readable_prequant_is_not_marked_unreachable(monkeypatch):
 
     def _listing(repo_id):
         return types.SimpleNamespace(
-            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.safetensors", size = 4096)]
         )
 
     backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
@@ -2659,7 +2664,7 @@ def test_local_only_treats_an_uncached_prequant_as_unreachable(monkeypatch):
 
     def _listing(repo_id):
         return types.SimpleNamespace(
-            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.safetensors", size = 4096)]
         )
 
     backend, tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
@@ -2679,7 +2684,7 @@ def test_a_readable_prequant_still_drops_the_dense_shards(monkeypatch):
 
     def _listing(repo_id):
         return types.SimpleNamespace(
-            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.safetensors", size = 4096)]
         )
 
     backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)

@@ -43,10 +43,7 @@ def _dotted(node):
 def _is_kernel_decorator(node):
     name = _dotted(node.func if isinstance(node, ast.Call) else node)
     last = name.split(".")[-1]
-    # jit_any_alignment(...) / _jit_any_alignment: triton.jit wrappers with specialization options.
-    return (
-        last in KERNEL_DECORATORS and (name.startswith("triton") or name == last)
-    ) or last.lstrip("_").startswith("jit_")
+    return last in KERNEL_DECORATORS and (name.startswith("triton") or name == last)
 
 
 def _kernels(tree):

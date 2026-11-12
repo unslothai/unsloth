@@ -13,6 +13,8 @@ from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import Route, expect, sync_playwright
 from playwright.sync_api import TimeoutError as PWTimeoutError
 
+from _playwright_robust import follow_os_reduced_motion
+
 from playwright_image_model_footprint import (
     BASE_URL,
     KLEIN_ROW,
@@ -270,6 +272,7 @@ def main() -> None:
             reduced_motion = "reduce",
             color_scheme = "dark",
         )
+        follow_os_reduced_motion(context)
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');"
             "localStorage.setItem('unsloth_download_transport', 'http');"

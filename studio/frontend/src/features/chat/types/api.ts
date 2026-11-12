@@ -165,6 +165,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  estimated_resident_gb?: number | null;
   /** Streamed lookup-table bytes inside `size_bytes`; 0 when none or on an older backend. */
   lookup_table_bytes?: number;
   pending_drafter_filename?: string | null;
@@ -290,6 +291,10 @@ export interface LoadModelResponse {
   gpu_layers?: number;
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
+  overflow_layers?: number | null;
+  gpu_weights_mib?: number | null;
+  host_weights_mib?: number | null;
+  expert_cache_mib?: number | null;
   offload_overridden?: boolean | null;
   gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
@@ -377,6 +382,7 @@ export interface InferenceStatusResponse {
   serving?: string[];
   serving_checkpoints?: string[];
   resident_mib?: number | null;
+  resident_on_gpu?: boolean | null;
   /** Keep multiple models loaded, as saved on the server. Absent from older servers. */
   multi_model_mode?: "off" | "fit" | "always";
   inference?: {

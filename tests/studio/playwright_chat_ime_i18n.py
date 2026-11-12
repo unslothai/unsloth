@@ -154,8 +154,7 @@ with sync_playwright() as p:
             return
 
     def _resolve_deferred_404s() -> None:
-        """Resolved once at the end because the response event and console error can arrive in
-        either order."""
+        """Runs last: the response event and console error can arrive in either order."""
         for text, url in deferred_404_console:
             remaining = unspent_get_404s.get(url, 0)
             if remaining > 0:

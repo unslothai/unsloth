@@ -142,12 +142,9 @@ def _rms_layernorm_backward(
     TRAIN_W: tl.constexpr,  # weight grad partials
     FROM_Y: tl.constexpr,  # recompute normed from saved Y
 ):
-    """
-    Fast RMS Layernorm kernel for the backward pass
-    Inspiration from a Triton tutorial:
-    https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-    TRAIN_W: per-program fp32 dW partials (fla-org/flash-linear-attention layer_norm_bwd_kernel_row).
-    """
+    """Fast RMS layernorm backward kernel, inspired by the Triton layer-norm tutorial; TRAIN_W
+    writes per-program fp32 dW partials, as in fla-org/flash-linear-attention
+    layer_norm_bwd_kernel_row."""
     pid = tl.program_id(0)
     if LONG_INDEXING:
         pid = pid.to(tl.int64)
