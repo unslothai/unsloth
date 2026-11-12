@@ -1509,3 +1509,96 @@ def test_whitespace_beside_a_tool_call_is_no_content(flm):
     message = body["choices"][0]["message"]
     assert message["content"] is None
     assert message["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def _long_chat(turns = 20):
+    messages = [{"role": "system", "content": "Answer briefly."}]
+    for index in range(turns):
+        messages.append({"role": "user", "content": f"question {index} " + "word " * 400})
+        messages.append({"role": "assistant", "content": f"answer {index} " + "word " * 400})
+    return messages + [{"role": "user", "content": "latest question"}]
+
+
+def _truncations(lines):
+    return [chunk["context_truncated"] for chunk in _data(lines) if "context_truncated" in chunk]
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_an_npu_chat_over_the_window_is_compacted_before_fastflowlm(flm, stream):
+    recorded = flm()
+    status, body = _call(
+        stream = stream, messages = _long_chat(), context_overflow = "truncate_oldest"
+    )
+    assert status == 200
+    sent = recorded[-1]["body"]["messages"]
+    assert len(sent) < len(_long_chat())
+    assert sent[0]["content"].endswith("Answer briefly.")
+    assert sent[-1]["content"] == "latest question"
+    if stream:
+        [truncation] = _truncations(body)
+        assert truncation["fits"] is True
+        assert truncation["dropped_messages"] == len(_long_chat()) - len(sent)
+
+
+@pytest.mark.parametrize("overflow", ["error", None])
+def test_an_npu_chat_with_auto_compact_off_is_forwarded_whole(flm, overflow):
+    recorded = flm()
+    status, body = _call(stream = True, messages = _long_chat(), context_overflow = overflow)
+    assert status == 200
+    assert len(recorded[-1]["body"]["messages"]) == len(_long_chat())
+    assert _truncations(body) == []
+
+
+def test_an_npu_chat_that_fits_is_forwarded_whole(flm):
+    recorded = flm()
+    short = _long_chat(turns = 2)
+    _call(stream = True, messages = short, context_overflow = "truncate_oldest")
+    assert len(recorded[-1]["body"]["messages"]) == len(short)
+
+
+def test_compact_now_resets_an_npu_chat_that_fits(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-thread"
+    short = _long_chat(turns = 4)
+    studio_db.upsert_chat_thread(
+        {"id": thread, "title": "t", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    for index, message in enumerate(m for m in short if m["role"] != "system"):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{thread}-{index}",
+                "threadId": thread,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+
+    async def connected(self) -> bool:
+        return False
+
+    # The tool loop polls for a disconnect and would stop before reaching FastFlowLM.
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded = flm(tools = True)
+    status, body = _call(
+        stream = True,
+        messages = short,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    sent = recorded[0]["body"]["messages"]
+    assert len(sent) < len(short)
+    assert "latest question" in json.dumps(sent[-1])
+    [truncation] = _truncations(body)
+    assert truncation["checkpoint_started"] is True
+    assert truncation["manual"] is True

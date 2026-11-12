@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Local GGUF, MLX and managed engine auto-compaction is on or off only; the server chooses how it
+ * Local GGUF, MLX, NPU and managed engine auto-compaction is on or off only; the server chooses how it
  * compacts (UNSLOTH_CONTEXT_POLICY, default "checkpoint").
  */
 
@@ -12,6 +12,8 @@ export function ggufCompactionRequestFields(options: {
   isGguf: boolean;
   isMlx?: boolean;
   isManagedEngine?: boolean;
+  // Lemonade does not compact, so the server fits the chat to the NPU's window
+  isNpu?: boolean;
   autoCompactEnabled: boolean;
   // /compact: asked for by the user, so it applies with auto-compaction off too
   compactNow?: boolean;
@@ -19,7 +21,14 @@ export function ggufCompactionRequestFields(options: {
   context_overflow?: "error" | "truncate_oldest";
   compact_context?: true;
 } {
-  if (!options.isGguf && !options.isMlx && !options.isManagedEngine) return {};
+  if (
+    !options.isGguf &&
+    !options.isMlx &&
+    !options.isManagedEngine &&
+    !options.isNpu
+  ) {
+    return {};
+  }
   if (options.compactNow) {
     return { context_overflow: "truncate_oldest", compact_context: true };
   }

@@ -236,6 +236,7 @@ import {
   useLibraryChatHandoffStore,
 } from "@/features/library/chat-handoff-store";
 import { resumesThought } from "@/features/model-picker";
+import { isNpuModelId } from "@/features/npu";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -5784,15 +5785,17 @@ const Composer: FC<{
         // The compacted turns stay reachable only through search_conversation, so no tools, no reset.
         if (
           !runtime.supportsTools ||
-          !resumesThought({
-            loadedIsGguf: runtime.loadedIsGguf,
-            loadedIsMlx: runtime.loadedIsMlx,
-            activeGgufVariant: runtime.activeGgufVariant,
-            activeNativePathToken: runtime.activeNativePathToken,
-            checkpoint: runtime.params.checkpoint,
-          })
+          !(
+            resumesThought({
+              loadedIsGguf: runtime.loadedIsGguf,
+              loadedIsMlx: runtime.loadedIsMlx,
+              activeGgufVariant: runtime.activeGgufVariant,
+              activeNativePathToken: runtime.activeNativePathToken,
+              checkpoint: runtime.params.checkpoint,
+            }) || isNpuModelId(runtime.params.checkpoint)
+          )
         ) {
-          toast.info("/compact works with GGUF and MLX models that support tools");
+          toast.info("/compact works with GGUF, MLX and NPU models that support tools");
           return;
         }
         requestThreadCompaction(referenceThreadId);
