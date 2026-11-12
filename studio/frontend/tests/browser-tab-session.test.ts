@@ -191,3 +191,16 @@ test("an unsaved chat's tabs follow it to the key a reload gives it, by either w
   other.useBrowserStore.getState().showChat(chatKeyOfThread("elsewhere"));
   assert.deepEqual([other.useBrowserStore.getState().open, shownUrls(other)], [false, []]);
 });
+
+test("an unsaved project chat's tabs come back in that project's new chat, not another project's or a plain chat", async () => {
+  for (const [landing, restored] of [["project:p1:nonce-2", true], ["project:p2:nonce-3", false], [chatKeyOfThread("plain"), false]] as const) {
+    session.clear();
+    const before = await reloaded();
+    before.useBrowserStore.getState().showChat("project:p1:nonce-1");
+    before.useBrowserStore.getState().openUrl("https://project.example/");
+    const after = await reloaded();
+    await settled();
+    after.useBrowserStore.getState().showChat(landing);
+    assert.deepEqual([after.useBrowserStore.getState().open, shownUrls(after)], restored ? [true, ["https://project.example/"]] : [false, []], landing);
+  }
+});

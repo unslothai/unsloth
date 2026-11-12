@@ -208,6 +208,8 @@ export function saveTabSession(state: TabSessionSource, key = TAB_SESSION_KEY, s
 
 /** Whether `chat` (a store chat key) was never saved, so no reload brings it back under that key. */
 export async function chatIsUnsaved(chat: string): Promise<boolean> {
+  // A project's new chat is keyed by a nonce made on mount (chat-page.tsx); saved, it is a single: chat.
+  if (chat.startsWith("project:")) return true;
   if (!chat.startsWith("single:")) return false;
   try {
     const { getStoredChatThread } = await import("@/features/chat/utils/chat-history-storage");
@@ -215,4 +217,10 @@ export async function chatIsUnsaved(chat: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Whether unsaved chat `from`'s tabs may move to `to`: a project's new chat only to that project's new chat. */
+export function sameKindOfChat(from: string, to: string): boolean {
+  const scope = (chat: string) => (chat.startsWith("project:") ? chat.slice(0, chat.lastIndexOf(":") + 1) : chat.slice(0, chat.indexOf(":") + 1));
+  return scope(from) === scope(to);
 }

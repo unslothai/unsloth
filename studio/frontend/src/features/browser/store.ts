@@ -12,7 +12,7 @@ import { copyTabPageStorage, dropTabPageStorage } from "./page-storage";
 import { setShownBrowserChat } from "./panel-availability";
 import { defaultZoom } from "./prefs-store";
 import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
-import { chatIsUnsaved, loadTabSession, saveTabSession } from "./tab-session";
+import { chatIsUnsaved, loadTabSession, sameKindOfChat, saveTabSession } from "./tab-session";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -509,7 +509,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     const from = restoredShown;
     restoredShown = null;
     const state = get();
-    if (from === chat || state.tabs.some((tab) => tab.chat === chat)) return;
+    if (from === chat || !sameKindOfChat(from, chat) || state.tabs.some((tab) => tab.chat === chat)) return;
     const { [from]: panel, ...chats } = state.chats;
     const tabs = state.tabs.map((tab) => (tab.chat === from ? { ...tab, chat } : tab));
     if (!panel) set({ tabs, chats });
