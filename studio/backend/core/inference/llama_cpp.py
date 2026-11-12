@@ -21836,17 +21836,16 @@ class LlamaCppBackend:
             )
 
         # The output cannot tell whose template it was: a custom one that passes llama-server's
-        # model-less argument check fails later, exactly like an embedded one. Name both owners.
+        # model-less argument check fails later, exactly like an embedded one. Blame neither.
         if LlamaCppBackend._is_chat_template_rejection(output or ""):
             template_error = re.search(
                 r"common_chat_templates_init: error:[ \t]*([^\r\n]+)", scan_tail
             )
             why = f" ({_short(template_error.group(1))})" if template_error else ""
             return LlamaCppBackend._with_startup_diagnostics(
-                f"llama-server rejected this model's chat template{why}; this is not a memory "
-                "problem. If you set a custom template, fix it under Chat Template in this "
-                "model's settings or in its extra arguments. Otherwise the template is the "
-                "GGUF's own: update llama.cpp, or set a working one under Chat Template.",
+                f"llama-server rejected this model's chat template{why}. Fix it under Chat "
+                "Template in the model's settings, or update llama.cpp if the template is the "
+                "GGUF's own.",
                 output,
                 log_path,
                 secrets,

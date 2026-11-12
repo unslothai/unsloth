@@ -1942,11 +1942,12 @@ class TestRejectedChatTemplate:
         summary = msg.split("\n\n")[0]
         assert summary.startswith("llama-server rejected this model's chat template ")
         assert "(lexer: unknown escape character \\q)" in summary
-        assert "not a memory problem" in summary
+        assert "Fix it under Chat Template in the model's settings" in summary
         assert "update llama.cpp" in summary
         assert "GGUF file is valid" not in msg
         assert "enough memory" not in msg
         assert "\n" not in summary
+        assert len(summary) < 200
         assert "chat template parsing error" in msg
         assert "Full log: /tmp/llama.log" in msg
 
@@ -1974,11 +1975,11 @@ class TestRejectedChatTemplate:
     )
     def test_the_output_never_decides_whose_template_it_was(self, output):
         # Init-time output is identical for an embedded template and a custom one, so the
-        # message names both owners instead of picking one.
+        # message blames neither and gives a remedy that holds for both.
         summary = _classify(output, "/models/m.gguf", "local/m", 1).split("\n\n")[0]
         assert "rejected this model's chat template" in summary
-        assert "If you set a custom template, fix it under Chat Template" in summary
-        assert "Otherwise the template is the GGUF's own" in summary
+        assert "Fix it under Chat Template in the model's settings" in summary
+        assert "update llama.cpp if the template is the GGUF's own" in summary
         assert "embedded in this GGUF" not in summary
         assert "it was started with" not in summary
         assert "std::exception" not in summary
@@ -2009,7 +2010,7 @@ class TestRejectedChatTemplate:
         summary = msg.split("\n\n")[0]
         assert secret not in msg
         assert "***" in summary
-        assert len(summary) < 650
+        assert len(summary) < 400
         assert msg.count("llama-server output:") == 1
 
 
