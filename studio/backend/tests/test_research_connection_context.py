@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from urllib.parse import unquote
 
+import httpx
 import pytest
 
 from core.inference import external_provider
@@ -27,6 +28,8 @@ MODEL = "qwen3:1.7b"
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
+    # Other test modules leave a mock transport on the shared client.
+    monkeypatch.setattr(external_provider, "_http_client", httpx.AsyncClient(trust_env = False))
     external_provider._served_windows.clear()
     external_provider._ollama_last_windows.clear()
     studio_db.upsert_chat_thread(
