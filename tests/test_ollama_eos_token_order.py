@@ -81,8 +81,7 @@ def test_ollama_eos_tokens_keep_unk_beside_an_unused_family():
 
 
 def test_ollama_eos_tokens_keep_short_tokens_whole():
-    # A 3-char token probes one character: "<" or "</" sits inside every special token, so
-    # collapsing it rewrote the whole list and shipped zero usable stops.
+    # Collapsing "<" (a 3-char token's half) rewrote every token and left no usable stop.
     for seed in range(8):
         assert _run(seed, ["<pad>", "<eos>", "<eot>", "<s>"], "<pad>") == [
             "<eos>",
@@ -98,8 +97,7 @@ def test_ollama_eos_tokens_keep_short_tokens_whole():
 
 
 def test_ollama_eos_tokens_keep_unrelated_characters():
-    # "e" is a substring of four tokens but is nobody's family prefix; stripping it left
-    # "abc" plus a stop of "e", which ends generation at the first e it meets.
+    # Stripping the shared "e" left a stop of "e".
     for seed in range(8):
         assert _run(seed, ["<pad>", "eop", "ezz", "abc", "def"], "<pad>") == [
             "abc",
@@ -110,6 +108,12 @@ def test_ollama_eos_tokens_keep_unrelated_characters():
 
 
 def test_ollama_eos_tokens_still_collapse_real_families():
-    # Members sharing more than half the token still merge into one stop.
     for seed in range(8):
         assert _run(seed, ["<pad>", "<eos>", "<eot>", "<eom>", "eop"], "<pad>") == ["<eo", "eop"]
+
+
+def test_ollama_eos_tokens_drop_whitespace_only_stops():
+    # Gemma's tab-run tokens made "\t" a stop, ending generation at the first indent.
+    for seed in range(4):
+        tokens = ["<pad>", "\t", "\t\t", "\t\t\t", "\n\n", "<end_of_turn>"]
+        assert _run(seed, tokens, "<pad>") == ["<end_of_turn>"]
