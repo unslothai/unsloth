@@ -9,7 +9,12 @@ import {
   notifyChatHistoryUpdated,
   saveChatProject,
 } from "../api/chat-api";
-import type { MessageRecord, ParsedConversation, ThreadRecord } from "../types";
+import type {
+  MessageRecord,
+  ParsedConversation,
+  ProjectRecord,
+  ThreadRecord,
+} from "../types";
 import {
   deleteStoredChatThreads,
   saveStoredChatThread,
@@ -447,10 +452,30 @@ async function restoreBackupProjects(
   const known = new Set(
     (await listChatProjects({ includeArchived: true })).map(({ id }) => id),
   );
-  for (const project of projects) {
+  const byId = new Map(projects.map((project) => [project.id, project]));
+  const ordered: ProjectRecord[] = [];
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  function visit(project: ProjectRecord) {
+    if (visited.has(project.id) || visiting.has(project.id)) return;
+    visiting.add(project.id);
+    if (project.parentId) {
+      const parent = byId.get(project.parentId);
+      if (parent) visit(parent);
+    }
+    visiting.delete(project.id);
+    visited.add(project.id);
+    ordered.push(project);
+  }
+  for (const project of projects) visit(project);
+
+  for (const project of ordered) {
     if (known.has(project.id)) continue;
     try {
-      await saveChatProject(project);
+      const parentId = project.parentId && known.has(project.parentId)
+        ? project.parentId
+        : null;
+      await saveChatProject({ ...project, parentId });
       known.add(project.id);
     } catch {
       // Its chats still import, ungrouped.

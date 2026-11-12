@@ -118,6 +118,31 @@ const PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS = 2000;
 const PROJECTS_INITIAL_FALLBACK = 8;
 const PROJECTS_ROW_HEIGHT = 68;
 
+function flattenProjectTree(
+  projects: ProjectRecord[],
+): Array<{ project: ProjectRecord; depth: number }> {
+  const projectIds = new Set(projects.map((project) => project.id));
+  const childrenByParent = new Map<string | null, ProjectRecord[]>();
+  for (const project of projects) {
+    const parentId = project.parentId && projectIds.has(project.parentId)
+      ? project.parentId
+      : null;
+    const children = childrenByParent.get(parentId) ?? [];
+    children.push(project);
+    childrenByParent.set(parentId, children);
+  }
+
+  const rows: Array<{ project: ProjectRecord; depth: number }> = [];
+  function visit(parentId: string | null, depth: number) {
+    for (const project of childrenByParent.get(parentId) ?? []) {
+      rows.push({ project, depth });
+      visit(project.id, depth + 1);
+    }
+  }
+  visit(null, 0);
+  return rows;
+}
+
 function formatUpdated(
   ts: number,
   t: (key: TranslationKey) => string,
@@ -193,6 +218,7 @@ export function ProjectsPage({
   const pinnedChatIdSet = useMemo(() => new Set(pinnedChatIds), [pinnedChatIds]);
 
   const [creating, setCreating] = useState(false);
+  const [parentFor, setParentFor] = useState<string | null>(null);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
   const [sectionFor, setSectionFor] = useState<ProjectRecord | null>(null);
   const createCustomSection = useSidebarOrganizationStore((s) => s.createCustomSection);
@@ -346,10 +372,15 @@ export function ProjectsPage({
   const listedProjects = ordered ?? sortedProjects;
   const isSearching = ordered ? searching : query.trim() !== "";
   const visibleCount = baseFit + extraCount;
-  const visibleProjects = isSearching
-    ? listedProjects
-    : listedProjects.slice(0, visibleCount);
-  const hasMore = !isSearching && listedProjects.length > visibleCount;
+  const listedProjectRows = useMemo(
+    () => flattenProjectTree(listedProjects),
+    [listedProjects],
+  );
+  const visibleProjectRows = isSearching
+    ? listedProjectRows
+    : listedProjectRows.slice(0, visibleCount);
+  const visibleProjects = visibleProjectRows.map(({ project }) => project);
+  const hasMore = !isSearching && listedProjectRows.length > visibleCount;
 
   const tourSteps = useMemo(
     () => buildProjectsTourSteps({ hasProjects: visibleProjects.length > 0 }),
@@ -643,7 +674,14 @@ export function ProjectsPage({
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button variant="dark" data-tour="projects-new" onClick={() => setCreating(true)}>
+          <Button
+            variant="dark"
+            data-tour="projects-new"
+            onClick={() => {
+              setParentFor(null);
+              setCreating(true);
+            }}
+          >
             <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             {t("projectsPage.newProject")}
           </Button>
@@ -683,7 +721,10 @@ export function ProjectsPage({
               <Button
                 variant="outline"
                 className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
-                onClick={() => setCreating(true)}
+                onClick={() => {
+                  setParentFor(null);
+                  setCreating(true);
+                }}
               >
                 <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
                 {t("projectsPage.createFirst")}
@@ -725,7 +766,7 @@ export function ProjectsPage({
             <span className="w-8 shrink-0" />
           </div>
           <div ref={listRef} data-tour="projects-list">
-          {visibleProjects.map((project) => {
+          {visibleProjectRows.map(({ project, depth }) => {
             const pinned = pinnedProjectIdSet.has(project.id);
             const chatsOpen = openProjectIds.has(project.id);
             const chats = projectChats[project.id];
@@ -734,6 +775,9 @@ export function ProjectsPage({
             <div
               key={project.id}
               className="group/project-row relative flex items-center gap-3 rounded-md px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
+              style={{
+                paddingLeft: `calc((20px + ${depth * 24}px) * var(--ui-space-scale, 1))`,
+              }}
             >
               <span className="flex min-w-0 flex-1 items-center gap-2">
                 {/* A real button holding only text. Giving the whole row the button role made
@@ -837,6 +881,10 @@ export function ProjectsPage({
                     <ProjectMenuItems
                       project={project}
                       onNewChat={() => newChatInProject(project.id)}
+                      onNewSubproject={() => {
+                        setParentFor(project.id);
+                        setCreating(true);
+                      }}
                       onEdit={() => setEditing(project)}
                       onDelete={() => openProjectDelete(project)}
                       onNewSection={() => setSectionFor(project)}
@@ -846,7 +894,12 @@ export function ProjectsPage({
               </div>
             </div>
             {chatsOpen && (
-              <div className="mb-2 flex flex-col gap-0.5 pl-[calc(52px*var(--ui-space-scale,1))]">
+              <div
+                className="mb-2 flex flex-col gap-0.5"
+                style={{
+                  paddingLeft: `calc((52px + ${depth * 24}px) * var(--ui-space-scale, 1))`,
+                }}
+              >
                 {chats === undefined || chats === "loading" ? (
                   <Skeleton className="ml-5 h-6 w-48 rounded-full" />
                 ) : chats === "error" ? (
@@ -1028,7 +1081,14 @@ export function ProjectsPage({
         </>
       )}
 
-      <NewProjectDialog open={creating} onOpenChange={setCreating} />
+      <NewProjectDialog
+        open={creating}
+        onOpenChange={(open) => {
+          setCreating(open);
+          if (!open) setParentFor(null);
+        }}
+        parentId={parentFor}
+      />
 
       <SectionNameDialog
         open={sectionFor !== null}

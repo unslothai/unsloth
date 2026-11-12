@@ -341,6 +341,27 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
         studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
 
 
+def test_chat_projects_support_nested_parent_relationships(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    parent = studio_db.upsert_chat_project(_project("parent"))
+    child = studio_db.upsert_chat_project({**_project("child"), "parentId": parent["id"]})
+
+    assert child["parentId"] == parent["id"]
+    assert studio_db.get_chat_project("child")["parentId"] == "parent"
+
+    # Older callers that omit the optional field must not flatten an existing tree.
+    updated = studio_db.upsert_chat_project({**_project("child"), "name": "Renamed"})
+    assert updated["parentId"] == "parent"
+
+    with pytest.raises(studio_db.ProjectParentError, match = "own parent"):
+        studio_db.update_chat_project("child", {"parentId": "child"})
+    with pytest.raises(studio_db.ProjectParentError, match = "contain themselves"):
+        studio_db.update_chat_project("parent", {"parentId": "child"})
+
+    studio_db.delete_chat_project("parent")
+    assert studio_db.get_chat_project("child")["parentId"] is None
+
+
 def test_thread_delete_blocks_a_late_create_with_the_same_id(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
 

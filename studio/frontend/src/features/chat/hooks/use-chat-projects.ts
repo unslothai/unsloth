@@ -171,8 +171,9 @@ export async function createChatProject(
   name: string,
   nativePathLease?: string,
   id?: string,
+  parentId?: string | null,
 ): Promise<ProjectRecord> {
-  return createStoredChatProject(name, nativePathLease, id);
+  return createStoredChatProject(name, nativePathLease, id, parentId);
 }
 
 export async function renameChatProject(
