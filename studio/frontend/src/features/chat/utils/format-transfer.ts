@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+/** True when `value` still reads below 1024 once rounded to `digits` decimals. Picking the unit on
+ *  the raw value let 1023.6 B/s print as "1024 B/s" and 1048575 B/s as "1024.0 KB/s". */
+function staysBelowNextUnit(value: number, digits: number): boolean {
+  return Number(value.toFixed(digits)) < 1024;
+}
+
 export function formatRate(bytesPerSecond: number): string {
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "--";
   const bps = bytesPerSecond;
-  if (bps < 1024) return `${bps.toFixed(0)} B/s`;
-  if (bps < 1024 ** 2) return `${(bps / 1024).toFixed(1)} KB/s`;
-  if (bps < 1024 ** 3) return `${(bps / 1024 ** 2).toFixed(1)} MB/s`;
+  const kb = bps / 1024;
+  const mb = bps / 1024 ** 2;
+  if (staysBelowNextUnit(bps, 0)) return `${bps.toFixed(0)} B/s`;
+  if (staysBelowNextUnit(kb, 1)) return `${kb.toFixed(1)} KB/s`;
+  if (staysBelowNextUnit(mb, 1)) return `${mb.toFixed(1)} MB/s`;
   return `${(bps / 1024 ** 3).toFixed(2)} GB/s`;
 }
 
