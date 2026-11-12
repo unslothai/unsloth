@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A running agent reply's tail (the empty text part after a tool call and the next-round status) leaves
-// the reply from the end of its children: removing it mid-list restyled the whole reply every round.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -50,9 +47,7 @@ test("assistant-ui's empty part fallback still matches the replica the tail rend
   const entry = require.resolve("@assistant-ui/core");
   const dist = entry.slice(0, entry.lastIndexOf(`${sep}dist${sep}`) + 6);
   const parts = readFileSync(join(dist, "react/primitives/message/MessageParts.js"), "utf8");
-  // ConditionalEmpty: shown for a non-text, non-reasoning last part, the condition runningReplyTail copies.
   assert.match(parts, /return lastPart\?\.type !== "text" && lastPart\?\.type !== "reasoning";/);
-  // EmptyParts: nothing unless running, else components.Text inside an empty, running text part.
   assert.match(parts, /if \(status\.type !== "running"\)\s*return null;/);
   assert.match(parts, /_jsx\(TextMessagePartProvider, \{ text: "", isRunning: status\.type === "running", children: _jsx\(Component,/);
   assert.match(parts, /_jsx\(ConditionalEmpty, \{ components: components, enabled: unstable_showEmptyOnNonTextEnd \}\)/);
@@ -64,13 +59,11 @@ test("both tail nodes sit in one display:contents box that is a direct sibling o
     thread.indexOf("const PartsWithRoundTail"),
     thread.indexOf("// Mounted only under a running reply"),
   );
-  // A child of the component that owns {children}: React commits that deletion before it appends the
-  // next part, so the box goes while it is the last child. Nested deeper, the part lands after it first.
+  // Only as a direct child of the component owning {children} is it removed before the next part lands.
   assert.match(
     tail,
     /return \(\s*<>\s*\{children\}\s*\{tail !== 0 && \(\s*<div data-slot="round-tail" className="contents">\s*<TextMessagePartProvider text="" isRunning=\{true\}>\s*<MarkdownText \/>\s*<\/TextMessagePartProvider>\s*\{tail === 2 && \(\s*<div data-slot="next-round-indicator" className="mt-2">/,
   );
-  // assistant-ui's own empty part would otherwise render too, inside the parts and after the new part.
   assert.match(
     thread,
     /<PartsWithRoundTail>\s*<MessagePrimitive\.Parts\s+components=\{ASSISTANT_PART_COMPONENTS\}\s+unstable_showEmptyOnNonTextEnd=\{false\}\s*\/>\s*<\/PartsWithRoundTail>/,
@@ -88,7 +81,6 @@ test("the tail's children keep the reply's spacing rules through the contents bo
   ]) {
     assert.ok(css.includes(rule), rule);
   }
-  // The reply's own rules, which the box's children no longer match directly.
   assert.ok(css.includes(":where(.aui-assistant-message-content > *):where(:not(:first-child)) {\n\t\tmargin-top: calc(1rem * var(--ui-space-scale, 1));"));
   assert.ok(css.includes(".aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child {"));
 });

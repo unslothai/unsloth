@@ -132,8 +132,7 @@ def check_reply_paint(page) -> None:
 
 
 ROUNDS = 12
-# Counts removals from the reply's children that leave a sibling after them: with KaTeX's MathML on
-# the page each one restyles the whole reply, so a round's tail must leave from the end.
+# With KaTeX's MathML on the page, each removal from the middle of the reply restyles all of it.
 CHILD_LIST_WATCH = r"""
 () => {
   window.__tail = {midRemovals: 0, statuses: 0};

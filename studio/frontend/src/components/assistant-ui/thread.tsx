@@ -7965,9 +7965,8 @@ const GeneratingIndicator: FC = () => {
   return <GeneratingStatus />;
 };
 
-// The parts, then assistant-ui's empty text part (its fallback is off) and, after a tool result, the
-// next-round status. One display:contents box owned here, so React removes it before appending the next
-// part: a mid-list removal restyles the whole reply (Chromium's MathML UA :nth-child rules).
+// assistant-ui's empty text part (fallback off) and the next-round status, in a box owned here so React removes
+// it before appending the next part: a mid-list removal restyles the whole reply (MathML UA :nth-child rules).
 const PartsWithRoundTail: FC<{ children: ReactNode }> = ({ children }) => {
   const tail = useAuiState(({ message }) =>
     runningReplyTail(message.status?.type === "running", message.content),

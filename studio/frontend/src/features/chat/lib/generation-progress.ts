@@ -32,10 +32,7 @@ export function betweenToolRounds(
   return false;
 }
 
-/**
- * What trails a running reply's parts: 0 nothing, 1 the empty text part assistant-ui shows after a
- * non-text part (its 1rem top margin is the gap under a running tool), 2 that and the next-round status.
- */
+/** After a running reply's parts: 0 nothing, 1 assistant-ui's empty text part, 2 that and the next-round status. */
 export function runningReplyTail(
   running: boolean,
   content: readonly { type: string; result?: unknown }[],
