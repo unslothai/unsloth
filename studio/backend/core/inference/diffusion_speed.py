@@ -659,8 +659,7 @@ def apply_speed_optims(
             pass
 
     if not applied["compiled"] and on_cuda:
-        # The denoiser stays eager (eager tier, or the compile was declined): bit-identical int8 GEMM routes. Keyed
-        # only when engaged, so a load with no int8 Linear reports exactly what it did before.
+        # Keyed only when engaged, so a load with no int8 Linear reports what it did before.
         if _install_eager_int8_gemm(
             pipe, logger, offload_active = offload_active, denoiser_offloaded = denoiser_offloaded
         ):
@@ -725,8 +724,7 @@ def _install_eager_int8_gemm(
     offload_active: bool,
     denoiser_offloaded: Optional[bool],
 ) -> bool:
-    """``diffusion_int8_gemm.install_eager`` on every uncompiled denoiser (resident, or swapped at its first forward);
-    a moved denoiser keeps torchao's path, as the compiled install does. True when any int8 Linear is a candidate."""
+    """``install_eager`` on every uncompiled, non-moved denoiser; True when any engaged."""
     if pipe is None:
         return False
     moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)

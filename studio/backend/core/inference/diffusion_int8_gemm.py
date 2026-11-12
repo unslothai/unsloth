@@ -38,7 +38,7 @@ _MARK = "_unsloth_i8_gemm_prev"
 # The bound ``_linear_forward`` the swap installed: a traced forward checks the instance ``forward`` by identity with
 # it (dynamo resolves ``forward.__func__ is _linear_forward`` to False, so the shared paths never engaged compiled).
 _FWD = "_unsloth_i8_gemm_fwd"
-# Set by install_eager: the act quant keeps to the dense, bit-identical rotation kernel (never rotq_h16).
+# Set by install_eager: dense bit-identical rotation kernel only.
 _EXACT = "_unsloth_i8_gemm_exact"
 # on a SwiGLU MLP whose down projection takes its codes from the gate / value halves
 _FF_MARK = "_unsloth_i8_gemm_swiglu_prev"
@@ -1853,12 +1853,8 @@ def install_eager(
     logger: Any = None,
     offload_active: bool = False,
 ) -> int:
-    """For a denoiser that runs uncompiled (speed off / eager, or a declined compile): torchao's eager int8 Linear is
-    cuBLAS ``_int_mm`` plus four float32 passes over the [rows, N] output (sm_120: a forward-compat sm_80 WMMA kernel,
-    about 3x a bf16 Linear), so take Studio's GEMM here too, restricted to the bit-identical routes: the fused-dequant
-    GEMM (probed bit-exact), the dense rotation + act quant kernel (probed bit-exact; never ``rotq_h16``), no SwiGLU
-    fusion. The output equals the stock eager Linear bit for bit. ``UNSLOTH_DIFFUSION_INT8_GEMM_EAGER=0`` keeps
-    torchao's path."""
+    """Uncompiled denoiser: only the routes bit-identical to torchao's eager int8 Linear (~3x a bf16 Linear on sm_120):
+    fused-dequant GEMM + dense rotation kernel, never ``rotq_h16``, no SwiGLU fusion."""
     if not eager_enabled():
         return 0
     return install(transformer, logger, offload_active = offload_active, exact = True)
@@ -1940,8 +1936,7 @@ def _swap_on(
     exact: bool = False,
 ) -> int:
     """Swap the eligible int8 Linears of ``transformer`` against card ``index``'s probed kernels. On a layer split
-    (several cards) only the Linears whose weight sits on ``index``. ``exact``: no SwiGLU fusion and the dense
-    rotation kernel only (see ``install_eager``)."""
+    (several cards) only the Linears whose weight sits on ``index``. ``exact``: see ``install_eager``."""
     global _OP_HANDLE
     import torch
 
