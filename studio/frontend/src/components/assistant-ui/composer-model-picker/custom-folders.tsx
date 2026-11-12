@@ -98,7 +98,6 @@ export function useCustomFolders({
       } catch (e) {
         const message = e instanceof Error ? e.message : "Failed to add folder";
         setError(message);
-        // The typed path's own error line is closed here.
         if (fromBrowser) {
           toast.error("Couldn't add folder", { description: message });
         }

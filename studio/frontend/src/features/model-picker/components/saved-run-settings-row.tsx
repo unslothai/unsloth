@@ -163,8 +163,7 @@ export function RunSettingsPicker({
               ? "Name for the new settings"
               : `New name for ${naming.target}`
           }
-          // The dropdown's own type and edge, so renaming does not resize the name it replaces;
-          // md: too, or the Input's md:text-sm outranks a plain size.
+          // The dropdown's type and edge, so renaming keeps the size; md: too, as the Input's md:text-sm wins.
           className={cn(
             "h-9 min-w-0 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] text-ui-13 font-medium md:text-ui-13",
             compact ? "w-full" : "flex-1",
@@ -301,7 +300,6 @@ export function RunSettingsPicker({
                 aria-label={`Delete ${entry.name}`}
                 title="Delete (Del)"
                 tabIndex={-1}
-                // Pulled in beside Rename: the item's 8px gap read as two separate controls.
                 className={cn(ROW_ICON, "-ml-1")}
                 onPointerDown={keepRow}
                 onPointerUp={keepRow}
@@ -335,12 +333,10 @@ export function RunSettingsPicker({
                   alwaysLoad.onChange(!alwaysLoad.checked);
                 }}
               >
-                {/* The page row's round checkbox, drawn rather than nested: the item is the control. */}
                 <span
                   aria-hidden={true}
                   className={cn(
                     "grid size-3.5 shrink-0 place-items-center rounded-full border",
-                    // !: the menu item recolours its children's text on hover, the tick included.
                     alwaysLoad.checked
                       ? "border-primary bg-primary !text-primary-foreground"
                       : "border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)]",
@@ -350,7 +346,7 @@ export function RunSettingsPicker({
                     <HugeiconsIcon
                       icon={Tick02Icon}
                       strokeWidth={2.5}
-                      // Every element, paths included: the item's hover rule colours each descendant.
+                      // !, on every element: the menu item's hover rule recolours each descendant.
                       className="size-2.5 !text-primary-foreground [&_*]:!text-primary-foreground"
                     />
                   ) : null}

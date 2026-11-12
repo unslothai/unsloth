@@ -6,17 +6,14 @@ import { useEffect } from "react";
 const RESIZE_MS = 220;
 const RESIZE_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
 
-/**
- * Glides a list between its old and new height when its rows change, as Zeron's picker does, so a
- * panel opened above its trigger does not jump its top edge on every tab or search.
- */
+/** Glides a list to its new height when its rows change, so a panel opened upward does not jump. */
 export function useAnimatedListHeight(el: HTMLElement | null): void {
   useEffect(() => {
     if (!el) {
       return;
     }
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)");
-    // The observer fires after the new rows are in, so at rest the old height must be remembered.
+    // The observer fires after the change, so the resting height is remembered.
     let shown = el.getBoundingClientRect().height;
     const release = () => {
       el.style.height = "";
@@ -24,12 +21,12 @@ export function useAnimatedListHeight(el: HTMLElement | null): void {
       shown = el.getBoundingClientRect().height;
     };
     const glide = () => {
-      // Mid-glide the pinned height is the one on screen, so a second change continues from it.
+      // Mid-glide, continue from the height on screen.
       const from = el.style.height ? el.getBoundingClientRect().height : shown;
       el.style.transition = "none";
       el.style.height = "";
       const to = el.getBoundingClientRect().height;
-      // The OS setting, or Studio's own Reduce motion (Settings > Appearance).
+      // Or Studio's own Reduce motion.
       const still =
         reduce?.matches ||
         document.documentElement.classList.contains("force-reduced-motion");
@@ -55,7 +52,7 @@ export function useAnimatedListHeight(el: HTMLElement | null): void {
         release();
       }
     };
-    // Runs before paint, so the new rows never show at the old height for a frame.
+    // A microtask, before paint: no frame shows the new rows at the old height.
     const observer = new MutationObserver(glide);
     observer.observe(el, { childList: true, subtree: true });
     el.addEventListener("transitionend", onEnd);

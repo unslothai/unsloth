@@ -129,7 +129,6 @@ export function useComposerReasoning(): ComposerReasoning {
   const turnOff = () => {
     setReasoningEnabled(false);
     applyQwenThinkingParams(false);
-    // Preserve thinking needs thinking on.
     setPreserveThinking(false);
   };
 

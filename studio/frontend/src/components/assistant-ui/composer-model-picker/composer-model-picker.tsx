@@ -103,6 +103,7 @@ import {
   usePinnedModelsStore,
   usePinnedRowDrag,
 } from "@/features/model-picker";
+import { reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
 import {
   type NpuModel,
   NpuSetupNotice,
@@ -214,7 +215,6 @@ function cachedMeta(row: Row): ModelSelectorChangeMeta {
   return {
     source: "hub",
     isLora: false,
-    // An incomplete snapshot has no load identity.
     loadId: row.partial ? undefined : (row.cached?.load_id ?? undefined),
     isDownloaded: !row.partial,
     isGguf: false,
@@ -644,8 +644,7 @@ function TabButton({
         aria-label={tab.label}
         onClick={onSelect}
         className={cn(
-          // Sized to the icon, not a fixed box: outline glyphs run narrower than the logos, so even
-          // boxes left them visibly further apart.
+          // Sized to the icon: outline glyphs run narrower than logos, so fixed boxes spaced them unevenly.
           "relative grid h-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center px-[calc(7.5px*var(--ui-space-scale,1))] transition-colors hover:text-foreground",
           shown ? "text-foreground" : "text-muted-foreground",
         )}
@@ -712,7 +711,7 @@ const ACTION =
 const ACTION_ROUND = `${ACTION} w-[calc(20px*var(--ui-space-scale,1))]`;
 const FAVORITE_STAR =
   "text-[rgb(0_0_0_/_0.42)] hover:text-[rgb(0_0_0_/_0.62)] dark:text-[rgb(255_255_255_/_0.5)] dark:hover:text-[rgb(255_255_255_/_0.72)]";
-// The ⋮ ink sits 0.3px below its icon's centre; lift it so the hover circle centres on it.
+// Lifts the ⋮ ink 0.3px so the hover circle centres on it.
 const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))] [&>svg]:-translate-y-[0.3px]`;
 // Red-tinted hover for the Eject pills: the theme's muted and accent fills match under glass.
 const EJECT_PILL_HOVER =
@@ -766,7 +765,6 @@ function AmberTag({ label, hint }: { label: string; hint: string }) {
 }
 
 const STATUS_TONE = {
-  // The loaded dot's own green, so the tag and the dot read as one state.
   loaded:
     "bg-[color-mix(in_srgb,var(--status-success)_16%,transparent)] text-status-success",
   green:
@@ -945,7 +943,7 @@ function SwitchRow({
   );
 }
 
-// Compact rows, so 8px corners (12px on a 26px row reads as a full pill) in the menu's 12px.
+// 8px corners: 12px on a 26px row reads as a full pill.
 const MENU_ITEM =
   "min-h-0 gap-2 rounded-[calc(8px*var(--ui-space-scale,1))] py-[calc(5px*var(--ui-space-scale,1))] pr-8 pl-2.5 text-ui-12 [&_[data-slot=dropdown-menu-radio-item-indicator]]:right-2.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5";
 const MENU_LABEL =
@@ -1068,8 +1066,6 @@ function modelFacts(
       {label}
     </span>
   );
-  // Every glyph is the Model Hub's own: text as Conversational, video as its Video gen slate,
-  // speech as Audio.
   const hub = (key: Capability["key"], label: string) => (
     <CapabilityGlyph
       capability={{ key, label }}
@@ -1083,7 +1079,6 @@ function modelFacts(
       c.label,
     );
   const inputs = new Set<Capability["key"]>(["vision", "audio"]);
-  // What it reads, what it says, then what it does.
   const supports: ReactNode[] = [
     mark("text", hub("conversational", "Text"), "Text"),
     ...found.filter((c) => inputs.has(c.key)).map(pill),
@@ -1299,7 +1294,6 @@ export function ComposerModelPicker({
     (s) => s.togglePinnedConnected,
   );
 
-  // The chat page owns open, so its shortcut, tour and the Hub's Run reach this picker.
   const [localOpen, setLocalOpen] = useState(false);
   const open = source ? source.open : localOpen;
   const setOpen = (next: boolean) => {
@@ -1581,7 +1575,7 @@ export function ComposerModelPicker({
         tab: DEVICE_TAB,
         kind: "cached",
         section: repoSection(repo.repo_id),
-        // The card's mlx tag or library counts too, as in the header picker: many MLX uploads lack it in the name.
+        // The card's mlx tag or library counts too: many MLX uploads lack it in the name.
         format: isMlxId(
           repo.repo_id,
           hasMlxCardTag({ tags: repo.tags, libraryName: repo.library_name }),
@@ -1849,7 +1843,6 @@ export function ComposerModelPicker({
       {
         value: DEVICE_TAB,
         label: "On Device",
-        // The tray glyph draws small in its box.
         icon: glyph(Download01Icon, "scale-[1.15]"),
       },
       ...makerTabs,
@@ -2025,7 +2018,6 @@ export function ComposerModelPicker({
   const listSections = useMemo<ListSection[]>(() => {
     if (viewed === DEVICE_TAB) {
       const present = new Set(foundRows.map((row) => row.section));
-      // Always shown: where training output and added folders land.
       present.add("fineTuned");
       present.add("custom");
       return orderBySection(
@@ -2410,7 +2402,6 @@ export function ComposerModelPicker({
       try {
         await pickQuantRow(row, target, seq);
       } catch {
-        // Offline, a downloaded MLX snapshot still loads as one checkpoint.
         if (row.kind === "cached" && pickSeq.current === seq) {
           source.onPick(row.id, cachedMeta(row));
           resetView();
@@ -2636,7 +2627,12 @@ export function ComposerModelPicker({
   ): Promise<ModelSelectorChangeMeta | null> => {
     const target = quantTarget(row);
     if (target) {
-      const { quants: list, defaultVariant, mlx } = await rowQuants(target);
+      const {
+        quants: list,
+        defaultVariant,
+        mlx,
+        hasVision,
+      } = await rowQuants(target);
       const quant = chooseQuant(list, [
         row.loadedQuant,
         row.id === chosen?.id ? activeVariant : null,
@@ -2648,6 +2644,7 @@ export function ComposerModelPicker({
           quant,
           target.local || quant.downloaded === true,
           !mlx,
+          hasVision ?? row.gguf?.has_vision,
         );
       }
       if (row.kind !== "cached") {
@@ -2807,7 +2804,10 @@ export function ComposerModelPicker({
         );
       },
       onDeleted: () => {
-        void inventory.refreshInventory();
+        void reconcileGgufPinsAfterDelete(
+          repo.repo_id,
+          useHfTokenStore.getState().token || undefined,
+        ).finally(() => inventory.refreshInventory());
       },
     };
   };
@@ -2853,7 +2853,6 @@ export function ComposerModelPicker({
   const deleteFor = (row: Row) => {
     const lora = row.lora;
     const trained = fineTunedSource(row);
-    // An exported GGUF deletes per quant, as the header picker does.
     if (
       lora &&
       trained &&
@@ -3100,7 +3099,6 @@ export function ComposerModelPicker({
             ) : null}
             {soleQuant ? <QuantPill quant={soleQuant} /> : null}
             {row.kind === "hub" ? (
-              // The warning hugs its chip, about 6px of ink apart, and sits as close to a long name.
               <span className="-ml-[calc(2.75px*var(--ui-space-scale,1))] flex shrink-0 items-center gap-[calc(5px*var(--ui-space-scale,1))]">
                 {offering ? (
                   <FitBadge
@@ -3133,7 +3131,6 @@ export function ComposerModelPicker({
             <span
               role="toolbar"
               aria-label={`${row.label} actions`}
-              // Pulled in so a pill or chip sits as far from the dots as the dots from the gear.
               className="-ml-[calc(3px*var(--ui-space-scale,1))] flex shrink-0 items-center"
               // Menus portal out but bubble through React: keep their clicks off the row.
               onClick={(event) => event.stopPropagation()}
@@ -3390,6 +3387,7 @@ export function ComposerModelPicker({
     variant: GgufVariantDetail,
     onDisk: boolean,
     isGguf = true,
+    hasVision: boolean | undefined = row.gguf?.has_vision,
   ) => {
     const exportedGguf =
       row.lora?.source === "exported" && row.lora.exportType === "gguf";
@@ -3420,7 +3418,7 @@ export function ComposerModelPicker({
             openConfig(
               modelConfigTarget(
                 row.id,
-                ggufMeta(row, variant, onDisk, isGguf),
+                ggufMeta(row, variant, onDisk, isGguf, hasVision),
                 row.label,
               ),
             );
@@ -3598,6 +3596,7 @@ export function ComposerModelPicker({
               variant,
               variant.downloaded === true,
               !offer.mlx,
+              offer.hasVision ?? row.gguf?.has_vision,
             ),
           }),
         )}
@@ -3905,8 +3904,7 @@ export function ComposerModelPicker({
           </button>
         </PopoverTrigger>
       )}
-      {/* No collision flip: the side is fixed per opening, so a tab or search that changes the
-      height cannot move the panel across the composer. */}
+      {/* No collision flip: a height change must not move the panel across the composer. */}
       <PopoverContent
         side={openSide}
         avoidCollisions={false}
@@ -4045,7 +4043,6 @@ export function ComposerModelPicker({
                 </button>
               ) : null}
               {chosenName ? (
-                // The expand chevron's twin: same 26px button, centred 25px in from the panel edge.
                 <Hint label="Collapse">
                   <button
                     type="button"
@@ -4107,7 +4104,7 @@ export function ComposerModelPicker({
                       <HugeiconsIcon
                         icon={FilterMailIcon}
                         strokeWidth={1.75}
-                        // The glyph's ink sits 0.5px under its box's centre; lifted to centre (measured).
+                        // Lifts the glyph's ink 0.5px to centre.
                         className="size-4 -translate-y-[0.5px]"
                       />
                       {formatFilter !== "all" ? (
@@ -4119,8 +4116,7 @@ export function ComposerModelPicker({
                   <DropdownMenuLabel className={MENU_LABEL}>
                     Sort
                   </DropdownMenuLabel>
-                  {/* As Library's column headers: the chosen sort shows its direction, and choosing it
-                  again flips it with the menu left open. */}
+                  {/* As Library's columns: choosing the active sort again flips it. */}
                   <DropdownMenuRadioGroup value={deviceSort}>
                     {(Object.keys(DEVICE_SORT_LABEL) as DeviceSort[]).map(
                       (key) => {
@@ -4128,7 +4124,6 @@ export function ComposerModelPicker({
                           ? ArrowDownIcon
                           : ArrowUpIcon;
                         const order = DEVICE_SORT_ORDER[key];
-                        // The chosen row says its current order; the others, the order they start in.
                         const hint =
                           key === deviceSort
                             ? deviceSortDesc
@@ -4157,7 +4152,6 @@ export function ComposerModelPicker({
                             >
                               {DEVICE_SORT_LABEL[key]}
                               {key === deviceSort ? (
-                                // A circle under the pointer, since clicking the arrow (or its row) flips the order.
                                 <span className="absolute right-[calc(5px*var(--ui-space-scale,1))] grid size-[calc(24px*var(--ui-space-scale,1))] place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]">
                                   <Arrow className="size-3.5" strokeWidth={2} />
                                   <span className="sr-only">
@@ -4308,7 +4302,6 @@ export function ComposerModelPicker({
                     ? eject(chosen)
                     : source?.eject(checkpoint ?? undefined)
                 }
-                // A wash, since this bar is already the muted tone.
                 className={cn(
                   "flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))]",
                   EJECT_PILL_HOVER,
@@ -4341,7 +4334,6 @@ export function ComposerModelPicker({
           <div
             className={cn(
               "flex shrink-0 flex-col gap-0.5",
-              // Collapsed, as far under the model bar as the list's foot and divider sit expanded.
               isExpanded
                 ? "border-t border-border pt-[calc(5px*var(--ui-space-scale,1))]"
                 : "pt-[calc(10px*var(--ui-space-scale,1))]",

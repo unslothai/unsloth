@@ -3257,9 +3257,8 @@ export function ModelConfigPage({
   const contextAtDefault = !target.isGguf
     ? savedContextPin(config) == null
     : config.customContextLength == null;
-  // Compared as the set store compares (normalized, speculative `auto` as unset): a loaded model's
-  // config spells its defaults out (`speculativeType: "auto"`, `gpuLayers: -1`), and read raw, Default
-  // looked edited, so a pinned model loaded on defaults showed Unsaved changes and each Save added a set.
+  // Normalized as the set store compares: a loaded config spells its defaults out
+  // (`speculativeType: "auto"`, `gpuLayers: -1`), which read raw made Default look edited.
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(
@@ -4484,7 +4483,6 @@ export function ModelConfigPage({
             variant="dark"
             type="button"
             size="sm"
-            // The theme's accent, as the Images page's Generate and the Effort slider use.
             className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/85"
             disabled={
               sharedVariantUnresolved ||

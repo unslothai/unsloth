@@ -112,7 +112,6 @@ export const DEVICE_SORT_LABEL: Record<DeviceSort, string> = {
   size: "Size",
   name: "Name",
 };
-/** What each direction means, for the sort rows' tooltips. */
 export const DEVICE_SORT_ORDER: Record<
   DeviceSort,
   { desc: string; asc: string }
@@ -346,9 +345,8 @@ export function sliderValue(
   return effort;
 }
 
-// Zeron's rule, judged once per opening from the trigger alone, never from the panel's height:
-// a below-preferring (new chat) picker opens down while 180px fit there; an above-preferring one
-// opens down only when above is short of 180px and below has more room.
+// Judged once per opening from the trigger, never the panel's height: a new chat opens down while
+// 180px fit there; otherwise down only when above is short of 180px and below has more room.
 const PICKER_MIN_ROOM = 180;
 /** The panel's gap to the window edge, which the side rule's room already leaves. */
 export const PICKER_EDGE = 8;
@@ -368,11 +366,8 @@ export function pickerSide(
   return above < PICKER_MIN_ROOM && below > above ? "bottom" : "top";
 }
 
-/**
- * Whether Discover falls back to the chat model list: only for the browse (no query) or a search still
- * waiting on its first results. A finished search whose results the filters all reject stays empty, or
- * the Hub-answered rows (kept without a text match) would show unrelated models.
- */
+/** Discover falls back to the chat list only before a search has results; else rows the Hub matched
+ * without a text match would show unrelated models. */
 export function discoverUsesFallback(
   hubQuery: string,
   hubResultCount: number,

@@ -511,7 +511,7 @@ test("an MLX variant's gear keeps its format, and exported GGUFs delete per quan
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /ggufMeta\(row, variant, onDisk, isGguf\)/);
+  assert.match(picker, /ggufMeta\(row, variant, onDisk, isGguf, hasVision\)/);
   assert.match(picker, /variant\.downloaded === true,\s+!offer\.mlx,/);
   assert.match(picker, /onDisk && \(row\.gguf \|\| exportedGguf\)/);
   assert.match(
@@ -720,4 +720,21 @@ test("MLX repos marked only by their card resolve as MLX, on device and on Disco
   );
   // The composer's own name-only rule is gone.
   assert.doesNotMatch(picker, /const isMlxId = /);
+});
+
+test("a per-quant delete reconciles quant favorites and settings keep the vision verdict", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const del = picker.slice(
+    picker.indexOf("const deleteQuantFor"),
+    picker.indexOf("const openConnectedSettings"),
+  );
+  assert.match(del, /reconcileGgufPinsAfterDelete\(\s*repo\.repo_id,/);
+  assert.match(picker, /ggufMeta\(row, variant, onDisk, isGguf, hasVision\)/);
+  assert.match(
+    picker,
+    /!offer\.mlx,\s*offer\.hasVision \?\? row\.gguf\?\.has_vision,\s*\)/,
+  );
+  assert.match(picker, /!mlx,\s*hasVision \?\? row\.gguf\?\.has_vision,\s*\)/);
 });

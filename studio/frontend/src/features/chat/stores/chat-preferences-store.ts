@@ -67,7 +67,7 @@ export interface ChatPreferencesState {
   setNotifyWhenReplyFinishes: (value: boolean) => void;
   filesPanelCollapsed: boolean;
   setFilesPanelCollapsed: (value: boolean) => void;
-  /** New chat composer height, 0 (top) to 100 (docked at the bottom); 50 is the middle, 40 the default. */
+  /** New chat composer height, 0 (top) to 100 (docked at the bottom). */
   newChatComposerPosition: number;
   setNewChatComposerPosition: (value: number) => void;
   showTurnNavigation: boolean;

@@ -2896,8 +2896,7 @@ const ThreadWelcome: FC<{
           </div>
         ) : (
           <>
-            {/* The composer box alone is centred, as T3 Code's: the spacers split the free height
-            by the position setting, and the greeting rides the top one's foot, 16px above it. */}
+            {/* Only the composer box is centred; the greeting sits on the top spacer's foot. */}
             <div
               className="aui-thread-welcome-spacer flex w-full basis-0 flex-col justify-end"
               style={{ flexGrow: `calc(var(--welcome-spacer-grow,1)*${composerPosition})` }}
@@ -2905,7 +2904,6 @@ const ThreadWelcome: FC<{
               {/* Padding here, not on the spacer, where it would count toward the spacer's share. */}
               <div className="flex flex-col pb-[calc(16px*var(--ui-space-scale,1))]">{greetingRow}</div>
             </div>
-            {/* No padding, so the composer here is as wide as once it docks. */}
             <div className="aui-thread-welcome-message flex w-full flex-col">
               {!hideComposer && <ComposerAnimated threadId={threadId} />}
             </div>

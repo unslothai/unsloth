@@ -661,7 +661,7 @@ export function ModelSearchFiltersControl({
               <HugeiconsIcon
                 icon={FilterMailIcon}
                 strokeWidth={1.75}
-                // The glyph's ink sits 0.5px under its box's centre; lifted to centre (measured).
+                // Lifts the glyph's ink 0.5px to centre.
                 className="size-5 -translate-y-[0.5px]"
               />
               {filtered && (

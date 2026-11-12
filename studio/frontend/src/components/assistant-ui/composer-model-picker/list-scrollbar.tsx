@@ -157,7 +157,6 @@ export function StripScrollbar({ strip }: { strip: HTMLDivElement | null }) {
         track,
         Math.max(MIN_THUMB, (track * strip.clientWidth) / strip.scrollWidth),
       );
-      // Centred on the tabs' green line, which it overlays.
       const line = strip.querySelector<HTMLElement>(".composer-tab-line");
       const lineMid = line
         ? line.getBoundingClientRect().top +
