@@ -3988,6 +3988,17 @@ export function ComposerModelPicker({
                 loadedContextLength={
                   configResident ? (source?.loadedContextLength ?? null) : null
                 }
+                initialConfig={
+                  pane?.config &&
+                  modelConfigTargetIsResident({
+                    target: configTarget,
+                    selectedId: pane.id,
+                    activeGgufVariant: pane.ggufVariant,
+                    loaded: true,
+                  })
+                    ? pane.config
+                    : null
+                }
               />
             </div>
             <ListScrollbar

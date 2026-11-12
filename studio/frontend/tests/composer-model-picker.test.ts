@@ -770,7 +770,7 @@ test("Compare panes pick through the composer picker, with no reasoning or eject
   assert.match(header, /<ComposerModelPicker\s+side="bottom"\s+align=\{side === "left" \? "start" : "end"\}/);
   assert.match(
     header,
-    /selection: \{ id: value, ggufVariant: selectedGgufVariant \?\? null \}/,
+    /selection: \{\s*id: value,\s*ggufVariant: selectedGgufVariant \?\? null,\s*config: selectedConfig \?\? null,\s*\}/,
   );
   assert.doesNotMatch(header, /<ModelSelector/);
   const picker = readSrc(
@@ -785,4 +785,6 @@ test("Compare panes pick through the composer picker, with no reasoning or eject
     /const reasoningChip = pane \? null : reasoning\.chipLabel;/,
   );
   assert.match(picker, /const chosenLoaded = pane\s*\? pane\.loaded === true/);
+  // Reopened Run settings start from the pane's own config, not the saved one.
+  assert.match(picker, /initialConfig=\{\s*pane\?\.config &&\s*modelConfigTargetIsResident\(\{\s*target: configTarget,\s*selectedId: pane\.id,/);
 });

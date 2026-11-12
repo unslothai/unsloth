@@ -42,6 +42,8 @@ export interface ComposerModelPickerSource {
     loaded?: boolean;
     loading?: boolean;
     placeholder?: string;
+    /** The settings this selection runs with, seeding its Run settings. */
+    config?: PerModelConfig | null;
   };
 }
 

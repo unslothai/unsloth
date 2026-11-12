@@ -1599,7 +1599,11 @@ function GeneralCompareHeader({
       activeModelConfig: selectedConfig ?? null,
       loadedContextLength: null,
       loaded: false,
-      selection: { id: value, ggufVariant: selectedGgufVariant ?? null },
+      selection: {
+        id: value,
+        ggufVariant: selectedGgufVariant ?? null,
+        config: selectedConfig ?? null,
+      },
     }),
     [
       models,
