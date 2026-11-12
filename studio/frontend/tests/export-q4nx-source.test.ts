@@ -404,9 +404,11 @@ test("the export summary describes the conversion: source, file and quant, outpu
   assert.deepEqual([...new Set(Object.values(empty))], ["\u2014"]);
 });
 
-test("an empty leftover quant folder is not offered as a file to convert", () => {
+test("an empty leftover quant folder and a split GGUF are not offered as a file to convert", () => {
   const files = [
     { filename: "m-Q4_0.gguf", quant: "Q4_0" },
+    // One variant for the whole shard set, named by shard 1; the converter would read that shard alone.
+    { filename: "BF16/m-BF16-00001-of-00002.gguf", quant: "BF16" },
     { filename: "Q8_0", quant: "Q8_0", cleanable: true },
     { filename: "m-Q4_1.gguf", quant: "Q4_1", cleanable: false },
   ];

@@ -75,9 +75,14 @@ export function packsDirectly(quant: string, architecture?: string | null): bool
 
 const PACKING_ORDER: Q4nxPacking[] = ["direct", "by-architecture", "requantized"];
 
-/** Drops the rows a listing adds for an empty leftover quant folder: there is no file to convert. */
-export function q4nxConvertibleFiles<T extends { cleanable?: boolean }>(variants: T[]): T[] {
-  return variants.filter((v) => !v.cleanable);
+// A split GGUF is listed as one variant named by its first shard; the converter reads one file.
+const SPLIT_SHARD = /-\d{3,}-of-\d{3,}\.gguf$/i;
+
+/** Drops what cannot be converted: empty leftover quant folders (no file) and split GGUFs. */
+export function q4nxConvertibleFiles<T extends { filename: string; cleanable?: boolean }>(
+  variants: T[],
+): T[] {
+  return variants.filter((v) => !v.cleanable && !SPLIT_SHARD.test(v.filename));
 }
 
 /** Directly packed quants first (backend order), then the rest; the first one is the default pick. */

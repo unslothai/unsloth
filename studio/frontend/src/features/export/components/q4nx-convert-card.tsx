@@ -633,7 +633,7 @@ export function Q4nxConvertCard({
         >
           {listing.error
             ? `Could not list the files: ${listing.error}`
-            : "No GGUF files found"}
+            : "No single-file GGUF found"}
         </p>
       );
     }
