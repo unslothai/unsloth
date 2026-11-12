@@ -10113,7 +10113,6 @@ class DiffusionBackend:
                                 or _cached_while_hub_unreachable(
                                     fetch_base, "transformer/config.json"
                                 ),
-                                # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t
                                 # Header variant first: the config must match the file's tensors, not its name.
                                 **transformer_config_overrides_for(
                                     fam,

@@ -17,7 +17,9 @@ from core.inference.diffusion_families import (
 )
 
 _GUIDED = {"guidance_embeds": True}
+_UNGUIDED = {"guidance_embeds": False}
 _SCHNELL = "black-forest-labs/FLUX.1-schnell"
+_DEV = "black-forest-labs/FLUX.1-dev"
 
 
 @pytest.mark.parametrize(
@@ -25,13 +27,14 @@ _SCHNELL = "black-forest-labs/FLUX.1-schnell"
     [
         (("flux.1-dev", "my-model.gguf", "/models/unet", _SCHNELL), _GUIDED),
         (("flux.1-dev", "flux1-schnell-fp8.safetensors", "/models", _SCHNELL), _GUIDED),
-        (("flux.1-schnell", "flux1-dev-Q4_K_M.gguf", "/models", _SCHNELL), {}),
+        (("flux.1-schnell", "flux1-dev-Q4_K_M.gguf", "/models", _SCHNELL), _UNGUIDED),
         ((None, "flux1-dev-Q4_K_M.gguf", "/models", _SCHNELL), _GUIDED),
         ((None, "flux1_krea_dev_fp8_scaled.safetensors", "/models", _SCHNELL), _GUIDED),
         ((None, "FLUX.1-Krea-dev.safetensors", "/models", _SCHNELL), _GUIDED),
-        ((None, "flux1-schnell-Q4_K_S.gguf", "unsloth/FLUX.1-schnell-GGUF", _SCHNELL), {}),
-        ((None, None, "unsloth/FLUX.1-dev-GGUF", "black-forest-labs/FLUX.1-dev"), _GUIDED),
-        ((None, "model.gguf", "/models/unet", _SCHNELL), {}),
+        ((None, "flux1-schnell-Q4_K_S.gguf", "unsloth/FLUX.1-schnell-GGUF", _SCHNELL), _UNGUIDED),
+        ((None, None, "unsloth/FLUX.1-dev-GGUF", _DEV), _GUIDED),
+        (("flux.1-schnell", "my-model.gguf", "/models", _DEV), _UNGUIDED),
+        ((None, "model.gguf", "/models/unet", _SCHNELL), _UNGUIDED),
     ],
 )
 def test_flux1_transformer_config_per_variant(identifiers, expected):
@@ -75,25 +78,30 @@ def _forward(model, torch, guidance):
         ).sample
 
 
-def test_a_dev_file_on_the_schnell_config_keeps_guidance(tmp_path):
+@pytest.mark.parametrize("file_guided", [True, False])
+def test_the_config_follows_the_file_not_the_base(tmp_path, file_guided):
     torch = pytest.importorskip("torch")
     diffusers = pytest.importorskip("diffusers")
     save_file = pytest.importorskip("safetensors.torch").save_file
 
-    base = tmp_path / "schnell"
+    base = tmp_path / "base"
     (base / "transformer").mkdir(parents = True)
     (base / "transformer" / "config.json").write_text(
-        json.dumps({"_class_name": "FluxTransformer2DModel", "guidance_embeds": False, **_TINY})
+        json.dumps(
+            {"_class_name": "FluxTransformer2DModel", "guidance_embeds": not file_guided, **_TINY}
+        )
     )
     torch.manual_seed(0)
-    dev = diffusers.FluxTransformer2DModel(guidance_embeds = True, **_TINY)
+    src = diffusers.FluxTransformer2DModel(guidance_embeds = file_guided, **_TINY)
     path = tmp_path / "renamed.safetensors"
-    save_file({k: v.contiguous() for k, v in dev.state_dict().items()}, str(path))
+    save_file({k: v.contiguous() for k, v in src.state_dict().items()}, str(path))
 
     variant = inspect_checkpoint(str(path)).variant
-    assert variant == "flux.1-dev"
+    assert variant == ("flux.1-dev" if file_guided else "flux.1-schnell")
     fam = detect_family("flux.1")
-    overrides = transformer_config_overrides_for(fam, variant, path.name, str(tmp_path), _SCHNELL)
+    overrides = transformer_config_overrides_for(
+        fam, variant, path.name, str(tmp_path), _SCHNELL if file_guided else _DEV
+    )
     model = diffusers.FluxTransformer2DModel.from_single_file(
         str(path),
         config = str(base),
@@ -101,9 +109,8 @@ def test_a_dev_file_on_the_schnell_config_keeps_guidance(tmp_path):
         torch_dtype = torch.float32,
         **overrides,
     )
-    assert model.config.guidance_embeds
-    embedder = model.time_text_embed.guidance_embedder
-    assert torch.equal(
-        embedder.linear_1.weight, dev.time_text_embed.guidance_embedder.linear_1.weight
-    )
-    assert not torch.allclose(_forward(model, torch, 1.0), _forward(model, torch, 3.5))
+    assert model.config.guidance_embeds == file_guided
+    for (name, got), want in zip(model.state_dict().items(), src.state_dict().values()):
+        assert torch.equal(got, want), name
+    if file_guided:
+        assert not torch.allclose(_forward(model, torch, 1.0), _forward(model, torch, 3.5))

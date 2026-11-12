@@ -503,14 +503,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         checkpoint_variants = ("flux1-schnell", "flux1-krea-dev", "flux1-dev"),
-        # The schnell base config has no guidance embedder; a dev / Krea-dev file on it would drop guidance_in.
+        # Only schnell lacks guidance_in; either base config on the other variant's file drops or misses it.
         transformer_config_variants = tuple(
-            (f"{prefix}-{model}", overrides)
-            for model, overrides in (
-                ("schnell", ()),
-                ("krea-dev", (("guidance_embeds", True),)),
-                ("dev", (("guidance_embeds", True),)),
-            )
+            (f"{prefix}-{model}", (("guidance_embeds", guided),))
+            for model, guided in (("schnell", False), ("krea-dev", True), ("dev", True))
             for prefix in ("flux.1", "flux1", "flux-1", "flux")
         ),
         filter_reduction_configs_archs = _FLUX1_REDUCTION_RACE_ARCHS,
