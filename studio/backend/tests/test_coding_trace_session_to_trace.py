@@ -711,20 +711,20 @@ def test_system_variable_too_deep_to_print_stays_as_written(monkeypatch):
             "u x 3 {{ $date }}",
             ["system_prompt_variables"],
         ),
-        # JSON.parse and String() print 1.0 as 1; a NaN map fails the parse and fills nothing.
+        # JSON.parse and JSON.stringify print [1.0] as [1]; a NaN map fails JSON.parse.
         ({"systemPrompt": "{{x}}", "systemVariables": '{"x":[1.0]}'}, None, "[1]", []),
+        (
+            {"systemPrompt": "{{n}}", "systemVariables": '{"n":NaN}'},
+            None,
+            "{{n}}",
+            ["system_prompt_variables"],
+        ),
         # JS \s matches \ufeff and not \x1c, the opposite of Python's; one pass fills nothing twice.
         (
             {"systemPrompt": "{{\ufeffx}} {{\x1cx}}", "systemVariables": '{"x":"{{y}}"}'},
             None,
             "{{y}} {{\x1cx}}",
             [],
-        ),
-        (
-            {"systemPrompt": "{{n}}", "systemVariables": '{"n":NaN}'},
-            None,
-            "{{n}}",
-            ["system_prompt_variables"],
         ),
         (
             None,
