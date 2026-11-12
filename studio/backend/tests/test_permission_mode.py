@@ -1591,6 +1591,8 @@ def test_shell_function_passed_by_reference_is_high_risk(code, refused):
         ("import os\nlist(map(vars(os)['remove'], ['x']))", True),
         ("import os\nlist(map(os.kill, [1234], [9]))", True),
         ("import psutil\nlist(map(psutil.Process.kill, psutil.process_iter()))", True),
+        ("import psutil\nk = psutil.Process.kill\nlist(map(k, psutil.process_iter()))", True),
+        ("import psutil\nk = psutil.Process(5).kill\nk()", True),
         ("import os\nprint(hasattr(os, 'remove'))", False),
         ("import os\nprint('use os.remove or shutil.rmtree to delete')", False),
         ("import os\nrm = os.remove\nprint('ready')", False),

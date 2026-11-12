@@ -8479,7 +8479,9 @@ def _python_is_high_risk(code: str) -> bool:
                     if isinstance(tgt, ast.Name):
                         destructive_fs_aliases.add(tgt.id)
         elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
-            if _is_destructive_attr(node.value.attr, node.value.value):
+            if _is_destructive_attr(node.value.attr, node.value.value) or _is_process_kill(
+                node.value
+            ):
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name):
                         destructive_fs_aliases.add(tgt.id)
@@ -8489,7 +8491,9 @@ def _python_is_high_risk(code: str) -> bool:
             and isinstance(node.target, ast.Name)
         ):
             # An annotated binding (f: object = os.remove) is the same alias.
-            if _is_destructive_attr(node.value.attr, node.value.value):
+            if _is_destructive_attr(node.value.attr, node.value.value) or _is_process_kill(
+                node.value
+            ):
                 destructive_fs_aliases.add(node.target.id)
     for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
