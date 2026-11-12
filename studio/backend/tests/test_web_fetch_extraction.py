@@ -4047,7 +4047,21 @@ def test_formula_counts_as_article_text():
     assert out.count("$d_{k}$") == 1 and "Menu" not in out
 
 
-def test_blank_alttext_falls_back_to_mathml():
-    assert html_to_markdown('<p>Value <math alttext=" "><mi>x</mi></math> here.</p>') == (
-        "Value $x$ here."
+@pytest.mark.parametrize(
+    "html",
+    [
+        '<p>Value <math alttext=" "><mi>x</mi></math> here.</p>',
+        '<p>Value <math alttext="x"><semantics><mi>y</mi>'
+        '<annotation encoding="application/x-tex"> </annotation></semantics></math> here.</p>',
+    ],
+)
+def test_blank_tex_source_falls_back(html):
+    assert html_to_markdown(html) == "Value $x$ here."
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_formula_cut_off_at_end_of_page_is_kept(main_content):
+    out = html_to_markdown(
+        "<p>Then <math><mi>x</mi><mo>+</mo><mn>1</mn>", main_content = main_content
     )
+    assert out == "Then $x+1$"

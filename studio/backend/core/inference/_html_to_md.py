@@ -1474,7 +1474,9 @@ class _MarkdownRenderer(HTMLParser):
         for position in range(len(self._skip_tags) - 1, index - 1, -1):
             tex = _mathml_tex(self._skip_tags[position], self._math.pop())
             if position == self._math_tex_at:
-                self._math_tex, self._math_tex_at = tex, -1
+                self._math_tex_at = -1
+                if tex.strip():
+                    self._math_tex = tex
             elif position:
                 self._math[-1].append(tex)
             else:
@@ -2135,6 +2137,8 @@ class _MarkdownRenderer(HTMLParser):
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
+        if self._math is not None:
+            self._close_math(0)
         # Headers first: a frame emits into the enclosing link or cell, which must still be open.
         self._flush_header_frames()
 
