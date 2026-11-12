@@ -360,6 +360,34 @@ def test_a_respelled_merge_method_reaches_the_merge_canonically(
     assert [c["save_method"] for c in calls["merge"]] == [canonical]
 
 
+@pytest.mark.parametrize(
+    "spelling, canonical",
+    [
+        ("Merged_4bit_Forced", "merged_4bit_forced"),
+        ("forced merged 4bit", "forced_merged_4bit"),
+        (" Merged-16bit ", "merged_16bit"),
+        ("LoRA", "lora"),
+    ],
+)
+@pytest.mark.parametrize("by_keyword", [True, False])
+def test_the_fsdp2_gather_placement_reads_the_canonical_method(spelling, canonical, by_keyword):
+    """FSDP2 picks where gathered weights live before unsloth_generic_save canonicalizes, so a
+    respelled merged_4bit offloaded the LoRA operands its in-place merge needs on the GPU."""
+    ns = _load("_merged_save_method", "_fsdp2_merged_offload")
+    args, kwargs = ((), {"save_method": spelling}) if by_keyword else (("d", None, spelling), {})
+    assert ns["_merged_save_method"](args, kwargs) == canonical
+    fsdp2 = types.ModuleType("unsloth.models.fsdp2_save")
+    fsdp2.offload_all_but_4bit_merge_operands = lambda model: "keep-4bit-merge-operands"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "unsloth.models.fsdp2_save", fsdp2)
+        ns["__package__"] = "unsloth"
+        ns["__name__"] = "unsloth.save"
+        offload = ns["_fsdp2_merged_offload"](object(), args, kwargs)
+    assert offload == ("keep-4bit-merge-operands" if "4bit" in canonical else True)
+    assert ns["_merged_save_method"]((), {}) == "merged_16bit"
+    assert ns["_merged_save_method"]((), {"save_method": None}) is None
+
+
 @pytest.mark.parametrize("spelling", ["Merged_4bit", "merged-4bit", " MERGED 4BIT "])
 def test_a_respelled_merged_4bit_still_hits_the_accuracy_guard(monkeypatch, tmp_path, spelling):
     model = _PeftModel()

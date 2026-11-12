@@ -7127,10 +7127,15 @@ def _fsdp2_rank():
 
 
 def _merged_save_method(args, kwargs):
-    if "save_method" in kwargs:
-        return kwargs["save_method"]
-    # (save_directory, tokenizer, save_method, ...)
-    return args[2] if len(args) > 2 else "merged_16bit"
+    # (save_directory, tokenizer, save_method, ...); canonical, as unsloth_generic_save sees it.
+    method = (
+        kwargs["save_method"]
+        if "save_method" in kwargs
+        else (args[2] if len(args) > 2 else "merged_16bit")
+    )
+    if isinstance(method, str):
+        method = method.lower().strip().replace("-", "_").replace(" ", "_")
+    return method
 
 
 def _fsdp2_merged_offload(model, args, kwargs):
