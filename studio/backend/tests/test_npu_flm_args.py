@@ -90,11 +90,18 @@ def test_status_reads_the_flags_back():
 
 
 class _Response:
-    status_code = 200
     text = ""
 
+    def __init__(
+        self,
+        payload = None,
+        status_code = 200,
+    ):
+        self.payload = {"status": "success"} if payload is None else payload
+        self.status_code = status_code
+
     def json(self):
-        return {"status": "success"}
+        return self.payload
 
 
 class _Server:
@@ -103,6 +110,7 @@ class _Server:
 
     def __init__(self):
         self.bodies = []
+        self.options = None
 
     def note(self, message):
         pass
@@ -134,6 +142,10 @@ class _Server:
     ):
         if path == "/v1/load":
             self.bodies.append(json_body)
+        if method == "GET" and path.endswith("/options"):
+            if self.options is None:
+                return _Response({"error": "not found"}, 404)
+            return _Response({"effective": {"flm_args": self.options}})
         return _Response()
 
     def is_alive(self):
@@ -176,6 +188,46 @@ def test_the_load_holds_the_prefill_chunk_to_the_context_it_resolves(backend):
     assert server.bodies[-1]["flm_args"] == "--prefill-chunk-len 4096"
     # Status reports what Lemonade runs with.
     assert npu._loaded.flm_args == "--prefill-chunk-len 4096"
+
+
+def test_a_saved_flag_survives_a_load_with_an_unsloth_studio_setting(backend):
+    npu, server = backend
+    server.options = "--q-len 4"
+    npu.load(_VISION.id, 8192, flm_args = "--pmode turbo")
+    assert server.bodies[-1]["flm_args"] == "--pmode turbo --q-len 4"
+    # The resident's own settings stay what Unsloth Studio asked for, so a reload compares equal.
+    assert npu._loaded.flm_args == "--pmode turbo"
+
+
+def test_unsloth_studio_wins_where_it_sets_the_same_flag(backend):
+    npu, server = backend
+    server.options = "--pmode balanced --q-len 4 --prefill-chunk-len 100000"
+    npu.load(_VISION.id, 4096, flm_args = "--pmode turbo")
+    # The saved chunk is held to the context too: Lemonade refuses a longer one.
+    assert server.bodies[-1]["flm_args"] == "--pmode turbo --q-len 4 --prefill-chunk-len 4096"
+
+
+def test_without_saved_options_the_load_sends_unsloth_studio_flags_only(backend):
+    npu, server = backend
+    npu.load(_VISION.id, 8192, flm_args = "--pmode turbo")
+    assert server.bodies[-1]["flm_args"] == "--pmode turbo"
+
+
+def test_saved_flags_alone_are_left_to_lemonade(backend):
+    npu, server = backend
+    server.options = "--q-len 4"
+    npu.load(_VISION.id, 8192)
+    assert "flm_args" not in server.bodies[-1]
+
+
+def test_merge_keeps_flag_values_together():
+    from core.inference.npu_flm_args import merge_flm_args
+
+    assert merge_flm_args("--q-len 4 --pmode=balanced --x -1", "--pmode turbo") == (
+        "--pmode turbo --q-len 4 --x -1"
+    )
+    assert merge_flm_args("--q-len 4", None) is None
+    assert merge_flm_args("", "--pmode turbo") == "--pmode turbo"
 
 
 def _route_npu(

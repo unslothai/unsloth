@@ -62,6 +62,26 @@ def clamp_prefill_chunk(flm_args: Optional[str], ctx_size: Optional[int]) -> Opt
     return " ".join(tokens) or None
 
 
+def _flag_groups(args: str) -> list[tuple[str, list[str]]]:
+    groups: list[tuple[str, list[str]]] = []
+    for token in args.split():
+        if token.startswith("-") and not token.lstrip("-").replace(".", "", 1).isdigit():
+            groups.append((token.split("=", 1)[0], [token]))
+        elif groups:
+            groups[-1][1].append(token)
+    return groups
+
+
+def merge_flm_args(saved: Optional[str], studio: Optional[str]) -> Optional[str]:
+    """``studio`` on top of the model's saved ``flm_args``. A request's ``flm_args`` replaces the saved
+    and architecture ones in Lemonade, so each saved flag Unsloth Studio does not set is carried over."""
+    if not studio:
+        return None
+    ours = {flag for flag, _ in _flag_groups(studio)}
+    kept = [" ".join(tokens) for flag, tokens in _flag_groups(saved or "") if flag not in ours]
+    return " ".join([studio, *kept])
+
+
 def flm_args_status(flm_args: Optional[str]) -> dict[str, Any]:
     """The status fields for a resident load's ``flm_args``."""
     tokens = (flm_args or "").split()

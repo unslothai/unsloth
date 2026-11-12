@@ -14,6 +14,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
+from urllib.parse import quote
 
 from core.inference.flm_files import (
     FlmDownloadError,
@@ -22,7 +23,7 @@ from core.inference.flm_files import (
     read_model_files,
 )
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
-from core.inference.npu_flm_args import clamp_prefill_chunk
+from core.inference.npu_flm_args import clamp_prefill_chunk, merge_flm_args
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -752,7 +753,9 @@ class LemonadeNpuBackend:
                 flm_args = clamp_prefill_chunk(flm_args, ctx)
                 json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False}
                 if flm_args:
-                    json_body["flm_args"] = flm_args
+                    json_body["flm_args"] = clamp_prefill_chunk(
+                        merge_flm_args(self._saved_flm_args(server, model.id), flm_args), ctx
+                    )
                 response = server.request(
                     "POST",
                     "/v1/load",
@@ -804,6 +807,21 @@ class LemonadeNpuBackend:
         if server is not None:
             server.stop()
         return True
+
+    @staticmethod
+    def _saved_flm_args(server: LemonadeServer, model_id: str) -> str:
+        """The model's ``flm_args`` from its saved, architecture and server-wide layers."""
+        response = server.request(
+            "GET", f"/v1/models/{quote(model_id, safe = '')}/options", timeout = 30.0
+        )
+        if response.status_code != 200:
+            return ""
+        try:
+            effective = response.json().get("effective") or {}
+        except ValueError:
+            return ""
+        value = effective.get("flm_args") if isinstance(effective, dict) else None
+        return value if isinstance(value, str) else ""
 
     @staticmethod
     def _resident_context(server: LemonadeServer, model_id: str) -> Optional[int]:
