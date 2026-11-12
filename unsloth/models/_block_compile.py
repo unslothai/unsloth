@@ -715,7 +715,10 @@ def _region_recompile_limit(kinds):
 
 
 # gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
-_SKIP = {"GptOssDecoderLayer"}
+# DeepSeek-V4.1 port: the CSA2 top-k gather is [B, S, min(index_topk, T), D]; Inductor's backward codegen fails on the
+# unbound symbol ("For Min(4, s24), expected [s24] to have been codegen-ed", torch 2.14). Its layers also share a
+# per-forward group-state dict that gradient checkpointing replays per layer.
+_SKIP = {"GptOssDecoderLayer", "DeepseekV41DecoderLayer"}
 
 
 def _enabled():
