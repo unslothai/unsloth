@@ -194,7 +194,7 @@ test("thinking without effort levels is a switch, as Preserve thinking is", () =
   );
   assert.match(
     picker,
-    /const showThinkingSwitch = reasoning\.supportsReasoning && !showEffort;/,
+    /const showThinkingSwitch =\s*!pane && reasoning\.supportsReasoning && !showEffort;/,
   );
   assert.match(picker, /<SwitchRow\s+label="Thinking"/);
   assert.match(picker, /<SwitchRow\s+label="Preserve thinking"/);
@@ -244,7 +244,10 @@ test("Run settings open inside the composer picker, not the header picker", () =
   );
   const page = readSrc("features/chat/chat-page.tsx");
   assert.doesNotMatch(page, /openRunSettings/);
-  assert.match(page, /configRequest: modelConfigRequest \?\? ownedConfigRequest,/);
+  assert.match(
+    page,
+    /configRequest: modelConfigRequest \?\? ownedConfigRequest,/,
+  );
   assert.match(
     page,
     /open: active && \(modelSelectorOpen \|\| modelConfigRequest !== null\)/,
@@ -756,4 +759,30 @@ test("the search ignores IME confirmation keys, and Chat keeps an adopted handof
     chat,
     /if \(handoffOwnsPicker && !modelSelectorOpen\) setOwnedConfigRequest\(null\);/,
   );
+});
+
+test("Compare panes pick through the composer picker, with no reasoning or eject", () => {
+  const page = readSrc("features/chat/chat-page.tsx");
+  const header = page.slice(
+    page.indexOf("function GeneralCompareHeader"),
+    page.indexOf("function generalCompareLabels"),
+  );
+  assert.match(header, /<ComposerModelPicker\s+side="bottom"\s+align=\{side === "left" \? "start" : "end"\}/);
+  assert.match(
+    header,
+    /selection: \{ id: value, ggufVariant: selectedGgufVariant \?\? null \}/,
+  );
+  assert.doesNotMatch(header, /<ModelSelector/);
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const checkpoint = pane \? pane\.id : runtimeCheckpoint;/,
+  );
+  assert.match(
+    picker,
+    /const reasoningChip = pane \? null : reasoning\.chipLabel;/,
+  );
+  assert.match(picker, /const chosenLoaded = pane\s*\? pane\.loaded === true/);
 });

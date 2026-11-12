@@ -12,7 +12,6 @@ import {
   type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
-  ModelSelector,
   type ModelSelectorChangeMeta,
   type PerModelConfig,
   isServedByMlx,
@@ -30,6 +29,7 @@ import {
   type ComposerModelPickerSource,
   ComposerModelPickerContext,
 } from "@/components/assistant-ui/composer-model-picker/context";
+import { ComposerModelPicker } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
 import { rowReachPx } from "@/components/assistant-ui/distant-rows";
 import { LibraryAttachmentTargetContext } from "@/features/library";
 import { usePlatformStore } from "@/config/env";
@@ -1577,6 +1577,46 @@ function GeneralCompareHeader({
   // Controlled so the body-portaled popover cannot linger over another tab off-route.
   const active = useChatActive();
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const pickerSource = useMemo<ComposerModelPickerSource>(
+    () => ({
+      models,
+      loraModels,
+      externalModels,
+      onPick: (id, meta) => {
+        onValueChange(id, meta);
+        setSelectorOpen(false);
+      },
+      eject: () => undefined,
+      ejectAll: () => undefined,
+      externalConnections,
+      open: active && selectorOpen,
+      onOpenChange: (open) => setSelectorOpen(active && open),
+      configRequest: null,
+      onConfigRequestAdopted: () => undefined,
+      onFoldersChange: onFoldersChange ?? (() => undefined),
+      onModelsChange: onModelsChange ?? (() => undefined),
+      deleteDisabled: deleteDisabled === true,
+      activeModelConfig: selectedConfig ?? null,
+      loadedContextLength: null,
+      loaded: false,
+      selection: { id: value, ggufVariant: selectedGgufVariant ?? null },
+    }),
+    [
+      models,
+      loraModels,
+      externalModels,
+      onValueChange,
+      externalConnections,
+      active,
+      selectorOpen,
+      onFoldersChange,
+      onModelsChange,
+      deleteDisabled,
+      selectedConfig,
+      value,
+      selectedGgufVariant,
+    ],
+  );
 
   const { pinned } = useSidebar();
   return (
@@ -1592,23 +1632,14 @@ function GeneralCompareHeader({
           : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
-      <ModelSelector
-        models={models}
-        loraModels={loraModels}
-        externalModels={externalModels}
-        externalConnections={externalConnections}
-        value={value}
-        selectedConfig={selectedConfig}
-        selectedGgufVariant={selectedGgufVariant}
-        onValueChange={onValueChange}
-        onFoldersChange={onFoldersChange}
-        onModelsChange={onModelsChange}
-        deleteDisabled={deleteDisabled}
-        variant="ghost"
-        className="pointer-events-auto ml-1.5 max-w-[80%] !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
-        open={active && selectorOpen}
-        onOpenChange={(open) => setSelectorOpen(active && open)}
-      />
+      <div className="compare-model-picker pointer-events-auto ml-1.5 min-w-0 max-w-[80%]">
+        <ComposerModelPickerContext.Provider value={pickerSource}>
+          <ComposerModelPicker
+            side="bottom"
+            align={side === "left" ? "start" : "end"}
+          />
+        </ComposerModelPickerContext.Provider>
+      </div>
       {label ? (
         <span
           className={cn(

@@ -1280,13 +1280,18 @@ function SearchField({
 
 export function ComposerModelPicker({
   side = "top",
-}: { side?: "top" | "bottom" }) {
+  align = "end",
+}: { side?: "top" | "bottom"; align?: "start" | "end" }) {
   const source = useComposerModelPickerSource();
   const navigate = useNavigate();
   const reasoning = useComposerReasoning();
-  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const activeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  const pane = source?.selection;
+  const runtimeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const runtimeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const runtimeLoading = useChatRuntimeStore((s) => s.modelLoading);
+  const checkpoint = pane ? pane.id : runtimeCheckpoint;
+  const activeVariant = pane ? pane.ggufVariant : runtimeVariant;
+  const modelLoading = pane ? pane.loading === true : runtimeLoading;
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
   const chatModels = useChatRuntimeStore((s) => s.models);
   const pinned = usePinnedModelsStore((s) => s.pinned);
@@ -1875,7 +1880,9 @@ export function ComposerModelPicker({
   const chosen = findChosenRow(rows, checkpoint);
   const chosenId = chosen?.id;
   // A pick names the chip at once; the checkpoint follows only once its load lands.
-  const [pending, setPending] = useState<Row | null>(null);
+  const [pendingPick, setPending] = useState<Row | null>(null);
+  // An outside selection names its pick itself.
+  const pending = pane ? null : pendingPick;
   useEffect(() => {
     if (!pending) {
       return;
@@ -2144,13 +2151,15 @@ export function ComposerModelPicker({
   }, []);
 
   // Before the inventory lands there is no row: trust residency, since an image load can release the model.
-  const chosenLoaded = Boolean(
-    chosen?.loaded ||
-      (!chosen &&
-        checkpoint &&
-        !isExternalModelId(checkpoint) &&
-        source?.loaded !== false),
-  );
+  const chosenLoaded = pane
+    ? pane.loaded === true && Boolean(checkpoint)
+    : Boolean(
+        chosen?.loaded ||
+          (!chosen &&
+            checkpoint &&
+            !isExternalModelId(checkpoint) &&
+            source?.loaded !== false),
+      );
   const eject = (row: Row) => {
     source?.eject(row.loadedId ?? row.id);
   };
@@ -2584,13 +2593,16 @@ export function ComposerModelPicker({
       ? pickerOrderedGgufVariants(quants.list, null, quantBudget).ordered
       : [];
   const showQuantRow = quantChoices.length > 1;
-  const showEffort = reasoning.isEffort && reasoning.levels.length > 1;
-  const showThinkingSwitch = reasoning.supportsReasoning && !showEffort;
-  const showFastSwitch = reasoning.supportsFast && !showEffort;
+  const showEffort = !pane && reasoning.isEffort && reasoning.levels.length > 1;
+  const showThinkingSwitch =
+    !pane && reasoning.supportsReasoning && !showEffort;
+  const showFastSwitch = !pane && reasoning.supportsFast && !showEffort;
+  const showPreserve = !pane && reasoning.supportsPreserve;
+  const reasoningChip = pane ? null : reasoning.chipLabel;
   const hasFoot =
     showQuantRow ||
     showThinkingSwitch ||
-    reasoning.supportsPreserve ||
+    showPreserve ||
     showEffort ||
     showFastSwitch;
 
@@ -2613,14 +2625,16 @@ export function ComposerModelPicker({
     return { title: "No models" };
   };
 
-  const chipLabel = chosenName ?? "Select model";
+  const chipLabel = chosenName ?? pane?.placeholder ?? "Select model";
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const formatDetail =
     activeVariant && chosenLoaded && !pending
       ? `${loadedIsMlx ? "MLX" : "GGUF"} · ${activeVariant}`
       : null;
   const loadedDetail =
-    loadedModels.length > 1 ? `${loadedModels.length} models loaded` : null;
+    (!pane || pane.loaded) && loadedModels.length > 1
+      ? `${loadedModels.length} models loaded`
+      : null;
   const chipDetail =
     [formatDetail, loadedDetail].filter(Boolean).join(" · ") || null;
   const ejectsAll = loadedModels.length > 1;
@@ -3787,7 +3801,7 @@ export function ComposerModelPicker({
                 )}
                 data-pill-label={chipLabel}
                 data-tour="chat-model-selector"
-                aria-label={`Model: ${chipLabel}${reasoning.chipLabel ? `, ${reasoning.chipLabel}` : ""}`}
+                aria-label={`Model: ${chipLabel}${reasoningChip ? `, ${reasoningChip}` : ""}`}
               >
                 {modelLoading || pending ? (
                   <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
@@ -3831,9 +3845,9 @@ export function ComposerModelPicker({
                     className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
                   />
                 )}
-                {reasoning.chipLabel ? (
+                {reasoningChip ? (
                   <span className="unsloth-thinking-label composer-model-chip-detail shrink-0">
-                    {reasoning.chipLabel}
+                    {reasoningChip}
                   </span>
                 ) : null}
               </button>
@@ -3855,7 +3869,7 @@ export function ComposerModelPicker({
             )}
             data-pill-label={chipLabel}
             data-tour="chat-model-selector"
-            aria-label={`Model: ${chipLabel}${reasoning.chipLabel ? `, ${reasoning.chipLabel}` : ""}`}
+            aria-label={`Model: ${chipLabel}${reasoningChip ? `, ${reasoningChip}` : ""}`}
           >
             {modelLoading || pending ? (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
@@ -3899,9 +3913,9 @@ export function ComposerModelPicker({
                 className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
               />
             )}
-            {reasoning.chipLabel ? (
+            {reasoningChip ? (
               <span className="unsloth-thinking-label composer-model-chip-detail shrink-0">
-                {reasoning.chipLabel}
+                {reasoningChip}
               </span>
             ) : null}
           </button>
@@ -3912,7 +3926,7 @@ export function ComposerModelPicker({
         side={openSide}
         avoidCollisions={false}
         collisionPadding={PICKER_EDGE}
-        align="end"
+        align={align}
         sideOffset={8}
         data-composer-model-picker=""
         data-tour="chat-model-selector-popover"
@@ -4007,7 +4021,8 @@ export function ComposerModelPicker({
                 ))}
               </div>
               <StripScrollbar strip={tabStrip} />
-              {(chosenLoaded || loadedModels.length > 0) &&
+              {(!pane || pane.loaded) &&
+              (chosenLoaded || loadedModels.length > 0) &&
               !pending &&
               !modelLoading ? (
                 <button
@@ -4417,7 +4432,7 @@ export function ComposerModelPicker({
                 onChange={reasoning.setEnabled}
               />
             ) : null}
-            {reasoning.supportsPreserve ? (
+            {showPreserve ? (
               <SwitchRow
                 label="Preserve thinking"
                 checked={reasoning.preserve}

@@ -306,26 +306,20 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
     /active,\s*newChatId: search\.new,\s*threadId: search\.thread,\s*compareId: search\.compare,\s*projectId: search\.project,/,
   );
   assert.match(chatPage, /modelSelectorOpen \|\| modelConfigRequest !== null/);
-  assert.match(modelSelector, /requestedConfigTarget \?\? configTarget/);
+  // The handoff lands in the composer picker; the task pages' picker only opens its own settings.
+  assert.match(modelSelector, /const visibleConfigTarget = open \? configTarget : null;/);
+  assert.doesNotMatch(modelSelector, /configRequest/);
   assert.match(
     modelSelector,
     /aria-label=\{\s*visibleConfigTarget\s*\? `Run settings for \$\{visibleConfigTarget\.displayName\}`\s*:\s*undefined\s*\}/,
   );
   assert.match(
     modelSelector,
-    /modelConfigInstanceKey\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*visibleConfigTarget\.ggufVariant,\s*visibleLoadedConfig,/,
+    /modelConfigInstanceKey\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*visibleConfigTarget\.ggufVariant,\s*null,/,
   );
   assert.match(
     modelSelector,
     /onRun=\{\(config, isDiffusion\) =>\s*onSelect\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*\{/,
-  );
-  assert.match(
-    modelSelector,
-    /setAdoptedConfigRequestId\(configRequest\.requestId\);\s*setConfigTarget\(requestedConfigTarget\)/,
-  );
-  assert.match(
-    modelSelector,
-    /onConfigRequestAdopted\?\.\(configRequest\.requestId\)/,
   );
   assert.match(
     chatPage,

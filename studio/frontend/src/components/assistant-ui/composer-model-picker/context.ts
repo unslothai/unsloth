@@ -32,6 +32,17 @@ export interface ComposerModelPickerSource {
   activeModelConfig: PerModelConfig | null;
   loadedContextLength: number | null;
   loaded: boolean;
+  /**
+   * A choice owned outside Chat (a Compare pane, the API page): shown instead of the chat's model,
+   * with no reasoning controls, and Eject only while `loaded`.
+   */
+  selection?: {
+    id: string;
+    ggufVariant: string | null;
+    loaded?: boolean;
+    loading?: boolean;
+    placeholder?: string;
+  };
 }
 
 export const ComposerModelPickerContext =
