@@ -443,9 +443,10 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
     } else if (type.endsWith("_call")) {
       const id = text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID();
       const builtin = type !== "function_call" && type !== "custom_tool_call";
-      const name = builtin
-        ? (BUILTIN_TOOL_NAMES[type] ?? type.replace(/_call$/, ""))
-        : (text(entry.name) ?? "unknown");
+      const name =
+        BUILTIN_TOOL_NAMES[type] ?? text(entry.name) ?? (builtin ? type.replace(/_call$/, "") : "unknown");
+      // mcp_call names its server in server_label.
+      const namespace = text(entry.namespace) ?? text(entry.server_label);
       const payload =
         typeof entry.code === "string"
           ? { code: entry.code }
@@ -457,7 +458,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
         type: "function",
         function: {
           // namespace__name and {input} wrapping match the backend.
-          name: text(entry.namespace) ? `${entry.namespace}__${name}` : name,
+          name: namespace ? `${namespace}__${name}` : name,
           arguments:
             typeof entry.arguments === "string"
               ? entry.arguments

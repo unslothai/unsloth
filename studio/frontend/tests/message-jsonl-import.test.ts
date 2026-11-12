@@ -776,3 +776,23 @@ test("hosted Responses calls import as server-side tool cards with their code an
   );
   assert.equal(calls[1].args?.code, "print(1)");
 });
+
+test("a Responses mcp_call keeps its server and tool name", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [{ role: "user", content: "Find docs" }],
+      output: [
+        { type: "mcp_call", id: "m1", server_label: "docs", name: "search_docs", arguments: "{\"q\":\"x\"}", output: "hit" },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Found." }] },
+      ],
+    }),
+    "response.json",
+  );
+
+  const call = conversation.messages
+    .flatMap((m) => m.content as ReadonlyArray<{ type?: string; toolName?: string; result?: unknown }>)
+    .find((p) => p.type === "tool-call");
+  assert.equal(call?.toolName, "docs__search_docs");
+  assert.equal(call?.result, "hit");
+});
