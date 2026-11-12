@@ -243,18 +243,21 @@ def _cached_model_paths(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[tuple[str, str]]:
-    """Both cached files in *hub_cache*, or None when either is missing. Without one, the caches Studio knows, then
-    custom folders (_custom_folder_hit)."""
+    """Both cached files in *hub_cache*, or None when either is missing. Without one, the active cache, then every
+    other location search_other_locations covers (_location_candidates)."""
     spec = MTMD_STT_MODELS[model_id]
     if hub_cache is None:
-        from core.inference.model_cache_search import known_hub_caches, search_custom_folders
-        for root in known_hub_caches():
-            cached = _cached_model_paths(model_id, hub_cache = root, revision = revision)
-            if cached is not None:
-                return cached
-        return search_custom_folders(
-            lambda listing: _custom_folder_candidates(spec, listing, revision),
-            lambda candidate: _custom_folder_hit(model_id, candidate, revision),
+        from core.inference.model_cache_search import search_other_locations
+        from core.inference.stt_sidecar import _active_hf_hub_cache
+
+        cached = _cached_model_paths(
+            model_id, hub_cache = Path(_active_hf_hub_cache()), revision = revision
+        )
+        if cached is not None:
+            return cached
+        return search_other_locations(
+            lambda listing: _location_candidates(spec, listing, revision),
+            lambda candidate: _location_hit(model_id, candidate, revision),
         )
     root = hub_cache
 
@@ -303,19 +306,19 @@ def _pair_in(directory: Path, spec: MtmdSttModel) -> Optional[tuple[str, str]]:
     return None
 
 
-def _custom_folder_candidates(
+def _location_candidates(
     spec: MtmdSttModel, listing, revision: Optional[str]
 ) -> list[tuple[str, Path]]:
-    """Where a custom folder may hold the pair: a Hub cache holding the repo, then a directory holding both files
-    loose, the places the Model Hub lists a loose GGUF from. Loose files carry no revision, so a pinned revision never
-    matches them."""
+    """Where a location may hold the pair: a Hub cache holding the repo, then (in a custom folder) a directory holding
+    both files loose, the places the Model Hub lists a loose GGUF from. Loose files carry no revision, so a pinned
+    revision never matches them."""
     found = [("cache", hub_cache) for hub_cache in listing.caches_holding(spec.repo)]
     if revision is None:
         found += [("loose", d) for d in listing.dirs_holding(spec.model_file, spec.mmproj_file)]
     return found
 
 
-def _custom_folder_hit(
+def _location_hit(
     model_id: str, candidate: tuple[str, Path], revision: Optional[str]
 ) -> Optional[tuple[str, str]]:
     kind, directory = candidate

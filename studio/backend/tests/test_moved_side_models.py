@@ -28,7 +28,7 @@ _SPEC = stt_mtmd_sidecar.MTMD_STT_MODELS[_MODEL_ID]
 
 
 def _forget_custom_folder_memos(monkeypatch):
-    for name in ("_custom_folder_rows_memo", "_custom_folder_listings_memo"):
+    for name in ("_location_rows_memo", "_location_listings_memo"):
         monkeypatch.setattr(model_cache_search, name, {})
 
 
@@ -169,7 +169,7 @@ def test_load_uses_the_moved_files(caches, tmp_path):
     assert Path(model).parent == tmp_path / "custom" and Path(mmproj).name == _SPEC.mmproj_file
 
 
-def test_whisper_engines_find_moved_cache_trees(caches, tmp_path):
+def test_whisper_engines_find_moved_cache_trees(caches, monkeypatch, tmp_path):
     repo, filename = (
         stt_ggml_sidecar.GGML_STT_REPOS["tiny"],
         stt_ggml_sidecar.GGML_STT_MODELS["tiny"],
@@ -192,6 +192,8 @@ def test_whisper_engines_find_moved_cache_trees(caches, tmp_path):
     )
     assert stt_sidecar.is_model_downloaded("tiny") is False
     caches["known"].append(previous)
+    # A Models folder change reaches the location list within its 2 s memo; the test does not wait for it.
+    _forget_custom_folder_memos(monkeypatch)
     assert stt_sidecar._find_complete_cached_snapshot("tiny") == snapshot.resolve()
 
 
@@ -232,8 +234,8 @@ def test_a_folder_holding_another_model_beside_the_pair_stays_visible(tmp_path, 
 def test_a_status_poll_lists_a_custom_folder_once_and_probes_only_candidates(
     caches, monkeypatch, tmp_path
 ):
-    """Every curated model missing, a recursive folder holding other things: one bounded listing per poll window,
-    then no thread and no file probe for the remaining lookups."""
+    """Every curated model missing, a recursive folder holding other things: one bounded listing per location per poll
+    window, then no thread and no file probe for the remaining lookups."""
     from hub.services.models import local_inventory
 
     folder = tmp_path / "custom"
@@ -258,7 +260,8 @@ def test_a_status_poll_lists_a_custom_folder_once_and_probes_only_candidates(
         assert all(
             stt_ggml_sidecar._cached_model_path(m) is None for m in stt_ggml_sidecar.GGML_STT_MODELS
         )
-    assert bounded == [str(folder)]
+    # The known caches, then the folder: each listed once over both polls.
+    assert str(folder) in bounded and len(bounded) == len(set(bounded))
     assert probes == []
 
 
@@ -309,6 +312,71 @@ def test_a_hung_custom_folder_is_skipped_within_the_hub_budget(
     finally:
         release.set()
         local_inventory._custom_folder_scans[str(hung)][1].result(timeout = 5)
+
+
+@pytest.mark.parametrize(
+    "stall", ["listing the known caches", "previous cache listing", "previous cache probe"]
+)
+def test_a_hung_previous_models_folder_does_not_block_a_custom_folder(
+    caches, monkeypatch, tmp_path, stall
+):
+    from hub.services.models import local_inventory
+    from utils.paths.scan_folder_health import STATUS_SLOW, scan_folder_status
+
+    monkeypatch.setattr(local_inventory, "_CUSTOM_FOLDER_SCAN_TIMEOUT_S", 0.2)
+    previous, good = tmp_path / "previous" / "hub", tmp_path / "good"
+    _hub_tree(previous, _SPEC.repo, {})  # incomplete, so a lookup probes its files
+    caches["known"].append(previous)
+    _asr_pair(good)
+    _register(caches, good)
+    release = threading.Event()
+    if stall == "listing the known caches":
+        known = list(caches["known"])
+
+        def known_hf_hub_caches():
+            release.wait(10)
+            return known
+
+        monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", known_hf_hub_caches)
+        key = model_cache_search._KNOWN_CACHES_KEY
+    elif stall == "previous cache listing":
+        real = model_cache_search._build_cache_listing
+
+        def build_cache_listing(root):
+            if root == previous:
+                release.wait(10)
+            return real(root)
+
+        monkeypatch.setattr(model_cache_search, "_build_cache_listing", build_cache_listing)
+        key = str(previous)
+    else:
+        real_file = stt_mtmd_sidecar._cached_file
+
+        def cached_file(
+            model_id,
+            filename,
+            *,
+            hub_cache = None,
+            revision = None,
+        ):
+            if hub_cache == previous:
+                release.wait(10)
+            return real_file(model_id, filename, hub_cache = hub_cache, revision = revision)
+
+        monkeypatch.setattr(stt_mtmd_sidecar, "_cached_file", cached_file)
+        key = str(previous)
+    try:
+        started = time.monotonic()
+        assert _paths()[0] == str(good / _SPEC.model_file)
+        assert time.monotonic() - started < 2
+        assert scan_folder_status(key) == STATUS_SLOW
+        _forget_custom_folder_memos(monkeypatch)
+        started = time.monotonic()
+        assert _paths()[0] == str(good / _SPEC.model_file)
+        assert time.monotonic() - started < 0.15
+    finally:
+        release.set()
+        local_inventory._custom_folder_scans[key][1].result(timeout = 5)
 
 
 def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
