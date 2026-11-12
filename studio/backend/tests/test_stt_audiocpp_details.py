@@ -292,10 +292,10 @@ def test_parakeet_switches_to_bounded_windows_on_long_audio(fake, side, source):
     assert "session_options" not in fake.starts[-1]["entry"]
 
 
-def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side, source):
+def test_moss_reads_the_source_in_place_with_speakers_and_token_budget(fake, side, source):
     result = side.transcribe_path(source, MOSS, None, timestamps = True)
     (body,) = fake.bodies
-    assert body["audio"] == str(source) and "options" not in body
+    assert body["audio"] == str(source) and body["options"] == {"max_tokens": 5120}
     assert source.exists()
     assert result["text"] == "Hello there. General Kenobi." and result["duration"] == 2.0
     assert result["speakers"] == ["S01", "S02"]
@@ -305,6 +305,18 @@ def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side,
     ]
     assert ALIGNER_KEY not in json.dumps(fake.starts[0]["entry"])
     assert side.transcribe(wav_bytes(), MOSS, None)["text"] == "Hello there. General Kenobi."
+
+
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [(2.0, 5120), (300.0, 5120), (960.0, 16384), (7200.0, 122880)],
+)
+def test_moss_scales_max_tokens_with_audio_duration(
+    fake, side, source, monkeypatch, duration, expected
+):
+    monkeypatch.setattr(stt, "_wav_rate_and_duration", lambda _path: (16000, duration))
+    side.transcribe_path(source, MOSS, None)
+    assert fake.bodies[-1]["options"] == {"max_tokens": expected}
 
 
 def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hub, monkeypatch):

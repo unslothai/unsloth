@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import subprocess
 import tempfile
 import threading
@@ -94,6 +95,19 @@ _TIMESTAMP_OPTIONS = {
     "audio_chunk_mode": "fixed",
     "qwen3_asr.preserve_punctuation": "true",
 }
+
+# MOSS emits a timestamp and speaker marker for every segment.  Its 5120-token runtime
+# default truncates an ordinary 15-minute, two-speaker recording, while 16384 tokens
+# completes a 16-minute recording.  Keep the runtime default for short clips and scale
+# the request with duration for longer recordings (1024 generated tokens per minute).
+_MOSS_MAX_TOKENS_PER_MINUTE = 1024
+_MOSS_DEFAULT_MAX_TOKENS = 5120
+
+
+def _moss_max_tokens(duration: Optional[float]) -> int:
+    """Budget enough output for MOSS diarization markers without changing short clips."""
+    scaled = math.ceil((duration or 0.0) * _MOSS_MAX_TOKENS_PER_MINUTE / 60.0)
+    return max(_MOSS_DEFAULT_MAX_TOKENS, scaled)
 
 # model_specs/nemotron_asr.json "languages"; the prompt dictionary also keys en/es/fr/pt/no.
 _NEMOTRON_ASR_LOCALES = (
@@ -1040,11 +1054,14 @@ class AudioCppSttSidecar:
                     if keys is None or "language" in keys
                     else None
                 )
+                options = dict(_TIMESTAMP_OPTIONS) if aligned else {}
+                if entry.family == "moss_transcribe_diarize":
+                    options["max_tokens"] = _moss_max_tokens(duration)
                 payload = self._post_details(
                     path,
                     sent,
                     cancel_event,
-                    dict(_TIMESTAMP_OPTIONS) if aligned else {},
+                    options,
                     timeout = _transcribe_timeout(duration),
                 )
                 if cancel_event is not None and cancel_event.is_set():
