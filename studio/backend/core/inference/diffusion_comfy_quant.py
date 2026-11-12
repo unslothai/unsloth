@@ -957,6 +957,8 @@ def _apply_key_map(
     key_map: Any,
     grouped_src: Optional[dict] = None,
     grouped_conv: Optional[dict] = None,
+    source_dtype: Optional[dict] = None,
+    dense_dtype: Optional[dict] = None,
 ) -> dict:
     """``state`` (file keys) renamed and row-split by ``key_map``; kept layers become ``(codes, scale, group, format)``.
     A packed W4A8 / W6A8 source (``grouped_src``, by index into ``kept``) also lands in ``grouped_conv`` row-split
@@ -1001,6 +1003,8 @@ def _apply_key_map(
                 raise ValueError(f"{key}: row selection {rows} outside its {rows_total} rows")
             converted[new_key] = take(value, rows)
             index = index_of.get(key)
+            if dense_dtype is not None and source_dtype and source_dtype.get(index) is not None:
+                dense_dtype[new_key] = source_dtype[index]
             if grouped_conv is not None and grouped_src and index in grouped_src:
                 selection = (
                     [slice(0, rows_total)]
@@ -1541,6 +1545,7 @@ def load_comfy_quant_transformer(
     sources: list = []  # (layer, codes, scale, block extras or None) kept for a runtime
     # source index -> (packed codes, fp8 step bytes, codebook) of a W4A8 / W6A8 source a packed keep can hold
     grouped_src: dict = {}
+    source_dtype: dict = {}  # source index -> the dtype ``keep_dtype`` names for its file key, if any
     dequantized = 0
     for layer in scan.layers.values():
         codes = state.pop(layer.name + ".weight")
@@ -1592,6 +1597,9 @@ def load_comfy_quant_transformer(
         ) and not (extra is not None and key_map is not None):
             if packed_parts is not None and grouped_packed:
                 grouped_src[len(sources)] = packed_parts
+            if keep_dtype is not None:
+                # a quantized layer the family keeps at full precision (H3's fp32 heads) widens to that dtype
+                source_dtype[len(sources)] = keep_dtype(layer.name + ".weight")
             sources.append((layer, codes, scale, extra))
             state[layer.name + ".weight"] = None  # placeholder, tagged below
         elif extra is not None:
@@ -1600,7 +1608,9 @@ def load_comfy_quant_transformer(
             )
             dequantized += 1
         else:
-            state[layer.name + ".weight"] = _dequant(codes, scale, layer.group, dtype)
+            # straight to a dtype the family keeps (H3's fp32 heads), never rounded through the compute dtype
+            wide = (keep_dtype(layer.name + ".weight") if keep_dtype is not None else None) or dtype
+            state[layer.name + ".weight"] = _dequant(codes, scale, layer.group, wide)
             dequantized += 1
 
     for key, value in list(state.items()):
@@ -1697,12 +1707,18 @@ def load_comfy_quant_transformer(
             )
             if rows_packed is not None:
                 grouped_conv[name] = rows_packed
+            kept_dtypes = {source_dtype.get(i) for i, _r, _n in segments}
+            if len(kept_dtypes) == 1 and None not in kept_dtypes:
+                dense_dtype[name] = kept_dtypes.pop()
         return out
 
     grouped_conv: dict = {}  # converted weight name -> GroupedInt8Linear buffers for a packed keep
+    dense_dtype: dict = {}  # converted weight name -> the full-precision dtype its dequant widens to
     if key_map is not None:
         # Rows move whole (no float64 tags: a 21 GB file would need ~5x that in tags)
-        converted = _apply_key_map(state, sources, key_map, grouped_src, grouped_conv)
+        converted = _apply_key_map(
+            state, sources, key_map, grouped_src, grouped_conv, source_dtype, dense_dtype
+        )
         for name, value in converted.items():
             if isinstance(value, tuple) and name in wanted:
                 if tuple(wanted[name].shape) != tuple(value[0].shape):
@@ -1844,7 +1860,9 @@ def load_comfy_quant_transformer(
             del converted[name]
             continue
         if weight is None:
-            converted[name] = _dequant(codes, scale, group, _dtype_for(name))
+            converted[name] = _dequant(
+                codes, scale, group, dense_dtype.get(name) or _dtype_for(name)
+            )
             dequantized += 1
             continue
         converted[name] = weight

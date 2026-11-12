@@ -448,6 +448,23 @@ def grouped_call_counts() -> dict:
     return dict(_CALLS)
 
 
+def _tuned_on(index: Any) -> bool:
+    """Eager, once per card: Studio's int8 GEMM op is registered and passed its bit-exact probe there."""
+    hit = _TUNED.get(index)
+    if hit is None:
+        try:
+            from . import diffusion_int8_gemm as g
+            hit = (
+                g.int8_gemm_mode() != "off"
+                and g._op() is not None
+                and g.device_config(index) is not None
+            )
+        except Exception:  # noqa: BLE001 -- the native W8A8 maths
+            hit = False
+        _TUNED[index] = bool(hit)
+    return bool(hit)
+
+
 def _rows_bucket(rows: int) -> int:
     return 0 if rows < 256 else 1 if rows < 2048 else 2
 
@@ -535,6 +552,9 @@ def grouped_linear_class():
 
         def _apply(self, fn, *args, **kwargs):
             out = super()._apply(fn, *args, **kwargs)
+            if self._tuned is None and self.weight_packed.is_cuda:
+                # placed on a card, in eager: decide the tuned GEMM now, since a compiled forward never probes
+                self._tuned = _tuned_on(self.weight_packed.device.index)
             probe = fn(torch.empty(0, dtype = self.compute_dtype, device = self.weight_packed.device))
             if isinstance(probe, torch.Tensor) and probe.dtype in (
                 torch.bfloat16,
@@ -623,21 +643,7 @@ def grouped_linear_class():
             return torch.ops.unsloth_studio.int8_mm_dequant(xq, q8, xs.to(torch.float32), ws, bias)
 
         def _tuned_ready(self, x: Any) -> bool:
-            """Eager, once per card: the GEMM op is registered and passed its bit-exact probe there."""
-            index = x.device.index
-            hit = _TUNED.get(index)
-            if hit is None:
-                try:
-                    from . import diffusion_int8_gemm as g
-                    hit = (
-                        g.int8_gemm_mode() != "off"
-                        and g._op() is not None
-                        and g.device_config(index) is not None
-                    )
-                except Exception:  # noqa: BLE001 -- the native W8A8 maths below
-                    hit = False
-                _TUNED[index] = bool(hit)
-            return bool(hit)
+            return _tuned_on(x.device.index)
 
         def _int8(self, x: Any) -> Any:
             from .diffusion_native_quant import (

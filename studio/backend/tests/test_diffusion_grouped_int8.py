@@ -520,3 +520,22 @@ def test_forced_packed_is_priced_packed_without_an_int8_runtime(tmp_path):
     int8 = cq.comfy_resident_mib(path, keep_int8 = True, keep_fp8 = False)
     assert packed == 4  # 3 MiB of codes + 256 KiB of steps + the row scales, rounded up
     assert int8 == 5 and dense == 17
+
+
+def test_a_dequantized_layer_the_family_keeps_fp32_widens_to_fp32(grouped_file):
+    # MiniMax-H3: a packed head the int8 filter skips (96 rows) dequantizes, and the family keeps it float32
+    path, _dense, tensors = grouped_file
+    model = cq.load_comfy_quant_transformer(
+        _Tiny,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.bfloat16, "config": "base/repo", "subfolder": "transformer"},
+        int8_backend = None,
+        family = "z-image",
+        grouped_packed = False,
+        keep_dtype = lambda key: torch.float32 if key.startswith("blocks.0.out.") else None,
+    )
+    out = model.blocks[0].to_out
+    assert out.weight.dtype == torch.float32 and out.bias.dtype == torch.float32
+    assert torch.equal(out.weight, _expected_dense(tensors, "blocks.0.out"))
+    assert model.blocks[1].to_out.weight.dtype == torch.bfloat16
