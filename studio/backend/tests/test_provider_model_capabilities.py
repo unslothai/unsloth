@@ -17,6 +17,7 @@ import pytest
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.provider_model_capabilities import (
+    MODELS_DEV_MODEL_LIST_SOURCES,
     openrouter_model_capabilities,
     provider_model_capabilities,
 )
@@ -472,15 +473,18 @@ def test_the_registry_lists_the_catalog_chat_models_newest_first(listed_catalog)
 
 def test_the_registry_never_fetches_and_is_never_empty_before_a_catalog_exists(listed_catalog):
     rows = asyncio.run(providers_route.list_registry(current_subject = "tester"))
-    assert all(row["default_models"] for row in rows)
+    listed = {row["provider_type"] for row in rows if row["default_models"]}
+    assert listed == set(MODELS_DEV_MODEL_LIST_SOURCES)
     assert _FakeCatalogClient.calls == 0
 
 
-def test_hand_kept_lists_are_not_replaced_by_the_catalog(listed_catalog, monkeypatch):
-    before = {name: _registry_models(name) for name in ("openai_codex", "openrouter", "qwencloud")}
+def test_providers_that_list_their_own_models_take_none_from_the_catalog(
+    listed_catalog, monkeypatch
+):
     monkeypatch.setitem(_RAW_MODELS_DEV, "openrouter", _RAW_MODEL_LISTS["openai"])
     listed_catalog()
-    assert {name: _registry_models(name) for name in before} == before
+    for name in ("openai_codex", "openrouter", "qwencloud", "typesafe", "liquid"):
+        assert _registry_models(name) == [], name
 
 
 def test_a_catalog_cached_before_model_lists_existed_is_refetched(listed_catalog, tmp_path):

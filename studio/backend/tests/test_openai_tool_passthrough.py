@@ -11285,7 +11285,7 @@ class TestCodexVisionCapability:
 
         body = inspect.getsource(inference_route._proxy_to_external_provider)
         assert "_may_receive_image = (" in body
-        assert "if _may_receive_image and model not in capabilities" in body
+        assert "if _may_receive_image and listed_model is None" in body
 
     def test_a_replay_only_turn_also_resolves_the_catalog(self):
         """MCP can be switched off while earlier image turns remain; the capability must still be

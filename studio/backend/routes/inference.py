@@ -29233,6 +29233,7 @@ async def _proxy_to_external_provider(
             offered_subscription_model_ids,
             forget_subscription_models,
             mark_subscription_catalog_stale,
+            restore_subscription_catalog,
             subscription_catalog_known,
             saved_models_proven_for,
             subscription_catalog_matches_account,
@@ -29256,11 +29257,7 @@ async def _proxy_to_external_provider(
                 status_code = 400, detail = "ChatGPT subscription chat requires stream=true."
             )
         model = payload.external_model or payload.model
-        from core.inference.providers import get_provider_info as _get_codex_provider_info
-
-        info = _get_codex_provider_info("openai_codex") or {}
-
-        # /codex/models may list slugs newer than the seed. Drop a catalog from another account.
+        # Drop a catalog from another account.
         current_bundle = load_oauth_bundle(payload.provider_id)
         current_account = current_bundle.get("account_id") if current_bundle else None
         if current_account and not subscription_catalog_matches_account(
@@ -29268,6 +29265,7 @@ async def _proxy_to_external_provider(
         ):
             forget_subscription_models(payload.provider_id)
             mark_subscription_catalog_stale(payload.provider_id)
+        restore_subscription_catalog(payload.provider_id, current_bundle)
 
         def _allowed_codex_models() -> set[str]:
             """Once read, the plan catalog is the authority; a saved slug survives hide, not a plan dropping it."""
@@ -29279,11 +29277,11 @@ async def _proxy_to_external_provider(
                     if offered_subscription_model(payload.provider_id, slug) is not None
                 }
             if subscription_catalog_stale(payload.provider_id):
-                return set(info.get("default_models", []))
+                return set()
             if not saved_models_proven_for(payload.provider_id, current_account):
                 # Saved models unproven for this account: a rebind before restart or on another worker leaves this.
-                return set(info.get("default_models", []))
-            return set(info.get("default_models", [])) | saved
+                return set()
+            return saved
 
         allowed_models = _allowed_codex_models()
         if model not in allowed_models:
@@ -29297,17 +29295,12 @@ async def _proxy_to_external_provider(
         if model not in allowed_models:
             raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
 
-        capabilities = info.get("model_capabilities", {})
         image_requested = any(
             isinstance(message.content, list)
             and any(part.type == "image_url" for part in message.content)
             for message in payload.messages
         )
-        listed_model = (
-            None
-            if model in capabilities
-            else offered_subscription_model(payload.provider_id, model)
-        )
+        listed_model = offered_subscription_model(payload.provider_id, model)
         # Vision flag is fixed for the run; an MCP tool may return a picture later.
         _may_receive_image = (
             image_requested
@@ -29320,7 +29313,7 @@ async def _proxy_to_external_provider(
             # A conversation already carrying an image needs the capability even with MCP off, or it is stripped.
             or _request_has_promotable_mcp_images(payload, exact = False)
         )
-        if _may_receive_image and model not in capabilities and listed_model is None:
+        if _may_receive_image and listed_model is None:
             # No catalog read this process; fetch modalities only when an image may be sent.
             try:
                 await ensure_subscription_models(payload.provider_id)
@@ -29330,11 +29323,12 @@ async def _proxy_to_external_provider(
             except Exception:
                 pass
             listed_model = offered_subscription_model(payload.provider_id, model)
-        if model in capabilities:
-            model_supports_vision = bool(capabilities[model].get("vision"))
-        else:
-            # A slug the registry never listed: the plan's own entry is all we know.
-            model_supports_vision = bool(listed_model and listed_model.get("vision"))
+        model_supports_vision = listed_model.get("vision") if listed_model else None
+        if model_supports_vision is None:
+            # The plan did not say: read the same model from the OpenAI catalog.
+            from routes.providers import cached_catalog_model_inputs
+
+            model_supports_vision = "image" in (cached_catalog_model_inputs("openai", model) or ())
         if not model_supports_vision:
             for message in payload.messages:
                 if isinstance(message.content, list) and any(

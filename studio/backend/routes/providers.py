@@ -243,7 +243,7 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "ChatGPT subscriptions do not use API keys.")
     if base_url is not None and (not updating or base_url != info["base_url"]):
         raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
-    if models is None:
+    if models is None or (not updating and not models):
         return
     # Same evidence order as the chat route, so a save cannot persist a model every send refuses.
     if provider_id and openai_codex_client.subscription_catalog_known(provider_id):
@@ -253,7 +253,7 @@ def _validate_provider_auth_contract(
             if openai_codex_client.offered_subscription_model(provider_id, slug) is not None
         }
     else:
-        allowed = set(info["default_models"])
+        allowed = set()
         proven = not provider_id or openai_codex_client.saved_models_proven_for(
             provider_id, validated_account
         )
@@ -463,11 +463,10 @@ async def update_provider_config(
         ):
             openai_codex_client.forget_subscription_models(provider_id)
             openai_codex_client.mark_subscription_catalog_stale(provider_id)
+        openai_codex_client.restore_subscription_catalog(provider_id, current_bundle)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
         # Only unproven slugs hit the catalog, so saves do not wait on upstream timeouts.
-        unproven = (
-            set(payload.models) - set(existing_info["default_models"]) - set(persisted_models)
-        )
+        unproven = set(payload.models) - set(persisted_models)
         if unproven:
             try:
                 await openai_codex_client.ensure_subscription_models(provider_id)
