@@ -149,6 +149,29 @@ def get_models_folder(
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
+@router.get("/sdxl-checkpoint", response_model = bool)
+def is_sdxl_checkpoint(
+    repo_id: str = Query(..., min_length = 1, max_length = 192),
+    filename: str = Query(..., pattern = r"(?i)^[^/\\]+\.safetensors$"),
+    revision: Optional[str] = Query(None, pattern = r"^[0-9a-f]{40}$"),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference.diffusion_hub_evidence import read_hub_checkpoint_family
+    from huggingface_hub.utils import HFValidationError, validate_repo_id
+
+    try:
+        validate_repo_id(repo_id)
+    except HFValidationError:
+        raise HTTPException(status_code = 422, detail = "Invalid repository ID") from None
+    try:
+        return read_hub_checkpoint_family(repo_id, filename, hf_token, revision) == "sdxl"
+    except Exception:
+        raise HTTPException(
+            status_code = 502, detail = "Could not read the checkpoint header"
+        ) from None
+
+
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)
 async def get_gguf_variants(
     repo_id: str = Query(

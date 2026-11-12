@@ -56,7 +56,7 @@ test("an adapter safetensors never drops a component's only .bin", async () => {
   });
 });
 
-test("SDXL checkpoint choices include both Animagine variants and exclude components and shards", async () => {
+test("SDXL checkpoint candidates include both Animagine variants and exclude components and shards", async () => {
   stubSiblings({
     "model_index.json": 671,
     "unet/diffusion_pytorch_model.safetensors": 512,
@@ -65,7 +65,7 @@ test("SDXL checkpoint choices include both Animagine variants and exclude compon
     "animagine-xl-4.0-opt.safetensors": 6938350040,
   }, "StableDiffusionXLPipeline");
   const info = await fetchModelSize("cagliostrolab/animagine-xl-4.0");
-  assert.deepEqual(info?.imageCheckpoints, [
+  assert.deepEqual(info?.imageCheckpointCandidates, [
     { filename: "animagine-xl-4.0.safetensors", bytes: 6938434056 },
     { filename: "animagine-xl-4.0-opt.safetensors", bytes: 6938350040 },
   ]);
@@ -101,4 +101,30 @@ test("reopening a model while its canceled metadata lookup settles starts one fr
   assert.deepEqual(await reopened, expected);
   assert.deepEqual(await secondReader, expected);
   assert.equal(fetch.mock.callCount(), 2);
+});
+
+test("the picker offers only confirmed checkpoints from a mixed SDXL repo", async (t) => {
+  const { confirmedSdxlCheckpoints } = await import("../src/features/hub/lib/sdxl-checkpoints.ts");
+  const { installLocalStorageFake } = await import("./helpers/kit.ts");
+  installLocalStorageFake();
+  const names = ["edition.safetensors", "unet.safetensors", "model.safetensors"];
+  const info = {
+    revision: "1".repeat(40), totalBytes: null, weightsBytes: null,
+    imageCheckpointCandidates: names.map((filename) => ({ filename, bytes: null })),
+  };
+  const calls: string[] = [];
+  const fetch = t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+    const params = new URL(String(input), "http://localhost").searchParams;
+    assert.equal(params.get("revision"), info.revision);
+    assert.equal(params.get("repo_id"), "acme/mixed");
+    const filename = params.get("filename")!;
+    calls.push(filename);
+    return Response.json(filename === "model.safetensors");
+  });
+  const read = () => confirmedSdxlCheckpoints("acme/mixed", info, undefined, new AbortController().signal);
+  const expected = [info.imageCheckpointCandidates[2]];
+  assert.deepEqual(await read(), expected);
+  assert.deepEqual(await read(), expected);
+  assert.deepEqual(calls.sort(), [...names].sort());
+  assert.equal(fetch.mock.callCount(), 3);
 });

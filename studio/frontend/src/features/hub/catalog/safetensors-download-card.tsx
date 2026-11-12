@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { imageCheckpointSelection } from "../download-manager/required-assets";
+import { confirmedSdxlCheckpoints } from "../lib/sdxl-checkpoints";
+import { imageCheckpointSelection, type ImageCheckpointFile } from "../download-manager/required-assets";
 import { useHubDownloadPlan, useHubQueue } from "../download-manager/use-hub-download-queue";
 import { HubPlanProgress } from "../download-manager/hub-plan-progress";
 import { useRequiredAssetsDownload, type AssetRuntime } from "./use-required-assets-download";
@@ -97,9 +98,9 @@ export function SafetensorsDownloadCard({
     !groupForRepoId(repoId, IMAGE_CATALOG);
   const hfEndpoint = useHfEndpoint();
   const sizeKey = `${hfEndpoint}::${repoId}::${fingerprintToken(hfToken)}`;
-  const [metadata, setMetadata] = useState<{ key: string; info: ModelSizeInfo | null }>();
+  const [metadata, setMetadata] = useState<{ key: string; info: ModelSizeInfo | null; choices?: ImageCheckpointFile[] }>();
   const info = metadata?.key === sizeKey ? metadata.info : undefined;
-  const choices = discoverCheckpoints ? info?.imageCheckpoints : undefined;
+  const choices = discoverCheckpoints && metadata?.key === sizeKey ? metadata.choices : undefined;
   const job = useRepoDownload({
     kind: "model",
     repoId,
@@ -161,9 +162,13 @@ export function SafetensorsDownloadCard({
     const controller = new AbortController();
     const { signal } = controller;
     void fetchModelSize(repoId, hfToken || undefined, signal)
-      .then((info) => {
+      .then(async (info) => {
         if (signal.aborted) return;
-        setMetadata({ key: sizeKey, info });
+        const choices = discoverCheckpoints && info
+          ? await confirmedSdxlCheckpoints(repoId, info, hfToken || undefined, signal)
+          : undefined;
+        if (signal.aborted) return;
+        setMetadata({ key: sizeKey, info, choices });
         const upstream = info?.weightsBytes ?? info?.totalBytes;
         if (!knownBytes && upstream) setJobExpectedBytes(upstream);
       })

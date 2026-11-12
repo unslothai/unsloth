@@ -350,6 +350,22 @@ def _stub_header(monkeypatch, keys_by_call):
     return calls
 
 
+def test_catalog_identifies_whole_sdxl_files_by_content_even_when_names_are_neutral(monkeypatch):
+    from hub.routes.inventory import is_sdxl_checkpoint
+
+    keys = [
+        ["transformer.single_transformer_blocks.0.attn.to_k.lora_A.weight"],
+        SDXL_DIFFUSERS_UNET_ONLY_KEYS,
+        SDXL_UNET_KEYS,
+    ]
+    _stub_header(monkeypatch, keys)
+    picks = [
+        is_sdxl_checkpoint("example/checkpoint", filename, "1" * 40, False, "test-user")
+        for filename in ("edition-1.safetensors", "unet.safetensors", "edition-2.safetensors")
+    ]
+    assert picks == [False, False, True]
+
+
 def test_a_denoiser_only_unet_is_not_evidence_for_a_whole_pipeline_family(hub_cache, monkeypatch):
     import huggingface_hub
 
