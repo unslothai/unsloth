@@ -339,6 +339,10 @@ export function WindowTitlebar({
       setRevealed(false);
     }, FULLSCREEN_TITLEBAR_HIDE_DELAY_MS);
   }, [cancelHide]);
+  const revealFromEdge = useCallback(() => {
+    setRevealed(true);
+    scheduleHide();
+  }, [scheduleHide]);
   useEffect(() => cancelHide, [fullscreen, cancelHide]);
   const backdropOpen = useSyncExternalStore(
     enabled ? subscribeViewportBackdrop : subscribeNever,
@@ -510,8 +514,8 @@ export function WindowTitlebar({
           data-slot="window-titlebar-reveal-edge"
           className="modal-pe-live pointer-events-auto fixed inset-x-0 top-0 h-[3px]"
           style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
-          onPointerEnter={reveal}
-          onPointerMove={reveal}
+          onPointerEnter={revealFromEdge}
+          onPointerMove={revealFromEdge}
         />
       )}
       {showSidebarSurface && !fullscreen && (
