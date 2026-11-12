@@ -128,3 +128,16 @@ export { usePinnedRowDrag } from "./components/model-selector/use-pinned-row-dra
 export { describeVariantListingError } from "./components/model-selector/variant-listing-error";
 export { pickerOrderedGgufVariants } from "./components/model-selector/variant-order";
 export { ggufVariantPickerLabel } from "./components/model-selector/variant-presentation";
+export { connectedModelMarks } from "./components/model-selector/connected-model-meta";
+export { mediaPageForTask } from "./components/model-selector/pickers";
+export {
+  AUDIO_CATALOG,
+  artifactForRepoId,
+} from "./components/model-selector/model-catalog";
+export {
+  audioPickIsRoutable,
+  audioPipelineTagFor,
+  curatedAudioInventoryTask,
+  macMlxSttRowIsRunnable,
+  taskForMediaPick,
+} from "./components/model-selector/audio-picker-policy";

@@ -3,6 +3,7 @@
 
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -22,6 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { audioPickSearch } from "@/features/audio/route-search";
 import {
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -36,6 +38,10 @@ import {
   parseExternalModelId,
 } from "@/features/chat/external-providers";
 import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
+import {
+  modelCatalogVersion,
+  subscribeModelCatalog,
+} from "@/features/chat/model-catalog";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
@@ -67,6 +73,7 @@ import {
 } from "@/features/hub";
 import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
 import {
+  AUDIO_CATALOG,
   ConnectedModelInfoDialog,
   ConnectedModelSettingsDialog,
   type LoraModelOption,
@@ -79,7 +86,12 @@ import {
   type ModelSelectorChangeMeta,
   type PickerFitStatus,
   VRAM_VERDICT,
+  artifactForRepoId,
+  audioPickIsRoutable,
+  audioPipelineTagFor,
   chatGgufFit,
+  connectedModelMarks,
+  curatedAudioInventoryTask,
   describeVariantListingError,
   estimateQuantBytes,
   ggufVariantPickerLabel,
@@ -89,6 +101,8 @@ import {
   loadStampId,
   loadedAt,
   loraOptionLabel,
+  macMlxSttRowIsRunnable,
+  mediaPageForTask,
   missingExternalModel,
   modelConfigInstanceKey,
   modelConfigTarget,
@@ -97,6 +111,7 @@ import {
   paramsFromId,
   pickerOrderedGgufVariants,
   pinDropAnchor,
+  taskForMediaPick,
   useChatPickerInventory,
   useModelLoadTimes,
   usePinnedConnectedModelsStore,
@@ -122,6 +137,7 @@ import {
 } from "@/lib/chevron-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { Folder02Icon } from "@/lib/folder-icons";
 import { classifyVariantFitOnCard } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
@@ -159,6 +175,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { useAnimatedListHeight } from "./animated-height";
 import { useComposerModelPickerSource } from "./context";
@@ -166,6 +183,11 @@ import { useCustomFolders } from "./custom-folders";
 import { EffortSlider } from "./effort-slider";
 import { ListScrollbar, StripScrollbar } from "./list-scrollbar";
 import {
+  CONNECTED_MODALITY_LABEL,
+  CONNECTED_SORT_LABEL,
+  CONNECTED_TAB,
+  type ConnectedModality,
+  type ConnectedSort,
   DEVICE_SORT_DESC,
   DEVICE_SORT_LABEL,
   DEVICE_SORT_ORDER,
@@ -177,6 +199,7 @@ import {
   type FormatTone,
   type ListSection,
   PICKER_EDGE,
+  PICKER_WIDTH,
   type PickerRow,
   RECOMMENDED_TAB,
   SECTION_LABEL,
@@ -190,10 +213,12 @@ import {
   localSection,
   matchesFormat,
   orderBySection,
+  pickerAlignOffset,
   pickerSide,
   pinCoversId,
   repoSection,
   sectionsHaveRows,
+  sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
 import { useComposerReasoning } from "./use-composer-reasoning";
@@ -209,6 +234,8 @@ interface Row extends PickerRow {
   loadedQuant?: string | null;
   partial?: boolean;
   resumable?: boolean;
+  /** Runs on the Audio page: a pick opens it there instead of loading into Chat. */
+  media?: "audio";
 }
 
 function cachedMeta(row: Row): ModelSelectorChangeMeta {
@@ -302,16 +329,24 @@ function loraNeedsQuant(lora: LoraModelOption): boolean {
 
 function loraMeta(lora: LoraModelOption): ModelSelectorChangeMeta {
   const isLocal = lora.source === "local";
+  const isLora =
+    !isLocal && lora.exportType !== "merged" && lora.exportType !== "gguf";
   return {
     source: isLocal
       ? "local"
       : lora.source === "exported"
         ? "exported"
         : "lora",
-    isLora:
-      !isLocal && lora.exportType !== "merged" && lora.exportType !== "gguf",
+    isLora,
     isDownloaded: true,
     isGguf: lora.isDirectGguf === true,
+    // A fine-tuned TTS/STT checkpoint reaches the Audio page by its codec.
+    ...(lora.audioType
+      ? {
+          pipelineTag: audioPipelineTagFor(lora.audioType, true, isLora),
+          audioType: lora.audioType,
+        }
+      : {}),
   };
 }
 
@@ -405,6 +440,8 @@ async function rowQuants(
   signal?: AbortSignal,
 ): Promise<{
   quants: GgufVariantDetail[];
+  /** Interrupted downloads: not loadable, but resumable and deletable. */
+  partials: GgufVariantDetail[];
   defaultVariant: string | null;
   mlx: boolean;
   hasVision: boolean | undefined;
@@ -419,10 +456,10 @@ async function rowQuants(
     signal,
   });
   // A partial quant cannot load, but a download offer must keep it so the download resumes.
-  const variants = (Array.isArray(res?.variants) ? res.variants : []).filter(
-    (v) => target.remote || v.partial !== true,
-  );
+  const listed = Array.isArray(res?.variants) ? res.variants : [];
+  const variants = listed.filter((v) => target.remote || v.partial !== true);
   return {
+    partials: listed.filter((v) => v.partial === true),
     quants:
       target.remote || target.local ? variants : downloadedQuants(variants),
     defaultVariant:
@@ -887,7 +924,23 @@ function Hint({
   );
 }
 
-function LoadedDot({ label, onEject }: { label: string; onEject: () => void }) {
+function LoadedDot({
+  label,
+  onEject,
+}: { label: string; onEject?: () => void }) {
+  if (!onEject) {
+    return (
+      <Hint label="Loaded">
+        <span
+          role="img"
+          aria-label="Loaded"
+          className="-mx-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 place-items-center"
+        >
+          <span className="size-[calc(6px*var(--ui-space-scale,1))] rounded-full bg-status-success" />
+        </span>
+      </Hint>
+    );
+  }
   return (
     <Hint label="Loaded. Click to eject">
       <button
@@ -1140,7 +1193,7 @@ function SectionHeader({
   actions,
   trailing,
 }: {
-  section: ListSection;
+  section: string;
   label: string;
   icon?: ReactNode;
   divider: boolean;
@@ -1285,7 +1338,26 @@ export function ComposerModelPicker({
   side = "top",
   align = "end",
 }: { side?: "top" | "bottom"; align?: "start" | "end" }) {
-  const source = useComposerModelPickerSource();
+  const rawSource = useComposerModelPickerSource();
+  // Every pick passes here first: Chat cannot load an audio model, so that pick opens the page
+  // that runs it. A ref, as the routing reads inventory this render has not built yet.
+  const routeMediaPick = useRef<
+    (id: string, meta: ModelSelectorChangeMeta) => boolean
+  >(() => false);
+  const source = useMemo(
+    () =>
+      rawSource
+        ? {
+            ...rawSource,
+            onPick: (id: string, meta: ModelSelectorChangeMeta) => {
+              if (!routeMediaPick.current(id, meta)) {
+                rawSource.onPick(id, meta);
+              }
+            },
+          }
+        : null,
+    [rawSource],
+  );
   const navigate = useNavigate();
   const reasoning = useComposerReasoning();
   const pane = source?.selection;
@@ -1360,6 +1432,9 @@ export function ComposerModelPicker({
   }, []);
   const [resolving, setResolving] = useState<string | null>(null);
   const [deviceQuants, setDeviceQuants] = useState<
+    ReadonlyMap<string, GgufVariantDetail[]>
+  >(() => new Map());
+  const [devicePartials, setDevicePartials] = useState<
     ReadonlyMap<string, GgufVariantDetail[]>
   >(() => new Map());
   const [foldedQuants, setFoldedQuants] = useState<ReadonlySet<string>>(
@@ -1442,6 +1517,7 @@ export function ComposerModelPicker({
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
+  const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   const showMemoryBar = useChatRuntimeStore((s) => s.showMemoryBar);
   const loadFreesResident =
     !keepModelsLoaded &&
@@ -1551,13 +1627,43 @@ export function ComposerModelPicker({
   const loraModels = source?.loraModels;
   const externalModels = source?.externalModels;
 
+  // The inventory often reports an audio GGUF as text-generation; the audio catalog's task wins.
+  const mediaTaskById = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const repo of [...inventory.cachedGguf, ...inventory.cachedModels]) {
+      const artifact = artifactForRepoId(repo.repo_id, AUDIO_CATALOG);
+      const task = curatedAudioInventoryTask({
+        inventoryTask: repo.task,
+        isExactCatalogArtifact: Boolean(artifact),
+        catalogScope: artifact?.group.scope,
+        catalogTask: artifact?.group.task,
+      });
+      if (task) {
+        byId.set(repo.repo_id.toLowerCase(), task);
+      }
+    }
+    return byId;
+  }, [inventory.cachedGguf, inventory.cachedModels]);
+  // Compare and the API page load what they pick, so they list no audio models.
+  const listsAudio = !pane;
+
   const rows = useMemo<Row[]>(() => {
     const device: Row[] = [];
+    const isAudio = (id: string, task: string | null | undefined) =>
+      listsAudio &&
+      mediaPageForTask(
+        taskForMediaPick(task, mediaTaskById.get(id.toLowerCase())),
+      ) === "audio";
     for (const repo of inventory.cachedGguf) {
-      if (!isChatTask(repo.task)) {
+      const audio = isAudio(repo.repo_id, repo.task);
+      if (
+        !audio &&
+        (!isChatTask(repo.task) || isMediaCatalogRepo(repo.repo_id))
+      ) {
         continue;
       }
       device.push({
+        media: audio ? "audio" : undefined,
         key: `gguf:${repo.repo_id}`,
         id: repo.repo_id,
         label: modelDisplayName(repo.repo_id),
@@ -1575,10 +1681,17 @@ export function ComposerModelPicker({
       });
     }
     for (const repo of inventory.cachedModels) {
-      if (repo.companion || !isChatTask(repo.task)) {
+      const audio = !repo.companion && isAudio(repo.repo_id, repo.task);
+      if (
+        !audio &&
+        (repo.companion ||
+          !isChatTask(repo.task) ||
+          isMediaCatalogRepo(repo.repo_id))
+      ) {
         continue;
       }
       device.push({
+        media: audio ? "audio" : undefined,
         key: `cached:${repo.repo_id}`,
         id: repo.repo_id,
         label: modelDisplayName(repo.repo_id),
@@ -1602,10 +1715,14 @@ export function ComposerModelPicker({
       });
     }
     for (const lora of loraModels ?? []) {
-      if (lora.audioType) {
+      if (lora.audioType && !listsAudio) {
         continue;
       }
       device.push({
+        media:
+          mediaPageForTask(loraMeta(lora).pipelineTag) === "audio"
+            ? "audio"
+            : undefined,
         key: `local:${lora.id}`,
         id: lora.id,
         label: loraOptionLabel(lora),
@@ -1715,6 +1832,7 @@ export function ComposerModelPicker({
       id: m.id,
       label: m.name,
       tab: `${EXT_PREFIX}${m.providerId}`,
+      groups: [CONNECTED_TAB],
       kind: "external",
       providerType: m.providerType,
       providerName: m.providerName,
@@ -1740,7 +1858,67 @@ export function ComposerModelPicker({
     recommended,
     mlxTaggedHub,
     externalModels,
+    mediaTaskById,
+    listsAudio,
   ]);
+  routeMediaPick.current = (id, meta) => {
+    if (!listsAudio) {
+      return false;
+    }
+    const pickedTask = taskForMediaPick(
+      meta.pipelineTag,
+      mediaTaskById.get(id.toLowerCase()),
+    );
+    const page = mediaPageForTask(pickedTask);
+    if (!page) {
+      return false;
+    }
+    const isGguf = Boolean(meta.isGguf || meta.ggufFilename);
+    const gguf = inventory.cachedGguf.find((c) => c.repo_id === id);
+    const cached = inventory.cachedModels.find((c) => c.repo_id === id);
+    if (
+      page === "audio" &&
+      !audioPickIsRoutable({
+        id,
+        task: pickedTask,
+        isGguf,
+        isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+        audioType: meta.audioType ?? gguf?.audio_type ?? cached?.audio_type,
+        isLocalCheckpoint:
+          meta.source === "lora" ||
+          meta.source === "exported" ||
+          meta.source === "local",
+        // Only the audio runtime's header classifier tags a GGUF text-to-audio.
+        taskFromGgufArch: gguf?.task === "text-to-audio" ? true : undefined,
+        tags: cached?.tags,
+        libraryName: cached?.library_name,
+      }) &&
+      !macMlxSttRowIsRunnable({
+        isMac,
+        isStt: pickedTask === "automatic-speech-recognition",
+        isGguf,
+        libraryName: cached?.library_name,
+      })
+    ) {
+      // Loading here would evict the chat model for a repo neither surface can run.
+      toast.error(
+        `${id} is not an audio model Unsloth can run yet. The Audio page lists the families it supports.`,
+        { duration: 7000 },
+      );
+      setPending(null);
+      return true;
+    }
+    setPending(null);
+    setOpen(false);
+    void navigate({
+      to: `/${page}`,
+      search:
+        page === "audio"
+          ? audioPickSearch(id, { ...meta, task: pickedTask })
+          : diffusionRouteSearch(id, meta),
+    });
+    return true;
+  };
 
   // Re-read per opening and inventory change; a failed read keeps the last list.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new inventory is the trigger, not an input.
@@ -1767,12 +1945,13 @@ export function ComposerModelPicker({
       wanted.map(async (row) => {
         const target = quantTarget(row);
         if (!target) {
-          return [row.key, [] as GgufVariantDetail[]] as const;
+          return [row.key, [] as GgufVariantDetail[], NO_QUANTS] as const;
         }
         try {
-          return [row.key, (await rowQuants(target)).quants] as const;
+          const { quants: list, partials } = await rowQuants(target);
+          return [row.key, list, partials] as const;
         } catch {
-          return [row.key, null] as const;
+          return [row.key, null, null] as const;
         }
       }),
     ).then((found) => {
@@ -1789,6 +1968,17 @@ export function ComposerModelPicker({
             next.set(key, list);
           } else if (!next.has(key)) {
             next.set(key, []);
+          }
+        }
+        return next;
+      });
+      setDevicePartials((prev) => {
+        const next = new Map(prev);
+        for (const [key, , partials] of found) {
+          if (partials?.length) {
+            next.set(key, partials);
+          } else if (partials) {
+            next.delete(key);
           }
         }
         return next;
@@ -1811,7 +2001,8 @@ export function ComposerModelPicker({
     const out: SourceTab[] = [];
     const seen = new Set<string>();
     for (const row of rows) {
-      const maker = row.groups ? rowMaker(row) : null;
+      const maker =
+        row.groups && row.kind !== "external" ? rowMaker(row) : null;
       if (!maker || seen.has(maker.id)) {
         continue;
       }
@@ -1856,6 +2047,15 @@ export function ComposerModelPicker({
         label: "On Device",
         icon: glyph(Download01Icon, "scale-[1.15]"),
       },
+      ...((externalModels?.length ?? 0) > 0
+        ? [
+            {
+              value: CONNECTED_TAB,
+              label: "Connected models",
+              icon: glyph(CloudIcon, "scale-[1.1]"),
+            },
+          ]
+        : []),
       ...makerTabs,
     ];
     const seen = new Set<string>();
@@ -1949,8 +2149,17 @@ export function ComposerModelPicker({
   const [deviceSort, setDeviceSort] = useState<DeviceSort>("recent");
   const [deviceSortDesc, setDeviceSortDesc] = useState(DEVICE_SORT_DESC.recent);
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const [connectedSort, setConnectedSort] = useState<ConnectedSort>("provider");
+  const [connectedModality, setConnectedModality] =
+    useState<ConnectedModality>("all");
+  // A provider catalogue arrives after first paint and decides most of the marks.
+  const catalogVersion = useSyncExternalStore(
+    subscribeModelCatalog,
+    modelCatalogVersion,
+  );
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `catalogVersion` re-reads marks a provider sync writes later.
   const foundRows = useMemo(() => {
     // Discover rows are the Hub's answer to this very query ("google" finds unsloth/gemma-*).
     const hubAnswered =
@@ -1965,14 +2174,43 @@ export function ComposerModelPicker({
       isFavorite,
       hubAnswered ? (row) => row.kind === "hub" : undefined,
     );
-    if (viewed === RECOMMENDED_TAB && fitOnDeviceOnly) {
+    if (viewed === RECOMMENDED_TAB) {
       return found.filter((row) => {
-        if (row.kind !== "hub" || row.onDevice || row.id === chosenId) {
+        if (!matchesFormat(row, formatFilter)) {
+          return false;
+        }
+        if (
+          !fitOnDeviceOnly ||
+          row.kind !== "hub" ||
+          row.onDevice ||
+          row.id === chosenId
+        ) {
           return true;
         }
         const fit = hubFit.get(row.id.toLowerCase());
         return !isOverBudget(fit) || (fit === "ram" && noGpu);
       });
+    }
+    if (viewed === CONNECTED_TAB) {
+      const shown =
+        connectedModality === "all"
+          ? found
+          : found.filter((row) => {
+              const parsed = parseExternalModelId(row.id);
+              const provider = providers.find(
+                (p) => p.id === parsed?.providerId,
+              );
+              const marks = connectedModelMarks({
+                providerType: row.providerType,
+                modelId: parsed?.modelId ?? row.label,
+                baseUrl: provider?.baseUrl ?? null,
+                apiType: provider?.apiType,
+              });
+              return connectedModality === "vision"
+                ? marks.vision
+                : marks.capabilities[connectedModality];
+            });
+      return sortConnectedRows(shown, connectedSort);
     }
     if (viewed !== DEVICE_TAB) {
       return found;
@@ -1998,12 +2236,16 @@ export function ComposerModelPicker({
     hubFit,
     noGpu,
     chosenId,
+    connectedSort,
+    connectedModality,
+    providers,
+    catalogVersion,
   ]);
   const [collapsedSections, setCollapsedSections] = useState<
     ReadonlySet<string>
   >(() => new Set());
-  const sectionKey = (section: ListSection) => `${viewed}:${section}`;
-  const toggleSection = (section: ListSection) => {
+  const sectionKey = (section: string) => `${viewed}:${section}`;
+  const toggleSection = (section: string) => {
     const key = sectionKey(section);
     setCollapsedSections((prev) => {
       const next = new Set(prev);
@@ -2055,6 +2297,12 @@ export function ComposerModelPicker({
           !(row.section && collapsedSections.has(`${viewed}:${row.section}`)),
       );
     }
+    if (viewed === CONNECTED_TAB && connectedSort === "provider") {
+      // Each connection folds under its own heading.
+      return found.filter(
+        (row) => !collapsedSections.has(`${viewed}:${row.tab}`),
+      );
+    }
     if (viewed !== FAVORITES_TAB) {
       return found;
     }
@@ -2073,6 +2321,7 @@ export function ComposerModelPicker({
     listSections,
     collapsedSections,
     foundRows,
+    connectedSort,
   ]);
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
@@ -2163,12 +2412,33 @@ export function ComposerModelPicker({
             !isExternalModelId(checkpoint) &&
             source?.loaded !== false),
       );
+  // A Compare pane ejects nothing, and the API page only once its load has settled.
+  const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
     source?.eject(row.loadedId ?? row.id);
   };
 
   const handOff = (row: Row) => {
     openModelCard(row);
+  };
+
+  // A Discover repo already on disk loads its cached copy; without isDownloaded the pick is staged
+  // as a download.
+  const wholeHubMeta = (row: Row): ModelSelectorChangeMeta => {
+    const id = row.id.toLowerCase();
+    const device = row.onDevice
+      ? rows.find(
+          (r) => r.kind === "cached" && !r.partial && r.id.toLowerCase() === id,
+        )
+      : undefined;
+    return device
+      ? cachedMeta(device)
+      : {
+          source: "hub",
+          isLora: false,
+          isGguf: false,
+          isDownloaded: Boolean(row.onDevice),
+        };
   };
 
   // A pick supersedes any still resolving its quant.
@@ -2254,7 +2524,7 @@ export function ComposerModelPicker({
       if (row.id !== chosen?.id) {
         setPending(row);
       }
-      source.onPick(row.id, { source: "hub", isLora: false, isGguf: false });
+      source.onPick(row.id, wholeHubMeta(row));
       resetView();
     };
     try {
@@ -2264,6 +2534,9 @@ export function ComposerModelPicker({
         mlx,
         hasVision,
       } = await rowQuants(target, abort.signal);
+      if (abort.signal.aborted) {
+        return;
+      }
       if (mlxRepo && !(mlx && list.length > 0)) {
         pickWhole();
         return;
@@ -2313,6 +2586,14 @@ export function ComposerModelPicker({
     }
   };
   useEffect(() => () => offerAbort.current?.abort(), []);
+  // A listing still in flight when the picker closes or the tab changes must not pick its lone
+  // quant: that would start a download the user walked away from.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `open` and `viewed` are the triggers.
+  useEffect(() => {
+    offerAbort.current?.abort();
+    offerAbort.current = null;
+    setOffer((now) => (now && now.quants === null ? null : now));
+  }, [open, viewed]);
 
   const pickOfferQuant = (
     row: Row,
@@ -2417,7 +2698,10 @@ export function ComposerModelPicker({
       try {
         await pickQuantRow(row, target, seq);
       } catch {
-        if (row.kind === "cached" && pickSeq.current === seq) {
+        if (pickSeq.current !== seq) {
+          return;
+        }
+        if (row.kind === "cached") {
           source.onPick(row.id, cachedMeta(row));
           resetView();
         } else {
@@ -2425,9 +2709,12 @@ export function ComposerModelPicker({
         }
         return;
       } finally {
-        setResolving(null);
+        setResolving((now) => (now === row.key ? null : now));
       }
-      resetView();
+      // A newer pick owns the view now.
+      if (pickSeq.current === seq) {
+        resetView();
+      }
       return;
     }
     if (row.id !== chosen?.id) {
@@ -2442,7 +2729,7 @@ export function ComposerModelPicker({
     } else if (row.kind === "loaded") {
       source.onPick(row.id, residentMeta(row));
     } else if (row.kind === "hub") {
-      source.onPick(row.id, { source: "hub", isLora: false, isGguf: false });
+      source.onPick(row.id, wholeHubMeta(row));
     }
     resetView();
   };
@@ -2492,6 +2779,7 @@ export function ComposerModelPicker({
 
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [openSide, setOpenSide] = useState(side);
+  const [alignOffset, setAlignOffset] = useState(0);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
@@ -2502,12 +2790,16 @@ export function ComposerModelPicker({
     setConfigTarget(null);
     if (open) {
       // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
-      setOpenSide(
-        pickerSide(
-          side,
-          triggerRef.current?.getBoundingClientRect() ?? null,
-          window.innerHeight,
-        ),
+      const trigger = triggerRef.current;
+      const rect = trigger?.getBoundingClientRect() ?? null;
+      setOpenSide(pickerSide(side, rect, window.innerHeight));
+      const scale = trigger
+        ? Number.parseFloat(
+            getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
+          ) || 1
+        : 1;
+      setAlignOffset(
+        pickerAlignOffset(align, rect, PICKER_WIDTH * scale, window.innerWidth),
       );
       resetView();
       setActive(0);
@@ -2562,11 +2854,46 @@ export function ComposerModelPicker({
       ?.scrollIntoView({ block: "nearest" });
   }, [active, isExpanded]);
 
+  // Rows and the quants open under them, in list order: arrows walk both, so a quant is reachable
+  // without tabbing past every row's actions.
+  const navNeighbour = (from: Element | null | undefined, dir: 1 | -1) => {
+    const items = Array.from(
+      listRef.current?.querySelectorAll<HTMLElement>(
+        "[data-row-index], [data-quant-option]",
+      ) ?? [],
+    );
+    const at = from ? items.indexOf(from as HTMLElement) : -1;
+    return at < 0 ? undefined : items[at + dir];
+  };
+  /** Moves from a focused row or quant; a row hands focus back to the search field. */
+  const navFrom = (from: HTMLElement, dir: 1 | -1) => {
+    const next = navNeighbour(from, dir);
+    if (!next) {
+      return;
+    }
+    const rowIndex = next.dataset.rowIndex;
+    if (rowIndex === undefined) {
+      next.focus();
+      return;
+    }
+    setActive(Number(rowIndex));
+    setHighlight(true);
+    (searchRef.current ?? next).focus();
+  };
+
   // Through a ref: a key pressed before the search commits runs after the re-render.
   const navKeyRef = useRef<(key: NavKey) => void>(() => undefined);
   navKeyRef.current = (key) => {
     if (key === "ArrowDown" || key === "ArrowUp") {
       if (highlightRef.current) {
+        const quant = navNeighbour(
+          listRef.current?.querySelector(`[data-row-index="${active}"]`),
+          key === "ArrowDown" ? 1 : -1,
+        );
+        if (quant && quant.dataset.rowIndex === undefined) {
+          quant.focus();
+          return;
+        }
         setActive((i) =>
           key === "ArrowDown"
             ? Math.min(shownRows.length - 1, i + 1)
@@ -2617,6 +2944,12 @@ export function ComposerModelPicker({
       return {
         title: "No favorites yet",
         hint: "Star a model to keep it here.",
+      };
+    }
+    if (viewed === CONNECTED_TAB && connectedModality !== "all") {
+      return {
+        title: "No models found",
+        hint: `No connected model offers ${CONNECTED_MODALITY_LABEL[connectedModality].toLowerCase()}.`,
       };
     }
     if (viewed === DEVICE_TAB) {
@@ -2927,7 +3260,7 @@ export function ComposerModelPicker({
         title: `Delete ${row.label}?`,
         description: "This removes the model's NPU files from this device.",
         successMessage: `Deleted ${row.label}`,
-        disabled: row.loaded,
+        disabled: row.loaded || source?.deleteDisabled,
         onConfirm: () => npuCatalog.remove(npu),
       };
     }
@@ -2947,7 +3280,7 @@ export function ComposerModelPicker({
         </>
       ),
       successMessage: `Deleted ${repo.repo_id}`,
-      disabled: row.loaded,
+      disabled: row.loaded || source?.deleteDisabled,
       onConfirm: async () => {
         await deleteCachedModel(
           repo.repo_id,
@@ -2985,6 +3318,19 @@ export function ComposerModelPicker({
     const onDisk = deviceQuants.get(row.key) ?? NO_QUANTS;
     const soleQuant = onDisk.length === 1 ? onDisk[0].quant : null;
     const manyQuants = onDisk.length > 1;
+    // Known without a quant listing, so the menu can offer Reset run settings and the gear can
+    // show that settings are saved, as the header picker does.
+    const savedMeta =
+      row.kind === "gguf" && onDisk.length === 1
+        ? ggufMeta(row, onDisk[0], true, true, row.gguf?.has_vision)
+        : row.kind === "cached" && onDisk.length === 0 && !row.partial
+          ? cachedMeta(row)
+          : row.kind === "local" && row.lora
+            ? loraMeta(row.lora)
+            : null;
+    const savedTarget = savedMeta
+      ? modelConfigTarget(row.id, savedMeta, row.label)
+      : undefined;
     // `foldedQuants` holds the rows toggled away from the "Expand quantizations" setting.
     const quantsOpen =
       manyQuants && expandQuantizations !== foldedQuants.has(row.key);
@@ -3051,15 +3397,10 @@ export function ComposerModelPicker({
               }
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
-                const next = index + (event.key === "ArrowDown" ? 1 : -1);
-                const el = listRef.current?.querySelector<HTMLElement>(
-                  `[data-row-index="${next}"]`,
+                navFrom(
+                  event.currentTarget,
+                  event.key === "ArrowDown" ? 1 : -1,
                 );
-                if (el) {
-                  el.focus();
-                  setActive(next);
-                  setHighlight(true);
-                }
               }
             }}
             className={cn(
@@ -3094,7 +3435,10 @@ export function ComposerModelPicker({
                 />
               ) : null}
               {row.loaded ? (
-                <LoadedDot label={row.label} onEject={() => eject(row)} />
+                <LoadedDot
+                  label={row.label}
+                  onEject={canEject ? () => eject(row) : undefined}
+                />
               ) : row.kind === "hub" && row.onDevice ? (
                 <Hint label="On device">
                   <span
@@ -3107,6 +3451,13 @@ export function ComposerModelPicker({
                 </Hint>
               ) : null}
             </span>
+            {row.media ? (
+              <StatusTag
+                tone="accent"
+                label="Audio"
+                hint="Opens on the Audio page"
+              />
+            ) : null}
             {row.partial ? (
               <AmberTag
                 label="Partial"
@@ -3191,7 +3542,7 @@ export function ComposerModelPicker({
                         : undefined
                     }
                     items={[
-                      ...(row.loaded
+                      ...(row.loaded && canEject
                         ? [
                             {
                               key: "eject",
@@ -3238,6 +3589,7 @@ export function ComposerModelPicker({
                         : []),
                     ]}
                     del={deleteFor(row)}
+                    runSettings={savedTarget}
                     buttonClassName={cn(ACTION_DOTS, actionClass)}
                     iconClassName="composer-row-dots"
                     contentClassName="composer-row-menu"
@@ -3245,6 +3597,7 @@ export function ComposerModelPicker({
                   <ModelLoadSettingsAction
                     ariaLabel={`Run settings for ${row.label}`}
                     tooltip="Load settings"
+                    savedFor={savedTarget}
                     onConfigure={() => openSettings(row)}
                     className={cn(ACTION_ROUND, actionClass)}
                     iconClassName="composer-row-icon"
@@ -3358,6 +3711,23 @@ export function ComposerModelPicker({
           className="mt-0.5 mr-3 mb-1.5 ml-[calc(40px*var(--ui-space-scale,1))] w-auto shrink-0"
         />
       ) : null;
+    // On Device only: Discover's own offer already lists a partial quant.
+    const partials =
+      row.tab === DEVICE_TAB && !row.partial && viewed !== RECOMMENDED_TAB
+        ? (devicePartials.get(row.key) ?? NO_QUANTS)
+        : NO_QUANTS;
+    const quantList = offerOpen ? (
+      renderOffer(row)
+    ) : quantsOpen || partials.length > 0 ? (
+      <Fragment key={`quants:${row.key}`}>
+        {quantsOpen ? renderDeviceQuants(row, onDisk) : null}
+        {quantsOpen || !manyQuants
+          ? partials.length > 0
+            ? renderPartialQuants(row, partials)
+            : null
+          : null}
+      </Fragment>
+    ) : null;
     const favoriteKey =
       viewed === FAVORITES_TAB && !query ? favoriteKeyOf(row) : null;
     if (favoriteKey) {
@@ -3378,26 +3748,18 @@ export function ComposerModelPicker({
         >
           {rowEl}
           {memoryBar}
-          {offerOpen
-            ? renderOffer(row)
-            : quantsOpen
-              ? renderDeviceQuants(row, onDisk)
-              : null}
+          {quantList}
         </div>
       );
     }
-    if (!(offerOpen || quantsOpen || memoryBar)) {
+    if (!(quantList || memoryBar)) {
       return rowEl;
     }
     return (
       <Fragment key={row.key}>
         {rowEl}
         {memoryBar}
-        {offerOpen
-          ? renderOffer(row)
-          : quantsOpen
-            ? renderDeviceQuants(row, onDisk)
-            : null}
+        {quantList}
       </Fragment>
     );
   };
@@ -3416,9 +3778,15 @@ export function ComposerModelPicker({
     const button = ACTION_ROUND;
     const reveal =
       "opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100";
+    const quantConfigTarget = modelConfigTarget(
+      row.id,
+      ggufMeta(row, variant, onDisk, isGguf, hasVision),
+      row.label,
+    );
     return (
       <span className="flex shrink-0 items-center">
-        {onDisk && (row.gguf || exportedGguf) ? (
+        {(onDisk && (row.gguf || exportedGguf)) ||
+        (variant.partial === true && row.gguf && row.tab === DEVICE_TAB) ? (
           <ModelRowMenu
             ariaLabel={`More options for ${row.label} ${variant.quant}`}
             cachePath={
@@ -3426,6 +3794,7 @@ export function ComposerModelPicker({
             }
             update={updateFor(row, variant)}
             del={deleteQuantFor(row, variant)}
+            runSettings={quantConfigTarget}
             buttonClassName={cn(ACTION_DOTS, reveal)}
             iconClassName="composer-row-dots"
             contentClassName="composer-row-menu"
@@ -3434,15 +3803,8 @@ export function ComposerModelPicker({
         <ModelLoadSettingsAction
           ariaLabel={`Run settings for ${row.label} ${variant.quant}`}
           tooltip="Load settings"
-          onConfigure={() => {
-            openConfig(
-              modelConfigTarget(
-                row.id,
-                ggufMeta(row, variant, onDisk, isGguf, hasVision),
-                row.label,
-              ),
-            );
-          }}
+          savedFor={quantConfigTarget}
+          onConfigure={() => openConfig(quantConfigTarget)}
           className={cn(button, reveal)}
           iconClassName="composer-row-icon"
         />
@@ -3492,12 +3854,19 @@ export function ComposerModelPicker({
     return (
       <div
         key={variant.filename || variant.quant}
-        className="group/row flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center rounded-full pr-[calc(6px*var(--ui-space-scale,1))] transition-colors hover:bg-sidebar-accent"
+        className="group/row flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center rounded-full pr-[calc(6px*var(--ui-space-scale,1))] transition-colors hover:bg-sidebar-accent has-[[data-quant-option]:focus-visible]:bg-sidebar-accent"
       >
         <button
           type="button"
           data-model-picker-option=""
+          data-quant-option=""
           onClick={onPick}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              navFrom(event.currentTarget, event.key === "ArrowDown" ? 1 : -1);
+            }
+          }}
           className="flex h-full min-w-0 flex-1 items-center gap-2 pr-2 pl-[calc(40px*var(--ui-space-scale,1))] text-left"
         >
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -3526,6 +3895,20 @@ export function ComposerModelPicker({
       </div>
     );
   };
+
+  /** An interrupted quant beside loadable ones: picking it resumes the download, its menu deletes it. */
+  const renderPartialQuants = (row: Row, list: GgufVariantDetail[]) => (
+    <div className="flex shrink-0 flex-col">
+      {list.map((variant) =>
+        renderQuantRow(variant, {
+          loaded: false,
+          recommended: false,
+          onPick: () => pickOfferQuant(row, variant),
+          actions: renderQuantActions(row, variant, false),
+        }),
+      )}
+    </div>
+  );
 
   const renderDeviceQuants = (row: Row, list: GgufVariantDetail[]) => {
     const loadedQuant = (
@@ -3672,7 +4055,24 @@ export function ComposerModelPicker({
     );
   };
 
+  // Until the device inventory or the Hub answers, an empty list is unknown, not "no models".
+  const listLoading =
+    viewed === RECOMMENDED_TAB
+      ? online && (hubSearch.isLoading || query.trim() !== hubQuery)
+      : !(viewed.startsWith(EXT_PREFIX) || inventory.cachedReady);
   const renderEmpty = () => {
+    if (listLoading) {
+      return (
+        <div
+          key="empty"
+          aria-live="polite"
+          className="flex items-center justify-center gap-2 px-4 py-8 text-ui-13 text-muted-foreground"
+        >
+          <Spinner className="size-[calc(14px*var(--ui-space-scale,1))]" />
+          Loading models
+        </div>
+      );
+    }
     const copy = emptyCopy();
     return (
       <div
@@ -3726,7 +4126,64 @@ export function ComposerModelPicker({
     ));
   };
 
+  const renderConnectedGroups = () => {
+    const out: ReactNode[] = [];
+    const indexOf = new Map(shownRows.map((row, i) => [row.key, i]));
+    let group: string | null = null;
+    for (const row of foundRows) {
+      if (row.tab !== group) {
+        group = row.tab;
+        const providerId = row.tab.slice(EXT_PREFIX.length);
+        const name = row.providerName ?? "Connection";
+        out.push(
+          <SectionHeader
+            key={`section:${row.tab}`}
+            section={row.tab}
+            label={name}
+            divider={out.length > 0}
+            collapsed={collapsedSections.has(sectionKey(row.tab))}
+            onToggle={() => toggleSection(row.tab)}
+            trailing={
+              <Hint label="Connection settings">
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label={`Open ${name} connection settings`}
+                  onClick={() => {
+                    setOpen(false);
+                    useSettingsDialogStore
+                      .getState()
+                      .openConnectionSettings(providerId);
+                  }}
+                  className="grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={Settings02Icon}
+                    strokeWidth={1.75}
+                    className="size-3"
+                  />
+                </button>
+              </Hint>
+            }
+          />,
+        );
+      }
+      const index = indexOf.get(row.key);
+      if (index !== undefined) {
+        out.push(renderRow(row, index));
+      }
+    }
+    return out;
+  };
+
   const renderSections = () => {
+    if (
+      viewed === CONNECTED_TAB &&
+      connectedSort === "provider" &&
+      foundRows.length > 0
+    ) {
+      return renderConnectedGroups();
+    }
     if (listSections.length === 0) {
       return shownRows.length === 0 ? renderEmpty() : shownRows.map(renderRow);
     }
@@ -3776,6 +4233,36 @@ export function ComposerModelPicker({
     return out;
   };
 
+  // Shared by the On Device and Discover menus, as the header picker shares one format filter.
+  const formatGroup = (
+    <>
+      <DropdownMenuLabel className={MENU_LABEL}>Format</DropdownMenuLabel>
+      <DropdownMenuRadioGroup
+        value={formatFilter}
+        onValueChange={(next) => setFormatFilter(next as FormatFilter)}
+      >
+        {(Object.keys(FORMAT_FILTER_LABEL) as FormatFilter[])
+          .filter((key) => key !== "npu" || npuCatalog !== null)
+          .map((key) => (
+            <DropdownMenuRadioItem
+              key={key}
+              value={key}
+              className={cn(MENU_ITEM, "gap-1.5")}
+            >
+              {FORMAT_DOT[key] ? (
+                <span
+                  className={cn(
+                    "size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full",
+                    FORMAT_DOT[key],
+                  )}
+                />
+              ) : null}
+              {FORMAT_FILTER_LABEL[key]}
+            </DropdownMenuRadioItem>
+          ))}
+      </DropdownMenuRadioGroup>
+    </>
+  );
   const viewedTab = tabs.find((t) => t.value === viewed);
   // Only when the tab changes, so a sideways scroll of the user's own is left alone.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `viewed` is the trigger; the DOM holds the selection.
@@ -3803,7 +4290,7 @@ export function ComposerModelPicker({
                     "composer-model-chip-empty",
                 )}
                 data-pill-label={chipLabel}
-                data-tour="chat-model-selector"
+                data-tour={pane ? undefined : "chat-model-selector"}
                 aria-label={`Model: ${chipLabel}${reasoningChip ? `, ${reasoningChip}` : ""}`}
               >
                 {modelLoading || pending ? (
@@ -3871,7 +4358,7 @@ export function ComposerModelPicker({
                 "composer-model-chip-empty",
             )}
             data-pill-label={chipLabel}
-            data-tour="chat-model-selector"
+            data-tour={pane ? undefined : "chat-model-selector"}
             aria-label={`Model: ${chipLabel}${reasoningChip ? `, ${reasoningChip}` : ""}`}
           >
             {modelLoading || pending ? (
@@ -3930,6 +4417,7 @@ export function ComposerModelPicker({
         avoidCollisions={false}
         collisionPadding={PICKER_EDGE}
         align={align}
+        alignOffset={alignOffset}
         sideOffset={8}
         data-composer-model-picker=""
         data-tour="chat-model-selector-popover"
@@ -4054,7 +4542,9 @@ export function ComposerModelPicker({
                     if (ejectsAll) {
                       source?.ejectAll();
                     } else if (!chosenLoaded && loadedModels[0]) {
-                      source?.eject(loadedModels[0].id);
+                      source?.eject(
+                        loadedModels[0].checkpoint ?? loadedModels[0].id,
+                      );
                     } else if (chosen) {
                       eject(chosen);
                     } else {
@@ -4110,7 +4600,9 @@ export function ComposerModelPicker({
                       ? "Search favorited models"
                       : viewed === DEVICE_TAB
                         ? "Search on device models"
-                        : `Search ${viewedTab?.label ?? ""} models`
+                        : viewed === CONNECTED_TAB
+                          ? "Search connected models"
+                          : `Search ${viewedTab?.label ?? ""} models`
                 }
                 aria-label="Search models"
                 aria-controls="composer-model-picker-list"
@@ -4200,35 +4692,136 @@ export function ComposerModelPicker({
                     )}
                   </DropdownMenuRadioGroup>
                   <DropdownMenuSeparator />
+                  {formatGroup}
+                </NonModalDropdownMenu>
+              ) : null}
+              {viewed === CONNECTED_TAB ? (
+                <NonModalDropdownMenu
+                  align="end"
+                  className="composer-filter-menu w-auto min-w-[calc(140px*var(--ui-space-scale,1))]"
+                  trigger={(ref) => (
+                    <button
+                      ref={ref}
+                      type="button"
+                      aria-label={`Sort and filter: ${CONNECTED_SORT_LABEL[connectedSort]}, ${CONNECTED_MODALITY_LABEL[connectedModality]}`}
+                      className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent"
+                    >
+                      <HugeiconsIcon
+                        icon={FilterMailIcon}
+                        strokeWidth={1.75}
+                        className="size-4 -translate-y-[0.5px]"
+                      />
+                      {connectedModality !== "all" ? (
+                        <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
+                      ) : null}
+                    </button>
+                  )}
+                >
                   <DropdownMenuLabel className={MENU_LABEL}>
-                    Format
+                    Sort
                   </DropdownMenuLabel>
                   <DropdownMenuRadioGroup
-                    value={formatFilter}
+                    value={connectedSort}
                     onValueChange={(next) =>
-                      setFormatFilter(next as FormatFilter)
+                      setConnectedSort(next as ConnectedSort)
                     }
                   >
-                    {(Object.keys(FORMAT_FILTER_LABEL) as FormatFilter[])
-                      .filter((key) => key !== "npu" || npuCatalog !== null)
-                      .map((key) => (
+                    {(Object.keys(CONNECTED_SORT_LABEL) as ConnectedSort[]).map(
+                      (key) => (
                         <DropdownMenuRadioItem
                           key={key}
                           value={key}
-                          className={cn(MENU_ITEM, "gap-1.5")}
+                          className={MENU_ITEM}
                         >
-                          {FORMAT_DOT[key] ? (
-                            <span
-                              className={cn(
-                                "size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full",
-                                FORMAT_DOT[key],
-                              )}
-                            />
-                          ) : null}
-                          {FORMAT_FILTER_LABEL[key]}
+                          {CONNECTED_SORT_LABEL[key]}
                         </DropdownMenuRadioItem>
-                      ))}
+                      ),
+                    )}
                   </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className={MENU_LABEL}>
+                    Modality
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={connectedModality}
+                    onValueChange={(next) =>
+                      setConnectedModality(next as ConnectedModality)
+                    }
+                  >
+                    {(
+                      Object.keys(
+                        CONNECTED_MODALITY_LABEL,
+                      ) as ConnectedModality[]
+                    ).map((key) => (
+                      <DropdownMenuRadioItem
+                        key={key}
+                        value={key}
+                        className={MENU_ITEM}
+                      >
+                        {CONNECTED_MODALITY_LABEL[key]}
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </NonModalDropdownMenu>
+              ) : null}
+              {viewed === RECOMMENDED_TAB ? (
+                <NonModalDropdownMenu
+                  align="end"
+                  className="composer-filter-menu w-auto min-w-[calc(140px*var(--ui-space-scale,1))]"
+                  trigger={(ref) => (
+                    <button
+                      ref={ref}
+                      type="button"
+                      aria-label={`Filter: ${FORMAT_FILTER_LABEL[formatFilter]}${fitOnDeviceOnly ? ", only models that fit" : ""}`}
+                      className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent"
+                    >
+                      <HugeiconsIcon
+                        icon={FilterMailIcon}
+                        strokeWidth={1.75}
+                        className="size-4 -translate-y-[0.5px]"
+                      />
+                      {fitOnDeviceOnly || formatFilter !== "all" ? (
+                        <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
+                      ) : null}
+                    </button>
+                  )}
+                >
+                  {formatGroup}
+                  <DropdownMenuSeparator />
+                  <Hint
+                    label="Hides models larger than this device's memory budget. Downloaded models stay visible."
+                    side="left"
+                  >
+                    <DropdownMenuItem
+                      role="menuitemcheckbox"
+                      aria-checked={fitOnDeviceOnly}
+                      onSelect={(event) => {
+                        event.preventDefault();
+                        setFitOnDeviceOnly(!fitOnDeviceOnly);
+                      }}
+                      className={cn(MENU_ITEM, "gap-1.5 pr-2.5 pl-1.5")}
+                    >
+                      <span
+                        aria-hidden={true}
+                        className={cn(
+                          "grid size-[calc(11px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full border",
+                          fitOnDeviceOnly
+                            ? "border-primary bg-primary !text-primary-foreground"
+                            : "border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)]",
+                        )}
+                      >
+                        {fitOnDeviceOnly ? (
+                          <HugeiconsIcon
+                            icon={Tick02Icon}
+                            strokeWidth={2.5}
+                            // !, on every element: the menu item's hover rule recolours each descendant.
+                            className="size-2 !text-primary-foreground [&_*]:!text-primary-foreground"
+                          />
+                        ) : null}
+                      </span>
+                      Only show models that fit
+                    </DropdownMenuItem>
+                  </Hint>
                 </NonModalDropdownMenu>
               ) : null}
               {source && connectionId ? (
@@ -4251,7 +4844,10 @@ export function ComposerModelPicker({
                     />
                   </button>
                 </Hint>
-              ) : source && viewed !== DEVICE_TAB ? (
+              ) : source &&
+                viewed !== DEVICE_TAB &&
+                viewed !== RECOMMENDED_TAB &&
+                viewed !== CONNECTED_TAB ? (
                 <Hint label="Model hub">
                   <button
                     type="button"
@@ -4260,12 +4856,7 @@ export function ComposerModelPicker({
                       setOpen(false);
                       void navigate({
                         to: "/hub",
-                        search: {
-                          tab:
-                            viewed === RECOMMENDED_TAB
-                              ? "discover"
-                              : "downloaded",
-                        },
+                        search: { tab: "downloaded" },
                       });
                     }}
                     className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"

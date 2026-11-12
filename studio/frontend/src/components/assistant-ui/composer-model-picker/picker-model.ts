@@ -176,6 +176,33 @@ export function sortDeviceRows<T extends PickerRow>(
   return desc === DEVICE_SORT_DESC[key] ? sorted : sorted.reverse();
 }
 
+export type ConnectedSort = "provider" | "name";
+export const CONNECTED_SORT_LABEL: Record<ConnectedSort, string> = {
+  provider: "Connection",
+  name: "Name",
+};
+// No Audio: connected models never take audio attachments.
+export type ConnectedModality = "all" | "vision" | "imageGen";
+export const CONNECTED_MODALITY_LABEL: Record<ConnectedModality, string> = {
+  all: "All",
+  vision: "Vision",
+  imageGen: "Image gen",
+};
+
+/** By connection (each one's models by name), or by name across every connection. */
+export function sortConnectedRows<T extends PickerRow>(
+  rows: readonly T[],
+  key: ConnectedSort,
+): T[] {
+  return [...rows].sort(
+    (a, b) =>
+      (key === "provider"
+        ? (a.providerName ?? "").localeCompare(b.providerName ?? "") ||
+          a.tab.localeCompare(b.tab)
+        : 0) || a.label.localeCompare(b.label),
+  );
+}
+
 const norm = (value: string | null | undefined): string =>
   (value ?? "").trim().toLowerCase();
 
@@ -364,6 +391,29 @@ export function pickerSide(
     return below >= PICKER_MIN_ROOM ? "bottom" : "top";
   }
   return above < PICKER_MIN_ROOM && below > above ? "bottom" : "top";
+}
+
+/** Radix `alignOffset` that slides the panel back inside the window on a narrow screen: the side is
+ * fixed, so Radix's own shift is off with its flip. */
+export const PICKER_WIDTH = 404;
+export function pickerAlignOffset(
+  align: "start" | "end",
+  trigger: { left: number; right: number } | null,
+  panelWidth: number,
+  viewportWidth: number,
+): number {
+  if (!trigger) {
+    return 0;
+  }
+  // PopoverContent caps its width at the window less 32px.
+  const width = Math.min(panelWidth, viewportWidth - 32);
+  const left = align === "end" ? trigger.right - width : trigger.left;
+  const clamped = Math.max(
+    PICKER_EDGE,
+    Math.min(left, viewportWidth - PICKER_EDGE - width),
+  );
+  // An end-aligned offset counts leftward.
+  return align === "end" ? left - clamped : clamped - left;
 }
 
 /** Discover falls back to the chat list only before a search has results; else rows the Hub matched

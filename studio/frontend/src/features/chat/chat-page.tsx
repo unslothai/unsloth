@@ -1543,6 +1543,16 @@ const LoraCompareContent = memo(function LoraCompareContent({
   );
 });
 
+// The picker's chip leaves with its composer (dictation, a minimized browser dock, the base view under
+// Compare): opening then would arm a popover that appears later or anchors to nothing.
+function composerModelChipShown(): boolean {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[data-chat-page-root] button[data-tour="chat-model-selector"]',
+    ),
+  ).some((chip) => chip.getClientRects().length > 0 && !chip.closest("[inert]"));
+}
+
 function GeneralCompareHeader({
   models,
   loraModels,
@@ -4327,6 +4337,7 @@ export function ChatPage({
 
   // Pinned open for tour steps so a stray click cannot dismiss it.
   const openModelSelector = useCallback(() => {
+    if (!composerModelChipShown()) return;
     setModelSelectorLocked(true);
     setModelSelectorOpen(true);
   }, []);
@@ -4338,7 +4349,7 @@ export function ChatPage({
 
   const toggleModelSelector = useCallback(() => {
     if (modelSelectorLocked) return;
-    setModelSelectorOpen((open) => !open);
+    setModelSelectorOpen((open) => !open && composerModelChipShown());
   }, [modelSelectorLocked]);
 
   const handleModelSelectorOpenChange = useCallback(
@@ -4605,7 +4616,11 @@ export function ChatPage({
       ejectAll: () => void ejectAllModels(),
       externalConnections,
       // Chat has no header picker: the shortcut, tour and Hub's Run open this one.
-      open: active && (modelSelectorOpen || modelConfigRequest !== null),
+      // Not under Compare, whose hidden base view keeps this composer mounted.
+      open:
+        active &&
+        view.mode !== "compare" &&
+        (modelSelectorOpen || modelConfigRequest !== null),
       onOpenChange: handleModelSelectorOpenChange,
       configRequest: modelConfigRequest ?? ownedConfigRequest,
       onConfigRequestAdopted: handleModelConfigRequestAdopted,
@@ -4629,6 +4644,7 @@ export function ChatPage({
       ejectAllModels,
       externalConnections,
       active,
+      view.mode,
       modelSelectorOpen,
       modelConfigRequest,
       ownedConfigRequest,

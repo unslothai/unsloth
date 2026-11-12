@@ -3467,7 +3467,7 @@ const MEDIA_PAGE_TASKS: readonly string[] = [
   ...AUDIO_GEN_TASKS,
 ];
 
-function mediaPageForTask(
+export function mediaPageForTask(
   task: string | null | undefined,
 ): "images" | "video" | "audio" | null {
   if (!task || !MEDIA_PAGE_TASKS.includes(task)) return null;

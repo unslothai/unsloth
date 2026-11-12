@@ -20,12 +20,14 @@ import {
   isChatTask,
   localSection,
   orderBySection,
+  pickerAlignOffset,
   pickerSide,
   pinCoversId,
   repoSection,
   sectionsHaveRows,
   sliderLevels,
   sliderValue,
+  sortConnectedRows,
 } from "../src/components/assistant-ui/composer-model-picker/picker-model.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -214,10 +216,13 @@ test("a loaded row ejects from its dot, its menu and the collapsed view", () => 
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
+  // A Compare pane has nothing to eject, so its dot is only a mark.
+  assert.match(picker, /const canEject = !pane \|\| pane\.loaded === true;/);
   assert.match(
     picker,
-    /<LoadedDot label=\{row\.label\} onEject=\{\(\) => eject\(row\)\} \/>/,
+    /onEject=\{canEject \? \(\) => eject\(row\) : undefined\}/,
   );
+  assert.match(picker, /\.\.\.\(row\.loaded && canEject/);
   assert.match(picker, /key: "eject"/);
   assert.match(picker, /aria-label=\{`Eject \$\{chosenName\}`\}/);
   const page = readSrc("features/chat/chat-page.tsx");
@@ -250,7 +255,7 @@ test("Run settings open inside the composer picker, not the header picker", () =
   );
   assert.match(
     page,
-    /open: active && \(modelSelectorOpen \|\| modelConfigRequest !== null\)/,
+    /open:\s+active &&\s+view\.mode !== "compare" &&\s+\(modelSelectorOpen \|\| modelConfigRequest !== null\)/,
   );
 });
 
@@ -589,7 +594,8 @@ test("cached MLX snapshots load whole and favorites show quant offers", () => {
   );
   // The Favorites wrapper renders an open offer as the plain list does.
   const fav = src.slice(src.indexOf("{...drag.rowProps(favoriteKey)}"));
-  assert.match(fav.slice(0, 900), /offerOpen\s+\?\s+renderOffer\(row\)/);
+  assert.match(fav.slice(0, 900), /\{quantList\}/);
+  assert.match(src, /const quantList = offerOpen \? \(\s+renderOffer\(row\)/);
 });
 
 test("Discover keeps rows the Hub search matched by maker alias", () => {
@@ -829,4 +835,114 @@ test("a folder row the scan calls GGUF lists its quants", () => {
   );
   assert.match(picker, /!lora\.isDirectGguf &&\s*\(lora\.isGguf === true \|\|/);
   assert.match(picker, /lora\.isDirectGguf \|\|\s*lora\.isGguf \|\|/);
+});
+
+test("the picker slides back inside a narrow window instead of hanging off its edge", () => {
+  // A phone: the chip ends at 295px, so a 343px end-aligned panel would start at -48px.
+  assert.equal(
+    pickerAlignOffset("end", { left: 267, right: 295 }, 404, 375),
+    -56,
+  );
+  // Compare's left pane opens rightward and would overrun the right edge.
+  assert.equal(
+    pickerAlignOffset("start", { left: 60, right: 200 }, 404, 420),
+    -36,
+  );
+  // With room, the panel stays on its trigger.
+  assert.equal(
+    pickerAlignOffset("end", { left: 900, right: 1050 }, 404, 1280),
+    0,
+  );
+  assert.equal(
+    pickerAlignOffset("start", { left: 300, right: 450 }, 404, 1280),
+    0,
+  );
+  assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
+});
+
+test("the Connected tab lists every connection's models, by connection or by name", () => {
+  const ext = (id: string, providerId: string, providerName: string) =>
+    row({
+      key: id,
+      id,
+      label: id,
+      tab: `ext:${providerId}`,
+      groups: [CONNECTED_TAB],
+      kind: "external",
+      providerName,
+    });
+  const rows = [
+    ext("gpt-5", "p2", "OpenAI"),
+    ext("claude-opus", "p1", "Anthropic"),
+    ext("claude-haiku", "p1", "Anthropic"),
+    row({ key: "device", id: "unsloth/Qwen3-4B-GGUF" }),
+  ];
+  const connected = filterRows(rows, CONNECTED_TAB, "", none);
+  assert.deepEqual(
+    sortConnectedRows(connected, "provider").map((r) => r.key),
+    ["claude-haiku", "claude-opus", "gpt-5"],
+  );
+  assert.deepEqual(
+    sortConnectedRows(connected, "name").map((r) => r.key),
+    ["claude-haiku", "claude-opus", "gpt-5"].sort(),
+  );
+  // Each connection keeps its own tab too.
+  assert.deepEqual(
+    filterRows(rows, "ext:p2", "", none).map((r) => r.key),
+    ["gpt-5"],
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /value: CONNECTED_TAB,\s+label: "Connected models"/);
+  // Right after On Device, ahead of the maker tabs.
+  assert.match(picker, /value: CONNECTED_TAB,[\s\S]{0,200}?\.\.\.makerTabs,/);
+  assert.match(picker, /Only show models that fit/);
+});
+
+test("an audio pick opens the Audio page instead of loading into Chat", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // Every pick passes the router before it reaches the page's handler.
+  assert.match(
+    picker,
+    /if \(!routeMediaPick\.current\(id, meta\)\) \{\s+rawSource\.onPick\(id, meta\);/,
+  );
+  assert.match(
+    picker,
+    /audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask \}\)/,
+  );
+  // Compare and the API page load what they pick, so they list none.
+  assert.match(picker, /const listsAudio = !pane;/);
+});
+
+test("a partial quant beside loadable ones is listed with its delete menu", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /partials: listed\.filter\(\(v\) => v\.partial === true\)/,
+  );
+  assert.match(picker, /renderPartialQuants\(row, partials\)/);
+  assert.match(
+    picker,
+    /variant\.partial === true && row\.gguf && row\.tab === DEVICE_TAB/,
+  );
+});
+
+test("Discover filters from one menu, in On Device's style", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // One format filter for both tabs, as in the header picker.
+  assert.equal((picker.match(/\{formatGroup\}/g) ?? []).length, 2);
+  // A ticked circle, as Run settings' Always load.
+  assert.match(picker, /setFitOnDeviceOnly\(!fitOnDeviceOnly\);/);
+  // The menu takes the Model hub button's place on Discover.
+  assert.match(
+    picker,
+    /viewed !== DEVICE_TAB &&\s+viewed !== RECOMMENDED_TAB &&\s+viewed !== CONNECTED_TAB \?/,
+  );
 });

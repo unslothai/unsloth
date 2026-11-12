@@ -3152,7 +3152,8 @@ def test_picker_popover_and_trigger_keep_their_tour_hooks():
     """Match tour props exactly: the trigger's value is a prefix of the popover's, so substrings mislead."""
     # Chat's picker is the composer chip now; the tour and drivers still find it by these hooks.
     composer = _read("components/assistant-ui/composer-model-picker/composer-model-picker.tsx")
-    assert composer.count('data-tour="chat-model-selector"') >= 1
+    # Only Chat's own chip: a Compare pane's would take the tour's model step.
+    assert composer.count('data-tour={pane ? undefined : "chat-model-selector"}') >= 1
     assert 'data-tour="chat-model-selector-popover"' in composer
 
 
