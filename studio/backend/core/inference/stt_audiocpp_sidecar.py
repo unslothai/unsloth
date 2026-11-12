@@ -109,6 +109,7 @@ def _moss_max_tokens(duration: Optional[float]) -> int:
     scaled = math.ceil((duration or 0.0) * _MOSS_MAX_TOKENS_PER_MINUTE / 60.0)
     return max(_MOSS_DEFAULT_MAX_TOKENS, scaled)
 
+
 # model_specs/nemotron_asr.json "languages"; the prompt dictionary also keys en/es/fr/pt/no.
 _NEMOTRON_ASR_LOCALES = (
     "ar-AR", "bg-BG", "cs-CZ", "da-DK", "de-DE", "el-GR", "en-GB", "en-US", "es-ES", "es-US",
