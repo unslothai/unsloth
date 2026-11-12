@@ -114,8 +114,10 @@ import {
   imeKeydownBlocksComposerSubmit,
   followUpSubmitIntent,
   steeringInsertionIndex,
+  parkedSendSteer,
   cancelPreStreamRunForThreadIds,
   type ComposerSendShortcut,
+  type ParkedSendSteerState,
   type ComposerSubmitIntent,
   type ComposerFollowUpBehavior,
   type ContextTruncation,
@@ -4477,6 +4479,19 @@ const Composer: FC<{
       }
     >(),
   );
+  // Both starts await settings or a read before the queue store lists them.
+  const hasPendingQueueStart = useCallback(
+    () =>
+      hasPendingPromptQueueStart(
+        promptQueueStartPendingRef.current.values(),
+        referenceThreadId,
+      ) ||
+      hasPendingPromptQueueStart(
+        pastedTextQueuePendingRef.current.values(),
+        referenceThreadId,
+      ),
+    [referenceThreadId],
+  );
   useEffect(() => {
     promptQueueTargetMountedRef.current = true;
     return () => {
@@ -5213,6 +5228,26 @@ const Composer: FC<{
     [cancelQueuedSend],
   );
 
+  // Carries out parkedSendSteer; consuming the intent makes one press cancel once.
+  const steerParkedSend = useCallback(
+    (state: Omit<ParkedSendSteerState, "behavior">) => {
+      const steer = parkedSendSteer({
+        ...state,
+        behavior: pendingFollowUpBehaviorRef.current,
+      });
+      if (!steer) return;
+      pendingFollowUpBehaviorRef.current = "queue";
+      cancelPreStreamRunForThreadIds(preStreamThreadIds);
+      if (!steer.cancelRun) return;
+      try {
+        aui.thread().cancelRun();
+      } catch {
+        // The response may have already ended; the parked send releases either way.
+      }
+    },
+    [aui, preStreamThreadIds],
+  );
+
   // A materializing image or clip parks the send; both gates share this to agree.
   const parkIfWaitingOnAttachments = useCallback(() => {
     if (
@@ -5371,21 +5406,35 @@ const Composer: FC<{
     );
     const livePreStreamRunActive =
       hasPreStreamRunReservation(preStreamThreadIds);
+    const parkedBehindResponse =
+      hasAttachments &&
+      !attachmentsAreQueueableText &&
+      (liveThreadIsRunning || livePromptQueueActive || livePreStreamRunActive);
     // pendingSendRef is authoritative because pendingSend still reflects the pre-cancel render.
     if (
       !pendingSend ||
       !pendingSendRef.current ||
       indexingActive ||
       threadScopedSettingsPending ||
-      (hasAttachments &&
-        !attachmentsAreQueueableText &&
-        (liveThreadIsRunning ||
-          livePromptQueueActive ||
-          livePreStreamRunActive)) ||
+      parkedBehindResponse ||
       hasMaterializingImageAttachments ||
       hasMaterializingAudioAttachments ||
       hasMaterializingVideoAttachments
     ) {
+      // A send parked for an upload or settings keeps its steer until that hold clears.
+      if (pendingSend && pendingSendRef.current) {
+        steerParkedSend({
+          parkedBehindResponse,
+          otherHoldActive:
+            threadScopedSettingsPending ||
+            hasMaterializingImageAttachments ||
+            hasMaterializingAudioAttachments ||
+            hasMaterializingVideoAttachments,
+          promptQueueActive: livePromptQueueActive || hasPendingQueueStart(),
+          researchActive: isResearchActive,
+          threadRunning: liveThreadIsRunning,
+        });
+      }
       return;
     }
     const { text, attachments } = aui.composer().getState();
@@ -5459,6 +5508,8 @@ const Composer: FC<{
     queueComposerText,
     queueTextAttachmentsPrompt,
     sendReservedComposer,
+    steerParkedSend,
+    hasPendingQueueStart,
     preStreamThreadIds,
     disableQueue,
     isResearchActive,
@@ -5765,14 +5816,7 @@ const Composer: FC<{
         threadIsRunning || aui.thread().getState().isRunning;
       const livePromptQueueActive =
         promptQueueActive ||
-        hasPendingPromptQueueStart(
-          promptQueueStartPendingRef.current.values(),
-          referenceThreadId,
-        ) ||
-        hasPendingPromptQueueStart(
-          pastedTextQueuePendingRef.current.values(),
-          referenceThreadId,
-        ) ||
+        hasPendingQueueStart() ||
         Boolean(
           findPromptQueueEntry(
             usePromptQueueUI.getState(),
@@ -5805,6 +5849,14 @@ const Composer: FC<{
           }
           if (canQueueAttachmentPrompt) {
             enqueueSend("running");
+            // Here too: a repeat press on an already parked send does not re-run the release effect.
+            steerParkedSend({
+              parkedBehindResponse: true,
+              otherHoldActive: false,
+              promptQueueActive: livePromptQueueActive,
+              researchActive: isResearchActive,
+              threadRunning: liveThreadIsRunning,
+            });
             return;
           }
           if (overlay || hasAttachments || hasPendingAudio) {
@@ -5916,6 +5968,8 @@ const Composer: FC<{
       setPendingImageEditReference,
       sendReservedComposer,
       shouldBlockSend,
+      steerParkedSend,
+      hasPendingQueueStart,
       threadIsRunning,
     ],
   );

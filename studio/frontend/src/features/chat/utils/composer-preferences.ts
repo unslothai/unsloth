@@ -203,3 +203,34 @@ export function steeringInsertionIndex(
   const index = Math.max(0, runIndex);
   return Math.min(items.length, index + (items[index]?.dispatched ? 1 : 0));
 }
+
+export type ParkedSendSteerState = {
+  behavior: ComposerFollowUpBehavior;
+  /** a binary attachment is held because a response, queue or pre-stream send is active. */
+  parkedBehindResponse: boolean;
+  /** an upload or the chat's settings still hold the send, so it may never go out. */
+  otherHoldActive: boolean;
+  promptQueueActive: boolean;
+  researchActive: boolean;
+  threadRunning: boolean;
+};
+
+/**
+ * A binary attachment cannot ride the prompt queue, so steering it stops the response and the
+ * parked send releases on the idle edge. Queued prompts stay ahead of it and research is never
+ * interrupted. Null keeps the send waiting; otherwise the pre-stream send is always cancelled.
+ */
+export function parkedSendSteer(
+  state: ParkedSendSteerState,
+): { cancelRun: boolean } | null {
+  if (
+    state.behavior !== "steer" ||
+    !state.parkedBehindResponse ||
+    state.otherHoldActive ||
+    state.promptQueueActive ||
+    state.researchActive
+  ) {
+    return null;
+  }
+  return { cancelRun: state.threadRunning };
+}
