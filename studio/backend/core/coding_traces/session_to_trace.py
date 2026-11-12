@@ -120,9 +120,9 @@ def _model_parts(message: dict) -> list:
     parts = message.get("content")
     if message.get("role") == "user":
         # By choice, [] (nothing typed, or a restored backup) takes the live first send: only the
-        # attachments. A reload, and so every restored [] row, sends a "\n" before them instead
-        # (toThreadMessage loads "" and chat-adapter.ts joins with "\n"). Content that is not a
-        # list never comes from a send, so it keeps that replay form.
+        # attachments. A reload, and so every restored [] row, sends a "\n" before their text
+        # instead (toThreadMessage loads "" and chat-adapter.ts joins with "\n"). Content that is
+        # not a list never comes from a send, so it keeps that replay form.
         loaded = parts if isinstance(parts, list) else [{"type": "text", "text": ""}]
         parts = _with_attachments({**message, "content": loaded})
     if not isinstance(parts, list):
@@ -209,7 +209,7 @@ def _convert_row(
     # Tool messages wait for their call group to close (serializeAssistantReplayMessages).
     pending: list[TraceMessage] = []
     pending_round = reasoned = imaged = None
-    # collectTextParts and pendingTextParts join with "\n": an empty part beside another adds one.
+    # toOpenAIMessages (user) and the flush (assistant) join text with "\n" and keep empty parts.
     pieces, texted, split = 0, None, False
     for position, part in enumerate(_model_parts(message)):
         kind = part.get("type") if isinstance(part, dict) else None
