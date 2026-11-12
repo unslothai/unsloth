@@ -236,6 +236,7 @@ export function BrowserAgentSettings() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ask">{t("browser.agentSettings.askEveryTime")}</SelectItem>
+              <SelectItem value="allow">{t("browser.agentSettings.alwaysAllow")}</SelectItem>
               <SelectItem value="never">{t("browser.agentSettings.never")}</SelectItem>
             </SelectContent>
           </Select>

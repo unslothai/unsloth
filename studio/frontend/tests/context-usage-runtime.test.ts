@@ -114,7 +114,7 @@ function harness(name = "ThreadContextUsageRecount") {
     browser: {
       enabled: false,
       historyAccess: "ask" as "ask" | "allow" | "never",
-      scriptAccess: "ask" as "ask" | "never",
+      scriptAccess: "ask" as "ask" | "allow" | "never",
     },
     browserToolSelections: [] as unknown[],
   };

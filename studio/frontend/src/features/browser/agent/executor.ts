@@ -1471,9 +1471,14 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, b
   // The document the user sees as they approve: a reload or a page at the same address is another one.
   const doc = (await pageCall(tab, { op: "status" })).doc;
   if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
-  const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, context);
-  if (refused) return { ok: false, error: refused };
-  if (signal?.aborted) return { ok: false, error: STOPPED };
+  if (useBrowserAgentStore.getState().scriptAccess !== "allow") {
+    const refused = await pass(
+      { kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" },
+      context,
+    );
+    if (refused) return { ok: false, error: refused };
+    if (signal?.aborted) return { ok: false, error: STOPPED };
+  }
   // Settings can change while the question is open.
   if (useBrowserAgentStore.getState().scriptAccess === "never") return { ok: false, error: SCRIPTS_OFF };
   const current = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <rect width="1200" height="700" fill="#0b1220"/>
+  <rect x="48" y="42" width="1104" height="616" rx="18" fill="#111b2e" stroke="#334155" stroke-width="2"/>
+  <text x="88" y="102" fill="#f8fafc" font-family="Arial, sans-serif" font-size="30" font-weight="700">Settings › Browser use</text>
+  <text x="88" y="144" fill="#94a3b8" font-family="Arial, sans-serif" font-size="20">Run scripts</text>
+  <rect x="88" y="190" width="1024" height="126" rx="12" fill="#172236"/>
+  <text x="120" y="235" fill="#e2e8f0" font-family="Arial, sans-serif" font-size="22">Run scripts</text>
+  <text x="120" y="276" fill="#94a3b8" font-family="Arial, sans-serif" font-size="17">Choose whether models can run scripts on pages.</text>
+  <rect x="840" y="218" width="220" height="52" rx="8" fill="#24344f" stroke="#64748b" stroke-width="2"/>
+  <text x="876" y="251" fill="#f8fafc" font-family="Arial, sans-serif" font-size="20">Ask every time</text>
+  <rect x="88" y="358" width="1024" height="210" rx="12" fill="#1b263b"/>
+  <text x="120" y="405" fill="#fca5a5" font-family="Arial, sans-serif" font-size="22" font-weight="700">Every browser_evaluate call pauses for approval</text>
+  <text x="120" y="449" fill="#cbd5e1" font-family="Arial, sans-serif" font-size="18">Even trusted dashboards require a script prompt before a read-only query can run.</text>
+  <text x="120" y="500" fill="#94a3b8" font-family="monospace" font-size="19">Ask every time  ·  Never</text>
+  <text x="850" y="500" fill="#fca5a5" font-family="Arial, sans-serif" font-size="19">No allow option</text>
+</svg>
