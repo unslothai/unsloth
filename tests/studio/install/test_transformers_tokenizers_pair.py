@@ -120,7 +120,6 @@ def test_the_tokenizers_bound_matches_the_pinned_transformers_release():
 
 
 def _sidecar_transformers_pins() -> dict[str, str]:
-    """TRANSFORMERS_*_VERSION literals from utils/transformers_version.py, read without importing it."""
     import ast
 
     source = (REPO_ROOT / "studio" / "backend" / "utils" / "transformers_version.py").read_text(

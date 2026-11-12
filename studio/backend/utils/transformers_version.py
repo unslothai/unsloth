@@ -2982,7 +2982,6 @@ def _ensure_venv_t5_530_exists() -> bool:
 
 
 def _ensure_venv_t5_550_exists() -> bool:
-    """Ensure .venv_t5_550/ exists with transformers TRANSFORMERS_550_VERSION."""
     return _ensure_venv_dir(
         _VENV_T5_550_DIR,
         _VENV_T5_550_PACKAGES,
@@ -2991,7 +2990,6 @@ def _ensure_venv_t5_550_exists() -> bool:
 
 
 def _ensure_venv_t5_510_exists() -> bool:
-    """Ensure .venv_t5_510/ exists with transformers TRANSFORMERS_510_VERSION."""
     return _ensure_venv_dir(
         _VENV_T5_510_DIR,
         _VENV_T5_510_PACKAGES,

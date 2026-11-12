@@ -54,7 +54,6 @@ def _write_build(
     archs = ("8.0", "8.9", "9.0a"),
     digest = True,
 ) -> Path:
-    """A fake hub build: a package whose __init__ uses a relative import, like the real ones."""
     d = root / "build" / variant
     d.mkdir(parents = True)
     files = {
@@ -78,7 +77,6 @@ def _write_build(
 
 @pytest.fixture
 def fake_hub(monkeypatch, tmp_path):
-    """Per (repo_type, revision) build roots; records every download pattern."""
     roots: dict = {}
     downloads: list = []
     variant = hub.candidate_variants(BUILD, "x86_64-linux")[0]
@@ -185,7 +183,6 @@ def test_rocm_or_cpu_torch_declines_without_network(monkeypatch):
     assert fn is None and "CUDA torch" in why
 
 
-# The order inside diffusion_attention._load_sage_hub_kernel.
 torch = pytest.importorskip("torch")
 dispatch = pytest.importorskip("diffusers.models.attention_dispatch")
 _HUB = getattr(dispatch.AttentionBackendName, "SAGE_HUB", None)
@@ -241,7 +238,6 @@ def test_kernels_get_kernel_is_the_fallback_and_both_reasons_are_kept(monkeypatc
 
 @needs_sage_hub
 def test_no_download_while_kernels_is_not_importable(monkeypatch, hub_slot):
-    # diffusers' sage_hub backend refuses to engage without kernels, so fetching the build would be wasted.
     monkeypatch.setattr(att, "_load_sage_hub_direct", lambda: pytest.fail("must not download"))
     monkeypatch.setitem(sys.modules, "kernels", None)
     fn, why = att._load_sage_hub_kernel()
