@@ -1741,8 +1741,7 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     ):
         if data.startswith(bom):
             return data.decode(codec, errors = "replace")
-    # No BOM: NULs dominating one side of every byte pair mean UTF-16 without a mark.
-    # Only ASCII-dominant text shows the pattern; dense CJK stays on the old heuristics.
+    # No BOM: NULs dominating one side of the byte pairs mean ASCII-heavy UTF-16.
     if len(data) >= 8:
         pairs = even_nulls = odd_nulls = 0
         for i in range(0, min(len(data), 1024) - 1, 2):
@@ -1760,8 +1759,7 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
             codec = "utf-16-le"
         if codec is not None:
             decoded = data.decode(codec, errors = "replace")
-            # Real text has no C0/C1 controls; a NUL-shaped binary keeps them, and
-            # falls through here so the binary guard below still sees its NULs.
+            # Real text has no C0/C1 controls; NUL-shaped binaries fall through to the binary guard.
             if _CONTROL_CHARS.search(decoded) is None:
                 return decoded
     try:

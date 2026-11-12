@@ -1305,7 +1305,7 @@ def doc(path: str) -> list[Section]:
                 offset = fc + 2 * (lo - start)
                 raw = word[offset : offset + 2 * (hi - lo)]
                 if len(raw) & 1:
-                    # A corrupt piece can end mid-character; one U+FFFD keeps the rest aligned.
+                    # Corrupt piece ending mid-character: one U+FFFD.
                     raw = raw[:-1] + b"\xfd\xff"
                 chars.append(raw.decode("utf-16-le", "surrogatepass"))
         text = "".join(chars).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")

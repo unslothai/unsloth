@@ -67,8 +67,7 @@ def test_a_utf16_source_file_without_a_byte_order_mark_is_not_mistaken_for_binar
 
 
 def test_utf16_detection_survives_an_astral_or_ideographic_character(tmp_path):
-    # An astral char or an ideographic space puts one NUL on the other side; the
-    # dominant side still wins.
+    # Astral chars and U+3000 put one NUL on the other side.
     text = "first line 😀 second line, more text follows here. 次\u3000の行\n"
     for codec in ("utf-16-le", "utf-16-be"):
         assert _text(tmp_path, f"astral_{codec}.txt", text.encode(codec)) == text
@@ -88,8 +87,7 @@ def test_a_binary_file_is_still_refused_under_a_source_extension(tmp_path):
 
 
 def test_a_nul_shaped_binary_is_still_refused_under_a_source_extension(tmp_path):
-    # A little-endian dump is NUL on every other byte; it is not text — the
-    # second shape decodes to C1 controls, which real text never contains.
+    # NUL-shaped dumps decode to C0/C1 controls, so they stay binary.
     for name, blob in (("readings.csv", b"\x01\x00" * 300), ("flags.csv", b"\x80\x00" * 300)):
         path = tmp_path / name
         path.write_bytes(blob)
