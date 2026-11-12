@@ -35,6 +35,8 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "flux.3-klein": ("--llm",),
     "flux.3-klein-base": ("--llm",),
     "krea-2": ("--llm",),
+    # The H3 Qwen3-VL-32B GGUF, vision tower included.
+    "minimax-h3-image": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
     "flux.1-kontext": ("--clip_l", "--t5xxl"),
 }
@@ -95,6 +97,8 @@ class SdCppGenParams:
     lora_apply_mode: Optional[str] = None
     # Qwen-Image-Layered layer count; sd.cpp returns layers + 1 images (first = input reconstruction). None = its default 3.
     qwen_image_layers: Optional[int] = None
+    # --rng (DiffusionFamily.sd_cpp_rng); None keeps sd.cpp's default.
+    rng: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -936,6 +940,8 @@ def build_sd_cpp_command(
         cmd += ["--scheduler", str(params.scheduler)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
+    if params.rng:
+        cmd += ["--rng", str(params.rng)]
     if params.batch_count and params.batch_count != 1:
         # The runner collects only --output, so a CLI batch drops images; use the server API.
         raise ValueError(
@@ -1111,6 +1117,7 @@ def build_sd_cpp_server_command(
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
     accelerator: Optional[str] = None,
+    rng: Optional[str] = None,
 ) -> list[str]:
     """Those dir flags all point at ``scratch_dir``, which must exist: sd-server fails on a missing dir."""
     if not files.diffusion_model:
@@ -1133,6 +1140,9 @@ def build_sd_cpp_server_command(
             cmd += [flag, value]
     if vae_format:
         cmd += ["--vae-format", vae_format]
+    # A server-wide flag: the request body has no rng field.
+    if rng:
+        cmd += ["--rng", str(rng)]
     cmd += ["--listen-ip", str(host), "--listen-port", str(int(port))]
     if scratch_dir:
         cmd += [
