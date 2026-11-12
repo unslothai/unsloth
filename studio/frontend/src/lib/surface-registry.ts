@@ -118,9 +118,8 @@ function attachRef<T>(ref: Ref<T> | undefined, value: T): () => void {
   return () => undefined;
 }
 
-/** A ref that undoes `attach` once, whether React runs the returned cleanup or a composer that
- * predates ref cleanups (use-composed-ref, inside react-textarea-autosize) drops it and calls
- * `ref(null)`; skipping that left the composer registered after every chat switch. */
+/** Undoes `attach` once, via the returned cleanup or `ref(null)`: use-composed-ref (react-textarea-autosize)
+ * drops cleanups, and ignoring its `ref(null)` leaked the composer on every chat switch. */
 function undoableRef<T>(attach: (element: T) => () => void): RefCallback<T> {
   let held: (() => void) | null = null;
   return (element: T | null) => {
