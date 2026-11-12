@@ -284,6 +284,7 @@ def test_adjacent_rows_alternate_calls_and_results():
     ]
     # A trailing source part must not open a piece that the next row merges into.
     assert (trace.messages[3].id, trace.messages[-1].reasoning) == ("a2", "r1\n\nr2")
+    assert "unsupported_part" not in _codes(trace)  # the UI drops source parts silently
 
 
 @pytest.mark.parametrize(

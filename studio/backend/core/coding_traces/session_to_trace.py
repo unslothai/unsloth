@@ -5,6 +5,9 @@
 
 The system text uses the thread's latest saved settings and the project's current instructions;
 Studio keeps no history of either, so an earlier turn may have seen different text.
+The trace is the local-model replay, so it leaves out the provider compaction item and Gemini
+continuation turns an external replay adds from row metadata. It has no sandbox path note before
+an attachment, which the UI adds when the python tool is on.
 """
 
 from __future__ import annotations
@@ -241,7 +244,7 @@ def _convert_row(
             if flush_pair:
                 _flush(pending, out)
                 pending_round = None
-        else:
+        elif kind != "source":  # serializeAssistantReplayMessages sends no source part
             imaged = imaged or (kind == "image" and part.get("image"))
             warnings.append(
                 TraceWarning("unsupported_part", f"Dropped a {kind!r} part", message_id)
