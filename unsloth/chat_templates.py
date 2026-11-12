@@ -86,8 +86,8 @@ else:
         trainer = arguments.pop("trainer", None)
         return _zoo_train_on_responses_only(trainer, **arguments)
 
-# TRL trains on "messages" when present, else on "text"; "conversations" is only read without "text".
-_DATASET_CHECK_COLUMNS = ("messages", "text", "conversations")
+# Order of unsloth_zoo sft_prepare_dataset: prompt/completion, then "text", then "messages".
+_DATASET_CHECK_COLUMNS = ("text", "messages", "conversations")
 _MEDIA_TYPES = ("image", "image_url", "video", "audio", "input_audio")
 
 
@@ -129,16 +129,20 @@ def _render_dataset_row(row, tokenizer):
     if not isinstance(row, dict):
         raise _MalformedRow("row is not a dict")
     column = next((c for c in _DATASET_CHECK_COLUMNS if c in row), None)
-    if column is not None:
-        value = row[column]
-    elif "prompt" in row and "completion" in row:
+    if "prompt" in row and "completion" in row:
         prompt, completion = row["prompt"], row["completion"]
         if isinstance(prompt, str) and isinstance(completion, str):
-            text = prompt + completion
-            return text, text.strip() == "", True, _has_media(row, ())
+            empty = (prompt + completion).strip() == ""
+            text_tokenizer = tokenizer.tokenizer if isinstance(tokenizer, ProcessorMixin) else tokenizer
+            eos = getattr(text_tokenizer, "eos_token", None)
+            if eos and not completion.endswith(eos):
+                completion += eos
+            return prompt + completion, empty, True, _has_media(row, ())
         if not isinstance(prompt, list) or not isinstance(completion, list):
             raise _MalformedRow("prompt and completion are not both strings or both message lists")
         column, value = "prompt/completion", prompt + completion
+    elif column is not None:
+        value = row[column]
     elif "instruction" in row and "output" in row:
         instruction, extra, output = row["instruction"], row.get("input"), row["output"]
         extra = "" if extra is None else extra
