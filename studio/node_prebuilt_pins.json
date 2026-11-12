@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "comment": "Trust anchor for install_node_prebuilt.py: sha256 frozen from the official nodejs.org SHASUMS256.txt. Review the supported LTS pin monthly and expedite security fixes. See NODE_RUNTIME.md for the update policy and verification steps.",
-  "default_version": "24.22.2",
+  "default_version": "24.22.3",
   "versions": {
-    "24.22.2": {
-      "node-v24.22.2-linux-x64.tar.gz": "361718c444e49af2ca5a110c83ba6a8901143f23ab285ebbef0341f391f482a9",
-      "node-v24.22.2-linux-x64.tar.xz": "48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75",
-      "node-v24.22.2-linux-arm64.tar.gz": "95c264150aceb7f3437a29fd6984924f5f8d1511ea3cbd6c508b83f6c555dae2",
-      "node-v24.22.2-linux-arm64.tar.xz": "eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8",
-      "node-v24.22.2-darwin-x64.tar.gz": "d5e336d588c45be0c37dbd52cc29895593009ca4997a77a1fd02815131ed0e52",
-      "node-v24.22.2-darwin-x64.tar.xz": "6965578fd823e72c1b5387f5ab84cb25368f886e02eb8779e6f0fce6b91c27b7",
-      "node-v24.22.2-darwin-arm64.tar.gz": "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a",
-      "node-v24.22.2-darwin-arm64.tar.xz": "1f5ac075be50bed4780ea3be19a007fda95ea4d527d28d76d0b91de47d915115",
-      "node-v24.22.2-win-x64.zip": "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2",
-      "node-v24.22.2-win-arm64.zip": "f47968c213105077f64c6510f007632c0ca2574802a0b5067c327c49abe1c468"
+    "24.22.3": {
+      "node-v24.22.3-linux-x64.tar.gz": "061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2",
+      "node-v24.22.3-linux-x64.tar.xz": "4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb",
+      "node-v24.22.3-linux-arm64.tar.gz": "261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8",
+      "node-v24.22.3-linux-arm64.tar.xz": "6e51a2ada00f0011cc266f65d98922b403d7ad88f809ca2aa615a5fe1ce6e86c",
+      "node-v24.22.3-darwin-x64.tar.gz": "977614af0504c81045e7fd85596dbca0e5f951b96681516dadafedcca8c447f7",
+      "node-v24.22.3-darwin-x64.tar.xz": "4daeec962855c1a6e66cda398a25037319dc1bbd4a0939188b3547afbbfb6490",
+      "node-v24.22.3-darwin-arm64.tar.gz": "ff6e17d4874b76d272212b908cc020d6e815fba5a6c7eaaa06add725840307fd",
+      "node-v24.22.3-darwin-arm64.tar.xz": "1d64136c8a43d648d1b3bad10797a4c995b1ca032d2bde8799de43b37f058fe5",
+      "node-v24.22.3-win-x64.zip": "e612af99f626ab415ea225af6bce5c971feb448cb5cae250bb1c3fa50c5f7d9f",
+      "node-v24.22.3-win-arm64.zip": "b3cc74a295b39d4f273271e96f58c06dd2b35757ca12abec64c7d0598b434f14"
     }
   }
 }
