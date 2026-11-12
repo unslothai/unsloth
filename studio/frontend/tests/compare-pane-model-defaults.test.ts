@@ -201,4 +201,8 @@ test("an NPU load keeps its sized window when Lemonade reports no model limit", 
   });
   assert.equal(fields.loadedContextLength, 65536);
   assert.equal(fields.maxContextLength, 65536);
+  assert.equal(fields.loadedNpuContextFit, null);
+  const fallback = loadedContextFields({ is_npu: true, context_length: 8192, npu_context_fit: 0 });
+  assert.equal(fallback.loadedNpuContextFit, 0);
+  assert.equal(fallback.loadedContextLength, 8192);
 });

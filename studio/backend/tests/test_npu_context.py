@@ -91,12 +91,12 @@ QWEN38_DFLASH2 = ("qwen3.8-dflash2-27b-FLM", "qwen3.8-dflash2:27b", 18.1)
 )
 def test_kv_counts_only_full_attention_layers_in_bf16(tmp_path, config, expected):
     # FastFlowLM logs "a saved row costs 32 KiB" for qwen3.5:4b: 8 full-attention layers, 4 KV heads.
-    assert nc.kv_bytes_per_token(_files(tmp_path, config).folder / "config.json") == expected
+    assert nc._kv_layout(_files(tmp_path, config).folder / "config.json").full_row_bytes == expected
 
 
 def test_kv_reads_the_interval_or_every_layer_when_types_are_absent(tmp_path):
     hybrid = {k: v for k, v in _QWEN36_35B.items() if k != "layer_types"}
-    assert nc.kv_bytes_per_token(_files(tmp_path, hybrid).folder / "config.json") == 20480
+    assert nc._kv_layout(_files(tmp_path, hybrid).folder / "config.json").full_row_bytes == 20480
     dense = {
         "text_config": {
             "num_hidden_layers": 28,
@@ -107,7 +107,7 @@ def test_kv_reads_the_interval_or_every_layer_when_types_are_absent(tmp_path):
     }
     path = tmp_path / "dense.json"
     path.write_text(json.dumps(dense), encoding = "utf-8")
-    assert nc.kv_bytes_per_token(path) == 28 * 2 * 8 * 128 * 2
+    assert nc._kv_layout(path).full_row_bytes == 28 * 2 * 8 * 128 * 2
 
 
 @pytest.mark.parametrize("text", [None, "not json", "[]", '{"num_hidden_layers": 0}'])
@@ -115,7 +115,7 @@ def test_kv_is_unknown_for_a_missing_or_unreadable_config(tmp_path, text):
     path = tmp_path / "config.json"
     if text is not None:
         path.write_text(text, encoding = "utf-8")
-    assert nc.kv_bytes_per_token(path) is None
+    assert nc._kv_layout(path) is None
 
 
 def test_a_9b_on_a_roomy_laptop_gets_far_more_than_8k(tmp_path, free_ram):
@@ -139,7 +139,10 @@ def test_the_35b_on_a_32gb_laptop_is_not_sized_to_32k(tmp_path, free_ram, free_g
     model = _model(*QWEN36_35B, 262144)
     plan = nc.plan_context(model, _files(tmp_path, _QWEN36_35B), None)
     assert plan.context_length == 8192
-    assert plan.fits == 8192
+    if free_gib == 20.0:
+        assert plan.fits == 0
+    else:
+        assert 0 < plan.fits < 8192
 
 
 def test_the_35b_grows_once_the_ram_is_there(tmp_path, free_ram):
@@ -147,6 +150,89 @@ def test_the_35b_grows_once_the_ram_is_there(tmp_path, free_ram):
     model = _model(*QWEN36_35B, 262144)
     plan = nc.plan_context(model, _files(tmp_path, _QWEN36_35B), None)
     assert plan.context_length == 65536
+
+
+def test_rounding_prices_the_active_allocation_for_auto_and_pins(tmp_path, free_ram, caplog):
+    # Qwen3 0.6B: 112 KiB per token. 17,408 rows would cost exactly 6,000 MiB
+    # including the prefix cache, but the active allocation jumps to 32,768.
+    config = {
+        "num_hidden_layers": 28,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+    }
+    model = _model("qwen3-0.6b-FLM", "qwen3:0.6b", 1, 40960)
+    files = _files(tmp_path, config)
+    free_ram["mib"] = 1024 + 2048 + 6000
+    assert nc.plan_context(model, files, None) == nc.ContextPlan(16384, 16384)
+    with caplog.at_level(logging.WARNING, logger = nc.__name__):
+        assert nc.plan_context(model, files, 16385) == nc.ContextPlan(16385, 16384)
+    assert "above the 16384 tokens" in caplog.text
+
+
+@pytest.mark.parametrize("tag,reported", [("qwen3:0.6b", 40960), ("lfm2.5-tk:1.2b", 128000)])
+def test_roomy_machine_and_explicit_pin_respect_the_engine_limit(tmp_path, free_ram, tag, reported):
+    model = _model("model-FLM", tag, 1, reported)
+    files = _files(tmp_path, _QWEN35_9B)
+    free_ram["mib"] = 100 * _GIB
+    for request in (None, 65536):
+        assert nc.plan_context(model, files, request) == nc.ContextPlan(32768, 32768)
+    assert nb._max_context_length(tag, 16384) == 16384
+
+
+@pytest.mark.parametrize("explicit_types", [False, True])
+def test_gemma_sliding_window_stops_growing(tmp_path, free_ram, explicit_types):
+    config = {
+        "num_hidden_layers": 34,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 4,
+        "head_dim": 256,
+        "sliding_window": 1024,
+        "sliding_window_pattern": 6,
+    }
+    if explicit_types:
+        config["layer_types"] = [
+            "full_attention" if (i + 1) % 6 == 0 else "sliding_attention" for i in range(34)
+        ]
+    files = _files(tmp_path, config)
+    kv = nc._kv_layout(files.folder / "config.json")
+    assert kv.bytes_for(65536) == 20 * 1024 * 65536 + 116 * 1024**2
+    assert nc._cost(65536, kv) == kv.bytes_for(65536) + 4096 * 1024**2
+    model = _model("gemma3-4b-FLM", "gemma3:4b", 3, 131072)
+    free_ram["mib"] = (8 + 3 + 2) * _GIB
+    assert nc.plan_context(model, files, None).context_length == 65536
+
+
+def test_gemma4_shared_layers_reuse_kv_and_global_heads_can_be_wider(tmp_path):
+    # Gemma 4 E2B: three global and twelve sliding layers own buffers; twenty reuse them.
+    config = {
+        "model_type": "gemma4_text",
+        "num_hidden_layers": 35,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 1,
+        "head_dim": 256,
+        "global_head_dim": 512,
+        "num_kv_shared_layers": 20,
+        "sliding_window": 512,
+        "layer_types": (["sliding_attention"] * 4 + ["full_attention"]) * 7,
+    }
+    kv = nc._kv_layout(_files(tmp_path, config).folder / "config.json")
+    assert kv.full_row_bytes == 6 * 1024
+    assert kv.bytes_for(65536) == 65536 * 6 * 1024 + 6 * 1024**2
+    assert nc._cost(1024, kv) == kv.bytes_for(4096) + 8 * kv.bytes_for(1024)
+
+
+def test_lfm_only_charges_its_explicit_attention_layers(tmp_path):
+    config = {
+        "num_hidden_layers": 16,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "head_dim": 64,
+        "full_attn_idxs": [2, 5, 8, 10, 12, 14],
+    }
+    assert (
+        nc._kv_layout(_files(tmp_path, config).folder / "config.json").full_row_bytes == 12 * 1024
+    )
 
 
 def test_a_missing_config_keeps_8192_without_reading_ram(tmp_path, free_ram):
@@ -187,8 +273,8 @@ def test_a_pin_wins_and_a_pin_that_will_not_fit_is_logged(tmp_path, free_ram, ca
     with caplog.at_level(logging.WARNING, logger = nc.__name__):
         plan = nc.plan_context(model, _files(tmp_path, _QWEN36_35B), 32768)
     assert plan.context_length == 32768
-    assert plan.fits == 8192
-    assert "32768" in caplog.text and "8192" in caplog.text
+    assert 0 < plan.fits < 8192
+    assert f"above the {plan.fits} tokens" in caplog.text
 
 
 def test_a_pin_that_fits_is_not_logged_and_is_capped_at_the_limit(tmp_path, free_ram, caplog):
@@ -311,7 +397,7 @@ def test_load_keeps_a_pin_and_8192_without_a_config(backend, monkeypatch, tmp_pa
     assert free_ram["reads"] == 0
 
 
-@pytest.mark.parametrize("fitted, expected", [(8192, 8192), (None, 262144)])
+@pytest.mark.parametrize("fitted, expected", [(0, 0), (4096, 4096), (None, 262144)])
 def test_the_load_response_reports_the_fit_as_the_ceiling(fitted, expected):
     from routes import inference as routes
 
@@ -326,5 +412,6 @@ def test_the_load_response_reports_the_fit_as_the_ceiling(fitted, expected):
     )
     response = routes._npu_load_response(resident, "loaded")
     assert response.context_length == 8192
+    assert response.npu_context_fit == fitted
     assert response.max_context_length == expected
     assert response.native_context_length == 262144

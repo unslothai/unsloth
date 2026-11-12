@@ -2594,6 +2594,7 @@ export function ModelConfigPage({
   const loadedDefaultChatTemplate = useChatRuntimeStore(
     (s) => s.defaultChatTemplate,
   );
+  const npuContextFit = useChatRuntimeStore((s) => s.loadedNpuContextFit);
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.maxContextLength,
   );
@@ -4335,13 +4336,11 @@ export function ModelConfigPage({
             />
             {targetIsNpu &&
               isActiveModel &&
-              savedContextPin(config) != null &&
-              loadedMaxContextLength != null &&
-              maxSeqLengthValue > loadedMaxContextLength && (
+              npuContextFit != null &&
+              maxSeqLengthValue > npuContextFit && (
                 <p className="text-ui-11 text-amber-500">
-                  Above Unsloth&apos;s free-memory estimate (
-                  {loadedMaxContextLength.toLocaleString()} tokens). The NPU
-                  may fail to load it.
+                  This window exceeds the free-memory estimate at load time
+                  ({npuContextFit.toLocaleString()} tokens).
                 </p>
               )}
             {!targetIsNpu && (

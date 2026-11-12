@@ -1758,6 +1758,10 @@ class _InferenceRuntimeFields(BaseModel):
     context_length: Optional[int] = Field(
         None, description = "Runtime context length in tokens for the loaded model"
     )
+    npu_context_fit: Optional[int] = Field(
+        None,
+        description = "Token window estimated to fit free RAM at NPU load time, before the Auto minimum.",
+    )
     max_context_length: Optional[int] = Field(
         None,
         description = (

@@ -42,7 +42,7 @@ _NO_KV_LAYER_TYPES = frozenset({"linear_attention", "conv", "mamba", "recurrent"
 @dataclass(frozen = True)
 class ContextPlan:
     context_length: int
-    # Largest context free RAM holds (never below the floor), or None when it could not be priced.
+    # Largest token window in budget, including zero; None when it could not be priced.
     fits: Optional[int]
 
 
@@ -55,8 +55,21 @@ def _positive(config: dict, key: str) -> Optional[int]:
     return value if isinstance(value, int) and value > 0 else None
 
 
-def kv_bytes_per_token(config_path: Optional[Path]) -> Optional[int]:
-    """KV bytes one token costs, from FastFlowLM's config.json; None when it can't be read."""
+@dataclass(frozen = True)
+class KvLayout:
+    full_row_bytes: int
+    sliding_row_bytes: int
+    sliding_window: int
+    minimum_capacity: int = 512
+
+    def bytes_for(self, tokens: int) -> int:
+        return (
+            tokens * self.full_row_bytes + min(tokens, self.sliding_window) * self.sliding_row_bytes
+        )
+
+
+def _kv_layout(config_path: Optional[Path]) -> Optional[KvLayout]:
+    """Read the cache layout from the installed FastFlowLM checkpoint."""
     if config_path is None:
         return None
     try:
@@ -78,28 +91,55 @@ def kv_bytes_per_token(config_path: Optional[Path]) -> Optional[int]:
         return None
     types = config.get("layer_types")
     interval = _positive(config, "full_attention_interval")
+    window = _positive(config, "sliding_window") or 0
+    pattern = _positive(config, "sliding_window_pattern")
+    indices = config.get("full_attn_idxs")
+    sliding = 0
     if isinstance(types, list) and len(types) == layers:
-        layers = sum(1 for kind in types if kind not in _NO_KV_LAYER_TYPES)
+        # Gemma 4's trailing shared layers reuse buffers from the preceding layers.
+        shared = _positive(config, "num_kv_shared_layers") or 0
+        cached_types = types[: layers - shared] if shared < layers else types
+        sliding = cached_types.count("sliding_attention") if window else 0
+        layers = sum(kind not in _NO_KV_LAYER_TYPES for kind in cached_types) - sliding
+    elif window and pattern:
+        # Gemma 3 uses full attention on every sixth layer (one-based).
+        full = layers // pattern
+        sliding, layers = layers - full, full
+    elif isinstance(indices, list) and all(type(i) is int and 0 <= i < layers for i in indices):
+        # LFM2 lists the attention layers explicitly; the others are convolutions.
+        layers = len(set(indices))
     elif interval:
         layers //= interval
-    return layers * 2 * kv_heads * head_dim * _KV_BYTES or None
+    if not (layers or sliding):
+        return None
+    global_heads = _positive(config, "num_global_key_value_heads") or kv_heads
+    global_dim = _positive(config, "global_head_dim") or head_dim
+    return KvLayout(
+        full_row_bytes = layers * 2 * global_heads * global_dim * _KV_BYTES,
+        sliding_row_bytes = sliding * 2 * kv_heads * head_dim * _KV_BYTES,
+        sliding_window = window,
+        minimum_capacity = 4096 if config.get("model_type") == "gemma4_text" else 512,
+    )
 
 
-def _cost(ctx: int, kv: int) -> int:
-    rows = ctx * kv
-    return rows + min(_PREFIX_CACHE_MIB * _MIB, _PREFIX_SLOTS * rows)
+def _cost(ctx: int, kv: KvLayout) -> int:
+    # FLM 1.0.12 rounds the active allocation up; a saved prefix only holds the rows used.
+    capacity = max(kv.minimum_capacity, 1 << (ctx - 1).bit_length())
+    active = kv.bytes_for(capacity)
+    prefix = min(_PREFIX_CACHE_MIB * _MIB, _PREFIX_SLOTS * kv.bytes_for(ctx))
+    return active + prefix
 
 
-def _largest_fitting(budget: int, kv: int, ceiling: int) -> int:
-    """Largest multiple of CONTEXT_STEP up to ceiling whose cost fits budget; 0 if none."""
-    lo, hi, best = 1, ceiling // CONTEXT_STEP, 0
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        if _cost(mid * CONTEXT_STEP, kv) <= budget:
-            best, lo = mid * CONTEXT_STEP, mid + 1
+def _largest_fitting(budget: int, kv: KvLayout, ceiling: int) -> int:
+    """Price exact token counts so an arbitrary pin and the fit estimate agree."""
+    lo, hi = 0, ceiling
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _cost(mid, kv) <= budget:
+            lo = mid
         else:
             hi = mid - 1
-    return best
+    return lo
 
 
 def plan_context(
@@ -114,14 +154,14 @@ def plan_context(
     requested = requested if requested and requested > 0 else None
     floor = min(DEFAULT_CONTEXT_LENGTH, limit or DEFAULT_CONTEXT_LENGTH)
     fits = None
-    kv = kv_bytes_per_token(files.folder / "config.json" if files is not None else None)
+    kv = _kv_layout(files.folder / "config.json" if files is not None else None)
     weights = max(files.total if files is not None else 0, int((model.size_gb or 0) * _GIB))
     available = _available_mib() if kv and weights else None
     if available is not None:
         reclaimed = int((previous.size_gb or 0) * _GIB) if previous is not None else 0
         budget = (available - HOST_RAM_HEADROOM_MIB) * _MIB + reclaimed - weights
         ceiling = limit or max(AUTO_CONTEXT_CEILING, requested or 0)
-        fits = max(_largest_fitting(budget, kv, ceiling), floor)
+        fits = _largest_fitting(budget, kv, ceiling)
     if requested is not None:
         ctx = min(requested, limit) if limit else requested
         if fits is not None and ctx > fits:
@@ -135,4 +175,5 @@ def plan_context(
         return ContextPlan(ctx, fits)
     if fits is None:
         return ContextPlan(floor, None)
-    return ContextPlan(min(fits, AUTO_CONTEXT_CEILING), fits)
+    auto = min(fits, AUTO_CONTEXT_CEILING) // CONTEXT_STEP * CONTEXT_STEP
+    return ContextPlan(max(floor, auto), fits)

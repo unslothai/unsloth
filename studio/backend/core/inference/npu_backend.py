@@ -47,7 +47,17 @@ _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 # Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
 # limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
 # DFlash2 shares the 27B xclbin and fails the same way: https://github.com/ROCm/FastFlowLM/issues/1001
-_FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192, "qwen3.8-dflash2:27b": 8192}
+_FLM_CONTEXT_LIMITS = {
+    "qwen3.8-mtp:27b": 8192,
+    "qwen3.8-dflash2:27b": 8192,
+    # FastFlowLM 1.0.12 model cards specify 32k for these exact tags, below checkpoint metadata.
+    # https://github.com/ROCm/FastFlowLM/tree/v1.0.12/docs/docs/models (qwen.md and lfm.md)
+    "qwen3:0.6b": 32768,
+    "qwen3:1.7b": 32768,
+    "qwen3:4b": 32768,
+    "qwen3:8b": 32768,
+    "lfm2.5-tk:1.2b": 32768,
+}
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
@@ -150,6 +160,12 @@ class NpuResident:
     api_key: str
     # Largest context free RAM held at load time; None when it could not be priced.
     fitted_context_length: Optional[int] = None
+
+    @property
+    def max_context_length(self) -> Optional[int]:
+        if self.fitted_context_length is not None:
+            return self.fitted_context_length
+        return self.model.max_context_length
 
 
 def is_npu_model_path(model_path: Optional[str]) -> bool:

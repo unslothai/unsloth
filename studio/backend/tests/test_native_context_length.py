@@ -397,10 +397,7 @@ class TestRouteCompleteness:
         for block in npu:
             assert "native_context_length = model.max_context_length" in block, block[:200]
             # The ceiling is what free RAM was estimated to hold at load, else the model's limit.
-            assert (
-                "max_context_length = resident.fitted_context_length or model.max_context_length"
-                in block
-            ), block[:200]
+            assert "max_context_length = resident.max_context_length" in block, block[:200]
 
     def test_non_gguf_load_responses_set_runtime_context_length(self):
         """Non-GGUF LoadResponse blocks report runtime context_length."""

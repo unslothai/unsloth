@@ -2754,6 +2754,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxPleOffloadReason",
   "mlxExpertOffloadReason",
   "loadedMlxOffloadDiskBytes",
+  "loadedNpuContextFit",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",

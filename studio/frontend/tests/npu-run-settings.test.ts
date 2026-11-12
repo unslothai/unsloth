@@ -59,9 +59,10 @@ test("NPU run settings show Auto until a load sizes the window, then the residen
   assert.match(configPage, /displayValue=\{isMlx && windowUnknown && !dragging \? unknownLabel : undefined\}/);
 });
 
-test("an NPU pin above the load's free-memory estimate warns", () => {
+test("a pinned or Auto window above the known NPU fit warns", () => {
   const warning = configPage.slice(configPage.indexOf("{targetIsNpu &&\n              isActiveModel &&"));
-  assert.match(warning, /savedContextPin\(config\) != null/);
-  assert.match(warning, /maxSeqLengthValue > loadedMaxContextLength/);
+  assert.doesNotMatch(warning.split("</p>")[0], /savedContextPin/);
+  assert.match(warning, /npuContextFit != null/);
+  assert.match(warning, /maxSeqLengthValue > npuContextFit/);
   assert.match(warning, /free-memory estimate/);
 });
