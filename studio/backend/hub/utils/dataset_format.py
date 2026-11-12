@@ -9,7 +9,10 @@ from typing import Any, Optional
 from utils.datasets.cells import text_cell_check, unwrap_message_column
 from utils.datasets.format_detection import (
     detect_dataset_format,
+    detect_video_columns,
+    detect_video_structure,
     has_message_prompt_completion,
+    video_sample,
     is_plain_text_dataset,
 )
 from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
@@ -457,6 +460,7 @@ def detect_multimodal_dataset(dataset):
     if sample is None:
         return {
             "is_image": False,
+            "is_video": False,
             "multimodal_columns": [],
             "modality_types": [],
             "is_audio": False,
@@ -508,6 +512,12 @@ def detect_multimodal_dataset(dataset):
             modality_types.add("audio")
     if audio_columns:
         multimodal_columns = [col for col in multimodal_columns if col not in set(audio_columns)]
+    video_columns = detect_video_columns(video_sample(dataset, sample))
+    audio_columns = [col for col in audio_columns if col not in video_columns]
+    if video_columns:
+        multimodal_columns = [col for col in multimodal_columns if col not in video_columns]
+        multimodal_columns += video_columns
+        modality_types.add("video")
 
     detected_text_col = None
     if audio_columns:
@@ -530,6 +540,7 @@ def detect_multimodal_dataset(dataset):
                 break
     return {
         "is_image": len(multimodal_columns) > 0,
+        "is_video": bool(video_columns),
         "multimodal_columns": multimodal_columns,
         "modality_types": list(modality_types),
         "is_audio": len(audio_columns) > 0,
@@ -550,6 +561,9 @@ def detect_vlm_dataset_structure(dataset):
             "text_column": None,
             "messages_column": None,
         }
+    video_structure = detect_video_structure(video_sample(dataset, sample))
+    if video_structure is not None:
+        return video_structure
     column_names = set(sample.keys())
     is_text = text_cell_check(dataset)
     if "messages" in column_names:
@@ -761,7 +775,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         warning = None
         if requires_mapping:
             missing = []
-            if not vlm_structure.get("image_column"):
+            if not (vlm_structure.get("image_column") or vlm_structure.get("video_column")):
                 missing.append("image")
             if not vlm_structure.get("text_column"):
                 missing.append("text")

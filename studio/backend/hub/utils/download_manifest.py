@@ -660,13 +660,14 @@ def _read_migration_payload(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _folded(name: str) -> str:
+    # Folded on Windows, as pathlib's glob is.
+    return name.casefold() if os.name == "nt" else name
+
+
 def _listed(directory: Path) -> list[tuple[str, str]]:
-    # Eager, and folded on Windows, as pathlib's glob is.
     with os.scandir(directory) as entries:
-        return [
-            (entry.name, entry.name.casefold() if os.name == "nt" else entry.name)
-            for entry in entries
-        ]
+        return [(entry.name, _folded(entry.name)) for entry in entries]
 
 
 def _migration_manifest_paths(parent: Path, failed: list) -> Iterator[Path]:
@@ -703,11 +704,14 @@ def _migration_fingerprint(parent: Path, scopes: Optional[Iterable[str]] = None)
         active, raw = _hub_cache_spellings(None)
         dirs = {".": os.stat(parent).st_mtime_ns}
         if scopes is None:
-            scopes = [
-                entry.name
-                for entry in os.scandir(parent)
-                if entry.name.startswith("cache-") and entry.is_dir(follow_symlinks = False)
-            ]
+            # Same name match as the scan, so a scope it reads is always fingerprinted.
+            with os.scandir(parent) as entries:
+                scopes = [
+                    entry.name
+                    for entry in entries
+                    if _folded(entry.name).startswith("cache-")
+                    and entry.is_dir(follow_symlinks = False)
+                ]
         for name in scopes:
             st = os.lstat(parent / name)
             if not stat.S_ISDIR(st.st_mode):

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usesWindowsTitlebar } from "@/components/tauri/window-titlebar";
+import { shouldUseCustomWindowTitlebar } from "@/components/tauri/window-titlebar";
 import {
   ChatBackground,
   WindowMaterialMount,
@@ -17,7 +17,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { routeNeedsHardware, videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
-import { DownloadApprovalDialog } from "@/features/browser";
+import { DownloadApprovalDialog } from "@/features/browser/download-approval";
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
@@ -88,7 +88,7 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   type ComponentType,
   lazy,
-
+  memo,
   type ReactNode,
   Suspense,
   useCallback,
@@ -99,6 +99,7 @@ import {
 
   useState,
 } from "react";
+import { FIND_SCOPE_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
 import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
@@ -226,6 +227,24 @@ function ChatPage(props: ChatPageProps) {
     </Suspense>
   );
 }
+
+// The layout re-renders on its own state (the Settings flag gating every route shortcut, a route
+// change): without these, each of those re-rendered the sidebar, the navbar and the whole chat
+// page with it. A component that takes no props is one element, made once: React skips a subtree
+// whose element is the one it rendered last. Neither form adds a fiber level, so the useId paths
+// the reload snapshot relies on are unchanged.
+const appSidebar = <AppSidebar />;
+const navbar = <Navbar />;
+const commandPalette = <CommandPalette />;
+const hfTokenWarningDialog = <HfTokenWarningDialog />;
+const remoteCodeConsentDialog = <RemoteCodeConsentDialog />;
+const downloadApprovalDialog = <DownloadApprovalDialog />;
+const transformersUpgradeDialog = <TransformersUpgradeDialog />;
+const managedEngineOfferDialog = <ManagedEngineOfferDialog />;
+const llmCompressorConsentDialog = <LlmCompressorConsentDialog />;
+const stopRunningChatsDialog = <StopRunningChatsDialog />;
+const imageViewer = <ImageViewer />;
+const ChatPageSlot = memo(ChatPage);
 
 const ImagesPage = lazy(() =>
   import("@/features/images").then((m) => ({ default: m.ImagesPage })),
@@ -405,6 +424,7 @@ const DEFAULT_DOCUMENT_TITLE = "Unsloth";
 
 function RootLayout() {
   const t = useT();
+  const findScopeRef = useSurfaceRef<HTMLDivElement>(FIND_SCOPE_SURFACE);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const routeOwnsReloadReadiness =
@@ -432,7 +452,9 @@ function RootLayout() {
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   const isChatRoute = pathname === "/chat";
-  const windowsWallpaperPage = !isChatRoute && usesWindowsTitlebar();
+  // The in-page titlebar, shared by Windows and Linux; the data-windows-* names predate Linux using it.
+  const windowsTitlebar = shouldUseCustomWindowTitlebar();
+  const windowsWallpaperPage = !isChatRoute && windowsTitlebar;
   const { pinned, setPinned, togglePinned } = useSidebarPin();
   const navigate = useNavigate();
 
@@ -489,7 +511,8 @@ function RootLayout() {
   }
   const shouldMountAudio = isAudioRoute || audioMounted;
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
-  const nonChatTopInset = useIsMobileShell()
+  const mobileShell = useIsMobileShell();
+  const nonChatTopInset = mobileShell
     ? "pt-14"
     : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
@@ -692,22 +715,22 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <SttDeviceSyncMount />
       <InterfaceZoom />
-      <WindowMaterialMount />
+      <WindowMaterialMount route={hideNavbar ? undefined : isChatRoute ? "chat" : "page"} />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
-      <HfTokenWarningDialog />
-      <RemoteCodeConsentDialog />
-      <DownloadApprovalDialog />
-      <TransformersUpgradeDialog />
-      <ManagedEngineOfferDialog />
-      <LlmCompressorConsentDialog />
-      <StopRunningChatsDialog />
-      <ImageViewer />
-      {!hideNavbar && <CommandPalette />}
+      {hfTokenWarningDialog}
+      {remoteCodeConsentDialog}
+      {downloadApprovalDialog}
+      {transformersUpgradeDialog}
+      {managedEngineOfferDialog}
+      {llmCompressorConsentDialog}
+      {stopRunningChatsDialog}
+      {imageViewer}
+      {!hideNavbar && commandPalette}
       {hideNavbar ? (
-        <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
+        <main className="h-dvh flex-1 overflow-y-auto pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
             <Outlet />
           </RouteBoundary>
@@ -720,12 +743,20 @@ function RootLayout() {
           data-wallpaper-workspace=""
           data-windows-wallpaper-page={windowsWallpaperPage || undefined}
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
+          data-wallpaper-media={isImagesRoute || isVideoRoute || isAudioRoute || undefined}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
-          <AppSidebar />
+          {appSidebar}
           <SidebarEdgeTrigger />
-          {windowsWallpaperPage && <div data-slot="page-wallpaper-blur" aria-hidden="true" />}
+          {windowsWallpaperPage && (
+            <div
+              data-slot="page-wallpaper-blur"
+              // AppSidebar's data-windows-glass-frame, which sits under this page only off the mobile sheet.
+              data-sidebar-frame={(pinned && !mobileShell) || undefined}
+              aria-hidden="true"
+            />
+          )}
           <SidebarInset
             className={
               isChatLike
@@ -736,8 +767,9 @@ function RootLayout() {
                   : "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto"
             }
           >
-            <Navbar />
+            {navbar}
             <div
+              ref={findScopeRef}
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
             >
@@ -752,7 +784,7 @@ function RootLayout() {
                   }
                   inert={!isChatRoute || undefined}
                 >
-                  <ChatPage search={chatSearch} active={isChatRoute} />
+                  <ChatPageSlot search={chatSearch} active={isChatRoute} />
                 </div>
               )}
               {shouldMountImages && (

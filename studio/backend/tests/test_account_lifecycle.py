@@ -126,7 +126,16 @@ def test_desktop_sets_owner_password_before_creating_managed_account(auth_env):
 @pytest.mark.parametrize("actor", ["unsloth", "alice", "bob"])
 @pytest.mark.parametrize(
     "operation",
-    ["list", "create", "setup-code", "deactivate", "reactivate", "model-access", "delete"],
+    [
+        "list",
+        "create",
+        "setup-code",
+        "deactivate",
+        "reactivate",
+        "model-access",
+        "rename",
+        "delete",
+    ],
 )
 @pytest.mark.parametrize("target", ["unsloth", "alice", "bob"])
 def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
@@ -144,6 +153,8 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         response = client.put(
             url + "/model-access", headers = headers(actor), json = {"model_allowlist": ["unsloth/*"]}
         )
+    elif operation == "rename":
+        response = client.put(url + "/username", headers = headers(actor), json = {"username": "carol"})
     elif operation in ("deactivate", "reactivate"):
         response = client.patch(
             url, headers = headers(actor), json = {"is_active": operation == "reactivate"}
@@ -187,6 +198,7 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         ("POST", "/missing/setup-code", None),
         ("PATCH", "/missing", {"is_active": False}),
         ("PUT", "/missing/model-access", {"model_allowlist": None}),
+        ("PUT", "/missing/username", {"username": "carol"}),
         ("DELETE", "/missing", None),
     ],
 )
@@ -751,6 +763,7 @@ def test_logout_revokes_only_actor_and_only_owner_clears_bootstrap_state(matrix,
     [
         ("POST", "/setup-code", None),
         ("PATCH", "", {"is_active": False}),
+        ("PUT", "/username", {"username": "carol"}),
         ("DELETE", "", None),
     ],
 )
@@ -953,6 +966,7 @@ def test_api_keys_cannot_manage_accounts(auth_env):
         client.post("/api/accounts", headers = key, json = {"username": "mallory"}),
         client.post(url + "/setup-code", headers = key),
         client.patch(url, headers = key, json = {"is_active": False}),
+        client.put(url + "/username", headers = key, json = {"username": "mallory"}),
         client.delete(url, headers = key),
     ):
         assert response.status_code == 403
@@ -1134,3 +1148,85 @@ def test_cli_reset_resolves_the_owner_sign_in_name(matrix, reset_cli):
     assert login(client, "alice", "alice-password").status_code == 200
     result = reset_cli.invoke(studio_cli.studio_app, ["reset-password", "--username", "nobody"])
     assert result.exit_code == 1 and "account not found" in result.output
+
+
+def rename(client, username, new_name):
+    account_id = storage.get_account(username).account_id
+    return client.put(
+        f"/api/accounts/{account_id}/username", headers = headers(), json = {"username": new_name}
+    )
+
+
+def test_rename_keeps_data_and_api_keys_and_signs_out_only_that_account(matrix):
+    client, _, _ = matrix
+    credentials = seed_credentials()
+    account = storage.get_account("alice")
+    marker = run_as(account, storage_roots.workspace_root) / "kept.txt"
+    marker.parent.mkdir(parents = True, exist_ok = True)
+    marker.write_text("chat history")
+    response = rename(client, "alice", "Alicia")
+    assert response.status_code == 200
+    assert response.json()["username"] == "alicia"
+    assert response.json()["account_id"] == account.account_id
+    renamed = storage.get_account("alicia")
+    assert run_as(renamed, storage_roots.workspace_root) / "kept.txt" == marker
+    assert marker.read_text() == "chat history"
+    for name, (access, refresh, key) in credentials.items():
+        response = client.get("/api/auth/api-keys", headers = {"Authorization": "Bearer " + access})
+        assert response.status_code == (401 if name == "alice" else 200)
+        assert (storage.verify_refresh_token(refresh) is None) == (name == "alice")
+        assert storage.validate_api_key(key) == ("alicia" if name == "alice" else name)
+    assert login(client, "alice", "alice-password").status_code == 401
+    session = login(client, "alicia", "alice-password")
+    assert session.status_code == 200
+    assert session.json()["account_id"] == account.account_id
+    access = {"Authorization": "Bearer " + session.json()["access_token"]}
+    keys = client.get("/api/auth/api-keys", headers = access).json()["api_keys"]
+    assert [k["name"] for k in keys] == ["test"]
+    before = db_rows("auth_user")
+    assert rename(client, "alicia", "alicia").json()["username"] == "alicia"
+    assert db_rows("auth_user") == before
+    assert client.get("/api/auth/api-keys", headers = access).status_code == 200
+
+
+def test_rename_refuses_taken_or_invalid_names_without_changes(matrix):
+    client, _, _ = matrix
+    assert set_alias(client, "riley").status_code == 200
+    before = db_rows("auth_user")
+    for name, status in (("BOB", 409), ("riley", 409), ("unsloth", 422), ("a.b", 422)):
+        assert rename(client, "alice", name).status_code == status, name
+    assert db_rows("auth_user") == before
+    owner = storage.get_account("unsloth").account_id
+    assert (
+        client.put(
+            f"/api/accounts/{owner}/username", headers = headers(), json = {"username": "boss"}
+        ).status_code
+        == 400
+    )
+
+
+def test_old_name_is_free_after_rename_and_shares_nothing(matrix):
+    client, _, _ = matrix
+    old_access = authentication.create_access_token("alice")
+    original = storage.get_account("alice").account_id
+    assert rename(client, "alice", "alicia").status_code == 200
+    fresh = create(client, "alice").json()
+    assert fresh["account"]["account_id"] != original
+    assert (
+        client.get(
+            "/api/auth/api-keys", headers = {"Authorization": "Bearer " + old_access}
+        ).status_code
+        == 401
+    )
+    assert login(client, "alice", fresh["setup_code"]).status_code == 200
+
+
+def test_a_key_minted_under_the_old_name_after_rename_binds_the_renamed_account(matrix):
+    client, _, _ = matrix
+    account_id = storage.get_account("alice").account_id
+    assert rename(client, "alice", "alicia").status_code == 200
+    token, row = storage.create_api_key(
+        username = "alice", name = "workflow", internal = True, account_id = account_id
+    )
+    assert row["username"] == "alicia"
+    assert storage.validate_api_key(token) == "alicia"

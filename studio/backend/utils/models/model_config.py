@@ -693,9 +693,8 @@ def _modeling_auto_source_path() -> Optional[str]:
 
 
 def _transformers_enables_torch() -> bool:
-    """True only when transformers surely enables torch (installed, USE_TORCH / USE_TF, declared
-    floor), decided from metadata. False keeps the import path, so no-torch installs still get the
-    curated fallback."""
+    """True only when transformers surely enables torch (installed, USE_TORCH/USE_TF, declared
+    floor); False keeps the import path, so no-torch installs get the curated fallback."""
     import importlib.metadata
     import importlib.util
 
@@ -1169,8 +1168,7 @@ _LAZY_MODULE_LOCK = threading.Lock()
 
 
 def _lazy_module_attr(name: str) -> Any:
-    """Build-once accessor. Also for in-module callers, where a bare global read would
-    not reach PEP 562."""
+    """Build-once accessor for in-module callers too; a bare global read would skip PEP 562."""
     with _LAZY_MODULE_LOCK:
         if name not in _LAZY_MODULE_CACHE:
             _LAZY_MODULE_CACHE[name] = _LAZY_MODULE_ATTRS[name]()
@@ -1409,9 +1407,8 @@ def _is_vision_model_or_none(
     ``gguf_variant`` picks the quant out of a directory, so the probe reads the weight
     file the load will open. ``require_image=False`` asks only for a companion projector,
     which is what an audio request needs: audio input rides the same file."""
-    # Local GGUF models are served by llama-server, so multimodal capability comes from a
-    # companion mmproj, not a Transformers config. Do not cache: a projector may be added
-    # beside an existing weight file after it was first inspected.
+    # Local GGUF models are served by llama-server, so multimodal support comes from a companion
+    # mmproj, not a Transformers config; do not cache, as a projector may be added later.
     if is_local_path(model_name):
         local_path = normalize_path(model_name)
         # Same rule as ModelConfig.from_identifier: variant lookup is directory-only, and
@@ -1516,6 +1513,33 @@ def is_vision_model(
             gguf_companion_roots,
         )
     )
+
+
+def audio_vlm_multimodal_lm_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[bool, bool]:
+    """(loads through AutoModelForMultimodalLM, config.json readable): no vision tower and a class registered there,
+    natively or by auto_map. AudioFlamingo3 has none and keeps FastModel's resolver. Raw config: no repo code runs."""
+    vision = _raw_config_has_vision_config(model_name, hf_token, local_files_only, revision)
+    if vision is None:
+        return False, False
+    if vision:
+        return False, True
+    try:
+        config = _read_raw_config_json(model_name, hf_token, local_files_only, revision) or {}
+    except Exception:
+        return False, False
+    auto_map = config.get("auto_map")
+    if isinstance(auto_map, dict) and "AutoModelForMultimodalLM" in auto_map:
+        return True, True
+    try:
+        from transformers.models.auto.modeling_auto import MODEL_FOR_MULTIMODAL_LM_MAPPING_NAMES
+    except ImportError:
+        return False, True
+    return config.get("model_type") in MODEL_FOR_MULTIMODAL_LM_MAPPING_NAMES, True
 
 
 def is_vision_model_checked(
@@ -4371,6 +4395,8 @@ class ModelConfig:
     # Repo a refused-Hub cached GGUF came from, for the download interlock.
     gguf_cache_repo: Optional[str] = None
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
+    # A picked MLX precision folder's config, for route checks only; sizing needs the folder's weights.
+    config_dir: Optional[str] = None
     base_model: Optional[str] = None  # Base model (for LoRAs)
     # Set for a GGUF only audio.cpp runs; loads via the native-audio worker, never llama-server.
     audio_cpp: Optional[Any] = None
@@ -4861,6 +4887,7 @@ class ModelConfig:
 
         return cls(
             gguf_variant = precision_folder,
+            config_dir = check_model if precision_folder else None,
             identifier = identifier,
             display_name = display_name,
             path = path,

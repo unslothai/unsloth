@@ -294,8 +294,7 @@ _fork_reset_installed = False
 
 
 def _reset_after_fork() -> None:
-    """A fork child inherits both locks in whatever state they were in and a
-    _spawner whose thread does not exist here. Start clean instead of deadlocking."""
+    """Fork children inherit locks in any state and a _spawner with no thread; start clean."""
     global _spawner, _spawner_lock, _record_lock, _owner_identity, _shutdown_latch
     _spawner_lock = threading.Lock()
     # A different pid here.
@@ -775,28 +774,12 @@ def collect_descendants_known(
         # Not a question about a process, so there is nothing indeterminate about it.
         return [], True
     if not is_signalable_pid(pid):
-        # Below the floor. Every process on the host descends from init, so walking pid 1
-        # hands the whole machine to a caller that is about to SIGTERM what it gets back:
-        # a stand-in process with pid 1 in a test did exactly that and took the user's
-        # session down. Nothing under init is ours by descent.
+        # Below the floor, pid 1 is never walked: every host process descends from init, so a tree
+        # kill would reach the whole machine (a test stand-in at pid 1 took a user's session down).
         return [], True
-    # Windows records the creating pid on a process and never clears it, not even when
-    # that parent exits and its number is handed to something else, so the raw table
-    # lists strangers created by an earlier holder of this pid as children of it. A real
-    # descendant cannot predate the process that created it, so each candidate is
-    # ordered against ITS OWN immediate parent, not only against the root.
-    #
-    # The root floor alone is not enough, and the difference is a real machine:
-    # the root starts at t=100, a stranger U starts at t=200 under some unrelated
-    # pid P, P exits, at t=300 P's number is reused for a genuine Unsloth child, and
-    # U still records P as its creator. U is later than the root, so a root-only floor
-    # admits it and taskkill /T /F reaches U and everything under it. Ordering U
-    # against P's CURRENT creation time (300) rejects it, because a child cannot
-    # predate its parent. Each step of the walk carries the parent's own creation
-    # time down, so the check holds at every depth rather than only at the first.
-    #
-    # Without a readable floor this claims nothing at all, and an unreadable candidate
-    # is skipped rather than assumed to be ours: a tree kill is not a place to guess.
+    # Windows keeps a creating pid after its parent exits and the number is reused, so each
+    # candidate is ordered against its parent's current creation time (a child cannot predate it) at
+    # every depth; with no readable floor nothing is claimed and unreadable candidates are skipped.
     if _is_windows():
         return _windows_collect_descendants_known(pid)
     # POSIX: the kernel rewrites parent links on reparent, so no floor is needed.
@@ -1339,8 +1322,7 @@ def pid_is_running(pid: "Optional[int]") -> bool:
 
 
 def _pid_is_zombie(pid: int) -> bool:
-    """An exited child nobody waited on. It answers signals like a live process,
-    so a survivor check has to tell the two apart."""
+    """Exited, unreaped child: it still answers signals, so survivor checks must exclude it."""
     if _is_windows():
         return False
     if _is_linux():
@@ -1459,12 +1441,9 @@ def seconds_since_quit_signal() -> Optional[float]:
 
 
 def begin_process_lifecycle() -> None:
-    """Clear the latch for an embedded host that calls run_server again.
-
-    Quitting is terminal for a CLI run, but in-process callers (studio/backend/colab.py)
-    reuse the interpreter, and a latch that never cleared would refuse every spawn of
-    the second session.
-    """
+    """Clears the shutdown latch for an embedded host that calls run_server again; quitting is
+    terminal for a CLI run, but in-process callers like studio/backend/colab.py reuse the
+    interpreter, so an uncleared latch would refuse every spawn."""
     global _quit_signal_at
     _shutdown_latch.clear()
     _quit_signal_at = None

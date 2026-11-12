@@ -50,6 +50,7 @@ def test_default_and_max_get_the_near_lossless_set(tier):
         H.LEVER_FP16_ENCODER,
         H.LEVER_FUSED_DECODER,
         H.LEVER_TILE_BATCH,
+        H.LEVER_INT8_DECODER,
     )
 
 
@@ -73,13 +74,19 @@ def test_fp16_accumulation_only_under_max_on_consumer_gpus(monkeypatch):
     )
 
 
-def test_int8_decoder_is_opt_in_only(monkeypatch):
-    for tier in ("eager", "default", "max"):
-        assert H.LEVER_INT8_DECODER not in H.plan_h3_vae_levers(
+def test_int8_decoder_is_on_for_default_and_max_with_a_kill_switch(monkeypatch):
+    for tier in ("default", "max", None):
+        assert H.LEVER_INT8_DECODER in H.plan_h3_vae_levers(
             tier, workflow = "fl2va", consumer_gpu = True
         )
+    assert H.LEVER_INT8_DECODER not in H.plan_h3_vae_levers("eager", workflow = "fl2va")
+    for value in ("0", "off", "false", "no"):
+        monkeypatch.setenv(H.H3_VAE_INT8_ENV, value)
+        for tier in ("eager", "default", "max"):
+            assert H.LEVER_INT8_DECODER not in H.plan_h3_vae_levers(tier, workflow = "fl2va")
     monkeypatch.setenv(H.H3_VAE_INT8_ENV, "1")
-    assert H.LEVER_INT8_DECODER in H.plan_h3_vae_levers("default", workflow = "fl2va")
+    assert H.LEVER_INT8_DECODER in H.plan_h3_vae_levers("eager", workflow = "fl2va")
+    assert H.plan_h3_vae_levers("off", workflow = "fl2va") == ()
 
 
 def test_t2va_skips_the_encoder_levers():
@@ -410,6 +417,63 @@ def test_tile_batching_matches_the_stock_tile_loop(monkeypatch):
         for batch in ("1", "2", "4", "8"):
             monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, batch)
             torch.testing.assert_close(fast._decode_clip(z), ref, rtol = 1e-5, atol = 1e-5)
+
+
+@pytest.mark.parametrize("batch", ["1", "2", "3"])
+@pytest.mark.parametrize("shape", [(6, 9), (4, 4), (10, 5), (3, 12)])
+def test_streamed_stitch_equals_the_stock_stitch_bit_for_bit(monkeypatch, batch, shape):
+    vae = _tiny_vae()
+    assert H._install_tile_batch(vae)
+    monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, batch)
+    z = torch.randn(1, 8, 3, *shape, generator = torch.Generator().manual_seed(5))
+    with torch.no_grad():
+        monkeypatch.setenv(H.H3_VAE_STREAM_STITCH_ENV, "0")
+        ref = vae._decode_clip(z)
+        monkeypatch.delenv(H.H3_VAE_STREAM_STITCH_ENV)
+        got = vae._decode_clip(z)
+    assert got.dtype == ref.dtype and got.shape == ref.shape and got.is_contiguous()
+    assert torch.equal(got, ref)
+
+
+def test_streamed_stitch_releases_each_decoder_batch(monkeypatch):
+    from torch.multiprocessing.reductions import StorageWeakRef
+
+    vae = _tiny_vae()
+    assert H._install_tile_batch(vae)
+    monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, "2")
+    stock_decoder = vae.decoder.forward
+
+    def run(stream):
+        outs, alive = [], []
+
+        def decoder(x):
+            alive.append(sum(not r.expired() for r in outs))
+            out = stock_decoder(x)
+            outs.append(StorageWeakRef(out.untyped_storage()))
+            return out
+
+        monkeypatch.setattr(vae.decoder, "forward", decoder)
+        if stream:
+            monkeypatch.delenv(H.H3_VAE_STREAM_STITCH_ENV, raising = False)
+        else:
+            monkeypatch.setenv(H.H3_VAE_STREAM_STITCH_ENV, "0")
+        with torch.no_grad():
+            vae._decode_clip(torch.randn(1, 8, 3, 10, 9))
+        return alive
+
+    assert run(stream = False)[-1] > 0, "stock keeps every decoded batch until the stitch"
+    assert set(run(stream = True)) == {0}
+
+
+def test_streamed_stitch_keeps_stock_for_an_unknown_stitch(monkeypatch):
+    vae = _tiny_vae()
+    assert H._install_tile_batch(vae)
+    calls = []
+    stock = vae._stitch_tiles
+    monkeypatch.setattr(vae, "_stitch_tiles", lambda *a: calls.append(1) or stock(*a))
+    with torch.no_grad():
+        vae._decode_clip(torch.randn(1, 8, 3, 6, 9))
+    assert calls == [1]
 
 
 def test_int8_decoder_replaces_block_linears_and_stays_close():
@@ -1401,3 +1465,26 @@ def test_the_fused_int8_path_matches_the_unfused_int8_path_on_cuda(monkeypatch):
     rel = lambda a, b: float((a - b).norm() / b.norm())  # noqa: E731
     assert rel(unfused, dense) < 0.02 and rel(fused, dense) < 0.02
     assert rel(fused, unfused) < 0.01
+
+
+def test_cold_tile_decode_compiles_fullgraph_in_one_graph(monkeypatch):
+    monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, "2")
+    monkeypatch.setattr(H, "_STITCH_KNOWN", {})
+    vae = _tiny_vae()
+    assert H._install_tile_batch(vae)
+    z = torch.randn(1, 8, 3, 6, 9, generator = torch.Generator().manual_seed(5))
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    torch._dynamo.reset()
+    try:
+        fn = torch.compile(lambda z: vae._decode_clip(z), backend = counter, fullgraph = True)
+        with torch.no_grad():
+            got = fn(z)
+            fn(z)
+    finally:
+        torch._dynamo.reset()
+    with torch.no_grad():
+        ref = vae._decode_clip(z)
+    assert counter.frame_count == 1
+    assert torch.equal(got, ref)
