@@ -1465,7 +1465,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_excluded_bases = ("openmoss-team/moss-image-base",),
         # Qwen3.5-9B int8 ConvRot: LPIPS 0.059 vs bf16; without the hosted file auto keeps bf16.
         te_quant_auto = "int8",
-        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image"),
+        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image", "kromoss"),
         prompt_hint = (
             "MOSS-Image reads plain captions, tag lists or JSON layouts; raise CFG (3 to 6) for short prompts."
         ),
