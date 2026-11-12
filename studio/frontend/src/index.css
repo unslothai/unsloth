@@ -2977,6 +2977,15 @@ html[data-chat-font] .aui-root {
 		border-radius: var(--radius-lg) !important;
 	}
 
+	/* The composer picker's row menus keep a 4px gutter (12px rows), and its compact filter rows
+	   take 8px corners in a 4px gutter; here, so they outrank .unsloth-plus-menu's 20px. */
+	.unsloth-plus-menu.composer-row-menu[data-slot] {
+		border-radius: calc(16px * var(--ui-space-scale, 1)) !important;
+	}
+	[data-slot="dropdown-menu-content"].composer-filter-menu {
+		border-radius: calc(12px * var(--ui-space-scale, 1)) !important;
+	}
+
 	/* The account menu's 10px gutter. */
 	[data-slot="dropdown-menu-content"].app-user-menu.menu-soft-surface-up {
 		border-radius: calc(var(--radius-md) + 10px) !important;
@@ -3417,13 +3426,9 @@ html[data-chat-font] .aui-root {
 		transition: none;
 	}
 
-	.aui-thread-welcome-center {
-		transition: padding-top 280ms cubic-bezier(0.22, 1, 0.36, 1);
-	}
-
+	/* An expanded composer takes the height, so the spacers (which read this) collapse under the greeting. */
 	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
-		padding-top: calc(1rem * var(--ui-space-scale, 1));
-		transition: none;
+		--welcome-spacer-grow: 0;
 	}
 
 
@@ -5146,21 +5151,60 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
-/* Unlayered, so the global scrollbar rule above cannot win. */
+/* Unlayered, so the global scrollbar rule above cannot win. Each draws its own overlay thumb instead. */
 .composer-model-list,
-.composer-run-settings {
+.composer-run-settings,
+.composer-tab-strip {
 	scrollbar-width: none;
 }
 .composer-model-list::-webkit-scrollbar,
-.composer-run-settings::-webkit-scrollbar {
+.composer-run-settings::-webkit-scrollbar,
+.composer-tab-strip::-webkit-scrollbar {
 	display: none;
 }
 /* The scrollbar at the menu's very edge: the side padding moves inside the scrolling viewport. */
 .composer-row-menu[data-slot] {
 	padding-inline: 0 !important;
+	/* Rows sit as far from the top and bottom as from the sides (the viewport's 4px). */
+	padding-block: calc(2px * var(--ui-space-scale, 1)) !important;
 }
 .composer-row-menu > [data-slot="dropdown-menu-viewport"] {
 	padding-inline: var(--spacing);
+}
+/* The + menu scrolls edge to edge: its viewport takes the card's 8px back as its own padding, so the
+scrollbar sits on the card's right edge and rows fade out under the top and bottom edges. */
+.composer-plus-menu[data-slot] > [data-slot="dropdown-menu-viewport"] {
+	margin-block: calc(-0.5rem * var(--ui-space-scale, 1));
+	margin-inline: calc(-8px * var(--ui-space-scale, 1));
+	padding-block: calc(0.5rem * var(--ui-space-scale, 1));
+	padding-inline: calc(8px * var(--ui-space-scale, 1));
+	mask-image: linear-gradient(
+		to bottom,
+		transparent,
+		#000 calc(12px * var(--ui-space-scale, 1)),
+		#000 calc(100% - 12px * var(--ui-space-scale, 1)),
+		transparent
+	);
+}
+/* A 4px thumb that shows only while the menu is hovered, as the picker's own list thumb does. The standard
+   scrollbar properties are reset here, since Chromium ignores ::-webkit-scrollbar while they are set. */
+@supports selector(::-webkit-scrollbar) {
+	.composer-plus-menu[data-slot] > [data-slot="dropdown-menu-viewport"] {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+.composer-plus-menu[data-slot] > [data-slot="dropdown-menu-viewport"]::-webkit-scrollbar {
+	width: calc(4px * var(--ui-space-scale, 1));
+}
+.composer-plus-menu[data-slot] > [data-slot="dropdown-menu-viewport"]::-webkit-scrollbar-thumb {
+	background: transparent;
+}
+.composer-plus-menu[data-slot]:hover > [data-slot="dropdown-menu-viewport"]::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.54);
+}
+.dark .composer-plus-menu[data-slot]:hover > [data-slot="dropdown-menu-viewport"]::-webkit-scrollbar-thumb {
+	background: oklch(0.67 0 0 / 0.5);
 }
 /* The composer's Run settings sit in a short panel: tighter section spacing than the header picker's page. */
 .composer-run-settings .space-y-5 > :not(:last-child) {
@@ -5168,6 +5212,83 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 .composer-run-settings .space-y-5 > .border-b.pb-5 {
 	padding-bottom: calc(12px * var(--ui-space-scale, 1));
+}
+/* 16px above the header and under the buttons; the pinned footer's sticky offsets follow the padding. */
+.composer-run-settings {
+	--run-settings-pad-y: calc(16px * var(--ui-space-scale, 1));
+	padding-block: var(--run-settings-pad-y);
+}
+.composer-run-settings [data-pinned-footer] {
+	bottom: calc(-1 * var(--run-settings-pad-y));
+	margin-bottom: calc(-1 * var(--run-settings-pad-y));
+	padding-bottom: var(--run-settings-pad-y);
+}
+/* No rule or padding over the footer: the Default settings field is the edge. */
+.composer-run-settings [data-pinned-footer] > :first-child {
+	border-top-width: 0;
+	padding-top: 0;
+}
+/* The pinned footer at 32px controls and 10px rows, so it takes less of the short panel. */
+.composer-run-settings [data-pinned-footer] > :first-child {
+	row-gap: calc(10px * var(--ui-space-scale, 1));
+}
+.composer-run-settings [data-pinned-footer] :is(
+		button[aria-label="Run settings for this model"],
+		button[aria-label="Rename this setting"],
+		[data-run-settings-name],
+		[data-slot="button"]
+	) {
+	height: calc(32px * var(--ui-space-scale, 1));
+	padding-block: 0;
+}
+.composer-run-settings [data-pinned-footer] button[aria-label="Rename this setting"] {
+	width: calc(32px * var(--ui-space-scale, 1));
+}
+/* Rows scrolling under the pinned footer fade out above it, so the list reads as going on. */
+.composer-run-settings [data-pinned-footer]::before {
+	content: "";
+	pointer-events: none;
+	position: absolute;
+	inset-inline: 0;
+	bottom: 100%;
+	height: calc(20px * var(--ui-space-scale, 1));
+	background: linear-gradient(to bottom, transparent, var(--popover));
+}
+.dark .composer-run-settings [data-pinned-footer]::before {
+	background: linear-gradient(to bottom, transparent, var(--sidebar));
+}
+.composer-run-settings [data-config-header] {
+	padding-bottom: calc(12px * var(--ui-space-scale, 1));
+}
+.composer-run-settings [data-config-title] {
+	margin-top: calc(4px * var(--ui-space-scale, 1));
+	/* Half a pixel under the full page's 14px and 10px, for the narrower panel. */
+	font-size: calc(0.84375rem * var(--ui-font-scale, 1));
+}
+.composer-run-settings [data-config-eyebrow] {
+	font-size: calc(0.59375rem * var(--ui-font-scale, 1));
+}
+/* Rows take their content's height (a 32px pill, a 20px switch, a line of text), not a flat 32px:
+   a title with nothing that tall beside it floated in the spare height, so sections began further
+   under their divider than the pill rows. */
+.composer-run-settings .config-row,
+.composer-run-settings [data-placement-title] {
+	min-height: 0;
+}
+.composer-run-settings [data-memory-estimate] > button {
+	min-height: calc(24px * var(--ui-space-scale, 1));
+}
+/* The system font sits its text low in a fixed-height input (0.5-1.25px measured); the buttons and
+   dropdowns beside them centre their caps, so only the fields are lifted. */
+.composer-run-settings input:not([type="checkbox"], [type="radio"], [type="range"]) {
+	/* Both edges, so a field with its own vertical padding (the rename box's py-1) lifts the same 0.75px. */
+	padding-top: 0;
+	padding-bottom: calc(1.5px * var(--ui-space-scale, 1));
+}
+.composer-run-settings [data-memory-advisory] {
+	margin-top: calc(6px * var(--ui-space-scale, 1));
+	font-size: var(--text-ui-11);
+	line-height: 1.375;
 }
 .composer-model-list[data-fade-top] {
 	mask-image: linear-gradient(to bottom, transparent, #000 14px);

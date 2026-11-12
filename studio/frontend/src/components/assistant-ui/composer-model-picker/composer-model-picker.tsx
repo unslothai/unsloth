@@ -143,6 +143,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import {
   type CSSProperties,
   Fragment,
@@ -157,12 +158,15 @@ import {
   useRef,
   useState,
 } from "react";
+import { useAnimatedListHeight } from "./animated-height";
 import { useComposerModelPickerSource } from "./context";
 import { useCustomFolders } from "./custom-folders";
 import { EffortSlider } from "./effort-slider";
-import { ListScrollbar } from "./list-scrollbar";
+import { ListScrollbar, StripScrollbar } from "./list-scrollbar";
 import {
+  DEVICE_SORT_DESC,
   DEVICE_SORT_LABEL,
+  DEVICE_SORT_ORDER,
   DEVICE_TAB,
   type DeviceSort,
   FAVORITES_TAB,
@@ -170,6 +174,7 @@ import {
   type FormatFilter,
   type FormatTone,
   type ListSection,
+  PICKER_EDGE,
   type PickerRow,
   RECOMMENDED_TAB,
   SECTION_LABEL,
@@ -182,6 +187,7 @@ import {
   localSection,
   matchesFormat,
   orderBySection,
+  pickerSide,
   pinCoversId,
   repoSection,
   sectionsHaveRows,
@@ -634,7 +640,9 @@ function TabButton({
         aria-label={tab.label}
         onClick={onSelect}
         className={cn(
-          "relative grid size-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center transition-colors hover:text-foreground",
+          // Sized to the icon, not a fixed box: outline glyphs run narrower than the logos, so even
+          // boxes left them visibly further apart.
+          "relative grid h-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center px-[calc(7.5px*var(--ui-space-scale,1))] transition-colors hover:text-foreground",
           shown ? "text-foreground" : "text-muted-foreground",
         )}
       >
@@ -855,11 +863,19 @@ const PARTIAL_HINT = {
 const UPDATE_HINT =
   "A newer upload is on Hugging Face. Update it from the menu.";
 
-function Hint({ label, children }: { label: string; children: ReactNode }) {
+function Hint({
+  label,
+  side = "top",
+  children,
+}: {
+  label: string;
+  side?: "top" | "left";
+  children: ReactNode;
+}) {
   return (
     <Tooltip delayDuration={0} disableHoverableContent={true}>
       <TooltipTrigger asChild={true}>{children}</TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact">
+      <TooltipContent side={side} className="tooltip-compact">
         {label}
       </TooltipContent>
     </Tooltip>
@@ -925,8 +941,9 @@ function SwitchRow({
   );
 }
 
+// Compact rows, so 8px corners (12px on a 26px row reads as a full pill) in the menu's 12px.
 const MENU_ITEM =
-  "min-h-0 gap-2 py-[calc(5px*var(--ui-space-scale,1))] pr-8 pl-2.5 text-ui-12 [&_[data-slot=dropdown-menu-radio-item-indicator]]:right-2.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5";
+  "min-h-0 gap-2 rounded-[calc(8px*var(--ui-space-scale,1))] py-[calc(5px*var(--ui-space-scale,1))] pr-8 pl-2.5 text-ui-12 [&_[data-slot=dropdown-menu-radio-item-indicator]]:right-2.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5";
 const MENU_LABEL =
   "px-2.5 pt-[calc(6px*var(--ui-space-scale,1))] pb-[calc(3px*var(--ui-space-scale,1))] text-ui-10";
 const FORMAT_DOT: Partial<Record<FormatFilter, string>> = {
@@ -1357,6 +1374,8 @@ export function ComposerModelPicker({
   const [quantsOpen, setQuantsOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // State as well as the ref: the panel mounts after this render, and the glide must attach then.
+  const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
   const [tabStrip, setTabStrip] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -1476,6 +1495,14 @@ export function ComposerModelPicker({
       resultCount: hubResults.length,
       resetKey: hubQuery,
     });
+  const attachList = useCallback(
+    (node: HTMLDivElement | null) => {
+      listRef.current = node;
+      hubScrollRef.current = node;
+      setListEl(node);
+    },
+    [hubScrollRef],
+  );
   const recommended = useMemo<ModelOption[]>(() => {
     const fromHub = hubResults
       .filter(
@@ -1758,34 +1785,43 @@ export function ComposerModelPicker({
       out.push({
         value: `${MAKER_PREFIX}${maker.id}`,
         label: maker.name,
-        icon: <MakerMark provider={maker} className="size-4" />,
+        // Solid marks read larger than the outline glyphs at one size, so tabs draw them at 15px.
+        icon: (
+          <MakerMark
+            provider={maker}
+            className="size-[calc(15px*var(--ui-space-scale,1))]"
+          />
+        ),
       });
     }
     return out;
   }, [rows]);
 
   const tabs = useMemo<SourceTab[]>(() => {
-    const glyph = (icon: typeof StarIcon) => (
-      <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
+    // Scaled (not resized, which would move the tab gaps) to a little under the logos' 15px of ink.
+    const glyph = (icon: typeof StarIcon, scale: string) => (
+      <HugeiconsIcon
+        icon={icon}
+        strokeWidth={1.75}
+        className={cn("size-4", scale)}
+      />
     );
     const out: SourceTab[] = [
-      { value: FAVORITES_TAB, label: "Favorites", icon: glyph(StarIcon) },
+      {
+        value: FAVORITES_TAB,
+        label: "Favorites",
+        icon: glyph(StarIcon, "scale-[1.1]"),
+      },
       {
         value: RECOMMENDED_TAB,
         label: "Discover models",
-        icon: glyph(Navigation05Icon),
+        icon: glyph(Navigation05Icon, "scale-[1.08]"),
       },
       {
         value: DEVICE_TAB,
         label: "On Device",
         // The tray glyph draws small in its box.
-        icon: (
-          <HugeiconsIcon
-            icon={Download01Icon}
-            strokeWidth={1.75}
-            className="size-4 scale-[1.15]"
-          />
-        ),
+        icon: glyph(Download01Icon, "scale-[1.15]"),
       },
       ...makerTabs,
     ];
@@ -1800,7 +1836,10 @@ export function ComposerModelPicker({
         label: m.providerName,
         icon: (
           <span className="flex shrink-0" style={opticalStyle(m.providerType)}>
-            <ApiProviderLogo providerType={m.providerType} className="size-4" />
+            <ApiProviderLogo
+              providerType={m.providerType}
+              className="size-[calc(15px*var(--ui-space-scale,1))]"
+            />
           </span>
         ),
       });
@@ -1873,6 +1912,7 @@ export function ComposerModelPicker({
     [pinned, pinnedConnected],
   );
   const [deviceSort, setDeviceSort] = useState<DeviceSort>("recent");
+  const [deviceSortDesc, setDeviceSortDesc] = useState(DEVICE_SORT_DESC.recent);
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
@@ -1906,6 +1946,7 @@ export function ComposerModelPicker({
       found.filter((row) => matchesFormat(row, formatFilter)),
       deviceSort,
       (row) => loadedAt(loadTimes, row.id),
+      deviceSortDesc,
     );
   }, [
     rows,
@@ -1916,6 +1957,7 @@ export function ComposerModelPicker({
     isFavorite,
     formatFilter,
     deviceSort,
+    deviceSortDesc,
     loadTimes,
     fitOnDeviceOnly,
     hubFit,
@@ -2036,6 +2078,7 @@ export function ComposerModelPicker({
     },
   });
   const isExpanded = expanded || !chosenName;
+  useAnimatedListHeight(listEl);
 
   const chosenTarget =
     // The Quantization row switches GGUF quants; an MLX precision is picked from its row.
@@ -2412,6 +2455,8 @@ export function ComposerModelPicker({
       loaded: source?.loaded ?? false,
     });
 
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [openSide, setOpenSide] = useState(side);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
@@ -2421,6 +2466,14 @@ export function ComposerModelPicker({
     setSeenOpen(open);
     setConfigTarget(null);
     if (open) {
+      // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
+      setOpenSide(
+        pickerSide(
+          side,
+          triggerRef.current?.getBoundingClientRect() ?? null,
+          window.innerHeight,
+        ),
+      );
       resetView();
       setActive(0);
       highlightRef.current = false;
@@ -3694,6 +3747,7 @@ export function ComposerModelPicker({
           <TooltipTrigger asChild={true}>
             <PopoverTrigger asChild={true}>
               <button
+                ref={triggerRef}
                 type="button"
                 className={cn(
                   "unsloth-thinking-pill composer-model-chip group/chip",
@@ -3761,6 +3815,7 @@ export function ComposerModelPicker({
       ) : (
         <PopoverTrigger asChild={true}>
           <button
+            ref={triggerRef}
             type="button"
             className={cn(
               "unsloth-thinking-pill composer-model-chip group/chip",
@@ -3821,8 +3876,12 @@ export function ComposerModelPicker({
           </button>
         </PopoverTrigger>
       )}
+      {/* No collision flip: the side is fixed per opening, so a tab or search that changes the
+      height cannot move the panel across the composer. */}
       <PopoverContent
-        side={side}
+        side={openSide}
+        avoidCollisions={false}
+        collisionPadding={PICKER_EDGE}
         align="end"
         sideOffset={8}
         data-composer-model-picker=""
@@ -3836,7 +3895,7 @@ export function ComposerModelPicker({
             ? `Run settings for ${configTarget.displayName}`
             : undefined
         }
-        className="unsloth-plus-menu composer-model-picker relative max-h-[min(calc(600px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))] w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2"
+        className="unsloth-plus-menu composer-model-picker relative max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))] w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2"
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
             requestAnimationFrame(() => searchRef.current?.focus());
@@ -3855,7 +3914,7 @@ export function ComposerModelPicker({
           <>
             <div
               ref={settingsRef}
-              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto overscroll-none pt-4.5 pr-[var(--run-settings-pad-r)] pb-4.5 pl-[var(--run-settings-pad-l)] [--run-settings-pad-l:calc(22px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(22px*var(--ui-space-scale,1))]"
+              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto overscroll-none pr-[var(--run-settings-pad-r)] pl-[var(--run-settings-pad-l)] [--run-settings-pad-l:calc(22px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(22px*var(--ui-space-scale,1))]"
             >
               <ModelConfigPage
                 key={modelConfigInstanceKey(
@@ -3868,6 +3927,7 @@ export function ComposerModelPicker({
                   configStandalone ? undefined : () => setConfigTarget(null)
                 }
                 focusField={configFocus ?? undefined}
+                dense={true}
                 onRun={(config, isDiffusion) => {
                   supersede();
                   source?.onPick(configTarget.configId ?? configTarget.id, {
@@ -3894,12 +3954,12 @@ export function ComposerModelPicker({
           </>
         ) : isExpanded ? (
           <>
-            <div className="flex shrink-0 items-center gap-1">
+            <div className="relative flex shrink-0 items-center gap-1">
               <div
                 ref={setTabStrip}
                 role="tablist"
                 aria-label="Model sources"
-                className="composer-tab-strip flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+                className="composer-tab-strip flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
                 onWheel={(event) => {
                   // A mouse wheel scrolls the tabs sideways; a trackpad already does.
                   if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
@@ -3916,6 +3976,7 @@ export function ComposerModelPicker({
                   />
                 ))}
               </div>
+              <StripScrollbar strip={tabStrip} />
               {(chosenLoaded || loadedModels.length > 0) &&
               !pending &&
               !modelLoading ? (
@@ -3942,7 +4003,7 @@ export function ComposerModelPicker({
                     }
                   }}
                   className={cn(
-                    "ml-auto flex h-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors",
+                    "ml-auto flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors",
                     EJECT_PILL_HOVER,
                   )}
                 >
@@ -3955,13 +4016,14 @@ export function ComposerModelPicker({
                 </button>
               ) : null}
               {chosenName ? (
+                // The expand chevron's twin: same 26px button, centred 25px in from the panel edge.
                 <Hint label="Collapse">
                   <button
                     type="button"
                     aria-label="Collapse the model list"
                     aria-expanded={true}
                     onClick={() => setExpanded(false)}
-                    className="mr-[calc(8px*var(--ui-space-scale,1))] grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                    className="mr-[calc(4px*var(--ui-space-scale,1))] grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
                   >
                     <HugeiconsIcon
                       icon={ChevronDownStandardIcon}
@@ -4005,19 +4067,19 @@ export function ComposerModelPicker({
               {viewed === DEVICE_TAB ? (
                 <NonModalDropdownMenu
                   align="end"
-                  className="w-auto min-w-[calc(140px*var(--ui-space-scale,1))]"
+                  className="composer-filter-menu w-auto min-w-[calc(140px*var(--ui-space-scale,1))]"
                   trigger={(ref) => (
                     <button
                       ref={ref}
                       type="button"
-                      aria-label={`Sort and filter: ${DEVICE_SORT_LABEL[deviceSort]}, ${FORMAT_FILTER_LABEL[formatFilter]}`}
+                      aria-label={`Sort and filter: ${DEVICE_SORT_LABEL[deviceSort]} ${deviceSortDesc ? "descending" : "ascending"}, ${FORMAT_FILTER_LABEL[formatFilter]}`}
                       className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent"
                     >
                       <HugeiconsIcon
                         icon={FilterMailIcon}
                         strokeWidth={1.75}
-                        // The Model Hub's Filters glyph, nudged down as there: its lines narrow downward.
-                        className="size-4 translate-y-px"
+                        // The glyph's ink sits 0.5px under its box's centre; lifted to centre (measured).
+                        className="size-4 -translate-y-[0.5px]"
                       />
                       {formatFilter !== "all" ? (
                         <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
@@ -4028,20 +4090,58 @@ export function ComposerModelPicker({
                   <DropdownMenuLabel className={MENU_LABEL}>
                     Sort
                   </DropdownMenuLabel>
-                  <DropdownMenuRadioGroup
-                    value={deviceSort}
-                    onValueChange={(next) => setDeviceSort(next as DeviceSort)}
-                  >
+                  {/* As Library's column headers: the chosen sort shows its direction, and choosing it
+                  again flips it with the menu left open. */}
+                  <DropdownMenuRadioGroup value={deviceSort}>
                     {(Object.keys(DEVICE_SORT_LABEL) as DeviceSort[]).map(
-                      (key) => (
-                        <DropdownMenuRadioItem
-                          key={key}
-                          value={key}
-                          className={MENU_ITEM}
-                        >
-                          {DEVICE_SORT_LABEL[key]}
-                        </DropdownMenuRadioItem>
-                      ),
+                      (key) => {
+                        const Arrow = deviceSortDesc
+                          ? ArrowDownIcon
+                          : ArrowUpIcon;
+                        const order = DEVICE_SORT_ORDER[key];
+                        // The chosen row says its current order; the others, the order they start in.
+                        const hint =
+                          key === deviceSort
+                            ? deviceSortDesc
+                              ? order.desc
+                              : order.asc
+                            : DEVICE_SORT_DESC[key]
+                              ? order.desc
+                              : order.asc;
+                        return (
+                          <Hint key={key} label={hint} side="left">
+                            <DropdownMenuRadioItem
+                              value={key}
+                              className={cn(
+                                MENU_ITEM,
+                                "[&_[data-slot=dropdown-menu-radio-item-indicator]]:hidden",
+                              )}
+                              onSelect={(event) => {
+                                if (key === deviceSort) {
+                                  event.preventDefault();
+                                  setDeviceSortDesc((desc) => !desc);
+                                  return;
+                                }
+                                setDeviceSort(key);
+                                setDeviceSortDesc(DEVICE_SORT_DESC[key]);
+                              }}
+                            >
+                              {DEVICE_SORT_LABEL[key]}
+                              {key === deviceSort ? (
+                                // A circle under the pointer, since clicking the arrow (or its row) flips the order.
+                                <span className="absolute right-[calc(5px*var(--ui-space-scale,1))] grid size-[calc(24px*var(--ui-space-scale,1))] place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]">
+                                  <Arrow className="size-3.5" strokeWidth={2} />
+                                  <span className="sr-only">
+                                    {deviceSortDesc
+                                      ? "descending"
+                                      : "ascending"}
+                                  </span>
+                                </span>
+                              ) : null}
+                            </DropdownMenuRadioItem>
+                          </Hint>
+                        );
+                      },
                     )}
                   </DropdownMenuRadioGroup>
                   <DropdownMenuSeparator />
@@ -4060,12 +4160,12 @@ export function ComposerModelPicker({
                         <DropdownMenuRadioItem
                           key={key}
                           value={key}
-                          className={MENU_ITEM}
+                          className={cn(MENU_ITEM, "gap-1.5")}
                         >
                           {FORMAT_DOT[key] ? (
                             <span
                               className={cn(
-                                "size-1.5 shrink-0 rounded-full",
+                                "size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full",
                                 FORMAT_DOT[key],
                               )}
                             />
@@ -4125,10 +4225,7 @@ export function ComposerModelPicker({
               ) : null}
             </div>
             <div
-              ref={(node) => {
-                listRef.current = node;
-                hubScrollRef.current = node;
-              }}
+              ref={attachList}
               id="composer-model-picker-list"
               data-model-picker-list=""
               onMouseLeave={() => setHighlight(false)}
@@ -4136,7 +4233,7 @@ export function ComposerModelPicker({
               role="listbox"
               tabIndex={-1}
               aria-label={viewedTab?.label}
-              className="composer-model-list flex max-h-[min(calc(340px*var(--ui-space-scale,1)),50vh)] min-h-0 flex-col gap-0.5 overflow-y-auto pt-1.5 pb-1.5"
+              className="composer-model-list flex max-h-[min(calc(400px*var(--ui-space-scale,1)),60vh)] min-h-0 flex-col gap-0.5 overflow-y-auto pt-1.5 pb-1.5"
             >
               {renderList()}
               {viewed === RECOMMENDED_TAB && hubSearch.hasMore ? (
@@ -4215,7 +4312,10 @@ export function ComposerModelPicker({
           <div
             className={cn(
               "flex shrink-0 flex-col gap-0.5",
-              isExpanded ? "border-t border-border pt-1" : "pt-1",
+              // Collapsed, as far under the model bar as the list's foot and divider sit expanded.
+              isExpanded
+                ? "border-t border-border pt-[calc(5px*var(--ui-space-scale,1))]"
+                : "pt-[calc(10px*var(--ui-space-scale,1))]",
             )}
           >
             {showQuantRow ? (

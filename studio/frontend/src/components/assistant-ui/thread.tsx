@@ -203,7 +203,6 @@ import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-ba
 import { insertSavedPrompt } from "@/features/chat/prompt-storage/insert-prompt";
 import {
   COMPOSER_POSITION_BOTTOM,
-  COMPOSER_POSITION_MIDDLE,
   useChatPreferencesStore,
 } from "@/features/chat/stores/chat-preferences-store";
 import {
@@ -2082,6 +2081,23 @@ const startGrammarPrewarm = (): void => {
 const renderThreadMessage = proplessSlot(ThreadMessage);
 
 // Memoized: chat-page renders this inside a store-subscribing component.
+// T3 Code's cut-off: under 34rem a centred composer leaves no room for the greeting above it.
+const SHORT_WINDOW_QUERY = "(max-height: 34rem)";
+const subscribeShortWindow = (notify: () => void) => {
+  const query = window.matchMedia?.(SHORT_WINDOW_QUERY);
+  query?.addEventListener("change", notify);
+  return () => query?.removeEventListener("change", notify);
+};
+const isShortWindow = () => window.matchMedia?.(SHORT_WINDOW_QUERY).matches ?? false;
+
+function useNewChatComposerDocked(): boolean {
+  const atBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerPosition >= COMPOSER_POSITION_BOTTOM,
+  );
+  const short = useSyncExternalStore(subscribeShortWindow, isShortWindow, () => false);
+  return atBottom || short;
+}
+
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
@@ -2090,9 +2106,7 @@ export const Thread: FC<{
   useEffect(() => {
     startGrammarPrewarm();
   }, []);
-  const composerAtBottom = useChatPreferencesStore(
-    (s) => s.newChatComposerPosition >= COMPOSER_POSITION_BOTTOM,
-  );
+  const composerAtBottom = useNewChatComposerDocked();
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
@@ -2794,12 +2808,7 @@ const ThreadWelcome: FC<{
   const composerPosition = useChatPreferencesStore(
     (s) => s.newChatComposerPosition,
   );
-  const composerAtBottom = composerPosition >= COMPOSER_POSITION_BOTTOM;
-  // Below 50 the top padding shrinks; above it, spacers split the leftover height.
-  const lift =
-    Math.min(composerPosition, COMPOSER_POSITION_MIDDLE) /
-    COMPOSER_POSITION_MIDDLE;
-  const sink = Math.max(0, composerPosition - COMPOSER_POSITION_MIDDLE);
+  const composerAtBottom = useNewChatComposerDocked();
   useMarkChatWelcome();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
@@ -2812,106 +2821,102 @@ const ThreadWelcome: FC<{
 
   const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
+  const greetingRow = (
+    <>
+      {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
+      {greeting.kind === "image" && !incognito && (
+        <div className="unsloth-welcome-greeting flex flex-row items-end justify-center">
+          <h1 className="sr-only">{t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}</h1>
+          <img
+            src={greeting.src}
+            alt=""
+            draggable={false}
+            className="unsloth-welcome-image fade-in slide-in-from-bottom-1 animate-in max-h-[calc(120px*var(--ui-space-scale,1))] max-w-full object-contain duration-200"
+          />
+        </div>
+      )}
+      {(greeting.kind === "text" || incognito) && (
+        <div
+          className={cn(
+            "unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]",
+            !incognito &&
+              greeting.kind === "text" &&
+              greeting.icon.kind === "none" &&
+              "min-h-[calc(44px*var(--ui-space-scale,1))]",
+          )}
+        >
+          {!incognito && greeting.kind === "text" && greeting.icon.kind === "sloth" && (
+            <MascotImg
+              src={currentEmojiSrc}
+              className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
+            />
+          )}
+          {!incognito && greeting.kind === "text" && greeting.icon.kind === "custom" && (
+            <img
+              src={greeting.icon.src}
+              alt=""
+              draggable={false}
+              className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(44px*var(--ui-space-scale,1))] shrink-0 -translate-y-[2px] object-contain"
+            />
+          )}
+          <h1
+            className={cn(
+              "aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200",
+              customText && "min-w-0 text-balance text-center [overflow-wrap:anywhere]",
+            )}
+          >
+            {incognito
+              ? t("welcome.temporaryChat")
+              : customText
+                ? customText
+                : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
+          </h1>
+        </div>
+      )}
+      {incognito && (
+        <p className="aui-thread-welcome-message-inner fade-in mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
+          {t("welcome.temporaryChatDescription")}
+        </p>
+      )}
+    </>
+  );
+
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      {/* With a files panel showing (chat with files, or project sources), center the whole block. */}
       <div
         className={cn(
           "aui-thread-welcome-center flex w-full grow flex-col items-center",
-          composerAtBottom
-            ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
-            : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
-          // Without the greeting, its row and gap become padding, so the composer stays where it was.
-          // The image row's -76px margin needs at least that much padding.
-          !composerAtBottom &&
-            (greeting.kind === "image" && !incognito
-              ? "pt-[max(calc(76px*var(--ui-space-scale,1)),calc(27.5dvh*var(--welcome-lift,1)))]"
-              : greeting.kind !== "off" || incognito
-                ? "pt-[calc(27.5dvh*var(--welcome-lift,1))]"
-                : "pt-[calc(27.5dvh*var(--welcome-lift,1)_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
+          composerAtBottom &&
+            "justify-center pb-[calc(160px*var(--ui-space-scale,1))]",
         )}
-        style={{ "--welcome-lift": lift } as CSSProperties}
       >
-        {!composerAtBottom && (
-          <div
-            aria-hidden="true"
-            className="[:has(.unsloth-files-panel)>&]:hidden"
-            style={{ flexGrow: sink }}
-          />
-        )}
-        {/* No padding, so the composer here is as wide as once it docks. */}
-        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
-          {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
-          {greeting.kind === "image" && !incognito && (
+        {composerAtBottom ? (
+          <div className="aui-thread-welcome-message flex w-full flex-col justify-center">
+            {greetingRow}
+          </div>
+        ) : (
+          <>
+            {/* The composer box alone is centred, as T3 Code's: the spacers split the free height
+            by the position setting, and the greeting rides the top one's foot, 16px above it. */}
             <div
-              className={cn(
-                "unsloth-welcome-greeting flex flex-row items-end justify-center",
-                !composerAtBottom &&
-                  "h-[calc(120px*var(--ui-space-scale,1))] -mt-[calc(76px*var(--ui-space-scale,1))]",
-              )}
+              className="aui-thread-welcome-spacer flex w-full basis-0 flex-col justify-end"
+              style={{ flexGrow: `calc(var(--welcome-spacer-grow,1)*${composerPosition})` }}
             >
-              <h1 className="sr-only">{t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}</h1>
-              <img
-                src={greeting.src}
-                alt=""
-                draggable={false}
-                className="unsloth-welcome-image fade-in slide-in-from-bottom-1 animate-in max-h-[calc(120px*var(--ui-space-scale,1))] max-w-full object-contain duration-200"
-              />
+              {/* Padding here, not on the spacer, where it would count toward the spacer's share. */}
+              <div className="flex flex-col pb-[calc(16px*var(--ui-space-scale,1))]">{greetingRow}</div>
             </div>
-          )}
-          {(greeting.kind === "text" || incognito) && (
+            {/* No padding, so the composer here is as wide as once it docks. */}
+            <div className="aui-thread-welcome-message flex w-full flex-col">
+              {!hideComposer && <ComposerAnimated threadId={threadId} />}
+            </div>
             <div
-              className={cn(
-                "unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]",
-                !incognito &&
-                  greeting.kind === "text" &&
-                  greeting.icon.kind === "none" &&
-                  "min-h-[calc(44px*var(--ui-space-scale,1))]",
-              )}
-            >
-              {!incognito && greeting.kind === "text" && greeting.icon.kind === "sloth" && (
-                <MascotImg
-                  src={currentEmojiSrc}
-                  className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
-                />
-              )}
-              {!incognito && greeting.kind === "text" && greeting.icon.kind === "custom" && (
-                <img
-                  src={greeting.icon.src}
-                  alt=""
-                  draggable={false}
-                  className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(44px*var(--ui-space-scale,1))] shrink-0 -translate-y-[2px] object-contain"
-                />
-              )}
-              <h1
-                className={cn(
-                  "aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200",
-                  customText && "min-w-0 text-balance text-center [overflow-wrap:anywhere]",
-                )}
-              >
-                {incognito
-                  ? t("welcome.temporaryChat")
-                  : customText
-                    ? customText
-                    : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
-              </h1>
-            </div>
-          )}
-          {incognito && (
-            <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
-              {t("welcome.temporaryChatDescription")}
-            </p>
-          )}
-          {!hideComposer && !composerAtBottom && (
-            <ComposerAnimated threadId={threadId} />
-          )}
-        </div>
-        {!composerAtBottom && (
-          <div
-            aria-hidden="true"
-            className="[:has(.unsloth-files-panel)>&]:hidden"
-            style={{ flexGrow: COMPOSER_POSITION_MIDDLE - sink }}
-          />
+              aria-hidden="true"
+              className="aui-thread-welcome-spacer basis-0"
+              style={{
+                flexGrow: `calc(var(--welcome-spacer-grow,1)*${COMPOSER_POSITION_BOTTOM - composerPosition})`,
+              }}
+            />
+          </>
         )}
       </div>
     </div>
@@ -7135,7 +7140,7 @@ const ComposerToolsMenu: FC<{
         align="start"
         sideOffset={0}
         avoidCollisions={true}
-        className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
+        className="unsloth-plus-menu composer-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
         // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => {
           event.preventDefault();

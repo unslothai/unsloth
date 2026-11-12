@@ -20,6 +20,7 @@ import {
   isChatTask,
   localSection,
   orderBySection,
+  pickerSide,
   pinCoversId,
   repoSection,
   sectionsHaveRows,
@@ -426,9 +427,14 @@ test("On Device sort and format filter follow the header picker's options", asyn
     sortDeviceRows(rows, "size", () => -1).map((r) => r.label),
     ["a", "b", "c"],
   );
+  // The arrow flips each key from its first direction.
   assert.deepEqual(
-    sortDeviceRows(rows, "downloaded", () => -1).map((r) => r.label),
-    ["a", "c", "b"],
+    sortDeviceRows(rows, "name", () => -1, true).map((r) => r.label),
+    ["c", "b", "a"],
+  );
+  assert.deepEqual(
+    sortDeviceRows(rows, "size", () => -1, false).map((r) => r.label),
+    ["c", "b", "a"],
   );
   assert.deepEqual(
     sortDeviceRows(rows, "recent", (r) => (r.label === "c" ? 10 : -1)).map(
@@ -602,4 +608,73 @@ test("Discover keeps rows the Hub search matched by maker alias", () => {
     ),
     [gemma],
   );
+});
+
+test("the picker's side is fixed per opening by the trigger, not the panel", () => {
+  const vh = 900;
+  // New chat (prefers below): a centred composer opens down, one near the foot opens up.
+  assert.equal(pickerSide("bottom", { top: 500, bottom: 530 }, vh), "bottom");
+  assert.equal(pickerSide("bottom", { top: 760, bottom: 790 }, vh), "top");
+  // A docked composer opens up, unless the window leaves it under 180px above.
+  assert.equal(pickerSide("top", { top: 840, bottom: 870 }, vh), "top");
+  assert.equal(pickerSide("top", { top: 120, bottom: 150 }, vh), "bottom");
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // Radix's flip would re-judge the side whenever a tab or search changes the height.
+  assert.match(picker, /side=\{openSide\}\s+avoidCollisions=\{false\}/);
+});
+
+test("the picker list glides to its new height instead of jumping", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // The element, not the ref: the panel mounts after the picker renders.
+  assert.match(picker, /useAnimatedListHeight\(listEl\);/);
+  assert.match(picker, /setListEl\(node\);/);
+  assert.match(picker, /ref=\{attachList\}/);
+  const glide = readSrc(
+    "components/assistant-ui/composer-model-picker/animated-height.ts",
+  );
+  // Before paint, from the height on screen, and never under reduced motion.
+  assert.match(glide, /new MutationObserver\(glide\)/);
+  // The observer fires after the rows change, so at rest it starts from the remembered height.
+  assert.match(
+    glide,
+    /const from = el\.style\.height \? el\.getBoundingClientRect\(\)\.height : shown;/,
+  );
+  assert.match(glide, /prefers-reduced-motion: reduce/);
+});
+
+test("each sort direction has words for its tooltip", async () => {
+  const { DEVICE_SORT_DESC, DEVICE_SORT_ORDER } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  // The first direction of each key matches what its rows show before any flip.
+  assert.equal(DEVICE_SORT_ORDER.recent.desc, "Newest first");
+  assert.equal(DEVICE_SORT_ORDER.size.desc, "Largest first");
+  assert.equal(DEVICE_SORT_ORDER.name.asc, "A to Z");
+  assert.deepEqual(DEVICE_SORT_DESC, { recent: true, size: true, name: false });
+});
+
+test("the composer's Run settings folds Always load and the save status into the dropdown", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /dense=\{true\}/);
+  const page = readSrc(
+    "features/model-picker/components/model-config-page.tsx",
+  );
+  // Dense passes both to the dropdown and keeps the status for screen readers only.
+  assert.match(page, /alwaysLoad=\{\s*dense/);
+  assert.match(page, /status=\{\s*dense && saveStatus/);
+  assert.match(
+    page,
+    /<p id=\{saveStatusId\} aria-live="polite" className="sr-only">/,
+  );
+  const row = readSrc(
+    "features/model-picker/components/saved-run-settings-row.tsx",
+  );
+  assert.match(row, /role="menuitemcheckbox"/);
+  assert.match(row, /Always load with these settings/);
 });

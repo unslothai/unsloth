@@ -106,12 +106,26 @@ export interface PickerRow {
   updatedAt?: number;
 }
 
-export type DeviceSort = "recent" | "size" | "name" | "downloaded";
+export type DeviceSort = "recent" | "size" | "name";
 export const DEVICE_SORT_LABEL: Record<DeviceSort, string> = {
   recent: "Recent",
   size: "Size",
   name: "Name",
-  downloaded: "Downloaded",
+};
+/** What each direction means, for the sort rows' tooltips. */
+export const DEVICE_SORT_ORDER: Record<
+  DeviceSort,
+  { desc: string; asc: string }
+> = {
+  recent: { desc: "Newest first", asc: "Oldest first" },
+  size: { desc: "Largest first", asc: "Smallest first" },
+  name: { desc: "Z to A", asc: "A to Z" },
+};
+/** Each key's first direction: newest and largest first, names A to Z. */
+export const DEVICE_SORT_DESC: Record<DeviceSort, boolean> = {
+  recent: true,
+  size: true,
+  name: false,
 };
 export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
 export const FORMAT_FILTER_LABEL: Record<FormatFilter, string> = {
@@ -144,10 +158,11 @@ export function sortDeviceRows<T extends PickerRow>(
   rows: readonly T[],
   key: DeviceSort,
   lastLoaded: (row: T) => number,
+  desc: boolean = DEVICE_SORT_DESC[key],
 ): T[] {
   const byDate = (a: T, b: T) =>
     (b.updatedAt ?? -1) - (a.updatedAt ?? -1) || a.label.localeCompare(b.label);
-  return [...rows].sort((a, b) => {
+  const sorted = [...rows].sort((a, b) => {
     if (key === "name") {
       return a.label.localeCompare(b.label);
     }
@@ -157,11 +172,9 @@ export function sortDeviceRows<T extends PickerRow>(
         a.label.localeCompare(b.label)
       );
     }
-    if (key === "recent") {
-      return lastLoaded(b) - lastLoaded(a) || byDate(a, b);
-    }
-    return byDate(a, b);
+    return lastLoaded(b) - lastLoaded(a) || byDate(a, b);
   });
+  return desc === DEVICE_SORT_DESC[key] ? sorted : sorted.reverse();
 }
 
 const norm = (value: string | null | undefined): string =>
@@ -331,4 +344,26 @@ export function sliderValue(
     return OFF_LEVEL;
   }
   return effort;
+}
+
+// Zeron's rule, judged once per opening from the trigger alone, never from the panel's height:
+// a below-preferring (new chat) picker opens down while 180px fit there; an above-preferring one
+// opens down only when above is short of 180px and below has more room.
+const PICKER_MIN_ROOM = 180;
+/** The panel's gap to the window edge, which the side rule's room already leaves. */
+export const PICKER_EDGE = 8;
+export function pickerSide(
+  preferred: "top" | "bottom",
+  trigger: { top: number; bottom: number } | null,
+  viewportHeight: number,
+): "top" | "bottom" {
+  if (!trigger) {
+    return preferred;
+  }
+  const above = trigger.top - PICKER_EDGE;
+  const below = viewportHeight - trigger.bottom - PICKER_EDGE;
+  if (preferred === "bottom") {
+    return below >= PICKER_MIN_ROOM ? "bottom" : "top";
+  }
+  return above < PICKER_MIN_ROOM && below > above ? "bottom" : "top";
 }

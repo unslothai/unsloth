@@ -263,7 +263,7 @@ import {
   type NumericValueInputHandle,
 } from "./numeric-value-input";
 
-const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
+const ROW_CLASS = "config-row flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
   "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
@@ -2533,6 +2533,8 @@ interface ModelConfigPageProps {
   variant?: "page" | "sidebar";
   showHeader?: boolean;
   focusField?: ModelConfigFocus;
+  /** The composer picker: Always load and the save status fold into the settings dropdown. */
+  dense?: boolean;
 }
 
 export function ModelConfigPage({
@@ -2546,6 +2548,7 @@ export function ModelConfigPage({
   variant = "page",
   showHeader = true,
   focusField,
+  dense = false,
 }: ModelConfigPageProps) {
   const saveStatusId = useId();
   const alwaysLoadId = useId();
@@ -4139,7 +4142,7 @@ export function ModelConfigPage({
     >
       {variant === "page" && showHeader && (
         // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
-        <div className="flex items-center gap-2.5 pb-5">
+        <div data-config-header="" className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
@@ -4155,10 +4158,10 @@ export function ModelConfigPage({
             </button>
           )}
           <div className="min-w-0 flex-1">
-            <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+            <div data-config-eyebrow="" className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
+            <div data-config-title="" className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
           </div>
@@ -4398,12 +4401,38 @@ export function ModelConfigPage({
           onNamingChange={setNaming}
           onNamingSubmit={submitNaming}
           onDelete={setPendingDelete}
+          alwaysLoad={
+            dense
+              ? {
+                  checked: selectedSet !== null && selectedSet === pinnedSet,
+                  disabled:
+                    naming !== null ||
+                    (selectedSet === null && customName === null) ||
+                    sharedVariantUnresolved ||
+                    extraArgsHydrating ||
+                    budgetSettling,
+                  onChange: setAlwaysLoad,
+                }
+              : undefined
+          }
+          status={
+            dense && saveStatus
+              ? { text: saveStatus, dirty: saveStatus === "Unsaved changes" }
+              : undefined
+          }
         />
-        {/* Always rendered so a status change never moves the buttons; the sidebar's name box already does. */}
+        {dense ? (
+          // The status rides on the dropdown; screen readers still hear it change.
+          <p id={saveStatusId} aria-live="polite" className="sr-only">
+            {saveStatus}
+          </p>
+        ) : (
+        /* Always rendered so a status change never moves the buttons; the sidebar's name box already does. */
         <div
           className={cn(
             "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2",
-            naming && (variant === "sidebar" ? "hidden" : "invisible"),
+            // The sidebar's name box takes this row; the page keeps it, its checkbox disabled meanwhile.
+            naming && variant === "sidebar" && "hidden",
           )}
         >
           <Checkbox
@@ -4442,6 +4471,7 @@ export function ModelConfigPage({
             {saveStatus}
           </p>
         </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="dark"
