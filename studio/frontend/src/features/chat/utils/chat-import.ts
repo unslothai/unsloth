@@ -369,6 +369,14 @@ function pairToTurns(obj: Record<string, unknown>): unknown[] {
 }
 
 // Responses tool outputs may be content-part arrays; text-only ones keep their text.
+// Studio's names for provider-run Responses tools (chat-adapter SERVER_SIDE_BUILTIN_TOOL_NAMES).
+const BUILTIN_TOOL_NAMES: Record<string, string> = {
+  web_search_call: "web_search",
+  code_interpreter_call: "code_execution",
+  shell_call: "code_execution",
+  local_shell_call: "code_execution",
+};
+
 function toolOutputText(output: unknown): string {
   if (typeof output === "string") return output;
   if (
@@ -433,8 +441,17 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
         });
       }
     } else if (type.endsWith("_call")) {
-      const name = text(entry.name) ?? type.replace(/_call$/, "");
       const id = text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID();
+      const builtin = type !== "function_call" && type !== "custom_tool_call";
+      const name = builtin
+        ? (BUILTIN_TOOL_NAMES[type] ?? type.replace(/_call$/, ""))
+        : (text(entry.name) ?? "unknown");
+      const payload =
+        typeof entry.code === "string"
+          ? { code: entry.code }
+          : entry.input !== undefined
+            ? { input: entry.input }
+            : (entry.arguments ?? entry.action ?? {});
       assistantTurn().tool_calls.push({
         id,
         type: "function",
@@ -445,17 +462,21 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
             typeof entry.arguments === "string"
               ? entry.arguments
               : JSON.stringify(
-                  entry.input !== undefined
-                    ? { input: entry.input }
-                    : (entry.arguments ?? entry.action ?? {}),
+                  // _server_tool marks provider-run calls the way Studio's own hosted-tool cards are stored.
+                  builtin && typeof payload === "object" && payload !== null
+                    ? { ...payload, _server_tool: true }
+                    : payload,
                 ),
         },
       });
-      // Provider-run builtin calls (web_search_call, shell_call, ...) already finished:
-      // answer them with their bundled output or status so none replays as unanswered.
-      const builtin =
-        type !== "function_call" && type !== "custom_tool_call" && !answered.has(id);
-      const done = entry.output ?? (builtin ? (text(entry.status) ?? "completed") : undefined);
+      // Provider-run calls already finished: answer them with their own output, else their status.
+      const logs = Array.isArray(entry.outputs)
+        ? entry.outputs.flatMap((o) => (typeof o?.logs === "string" ? [o.logs] : [])).join("\n")
+        : "";
+      const done =
+        entry.output ??
+        (logs || undefined) ??
+        (builtin && !answered.has(id) ? (text(entry.status) ?? "completed") : undefined);
       if (done != null) {
         turns.push({ role: "tool", tool_call_id: id, content: toolOutputText(done) });
       }

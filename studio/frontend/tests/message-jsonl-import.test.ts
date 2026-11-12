@@ -752,3 +752,27 @@ test("a builtin call keeps its explicit output item over a status placeholder", 
     .find((p) => p.type === "tool-call");
   assert.equal(call?.result, "a.txt");
 });
+
+test("hosted Responses calls import as server-side tool cards with their code and logs", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [{ role: "user", content: "Compute" }],
+      output: [
+        { type: "web_search_call", id: "ws1", status: "completed", action: { type: "search", query: "q" } },
+        { type: "code_interpreter_call", id: "ci1", status: "completed", code: "print(1)", outputs: [{ type: "logs", logs: "1" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "1" }] },
+      ],
+    }),
+    "response.json",
+  );
+
+  const calls = conversation.messages
+    .flatMap((m) => m.content as ReadonlyArray<{ type?: string; toolName?: string; args?: Record<string, unknown>; result?: unknown }>)
+    .filter((p) => p.type === "tool-call");
+  assert.deepEqual(
+    calls.map((p) => [p.toolName, p.args?._server_tool, p.result]),
+    [["web_search", true, "completed"], ["code_execution", true, "1"]],
+  );
+  assert.equal(calls[1].args?.code, "print(1)");
+});
