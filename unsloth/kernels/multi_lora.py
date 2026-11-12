@@ -1507,6 +1507,9 @@ def set_multi_lora_batch(
         seg = layer.batch.seg_start
         present = (seg[1:] - seg[:-1]) > 0
         layer.seen = present if layer.seen is None else layer.seen | present
+        if isinstance(layer, MultiLoraExpertParam):
+            # Build groups eagerly: a data-dependent .tolist() inside forward breaks fullgraph.
+            _adapter_groups(layer.batch)
     return next(iter(by_device.values()))
 
 
