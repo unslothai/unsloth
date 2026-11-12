@@ -1988,16 +1988,20 @@ def planned_dit_scheme(
     transformer_quant: Optional[str],
     device: Any,
     text_encoder_quant: Optional[str] = None,
+    reclaimable_host_gb: float = 0.0,
 ) -> Optional[str]:
     """The DiT scheme a load on ``device`` would resolve, for the download plan. The load evicts chat and the resident
-    model first, so the whole card is planned, as the generic prequant plan does; a VRAM budget still wins. The
-    encoder the request takes is planned beside it, as the load does."""
+    model first, so the whole card is planned, as the generic prequant plan does, and the host gets back
+    ``reclaimable_host_gb`` (the resident pipeline's host weights); budget env vars still win. The encoder the request
+    takes is planned beside it, as the load does."""
     import torch
 
     dev = torch.device(device)
     vram, host = device_budgets(dev)
     if not os.environ.get(VRAM_BUDGET_ENV) and dev.type == "cuda" and torch.cuda.is_available():
         vram = torch.cuda.mem_get_info(dev)[1] / 1e9
+    if host is not None and not os.environ.get(HOST_BUDGET_ENV):
+        host += max(0.0, float(reclaimable_host_gb))
     return resolve_dit_scheme(
         transformer_quant,
         device = dev,

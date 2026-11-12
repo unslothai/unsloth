@@ -6406,7 +6406,17 @@ class DiffusionBackend:
             from .diffusion_minimax_h3_image import QUANT_SCHEMES, planned_dit_scheme
             with diffusion_device_scope(gpu_ordinal):
                 target = self._target_for_ordinal(fam, gpu_ordinal)
-                scheme = planned_dit_scheme(transformer_quant, target.device, text_encoder_quant)
+                scheme = planned_dit_scheme(
+                    transformer_quant,
+                    target.device,
+                    text_encoder_quant,
+                    # The load unloads the resident pipeline first, as the generic plan credits.
+                    reclaimable_host_gb = pipeline_host_mib(
+                        getattr(getattr(self, "_state", None), "pipe", None)
+                    )
+                    * 2**20
+                    / 1e9,
+                )
             return scheme if scheme in QUANT_SCHEMES else None
         except Exception as exc:  # noqa: BLE001 -- unplannable: stage the bf16 shards, as before
             logger.warning("diffusion.h3_image_dit_plan_failed: %s", exc)

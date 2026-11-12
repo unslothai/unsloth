@@ -589,6 +589,42 @@ def test_the_plan_sizes_the_encoder_the_request_takes(h3i, monkeypatch):
     assert seen == [h3i.H3_IMAGE_TE_INT8_GB, h3i.H3_IMAGE_TE_BF16_GB]
 
 
+def test_the_plan_credits_host_memory_the_unload_frees(h3i, monkeypatch):
+    """An 80 GB card keeps the bf16 DiT resident, but only with room on the host for the encoder. A CPU-offloaded
+    model leaving 20 GB of RAM free would plan int8, then the load unloads it first and takes bf16."""
+    pytest.importorskip("torchao")
+    import torch
+
+    monkeypatch.delenv(h3i.VRAM_BUDGET_ENV, raising = False)
+    monkeypatch.delenv(h3i.HOST_BUDGET_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(h3i, "device_budgets", lambda dev: (80.0, 20.0))
+    assert h3i.planned_dit_scheme(None, "cuda") == "int8"
+    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) is None
+    # A host budget is the user's word: nothing is credited on top of it.
+    monkeypatch.setenv(h3i.HOST_BUDGET_ENV, "20")
+    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) == "int8"
+
+
+def test_the_backend_plan_passes_the_resident_pipeline_host_memory(h3i, monkeypatch):
+    import types
+
+    from core.inference import diffusion as dmod
+
+    seen = []
+    monkeypatch.setattr(
+        h3i, "planned_dit_scheme", lambda *a, **kw: seen.append(kw["reclaimable_host_gb"])
+    )
+    monkeypatch.setattr(dmod, "pipeline_host_mib", lambda pipe: 4096 if pipe == "resident" else 0)
+    backend = dmod.DiffusionBackend()
+    monkeypatch.setattr(
+        backend, "_target_for_ordinal", lambda fam, ordinal: types.SimpleNamespace(device = "cpu")
+    )
+    backend._state = types.SimpleNamespace(pipe = "resident")
+    backend._h3_image_planned_dit_scheme(None, None, None)
+    assert seen == [pytest.approx(4096 * 2**20 / 1e9)]
+
+
 def test_streamer_runs_blocks_from_the_host(h3i):
     import torch
 
