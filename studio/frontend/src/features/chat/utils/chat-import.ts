@@ -376,16 +376,13 @@ function pairToTurns(obj: Record<string, unknown>): unknown[] {
   ];
 }
 
-// A Responses tool turn's {text, images} result: the live parser's wrapper, which replay unwraps
-// into text plus image input. Symbol-keyed so imported JSON cannot set it.
+// Live parser's {text, images} tool result; symbol-keyed so imported JSON cannot set it.
 const STRUCTURED_RESULT = Symbol("structuredResult");
 // Item order of a merged Responses assistant run: content parts and tool_calls indices.
 const ITEM_ORDER = Symbol("itemOrder");
 
-// Responses tool outputs may be content-part arrays (text, logs, images).
 function toolTurn(callId: string, output: unknown): Record<string | symbol, unknown> {
   if (typeof output === "string") return { role: "tool", tool_call_id: callId, content: output };
-  // A lone part (computer_screenshot) normalizes like a one-part list.
   const parts = (Array.isArray(output) ? output : typeof output === "object" && output !== null ? [output] : []) as Array<Record<string, unknown> | null>;
   const texts: string[] = [];
   const images: { data: string; mimeType: string }[] = [];
@@ -421,8 +418,7 @@ const BUILTIN_TOOL_NAMES: Record<string, string> = {
 // Executed by the client, so neither hosted nor answered on its own.
 const CLIENT_RUN_CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call", "computer_call"]);
 
-// Saved Responses API object: adjacent assistant items share one turn, as in the
-// backend's _normalise_responses_input, so parallel calls precede their outputs.
+// Adjacent assistant items share one turn, as in the backend's _normalise_responses_input.
 function responsesToTurns(obj: Record<string, unknown>): unknown[] {
   // A lone typed item (a raw function_call_output line) is not a transcript.
   if (typeof obj.type === "string") return [];
@@ -442,8 +438,7 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
     turn.content.push(...parts);
     turn[ITEM_ORDER].push(...parts);
   };
-  // Hosted results wait until the assistant run ends: a tool turn mid-run would split it, and
-  // replay drops the hosted call, leaving a tool-only record that pruning treats as abandoned.
+  // Hosted results flush after the run: mid-run they split it and replay prunes the tool-only half.
   const hosted = new Set<string>();
   const deferred: Record<string | symbol, unknown>[] = [];
   const push = (turn: Record<string | symbol, unknown>) => turns.push(...deferred.splice(0), turn);
@@ -519,14 +514,13 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
             typeof entry.arguments === "string"
               ? entry.arguments
               : JSON.stringify(
-                  // _server_tool marks provider-run calls the way Studio's own hosted-tool cards are stored.
+                  // Marked like Studio's own hosted-tool cards, so replay strips them.
                   builtin && typeof payload === "object" && payload !== null
                     ? { ...payload, _server_tool: true }
                     : payload,
                 ),
         },
       });
-      // Provider-run calls already finished: answer them with their own output, else their status.
       const done =
         entry.output ??
         (Array.isArray(entry.outputs) && entry.outputs.length > 0 ? entry.outputs : undefined) ??
