@@ -407,6 +407,8 @@ def test_the_encoder_routes_through_the_counted_copy_credit(monkeypatch, host, p
         assert seen == []
     else:
         assert len(seen) == 1 and seen[0]["replaces_counted"] is want
+        # the encoder runs once per request: its copy stream's cache goes back after each encode
+        assert seen[0]["release_after_forward"] is True
     x = torch.randn(4, 64)
     stack = enc.stack[0]
     with torch.no_grad():
@@ -434,6 +436,8 @@ def test_the_dit_routes_through_the_counted_copy_credit(monkeypatch):
     streamer = h3i._place_streamed_dit(_T(), _V(), "cpu", plan, pinned_already = [_Plan(5, 5)])
     assert len(seen) == 1 and seen[0]["replaces_counted"] is True
     assert seen[0]["max_pin_bytes"] == h3i.pin_room_bytes(plan)
+    # the DiT streams every step: its copy stream keeps its cache
+    assert seen[0]["release_after_forward"] is False
     streamer.remove()
 
 
@@ -457,4 +461,32 @@ def test_a_counted_stream_pins_bit_identically_and_reports_its_bytes(monkeypatch
         for _ in range(3):
             assert torch.equal(stack(x), want)
     assert streamer.stats()["pinned_bytes"] == streamer.pinned_bytes
+    streamer.remove()
+
+
+@cuda
+@pytest.mark.parametrize("release", [False, True])
+def test_an_encoder_stream_hands_its_cache_back_after_each_forward(monkeypatch, release):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 1 << 20)
+    ref = _Stack().cuda().eval()
+    stack = _Stack().eval()
+    stack.inp.cuda()
+    streamer = op.stream_module_list(stack, stack.layers, "cuda", 0, release_after_forward = release)
+    assert streamer is not None
+    calls = []
+    real = torch.cuda.empty_cache
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(1) or real())
+    x = torch.randn(8, 64, device = "cuda")
+    with torch.no_grad():
+        want = ref(x)
+        for _ in range(2):
+            assert torch.equal(stack(x), want)
+        stack.stop_after = 2
+        with pytest.raises(_Stop):
+            stack(x)
+        stack.stop_after = None
+        assert torch.equal(stack(x), want)
+    assert len(calls) == (4 if release else 0)
     streamer.remove()

@@ -2510,7 +2510,8 @@ def make_list_streamer(
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
 ) -> Any:
-    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``."""
+    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``.
+    The encoder's pinned streamer releases its copy stream's cached blocks after each encode."""
     streamer = None
     if pinned and pinned_stream_enabled():
         from .diffusion_offload_prefetch import stream_module_list
@@ -2523,6 +2524,7 @@ def make_list_streamer(
             reserve_bytes = reserve_bytes,
             max_pin_bytes = max_pin_bytes,
             replaces_counted = replaces_counted,
+            release_after_forward = role == "text_encoder",
         )
     if streamer is None:
         streamer = ModuleListStreamer(members, device, resident)

@@ -1441,11 +1441,15 @@ def stream_module_list(
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
+    release_after_forward: bool = False,
 ) -> Optional[PrefetchedListStreamer]:
     """A ``PrefetchedListStreamer`` over ``blocks``, or None (nothing changed) when it does not apply or cannot pin.
     Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given. ``replaces_counted``:
     ``max_pin_bytes`` is room left beside host copies of ``blocks`` the caller already counts; the pins take their
-    place (the pageable tensors are dropped as each member pins), so only the live budget bounds them."""
+    place (the pageable tensors are dropped as each member pins), so only the live budget bounds them.
+    ``release_after_forward``: an owner that runs once per request (an encoder) hands its copy stream's cached blocks
+    back after each forward; they would otherwise stay reserved for that stream only, shrinking the free memory the
+    later stages size themselves by."""
     import torch
 
     refused = _list_stream_refusal(device)
@@ -1562,10 +1566,13 @@ def stream_module_list(
             pf.begin()
             pf.kick()  # the first streamed members copy while the resident ones run
 
+        def _end(*_a: Any, **_k: Any) -> None:
+            pf.end()
+            if release_after_forward and not getattr(pf, "capturing", False):
+                torch.cuda.empty_cache()
+
         streamer.handles.append(owner.register_forward_pre_hook(_eager(_begin)))
-        streamer.handles.append(
-            owner.register_forward_hook(_eager(lambda *_a, **_k: pf.end()), always_call = True)
-        )
+        streamer.handles.append(owner.register_forward_hook(_eager(_end), always_call = True))
         streamer.prefetcher = pf
         streamer.streamed = len(streamed)
         streamer.pinned_bytes = int(need)
