@@ -15,7 +15,12 @@ import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { deleteCachedModel } from "../inventory";
 import type { ModelInventoryFormat } from "../inventory";
-import { fetchModelSize } from "../lib/dataset-size";
+import {
+  groupForRepoId,
+  IMAGE_CATALOG,
+} from "@/features/model-picker/components/model-selector/model-catalog";
+import { bumpInventoryVersion } from "../stores/inventory-events";
+import { fetchModelSize, type ModelSizeInfo } from "../lib/dataset-size";
 import { formatBytes } from "../lib/format";
 import { fingerprintToken } from "../lib/token-fingerprint";
 import { useHfTokenStore } from "../stores/hf-token-store";
@@ -61,6 +66,7 @@ export function SafetensorsDownloadCard({
   cachePath,
   knownBytes,
   onRun,
+  onRunCheckpoint,
   runPending = false,
   onChange,
   assetRuntime,
@@ -77,25 +83,42 @@ export function SafetensorsDownloadCard({
   cachePath?: string | null;
   knownBytes?: number | null;
   onRun?: () => void;
+  onRunCheckpoint?: (filename: string) => void;
   runPending?: boolean;
   onChange?: () => void;
   assetRuntime?: AssetRuntime;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
-  const assets = useRequiredAssetsDownload({ repoId, runtime: assetRuntime });
+  const discoverCheckpoints =
+    assetRuntime === "images" &&
+    !repoId.toLowerCase().startsWith("unsloth/") &&
+    !groupForRepoId(repoId, IMAGE_CATALOG);
   const hfEndpoint = useHfEndpoint();
   const sizeKey = `${hfEndpoint}::${repoId}::${fingerprintToken(hfToken)}`;
-  const [modelSize, setModelSize] = useState<{
-    key: string;
-    bytes: number | null;
-  }>(() => ({ key: sizeKey, bytes: null }));
+  const [metadata, setMetadata] = useState<{ key: string; info: ModelSizeInfo | null }>();
+  const info = metadata?.key === sizeKey ? metadata.info : undefined;
+  const choices = discoverCheckpoints ? info?.imageCheckpoints : undefined;
+  const [picked, setPicked] = useState<{ key: string; filename: string }>();
+  const basename = repoId.split("/").pop()?.toLowerCase();
+  const checkpoint =
+    choices?.find((file) => picked?.key === sizeKey && file.filename === picked.filename) ??
+    choices?.find((file) => file.filename.toLowerCase() === basename + ".safetensors") ??
+    choices?.[0];
+  const discovering = discoverCheckpoints && online && info === undefined;
+  const assets = useRequiredAssetsDownload({
+    repoId,
+    filename: checkpoint?.filename,
+    runtime: discovering ? undefined : assetRuntime,
+    modelLabel: checkpoint?.filename,
+  });
+  const installed = checkpoint ? assets.checkpointInstalled : isDownloaded;
+  const partial = !checkpoint && isPartial;
+  const run = checkpoint ? onRunCheckpoint?.bind(null, checkpoint.filename) : onRun;
   const modelTotalBytes =
     knownBytes && knownBytes > 0
       ? knownBytes
-      : modelSize.key === sizeKey
-        ? modelSize.bytes
-        : null;
+      : info?.weightsBytes ?? info?.totalBytes ?? null;
   const [deleteRepoOpen, setDeleteRepoOpen] = useState(false);
   const { deleting, runDelete } = useCardDelete({
     action: () =>
@@ -124,7 +147,7 @@ export function SafetensorsDownloadCard({
   useEffect(() => {
     if (knownBytes && knownBytes > 0) {
       setJobExpectedBytes(knownBytes);
-      return;
+      if (!discoverCheckpoints) return;
     }
     if (!online) return;
     if (!repoId) return;
@@ -132,22 +155,22 @@ export function SafetensorsDownloadCard({
     const { signal } = controller;
     void fetchModelSize(repoId, hfToken || undefined, signal)
       .then((info) => {
-        if (signal.aborted || !info) return;
-        const upstream = info.weightsBytes ?? info.totalBytes;
-        if (upstream && upstream > 0) {
-          setModelSize({ key: sizeKey, bytes: upstream });
-          setJobExpectedBytes(upstream);
-        }
+        if (signal.aborted) return;
+        setMetadata({ key: sizeKey, info });
+        const upstream = info?.weightsBytes ?? info?.totalBytes;
+        if (!knownBytes && upstream) setJobExpectedBytes(upstream);
       })
       .catch((err) => {
-        if (!signal.aborted && import.meta.env.DEV) {
+        if (signal.aborted) return;
+        setMetadata({ key: sizeKey, info: null });
+        if (import.meta.env.DEV) {
           console.debug("Model size lookup failed", err);
         }
       });
     return () => {
       controller.abort();
     };
-  }, [repoId, hfToken, sizeKey, setJobExpectedBytes, knownBytes, online]);
+  }, [repoId, hfToken, sizeKey, setJobExpectedBytes, knownBytes, online, discoverCheckpoints]);
 
   const downloading = isRepoDownloadProgress(progress);
   const partialsResumable = useHttpPartialsResumable();
@@ -162,13 +185,15 @@ export function SafetensorsDownloadCard({
     partialResumable,
     partialsResumable,
   });
-  const hubPlan = useHubDownloadPlan(repoId);
+  const hubPlan = useHubDownloadPlan(repoId, checkpoint?.filename);
+  const displayBytes = checkpoint ? checkpoint.bytes : modelTotalBytes;
   const showDownloadAction = !hubPlan && (
-    !isDownloaded || downloading || cancelling || downloadAction.starting);
+    !installed || downloading || cancelling || downloadAction.starting);
   const showRunAction = !hubPlan &&
-    Boolean(onRun) &&
-    isDownloaded &&
-    !isPartial &&
+    Boolean(run) &&
+    !discovering &&
+    installed &&
+    !partial &&
     !downloading &&
     !cancelling &&
     !downloadAction.starting &&
@@ -220,12 +245,25 @@ export function SafetensorsDownloadCard({
         }
       >
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-          <span className="flex items-center gap-1.5 text-ui-12 text-muted-foreground">
-            {isDownloaded && <DotTag tone="success" label="On device" />}
-            {!isDownloaded && downloading && (
+          <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
+            {checkpoint && (
+              <select
+                aria-label="Image checkpoint"
+                className="min-w-0 truncate rounded bg-background text-foreground"
+                value={checkpoint.filename}
+                disabled={downloading || Boolean(hubPlan) || assets.checking}
+                onChange={(event) => setPicked({ key: sizeKey, filename: event.target.value })}
+              >
+                {choices?.map((file) => (
+                  <option key={file.filename}>{file.filename}</option>
+                ))}
+              </select>
+            )}
+            {installed && <DotTag tone="success" label="On device" />}
+            {!installed && downloading && (
               <DotTag tone="downloading" label="Downloading" />
             )}
-            {!isDownloaded && isPartial && !downloading && (
+            {!installed && partial && !downloading && (
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <span className="inline-flex">
@@ -237,13 +275,12 @@ export function SafetensorsDownloadCard({
                 </TooltipContent>
               </Tooltip>
             )}
-            <DotTag
-              tone={formatModelTone(modelFormat)}
-              label={formatModelLabel(modelFormat)}
-            />
-            {modelTotalBytes && modelTotalBytes > 0 && (
+            {!checkpoint && (
+              <DotTag tone={formatModelTone(modelFormat)} label={formatModelLabel(modelFormat)} />
+            )}
+            {displayBytes && displayBytes > 0 && (
               <span className="tabular-nums">
-                {formatBytes(modelTotalBytes)}
+                {formatBytes(displayBytes)}
               </span>
             )}
           </span>
@@ -266,26 +303,29 @@ export function SafetensorsDownloadCard({
             )}
           </div>
         </div>
-        {showDownloadAction && !(showRunAction && onRun) && <CardDivider />}
+        {showDownloadAction && !showRunAction && <CardDivider />}
         {showDownloadAction && (
           <DownloadActionButton
             downloading={downloadAction.downloading}
             cancelling={downloadAction.cancelling}
-            loading={downloadAction.starting || assets.checking}
-            isPartial={downloadAction.isPartial}
+            loading={discovering || downloadAction.starting || assets.checking}
+            isPartial={!checkpoint && downloadAction.isPartial}
             partialResumable={downloadAction.partialResumable}
             stopMode={downloadAction.stopMode}
             progressPercent={downloadAction.progressPercent}
-            disabled={downloadAction.disabled || assets.checking}
-            onClick={() => downloading ? downloadAction.onClick() : void assets.request(downloadAction.onClick)}
+            disabled={discovering || downloadAction.disabled || assets.checking}
+            onClick={() => {
+              if (downloading) downloadAction.onClick();
+              else void assets.request(checkpoint ? bumpInventoryVersion : downloadAction.onClick);
+            }}
             className={repoPeerActive ? "opacity-70" : undefined}
           />
         )}
         {hubPlan && <span className="px-3 text-ui-12 text-muted-foreground">Downloading…</span>}
-        {showRunAction && onRun && (
+        {showRunAction && run && (
           <ModelRunActionButton
-            label={`Configure and run ${repoId}`}
-            onClick={onRun}
+            label={`Configure and run ${checkpoint?.filename ?? repoId}`}
+            onClick={run}
             loading={runPending}
           />
         )}

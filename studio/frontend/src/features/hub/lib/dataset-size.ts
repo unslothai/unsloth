@@ -259,9 +259,11 @@ export function fetchDatasetSize(
 export interface ModelSizeInfo {
   totalBytes: number | null;
   weightsBytes: number | null;
+  imageCheckpoints?: { filename: string; bytes: number | null }[];
 }
 
 interface ModelInfoApiResponse {
+  config?: { diffusers?: { _class_name?: string } };
   siblings?: Array<{
     rfilename?: string;
     size?: number;
@@ -471,6 +473,14 @@ export function fetchModelSize(
       }
       const data = (await res.json()) as ModelInfoApiResponse;
       const siblings = data.siblings ?? [];
+      // SDXL repos can package alternate whole checkpoints alongside their Diffusers component folders.
+      const imageCheckpoints = data.config?.diffusers?._class_name === "StableDiffusionXLPipeline"
+        ? siblings.flatMap(({ rfilename, size }) =>
+            rfilename && /^[^/\\]+\.safetensors$/i.test(rfilename) && !/[-_]\d+-of-\d+\./i.test(rfilename)
+              ? [{ filename: rfilename, bytes: size ?? null }]
+              : [],
+          )
+        : [];
       const skipConsolidated = shipsTransformersWeights(siblings);
       const skipDuplicateFormats = shipsRootSafetensors(siblings);
       const names = siblings.map((s) => s.rfilename ?? "");
@@ -506,6 +516,7 @@ export function fetchModelSize(
         value: {
           totalBytes: total > 0 ? total : null,
           weightsBytes: weights > 0 ? weights : null,
+          ...(imageCheckpoints.length ? { imageCheckpoints } : {}),
         },
       };
     },

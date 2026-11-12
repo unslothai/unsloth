@@ -12,10 +12,11 @@ const { fetchModelSize } = await import(
   "../src/features/hub/lib/dataset-size.ts"
 );
 
-function stubSiblings(sizes: Record<string, number>): void {
+function stubSiblings(sizes: Record<string, number>, pipelineClass?: string): void {
   globalThis.fetch = (async () =>
     new Response(
       JSON.stringify({
+        config: { diffusers: { _class_name: pipelineClass } },
         siblings: Object.entries(sizes).map(([rfilename, size]) => ({
           rfilename,
           size,
@@ -53,4 +54,19 @@ test("an adapter safetensors never drops a component's only .bin", async () => {
     totalBytes: 1 + 5 + 200 + 10 + 20,
     weightsBytes: 5 + 200 + 10 + 20,
   });
+});
+
+test("SDXL checkpoint choices include both Animagine variants and exclude components and shards", async () => {
+  stubSiblings({
+    "model_index.json": 671,
+    "unet/diffusion_pytorch_model.safetensors": 512,
+    "model-00001-of-00002.safetensors": 256,
+    "animagine-xl-4.0.safetensors": 6938434056,
+    "animagine-xl-4.0-opt.safetensors": 6938350040,
+  }, "StableDiffusionXLPipeline");
+  const info = await fetchModelSize("cagliostrolab/animagine-xl-4.0");
+  assert.deepEqual(info?.imageCheckpoints, [
+    { filename: "animagine-xl-4.0.safetensors", bytes: 6938434056 },
+    { filename: "animagine-xl-4.0-opt.safetensors", bytes: 6938350040 },
+  ]);
 });

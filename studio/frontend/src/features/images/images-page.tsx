@@ -224,7 +224,7 @@ import {
 } from "@/lib/resolved-precision";
 import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
-  routedGgufFilename,
+  routedImageFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
@@ -4625,8 +4625,8 @@ export function ImagesPage({
     }
     // `routeSearch` is rebuilt every render, so depend on the two fields.
     const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
-    const routedFilename = routedGgufFilename(routed);
-    const routedLabel = routedGgufLabel(routed);
+    const routedFilename = routedImageFilename(routed);
+    const routedLabel = routedFilename ? null : routedGgufLabel(routed);
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
