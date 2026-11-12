@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -42,6 +43,16 @@ _HIDDEN_STT_REPO_IDS = frozenset(
     }
 )
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
+# The Qwen3-ASR files by exact name (stt_mtmd_sidecar.MTMD_STT_MODELS): a pair moved out of the cache into a custom
+# folder keeps no repo id, and dictation still finds it there.
+_HIDDEN_STT_FILENAMES_LOWER = frozenset(
+    {
+        "qwen3-asr-0.6b-q8_0.gguf",
+        "mmproj-qwen3-asr-0.6b-q8_0.gguf",
+        "qwen3-asr-1.7b-q8_0.gguf",
+        "mmproj-qwen3-asr-1.7b-q8_0.gguf",
+    }
+)
 
 # audio.cpp umbrella repo: its subfolder GGUFs would show as chat models, so the Audio page and Voice settings reach them through the audio.cpp catalog.
 _HIDDEN_AUDIO_CPP_REPO_IDS_LOWER = frozenset({"audio-cpp/audio.cpp-gguf"})
@@ -136,6 +147,28 @@ def _path_is_whisper_model(value: str) -> bool:
     except OSError:
         return False
     return any(_config_is_whisper(candidate) for candidate in candidates)
+
+
+def _path_is_curated_stt_gguf_dir(value: str) -> bool:
+    """A local folder whose only GGUFs are the curated Qwen3-ASR files: a pair moved into its own sub-folder of a
+    custom folder, which the inventory lists as one folder row."""
+    path = Path(value).expanduser()
+    # Absolute only: a bare id must not be listed against the working directory.
+    if not path.is_absolute():
+        return False
+    found = False
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                name = entry.name.lower()
+                if not name.endswith(".gguf"):
+                    continue
+                if name not in _HIDDEN_STT_FILENAMES_LOWER:
+                    return False
+                found = True
+    except OSError:
+        return False
+    return found
 
 
 def _safe_resolve(path: Path) -> Optional[str]:
@@ -240,7 +273,8 @@ def is_hidden_model(*values: str | None) -> bool:
                 return True
             continue
         # Split on both separators so a Windows-style path is matched on a POSIX interpreter and vice versa. Anything else is a filesystem path: the probe is matched by its exact filename (stories260K.gguf) and a configured local-path embedder by exact resolved path.
-        if low.replace("\\", "/").rsplit("/", 1)[-1] == _PROBE_FILENAME:
+        basename = low.replace("\\", "/").rsplit("/", 1)[-1]
+        if basename == _PROBE_FILENAME or basename in _HIDDEN_STT_FILENAMES_LOWER:
             return True
         if _path_basename_is_default_embedder(v):
             return True
@@ -248,6 +282,8 @@ def is_hidden_model(*values: str | None) -> bool:
             return True
         # Custom Whisper checkpoints keep no curated repo id, so match by config.
         if _path_is_whisper_model(v):
+            return True
+        if _path_is_curated_stt_gguf_dir(v):
             return True
         if exact_paths:
             resolved = _safe_resolve(Path(v).expanduser())

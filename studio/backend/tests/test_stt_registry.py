@@ -89,6 +89,8 @@ def test_load_releases_the_other_engines_after_the_target_loads(monkeypatch):
     target = sidecars["mtmd"]
     target.load = lambda model, request_cancel_event = None, device = None: order.append("load:mtmd")
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
+    # Not on disk, so the load must answer before anything is released; the lookup also reads the host's default HF home.
+    monkeypatch.setattr(stt_registry, "_model_is_downloaded", lambda engine, model: False)
 
     stt_registry.load("qwen3-asr-0.6b", "mtmd")
 

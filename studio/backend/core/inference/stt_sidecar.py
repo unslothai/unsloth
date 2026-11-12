@@ -449,6 +449,72 @@ def _repo_cache_dir(repo: str, *, hub_cache: Optional[Path] = None) -> Path:
     return root / f"models--{repo.replace('/', '--')}"
 
 
+# One status poll runs a dozen lookups and a recursive folder's walk can take a few hundred ms, so memoise briefly.
+_CUSTOM_FOLDER_DIRS_TTL_SECONDS = 2.0
+_custom_folder_dirs_lock = threading.Lock()
+_custom_folder_dirs_memo: Optional[tuple[float, tuple[Path, ...]]] = None
+
+
+def _custom_folder_dirs() -> list[Path]:
+    """Registered custom folders, plus the nested folders of a recursive one: the directories the Model Hub scans."""
+    global _custom_folder_dirs_memo
+    with _custom_folder_dirs_lock:
+        memo = _custom_folder_dirs_memo
+        if memo is not None and time.monotonic() - memo[0] < _CUSTOM_FOLDER_DIRS_TTL_SECONDS:
+            return list(memo[1])
+    dirs = _list_custom_folder_dirs()
+    with _custom_folder_dirs_lock:
+        _custom_folder_dirs_memo = (time.monotonic(), tuple(dirs))
+    return dirs
+
+
+def _list_custom_folder_dirs() -> list[Path]:
+    try:
+        from storage.studio_db import list_scan_folders
+        folders = list_scan_folders()
+    except Exception as exc:  # noqa: BLE001 - an unreadable folder list must not fail a lookup
+        logger.debug("STT: could not list custom folders: %s", exc)
+        return []
+    dirs: list[Path] = []
+    for folder in folders:
+        raw = str(folder.get("path") or "").strip()
+        if not raw:
+            continue
+        path = Path(raw)
+        dirs.append(path)
+        if folder.get("recursive"):
+            try:
+                from hub.services.models.local_inventory import nested_scan_roots
+                dirs.extend(nested_scan_roots(path))
+            except Exception as exc:  # noqa: BLE001 - the folder itself is still searched
+                logger.debug("STT: could not list nested folders: %s", exc)
+    return dirs
+
+
+def _stt_hub_cache_roots() -> list[Path]:
+    """Hub caches a downloaded dictation model may sit in: the active one first (downloads write only there), then
+    every other cache Studio knows and the caches inside custom folders, the roots chat model loads search too."""
+    roots = [_active_hf_hub_cache()]
+    try:
+        from utils.hf_cache_settings import known_hf_hub_caches
+        roots.extend(known_hf_hub_caches())
+    except Exception as exc:  # noqa: BLE001 - the active cache still answers
+        logger.debug("STT: could not list known Hub caches: %s", exc)
+    folders = _custom_folder_dirs()
+    if folders:
+        from hub.utils.inventory_scan import scan_folder_hf_caches
+        for folder in folders:
+            roots.extend(scan_folder_hf_caches(folder))
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = os.path.normcase(os.path.normpath(str(root)))
+        if key not in seen:
+            seen.add(key)
+            unique.append(Path(root))
+    return unique
+
+
 def _revision_record_path(repo: str) -> Path:
     from utils.paths.storage_roots import cache_root
     digest = hashlib.sha256(repo.encode("utf-8")).hexdigest()
@@ -513,11 +579,16 @@ def _fallback_revisions(repo: str, *, hub_cache: Optional[Path] = None) -> list[
     return candidates
 
 
-def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
-    """Resolve a canonical SHA below this repository's active snapshots dir."""
+def _safe_snapshot_for_revision(
+    repo: str,
+    revision: str,
+    *,
+    hub_cache: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve a canonical SHA below this repository's snapshots dir in *hub_cache* (default: the active cache)."""
     if not _HF_COMMIT_SHA.fullmatch(revision):
         return None
-    snapshots = _repo_cache_dir(repo) / "snapshots"
+    snapshots = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots"
     candidate = snapshots / revision
     try:
         snapshots_resolved = snapshots.resolve()
@@ -543,27 +614,36 @@ def _snapshot_usable(model_id: str, snapshot: Path) -> bool:
 
 
 def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
-    """Find one complete local snapshot without contacting the Hub."""
+    """Find one complete local snapshot without contacting the Hub, in every cache _stt_hub_cache_roots lists."""
     model_id = resolve_model_id(model)
     repo = resolve_model_repo(model_id)
-
     recorded = _read_revision_record(repo)
+    for hub_cache in _stt_hub_cache_roots():
+        snapshot = _complete_snapshot_in(model_id, repo, recorded, hub_cache)
+        if snapshot is not None:
+            return snapshot
+    return None
+
+
+def _complete_snapshot_in(
+    model_id: str, repo: str, recorded: Optional[str], hub_cache: Path
+) -> Optional[Path]:
     if recorded:
-        snapshot = _safe_snapshot_for_revision(repo, recorded)
+        snapshot = _safe_snapshot_for_revision(repo, recorded, hub_cache = hub_cache)
         if snapshot is not None and _snapshot_usable(model_id, snapshot):
             return snapshot
 
-    ref = _repo_cache_dir(repo) / "refs" / "main"
+    ref = _repo_cache_dir(repo, hub_cache = hub_cache) / "refs" / "main"
     try:
         revision = ref.read_text(encoding = "utf-8").strip()
     except OSError:
         revision = ""
-    snapshot = _safe_snapshot_for_revision(repo, revision)
+    snapshot = _safe_snapshot_for_revision(repo, revision, hub_cache = hub_cache)
     if snapshot is not None and _snapshot_usable(model_id, snapshot):
         _write_revision_record(repo, revision)
         return snapshot
 
-    snapshots = _repo_cache_dir(repo) / "snapshots"
+    snapshots = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots"
     try:
         revisions = sorted(
             (
@@ -576,7 +656,7 @@ def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
     except OSError:
         return None
     for _mtime, revision in revisions:
-        snapshot = _safe_snapshot_for_revision(repo, revision)
+        snapshot = _safe_snapshot_for_revision(repo, revision, hub_cache = hub_cache)
         if snapshot is not None and _snapshot_usable(model_id, snapshot):
             _write_revision_record(repo, revision)
             return snapshot

@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import os
 import secrets
 import socket
 import subprocess
@@ -243,11 +244,17 @@ def _cached_model_paths(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[tuple[str, str]]:
-    """Both cached files, or None when either is missing."""
+    """Both cached files in *hub_cache*, or None when either is missing. Without one, every cache
+    _stt_hub_cache_roots lists, then the pair moved out of a cache into a custom folder."""
     spec = MTMD_STT_MODELS[model_id]
-    from core.inference.stt_sidecar import _active_hf_hub_cache
-
-    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+    if hub_cache is None:
+        from core.inference.stt_sidecar import _stt_hub_cache_roots
+        for root in _stt_hub_cache_roots():
+            cached = _cached_model_paths(model_id, hub_cache = root, revision = revision)
+            if cached is not None:
+                return cached
+        return _custom_folder_pair(spec) if revision is None else None
+    root = hub_cache
 
     def cached_at(candidate_revision: str) -> Optional[tuple[str, str]]:
         model = _cached_file(
@@ -281,6 +288,50 @@ def _cached_model_paths(
         if cached is not None:
             _write_revision_record(spec.repo, candidate)
             return cached
+    return None
+
+
+# Bounds one custom folder's listing, as the Model Hub scan does (_MAX_CUSTOM_FOLDER_ENTRIES).
+_CUSTOM_FOLDER_ENTRY_LIMIT = 2000
+
+
+def _pair_in(directory: Path, spec: MtmdSttModel) -> Optional[tuple[str, str]]:
+    model, mmproj = directory / spec.model_file, directory / spec.mmproj_file
+    try:
+        if model.is_file() and mmproj.is_file():
+            return str(model), str(mmproj)
+    except OSError:
+        pass
+    return None
+
+
+def _custom_folder_pair(spec: MtmdSttModel) -> Optional[tuple[str, str]]:
+    """The model and its mmproj side by side in a custom folder or one of its sub-folders, the places the Model Hub
+    lists a loose GGUF from. Matched by the exact curated file names; no revision is known for a loose copy."""
+    from core.inference.stt_sidecar import _custom_folder_dirs
+
+    for folder in _custom_folder_dirs():
+        pair = _pair_in(folder, spec)
+        if pair is not None:
+            return pair
+        try:
+            with os.scandir(folder) as entries:
+                for index, entry in enumerate(entries):
+                    if index >= _CUSTOM_FOLDER_ENTRY_LIMIT:
+                        break
+                    # A models--* tree is a Hub cache, already searched by revision.
+                    if entry.name.startswith((".", "models--")):
+                        continue
+                    try:
+                        if not entry.is_dir():
+                            continue
+                    except OSError:
+                        continue
+                    pair = _pair_in(Path(entry.path), spec)
+                    if pair is not None:
+                        return pair
+        except OSError:
+            continue
     return None
 
 
