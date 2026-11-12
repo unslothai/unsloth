@@ -4,6 +4,8 @@
 import asyncio
 import os
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1203,13 +1205,22 @@ def test_dataset_cancel_pending_spawn_arms_pending_cancel(monkeypatch):
 def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
     payload = b'{"text":"hello"}\n'
     offloaded = []
+    caller = threading.get_ident()
+    real_open = open
 
-    async def run_offloaded(function, *args):
-        offloaded.append(function)
-        return function(*args)
+    @contextmanager
+    def track_open(*args, **kwargs):
+        with real_open(*args, **kwargs) as target:
+
+            class Writer:
+                def write(self, chunk):
+                    offloaded.append(threading.get_ident() != caller)
+                    return target.write(chunk)
+
+            yield Writer()
 
     monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
-    monkeypatch.setattr(local.asyncio, "to_thread", run_offloaded)
+    monkeypatch.setattr(local, "open", track_open, raising = False)
 
     response = asyncio.run(local.upload_dataset_response(_Upload("../train.jsonl", payload)))
 
@@ -1218,7 +1229,7 @@ def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
     assert stored_path.parent == tmp_path
     assert stored_path.name.endswith("_train.jsonl")
     assert stored_path.read_bytes() == payload
-    assert any(getattr(function, "__name__", "") == "write" for function in offloaded)
+    assert offloaded == [True]
 
 
 def test_local_dataset_items_expose_recipe_and_upload_source(monkeypatch, tmp_path):

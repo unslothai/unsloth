@@ -10,6 +10,7 @@ import json
 import uuid
 from contextlib import suppress
 from pathlib import Path
+from typing import BinaryIO
 from fastapi import HTTPException, UploadFile
 
 from hub.schemas.datasets import (
@@ -448,6 +449,28 @@ def _upload_destination(filename: str) -> tuple[str, Path, int, str]:
     return filename, DATASET_UPLOAD_DIR / stored_name, max_bytes, max_label
 
 
+# --- Multipart write lifetime helper ---
+async def _write_upload_chunk(target: BinaryIO, chunk: bytes) -> None:
+    """Keep cancellation from closing or unlinking the target under an active writer."""
+    # A direct executor future survives cancellation of tasks during loop shutdown.
+    write_future = asyncio.get_running_loop().run_in_executor(None, target.write, chunk)
+    try:
+        await asyncio.shield(write_future)
+    except asyncio.CancelledError:
+        # Cancelling an executor awaiter does not stop its worker. Repeated cancellation
+        # must also leave the handle alive until the write has settled.
+        while not write_future.done():
+            with suppress(asyncio.CancelledError, Exception):
+                await asyncio.shield(write_future)
+        # Retrieve any late I/O error without replacing the caller's cancellation.
+        with suppress(Exception):
+            write_future.result()
+        raise
+
+
+# --- End write lifetime helper ---
+
+
 def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResponse:
     from core.training.account_jobs import account_path
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
@@ -469,29 +492,31 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
     if grant.size_bytes is not None and grant.size_bytes > max_bytes:
         raise _upload_too_large(max_label)
 
+    # The inventory accepts only dataset suffixes; keep partial bytes in a sibling
+    # until both handles are closed so rename is atomic on the same filesystem.
+    staging_path = stored_path.parent / f".{uuid.uuid4().hex}.part"
+    staging_created = False
     written = 0
-    upload_complete = False
     try:
-        with open(grant.canonical_path, "rb") as source, open(stored_path, "wb") as target:
+        with open(grant.canonical_path, "rb") as source, open(staging_path, "xb") as target:
+            staging_created = True
             while chunk := source.read(LOCAL_UPLOAD_CHUNK_BYTES):
                 written += len(chunk)
                 if written > max_bytes:
                     raise _upload_too_large(max_label)
                 target.write(chunk)
-        upload_complete = True
+        if written == 0:
+            raise HTTPException(status_code = 400, detail = "Dropped dataset is empty")
+        staging_path.rename(stored_path)
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
             detail = "Dropped dataset could not be read.",
         ) from exc
     finally:
-        if not upload_complete:
+        if staging_created:
             with suppress(OSError):
-                stored_path.unlink(missing_ok = True)
-
-    if written == 0:
-        stored_path.unlink(missing_ok = True)
-        raise HTTPException(status_code = 400, detail = "Dropped dataset is empty")
+                staging_path.unlink(missing_ok = True)
 
     return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
 
@@ -514,24 +539,24 @@ async def upload_dataset_response(
     if isinstance(declared_size, int) and declared_size > max_bytes:
         raise _upload_too_large(max_label)
 
+    staging_path = stored_path.parent / f".{uuid.uuid4().hex}.part"
+    staging_created = False
     written = 0
-    upload_complete = False
     try:
-        with open(stored_path, "wb") as f:
+        with open(staging_path, "xb") as f:
+            staging_created = True
             while chunk := await file.read(LOCAL_UPLOAD_CHUNK_BYTES):
                 written += len(chunk)
                 if written > max_bytes:
                     raise _upload_too_large(max_label)
-                await asyncio.to_thread(f.write, chunk)
-        upload_complete = True
+                await _write_upload_chunk(f, chunk)
+        if written == 0:
+            raise HTTPException(status_code = 400, detail = "Empty upload payload")
+        staging_path.rename(stored_path)
     finally:
-        if not upload_complete:
+        if staging_created:
             with suppress(OSError):
-                stored_path.unlink(missing_ok = True)
-
-    if written == 0:
-        stored_path.unlink(missing_ok = True)
-        raise HTTPException(status_code = 400, detail = "Empty upload payload")
+                staging_path.unlink(missing_ok = True)
 
     return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
 
