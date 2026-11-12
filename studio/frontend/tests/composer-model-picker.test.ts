@@ -582,3 +582,24 @@ test("cached MLX snapshots load whole and favorites show quant offers", () => {
   const fav = src.slice(src.indexOf("{...drag.rowProps(favoriteKey)}"));
   assert.match(fav.slice(0, 900), /offerOpen\s+\?\s+renderOffer\(row\)/);
 });
+
+test("Discover keeps rows the Hub search matched by maker alias", () => {
+  const gemma = row({
+    id: "unsloth/gemma-4-E2B-it-GGUF",
+    label: "gemma-4-E2B-it-GGUF",
+    tab: RECOMMENDED_TAB,
+    kind: "hub",
+  });
+  // A plain text filter drops it: "google" is in neither the id nor the label.
+  assert.deepEqual(filterRows([gemma], RECOMMENDED_TAB, "google", none), []);
+  assert.deepEqual(
+    filterRows(
+      [gemma],
+      RECOMMENDED_TAB,
+      "google",
+      none,
+      (r) => r.kind === "hub",
+    ),
+    [gemma],
+  );
+});

@@ -197,6 +197,8 @@ export function filterRows<T extends PickerRow>(
   tab: string,
   query: string,
   isFavorite: (row: T) => boolean,
+  /** Rows a Hub search already matched (it expands maker aliases), kept without a text match. */
+  matched?: (row: T) => boolean,
 ): T[] {
   const q = norm(query);
   const seen = new Set<string>();
@@ -211,6 +213,7 @@ export function filterRows<T extends PickerRow>(
     }
     return (
       !q ||
+      matched?.(row) === true ||
       norm(row.label).includes(q) ||
       norm(row.id).includes(q) ||
       norm(row.providerName).includes(q)

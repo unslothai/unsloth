@@ -1878,7 +1878,19 @@ export function ComposerModelPicker({
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
   const foundRows = useMemo(() => {
-    const found = filterRows(rows, viewed, query, isFavorite);
+    // Discover rows are the Hub's answer to this very query ("google" finds unsloth/gemma-*).
+    const hubAnswered =
+      viewed === RECOMMENDED_TAB &&
+      hubQuery !== "" &&
+      hubQuery === query.trim() &&
+      hubResults.length > 0;
+    const found = filterRows(
+      rows,
+      viewed,
+      query,
+      isFavorite,
+      hubAnswered ? (row) => row.kind === "hub" : undefined,
+    );
     if (viewed === RECOMMENDED_TAB && fitOnDeviceOnly) {
       return found.filter((row) => {
         if (row.kind !== "hub" || row.onDevice || row.id === chosenId) {
@@ -1900,6 +1912,8 @@ export function ComposerModelPicker({
     rows,
     viewed,
     query,
+    hubQuery,
+    hubResults.length,
     isFavorite,
     formatFilter,
     deviceSort,
