@@ -1138,11 +1138,14 @@ def fp8_stored_layers(model: Any) -> int:
 
 
 def pipe_fp8_stored_layers(pipe: Any) -> int:
-    """fp8-stored plus packed nvfp4 / mxfp8 Linears of the denoisers: buffers widened per forward."""
+    """fp8-stored plus packed nvfp4 / mxfp8 / W4A8 / W6A8 Linears of the denoisers: buffers decoded per forward."""
+    from .diffusion_grouped_int8 import grouped_packed_layers
     from .diffusion_packed_block import packed_block_layers
+
     return sum(
         fp8_stored_layers(getattr(pipe, attr, None))
         + packed_block_layers(getattr(pipe, attr, None))
+        + grouped_packed_layers(getattr(pipe, attr, None))
         for attr in ("transformer", "transformer_2")
     )
 

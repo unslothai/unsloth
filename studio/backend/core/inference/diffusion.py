@@ -16544,8 +16544,15 @@ def _lora_load_block_reason(pipe: Any) -> Optional[str]:
             "UNSLOTH_DIFFUSION_COMFY_MXFP8=0, or name the LoRA in the API load request (Unsloth then dequantizes "
             "those layers)."
         )
+    from .diffusion_grouped_int8 import GROUPED_PACKED_ENV, grouped_packed_layers
     from .diffusion_packed_block import PACKED_BLOCK_ENV, packed_block_layers
 
+    if grouped_packed_layers(getattr(pipe, "transformer", None)):
+        return (
+            "LoRA is not available on this load: the file's W4A8 / W6A8 layers are kept packed and decoded per "
+            f"layer, which cannot carry adapters. Set {GROUPED_PACKED_ENV}=0, or name the LoRA in the API load "
+            "request (Unsloth then decodes those layers at load)."
+        )
     if packed_block_layers(getattr(pipe, "transformer", None)):
         return (
             "LoRA is not available on this load: the file's nvfp4 / mxfp8 layers are kept packed and "
