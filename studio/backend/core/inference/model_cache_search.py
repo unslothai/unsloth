@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where a curated side model (dictation, the FLUX.3 prompt upsampler, the mask segmenter) may sit on disk besides
-the active Hugging Face cache: the other caches chat model loads search, then the user's custom folders. Those can sit
-on slow or dead mounts, so each is listed and probed under the Model Hub's per-folder budget."""
+"""Finds curated side models outside the active HF cache: the other known caches, then the account's custom folders,
+each listed and probed under the Model Hub's per-folder budget (they can sit on slow or dead mounts)."""
 
 from __future__ import annotations
 
@@ -19,8 +18,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-# One status poll runs a dozen lookups, so the locations are listed once and the listing is reused for a few seconds,
-# per account: each account registers its own custom folders.
+# One status poll runs a dozen lookups; listings are reused briefly, per account (custom folders are per account).
 _LOCATION_TTL_SECONDS = 2.0
 _location_lock = threading.Lock()
 # (row key, path, recursive, kind): kind "cache" is a Hub cache root, "folder" a custom folder.
@@ -35,10 +33,8 @@ _C = TypeVar("_C")
 
 @dataclass(frozen = True)
 class LocationListing:
-    """What one location holds, by lowercased name: Hub caches per ``models--*`` repo directory, and the directories
-    holding each file name. For a custom folder it covers the directories the Model Hub scans (the folder, and its
-    nested folders when it is recursive), the ``hub`` cache under each, and their immediate sub-folders for loose files;
-    for a Hub cache root, only the repos in it."""
+    """Lowercased ``models--*`` dir -> Hub caches holding it, and file name -> directories holding it. A Hub cache root
+    lists only its repos; a custom folder lists what the Model Hub scans there."""
 
     hub_caches: dict[str, tuple[Path, ...]]
     file_dirs: dict[str, tuple[Path, ...]]
@@ -52,8 +48,7 @@ class LocationListing:
 
 
 def account_scope() -> str:
-    """The acting account's storage root. Custom folders live in its studio.db, so whatever is found through them
-    is cached per account."""
+    """Memo key: custom folders live in the acting account's studio.db."""
     try:
         from utils.paths.storage_roots import workspace_root
         return str(workspace_root())
@@ -97,8 +92,7 @@ def _entry_is(entry: os.DirEntry, kind: str) -> bool:
 
 
 def _build_custom_folder_listing(path: Path, recursive: bool) -> LocationListing:
-    """Read with the Model Hub's own folder-scan rules (its entry cap, nested folders and ``hub/`` cache rule), so the
-    places a model is found here stay the places the Model Hub lists it from."""
+    """Uses the Model Hub's folder-scan rules so a model is found exactly where the Model Hub lists it."""
     from hub.services.models.local_inventory import _MAX_CUSTOM_FOLDER_ENTRIES, nested_scan_roots
     from hub.utils.inventory_scan import scan_folder_hf_caches
 
@@ -158,8 +152,7 @@ def _build_cache_listing(root: Path) -> LocationListing:
 
 
 def _bounded(key: str, work: Callable[[], _T]) -> Optional[_T]:
-    """``work()`` under the Model Hub's per-folder budget and stuck-thread record, or None when it timed out, failed,
-    or an earlier run under *key* is still stuck."""
+    """``work()`` under the Model Hub's per-folder budget; None on timeout, failure, or an already slow location."""
     from hub.services.models.local_inventory import run_custom_folder_bounded_sync
     from utils.paths.scan_folder_health import STATUS_SLOW, scan_folder_status
 
@@ -177,9 +170,7 @@ def _norm_key(path: Path | str) -> str:
 
 
 def _known_cache_rows() -> list[_Row]:
-    """The Hub caches chat model loads also search, besides the active one: previous Models folders, download
-    folders, then the legacy and default caches. Stored paths are taken as written, not resolved: each is touched only
-    inside its own bounded listing, so one dead mount cannot hide the others."""
+    """Non-active caches chat loads search. Paths are not resolved here: a dead mount would hang before the budget."""
     from core.inference.stt_sidecar import _active_hf_hub_cache
     from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
     from utils.hf_cache_settings import known_hf_hub_cache_candidates
@@ -200,7 +191,6 @@ def _known_cache_rows() -> list[_Row]:
 
 
 def _custom_folder_rows() -> list[_Row]:
-    """The custom folders the acting account registered. Database only."""
     try:
         from storage.studio_db import list_scan_folders
         folders = list_scan_folders()
@@ -208,7 +198,6 @@ def _custom_folder_rows() -> list[_Row]:
         logger.debug("Could not list custom folders: %s", exc)
         return []
     from hub.utils.paths import normalize_path
-
     return [
         (raw, Path(normalize_path(raw)).expanduser(), bool(folder.get("recursive")), "folder")
         for folder in folders
@@ -219,11 +208,8 @@ def _custom_folder_rows() -> list[_Row]:
 def search_other_locations(
     candidates: Callable[[LocationListing], Iterable[_C]], probe: Callable[[_C], Optional[_T]]
 ) -> Optional[_T]:
-    """The first answer of ``probe(candidate)`` over the candidates ``candidates(listing)`` names in each location
-    besides the active cache: the other known caches, then the acting account's custom folders. Listing a location
-    and probing its candidates run under the Model Hub's per-folder budget and stuck-thread record: a location that does
-    not answer in time is skipped and marked slow, and one already marked slow is not touched. A location whose recent
-    listing names no candidate is passed over without touching the disk."""
+    """First non-None ``probe(candidate)`` over each non-active location's ``candidates(listing)``. A location whose
+    memoised listing names no candidate is skipped without touching the disk."""
     scope = account_scope()
     rows = _memo_get(_location_rows_memo, scope)
     if rows is None:
@@ -262,8 +248,7 @@ def search_other_locations(
 
 
 def find_in_hub_caches(repo: str, lookup: Callable[[Path], Optional[_T]]) -> Optional[_T]:
-    """``lookup(hub_cache)`` on the active cache (downloads write only there), then on every other Hub cache holding
-    *repo*: the known caches, then the caches inside custom folders."""
+    """``lookup(hub_cache)`` on the active cache, then on every other Hub cache holding *repo*."""
     from core.inference.stt_sidecar import _active_hf_hub_cache
 
     found = lookup(Path(_active_hf_hub_cache()))

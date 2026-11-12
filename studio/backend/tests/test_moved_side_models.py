@@ -92,7 +92,6 @@ def _paths():
     return stt_mtmd_sidecar._cached_model_paths(_MODEL_ID)
 
 
-# ── dictation: where the files are found ────────────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("layout", ["folder", "registered HF_HOME"])
 def test_cache_tree_moved_into_a_custom_folder_is_found(caches, tmp_path, layout):
     folder = tmp_path / "custom"
@@ -202,7 +201,6 @@ def test_whisper_engines_find_moved_cache_trees(caches, monkeypatch, tmp_path):
     assert stt_sidecar._find_complete_cached_snapshot("tiny") == snapshot.resolve()
 
 
-# ── dictation: hidden from chat ─────────────────────────────────────────────────────────────────────────────────
 def test_hidden_names_match_the_catalogue_and_the_model_hub_scan():
     from hub.services.models import local_inventory
 
@@ -235,12 +233,10 @@ def test_a_folder_holding_another_model_beside_the_pair_stays_visible(tmp_path, 
     assert hidden_models.is_hidden_model(str(folder / other[-1])) is False
 
 
-# ── dictation: cost, slow folders, accounts, event loop ─────────────────────────────────────────────────────────
 def test_a_status_poll_lists_a_custom_folder_once_and_probes_only_candidates(
     caches, monkeypatch, tmp_path
 ):
-    """Every curated model missing, a recursive folder holding other things: one bounded listing per location per poll
-    window, then no thread and no file probe for the remaining lookups."""
+    """Every curated model missing: one bounded listing per location per poll window, then no thread or file probe."""
     from hub.services.models import local_inventory
 
     folder = tmp_path / "custom"
@@ -265,7 +261,6 @@ def test_a_status_poll_lists_a_custom_folder_once_and_probes_only_candidates(
         assert all(
             stt_ggml_sidecar._cached_model_path(m) is None for m in stt_ggml_sidecar.GGML_STT_MODELS
         )
-    # The known caches, then the folder: each listed once over both polls.
     assert str(folder) in bounded and len(bounded) == len(set(bounded))
     assert probes == []
 
@@ -274,8 +269,7 @@ def test_a_status_poll_lists_a_custom_folder_once_and_probes_only_candidates(
 def test_a_hung_custom_folder_is_skipped_within_the_hub_budget(
     caches, monkeypatch, tmp_path, stall
 ):
-    """One folder blocks in its walk or in a file probe after it: it is given up within the budget, marked slow, the
-    next folder is still searched, and the next lookup does not wait on it again."""
+    """A folder that blocks is given up within the budget and marked slow; the next folder is still searched."""
     from hub.services.models import local_inventory
     from utils.paths.scan_folder_health import STATUS_SLOW, scan_folder_status
 
@@ -324,8 +318,7 @@ def test_a_hung_custom_folder_is_skipped_within_the_hub_budget(
 def test_a_hung_previous_models_folder_does_not_hide_other_locations(
     caches, monkeypatch, tmp_path, stall, model_in
 ):
-    """One previous Models folder hangs while being listed or probed: it is given up within its own budget and marked
-    slow, every other location is still searched, and the next lookup does not wait on it again."""
+    """A previous Models folder that hangs is given up within its own budget and marked slow; the rest are searched."""
     from hub.services.models import local_inventory
     from utils.paths.scan_folder_health import STATUS_SLOW, scan_folder_status
 
@@ -381,8 +374,7 @@ def test_a_hung_previous_models_folder_does_not_hide_other_locations(
 
 
 def test_a_dead_stored_models_folder_does_not_hide_a_healthy_one(caches, monkeypatch, tmp_path):
-    """Two previous Models folders are stored; resolving or reading the first hangs (a dead mount). The healthy one
-    still answers within the budget."""
+    """A dead stored Models folder does not stop the healthy one from answering within the budget."""
     from hub.services.models import local_inventory
 
     monkeypatch.setattr(local_inventory, "_CUSTOM_FOLDER_SCAN_TIMEOUT_S", 0.2)
@@ -455,7 +447,6 @@ def test_a_known_cache_registered_as_a_custom_folder_is_listed_both_ways(caches,
 
 
 def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
-    """Uses the real per-account folder list, so not the ``caches`` fixture."""
     from storage import studio_db
     from utils.account_context import AccountContext, run_as
     from utils.paths.storage_roots import workspace_root
@@ -469,7 +460,6 @@ def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
     monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
     _forget_custom_folder_memos(monkeypatch)
     stt_mtmd_sidecar._forget_downloaded_probe()
-    # A member may register only folders inside their own workspace.
     folder = run_as(alice, workspace_root) / "models"
     _asr_pair(folder)
     run_as(alice, studio_db.add_scan_folder, str(folder))
@@ -524,7 +514,6 @@ def test_openai_translations_checks_the_model_off_the_event_loop(monkeypatch):
     assert exc.value.status_code == 400 and on_loop == [False]
 
 
-# ── FLUX.3 prompt upsampler ─────────────────────────────────────────────────────────────────────────────────────
 _UD, _Q4 = pup.UPSAMPLER_MODEL_FILES["UD-Q4_K_XL"], pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
 
 
@@ -602,7 +591,6 @@ def test_upsampler_loose_files_are_not_matched_but_an_override_projector_is_sear
     assert pup.mmproj_path() == str(snapshot / pup.UPSAMPLER_MMPROJ_FILE)
 
 
-# ── mask segmenter ────────────────────────────────────────────────────────────────────────────────────────────────
 @pytest.fixture
 def segmenter(caches, monkeypatch):
     for name in (diffusion_segment.ENV_PATH_OVERRIDE, diffusion_segment.ENV_VARIANT):

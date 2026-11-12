@@ -386,7 +386,7 @@ def _cached_model_path(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a fully downloaded GGML file in *hub_cache*, else None. Without one, wherever find_in_hub_caches looks."""
+    """Path of a fully downloaded GGML file in *hub_cache* (default: every cache find_in_hub_caches covers) or None."""
     if hub_cache is None:
         from core.inference.model_cache_search import find_in_hub_caches
         return find_in_hub_caches(

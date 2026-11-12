@@ -718,8 +718,8 @@ def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> 
 def _pair_at(
     hub_cache: Optional[Path], model_file: str, *, need_mmproj: bool
 ) -> Optional[tuple[str, Optional[str]]]:
-    """``model_file`` and the projector from ONE revision of *hub_cache* (the recorded one first), as the downloader
-    pins them; with ``need_mmproj`` false, the model alone when no revision holds both."""
+    """``model_file`` and the projector from ONE revision (the recorded one first); without ``need_mmproj``, the model
+    alone when no revision holds both."""
     model_only = None
     for revision in _candidate_revisions(hub_cache):
         model = _cached_file(model_file, hub_cache = hub_cache, revision = revision)
@@ -737,9 +737,8 @@ def _cached_pair(
 ) -> tuple[Optional[str], Optional[str]]:
     """The model and projector from one revision, in ``model_files`` order. A complete pair of any of them beats a
     model alone, so an interrupted default download does not cost edits their reference images. Without *hub_cache*,
-    each quant is looked for wherever find_in_hub_caches looks before the next one, so the current quant in a previous
-    Models folder or a custom folder beats an older one in the active cache. The loose ``mmproj-F16.gguf`` name is
-    common to other models, so only Hub caches count."""
+    each quant is searched in every cache before the next, so the current quant anywhere beats an older active one.
+    Only Hub caches count: ``mmproj-F16.gguf`` is a common name."""
     from core.inference.model_cache_search import find_in_hub_caches
 
     for need_mmproj in (True, False):
@@ -863,8 +862,7 @@ def status() -> dict:
         or None not in _cached_pair(model_files = (UPSAMPLER_MODEL_FILE,))
         or (mmproj is not None and model_name not in UPSAMPLER_SUPERSEDED_FILES)
     )
-    # Bytes still to fetch: a file already cached at any revision is a blob the hub cache reuses. Only the active
-    # cache counts, since the download writes there and a copy elsewhere is not reused.
+    # Bytes still to fetch from the active cache (the download writes there): any cached revision's blob is reused.
     missing = (
         []
         if current_downloaded

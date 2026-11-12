@@ -512,9 +512,8 @@ def known_hf_hub_caches() -> list[Path]:
 
 
 def known_hf_hub_cache_candidates() -> list[Path]:
-    """known_hf_hub_caches() in the same order, with the stored paths only expanded, never resolved, and nothing on
-    disk touched: resolving a previous Models folder on a dead mount hangs, so a caller can resolve and probe each one
-    under its own time budget. May hold two spellings of one directory."""
+    """known_hf_hub_caches() in order, expanded but never resolved or touched (a dead mount hangs), so a caller can
+    probe each under its own budget. May hold two spellings of one directory."""
     paths = get_hf_cache_paths()
     homes: list[Path] = []
     if paths.source != "environment":

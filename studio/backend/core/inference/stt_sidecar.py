@@ -548,7 +548,7 @@ def _snapshot_usable(model_id: str, snapshot: Path) -> bool:
 
 
 def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
-    """Find one complete local snapshot without contacting the Hub, wherever find_in_hub_caches looks."""
+    """Find one complete local snapshot in any cache find_in_hub_caches covers, without contacting the Hub."""
     model_id = resolve_model_id(model)
     repo = resolve_model_repo(model_id)
     from core.inference.model_cache_search import find_in_hub_caches

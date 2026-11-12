@@ -25477,7 +25477,7 @@ async def openai_audio_translations(
 
     sidecar_model = None if model in (None, "", "whisper-1") else model
     # mtmd / audio.cpp engines and turbo checkpoints would just transcribe.
-    # can_translate may read the model's config from a custom folder, which can sit on a slow mount.
+    # can_translate may read a config from a custom folder on a slow mount.
     if _stt_engine_for_model(sidecar_model) is not None or not await asyncio.to_thread(
         can_translate, sidecar_model
     ):
@@ -25950,7 +25950,7 @@ async def stt_status(
         ]
         return transformers, mtmd_ids, gguf_ids
 
-    # The lookups also read custom folders, which can sit on a slow or hung mount.
+    # The lookups may read custom folders on a slow mount.
     transformers_downloaded, mtmd_downloaded, gguf_downloaded = await asyncio.to_thread(
         downloaded_ids
     )
@@ -52266,7 +52266,6 @@ async def mask_segmenter_download(
         download_id = await asyncio.to_thread(diffusion_segment.start_download, token, variant.id)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
-    # The plan reads the cached snapshots, which may sit in a custom folder on a slow mount.
     plan = await asyncio.to_thread(diffusion_segment.download_plan, variant)
     return JSONResponse(
         content = {

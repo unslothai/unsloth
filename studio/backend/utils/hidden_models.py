@@ -43,8 +43,7 @@ _HIDDEN_STT_REPO_IDS = frozenset(
     }
 )
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
-# The Qwen3-ASR files by exact name (stt_mtmd_sidecar.MTMD_STT_MODELS): a pair moved out of the cache into a custom
-# folder keeps no repo id, and dictation still finds it there.
+# stt_mtmd_sidecar.MTMD_STT_MODELS file names: a loose pair in a custom folder has no repo id.
 _HIDDEN_STT_FILENAMES_LOWER = frozenset(
     {
         "qwen3-asr-0.6b-q8_0.gguf",
@@ -149,8 +148,7 @@ def _path_is_whisper_model(value: str) -> bool:
     return any(_config_is_whisper(candidate) for candidate in candidates)
 
 
-# Weight suffixes the Model Hub folder scan reads (local_inventory._PAYLOAD_SUFFIXES), and the configs that make a
-# folder a model on their own.
+# local_inventory._PAYLOAD_SUFFIXES, plus configs that make a folder a model on their own.
 _MODEL_PAYLOAD_SUFFIXES = (
     ".safetensors",
     ".gguf",
@@ -166,9 +164,7 @@ _MODEL_CONFIG_NAMES = frozenset({"config.json", "adapter_config.json", "model_in
 
 
 def _path_is_curated_stt_gguf_dir(value: str) -> bool:
-    """A local folder whose only model is the curated Qwen3-ASR pair: a pair moved into its own sub-folder of a
-    custom folder, which the inventory lists as one folder row. Any other weights or a model config keep the folder,
-    since its row then stands for that model too."""
+    """A local folder whose only model is the curated Qwen3-ASR pair. Other weights or a model config keep it listed."""
     path = Path(value).expanduser()
     # Absolute only: a bare id must not be listed against the working directory.
     if not path.is_absolute():

@@ -327,7 +327,7 @@ def _cached_snapshot(
 ) -> Optional[str]:
     """The snapshot directory holding every file of ``model_id`` (a variant's bf16 files, or a pre-quantized spec's
     configs and file) at one revision (the pin first, then the recorded one, then any cached commit), else None.
-    Without *hub_cache* and *revision*, wherever find_in_hub_caches looks; the download's own check passes both."""
+    Without *hub_cache* and *revision*, every cache find_in_hub_caches covers."""
     if hub_cache is None and revision is None:
         from core.inference.model_cache_search import find_in_hub_caches
         return find_in_hub_caches(
