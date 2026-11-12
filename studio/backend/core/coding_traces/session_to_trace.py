@@ -171,8 +171,8 @@ def _branch(
 
 
 def _legacy_load(chain: list[dict], messages: list[dict]) -> list[dict]:
-    """With no parentId on any row, the UI loads through fromArray, whose fromThreadMessageLike
-    drops blank text and reasoning and non-data-URL images from assistant turns."""
+    """With no parentId on any row, the UI loads through fromArray. Its fromThreadMessageLike drops
+    blank text, blank reasoning and images that do not match _DATA_IMAGE in assistant turns."""
     if any(m.get("parentId") is not None for m in messages):
         return chain  # repository.import keeps every part
     return [
