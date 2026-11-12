@@ -545,7 +545,7 @@ def _reject_constant(text: str) -> None:
 
 def _fill_variables(prompt: str, raw: object) -> tuple[str, bool]:
     """Fill custom systemVariables as resolveSystemPromptVariables does, and say if any placeholder
-    stays as written: $date, $time and $now used the send-time clock, which is not stored."""
+    stays as written: unknown, unprintable, or $date, $time or $now (the send-time clock)."""
     try:
         # parseSystemVariablesMap uses JSON.parse, so every number is a double and a NaN
         # fills nothing.
@@ -580,7 +580,7 @@ def _fill_variables(prompt: str, raw: object) -> tuple[str, bool]:
         try:
             return _js_json(current)
         except RecursionError:
-            return keep(match)  # JSON.stringify would manage it
+            return keep(match)  # too deep for _js_json; JSON.stringify would print it
 
     return _PROMPT_VARIABLE.sub(fill, prompt), bool(kept)  # one pass: a value is not filled again
 
