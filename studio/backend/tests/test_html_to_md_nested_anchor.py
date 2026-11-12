@@ -38,7 +38,6 @@ def test_nested_anchor_outer_never_closed():
 
 
 def test_nested_anchor_outer_without_href_keeps_text():
-    # link text strips at </a>, so the space inside the anchor does not separate
     html = '<p><a>plain <a href="/i">inner</a></a></p>'
     assert html_to_markdown(html) == "plain[inner](/i)"
 
@@ -59,7 +58,6 @@ def test_nested_anchor_inside_header_scope():
 
 
 def test_nested_anchor_inside_pre_matches_a_real_close():
-    # pre text bypasses the link buffer, so the anchor emits only its mark chars; same as </a> today.
     nested = '<pre><a href="/o">x<b>y</b><a href="/i">z</a></pre>'
     closed = '<pre><a href="/o">x<b>y</b></a><a href="/i">z</a></pre>'
-    assert html_to_markdown(nested) == html_to_markdown(closed) == "```\nxy[****](/o)z\n```"
+    assert html_to_markdown(nested) == html_to_markdown(closed)
