@@ -29327,7 +29327,6 @@ async def _proxy_to_external_provider(
         if model_supports_vision is None:
             # The plan did not say: read the same model from the OpenAI catalog.
             from routes.providers import cached_catalog_model_inputs
-
             model_supports_vision = "image" in (cached_catalog_model_inputs("openai", model) or ())
         if not model_supports_vision:
             for message in payload.messages:

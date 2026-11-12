@@ -2122,9 +2122,7 @@ def test_the_plan_catalog_survives_a_restart_without_upstream(monkeypatch):
         # A restart: nothing in memory, and upstream cannot be asked.
         forget_subscription_models("codex-1")
         monkeypatch.setattr(codex_client, "_create_http_client", lambda: _UnreachableCatalog())
-        refused = _codex_chat_gate(
-            monkeypatch, dropped, resolve = _resolves, saved_models = [dropped]
-        )
+        refused = _codex_chat_gate(monkeypatch, dropped, resolve = _resolves, saved_models = [dropped])
         assert refused.status_code == 400
         assert "Choose a curated Codex model." in str(refused.detail)
         assert offered_subscription_model_ids("codex-1") == {listed}

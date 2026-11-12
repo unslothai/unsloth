@@ -584,7 +584,11 @@ def test_a_custom_system_one_server_is_not_read_in_the_native_format(upstream):
     upstream.replies[0] = httpx.Response(200, json = TYPESAFE_MODELS)
     listed = _providers_post(
         "/providers/models",
-        {"provider_type": "custom", "api_type": "systemone", "base_url": "http://localhost:8888/v1"},
+        {
+            "provider_type": "custom",
+            "api_type": "systemone",
+            "base_url": "http://localhost:8888/v1",
+        },
     )
     assert listed == []
     assert upstream.calls[0].url.params["output_modalities"] == "decisions"
