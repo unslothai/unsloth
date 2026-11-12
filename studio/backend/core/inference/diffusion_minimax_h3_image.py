@@ -1037,6 +1037,14 @@ def torch_no_grad(fn: Callable) -> Callable:
 
 
 def _pipeline_base() -> Any:
+    # Runs at import, and the download plan and load preflight import this module before any load closes the
+    # window: a concurrent background diffusers import (the /api/system probe) otherwise races this one through
+    # peft's circular imports and one side gets a half-initialized module.
+    try:
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(logger)
+    except Exception:  # noqa: BLE001 - ordering only; the import below still runs
+        pass
     try:
         from diffusers import DiffusionPipeline
     except (
