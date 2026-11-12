@@ -12637,6 +12637,7 @@ class VideoBackend:
                 fuse_h3_qkv_,
                 h3_attention_backend,
                 install_strided_attention,
+                strided_install_backend,
             )
             h3_denoiser = getattr(pipe, denoiser_component, None)
             # Resident only: a streamed denoiser's offload hooks are keyed to the three projections.
@@ -12671,10 +12672,7 @@ class VideoBackend:
                 target = types.SimpleNamespace(device = device, dtype = dtype),
             )
             # speed off stays bit-identical: the fused q/k norm + RoPE only matches stock within a rounding step
-            if effective_speed != SPEED_OFF and attention_engaged in (
-                "_native_cudnn",
-                "_native_flash",
-            ):
+            if effective_speed != SPEED_OFF and strided_install_backend(attention_engaged):
                 try:
                     if install_strided_attention(
                         getattr(pipe, denoiser_component, None), logger = logger
