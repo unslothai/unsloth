@@ -1031,6 +1031,7 @@ export const id = {
       showLess: "Tampilkan lebih sedikit",
       settings: "Pengaturan",
       api: "API",
+      benchmarks: "Benchmark",
       lightMode: "Mode Terang",
       darkMode: "Mode Gelap",
       guidedTour: "Tur Terpandu",
