@@ -39,6 +39,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
 import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -93,12 +94,19 @@ import {
 } from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html-format";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
 import {
   composerDraftKey,
+  flushComposerDraft,
   latestDraft,
+  NEW_COMPARE_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   writeComposerDraft,
@@ -142,7 +150,10 @@ import {
   exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
 } from "./prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "./components/export-format-items";
 import {
   listPromptEntries,
   listPromptLists,
@@ -287,6 +298,19 @@ export interface CompareHandle {
 }
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
+// Built on call, like chatExportOptions, so an import cycle cannot leave an exporter undefined.
+function composerExportFormats() {
+  return [
+    { label: "Training JSONL", fn: exportConversationRawJsonl },
+    { label: "Message JSONL", fn: exportConversationMessagesJsonl },
+    { label: "CSV", fn: exportConversationCsv },
+    { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+    { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
+    { label: CONVERSATION_HTML_LABEL, fn: exportConversationHtml },
+    { label: CONVERSATION_PDF_LABEL, fn: exportConversationPdf },
+  ];
+}
+
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
@@ -615,6 +639,10 @@ async function waitForBackendLoadToSettle(): Promise<void> {
 }
 
 export function SharedComposer({
+  draftId,
+  pairSaved,
+  pairSubmitted,
+  onPairSubmitted,
   handlesRef,
   model1,
   model2,
@@ -625,6 +653,10 @@ export function SharedComposer({
   sendUnavailableReason,
   requireStableCheckpoint = false,
 }: {
+  draftId: string;
+  pairSaved?: boolean;
+  pairSubmitted: boolean;
+  onPairSubmitted: () => void;
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
@@ -647,48 +679,62 @@ export function SharedComposer({
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
   const incognito = useChatRuntimeStore((s) => s.incognito);
+  const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
+  const syncDraft = shareDraft && !incognito;
+  const unsentPair = pairSaved === false && !pairSubmitted;
+  const draftKey = composerDraftKey(unsentPair ? NEW_COMPARE_DRAFT_ID : draftId, shareDraft);
+  const draftScope = incognito ? null : draftKey;
   const [text, setText] = useState(() =>
-    useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
+    incognito ? "" : latestDraft(draftKey),
   );
   const [draftSource] = useState(() => Symbol("compare composer"));
   // Text that came from the chat composer, so it isn't published back.
   const remoteDraftRef = useRef<string | null>(null);
-  const unsavedDraftRef = useRef<string | null>(null);
-  const incognitoBeforeRef = useRef(incognito);
+  const unsavedDraftRef = useRef<{ key: string; text: string } | null>(null);
+  const draftScopeBeforeRef = useRef(draftScope);
+  const draftOwnerBeforeRef = useRef({ draftId, shareDraft, draftKey });
   useEffect(() => {
-    // Leaving a temporary chat (Compare can mount just before it resets) restores the saved draft.
-    if (incognitoBeforeRef.current !== incognito) {
-      incognitoBeforeRef.current = incognito;
-      if (!incognito) {
-        remoteDraftRef.current = latestDraft();
-        setText(remoteDraftRef.current);
+    if (draftScopeBeforeRef.current !== draftScope) {
+      draftScopeBeforeRef.current = draftScope;
+      const before = draftOwnerBeforeRef.current;
+      draftOwnerBeforeRef.current = { draftId, shareDraft, draftKey };
+      let next = incognito ? "" : latestDraft(draftKey);
+      if (!incognito && before.draftId === draftId && before.shareDraft === shareDraft && text) {
+        // Same pair, slot decided by its history: what was typed while it loaded wins.
+        writeComposerDraft(before.draftKey, "");
+        writeComposerDraft(draftKey, text);
+        next = text;
       }
+      if (!incognito && !shareDraft) stageComposerDraft(draftKey, next);
+      remoteDraftRef.current = next;
+      setText(next);
       return;
     }
     if (incognito || text === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
-    publishDraft(text, draftSource);
+    if (shareDraft) publishDraft(text, draftSource);
     // Emptied (a send, or cleared by hand): gone at once, so a reload can't bring back a sent prompt.
     if (text === "") {
-      writeComposerDraft(composerDraftKey(), "");
+      writeComposerDraft(draftKey, "");
       unsavedDraftRef.current = null;
       return;
     }
-    unsavedDraftRef.current = text;
+    unsavedDraftRef.current = { key: draftKey, text };
+    stageComposerDraft(draftKey, text);
     const timer = setTimeout(() => {
-      writeComposerDraft(composerDraftKey(), text);
+      writeComposerDraft(draftKey, text);
       unsavedDraftRef.current = null;
     }, 300);
     return () => clearTimeout(timer);
-  }, [text, incognito, draftSource]);
-  // Leaving Compare inside the debounce still saves what was typed.
+  }, [text, draftScope, draftKey, incognito, shareDraft, draftSource]);
   useEffect(
     () => () => {
       if (unsavedDraftRef.current !== null) {
-        writeComposerDraft(composerDraftKey(), unsavedDraftRef.current);
+        flushComposerDraft(unsavedDraftRef.current.key, unsavedDraftRef.current.text);
+        unsavedDraftRef.current = null;
       }
     },
-    [],
+    [draftScope],
   );
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
@@ -718,12 +764,13 @@ export function SharedComposer({
     [],
   );
   useEffect(() => {
-    if (incognito) return;
+    if (!syncDraft) return;
     return subscribeDraft(draftSource, (next) => {
+      unsavedDraftRef.current = null;
       remoteDraftRef.current = next;
       setCurrentText(next);
     });
-  }, [incognito, draftSource, setCurrentText]);
+  }, [syncDraft, draftSource, setCurrentText]);
   // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {
@@ -777,6 +824,7 @@ export function SharedComposer({
   );
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerSurfaceRef = useSurfaceRef(COMPOSER_INPUT_SELECTOR, textareaRef);
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
   );
@@ -1543,6 +1591,11 @@ export function SharedComposer({
       });
     };
     const clearSubmittedDraft = () => {
+      if (unsentPair) {
+        unsavedDraftRef.current = null;
+        if (!shareDraft) writeComposerDraft(draftKey, "");
+      }
+      onPairSubmitted();
       setCurrentText("");
       setIsWritingExpanded(false);
       setPendingImages([]);
@@ -2628,36 +2681,25 @@ export function SharedComposer({
           collisionPadding={16}
           className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
-          {[
-            { label: "Training JSONL", fn: exportConversationRawJsonl },
-            { label: "Message JSONL", fn: exportConversationMessagesJsonl },
-            { label: "CSV", fn: exportConversationCsv },
-            { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
-            {
-              label: CONVERSATION_MARKDOWN_LABEL,
-              fn: exportConversationMarkdown,
-            },
-          ].map(({ label, fn }) => (
-            <DropdownMenuItem
-              key={label}
-              disabled={exportThreadIds.length === 0}
-              onSelect={() => {
-                if (!exportThreadIds.length) {
-                  toast.error("No conversation to export yet.");
-                  return;
+          <ExportFormatItems
+            options={composerExportFormats().map(({ label }) => ({ key: label, label }))}
+            subContentClassName="unsloth-plus-menu w-[calc(176px*var(--ui-space-scale,1))]"
+            onSelect={(label) => {
+              const fn = composerExportFormats().find((f) => f.label === label)?.fn;
+              if (!fn) return;
+              if (!exportThreadIds.length) {
+                toast.error("No conversation to export yet.");
+                return;
+              }
+              (async () => {
+                for (const id of exportThreadIds) {
+                  await fn(id);
                 }
-                (async () => {
-                  for (const id of exportThreadIds) {
-                    await fn(id);
-                  }
-                })().catch((error) => {
-                  if (!isDownloadCancelled(error)) toast.error("Export failed.");
-                });
-              }}
-            >
-              {label}
-            </DropdownMenuItem>
-          ))}
+              })().catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
+            }}
+          />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
@@ -2731,9 +2773,9 @@ export function SharedComposer({
           void addFiles(e.dataTransfer.files);
         }}
       >
-        {/* Gemini-style drop affordance, mirrored from the single composer. */}
+        {/* Gemini-style drop affordance, mirrored from the single composer; blurred only while shown (see thread.tsx). */}
         <div
-          className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
+          className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100 backdrop-blur-sm" : "opacity-0"}`}
         >
           <HugeiconsIcon
             icon={Attachment01Icon}
@@ -3080,7 +3122,7 @@ export function SharedComposer({
               <textarea
                 {...skillMentions.inputProps}
                 id={inputId}
-                ref={textareaRef}
+                ref={composerSurfaceRef}
                 data-type-to-activate="composer"
                 value={text}
                 onChange={(e) => {

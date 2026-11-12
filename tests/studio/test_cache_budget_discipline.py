@@ -115,10 +115,9 @@ _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
 _LEAF_MAIN = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/main['\"]|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
 )
-# Staging repos (scripts/pr_review/staging_ci.py) open PRs against `upstream-main` and never
-# push their own main, so their dependency caches are seeded by a run dispatched on that branch.
-# The equality counts as restricted ONLY next to an AND-ed guard that excludes this repository:
-# a branch ref is never a PR ref, but here upstream-main has no business saving anything.
+# Staging repos (scripts/pr_review/staging_ci.py) open PRs against upstream-main and never push
+# their own main, so a run on that branch seeds their caches; the equality counts only beside an
+# AND-ed guard that excludes this repository, since upstream-main should save nothing.
 _LEAF_SEED = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/upstream-main['\"]"
     r"|['\"]refs/heads/upstream-main['\"]\s*==\s*github\.ref"

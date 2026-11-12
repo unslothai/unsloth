@@ -119,6 +119,7 @@ from core.inference.llama_server_args import (
     extra_args_select_load_mode,
     fit_is_enabled_in,
     force_pageable_load,
+    load_mode_left_auto,
     memory_env_selects_load_mode,
     memory_state_satisfies_settings,
     fit_is_effectively_on,
@@ -941,17 +942,6 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
                         seen.add(llvm_lib)
                         out.append(llvm_lib)
     return out
-
-
-def _has_unclosed_markup_block(text: str) -> bool:
-    """Counted rather than matched, so a closed block followed by an open one still counts as unclosed."""
-    opens_html = len(re.findall(r"<html\b", text, re.IGNORECASE))
-    closes_html = len(re.findall(r"</html\s*>", text, re.IGNORECASE))
-    if opens_html > closes_html:
-        return True
-    opens_svg = len(re.findall(r"<svg\b", text, re.IGNORECASE))
-    closes_svg = len(re.findall(r"</svg\s*>", text, re.IGNORECASE))
-    return opens_svg > closes_svg
 
 
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
@@ -2495,6 +2485,15 @@ _VRAM_FLOOR_RESERVE_MIB = 512.0
 # llama-server's own --fit-target default ("target margin per device for --fit,
 # ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
+# Extra --fit-target for a load paged on a Windows iGPU, whose GPU share and mapped pages share one
+# memory: on a Strix Halo 8 GiB still aborted at warm-up, 16 GiB ran. Linux runs slower with it.
+_IGPU_PAGED_FIT_HEADROOM_MIB = 15360
+
+
+def _paged_load_needs_fit_headroom() -> bool:
+    """Whether a load paged on an iGPU needs ``_IGPU_PAGED_FIT_HEADROOM_MIB``."""
+    return sys.platform == "win32"
+
 
 # Windows + NVIDIA since driver 536.40: WDDM spills VRAM overflow to host RAM instead of failing, so the reserve matches llama.cpp fit margin.
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
@@ -6031,6 +6030,11 @@ _PAGEABLE_OVERRIDE_NOTE = (
     "RAM up front and cannot complete at this size, so Unsloth loaded it with memory "
     "mapping instead."
 )
+# The override where nobody chose the mode (auto is none on an iGPU); lazy and fit flags are logged.
+_PAGEABLE_AUTO_OVERRIDE_NOTE = (
+    " Unsloth turned on memory mapping, which llama.cpp leaves off by default on this "
+    "integrated GPU."
+)
 # The override is reported, not undone: the running server is already memory-mapped.
 _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
     "This model was set to load without memory mapping, and with its vision projector "
@@ -6038,6 +6042,13 @@ _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
     "mapping instead. The projector then failed to start and this session is text-only, "
     "which the weights alone would have fit. The running server keeps the memory "
     "mapping it started with; load the model again to run it as you asked."
+)
+_PAGEABLE_AUTO_OVERRIDE_TEXT_ONLY_NOTICE = (
+    "With its vision projector in system RAM this model could run out of memory without "
+    "memory mapping, llama.cpp's default on this integrated GPU, so Unsloth loaded it with "
+    "memory mapping instead. The projector then failed to start and this session is "
+    "text-only, which the weights alone would have fit. The running server keeps the "
+    "memory mapping it started with."
 )
 _CGROUP_ROOT = "/sys/fs/cgroup"
 _PROC_SELF_CGROUP = "/proc/self/cgroup"
@@ -6226,6 +6237,17 @@ def _info_once_per_load(msg: str, *args) -> None:
 
 # "Probed, no usable answer", kept apart from None = "not probed yet".
 _MISSING = object()
+
+
+def _apple_wired_headroom_bytes_for_load() -> Optional[int]:
+    """One placement asks several times (sysctl + ioreg each); an armed load reuses the first reading."""
+    memo = _load_probe_memo_get("apple_wired", None)
+    if memo is not None:
+        return None if memo is _MISSING else memo
+    wired = _apple_wired_headroom_bytes()
+    _load_probe_memo_put("apple_wired", None, _MISSING if wired is None else wired)
+    return wired
+
 
 # Display reads only (/api/system would spawn the probe per poll); a GPU memory event or fresh_reads() skips it.
 _VULKAN_INVENTORY_TTL_S = 30.0
@@ -6803,6 +6825,8 @@ class LlamaCppBackend(LlamaChatMixin):
         self._mmproj_accepts_image: bool = True
         # Set in _kill_process (monotonic); load_model reads it to decide whether to wait for VRAM reclaim.
         self._last_kill_monotonic: float = 0.0
+        # {GPU: (free MiB, child's weights MiB)} read just before the last kill.
+        self._last_kill_vram_baseline: Optional[dict[int, tuple[int, float]]] = None
         self._planned_vram_mib: dict[int, int] = {}
         self._pending_plan_mib: dict[int, int] = {}
 
@@ -8397,6 +8421,8 @@ class LlamaCppBackend(LlamaChatMixin):
     _build_number_cache: dict[tuple[str, int, int], Optional[int]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
     _capability_retry_backoff: dict[tuple[str, int, int], float] = {}
+    # Not on the caps dict: probe_server_capabilities returns a fresh copy on --fit-target builds.
+    _reasoning_budget_value_cache: dict[tuple[str, int, int, int], bool] = {}
     _capability_cache_lock = threading.Lock()
 
     # Older builds take a bare boolean -fa and exit on a following "on".
@@ -8537,6 +8563,7 @@ class LlamaCppBackend(LlamaChatMixin):
                 "supports_video_timestamp_interval": False,
                 "supports_video_ffmpeg_dir": None,
                 "supports_load_mode": False,
+                "supports_load_mode_auto": False,
                 "supports_moe_cache": False,
                 "supports_moe_cache_auto": False,
                 "supports_lazy_mode": False,
@@ -8608,6 +8635,7 @@ class LlamaCppBackend(LlamaChatMixin):
         supports_video_timestamp_interval = False
         supports_video_ffmpeg_dir = None
         supports_load_mode = False
+        supports_load_mode_auto = False
         supports_moe_cache = False
         supports_moe_cache_auto = False
         supports_lazy_mode = False
@@ -8822,6 +8850,14 @@ class LlamaCppBackend(LlamaChatMixin):
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
+            # "auto: mmap, unless a device does not support it": without it, mmap is the default everywhere.
+            supports_load_mode_auto = bool(
+                supports_load_mode
+                and re.search(
+                    r"(?<![a-z0-9_+-])auto(?![a-z0-9_+-])",
+                    (blocks.get("--load-mode") or "").lower(),
+                )
+            )
             # "auto" is a fork addition; upstream builds exit on it, so fail closed.
             supports_moe_cache = bool(probe_ok and _is_real("--moe-cache-mib"))
             supports_moe_cache_auto = bool(
@@ -8935,6 +8971,7 @@ class LlamaCppBackend(LlamaChatMixin):
             "supports_video_timestamp_interval": supports_video_timestamp_interval,
             "supports_video_ffmpeg_dir": supports_video_ffmpeg_dir,
             "supports_load_mode": supports_load_mode,
+            "supports_load_mode_auto": supports_load_mode_auto,
             "supports_moe_cache": supports_moe_cache,
             "supports_moe_cache_auto": supports_moe_cache_auto,
             "supports_lazy_mode": supports_lazy_mode,
@@ -9022,27 +9059,47 @@ class LlamaCppBackend(LlamaChatMixin):
             value_key = f"supports_reasoning_budget_value:{effective_budget}"
             if value_key not in caps:
                 probe_binary = cls._exec_path_for_launch(binary)
-                probe_env = cls._llama_server_env_for_binary(probe_binary)
-                # llama-server parses LLAMA_ARG_* before argv, so clear stale inherited values.
-                for name in tuple(probe_env):
-                    if name.startswith("LLAMA_ARG_"):
-                        probe_env.pop(name, None)
-                if sys.platform == "darwin":
-                    probe_env["GGML_METAL_DEVICES"] = "0"
                 try:
-                    result = subprocess.run(
-                        [probe_binary, "--reasoning-budget", str(effective_budget), "--help"],
-                        capture_output = True,
-                        text = True,
-                        encoding = "utf-8",
-                        errors = "replace",
-                        timeout = 10,
-                        check = False,
-                        env = probe_env,
+                    probe_stat = Path(probe_binary).stat()
+                    value_cache_key = (
+                        str(probe_binary),
+                        probe_stat.st_mtime_ns,
+                        probe_stat.st_size,
+                        effective_budget,
                     )
-                    caps[value_key] = result.returncode == 0
-                except (OSError, subprocess.SubprocessError):
-                    caps[value_key] = False
+                except OSError:
+                    value_cache_key = None
+                with cls._capability_cache_lock:
+                    known = cls._reasoning_budget_value_cache.get(value_cache_key)
+                if known is not None:
+                    caps[value_key] = known
+                else:
+                    probe_env = cls._llama_server_env_for_binary(probe_binary)
+                    # llama-server parses LLAMA_ARG_* before argv, so clear stale inherited values.
+                    for name in tuple(probe_env):
+                        if name.startswith("LLAMA_ARG_"):
+                            probe_env.pop(name, None)
+                    if sys.platform == "darwin":
+                        probe_env["GGML_METAL_DEVICES"] = "0"
+                    try:
+                        result = subprocess.run(
+                            [probe_binary, "--reasoning-budget", str(effective_budget), "--help"],
+                            capture_output = True,
+                            text = True,
+                            encoding = "utf-8",
+                            errors = "replace",
+                            timeout = 10,
+                            check = False,
+                            env = probe_env,
+                            **_windows_hidden_subprocess_kwargs(),
+                        )
+                        caps[value_key] = result.returncode == 0
+                        # Spawn errors, timeouts, signals and NTSTATUS crashes (unsigned) probe again.
+                        if value_cache_key is not None and 0 <= result.returncode < 0xC0000000:
+                            with cls._capability_cache_lock:
+                                cls._reasoning_budget_value_cache[value_cache_key] = caps[value_key]
+                    except (OSError, subprocess.SubprocessError):
+                        caps[value_key] = False
             if not caps[value_key]:
                 raise ValueError(
                     f"llama-server at {binary} does not accept positive reasoning budgets. "
@@ -10626,6 +10683,11 @@ class LlamaCppBackend(LlamaChatMixin):
         return LlamaCppBackend._integrated_cuda_mask_key() in LlamaCppBackend._INTEGRATED_CUDA_IDS
 
     @staticmethod
+    def _cuda_device_info():
+        from utils.hardware import nvidia
+        return nvidia.cuda_device_info_or_torch()
+
+    @staticmethod
     def _integrated_cuda_gpu_ids() -> set[int]:
         """PHYSICAL ids of visible integrated CUDA GPUs; ROCm is left to _rocm_unified_memory_gpu_ids."""
         cached = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
@@ -10641,29 +10703,19 @@ class LlamaCppBackend(LlamaChatMixin):
                 return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return set()
+            info = LlamaCppBackend._cuda_device_info()
+            if info is None:
+                return set()
             # Same ordinal-to-physical map as the ROCm twin, so masked CUDA_VISIBLE_DEVICES=2 hosts stay correct.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            integrated: set[int] = set()
-            # An incomplete pass is returned but not cached, so a failed query is retried.
-            complete = True
-            for ordinal in range(torch.cuda.device_count()):
-                try:
-                    props = torch.cuda.get_device_properties(ordinal)
-                except Exception:
-                    complete = False
-                    continue
-                # Both attribute spellings: torch renamed `integrated`.
-                if not (
-                    getattr(props, "is_integrated", False) or getattr(props, "integrated", False)
-                ):
-                    continue
-                integrated.add(
-                    physical_ids[ordinal]
-                    if physical_ids is not None and ordinal < len(physical_ids)
-                    else ordinal
-                )
-            # Cached for the preflight only if the pass reached every device; a torch that raised says nothing.
-            if complete:
+            integrated = {
+                physical_ids[ordinal]
+                if physical_ids is not None and ordinal < len(physical_ids)
+                else ordinal
+                for ordinal, device in enumerate(info)
+                if device is not None and device[1]
+            }
+            if all(device is not None for device in info):
                 LlamaCppBackend._INTEGRATED_CUDA_IDS[
                     LlamaCppBackend._integrated_cuda_mask_key()
                 ] = integrated
@@ -10676,7 +10728,7 @@ class LlamaCppBackend(LlamaChatMixin):
 
     @staticmethod
     def _integrated_cuda_pool_total_mib() -> dict[int, int]:
-        """Pool MiB per integrated CUDA device, from props.total_memory: what it can actually allocate."""
+        """Pool MiB per integrated CUDA device, from the driver's total memory: what it can actually allocate."""
         key = LlamaCppBackend._integrated_cuda_mask_key()
         cached = LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB.get(key)
         if cached is not None:
@@ -10685,24 +10737,21 @@ class LlamaCppBackend(LlamaChatMixin):
         if not integrated:
             return {}
         try:
-            import torch
-
+            info = LlamaCppBackend._cuda_device_info()
+            if info is None:
+                return {}
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             totals: dict[int, int] = {}
-            complete = True
-            for ordinal in range(torch.cuda.device_count()):
+            complete = all(device is not None for device in info)
+            for ordinal, device in enumerate(info):
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                if idx not in integrated:
+                if device is None or idx not in integrated:
                     continue
-                try:
-                    props = torch.cuda.get_device_properties(ordinal)
-                    totals[idx] = int(props.total_memory) // (1024 * 1024)
-                except Exception:
-                    complete = False
+                totals[idx] = int(device[2]) // (1024 * 1024)
             if complete:
                 LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB[key] = totals
             return totals
@@ -10866,17 +10915,16 @@ class LlamaCppBackend(LlamaChatMixin):
                 return False  # ROCm reuses torch.cuda.*; not a CUDA part
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            count = torch.cuda.device_count()
+            info = LlamaCppBackend._cuda_device_info() or []
 
             # Mirror _get_gpu_free_memory; unset or unparsable CUDA_VISIBLE_DEVICES keeps physical id == ordinal.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
 
             names_by_id: dict[int, str] = {}
-            for ordinal in range(count):
-                try:
-                    name = (torch.cuda.get_device_properties(ordinal).name or "").lower()
-                except Exception:
+            for ordinal, device in enumerate(info):
+                if device is None:
                     continue
+                name = (device[3] or "").lower()
                 pid = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
@@ -12059,12 +12107,12 @@ class LlamaCppBackend(LlamaChatMixin):
     @staticmethod
     def _apple_metal_wired_ceiling_bytes() -> int:
         """Wired GPU memory a Metal load may still take, system-wide; 0 if unknown or used up."""
-        return _apple_wired_headroom_bytes() or 0
+        return _apple_wired_headroom_bytes_for_load() or 0
 
     @staticmethod
     def _apple_metal_wired_headroom_bytes() -> Optional[int]:
         """The same headroom, but None when unknown, so 0 means used up."""
-        return _apple_wired_headroom_bytes()
+        return _apple_wired_headroom_bytes_for_load()
 
     @staticmethod
     def _metal_fit_target_floor_mib() -> float:
@@ -13842,12 +13890,131 @@ class LlamaCppBackend(LlamaChatMixin):
             "yes",
         )
 
+    def _auto_load_mode_unmapped(
+        self,
+        server_caps: Optional[Mapping[str, object]],
+        *,
+        child_has_no_gpu: bool = False,
+        **devices,
+    ) -> bool:
+        """Whether llama.cpp resolves ``--load-mode auto`` to ``none`` here: a device lacking
+        ``mmap_support`` turns both auto modes off (``load_tensors``); ``devices`` go to
+        ``_lazy_auto_resolves_off``."""
+        if child_has_no_gpu or not (server_caps or {}).get("supports_load_mode_auto"):
+            return False
+        try:
+            return bool(self._lazy_auto_resolves_off(**devices))
+        except Exception as e:  # noqa: BLE001 -- unknown devices: keep the launch as is
+            logger.debug("Could not tell whether llama.cpp maps this load: %s", e)
+            return False
+
+    def _paged_lookup_table_flags(
+        self,
+        model_path: Optional[str],
+        caps: Optional[Mapping[str, object]],
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> list[str]:
+        """``[<lazy flag>, "on"]`` to stream the tables auto streams elsewhere: mmap prefetch skips
+        only lazy ranges (llama-mmap.cpp). Empty when a lazy mode is set or nothing would stream."""
+        caps = caps or {}
+        if not model_path or not caps.get("supports_lazy_mode"):
+            return []
+        flag = str(caps.get("lazy_mode_flag") or "--lazy-mode")
+        source_env = os.environ if env is None else env
+        flags, env_name = _LAZY_MODE_SPELLINGS.get(flag, (frozenset({flag}), ""))
+        argv = list(argv or ())
+        if (env_name and str(source_env.get(env_name) or "").strip()) or _extra_args_set_any_flag(
+            argv, flags
+        ):
+            return []
+        if self._lazy_read_host_bytes(model_path, caps = caps, extra_args = argv, env = source_env) <= 0:
+            return []
+        return [flag, "on"]
+
+    @staticmethod
+    def _paged_fit_headroom_flags(
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]],
+        user_args: Optional[Iterable[str]],
+        gpu_count: int = 1,
+    ) -> list[str]:
+        """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` over the launch's margin.
+        Empty off Windows, with the fitter off, a user margin, a per-device list, or a second
+        device, which the broadcast margin would starve."""
+        args = [str(a) for a in argv or ()]
+        if not _paged_load_needs_fit_headroom() or gpu_count > 1:
+            return []
+        if (
+            _extra_args_device(args, {"--rpc"})
+            or str((env or {}).get("LLAMA_ARG_RPC") or "").strip()
+        ):
+            return []
+        devices = _extra_args_device(args, {"--device", "-dev"})
+        if devices is None:
+            devices = str((env or {}).get("LLAMA_ARG_DEVICE") or "")
+        if (
+            len(
+                [
+                    d
+                    for d in devices.split(",")
+                    if d.strip().lower() not in ("", *_CPU_DEVICE_VALUES)
+                ]
+            )
+            > 1
+        ):
+            return []
+        if not fit_is_effectively_on(args, env) or _fit_target_values(user_args or (), env):
+            return []
+        raw = _last_flag_value(args, {"-fitt", "--fit-target"})
+        if (
+            raw is not None
+            and len([p for p in str(raw).replace("/", ",").split(",") if p.strip()]) > 1
+        ):
+            return []
+        have = _single_device_fit_margin(args, None)
+        base = _LLAMA_FIT_TARGET_DEFAULT_MIB if have is None else have
+        return ["--fit-target", str(math.ceil(base + _IGPU_PAGED_FIT_HEADROOM_MIB))]
+
+    @staticmethod
+    def _margins_with_paged_headroom(
+        margins: Optional[Mapping[int, float]],
+        headroom: Iterable[str],
+        sign: int = 1,
+    ) -> Optional[Mapping[int, float]]:
+        """The spawn respells ``--fit-target`` per device from ``margins``, so they carry the headroom too."""
+        if not margins or not list(headroom):
+            return margins
+        return {i: m + sign * _IGPU_PAGED_FIT_HEADROOM_MIB for i, m in margins.items()}
+
+    @staticmethod
+    def _withdraw_paged_headroom(
+        cmd: list[str], margins: Optional[Mapping[int, float]], headroom: list[str]
+    ) -> tuple[list[str], Optional[Mapping[int, float]]]:
+        """``cmd`` and ``margins`` without the iGPU paging headroom, for a respawn off the iGPU."""
+        return (
+            LlamaCppBackend._without_flag_pairs(cmd, headroom),
+            LlamaCppBackend._margins_with_paged_headroom(margins, headroom, sign = -1),
+        )
+
     def _page_an_oversized_unmapped_load(
-        self, cmd: Iterable[str], env: Optional[dict], oversized
+        self,
+        cmd: Iterable[str],
+        env: Optional[dict],
+        oversized,
+        *,
+        auto_unmapped: bool = False,
+        lazy_table_flags: Optional[Callable[[list], list]] = None,
+        fit_headroom_flags: Optional[Callable[[list], list]] = None,
     ) -> tuple[list, Optional[str]]:
-        """Returns (cmd, note); rewrites an oversized non-pageable load to mmap so it finishes; judges effective env state, not argv; never blocks."""
+        """Returns (cmd, note); rewrites an oversized non-pageable load to mmap so it finishes; judges effective env state, not argv; never blocks.
+
+        ``auto_unmapped``: auto is none for this child, so an unset mode is rewritten too, and
+        ``lazy_table_flags(argv)`` / ``fit_headroom_flags(argv)`` are appended."""
         original = cmd if isinstance(cmd, list) else list(cmd or ())
-        _mlock_now, _reserves_ram_now = resolve_effective_memory_state(original, env)
+        _mlock_now, _reserves_ram_now = resolve_effective_memory_state(
+            original, env, auto_unmapped = auto_unmapped
+        )
         if not _reserves_ram_now:
             return original, None
         try:
@@ -13857,15 +14024,33 @@ class LlamaCppBackend(LlamaChatMixin):
             # Advisory pricing: an unreadable host or GGUF leaves the launch alone.
             logger.debug("Could not price the load for a pageable override.", exc_info = True)
             return original, None
-        paged, overridden = force_pageable_load(original, env)
+        from_auto = auto_unmapped and load_mode_left_auto(original, env)
+        paged, overridden = force_pageable_load(original, env, auto_unmapped = auto_unmapped)
         if not overridden:
             return original, None
+        lazy: list = []
+        if auto_unmapped and lazy_table_flags is not None:
+            try:
+                lazy = list(lazy_table_flags(paged) or [])
+            except Exception:  # noqa: BLE001 -- the mapping alone still lets the load finish
+                logger.debug("Lookup tables: could not price lazy reads.", exc_info = True)
+        paged = [*paged, *lazy]
+        headroom: list = []
+        if auto_unmapped and fit_headroom_flags is not None:
+            try:
+                headroom = list(fit_headroom_flags(paged) or [])
+            except Exception:  # noqa: BLE001 -- the mapping still applies without the margin
+                logger.debug("Fit headroom: could not read the launch's margin.", exc_info = True)
+        paged = [*paged, *headroom]
         logger.warning(
             "Overriding the unmapped load mode (%s) for an oversized model: it would "
-            "allocate the whole model in host RAM instead of paging it in.",
+            "allocate the whole model in host RAM instead of paging it in.%s%s",
             ", ".join(overridden),
+            f" Lookup tables: {' '.join(lazy)}." if lazy else "",
+            f" GPU headroom: {' '.join(headroom)}." if headroom else "",
         )
-        return paged, _PAGEABLE_OVERRIDE_NOTE
+        note = _PAGEABLE_AUTO_OVERRIDE_NOTE if from_auto else _PAGEABLE_OVERRIDE_NOTE
+        return paged, note
 
     @property
     def last_load_warning(self) -> Optional[str]:
@@ -13921,7 +14106,11 @@ class LlamaCppBackend(LlamaChatMixin):
             # The discrete guard never charged the projector, so its verdict stands.
             self._last_load_warning = host_msg + suffix
         elif suffix.strip():
-            self._last_load_warning = _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE
+            self._last_load_warning = (
+                _PAGEABLE_AUTO_OVERRIDE_TEXT_ONLY_NOTICE
+                if _PAGEABLE_AUTO_OVERRIDE_NOTE in suffix
+                else _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE
+            )
         else:
             self._last_load_warning = None
         logger.info(
@@ -14409,14 +14598,65 @@ class LlamaCppBackend(LlamaChatMixin):
     # Skip the wait when the last kill is older than this; the driver has already reclaimed it.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
 
+    # Weights under this on a GPU cannot be told from noise in its free-VRAM figure.
+    _VRAM_RELEASE_MIN_HELD_MIB: float = 512.0
+    # Windows (WDDM) reports a dead child's VRAM as free after it exits. A bound, not a measurement.
+    _VRAM_RELEASE_WAIT_S: float = 10.0
+
+    @staticmethod
+    def _free_vram_counts_only_this_process() -> bool:
+        """Windows ROCm free VRAM excludes other processes; checks torch too, as IS_ROCM is set late."""
+        if sys.platform != "win32":
+            return False
+        from utils.hardware import rocm_windows_free_is_untrusted
+
+        if rocm_windows_free_is_untrusted():
+            return True
+        torch = sys.modules.get("torch")
+        return torch is not None and LlamaCppBackend._torch_is_rocm(torch)
+
+    def _vram_baseline_before_kill(self) -> Optional[dict[int, tuple[int, float]]]:
+        """{GPU: (free MiB, child's weights MiB)} while the child lives; None if any GPU's reading
+        does not count those weights as used (cannot show their release) or on Windows ROCm."""
+        try:
+            if self._free_vram_counts_only_this_process():
+                return None
+            held = {
+                idx: float(gb) * 1024.0
+                for idx, gb in (self.reclaimable_gpu_memory_gb() or {}).items()
+                if float(gb) * 1024.0 >= self._VRAM_RELEASE_MIN_HELD_MIB
+            }
+            if not held:
+                return None
+            from utils.hardware import gpu_query
+
+            with gpu_query.fresh_reads():
+                readings = {
+                    i: (free, total) for i, free, total in LlamaCppBackend._get_gpu_memory()
+                }
+            # Again: the read itself may be what imported torch.
+            if self._free_vram_counts_only_this_process():
+                return None
+            baseline: dict[int, tuple[int, float]] = {}
+            for idx, held_mib in held.items():
+                free, total = readings.get(idx, (0, 0))
+                if total <= 0 or total - free < held_mib / 2.0:
+                    return None
+                baseline[idx] = (int(free), held_mib)
+            return baseline
+        except Exception:
+            return None
+
     @staticmethod
     def _wait_for_vram_settle(
         max_wait: float = 2.0,
         interval: float = 0.25,
         tolerance_mib: int = 256,
         since_kill: float = 0.0,
+        baseline: Optional[dict[int, tuple[int, float]]] = None,
     ) -> None:
-        """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi."""
+        """Polls until VRAM settles after a kill; skips on cold start, stale kill, CPU-only, probe errors, GPU-set change; max_wait caps a wedged nvidia-smi.
+        With ``baseline``, samples count only once the child's VRAM shows freed (up to ``_VRAM_RELEASE_WAIT_S``)."""
         now = time.monotonic()
         if since_kill <= 0.0:
             return
@@ -14436,18 +14676,40 @@ class LlamaCppBackend(LlamaChatMixin):
             except Exception:
                 return None
 
+        def _released(sample) -> bool:
+            # Per GPU; half the weights, since another tenant may take some of the freed memory.
+            free = dict(sample)
+            return all(
+                free.get(idx, before) - before >= held / 2.0
+                for idx, (before, held) in baseline.items()
+            )
+
         prev = _probe_or_none()
         if prev is None or not prev:
             return
+        # A GPU the probe no longer lists cannot be tracked.
+        awaiting_release = (
+            bool(baseline) and set(baseline) <= {idx for idx, _free in prev} and not _released(prev)
+        )
+        if awaiting_release:
+            deadline = now + max(max_wait, LlamaCppBackend._VRAM_RELEASE_WAIT_S)
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return
+                break
             # Clip the nap so a near-zero ``max_wait`` is respected.
             time.sleep(min(interval, remaining))
+            if awaiting_release and time.monotonic() >= deadline:
+                break
             curr = _probe_or_none()
             if curr is None or not curr or len(curr) != len(prev):
                 return
+            if awaiting_release:
+                if _released(curr):
+                    awaiting_release = False
+                    deadline = time.monotonic() + max_wait
+                prev = curr
+                continue
             prev_map = dict(prev)
             stable = True
             for idx, free in curr:
@@ -14463,6 +14725,13 @@ class LlamaCppBackend(LlamaChatMixin):
             if stable:
                 return
             prev = curr
+        if awaiting_release:
+            logger.warning(
+                "Free VRAM did not rise within %.1f s of stopping the previous llama-server "
+                "(it held about %.0f MiB); the GPU fit that follows uses the reported figure.",
+                max(max_wait, LlamaCppBackend._VRAM_RELEASE_WAIT_S),
+                sum(held for _before, held in baseline.values()),
+            )
 
     # Free-VRAM fraction at which Unsloth pins the GPU instead of deferring to --fit on.
     # Guards fragmentation and per-device context; 0.90 sent 91-94% fits to CPU offload.
@@ -20545,6 +20814,48 @@ class LlamaCppBackend(LlamaChatMixin):
             return []
         return discrete if 0 < len(discrete) < len(_selected) else []
 
+    _CURRENT_DEVICE_RE = re.compile(r"current device:\s*(\d+)")
+
+    @classmethod
+    def _unpinned_arch_crash_retry(
+        cls,
+        output: str,
+        enumerated,
+        child_ids: Optional[Sequence[int]] = None,
+    ) -> tuple[list[int], list[int]]:
+        """``(crashed, remaining)`` physical ids from the child's "current device: N", or ``([], [])``.
+        ``child_ids`` maps the child's ordinals when Studio masked it."""
+        if not cls._host_torch_is_rocm():
+            return [], []  # an unmasked CUDA child orders devices by speed, not by our ids
+        matches = cls._CURRENT_DEVICE_RE.findall(output or "")
+        if not matches:
+            return [], []
+        ordinal = int(matches[-1])
+        # Ordinals we cannot map back to physical ids; guessing could expose a hidden card.
+        if cls._gpu_device_ordinal_active() or (
+            child_ids is None
+            and (cls._visibility_mask_is_unmappable() or cls._rocm_visibility_masks_are_stacked())
+        ):
+            return [], []
+        physical_ids = (
+            list(child_ids) if child_ids is not None else cls._resolve_visible_physical_ids()
+        )
+        if physical_ids is not None:
+            if ordinal >= len(physical_ids):
+                return [], []
+            ordinal = physical_ids[ordinal]
+        _enumerated = sorted(set(enumerated or ()))
+        if ordinal not in _enumerated:
+            return [], []
+        remaining = [i for i in _enumerated if i != ordinal]
+        # A shared-memory iGPU is the usual second uncovered arch; kept only when nothing else is left.
+        try:
+            unified = cls._rocm_unified_memory_gpu_ids()
+            discrete = [i for i in remaining if i not in unified]
+        except Exception:
+            discrete = []
+        return [ordinal], (discrete or remaining)
+
     @staticmethod
     def _cache_tuning_target_unknown(
         extra_args: Optional[Iterable[str]], device_flags_owned: bool, env: Mapping[str, str]
@@ -21388,10 +21699,11 @@ class LlamaCppBackend(LlamaChatMixin):
                 "UNSLOTH_LLAMA_CPP_BACKEND=cpu unsloth studio update."
             )
         if backend == "hip":
+            var = "HIP_VISIBLE_DEVICES" if sys.platform == "win32" else "ROCR_VISIBLE_DEVICES"
             return base + (
                 "This often means an unsupported secondary GPU; on AMD/ROCm, hide it "
-                "with ROCR_VISIBLE_DEVICES (e.g. ROCR_VISIBLE_DEVICES=0 exposes only "
-                "the first GPU) before launching Unsloth Studio."
+                f"with {var} (e.g. {var}=0 exposes only the first GPU) before "
+                "launching Unsloth Studio."
             )
         if backend == "cuda":
             return base + (
@@ -21655,6 +21967,8 @@ class LlamaCppBackend(LlamaChatMixin):
             _fit_target_delta_by_idx: Optional[dict[int, float]] = None
             # Studio's emitted margins per card, spelled into --fit-target at spawn.
             _fit_target_margins_by_idx: Optional[dict[int, float]] = None
+            # --fit-target pair a paged iGPU launch appended, withdrawn if a retry leaves the iGPU.
+            _paged_headroom: list = []
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
             _fit_target_priced = False
@@ -22237,7 +22551,10 @@ class LlamaCppBackend(LlamaChatMixin):
                 self._vram_fraction_launched = None
                 # Outside the lock, as for llama-server: the Auto layer fit reads free VRAM,
                 # which a just-killed runner still holds until the driver reclaims it.
-                self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+                self._wait_for_vram_settle(
+                    since_kill = self._last_kill_monotonic,
+                    baseline = getattr(self, "_last_kill_vram_baseline", None),
+                )
                 with self._lock:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
@@ -22273,7 +22590,10 @@ class LlamaCppBackend(LlamaChatMixin):
             self._resumes_thoughts = self.resumes_thoughts(binary)
 
             # Outside self._lock so /unload, /cancel, /status aren't blocked.
-            self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+            self._wait_for_vram_settle(
+                since_kill = self._last_kill_monotonic,
+                baseline = getattr(self, "_last_kill_vram_baseline", None),
+            )
 
             # ── Phase 3: start llama-server (under lock) ──────────────
             with self._lock:
@@ -24785,6 +25105,8 @@ class LlamaCppBackend(LlamaChatMixin):
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: cap here, or the context stays native and over-commits
                         # unified memory.
+                        # After the download: the wired checks below share one reading for this load.
+                        _arm_load_probe_memo()
                         # llama.cpp's --fit is blind to Unsloth's own footprint and the wired limit.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         # With --fit off (argv or LLAMA_ARG_FIT env) nothing reduces what we emit, so hand over the floor the llama.cpp fitter itself would reduce to.
@@ -28725,8 +29047,38 @@ class LlamaCppBackend(LlamaChatMixin):
                         )
                     )
 
+                # On an iGPU auto is none; same devices as the guard above.
+                _launch_auto_unmapped = self._auto_load_mode_unmapped(
+                    server_caps,
+                    child_has_no_gpu = _child_has_no_gpu,
+                    gpu_indices = [row[0] for row in _reachable_gpus] or None,
+                    detected_gpus = _reachable_gpus,
+                    shared_gpu_ids = _shared_gpu_ids,
+                    is_vulkan_backend = is_vulkan_backend,
+                    probe_integrated_cuda = False,
+                    extra_args = cmd,
+                    env = env,
+                    device_list = False,
+                    integrated_gpu_ids = _vulkan_igpu_ids,
+                )
+                _paged_headroom = []
                 cmd, _pageable_note = self._page_an_oversized_unmapped_load(
-                    cmd, env, _launch_is_oversized
+                    cmd,
+                    env,
+                    _launch_is_oversized,
+                    auto_unmapped = _launch_auto_unmapped,
+                    lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
+                        model_path, server_caps, argv, env
+                    ),
+                    fit_headroom_flags = lambda argv: _paged_headroom.extend(
+                        self._paged_fit_headroom_flags(
+                            argv, env, extra_args, gpu_count = len(_reachable_gpus)
+                        )
+                    )
+                    or _paged_headroom,
+                )
+                _fit_target_margins_by_idx = self._margins_with_paged_headroom(
+                    _fit_target_margins_by_idx, _paged_headroom
                 )
                 if _pageable_note:
                     # Record the argv that actually launches, and snapshot it too, since arch-crash retry restores it.
@@ -29922,22 +30274,51 @@ class LlamaCppBackend(LlamaChatMixin):
                             "update llama.cpp to use tensor parallelism with a "
                             "quantized cache."
                         )
-                # Auto-pinned device has no kernels in this binary: retry once on a narrowed set, since the gate cannot see custom builds; explicit picks keep their error.
+                # A launched device has no kernels in this binary: retry once on a narrowed set (the gate cannot see custom builds or unreadable coverage); explicit picks keep their error.
+                _arch_crash_tail = "\n".join(self._stdout_lines[-80:])
                 if (
                     not healthy
                     and not _load_cancelled()
                     and not gpu_ids
                     and not is_vulkan_backend
-                    and gpu_indices
-                    and self._kernel_image_invalid("\n".join(self._stdout_lines[-80:]))
+                    and self._kernel_image_invalid(_arch_crash_tail)
                 ):
-                    _crashed = sorted(set(gpu_indices))
                     # _detected_gpus, not gpus: the post-picker enumeration this launch
                     # planned against, and unlike `gpus` it survives the manual mode that
                     # empties the pool to bypass the planner.
-                    _remaining = self._arch_crash_retry_gpu_ids(
-                        gpu_indices, [i for i, _free in _detected_gpus]
-                    )
+                    _enumerated = [i for i, _free in _detected_gpus]
+                    if gpu_indices:
+                        _crashed = sorted(set(gpu_indices))
+                        _remaining = self._arch_crash_retry_gpu_ids(gpu_indices, _enumerated)
+                    elif (
+                        _cache_target_unknown
+                        or str(env.get("LLAMA_ARG_MAIN_GPU", "")).strip()
+                        or _GPU_DEVICE_TOKEN_RE.match(
+                            str(env.get("MTMD_BACKEND_DEVICE", "")).strip()
+                        )
+                    ):
+                        # A user --device / --main-gpu / projector device env numbers cards by the unnarrowed set.
+                        _crashed, _remaining = [], []
+                    else:
+                        # Unpinned (manual split, or unreadable coverage): only the child's "current device" names the card.
+                        _crashed, _remaining = self._unpinned_arch_crash_retry(
+                            _arch_crash_tail, _enumerated, _child_gpu_physical_ids
+                        )
+                        if (
+                            _remaining
+                            and _companion_fit_mask is None
+                            and any(
+                                _flag_name(str(tok)) in flags
+                                for tok in cmd
+                                for flags in _COMPANION_DEVICE_FLAG_GROUPS
+                            )
+                        ):
+                            # Companion ROCm<n> tokens number this child's devices; the refit below remaps them.
+                            _companion_fit_mask = (
+                                list(_child_gpu_physical_ids)
+                                if _child_gpu_physical_ids is not None
+                                else self._resolve_visible_physical_ids() or sorted(_enumerated)
+                            )
                     if _remaining:
                         # Earlier notices priced the crashed selection; re-price on the respawn set, since first notice wins.
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
@@ -30078,7 +30459,6 @@ class LlamaCppBackend(LlamaChatMixin):
                             env, ",".join(str(i) for i in _retry_mask), prefer_rocr = True
                         )
                         _child_gpu_physical_ids = tuple(int(i) for i in _retry_mask)
-                        # No ratio record here: _tensor_split is set only in manual mode, where gpu_indices stays None.
                         self._clear_split_placement_env(env)
                         # The mask re-indexes survivors, so drop a --tensor-split sized for the crashed set.
                         _arch_retry_cmd = self._without_tensor_split(cmd)
@@ -30089,9 +30469,9 @@ class LlamaCppBackend(LlamaChatMixin):
                                 "devices and the narrowed set re-indexes them."
                             )
                             cmd = _arch_retry_cmd
-                            # No ratio record, unlike the proactive gate: _tensor_split
-                            # is non-None only in manual mode, which leaves gpu_indices
-                            # None, and this arm needs it truthy.
+                            # Recorded like the proactive gate, or the next Apply sees a different server and reloads.
+                            if self._tensor_split:
+                                self._arch_gate_dropped_tensor_split = tuple(self._tensor_split)
                             self._tensor_split = None
                             # The auto twin, which this arm CAN reach: an auto
                             # tensor-parallel fallback emits its ratio with
@@ -30281,8 +30661,41 @@ class LlamaCppBackend(LlamaChatMixin):
                                 )
                             )
 
+                        _retry_auto_unmapped = self._auto_load_mode_unmapped(
+                            server_caps,
+                            gpu_indices = [row[0] for row in _retry_rows] or None,
+                            detected_gpus = _retry_rows,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            is_vulkan_backend = is_vulkan_backend,
+                            probe_integrated_cuda = False,
+                            extra_args = cmd,
+                            env = env,
+                            device_list = False,
+                            integrated_gpu_ids = _vulkan_igpu_ids,
+                        )
+                        if _paged_headroom and not _retry_auto_unmapped:
+                            cmd, _fit_target_margins_by_idx = self._withdraw_paged_headroom(
+                                cmd, _fit_target_margins_by_idx, _paged_headroom
+                            )
+                            _paged_headroom = []
+                        _retry_headroom: list = []
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
-                            cmd, env, _retry_is_oversized
+                            cmd,
+                            env,
+                            _retry_is_oversized,
+                            auto_unmapped = _retry_auto_unmapped,
+                            lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
+                                model_path, server_caps, argv, env
+                            ),
+                            fit_headroom_flags = lambda argv: _retry_headroom.extend(
+                                self._paged_fit_headroom_flags(
+                                    argv, env, extra_args, gpu_count = len(_retry_rows)
+                                )
+                            )
+                            or _retry_headroom,
+                        )
+                        _fit_target_margins_by_idx = self._margins_with_paged_headroom(
+                            _fit_target_margins_by_idx, _retry_headroom
                         )
                         if _retry_pageable_note:
                             # Onto whichever notice first-notice-wins kept above; a
@@ -32410,6 +32823,9 @@ class LlamaCppBackend(LlamaChatMixin):
         """Read both before terminate: getpgid fails once the leader is reaped and children reparent on exit; the visual server must be named while the link exists"""
         self._stop_mtp_crash_watchdog()
         self._reset_effective_parallel_slots()
+        if self._process is not None:
+            # While the child still holds its VRAM and its GPU ids; a shutdown has no load to plan for.
+            self._last_kill_vram_baseline = None if teardown else self._vram_baseline_before_kill()
         # _process may be a test stand-in lacking terminate(); skip signalling, fall through to finally.
         self._diffusion_requested_ngl = None
         self._child_gpu_physical_ids = None

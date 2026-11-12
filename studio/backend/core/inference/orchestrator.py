@@ -302,9 +302,7 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
 
 
 def _mlx_runtime_mirror_fields(model_info: dict) -> dict:
-    """MLX runtime state the parent mirrors, omitting what was not reported. Only the MLX backend
-    sends these. Creating the keys for every backend would make the reload comparison see a None
-    the backend never stored, and reload on every identical request."""
+    """Only the MLX backend sends these; a None on other backends would reload every identical request."""
     return {key: model_info[key] for key in _MLX_RUNTIME_MIRROR_FIELDS if key in model_info}
 
 
@@ -407,9 +405,7 @@ def _encoded_images(images, to_base64) -> list:
 
 
 def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
-    """The parent's view of a model the worker holds. Measured or classified in the subprocess and
-    unrecoverable once the model lives there, so a field the worker sends and this does not copy
-    is one the API can never report."""
+    """Parent's view of a worker-held model: a field not copied here can never be reported by the API."""
     return {
         "is_vision": model_info.get("is_vision", False),
         "is_lora": model_info.get("is_lora", False),
@@ -433,6 +429,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_family": model_info.get("audio_family"),
         "audio_options": model_info.get("audio_options"),
         "gguf_variant": model_info.get("gguf_variant"),
+        "precision_folder": model_info.get("precision_folder"),
         "audio_workflows": model_info.get("audio_workflows"),
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
@@ -770,8 +767,7 @@ class InferenceOrchestrator:
             logger.debug("Could not tell the worker to let go of its batch", exc_info = True)
 
     def is_worker_alive(self) -> bool:
-        """True while the inference subprocess is running, even with no model active (a failed load
-        can leave a live worker holding sidecar modules)."""
+        """True while the worker runs, even with no model (a failed load can leave sidecars)."""
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
             return managed.alive()
@@ -850,9 +846,8 @@ class InferenceOrchestrator:
                 self._worker_reserved_for = None
 
     def _shutdown_before_respawn(self) -> None:
-        """Tear the current worker down before a retry spawns its replacement. A worker that
-        survives terminate/kill keeps its handle (see the model-switch guard in load_model), and a
-        second worker must not be spawned over it."""
+        """Tear down before a retry respawns: a worker that survives terminate/kill is never spawned
+        over."""
         if self._shutdown_subprocess(timeout = 5) is False:
             raise RuntimeError(
                 "The inference worker did not exit and still holds GPU memory; "
@@ -3050,15 +3045,17 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         timeout: float = 30.0,
+        images: Optional[list] = None,
     ) -> tuple[int, Optional[str]]:
         """Reads through an addressed mailbox: in compare mode a dispatcher owns the response queue
         instead."""
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
+            if tools:
+                raise ValueError("Tools are unavailable for this optional engine profile.")
             return managed.count_tokens(
                 messages,
                 system_prompt,
-                tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
@@ -3083,6 +3080,7 @@ class InferenceOrchestrator:
                     "enable_thinking": enable_thinking,
                     "reasoning_effort": reasoning_effort,
                     "preserve_thinking": preserve_thinking,
+                    "images_base64": _encoded_images(images, self._pil_to_base64) or None,
                 }
             )
             resp = self._await_reply(
@@ -3122,6 +3120,8 @@ class InferenceOrchestrator:
         request_branch: Optional[list] = None,
         live_branch: Optional[list] = None,
         force_reset: bool = False,
+        keeps_boundary: bool = False,
+        images: Optional[list] = None,
     ) -> dict:
         """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
@@ -3158,6 +3158,7 @@ class InferenceOrchestrator:
                 retrieval_budget,
                 truncate_oldest_messages,
             )
+            from core.inference.mcp_images import image_marker_parts
             from core.inference.chat_compaction import (
                 _archive_and_recall,
                 _boundary_metadata,
@@ -3174,6 +3175,16 @@ class InferenceOrchestrator:
 
             if messages_without_unpriced_media(conversation) is not conversation:
                 return unchanged
+            # One picture per marker, in order; only the MLX count prices them.
+            images = _encoded_images(images, self._pil_to_base64)
+            markers = image_marker_parts(conversation) if images else []
+            if len(markers) != len(images) or (images and not model_info.get("is_mlx")):
+                return unchanged
+
+            def _marked(fitted):
+                kept = {id(part) for part in image_marker_parts(fitted)}
+                return [index for index, marker in enumerate(markers) if id(marker) in kept]
+
             if cancel_event is not None and cancel_event.is_set():
                 return unchanged
             # The count prices a new reply, not a resumed reply or thought.
@@ -3216,6 +3227,9 @@ class InferenceOrchestrator:
                     raise RuntimeError("Context compaction cancelled")
                 if estimated:
                     return _utf8_half_tokens(messages_without_unpriced_media(fitted))
+                if images:
+                    pictures = [images[index] for index in _marked(fitted)]
+                    return self.count_chat_tokens(fitted, "", images = pictures, **count_kwargs)[0]
                 return self.count_chat_tokens(fitted, "", **count_kwargs)[0]
 
             can_reset = _can_reset_epoch(
@@ -3250,7 +3264,7 @@ class InferenceOrchestrator:
                 max_tokens = fit_max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
-                keeps_boundary = _keeps_compaction_boundary(thread_id),
+                keeps_boundary = keeps_boundary or _keeps_compaction_boundary(thread_id),
                 can_reset = can_reset,
                 recall_offered = recall_offered,
                 reserve_tokens = _conversation_recall_reserve(thread_id),
@@ -3318,6 +3332,7 @@ class InferenceOrchestrator:
                 "recalled": bool(recall["recalled"]),
                 "anchored": list(recall["anchored"]),
                 "boundary_applied": True,
+                "dropped_images": sorted(set(range(len(markers))) - set(_marked(fitted))),
             }
         except Exception as exc:
             logger.warning("Could not preflight the context window: %s", exc)
@@ -3332,8 +3347,7 @@ class InferenceOrchestrator:
         timeout,
         cancelled = None,
     ):
-        """The worker's *reply_type* answer to *request_id*, or None once *timeout* passes
-        or *cancelled* returns true."""
+        """reply_type answer for request_id, or None on timeout or when cancelled is true."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if cancelled is not None and cancelled():
@@ -3694,9 +3708,8 @@ class InferenceOrchestrator:
         disable_parallel_tool_use: bool = False,
         **_unused,
     ):
-        """Run the safetensors agentic tool loop in the parent process, calling the worker for each
-        turn. Yields the same event dicts as the GGUF tool loop so the route layer can stream
-        both backends through one helper."""
+        """Runs the safetensors tool loop in the parent, calling the worker per turn; events match
+        GGUF's."""
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
@@ -3795,6 +3808,8 @@ class InferenceOrchestrator:
         _request_ids = {id(message) for message in initial}
         _sticky_boundary_applied = False
         _conversation_recall_done = False
+        # Later fits run on the cut history, so the cut stays put even without a saved thread.
+        _loop_cut = False
         # Loop notices are user turns, so the fit stops protecting the question as the newest user turn.
         _rolling_anchor_ids: set[int] = set()
         for message in reversed(initial):
@@ -3803,10 +3818,7 @@ class InferenceOrchestrator:
                 break
 
         def _fit_iteration(conversation: list, active_tools: list, live_branch: list) -> dict:
-            nonlocal _sticky_boundary_applied, _conversation_recall_done
-            if loop_images:
-                # The count cannot price pictures.
-                return {}
+            nonlocal _sticky_boundary_applied, _conversation_recall_done, _loop_cut
             # Pin the newest tool result and its user turn for this fit only, or results fill the window.
             pinned = _rolling_anchor_ids
             for index in range(len(conversation) - 1, -1, -1):
@@ -3835,6 +3847,11 @@ class InferenceOrchestrator:
                 recall_done = _conversation_recall_done,
                 request_branch = _request_branch,
                 live_branch = live_branch,
+                keeps_boundary = _loop_cut,
+                images = loop_images,
+            )
+            _loop_cut = _loop_cut or any(
+                event.get("dropped_messages") for event in result.get("events") or ()
             )
             # The saved boundary applies once, in the first fit that runs (not resumed or failed).
             if result.get("boundary_applied"):
@@ -4134,8 +4151,7 @@ class InferenceOrchestrator:
         *,
         may_signal: bool = True,
     ) -> tuple[bool, bool]:
-        """End one request: by name where the worker reads stops, else via the shared event.
-        Reports (recorded, sent)."""
+        """End by name if the worker reads stops, else via the event; gives (recorded, sent)."""
         ledger = self._stop_ledger
         sent = False
         if ledger is not None:

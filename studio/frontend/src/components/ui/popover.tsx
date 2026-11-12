@@ -44,8 +44,7 @@ function PopoverContent({
 }) {
   const snappedRef = useSnappedPaddingRef(ref);
   const inheritedGlow = useContext(DropdownGlowContext);
-  // Inside a modal dialog the body scroll lock swallows wheel events on
-  // body-portaled content; portal into the dialog instead (like Select).
+  // Modal body scroll lock swallows wheel on body-portaled content; portal into the dialog.
   const dialogContainer = useDialogPortalContainer();
   return (
     <PopoverPrimitive.Portal

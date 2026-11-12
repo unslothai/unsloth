@@ -4,7 +4,12 @@
 // Harness for tests/studio/playwright_thread_weight.py: the real Thread and real markdown bodies,
 // seeded via thread.import on a local runtime (only it backs export/import used by delete).
 
+import {
+  hasPendingProgressiveMounts,
+  holdProgressiveMounts,
+} from "@/components/assistant-ui/progressive-messages";
 import { Thread } from "@/components/assistant-ui/thread";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   AssistantRuntimeProvider,
@@ -26,13 +31,18 @@ import {
 import { type ReactElement, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
+import { watchModalPointerLock } from "./src/lib/modal-pointer-lock";
 
 // Answer ForkCountBadge GETs in-page: a Playwright-side answer would add a CDP round trip per
 // assistant message inside the timed region.
 const realFetch = window.fetch.bind(window);
+const apiWrites: { url: string; body: string | null }[] = [];
 window.fetch = (input, init) => {
   const url = typeof input === "string" ? input : (input as Request).url ?? String(input);
   if (url.includes("/api/")) {
+    if (init?.method && init.method !== "GET") {
+      apiWrites.push({ url, body: typeof init.body === "string" ? init.body : null });
+    }
     return Promise.resolve(
       new Response("{}", {
         status: 200,
@@ -99,7 +109,10 @@ type SeedOptions = {
    * `rounds` x reasoning, tool call, answer per reply; truncation every `compactionEvery`th.
    * `sources` adds six URL source parts after every web_search call.
    */
-  agent?: { rounds: number; compactionEvery?: number; sources?: boolean };
+  agent?: { rounds: number; compactionEvery?: number; sources?: boolean; rich?: boolean };
+  /** Each default reply also carries a numbered equation, which KaTeX counts page-wide, and
+   *  the same environments as code. */
+  numbered?: boolean;
 };
 
 const AGENT_TOOLS = ["web_search", "terminal", "python"] as const;
@@ -114,7 +127,11 @@ function urlSources(tag: string) {
   }));
 }
 
-function agentContent(index: number, rounds: number, sources = false) {
+function table(tag: string): string {
+  return ["| step | loss | lr |", "|---|---|---|", ...[0, 1, 2, 3].map((row) => `| ${tag}.${row} | 0.${row}4 | 2e-4 |`)].join("\n");
+}
+
+function agentContent(index: number, rounds: number, sources = false, rich = false) {
   const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
   for (let round = 0; round < rounds; round++) {
     const tag = `${index}_${round}`;
@@ -138,7 +155,9 @@ function agentContent(index: number, rounds: number, sources = false) {
     if (sources && toolName === "web_search") parts.push(...urlSources(tag));
     parts.push({
       type: "text" as const,
-      text: `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
+      text: rich
+        ? [assistantMarkdown(index * 10 + round), table(tag), `- first item ${tag}\n- second item ${tag}`].join("\n\n")
+        : `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
     });
   }
   return parts;
@@ -160,7 +179,15 @@ function buildMessages(
     if (index % 2 === 0) {
       return {
         role: "user" as const,
-        content: [{ type: "text" as const, text: userMarkdown(index) }],
+        content: [
+          {
+            type: "text" as const,
+            // A prompt shows math source as text, so these take no number.
+            text:
+              userMarkdown(index) +
+              (options?.numbered ? "\n\n$$\\begin{equation}p=1\\end{equation}$$" : ""),
+          },
+        ],
       };
     }
     if (agent) {
@@ -169,7 +196,7 @@ function buildMessages(
       const compacted = every > 0 && ordinal > 0 && ordinal % every === 0;
       return {
         role: "assistant" as const,
-        content: agentContent(index, agent.rounds, agent.sources),
+        content: agentContent(index, agent.rounds, agent.sources, agent.rich),
         ...(compacted
           ? {
               metadata: {
@@ -192,7 +219,13 @@ function buildMessages(
           type: "text" as const,
           text: isPlain((index - 1) / 2, options)
             ? plainAssistantMarkdown(index)
-            : assistantMarkdown(index),
+            : assistantMarkdown(index) +
+              (options?.numbered
+                ? `\n\n$$\n\\begin{equation}E_{${index}} = mc^2\\end{equation}\n$$` +
+                  "\n\n$$\n\\begin{align}f &= \\begin{cases}1\\\\0\\end{cases}\\\\ g &= 2\\end{align}\n$$" +
+                  // Examples, not math: they render verbatim and take no number.
+                  "\n\n```latex\n\\begin{equation}x\\end{equation}\n```\n\nInline `\\begin{align}a\\end{align}` too."
+                : ""),
         },
       ],
     };
@@ -282,6 +315,24 @@ function ThreadWeightApi({
       messageCount(): number {
         return document.querySelectorAll("[data-role]").length;
       },
+      /** Opens the last user prompt's editor; returns its message id. */
+      editLastPrompt(): string | null {
+        const messages = aui.thread().getState().messages;
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          if (messages[index].role !== "user") continue;
+          aui.thread().message({ index }).composer().beginEdit();
+          return messages[index].id;
+        }
+        return null;
+      },
+      /** The conversation's length, where messageCount() is how much of it is mounted. */
+      threadLength(): number {
+        return aui.thread().getState().messages.length;
+      },
+      /** What the turn rail waits on before it renders: a full mount still under way. */
+      pendingMounts(): boolean {
+        return hasPendingProgressiveMounts();
+      },
       counts(): {
         messages: number;
         assistantMessages: number;
@@ -325,6 +376,10 @@ function ThreadWeightApi({
       viewport(): HTMLElement | null {
         return document.querySelector<HTMLElement>(".aui-thread-viewport");
       },
+      /** Non-GET /api/ calls the stub above answered. */
+      apiWrites(): { url: string; body: string | null }[] {
+        return apiWrites;
+      },
       composer(): HTMLTextAreaElement | null {
         return document.querySelector<HTMLTextAreaElement>(
           ".aui-composer-input",
@@ -367,6 +422,36 @@ function ThreadWeightApi({
   }, [aui, setThreadMounted]);
 
   return null;
+}
+
+// The checks on this page measure what a whole thread costs in the DOM (the state an open find bar
+// or a print puts the app in), so every row stays mounted. `?window=1` leaves the thread as the
+// app opens it: only the rows near the reader are mounted.
+if (new URLSearchParams(window.location.search).get("window") !== "1") {
+  holdProgressiveMounts();
+}
+
+// `?shell=1`: the ancestors the app puts around the thread (root layout + chat page), so CSS
+// anchored on them (e.g. a `:has()` on the wallpaper workspace) runs here as it does in Studio.
+const SHELL = new URLSearchParams(window.location.search).get("shell") === "1";
+
+function AppShell({ children }: { children: ReactElement }): ReactElement {
+  if (!SHELL) return children;
+  return (
+    <SidebarProvider
+      data-wallpaper-workspace=""
+      data-wallpaper-route="chat"
+      className="relative !min-h-0 h-[100dvh] overflow-hidden"
+    >
+      <SidebarInset className="overflow-hidden">
+        <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+          <div data-chat-content-root="" className="relative flex min-h-0 flex-1 flex-col">
+            {children}
+          </div>
+        </div>
+      </SidebarInset>
+    </SidebarProvider>
+  );
 }
 
 // `?remote=1`: the remote thread list + attachments adapter the app uses, for the same scopes.
@@ -423,12 +508,14 @@ function HarnessBody({
       <AssistantRuntimeProvider runtime={runtime}>
         <ThreadWeightApi setThreadMounted={setThreadMounted} />
         {/* Thread is flex-1 basis-0 min-h-0, so it needs a bounded flex parent to scroll. */}
-        <div
-          data-smoke="thread"
-          style={{ display: "flex", flexDirection: "column", height: "100vh" }}
-        >
-          {threadMounted ? <Thread hideWelcome={true} /> : null}
-        </div>
+        <AppShell>
+          <div
+            data-smoke="thread"
+            style={{ display: "flex", flexDirection: "column", height: SHELL ? "100%" : "100vh" }}
+          >
+            {threadMounted ? <Thread hideWelcome={true} /> : null}
+          </div>
+        </AppShell>
       </AssistantRuntimeProvider>
     </TooltipProvider>
   );
@@ -445,4 +532,7 @@ const root = document.getElementById("root");
 if (!root) {
   throw new Error("missing #root");
 }
+// As in main.tsx: the gate's modal lock check then times the attributes the app mirrors from the
+// body lock, not a bare inline style the modal rules no longer read.
+watchModalPointerLock(document);
 createRoot(root).render(<RouterProvider router={router as unknown as never} />);

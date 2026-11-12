@@ -93,17 +93,17 @@ from core.inference.tool_call_parser import (
     thinking_exhausted_message as _thinking_exhausted_message,
     unfinished_thought_progress as _unfinished_thought_progress,
 )
+from core.inference.tool_facts import repeatable
 from core.inference.tool_loop_controller import (
     BROWSER_TOOL_NAMES,
-    REPEATABLE_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
-    _WORKSPACE_READ_TOOLS,
     _reruns_after_new_work,
     append_deferred_nudges,
     awaiting_approval_status,
     deferred_nudge_text,
     provisional_tool_provenance,
+    reads_only,
     restore_replayed_tool_results,
     tool_call_limit_nudge,
     with_appended_text,
@@ -842,6 +842,8 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
                 getattr(backend, "_model_identifier", None),
                 id(process),
                 getattr(process, "pid", None),
+                # llama.cpp renders date_string / strftime_now from its clock (Llama 3.x templates print the date)
+                time.strftime("%Y-%m-%d"),
                 *parts,
             ],
             sort_keys = True,
@@ -1453,6 +1455,8 @@ class LlamaChatMixin:
         _conversation_recall_done = False
         # Apply the sticky boundary once; refits run on already-fitted history.
         _sticky_boundary_applied = False
+        # Later fits run on the cut history, so the cut stays put even without a saved thread.
+        _loop_cut = False
         # Estimator misses the tool catalogue and template framing; the offset corrects it.
         _prompt_token_offset: Optional[int] = None
         # The branch this request is on, kept aside before anything is evicted from or
@@ -2010,7 +2014,7 @@ class LlamaChatMixin:
                         ),
                         estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
-                        keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
                         recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
@@ -2022,6 +2026,7 @@ class LlamaChatMixin:
                     )
                     # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
+                    _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
                     if truncation and truncation.get("fits"):
                         # Before the recall injection, so both sides describe the same
                         # messages, priced by the fit with the catalogue and template.
@@ -2164,7 +2169,7 @@ class LlamaChatMixin:
             _respawn_truncations: list[dict] = []
 
             def _refit_iteration_after_respawn() -> None:
-                nonlocal conversation
+                nonlocal conversation, _loop_cut
                 _before_respawn_fit = conversation
                 if (
                     _preflight_context_length is None
@@ -2201,7 +2206,7 @@ class LlamaChatMixin:
                         ),
                         estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
-                        keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
                             thread_id,
                             _backend_supports_tools(self),
@@ -2210,6 +2215,7 @@ class LlamaChatMixin:
                         recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
+                    _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
                     # Record here: the reopened stream raises before forwarding sees the refusal.
                     from core.inference import context_refusal  # noqa: PLC0415
 
@@ -3217,6 +3223,8 @@ class LlamaChatMixin:
                             and _nudge_enabled(nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
+                            # Telling the user what only they can do is the answer, not a stall.
+                            and not tool_controller.awaiting_user
                             and _reprompt_used < _reprompt_cap
                             and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
                             # _stripped is what gets replayed; intent text may be a short tail.
@@ -3444,19 +3452,25 @@ class LlamaChatMixin:
                     for _tc in tool_calls if deduplicate_tool_calls else ():
                         _fn = _tc.get("function", {}) or {}
                         _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                        if _reruns_after_new_work(_fn.get("name")):
+                        # An unseeded generator: two identical calls are two outputs, and each is new work.
+                        if _reruns_after_new_work(_fn.get("name")) and repeatable(_fn.get("name")):
+                            if not reads_only(_fn.get("name")):
+                                _novel_kept += 1
+                            _novel_at_last_keep[_key] = _novel_kept
+                            _last_workspace_key = _key
+                        elif _reruns_after_new_work(_fn.get("name")):
                             if _key == _last_workspace_key:
                                 continue
                             if _key in _seen_keys:
                                 if _novel_kept <= _novel_at_last_keep.get(_key, 0):
                                     continue
-                            elif _fn.get("name") not in _WORKSPACE_READ_TOOLS:
+                            elif not reads_only(_fn.get("name")):
                                 _novel_kept += 1
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
                         # A browser call acts on the page as it is then: two scrolls are two scrolls.
                         # Two identical generate_image calls are two images.
-                        elif _key in _seen_keys and _fn.get("name") not in REPEATABLE_TOOL_NAMES:
+                        elif _key in _seen_keys and not repeatable(_fn.get("name")):
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -3564,6 +3578,7 @@ class LlamaChatMixin:
                         _keys.add(_spec.key)
                         _next += 1
 
+                tool_controller.begin_batch()
                 for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
@@ -4630,7 +4645,7 @@ class LlamaChatMixin:
                     ),
                     estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
-                    keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                     can_reset = _final_can_reset,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _final_sticky,
@@ -4789,7 +4804,7 @@ class LlamaChatMixin:
                     ),
                     estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
-                    keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),

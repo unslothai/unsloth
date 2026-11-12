@@ -291,6 +291,10 @@ export interface LoadModelResponse {
   gpu_layers?: number;
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
+  overflow_layers?: number | null;
+  gpu_weights_mib?: number | null;
+  host_weights_mib?: number | null;
+  expert_cache_mib?: number | null;
   offload_overridden?: boolean | null;
   gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
@@ -378,6 +382,7 @@ export interface InferenceStatusResponse {
   serving?: string[];
   serving_checkpoints?: string[];
   resident_mib?: number | null;
+  resident_on_gpu?: boolean | null;
   /** Keep multiple models loaded, as saved on the server. Absent from older servers. */
   multi_model_mode?: "off" | "fit" | "always";
   inference?: {

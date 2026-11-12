@@ -176,6 +176,7 @@ import {
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
+  externalModelTakesVideo,
   isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -478,6 +479,7 @@ import {
 } from "@/lib/evicted-toast";
 import {
   type OffloadCounts,
+  expertSpillNote,
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
@@ -2079,12 +2081,11 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-/** The MCP image bound applied to the run's own tool results, BEFORE they are
- *  serialized. Bounding the OpenAI history afterwards meant every result's image
- *  array was stringified into an envelope on the main thread and then parsed again
- *  to be cut or dropped -- on every send, for pictures the request would not carry.
- *  A result that keeps no picture becomes its plain text, which is what the
- *  serializer emits for a stripped envelope. */
+/**
+ * MCP image bound applied to the run's tool results before serialization; bounding afterwards
+ * stringified and re-parsed every image array on each send, for pictures the request would not
+ * carry; a result with no picture becomes plain text.
+ */
 function boundMcpImageResults(
   messages: RunMessages,
   { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
@@ -3482,6 +3483,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       cpuFallbackReason,
       mmprojFallbackReason,
       offloadWarning(offloadCounts ?? {}),
+      expertSpillNote(offloadCounts ?? {}),
     );
     const options = {
       description: notice.description,
@@ -5541,6 +5543,7 @@ export function createOpenAIStreamAdapter(
         audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
         audioCount: latestUserAudioClips(survivingMessages).length,
         video: Boolean(videoBase64),
+        externalTakesVideo: externalModelTakesVideo(params.checkpoint),
       });
       if (attachedMediaReason) {
         blockAttachmentRun(attachedMediaReason);
@@ -6441,6 +6444,8 @@ export function createOpenAIStreamAdapter(
         if (usageThreadKey !== null) {
           store.setThreadContextUsage(usageThreadKey, usage);
         }
+        // The realtime meter shows this exact count from here until the next pass starts.
+        store.settleLiveGeneration(usageKey);
         if (
           store.activeThreadId === (usageThreadKey ?? activeThreadIdAtRunStart) &&
           store.params.checkpoint === params.checkpoint
@@ -6726,6 +6731,7 @@ export function createOpenAIStreamAdapter(
                 : {}),
               stream: true,
               stream_options: { include_usage: true },
+              video_base64: findLatestUserVideoBase64(currentTurnMessages),
               // Never forwarded upstream; the trailing assistant turn is what requests continuation.
               ...(continuation ? { continue_final_message: true } : {}),
               // Reasoning-class models (OpenAI gpt-5.x / o3) reject temperature and top_p; forward only when supported.

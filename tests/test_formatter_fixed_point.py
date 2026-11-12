@@ -422,11 +422,8 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
 
 @pytest.mark.skipif(not _HAS_PROC, reason = "reads Linux /proc")
 def test_a_pid_reaped_between_the_two_probes_is_not_alive(monkeypatch):
-    """The signal probe can see a zombie that is reaped before /proc/<pid>/stat is opened.
-
-    That window used to read as alive, so the timeout test above failed on a process that had
-    already been killed and reaped (Repo tests (CPU, rest) on #12097).
-    """
+    """A pid reaped between the two probes must not read as alive, since the signal probe can see a
+    zombie before /proc/<pid>/stat is opened (issue 12097)."""
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     child.wait()
     assert not Path(f"/proc/{child.pid}").exists(), "the child was not reaped"
@@ -436,10 +433,8 @@ def test_a_pid_reaped_between_the_two_probes_is_not_alive(monkeypatch):
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX signal probe")
 def test_without_proc_a_pid_the_signal_probe_finds_is_alive(monkeypatch):
-    """Where /proc is not mounted (macOS), a missing /proc entry proves nothing.
-
-    Reading it as death would pass the timeout test above even if the group kill missed.
-    """
+    """Where /proc is not mounted (macOS) a missing /proc entry proves nothing, so reading it as
+    death would pass the timeout test even if the group kill missed."""
     # A pid with no /proc entry, as on macOS, that the signal probe still finds.
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     child.wait()

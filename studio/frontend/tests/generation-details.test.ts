@@ -413,7 +413,7 @@ test("the live line follows the branch picker, so its growing text never moves t
 test("the live line gates on the preference before any assistant-ui selector", () => {
   const line = readSrc("components/assistant-ui/live-generation-line.tsx");
   const gate = line.slice(line.indexOf("export const LiveGenerationLine"), line.indexOf("const RunningGate"));
-  assert.match(gate, /return enabled \? <RunningGate \/> : null;/);
+  assert.match(gate, /return details \|\| realtime \? <RunningGate realtime=\{realtime\} \/> : null;/);
   assert.doesNotMatch(gate, /useAuiState/);
 });
 
@@ -473,6 +473,15 @@ test("the placement readout names expert weights and gives both memory figures",
   );
   assert.equal(loadedPlacementFrom({ is_gguf: false, offload_total_layers: 31 }), null);
   assert.equal(loadedPlacementFrom({ is_gguf: true }), null);
+});
+
+test("the placement row needs no setting", () => {
+  // Source text: the row cannot be mounted here, since it pulls in the chat feature's React tree.
+  const row = readSrc("features/model-picker/components/loaded-placement-row.tsx");
+  assert.doesNotMatch(row, /showGenerationDetails|useChatPreferencesStore/);
+  assert.match(row, /if \(placement === null\) return null;/);
+  assert.equal(en.settings.chat.showGenerationDetails, "Detailed speed info");
+  assert.doesNotMatch(en.settings.chat.showGenerationDetailsDescription, /layers/);
 });
 
 test("a GPU build that fell back to the CPU is not reported as GPU layers", () => {

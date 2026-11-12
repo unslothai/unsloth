@@ -19,8 +19,10 @@ if os.environ.get("UNSLOTH_TEST_RANKS_ON_GPU") != "1" and (
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
+import dataclasses  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
+import types  # noqa: E402
 
 import pytest  # noqa: E402
 import torch  # noqa: E402
@@ -55,6 +57,36 @@ def _checkpoint(tmp, arch = "llama"):
 
     from test_tp_native_oracle import LLAMA, QWEN3, QWEN3_MOE, build
 
+    if arch == "qwen3_5":
+        # Hybrid: Gated DeltaNet (linear attention) layers beside attention, 4 heads / 2 kv heads, 4 value heads
+        # over 2 key heads in the linear layers, so Ulysses cp 2 splits both kinds. No hub weights: random init.
+        import transformers
+
+        tok = AutoTokenizer.from_pretrained(QWEN3)
+        config = transformers.Qwen3_5TextConfig(
+            vocab_size = len(tok),
+            hidden_size = 32,
+            intermediate_size = 64,
+            num_hidden_layers = N_LAYERS,
+            layer_types = ["linear_attention", "full_attention"] * (N_LAYERS // 2),
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            head_dim = 8,
+            linear_num_key_heads = 2,
+            linear_num_value_heads = 4,
+            linear_key_head_dim = 8,
+            linear_value_head_dim = 8,
+            linear_conv_kernel_dim = 4,
+            attention_dropout = 0.0,
+            tie_word_embeddings = False,
+        )
+        torch.manual_seed(0)
+        model = transformers.Qwen3_5ForCausalLM(config)
+        model.generation_config.pad_token_id = None
+        path = os.path.join(tmp, "ckpt")
+        model.save_pretrained(path, safe_serialization = True)
+        tok.save_pretrained(path)
+        return path
     if arch in ("qwen3_moe", "qwen3", "qwen3_moe_wide"):
         # qwen3_moe: 4 heads / 2 kv heads, 4 experts (2 per token), router aux loss off as shipped.
         # qwen3_moe_wide: hidden and expert widths of 32, so Unsloth's Triton grouped GEMM takes the experts (it
@@ -73,6 +105,55 @@ def _checkpoint(tmp, arch = "llama"):
     path = _save_checkpoint("llama", os.path.join(tmp, "ckpt"), {"num_hidden_layers": N_LAYERS})
     AutoTokenizer.from_pretrained(LLAMA).save_pretrained(path)
     return path
+
+
+# Packed rows, one per micro-batch, each with other documents (compiled layers must follow every row): "padfree"
+# fills the row, "pack" leaves a one-token tail that context parallel pads to the cp multiple.
+_PACKED_DOCS = {
+    "padfree": ([5, 7, 4], [3, 9, 4], [8, 2, 6], [4, 4, 8]),
+    "pack": ([5, 7, 3], [3, 9, 3], [8, 2, 5], [6, 6, 3]),
+}
+
+
+def _packed_row(batch, kind, row):
+    """One packed row as Unsloth's packing / padding-free collators hand it on: the global document lengths,
+    positions restarting per document, and no target across a document start."""
+    lengths = _PACKED_DOCS[kind][row % len(_PACKED_DOCS[kind])]
+    n = sum(lengths)
+    input_ids, labels = batch["input_ids"][:, :n], batch["labels"][:, :n].clone()
+    starts = torch.tensor([0, *lengths[:-1]]).cumsum(0)
+    labels[:, starts] = -100
+    position_ids = torch.cat([torch.arange(k) for k in lengths])[None]
+    return {
+        "input_ids": input_ids,
+        "labels": labels,
+        "position_ids": position_ids,
+        "packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32),
+    }
+
+
+def _packed_oracle(model, batch):
+    """The one-process reference itself keeps documents apart: each document's logits in the packed row equal
+    the same document alone (eager, so no compiled graph is added to the reference's counters)."""
+    ids, lengths = batch["input_ids"], batch["packed_seq_lengths"].tolist()
+    was = model.training
+    model.eval()
+    with torch.no_grad(), torch.compiler.set_stance("force_eager"):
+        full = model(
+            input_ids = ids,
+            position_ids = batch["position_ids"],
+            packed_seq_lengths = batch["packed_seq_lengths"],
+            use_cache = False,
+        ).logits[0]
+        worst, start = 0.0, 0
+        for n in lengths:
+            alone = model(input_ids = ids[:, start : start + n], use_cache = False).logits[0]
+            worst = max(
+                worst, float((full[start : start + n] - alone).abs().max() / alone.abs().max())
+            )
+            start += n
+    model.train(was)
+    return worst
 
 
 def _full(t):
@@ -289,7 +370,11 @@ def _case_train(
     device = "cpu",
     bypass_pre = False,
     bypass_post = False,
+    args_coef = "unset",
+    probe_refusal = False,
     gc = "none",
+    packed = None,
+    eval_only = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -383,6 +468,25 @@ def _case_train(
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
+    cpu_chunked_ce = False
+    if eval_only:
+        from unsloth_zoo.cpu.ops import patch_chunked_causal_lm_loss
+        cpu_chunked_ce = patch_chunked_causal_lm_loss(model)
+    gdn_calls = []
+    if arch == "qwen3_5":
+        # The torch Gated DeltaNet kernels (fla / Triton need CUDA), and a counter on Unsloth's GDN exchange.
+        from test_ulysses_hybrid import _force_torch_kernels
+
+        from unsloth.utils import ulysses_hybrid as gdn
+
+        _force_torch_kernels(model)
+        original_gdn = gdn.ulysses_gated_delta_forward
+
+        def counted_gdn(*a, **k):
+            gdn_calls.append(1)
+            return original_gdn(*a, **k)
+
+        gdn.ulysses_gated_delta_forward = counted_gdn
     gc_stats = {"checkpoint_calls": 0, "offloaded": 0, "restored": 0}
     if gc != "none":
         _install_unsloth_checkpoint(model, gc, gc_stats)
@@ -421,13 +525,17 @@ def _case_train(
         batch["labels"][
             batch["labels"] % 5 == 0
         ] = -100  # uneven token counts per row and per shard
+        if eval_only:
+            batch["attention_mask"] = torch.ones_like(input_ids)
+        if packed:
+            batch.update(_packed_row(batch, packed, int(rows[0]["row"])))
         return batch
 
     class SequentialSFT(trl.SFTTrainer):
         def _get_train_sampler(self, *args, **kwargs):
             return torch.utils.data.SequentialSampler(self.train_dataset)
 
-    grads = {}
+    grads, query = {}, None
 
     class Grabber(transformers.TrainerCallback):
         def on_pre_optimizer_step(
@@ -468,12 +576,20 @@ def _case_train(
         dataset_kwargs = {"skip_prepare_dataset": True},
         gradient_checkpointing = False,
     )
+    if eval_only:
+        args.loss_type = "nll"
+    if packed:
+        # What the registry reads for a packed run (query_from): SFTConfig.padding_free; the rows come from the
+        # collator above, so TRL's own padding-free collator is not involved.
+        args.padding_free = True
     if device != "cpu" and torch.cuda.device_count() < world:
         args.ddp_backend = os.environ.get("UNSLOTH_TEST_SHARED_GPU_BACKEND", "gloo")
     if hasattr(args, "router_aux_loss_coef"):
         # TRL turns the MoE load balancing loss on from the architecture's coefficient unless this is 0.0
         # (it then sets output_router_logits on the config itself): aux off unless the case asks for it.
         args.router_aux_loss_coef = aux_coef if (router_aux or trl_aux) else 0.0
+        if args_coef != "unset":
+            args.router_aux_loss_coef = args_coef
     if sft_cp:
         args.context_parallel_size = cp
         args.context_parallel_backend = "ulysses"
@@ -483,7 +599,56 @@ def _case_train(
         # enough: the stamp below is the per-model "train this one in float32" switch the trainer honours.
         args.bf16 = args.fp16 = False
         model._unsloth_forced_float32 = True
+    if packed:
+        from unsloth import parallel_capabilities as caps
+
+        # The registry's view of the run as configured, before the CPU route's normalize_cpu_training_arguments
+        # (unsloth_zoo/cpu/trainer.py) turns padding_free off on CPU ranks inside the trainer's __init__.
+        layout_now = types.SimpleNamespace(
+            dp = 1, tp = 1, pp = 1, cp = cp, fsdp2 = False, cp_backend = "ulysses"
+        )
+        query = dataclasses.asdict(
+            caps.query_from(layout_now, SequentialSFT, model, args, cp = cp, cp_backend = "ulysses")
+        )
     tokenizer = AutoTokenizer.from_pretrained(ckpt)
+    if probe_refusal:
+        before = {n: (p.detach().clone(), p.device) for n, p in model.named_parameters()}
+
+        def untouched():
+            now = dict(model.named_parameters())
+            return now.keys() == before.keys() and all(
+                now[n].device == d and now[n].shape == t.shape and torch.equal(now[n].detach(), t)
+                for n, (t, d) in before.items()
+            )
+
+        phase = "init"
+        try:
+            trainer = SequentialSFT(
+                model = model,
+                args = args,
+                train_dataset = data,
+                data_collator = collate,
+                processing_class = tokenizer,
+            )
+            phase = "train"
+            trainer.train()
+        except Exception as e:
+            return {
+                "error": f"{type(e).__name__}: {e}",
+                "phase": phase,
+                "split": pp_native.pipeline_stage_of(model) is not None,
+                "untouched": untouched(),
+            }
+        logs = [h for h in trainer.state.log_history if "loss" in h]
+        stage = pp_native.pipeline_stage_of(trainer.model)
+        return {
+            "phase": None,
+            "losses": [h["loss"] for h in logs],
+            "stage": None if stage is None else int(stage.stage_index),
+            "output_router_logits": bool(
+                getattr(trainer.model.config, "output_router_logits", False)
+            ),
+        }
     trainer = SequentialSFT(
         model = model,
         args = args,
@@ -492,6 +657,17 @@ def _case_train(
         processing_class = tokenizer,
         callbacks = [Grabber()],
     )
+    if eval_only:
+        trainer.args.per_device_eval_batch_size = bs
+        metrics = trainer.evaluate(eval_dataset = data)
+        stage = pp_native.pipeline_stage_of(trainer.model)
+        return {
+            "eval_loss": metrics["eval_loss"],
+            "rows_read": rows_read,
+            "stage": None if stage is None else int(stage.stage_index),
+            "cpu_compute_loss": bool(getattr(type(trainer).compute_loss, "_unsloth_cpu", False)),
+            "cpu_chunked_ce": cpu_chunked_ce,
+        }
     if device != "cpu":
         assert trainer.accelerator.mixed_precision == "no", trainer.accelerator.mixed_precision
     manager = getattr(trainer, "_context_parallel_manager", None)
@@ -518,10 +694,37 @@ def _case_train(
         ulysses_hybrid._ulysses_hf_attention = counted
     from unsloth.utils import compile_counters
 
+    packed_seen, oracle, exchanges = [], None, None
+    if packed:
+        # Eager, outside the compiled layers: the global document lengths of every micro-batch at its shard.
+        original_shard = cpm.ContextParallelManager._ulysses_shard
+
+        def recorded_shard(self, inputs):
+            packed_seen.append(
+                [int(x) for x in torch.as_tensor(inputs["packed_seq_lengths"]).tolist()]
+            )
+            return original_shard(self, inputs)
+
+        cpm.ContextParallelManager._ulysses_shard = recorded_shard
+        if world == 1:
+            oracle = _packed_oracle(trainer.model, collate([data[0]]))
+            rows_read.clear()  # the oracle's row is not a training micro-batch
     torch._dynamo.reset()
     before = compile_counters.snapshot()
-    trainer.train()
+    if packed:
+        # Inside the compiled layers no Python counter runs: the profiler sees each collective they issue.
+        from torch.profiler import ProfilerActivity, profile
+        with profile(activities = [ProfilerActivity.CPU]) as prof:
+            trainer.train()
+        exchanges = sum(1 for e in prof.events() if e.name == "gloo:all_to_all")
+    else:
+        trainer.train()
     compile_used = compile_counters.since(before)
+    if packed:
+        # torch >= 2.13 counts data-dependent breaks (the old cu_seqlens tail check) under "unimplemented".
+        compile_used["unimplemented"] = int(
+            sum(torch._dynamo.utils.counters.get("unimplemented", {}).values())
+        )
     if device != "cpu":
         assert autocast_seen == {False}, ("a GPU cell ran under autocast", autocast_seen)
     logs = [h for h in trainer.state.log_history if "loss" in h]
@@ -573,6 +776,12 @@ def _case_train(
         "memory": __import__("unsloth.parallel_capabilities", fromlist = ["x"])._memory(
             trainer.model, args
         ),
+        "packed_seen": packed_seen,
+        "oracle": oracle,
+        "query": query,
+        "exchanges": exchanges,
+        "n_layers": int(trainer.model.config.num_hidden_layers),
+        "gdn_calls": len(gdn_calls),
     }
     if dist.is_initialized():
         dist.barrier()
@@ -678,8 +887,14 @@ _ONE_MICROBATCH_REFUSED = "pipeline schedule cannot run 1 micro-batches over 2 s
 
 
 def _skip_if_one_microbatch_refused(results):
+    from unsloth.models import pp_env
+
     errors = [res.get("error") or "" for res in results]
-    if errors and all(_ONE_MICROBATCH_REFUSED in e for e in errors):
+    # Where GPipe pads a single micro-batch up to the stage count, a batch of one splits too and is refused.
+    padded = pp_env._gpipe_needs_stage_count() and all(
+        "splits each Trainer batch into 2" in e for e in errors
+    )
+    if errors and (padded or all(_ONE_MICROBATCH_REFUSED in e for e in errors)):
         import torch as _torch
         pytest.skip(
             f"torch {_torch.__version__}'s GPipe schedule refuses 1 micro-batch over 2 stages (torch < 2.13), and "
@@ -884,6 +1099,78 @@ def test_block_compile_composes_like_one_process(world, flag, ref_bs):
         _close(res, eager, what = (flag, "compiled", rank))
 
 
+@needs_block_compile_torch
+@pytest.mark.parametrize("ga", [1, 2])
+@pytest.mark.parametrize("packed", ["pack", "padfree"])
+@pytest.mark.parametrize("arch", ["qwen3", "llama"])
+def test_block_compile_packed_rows_under_cp_match_one_process(arch, packed, ga):
+    """Unsloth's block compile x packed / padding-free rows x cp 2 Ulysses (the registry's packed compiled
+    cell): the same numbers as one eager process; the registry sees block compile, packing and cp Ulysses;
+    every micro-batch's documents reach the exchange; the compiled layers issue the all-to-alls; no more graph
+    breaks (also data-dependent ones) / recompiles / graphs than the same compiled script in one process."""
+    from unsloth.utils.compile_counters import not_above
+
+    kw = dict(arch = arch, packed = packed, ga = ga)
+    eager = _ref(1, **kw)
+    single = _ref(1, compile = True, **kw)
+    assert single["compiled_classes"] and single["compile"]["unique_graphs"] > 0, single["compile"]
+    assert single["oracle"] < 1e-4, (
+        "the one-process reference attends across documents",
+        single["oracle"],
+    )
+    _close(single, eager, what = "one process compiled")
+    micro = len(single["rows_read"])
+    want_docs = [list(_PACKED_DOCS[packed][r[0] % 4]) for r in single["rows_read"]]
+    results = _spawn("train", 2, bs = 1, cp = 2, compile = True, **kw)
+    _same_rows(results, single, what = kw)
+    for rank, res in enumerate(results):
+        what = (kw, rank)
+        assert res["compiled_classes"] == single["compiled_classes"], what
+        query = res["query"]
+        assert (
+            query["compile"],
+            query["packing"],
+            query["cp"],
+            query["cp_backend"],
+            query["family"],
+        ) == (
+            "block",
+            True,
+            2,
+            "ulysses",
+            arch,
+        ), (what, query)
+        # The run as configured reaches the registry's packed compiled cell, whose evidence is this test.
+        from unsloth import parallel_capabilities as caps
+
+        status, cell = caps.cell_status(caps.Query(**query))
+        assert (
+            status == "supported" and "test_block_compile_packed_rows_under_cp" in cell.compile
+        ), (what, cell)
+        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], (
+            what,
+            res["seen_lengths"],
+        )
+        assert res["packed_seen"] == want_docs, (what, res["packed_seen"], want_docs)
+        # At least one exchange per layer per micro-batch forward and backward (Ulysses swaps q / k / v and back).
+        assert res["exchanges"] >= 2 * res["n_layers"] * micro, (what, res["exchanges"])
+        assert not not_above(res["compile"], single["compile"]), (
+            what,
+            res["compile"],
+            single["compile"],
+        )
+        for key in ("unimplemented", "unique_graphs"):
+            assert res["compile"][key] <= single["compile"][key], (
+                what,
+                key,
+                res["compile"],
+                single["compile"],
+            )
+        # Adam (eps 1e-4) amplifies cp's fp32 reduction order on near-zero adapter grads: the eager cp arm moves
+        # the adapters by the same 1.8e-5 (qwen3 padding-free), so the band is the eager composition's.
+        _close(res, eager, what = what, state_atol = 5e-5)
+
+
 @pytest.mark.parametrize(
     "env, sft_cp",
     [({"UNSLOTH_FSDP2": "1"}, True), ({"UNSLOTH_PARALLEL": "cp=2,fsdp=1"}, False)],
@@ -899,6 +1186,46 @@ def test_cp_with_native_fsdp2_matches_one_process(env, sft_cp):
         assert res["seen_lengths"] == [SEQ // 2] and res["ulysses_calls"] >= N_LAYERS
         assert "FSDP2 shards and reduces over dp_shard x cp" in (res["banner"] or ""), res["banner"]
         _close(res, ref, what = (env, rank))
+
+
+def _needs_qwen3_5():
+    import transformers
+    if not hasattr(transformers, "Qwen3_5TextConfig"):
+        pytest.skip(f"transformers {transformers.__version__} has no Qwen3.5")
+
+
+def test_hybrid_qwen3_5_under_cp_matches_one_process():
+    """Qwen3.5 hybrid (Gated DeltaNet + attention) under Ulysses cp 2: both layer kinds exchange, one process's
+    numbers."""
+    _needs_qwen3_5()
+    ref = _ref(2, arch = "qwen3_5")
+    assert ref["gdn_calls"] == 0 and ref["ulysses_calls"] == 0
+    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_5")):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["cp_group"] == [0, 1] and res["seen_lengths"] == [SEQ // 2]
+        # Every forward of a training step: N_LAYERS // 2 linear attention and as many attention layers.
+        assert res["gdn_calls"] >= N_LAYERS // 2 and res["ulysses_calls"] >= N_LAYERS // 2, res
+        _close(res, ref, what = ("qwen3_5 cp2", rank))
+
+
+@pytest.mark.parametrize(
+    "env, sft_cp",
+    [({"UNSLOTH_FSDP2": "1"}, True), ({"UNSLOTH_PARALLEL": "cp=2,fsdp=1"}, False)],
+    ids = ["fsdp2_env_cp_config", "unsloth_parallel"],
+)
+def test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process(env, sft_cp):
+    """The registry's hybrid cp x native FSDP2 cell: strict mode (unverified layouts refused) trains it, FSDP2
+    shards over (dp_shard, cp), the Gated DeltaNet and attention exchanges run, one process's numbers."""
+    _needs_qwen3_5()
+    ref = _ref(4, arch = "qwen3_5")
+    env = {**env, "UNSLOTH_PARALLEL_STRICT": "1"}
+    for rank, res in enumerate(_spawn("train", 4, env, bs = 2, cp = 2, sft_cp = sft_cp, arch = "qwen3_5")):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["native_fsdp2"] and res["cp_group"] == [rank - rank % 2, rank - rank % 2 + 1]
+        assert res["seen_lengths"] == [SEQ // 2]
+        assert res["gdn_calls"] >= N_LAYERS // 2 and res["ulysses_calls"] >= N_LAYERS // 2, res
+        assert "FSDP2 shards and reduces over dp_shard x cp" in (res["banner"] or ""), res["banner"]
+        _close(res, ref, what = ("qwen3_5", env, rank), state_atol = 1e-5)
 
 
 def test_dense_qwen3_under_cp_matches_one_process():
@@ -993,6 +1320,86 @@ def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(
     for rank, res in enumerate(results):
         # transformers 4.x drifts ~1.4e-4 / ~5e-6 at GA 4 even aux off; the guarded error is 13-42% of the loss
         _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (ga, aux, rank))
+
+
+@pytest.mark.parametrize(
+    "arch,aux",
+    [("llama", False), ("qwen3_moe", False), ("qwen3_moe", True)],
+    ids = ["dense", "moe_aux_off", "moe_aux_on"],
+)
+def test_cpu_pipeline_eval_matches_one_process(monkeypatch, arch, aux):
+    monkeypatch.setenv("UNSLOTH_FORCE_CPU", "1")
+    kw = dict(
+        bs = 2,
+        ga = 1,
+        steps = 3,
+        arch = arch,
+        eval_only = True,
+        router_aux = aux,
+        aux_coef = 0.5 if aux else None,
+    )
+    (ref,) = _spawn("train", 1, **kw)
+    assert "error" not in ref, ref
+    results = _spawn(
+        "train",
+        2,
+        {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"},
+        **kw,
+    )
+    _skip_if_one_microbatch_refused(results)
+    assert sorted(res.get("stage", -1) for res in results) == [0, 1], results
+    for res in [ref, *results]:
+        assert "error" not in res, res
+        assert res["cpu_compute_loss"]
+        assert res["cpu_chunked_ce"] is (arch == "llama")
+        assert res["rows_read"] == ref["rows_read"]
+        assert res["eval_loss"] == pytest.approx(ref["eval_loss"], rel = 1e-5)
+
+
+_PP_AUX_SPLIT = "load-balancing loss per micro-batch"
+
+
+@pytest.mark.parametrize(
+    "how",
+    [
+        dict(router_aux = True, aux_coef = 0.5),
+        dict(trl_aux = True, aux_coef = 0.5),
+    ],
+    ids = ["config_flag", "trl_coef"],
+)
+@pytest.mark.parametrize("env", [{}, {"UNSLOTH_PP_SCHEDULE": "1f1b"}], ids = ["default", "1f1b"])
+def test_pp_moe_router_aux_loss_split_over_micro_batches_is_refused_at_trainer_init(how, env):
+    env = {"UNSLOTH_PP_SIZE": "2", **env}
+    for rank, res in enumerate(
+        _spawn("train", 2, env, bs = 2, ga = 1, steps = 1, arch = "qwen3_moe", probe_refusal = True, **how)
+    ):
+        assert _PP_AUX_SPLIT in (res.get("error") or ""), (rank, res)
+        assert res["phase"] == "init", (rank, res)
+        assert not res["split"] and res["untouched"], (rank, res)
+
+
+@pytest.mark.parametrize(
+    "how, env",
+    [
+        (dict(), {}),
+        (dict(router_aux = True, args_coef = 0.0), {}),
+        (
+            dict(router_aux = True, aux_coef = 0.5, ga = 2),
+            {"UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"},
+        ),
+        (dict(router_aux = True, aux_coef = 0.5, bs = 1), {"UNSLOTH_PP_SCHEDULE": "gpipe"}),
+    ],
+    ids = ["aux_off", "config_flag_coef0", "aux_on_one_microbatch", "aux_on_batch_of_one"],
+)
+def test_pp_moe_router_aux_loss_allowed_layouts_still_train(how, env):
+    kw = dict(bs = 2, ga = 1, steps = 2, arch = "qwen3_moe", probe_refusal = True)
+    kw.update(how)
+    results = _spawn("train", 2, {"UNSLOTH_PP_SIZE": "2", **env}, **kw)
+    _skip_if_one_microbatch_refused(results)
+    assert sorted(res.get("stage") for res in results) == [0, 1], results
+    for rank, res in enumerate(results):
+        assert res["phase"] is None and "error" not in res, (rank, res)
+        assert len(res["losses"]) == 2 and all(l == l for l in res["losses"]), (rank, res)
 
 
 # LoRA on the experts is eager only under cp (the registry's qwen3_moe x lora+experts x cp row): its per instance
