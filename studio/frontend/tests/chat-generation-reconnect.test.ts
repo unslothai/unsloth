@@ -156,6 +156,58 @@ test("reconnect resumes from the applied cursor without duplicate chunks", async
   );
 });
 
+test("a stream that goes silent without closing is dropped and resumed from the cursor", async () => {
+  const eventUrls: string[] = [];
+  const encoder = new TextEncoder();
+  let deadStreamCancelled = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/events")) {
+      eventUrls.push(url);
+      if (eventUrls.length > 1) {
+        return sse([
+          frame(2, "chunk", { choices: [{ delta: { content: "B" } }] }),
+          frame(3, "run.completed", { status: "completed" }, run("completed", 3)),
+        ]);
+      }
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                frame(1, "chunk", { choices: [{ delta: { content: "A" } }] }),
+              ),
+            );
+            init?.signal?.addEventListener("abort", () =>
+              controller.error(init.signal?.reason),
+            );
+          },
+          cancel() {
+            deadStreamCancelled = true;
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    return new Response(JSON.stringify(run("running", 1)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const sequences: number[] = [];
+  for await (const update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+    silenceTimeoutMs: 50,
+    signal: AbortSignal.timeout(2_000),
+  })) {
+    if (update.event) sequences.push(update.event.seq);
+  }
+  assert.deepEqual(sequences, [1, 2, 3]);
+  assert.equal(deadStreamCancelled, true);
+  assert.match(eventUrls[1], /after=1$/);
+});
+
 test("durable replay normalizes reasoning summary control frames", async () => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     if (String(input).includes("/events")) {

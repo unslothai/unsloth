@@ -327,10 +327,19 @@ def _patched_trainer(
         def compute_loss_context_manager(self):
             return contextlib.nullcontext()
 
-        def compute_loss(self, model, inputs):
+        def compute_loss(
+            self,
+            model,
+            inputs,
+            num_items_in_batch = None,
+        ):
+            # Like TRL's SFTTrainer: a per-token loss of 1 over this shard's targets, divided by the
+            # num_items_in_batch argument (an inputs["num_items_in_batch"] key is not read).
             assert inputs["use_cache"] is False
             targets = inputs["shift_labels"].ne(-100).sum()
-            return targets.float() / inputs["num_items_in_batch"]
+            if num_items_in_batch is None:
+                num_items_in_batch = targets.clamp_min(1)
+            return targets.float() / num_items_in_batch
 
         def train(self, *a, **k):
             return "trained"
@@ -381,6 +390,71 @@ def test_eval_loss_is_the_token_mean_even_with_an_empty_shard(monkeypatch, world
     assert logits is None and labels_out is None
     with pytest.raises(NotImplementedError, match = "loss-only"):
         trainer.prediction_step(None, batch(), False)
+
+
+def _model_normalised_loss(
+    self,
+    model,
+    inputs,
+    num_items_in_batch = None,
+):
+    # TRL < 1 hands inputs to the model: sum / inputs["num_items_in_batch"] when the key is there, else
+    # transformers' token mean over this shard, 0 / 0 on a shard without targets.
+    targets = inputs["shift_labels"].ne(-100).sum().float()
+    count = inputs.get("num_items_in_batch")
+    return targets / (targets if count is None else count)
+
+
+@pytest.mark.parametrize("compute_loss", ["trl", "model"])
+def test_eval_loss_is_not_multiplied_by_the_cp_size(monkeypatch, compute_loss):
+    import types
+
+    @contextlib.contextmanager
+    def first_half(mesh, buffers, buffer_seq_dims, no_restore_buffers):
+        for buffer in buffers:
+            buffer.data = buffer[:, : buffer.shape[1] // 2].clone()
+        yield
+
+    monkeypatch.setattr(cp, "context_parallel", first_half)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    Trainer = _patched_trainer(monkeypatch)
+    if compute_loss == "model":
+        monkeypatch.setattr(Trainer, "compute_loss", _model_normalised_loss)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
+    manager = _manager(size = 2)
+    manager.mesh = types.SimpleNamespace(get_group = lambda: "cp")
+    trainer._context_parallel_manager = manager
+    # Two ranks holding 2 of the 4 targets each, with the same per-token loss: the sum is 1, not 2.
+    monkeypatch.setattr(cp.dist, "all_reduce", lambda tensor, group = None: tensor.mul_(2))
+    labels = torch.tensor([[-100, 1, 1, -100, -100, -100, -100, 1, 1]])  # padded to 12, halves of 6
+    batch = {"input_ids": torch.ones(1, 9, dtype = torch.long), "labels": labels}
+    loss, _, _ = trainer.prediction_step(None, batch, True)
+    assert loss.item() == pytest.approx(1.0)
+
+
+def test_eval_loss_of_a_shard_without_targets_is_zero_even_when_its_mean_is_nan(monkeypatch):
+    import types
+
+    @contextlib.contextmanager
+    def first_half(mesh, buffers, buffer_seq_dims, no_restore_buffers):
+        for buffer in buffers:
+            buffer.data = buffer[:, : buffer.shape[1] // 2].clone()
+        yield
+
+    monkeypatch.setattr(cp, "context_parallel", first_half)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    Trainer = _patched_trainer(monkeypatch)
+    monkeypatch.setattr(Trainer, "compute_loss", _model_normalised_loss)
+    trainer = cp._bind_cp_methods(object.__new__(Trainer))
+    manager = _manager(size = 2)
+    manager.mesh = types.SimpleNamespace(get_group = lambda: "cp")
+    trainer._context_parallel_manager = manager
+    # This rank holds the prompt (no targets), the other rank's share is the whole mean, 1.
+    monkeypatch.setattr(cp.dist, "all_reduce", lambda tensor, group = None: tensor.add_(1.0))
+    labels = torch.tensor([[-100] * 7 + [1, 1]])
+    batch = {"input_ids": torch.ones(1, 9, dtype = torch.long), "labels": labels}
+    loss, _, _ = trainer.prediction_step(None, batch, True)
+    assert loss.item() == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize(
@@ -1557,6 +1631,56 @@ def test_a_forwarded_cp_size_of_one_installs_no_wrappers(monkeypatch, forwarded)
     Trainer(None, args = args, context_parallel_size = forwarded)
     assert built == []
     assert not any(hasattr(Trainer.__dict__[name], "__wrapped__") for name in _CP_METHODS)
+
+
+@pytest.mark.parametrize("rope", ["dynamic", "longrope"])
+def test_ulysses_seq_len_rope_uses_the_whole_sequence(monkeypatch, rope):
+    # dynamic / longrope choose frequencies from max(position_ids) + 1: rank 0 of 2 sees positions
+    # 0..15 (within the original 16), the whole sequence 0..31 (beyond it).
+    import copy
+    import types
+    from transformers import LlamaConfig, LlamaForCausalLM, Phi3Config, Phi3ForCausalLM
+
+    small = dict(
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        vocab_size = 64,
+    )
+    if rope == "dynamic":
+        config = LlamaConfig(
+            max_position_embeddings = 16,
+            rope_scaling = {"rope_type": "dynamic", "factor": 2.0},
+            **small,
+        )
+        model = LlamaForCausalLM(config)
+    else:
+        factors = [1.0 + i for i in range(4)]
+        config = Phi3Config(
+            max_position_embeddings = 64,
+            original_max_position_embeddings = 16,
+            rope_scaling = {"type": "longrope", "short_factor": [1.0] * 4, "long_factor": factors},
+            pad_token_id = 0,
+            **small,
+        )
+        model = Phi3ForCausalLM(config)
+    rotary = model.model.rotary_emb
+    # rope_scaling: the form transformers 4.57 reads and 5.x converts, so neither corner falls back to default.
+    assert rotary.rope_type == rope
+    x = torch.ones(1, 32, 8)
+    full = torch.arange(32)[None]
+    # A copy: dynamic NTK caches the frequencies it last computed.
+    expected = [t[:, :16] for t in copy.deepcopy(rotary)(x, full)]
+    manager = _manager(size = 2)
+    manager.backend = "ulysses"
+    manager.attach_attention_hooks(model)
+    manager.mesh = types.SimpleNamespace(get_local_rank = lambda: 0)
+    manager.full_position_ids = full
+    monkeypatch.setattr(cp, "_ACTIVE_MANAGER", manager)
+    for got, want in zip(rotary(x[:, :16], full[:, :16]), expected):
+        torch.testing.assert_close(got, want)
 
 
 @pytest.mark.parametrize(

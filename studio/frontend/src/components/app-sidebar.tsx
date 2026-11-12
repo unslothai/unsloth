@@ -81,7 +81,6 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import {
   DesktopTitlebarNavigation,
   shouldUseCustomWindowTitlebar,
-  usesWindowsTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 // deep imports avoid the Images index because its ImagesPage re-export would undo the code split.
@@ -347,7 +346,8 @@ import {
 } from "@/features/chat/hooks/use-sidebar-drag";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
-import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
+import { PinnedPageRow, usePinnedPages } from "@/features/browser/pinned-page-row";
+import type { PinnedPage } from "@/features/browser/pinned-pages-store";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import { translate, useT, type TranslationKey } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -5884,7 +5884,7 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}
-      data-windows-glass-frame={(pinned && usesWindowsTitlebar()) || undefined}
+      data-windows-glass-frame={(pinned && usesCustomTitlebar) || undefined}
       variant="sidebar"
       className={cn(
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",

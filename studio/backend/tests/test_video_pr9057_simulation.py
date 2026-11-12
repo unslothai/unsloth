@@ -24,7 +24,7 @@ from routes.inference import (  # noqa: E402
     _video_b64_rejection,
 )
 
-LIMIT = 64 * 1024 * 1024
+LIMIT = 256 * 1024 * 1024
 
 
 def _props_backend(props):
@@ -40,23 +40,23 @@ def test_the_ceiling_formula_matches_what_base64_actually_produces(n):
 
 
 def test_a_clip_of_exactly_the_composer_limit_is_admitted():
-    # 67108864 = 3*22369621 + 1, so the last byte costs a full padded quad.
-    assert _MAX_VIDEO_B64_CHARS == 89478488
-    assert 4 * math.ceil(LIMIT / 3) == 89478488
-    exact = "A" * 89478488
+    # 268435456 = 3*89478485 + 1, so the last byte costs a full padded quad.
+    assert _MAX_VIDEO_B64_CHARS == 357913944
+    assert 4 * math.ceil(LIMIT / 3) == 357913944
+    exact = "A" * 357913944
     assert _video_b64_rejection(exact)[1] is None
 
 
 def test_the_old_floor_expression_would_have_refused_it():
     floored = (LIMIT * 4) // 3
-    assert floored == 89478485
+    assert floored == 357913941
     assert floored < 4 * math.ceil(LIMIT / 3)
 
 
 def test_one_character_over_the_ceiling_is_refused_413():
     assert _video_b64_rejection("A" * (_MAX_VIDEO_B64_CHARS + 1))[1] == (
         413,
-        "Video file is too large (max 64 MB).",
+        "Video file is too large (max 256 MB).",
     )
 
 

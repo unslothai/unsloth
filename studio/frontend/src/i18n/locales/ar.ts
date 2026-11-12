@@ -3043,11 +3043,11 @@ export const ar = {
       showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
       showReplyTimesKeywords:
         "طابع زمني وقت ساعة تاريخ متى انتهى رد رسالة timestamp time clock date reply",
-      showGenerationDetails: "معلومات مفصّلة عن السرعة والتحميل",
+      showGenerationDetails: "معلومات مفصّلة عن السرعة",
       showGenerationDetailsDescription:
-        "يضيف سرعة قراءة الموجّه وعدد الرموز وقبول المسودات إلى القراءات المباشرة، ويعرض مكان تحميل طبقات النموذج.",
+        "يضيف سرعة قراءة الموجّه وعدد الرموز وقبول المسودات إلى القراءات المباشرة.",
       showGenerationDetailsKeywords:
-        "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "تفاصيل سرعة رموز إحصاءات verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "إحصاءات السرعة والسياق",
       generationStatsUpdatesDescription:
         "يحسب الوضع الفوري الرموز في الثانية واستخدام السياق أثناء بث الرد. أما عند الانتهاء فيحدّثها عند اكتمال كل رد.",

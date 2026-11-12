@@ -8,6 +8,7 @@ from __future__ import annotations
 import codecs
 import random
 import sys
+import threading
 import time
 import tracemalloc
 from email.message import Message
@@ -524,6 +525,106 @@ def test_large_head_token_keeps_article(monkeypatch, opening, closing):
     assert "Long token article marker" in _fetch_with(monkeypatch, html, "text/html")
 
 
+_MENU = b'<li><a href="/api/item">Menu entry</a></li>\n'
+_LINES = b"<p>line</p>" * (1024 * 1024)
+
+
+def _menu_page(content: bytes) -> bytes:
+    menu = _MENU * (700 * 1024 // len(_MENU))
+    return (
+        b"<html><head><title>t</title></head><body><nav><ul>"
+        + menu
+        + b"</ul></nav>"
+        + content
+        + b"</body></html>"
+    )
+
+
+def _read_html(resp, cancel_event = None):
+    return tools._read_capped_body(
+        resp,
+        tools._MAX_HTML_FETCH_BYTES,
+        timeout = 5,
+        deadline = None,
+        cancel_event = cancel_event,
+        body_window = tools._MAX_FETCH_BYTES,
+    )
+
+
+def _first_window(body: bytes) -> bytes:
+    return body[: body.index(b"</head>") + tools._MAX_FETCH_BYTES]
+
+
+@pytest.mark.parametrize("tag", [b"main", b"article"])
+def test_page_text_after_a_large_menu_is_read(monkeypatch, tag):
+    html = _menu_page(b"<%b><h1>Dense layer</h1><p>BODY-MARK takes units.</p></%b>" % (tag, tag))
+    assert "BODY-MARK takes units." in _fetch_with(monkeypatch, html, "text/html")
+
+
+def test_page_text_after_a_large_menu_gets_a_full_window():
+    body = _menu_page(b"<main><h1>Start</h1>" + _LINES + b"</main>")
+    resp = _FakeResp(body, "text/html")
+    error, read = _read_html(resp)
+    window_end = body.index(b"<main>") + tools._MAX_FETCH_BYTES
+    assert error is None
+    assert window_end <= resp._pos < window_end + 2 * 65536
+    assert read == body[: resp._pos]
+
+
+def test_page_text_inside_the_window_reads_no_further():
+    body = b"<html><head><title>t</title></head><body><main><h1>Start</h1>" + _LINES + b"</main>"
+    resp = _FakeResp(body, "text/html")
+    assert _read_html(resp) == (None, _first_window(body))
+    assert resp._pos == len(_first_window(body))
+
+
+def test_page_without_a_content_start_keeps_the_first_window():
+    body = b"<html><head><title>t</title></head><body>" + _LINES + b"</body></html>"
+    assert _read_html(_FakeResp(body, "text/html")) == (None, _first_window(body))
+
+
+def test_failed_read_past_the_window_keeps_the_first_window():
+    body = b"<html><head><title>t</title></head><body>" + _LINES + b"</body></html>"
+    resp = _FakeResp(body, "text/html")
+    read = resp.read
+
+    def stalling_read(n = None):
+        if resp._pos > 1024 * 1024:
+            raise TimeoutError("timed out")
+        return read(n)
+
+    resp.read = stalling_read
+    assert _read_html(resp) == (None, _first_window(body))
+
+
+def test_failed_read_after_a_late_content_start_keeps_the_first_window():
+    body = _menu_page(b"<main><h1>Start</h1>" + _LINES + b"</main>")
+    resp = _FakeResp(body, "text/html")
+    read = resp.read
+
+    def stalling_read(n = None):
+        if resp._pos > body.index(b"<main>") + 65536:
+            raise TimeoutError("timed out")
+        return read(n)
+
+    resp.read = stalling_read
+    assert _read_html(resp) == (None, _first_window(body))
+
+
+def test_read_past_the_window_stops_when_cancelled():
+    cancel = threading.Event()
+    resp = _FakeResp(_menu_page(_LINES), "text/html")
+    read = resp.read
+
+    def cancelling_read(n = None):
+        if resp._pos > 1024 * 1024:
+            cancel.set()
+        return read(n)
+
+    resp.read = cancelling_read
+    assert _read_html(resp, cancel) == ("Failed to fetch URL: cancelled.", b"")
+
+
 @pytest.mark.parametrize(
     "content_type,body",
     [
@@ -543,9 +644,15 @@ def test_large_head_token_keeps_article(monkeypatch, opening, closing):
             + b"x" * (4 * 1024 * 1024)
             + b"</script></html>",
         ),
+        (
+            "text/html",
+            b"<html><head><title>t</title></head><body><p>Harbor ferry adds night service</p>"
+            + b"<p>log line</p>" * (512 * 1024)
+            + b"</body></html>",
+        ),
         ("text/plain", b"Harbor ferry adds night service\n" + b"log line\n" * (512 * 1024)),
     ],
-    ids = ["html", "html-without-body-tag", "text"],
+    ids = ["html", "html-without-body-tag", "html-without-content-start", "text"],
 )
 def test_large_page_on_a_slow_link_still_returns_its_start(monkeypatch, content_type, body):
     clock = {"time": 1000.0}
