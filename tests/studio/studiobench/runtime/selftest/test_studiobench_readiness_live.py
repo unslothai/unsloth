@@ -709,3 +709,17 @@ def test_a_windowed_thread_with_no_viewport_is_refused(browser):
         page.close()
 
     assert "viewport_present" in str(caught.value), str(caught.value)
+
+
+def test_residual_stabilizer_padding_settles_the_pin():
+    """use-intent-aware-autoscroll keeps `--aui-scroll-stabilizer` as residual padding after the
+    pin ends and drops it only when the user scrolls up, on fully mounted builds too."""
+    residual = _windowed_probe(pinning = True, stabilizer = "24px")
+    assert evaluate(residual, None, 18, MODE_WINDOWED)["pin_settled"] is False
+    assert evaluate(residual, dict(residual), 18, MODE_WINDOWED)["pin_settled"] is True
+    moving = _windowed_probe(pinning = True, stabilizer = "12px")
+    assert evaluate(residual, moving, 18, MODE_WINDOWED)["pin_settled"] is False
+    growing = _windowed_probe(pinning = True, stabilizer = "24px", scroll_height = 90)
+    assert evaluate(residual, growing, 18, MODE_WINDOWED)["pin_settled"] is False
+    cleared = _windowed_probe()
+    assert evaluate(cleared, residual, 18, MODE_WINDOWED)["pin_settled"] is True

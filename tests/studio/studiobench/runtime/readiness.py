@@ -75,8 +75,8 @@ PROBE_JS = """
   // permanently and hides it with `invisible` when use-intent-aware-autoscroll reports at-bottom,
   // so this is the state the app is acting on rather than a number the driver computed.
   const jump = document.querySelector(".aui-thread-scroll-to-bottom");
-  // Set on the viewport WHILE the autoscroll is pinning and removed when it settles. A page that
-  // still carries it is mid-pin, whatever its scrollTop currently reads.
+  // Set on the viewport while the autoscroll pins. use-intent-aware-autoscroll keeps the last
+  // value as residual padding until the user scrolls up, so only a changing value is mid-pin.
   const stabilizer = vp
     ? (vp.style.getPropertyValue("--aui-scroll-stabilizer") || "").trim()
     : "";
@@ -120,6 +120,7 @@ PROBE_JS = """
     jump_button_present: Boolean(jump),
     app_says_at_bottom: jump ? jump.classList.contains("invisible") : null,
     pinning: stabilizer !== "",
+    stabilizer: stabilizer,
   };
 }
 """
@@ -208,8 +209,13 @@ def evaluate(probe: dict, previous: Optional[dict], expected_messages: int, mode
         out["anchored_at_end"] = bool(app_bottom) if app_bottom is not None else near_bottom
         # Assert the viewport exists: without it every windowed condition above silently passes.
         out["viewport_present"] = bool(probe.get("viewport_present"))
-        # `--aui-scroll-stabilizer` is present while autoscroll is still pinning.
-        out["pin_settled"] = not probe.get("pinning")
+        # `--aui-scroll-stabilizer` stays on the viewport as residual padding once the pin ends, so
+        # a value unchanged since the last probe of a settled page has finished pinning.
+        out["pin_settled"] = not probe.get("pinning") or bool(
+            settled
+            and previous.get("pinning")
+            and previous.get("stabilizer") == probe.get("stabilizer")
+        )
         out["not_over_mounted"] = (probe.get("mounted") or 0) <= expected_messages
     else:
         out["all_messages_mounted"] = (probe.get("mounted") or 0) >= expected_messages
