@@ -68,6 +68,8 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
+import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
   isOllamaModelId,
@@ -532,7 +534,9 @@ export function syncModelCapabilities(
       ...models,
       {
         id: modelId,
-        name: modelDisplayName(resp.display_name || modelId),
+        name:
+          npuDisplayNameNow(modelId) ??
+          modelDisplayName(resp.display_name || modelId),
         isLora: Boolean(resp.is_lora),
         ...synced,
       },
@@ -3566,9 +3570,9 @@ export function useChatModelRuntime() {
       }
       loadLifecycleLeaseRef.current = lease;
       const loadIntentId = ++modelSelectionIntentEpoch;
-      const displayName = modelDisplayName(
-        modelPath.slice(modelPath.indexOf(":") + 1),
-      );
+      const displayName =
+        npuDisplayNameNow(modelPath) ??
+        modelDisplayName(modelPath.slice(modelPath.indexOf(":") + 1));
       const previous = useChatRuntimeStore.getState();
       const previousCheckpoint = previous.params.checkpoint;
       const previousGgufVariant = previous.activeGgufVariant;

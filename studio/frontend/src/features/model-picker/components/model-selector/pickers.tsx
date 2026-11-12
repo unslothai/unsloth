@@ -96,6 +96,7 @@ import {
   type NpuPickerSource,
   NpuRuntimeVersions,
   NpuSetupNotice,
+  npuDisplayName,
   npuDownloadLabel,
   npuResumeLabel,
   npuRowsFor,
@@ -7777,6 +7778,7 @@ export function HubModelPicker({
     const downloading = model.id in npuCatalog.downloads;
     const progress = npuCatalog.downloads[model.id];
     const reconnecting = model.id in npuCatalog.reconnecting;
+    const name = npuDisplayName(model);
     const details = [
       "NPU",
       npuSizeLabel(model.size_gb),
@@ -7790,7 +7792,7 @@ export function HubModelPicker({
     const pick = () => onSelect(model.model_path, meta);
     const row = (
       <ModelRow
-        label={model.id}
+        label={name}
         meta={
           downloading
             ? `NPU · ${npuDownloadLabel(progress, reconnecting)}`
@@ -7832,7 +7834,7 @@ export function HubModelPicker({
     const settings =
       onConfigure && model.downloaded && !downloading ? (
         <ModelLoadSettingsAction
-          ariaLabel={`Inference settings for ${model.id}`}
+          ariaLabel={`Inference settings for ${name}`}
           onConfigure={() => onConfigure(model.model_path, configMeta)}
           savedFor={modelConfigTarget(model.model_path, configMeta)}
         />
@@ -7848,10 +7850,10 @@ export function HubModelPicker({
           {settings}
           {onDevice && (
             <ModelDeleteAction
-              ariaLabel={`Delete ${model.id}`}
-              title={`Delete ${model.id}?`}
+              ariaLabel={`Delete ${name}`}
+              title={`Delete ${name}?`}
               description="This removes the model's NPU files from this device."
-              successMessage={`Deleted ${model.id}`}
+              successMessage={`Deleted ${name}`}
               disabled={isLoaded}
               onConfirm={() => npuCatalog.remove(model)}
             />

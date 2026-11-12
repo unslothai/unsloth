@@ -27,7 +27,12 @@ import {
   requestModelConfigHandoff,
 } from "@/features/model-picker";
 import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
-import { type NpuModel, type NpuPickerSource, useNpuStatus } from "@/features/npu";
+import {
+  type NpuModel,
+  type NpuPickerSource,
+  npuDisplayName,
+  useNpuStatus,
+} from "@/features/npu";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -1735,7 +1740,7 @@ export function ModelsPage() {
       openRunSettingsInChat({
         requestId: createModelConfigHandoffRequestId(),
         id: model.model_path,
-        displayName: model.id,
+        displayName: npuDisplayName(model),
         meta: {
           source: "local",
           isLora: false,

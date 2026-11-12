@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as zustand from "zustand";
+import * as displayName from "../src/features/npu/display-name.ts";
 import type * as NpuCatalogStore from "../src/features/npu/npu-catalog-store.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -43,6 +44,7 @@ function harness() {
     new URL("../src/features/npu/npu-catalog-store.ts", import.meta.url),
     {
       zustand,
+      "./display-name": displayName,
       "@/lib/toast": {
         toast: { error: (title: string) => toasts.push(title) },
       },

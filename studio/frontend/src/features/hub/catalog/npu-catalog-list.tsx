@@ -8,7 +8,9 @@ import {
   type NpuPickerSource,
   NpuRuntimeVersions,
   NpuSetupNotice,
+  npuDisplayName,
   npuDownloadLabel,
+  npuRepoLabel,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -95,7 +97,11 @@ function NpuCatalogRow({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const name = npuDisplayName(model);
+  const repo = npuRepoLabel(model);
   const details = [
+    // The owner line, as GGUF rows show it.
+    repo.includes("/") ? repo.slice(0, repo.indexOf("/")) : null,
     model.checkpoint,
     npuSizeLabel(model.size_gb),
     model.supports_vision ? "Vision" : null,
@@ -108,7 +114,7 @@ function NpuCatalogRow({
     setDeleting(true);
     try {
       await onRemove();
-      toast.success(`Deleted ${model.id}`);
+      toast.success(`Deleted ${name}`);
       setConfirming(false);
     } catch (error) {
       toast.error(
@@ -131,7 +137,7 @@ function NpuCatalogRow({
       />
       <div className="min-w-0 flex-1">
         <div className="truncate text-ui-13 font-medium text-foreground">
-          {model.id}
+          {name}
         </div>
         <div className="truncate text-ui-12 text-muted-foreground">
           {details.join(" · ")}
@@ -159,7 +165,7 @@ function NpuCatalogRow({
           <DeleteConfirmDialog
             open={confirming}
             onOpenChange={setConfirming}
-            title={`Delete ${model.id}?`}
+            title={`Delete ${name}?`}
             description="This removes the model's NPU files from this device."
             deleting={deleting}
             onConfirm={() => void remove()}

@@ -12,10 +12,20 @@ export {
   npuRowsFor,
   npuSizeLabel,
 } from "./api";
+export {
+  npuDisplayName,
+  npuDisplayNameOf,
+  npuRepoLabel,
+} from "./display-name";
 export { NpuRuntimeVersions, NpuSetupNotice } from "./npu-setup-notice";
 export {
   type NpuCatalog,
   type NpuPickerSource,
   useNpuCatalog,
 } from "./use-npu-catalog";
+export {
+  npuDisplayNameNow,
+  useNpuDisplayName,
+  useNpuDisplayNames,
+} from "./use-npu-display-name";
 export { useNpuStatus } from "./use-npu-status";

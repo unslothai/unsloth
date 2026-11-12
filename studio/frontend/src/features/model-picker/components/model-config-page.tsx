@@ -237,7 +237,11 @@ import {
   subscribeAdvancedSettingsOpen,
 } from "../model-config/per-model-config";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
-import { isNpuModelId, NPU_DEFAULT_CONTEXT_LENGTH } from "../../npu";
+import {
+  isNpuModelId,
+  NPU_DEFAULT_CONTEXT_LENGTH,
+  useNpuDisplayName,
+} from "../../npu";
 import {
   type RunConfigImport,
   SharedRunConfigControls,
@@ -2373,6 +2377,7 @@ export function ModelConfigPage({
   );
   const configId = target.configId ?? target.id;
   const targetIsNpu = isNpuModelId(target.id);
+  const npuName = useNpuDisplayName(targetIsNpu ? target.id : null);
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(configId, target.ggufVariant);
@@ -3936,7 +3941,7 @@ export function ModelConfigPage({
               Run settings
             </div>
             <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
-              {target.displayName}
+              {npuName ?? target.displayName}
             </div>
             <div
               className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground"

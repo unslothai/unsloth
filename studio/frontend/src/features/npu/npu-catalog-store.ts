@@ -12,6 +12,7 @@ import {
   listNpuDownloads,
   listNpuModels,
 } from "./api";
+import { npuDisplayNameOf } from "./display-name";
 
 interface NpuCatalogState {
   models: NpuModel[] | null;
@@ -128,7 +129,9 @@ export function followNpuDownload(
       if (advance(event.percent)) streamed = true;
     };
     const fail = (description: string): false => {
-      toast.error(`Could not download ${id}`, { description });
+      const name =
+        npuDisplayNameOf(useNpuCatalogStore.getState().models, id) ?? id;
+      toast.error(`Could not download ${name}`, { description });
       return false;
     };
     let stalledReconnects = 0;

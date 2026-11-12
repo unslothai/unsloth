@@ -13,6 +13,8 @@ import {
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
 import { pinnedReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
+import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
@@ -123,7 +125,9 @@ function ensureActiveModelInStoreList(
   }
   const summary: ChatModelRow = {
     id: checkpointId,
-    name: modelDisplayName(status.active_model ?? checkpointId),
+    name:
+      npuDisplayNameNow(checkpointId) ??
+      modelDisplayName(status.active_model ?? checkpointId),
     isVision: status.is_vision ?? false,
     isLora: false,
     isGguf: status.is_gguf ?? false,
