@@ -968,3 +968,510 @@ test("a hosted call before its answer exports in that order", () => {
   );
   assert.equal(answerAt, exported.length - 1);
 });
+
+test("legacy function_call turns survive message JSONL import", () => {
+  const [conversation] = parseImportText(
+    [
+      '{"role":"user","content":"Weather in Paris?"}',
+      '{"role":"assistant","content":null,"function_call":{"name":"get_weather","arguments":"{\\"city\\":\\"Paris\\"}"}}',
+      '{"role":"function","name":"get_weather","content":"72F sunny"}',
+      '{"role":"assistant","content":"It is 72 and sunny."}',
+    ].join("\n"),
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["user", "assistant", "assistant"],
+  );
+  assert.deepEqual(toolCallResults(conversation), ["72F sunny"]);
+  const call = (
+    conversation.messages[1].content as ReadonlyArray<{
+      type: string;
+      toolName?: string;
+      args?: unknown;
+    }>
+  )[0];
+  assert.equal(call.type, "tool-call");
+  assert.equal(call.toolName, "get_weather");
+  assert.deepEqual(call.args, { city: "Paris" });
+});
+
+test("legacy function results reach their call inside a messages record", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      messages: [
+        { role: "user", content: "Add 2+2" },
+        {
+          role: "assistant",
+          content: null,
+          function_call: { name: "calc", arguments: '{"e":"2+2"}' },
+        },
+        { role: "function", name: "calc", content: "4" },
+        { role: "assistant", content: "4" },
+      ],
+    }),
+    "chat.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["user", "assistant", "assistant"],
+  );
+  assert.deepEqual(toolCallResults(conversation), ["4"]);
+});
+
+test("each legacy function result reaches the call that named it", () => {
+  const [conversation] = parseImportText(
+    [
+      '{"role":"user","content":"Time and weather?"}',
+      '{"role":"assistant","content":null,"function_call":{"name":"get_time","arguments":"{}"}}',
+      '{"role":"assistant","content":null,"function_call":{"name":"get_weather","arguments":"{}"}}',
+      '{"role":"function","name":"get_time","content":"NOON"}',
+      '{"role":"function","name":"get_weather","content":"RAIN"}',
+    ].join("\n"),
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["NOON", "RAIN"]);
+});
+
+test("a legacy function result ahead of its call still lands on it", () => {
+  const [conversation] = parseImportText(
+    '{"role":"function","name":"lookup","content":"EARLY"}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"lookup","arguments":"{}"}}\n' +
+      '{"role":"assistant","content":"Done"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["EARLY"]);
+});
+
+test("assistant text stays beside its legacy function call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":"Checking.","function_call":{"name":"lookup","arguments":"not json"}}\n' +
+      '{"role":"function","name":"lookup","content":"FOUND"}',
+    "conversation-messages.jsonl",
+  );
+
+  const call = (
+    conversation.messages[0].content as ReadonlyArray<{
+      type: string;
+      toolCallId: string;
+    }>
+  )[1];
+  assert.equal(typeof call.toolCallId, "string");
+  assert.notEqual(call.toolCallId.length, 0);
+  assert.deepEqual(conversation.messages[0].content, [
+    { type: "text", text: "Checking." },
+    {
+      type: "tool-call",
+      toolCallId: call.toolCallId,
+      toolName: "lookup",
+      args: { _raw: "not json" },
+      argsText: "not json",
+      result: "FOUND",
+    },
+  ]);
+});
+
+test("already-parsed legacy function arguments survive import", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":{"a":1}}}',
+    "conversation-messages.jsonl",
+  );
+
+  const call = (
+    conversation.messages[0].content as ReadonlyArray<{
+      args?: unknown;
+      argsText?: string;
+    }>
+  )[0];
+  assert.deepEqual(call.args, { a: 1 });
+  assert.equal(call.argsText, '{"a":1}');
+});
+
+test("a structured legacy function result imports as json text", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}\n' +
+      '{"role":"function","name":"f","content":{"rows":3}}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ['{"rows":3}']);
+});
+
+test("an assistant line carrying only function_call still counts as a message", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","function_call":{"name":"f","arguments":"{}"}}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.equal(conversation.messages.length, 1);
+  assert.deepEqual(toolCallResults(conversation), ["undefined"]);
+});
+
+test("an early function result reaches only one same-name call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"function","name":"f","content":"EARLY"}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["EARLY", "undefined"]);
+});
+
+test("early function results land on same-name calls in order", () => {
+  const [conversation] = parseImportText(
+    '{"role":"function","name":"f","content":"FIRST"}\n' +
+      '{"role":"function","name":"f","content":"SECOND"}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["FIRST", "SECOND"]);
+});
+
+test("batched same-name results bind the newest call still waiting", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}\n' +
+      '{"role":"function","name":"f","content":"R1"}\n' +
+      '{"role":"function","name":"f","content":"R2"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["R2", "R1"]);
+});
+
+test("a legacy function result can name a modern tool call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}}]}\n' +
+      '{"role":"function","name":"search","content":"RESULT"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["RESULT"]);
+});
+
+test("a message-shaped record keeps its nested messages conversation", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","function_call":{"name":"f","arguments":"{}"},' +
+      '"messages":[{"role":"user","content":"hi"}]}',
+    "chat.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["user"],
+  );
+});
+
+test("flat tool_calls entries keep their name and arguments", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"t1","name":"search","arguments":{"q":"x"}}]}\n' +
+      '{"role":"tool","tool_call_id":"t1","content":"HIT"}',
+    "conversation-messages.jsonl",
+  );
+
+  const call = (
+    conversation.messages[0].content as ReadonlyArray<{
+      toolCallId?: string;
+      toolName?: string;
+      args?: unknown;
+    }>
+  )[0];
+  assert.equal(call.toolCallId, "t1");
+  assert.equal(call.toolName, "search");
+  assert.deepEqual(call.args, { q: "x" });
+  assert.deepEqual(toolCallResults(conversation), ["HIT"]);
+});
+
+test("already-parsed arguments on a modern tool call survive import", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"t1","type":"function","function":{"name":"f","arguments":{"a":1}}}]}',
+    "conversation-messages.jsonl",
+  );
+
+  const call = (
+    conversation.messages[0].content as ReadonlyArray<{
+      args?: unknown;
+      argsText?: string;
+    }>
+  )[0];
+  assert.deepEqual(call.args, { a: 1 });
+  assert.equal(call.argsText, '{"a":1}');
+});
+
+test("call_id identifies a flat tool call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"call_id":"c9","name":"f","arguments":"{}"}]}\n' +
+      '{"role":"tool","tool_call_id":"c9","content":"OK"}',
+    "conversation-messages.jsonl",
+  );
+
+  const call = (
+    conversation.messages[0].content as ReadonlyArray<{ toolCallId?: string }>
+  )[0];
+  assert.equal(call.toolCallId, "c9");
+  assert.deepEqual(toolCallResults(conversation), ["OK"]);
+});
+
+test("a tool result that only names its call still reaches it", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"t1","type":"function","function":{"name":"f","arguments":"{}"}}]}\n' +
+      '{"role":"tool","name":"f","content":"BYNAME"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["BYNAME"]);
+});
+
+test("a tool result falls back to its name when its id matches nothing", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}\n' +
+      '{"role":"tool","tool_call_id":"unrelated","name":"f","content":"FELLBACK"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["FELLBACK"]);
+});
+
+test("an unnamed function result lands on the newest unanswered call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"g","arguments":"{}"}}\n' +
+      '{"role":"function","content":"NONAME"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["undefined", "NONAME"]);
+});
+
+test("unnamed results for parallel calls bind in call order", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"name":"f","arguments":{}},{"name":"g","arguments":{}}]}\n' +
+      '{"role":"tool","content":"FIRST"}\n' +
+      '{"role":"tool","content":"SECOND"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["FIRST", "SECOND"]);
+});
+
+test("an unnamed early function result waits for a call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"function","content":"ORPHAN"}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["ORPHAN"]);
+});
+
+test("a function_call nested under additional_kwargs survives", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":"","additional_kwargs":{"function_call":{"name":"f","arguments":"{\\"a\\":1}"}}}\n' +
+      '{"role":"function","name":"f","content":"KW"}',
+    "conversation-messages.jsonl",
+  );
+
+  const call = (
+    conversation.messages[0].content as ReadonlyArray<{
+      toolName?: string;
+      args?: unknown;
+    }>
+  )[0];
+  assert.equal(call.toolName, "f");
+  assert.deepEqual(call.args, { a: 1 });
+  assert.deepEqual(toolCallResults(conversation), ["KW"]);
+});
+
+test("tool_calls nested under additional_kwargs survive", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":"","additional_kwargs":{"tool_calls":[{"id":"k1","type":"function","function":{"name":"f","arguments":"{}"}}]}}\n' +
+      '{"role":"tool","tool_call_id":"k1","content":"KWTC"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["KWTC"]);
+});
+
+test("a function_call duplicated inside tool_calls produces one call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"t1","type":"function","function":{"name":"f","arguments":"{\\"a\\":1}"}}],"function_call":{"name":"f","arguments":"{\\"a\\":1}"}}',
+    "conversation-messages.jsonl",
+  );
+
+  const parts = conversation.messages[0].content as ReadonlyArray<{
+    type: string;
+  }>;
+  assert.deepEqual(
+    parts.map(({ type }) => type),
+    ["tool-call"],
+  );
+});
+
+test("a keyed early result is not stolen by an earlier different-name call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"function","name":"g","content":"Rg"}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"g","arguments":"{}"}}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["undefined", "Rg"]);
+});
+
+test("a tool result waits for the call its id names", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}\n' +
+      '{"role":"tool","tool_call_id":"x","name":"f","content":"R"}\n' +
+      '{"role":"assistant","content":null,"tool_calls":[{"id":"x","type":"function","function":{"name":"f","arguments":"{}"}}]}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["undefined", "R"]);
+});
+
+test("a function_call id lets a modern tool result bind it", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"function_call":{"id":"fc1","name":"f","arguments":"{}"}}\n' +
+      '{"role":"tool","tool_call_id":"fc1","content":"BYID"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["BYID"]);
+});
+
+test("same-name calls in one turn take results in call order", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[' +
+      '{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},' +
+      '{"id":"b","type":"function","function":{"name":"f","arguments":"{}"}}]}\n' +
+      '{"role":"tool","name":"f","content":"R1"}\n' +
+      '{"role":"tool","name":"f","content":"R2"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["R1", "R2"]);
+});
+
+test("a function_call with different arguments is not deduplicated", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[' +
+      '{"id":"t1","type":"function","function":{"name":"f","arguments":"{\\"a\\":1}"}}],' +
+      '"function_call":{"name":"f","arguments":"{\\"a\\":2}"}}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.equal(conversation.messages[0].content.length, 2);
+});
+
+test("a keyed result for a call that never appears drops instead of lying", () => {
+  const [conversation] = parseImportText(
+    '{"role":"tool","tool_call_id":"ghost","name":"stock","content":"AAPL"}\n' +
+      '{"role":"assistant","content":null,"function_call":{"name":"f","arguments":"{}"}}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["undefined"]);
+});
+
+for (const role of ["tool", "function"]) {
+  for (const resultFirst of [false, true]) {
+    test(`a ${role} result with an unmatched id cannot bind by name (${resultFirst ? "early" : "late"})`, () => {
+      const call = {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "real-call", type: "function", function: { name: "lookup", arguments: "{}" } }],
+      };
+      const result = { role, tool_call_id: "missing-call", name: "lookup", content: "WRONG RESULT" };
+      const messages = resultFirst ? [result, call] : [call, result];
+      const [conversation] = parseImportText(
+        messages.map((message) => JSON.stringify(message)).join("\n"),
+        "conversation-messages.jsonl",
+      );
+
+      assert.deepEqual(toolCallResults(conversation), ["undefined"]);
+    });
+  }
+}
+
+test("a null tool_calls entry does not lose the other calls", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[null,{"id":"t1","type":"function","function":{"name":"f","arguments":"{}"}}]}\n' +
+      '{"role":"tool","tool_call_id":"t1","content":"OK"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["OK"]);
+});
+
+test("a null entry inside a messages record does not lose the conversation", () => {
+  const [conversation] = parseImportText(
+    '{"messages":[null,{"role":"user","content":"hi"},7,{"role":"assistant","content":"yo"}]}',
+    "chat.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["user", "assistant"],
+  );
+});
+
+test("an early keyed result is not displaced by a later anonymous one", () => {
+  const [conversation] = parseImportText(
+    '{"role":"tool","tool_call_id":"a","content":"A"}\n' +
+      '{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"g","arguments":"{}"}}]}\n' +
+      '{"role":"tool","content":"B"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
+});
+
+test("a reserialized function_call copy of a tool call is not duplicated", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{\\"a\\":1}"}}],"function_call":{"name":"f","arguments":"{\\"a\\": 1}"}}\n' +
+      '{"role":"tool","tool_call_id":"c1","content":"R"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["R"]);
+});
+
+test("a legacy copy with a different explicit id stays its own call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}],"function_call":{"id":"b","name":"f","arguments":"{}"}}\n' +
+      '{"role":"tool","tool_call_id":"a","content":"A"}\n' +
+      '{"role":"tool","tool_call_id":"b","content":"B"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
+});
+
+test("a name-only result ahead of its calls keeps arrival order", () => {
+  const [conversation] = parseImportText(
+    '{"role":"tool","name":"f","content":"A"}\n' +
+      '{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"f","arguments":"{}"}}]}\n' +
+      '{"role":"tool","name":"f","content":"B"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
+});
+
+test("an anonymous result ahead of its calls keeps arrival order", () => {
+  const [conversation] = parseImportText(
+    '{"role":"tool","content":"A"}\n' +
+      '{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"g","arguments":"{}"}}]}\n' +
+      '{"role":"tool","content":"B"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
+});

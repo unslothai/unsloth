@@ -105,7 +105,7 @@ export function nativeImportSource(handle: {
   };
 }
 
-// role:"tool" results fold into the preceding tool-call part's `result`.
+// role:"tool" and role:"function" results fold into a tool-call part's `result`.
 function oaiContentToParts(raw: unknown): unknown[] {
   if (!Array.isArray(raw)) {
     return typeof raw === "string" && raw.trim()
@@ -148,32 +148,73 @@ function oaiMessagesToRecords(
   threadId: string,
   baseTs: number,
 ): MessageRecord[] {
-  const toolResults = new Map<string, unknown>();
-  const pending: Array<{ turn: number; part: { toolCallId: string; result?: unknown } }> = [];
+  // Waiting results under id:, name:, bare: (named, no id) and anon keys; cursors keep lookups linear.
+  type Stashed = { result: unknown; used?: boolean };
+  const buckets = new Map<string, { items: Stashed[]; start: number }>();
+  const stash = (result: unknown, id?: string, name?: string) => {
+    const entry: Stashed = { result };
+    const keys =
+      id === undefined && name === undefined
+        ? ["anon"]
+        : [id !== undefined && `id:${id}`, name !== undefined && `name:${name}`, id === undefined && `bare:${name}`];
+    for (const key of keys) {
+      if (!key) continue;
+      const bucket = buckets.get(key);
+      if (bucket) bucket.items.push(entry);
+      else buckets.set(key, { items: [entry], start: 0 });
+    }
+  };
+  const take = (key: string) => {
+    const bucket = buckets.get(key);
+    if (!bucket) return undefined;
+    while (bucket.start < bucket.items.length && bucket.items[bucket.start].used) bucket.start++;
+    const entry = bucket.items[bucket.start];
+    if (entry) entry.used = true;
+    return entry?.result;
+  };
+  const pending: Array<{
+    turn: number;
+    hasExplicitId: boolean;
+    part: { toolCallId: string; toolName: string; result?: unknown };
+  }> = [];
+  const bindResult = (
+    pred: (entry: (typeof pending)[number]) => boolean,
+    result: unknown,
+  ) => {
+    for (let at = pending.length - 1; at >= 0; at--) {
+      if (!pred(pending[at])) continue;
+      const { turn } = pending[at];
+      const first = pending.findIndex((entry) => entry.turn === turn && pred(entry));
+      pending[first].part.result = result;
+      pending.splice(first, 1);
+      return true;
+    }
+    return false;
+  };
 
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
   let idx = 0;
 
   for (const m of oaiMsgs) {
-    if (typeof m !== "object" || m === null) continue;
+    if (m === null || typeof m !== "object") continue;
     const msg = m as Record<string, unknown>;
     const role = msg.role as string;
-    if (role === "tool") {
-      if (typeof msg.tool_call_id !== "string") continue;
+    if (role === "tool" || role === "function") {
       const result =
         (msg as { [STRUCTURED_RESULT]?: unknown })[STRUCTURED_RESULT] ??
         (typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
-      let at = pending.length - 1;
-      while (at >= 0 && pending[at].part.toolCallId !== msg.tool_call_id) at--;
-      if (at === -1) {
-        toolResults.set(msg.tool_call_id, result);
-      } else {
-        const { turn } = pending[at];
-        at = pending.findIndex((entry) => entry.turn === turn && entry.part.toolCallId === msg.tool_call_id);
-        pending[at].part.result = result;
-        pending.splice(at, 1);
-      }
+      const idKey =
+        typeof msg.tool_call_id === "string" ? msg.tool_call_id : undefined;
+      const nameKey = typeof msg.name === "string" ? msg.name : undefined;
+      // An id always wins over a name; unnamed results bind in call order within the newest turn.
+      const bound =
+        idKey !== undefined
+          ? bindResult((entry) => entry.part.toolCallId === idKey, result)
+          : nameKey !== undefined
+            ? bindResult((entry) => entry.part.toolName === nameKey, result)
+            : bindResult(() => true, result);
+      if (!bound) stash(result, idKey, nameKey);
       continue;
     }
 
@@ -184,27 +225,71 @@ function oaiMessagesToRecords(
     if (role === "assistant") {
       const parts = oaiContentToParts(msg.content);
       if (parts.length === 0) parts.push(...oaiContentToParts(msg.refusal));
+      const argumentsText = (fn: Record<string, unknown>) =>
+        typeof fn.arguments === "string"
+          ? fn.arguments
+          : JSON.stringify(fn.arguments ?? {});
+      const parseArgs = (argsStr: string): unknown => {
+        // _raw matches what the stream adapter and backend keep for invalid JSON arguments.
+        try { return JSON.parse(argsStr); } catch { return { _raw: argsStr }; }
+      };
       const callParts: unknown[] = [];
-      if (Array.isArray(msg.tool_calls)) {
-        for (const tc of msg.tool_calls) {
+      const addCall = (fn: Record<string, unknown>, callId: unknown) => {
+        const argsStr = argumentsText(fn);
+        const part: { type: string; toolCallId: string; toolName: string; args: unknown; argsText: string; result?: unknown } = {
+          type: "tool-call",
+          toolCallId: typeof callId === "string" ? callId : crypto.randomUUID(),
+          toolName: typeof fn.name === "string" ? fn.name : "unknown",
+          args: parseArgs(argsStr),
+          argsText: argsStr,
+        };
+        callParts.push(part);
+        // An earlier result binds now (id, else id-less name, else anonymous), in arrival order.
+        const early =
+          (typeof callId === "string" ? take(`id:${callId}`) : undefined) ??
+          take(`bare:${part.toolName}`) ??
+          take("anon");
+        if (early !== undefined) part.result = early;
+        else pending.push({ turn: idx, part, hasExplicitId: typeof callId === "string" });
+      };
+      // LangChain nests both call shapes under additional_kwargs.
+      const additional =
+        typeof msg.additional_kwargs === "object" && msg.additional_kwargs !== null
+          ? (msg.additional_kwargs as Record<string, unknown>)
+          : undefined;
+      const toolCalls = Array.isArray(msg.tool_calls)
+        ? msg.tool_calls
+        : additional !== undefined && Array.isArray(additional.tool_calls)
+          ? additional.tool_calls
+          : undefined;
+      if (toolCalls !== undefined) {
+        for (const tc of toolCalls) {
+          if (tc === null || typeof tc !== "object") continue;
           const tcObj = tc as Record<string, unknown>;
-          const fn = (tcObj.function as Record<string, unknown>) ?? {};
-          const tcId = typeof tcObj.id === "string" ? tcObj.id : crypto.randomUUID();
-          const name = typeof fn.name === "string" ? fn.name : "unknown";
-          const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
-          let args: unknown = {};
-          // _raw matches what the stream adapter and backend keep for invalid JSON arguments.
-          try { args = JSON.parse(argsStr); } catch { args = { _raw: argsStr }; }
-          const part = {
-            type: "tool-call",
-            toolCallId: tcId,
-            toolName: name,
-            args,
-            argsText: argsStr,
-          };
-          callParts.push(part);
-          pending.push({ turn: idx, part });
+          const fn = tcObj.function;
+          addCall(
+            (typeof fn === "object" && fn !== null ? fn : tcObj) as Record<string, unknown>,
+            tcObj.id ?? tcObj.call_id,
+          );
         }
+      }
+      const legacyCall =
+        (typeof msg.function_call === "object" && msg.function_call) ||
+        additional?.function_call;
+      if (typeof legacyCall === "object" && legacyCall !== null) {
+        const fn = legacyCall as Record<string, unknown>;
+        const name = typeof fn.name === "string" ? fn.name : "unknown";
+        const args = JSON.stringify(parseArgs(argumentsText(fn)));
+        // Converters that upgraded the call to tool_calls sometimes leave the copy, maybe reserialized.
+        const alreadyListed = callParts.some((part) => {
+          const p = part as { type?: string; toolName?: string; toolCallId?: string; args?: unknown };
+          return (
+            p.type === "tool-call" &&
+            p.toolName === name &&
+            (typeof fn.id === "string" ? p.toolCallId === fn.id : JSON.stringify(p.args) === args)
+          );
+        });
+        if (!alreadyListed) addCall(fn, fn.id);
       }
       const order = (msg as { [ITEM_ORDER]?: unknown[] })[ITEM_ORDER];
       content = order
@@ -231,9 +316,10 @@ function oaiMessagesToRecords(
     idx++;
   }
 
-  for (const { part } of pending) {
-    const result = toolResults.get(part.toolCallId);
-    if (result !== undefined) part.result = result;
+  // A keyed result binds by name only to a call without its own id; keyed leftovers drop.
+  for (const { part, hasExplicitId } of pending) {
+    if (part.result !== undefined) continue;
+    part.result = take(`${hasExplicitId ? "bare" : "name"}:${part.toolName}`);
   }
 
   return records;
