@@ -78,6 +78,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
+import { readAfterUnload } from "@/lib/read-after-unload";
 import { Switch } from "@/components/ui/switch";
 import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
@@ -3724,11 +3725,7 @@ export function ImagesPage({
       // A load runs on the backend as a daemon thread that survives navigation, so resume tracking one still in flight.
       let inFlight = false;
       try {
-        const p = await getDiffusionLoadProgress();
-        if (pendingUnload.current) {
-          setInitialLoadProbe("idle");
-          return;
-        }
+        const p = await readAfterUnload(pendingUnload, () => getDiffusionLoadProgress());
         inFlight = isLoadInFlightPhase(p.phase);
         if (inFlight) {
           setBusy("loading");
@@ -3753,8 +3750,8 @@ export function ImagesPage({
       setInitialLoadProbe(inFlight ? "loading" : "idle");
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
-        const g = await getGenerateProgress();
-        if (g.active && !pendingUnload.current) {
+        const g = await readAfterUnload(pendingUnload, getGenerateProgress);
+        if (g.active) {
           runTarget.current = g.target ?? undefined;
           setBusy("generating");
           setGenStep(g);

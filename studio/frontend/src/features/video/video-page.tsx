@@ -121,6 +121,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { readAfterUnload } from "@/lib/read-after-unload";
 import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -2788,8 +2789,8 @@ function VideoGenerator({
       await refreshStatus();
       // Loads run on a backend daemon thread that survives navigation, so resume tracking.
       try {
-        const p = await getVideoLoadProgress();
-        if (!pendingUnload.current && (p.phase === "downloading" || p.phase === "finalizing")) {
+        const p = await readAfterUnload(pendingUnload, () => getVideoLoadProgress());
+        if (p.phase === "downloading" || p.phase === "finalizing") {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
@@ -2802,8 +2803,8 @@ function VideoGenerator({
       setLoadProbed(true);
       // Generation also runs on a daemon thread, so a reload re-enters the poll loop.
       try {
-        const g = await getVideoGenerateProgress();
-        if (g.active && !pendingUnload.current) {
+        const g = await readAfterUnload(pendingUnload, getVideoGenerateProgress);
+        if (g.active) {
           setBusy("generating");
           setGenStep(g.phase === "queued" ? null : g);
           startGenPoll();
