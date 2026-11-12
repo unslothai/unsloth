@@ -100,7 +100,7 @@ export type BrowserTab = {
   chat: string;
 };
 
-type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean; floating: boolean };
+type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean; floating: boolean; floatedForAgent?: boolean };
 
 /** The chat on screen before the chat page names it (chat-page.tsx `shownChatKey`). */
 export const NEW_CHAT = "new";
@@ -538,7 +538,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
           open: state.open,
           activeTabId: state.activeTabId,
           fullView: state.fullView,
-          floating: state.floating && !state.floatedForAgent,
+          floating: state.floating,
+          floatedForAgent: state.floatedForAgent,
         };
       } else {
         delete chats[state.chat];
@@ -560,7 +561,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         fullView: open && (saved ? saved.fullView : state.fullView),
         // Each chat floats only once it was floated there; a chat new to the browser opens beside it.
         floating: saved?.floating ?? false,
-        floatedForAgent: false,
+        // A close mid-run stays a close on return: still floated for the agent, not docked open.
+        floatedForAgent: (saved?.floating && saved.floatedForAgent) ?? false,
         annotateTabId: null,
         renamingTabId: null,
       });
