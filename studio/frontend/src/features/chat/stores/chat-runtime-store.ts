@@ -2000,10 +2000,17 @@ export function withChatOwnedSettings<T extends ChatRuntimeStore>(state: T): T {
   if (threadScopedSettingsThreadId !== null) {
     restoreChatOwnedValues(threadScopedSettingsThreadId, owned);
   }
-  return { ...state, ...owned };
+  // Sampling the chat does not own is left unset: a new model's load supplies it (restoreThreadScopedParams).
+  const params: Record<string, unknown> = { ...state.params };
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (firstSetThreadScopedValue(heldThreadScopedParamValue(key), threadScopedOverride(key)) === undefined) {
+      params[key] = undefined;
+    }
+  }
+  return { ...state, ...owned, params: params as unknown as T["params"] };
 }
 
-/** `run`, which carries the model `live` just loaded, with what that load sets: pill clamps, its effort pin, Think. */
+/** `run`, which carries the model `live` just loaded, with what that load sets: pill clamps, its effort pin, Think, unowned sampling. */
 export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, live: T): T {
   const next: Record<string, unknown> = { ...run };
   for (const key of CLAMPED_PILL_KEYS) {
@@ -2012,6 +2019,12 @@ export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, liv
   if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
   // Every load writes Think from the model (pin, forced gates, default), not from the chat.
   next.reasoningEnabled = live.reasoningEnabled;
+  const loaded = withoutActiveThreadParams(live, live.params) as unknown as Record<string, unknown>;
+  const params: Record<string, unknown> = { ...run.params };
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (params[key] === undefined) params[key] = loaded[key];
+  }
+  next.params = params;
   return next as T;
 }
 

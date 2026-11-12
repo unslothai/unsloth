@@ -56,6 +56,7 @@ function chatState(overrides: Record<string, unknown>, params: Record<string, un
     supportsTools: false,
     loadedContextLength: 4096,
     loadedIsGguf: false,
+    paramsByModel: {},
     ...overrides,
     params: {
       checkpoint: "",
@@ -372,4 +373,38 @@ test("a load that leaves the model in place keeps chat A's effective values", ()
   assert.equal(run.reasoningEnabled, true);
   assert.equal(run.permissionMode, "ask");
   assert.equal((run.params as unknown as { systemPrompt: string }).systemPrompt, "chat A prompt");
+});
+
+test("chat A's unowned sampling follows the new model's load; its own stays", () => {
+  const store = useChatRuntimeStore;
+  const apply = store.getState().applyThreadScopedSettings as (id: string, s: object) => void;
+  const send = (thread: string, stored: object) => {
+    store.setState({
+      settingsHydrated: true,
+      modelLoading: true,
+      activeThreadId: thread,
+      params: { ...store.getState().params, checkpoint: "old-model", temperature: 0.6, topP: 0.95 },
+    });
+    apply(thread, stored);
+    const atSend = store.getState();
+    const chatOwned = withChatOwnedSettings(atSend);
+    apply("chat-b", { temperature: 1.1 });
+    store.setState({ activeThreadId: "chat-b", modelLoading: false });
+    (store.getState().setParams as (p: object, o: object) => void)(
+      { ...store.getState().params, checkpoint: "new-model", temperature: 0.31, topP: 0.41 },
+      { fromModelDefaults: true },
+    );
+    const live = store.getState() as unknown as ReturnType<typeof chatState>;
+    assert.equal(live.params.temperature, 1.1, "chat B's own value is on screen");
+    const run = runAfterWait(live, atSend as never, thread, withLoadedModelOverrides as never, chatOwned);
+    store.setState({ modelLoading: false });
+    return run.params;
+  };
+  // A legacy row stores other settings but no sampling (thread-scoped-sampling-compat C1b).
+  const legacy = send("legacy-a", { permissionMode: "ask" });
+  assert.equal(legacy.temperature, 0.31);
+  assert.equal(legacy.topP, 0.41);
+  const pinned = send("pinned-a", { permissionMode: "ask", temperature: 0.2 });
+  assert.equal(pinned.temperature, 0.2);
+  assert.equal(pinned.topP, 0.41);
 });
