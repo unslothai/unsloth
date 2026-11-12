@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type Ref, type RefCallback, useCallback, useMemo } from "react";
+import { type Ref, type RefCallback, useMemo } from "react";
 
 // Shortcut checks read the elements that register here plus whatever is outside the app root
 // (third-party portals), instead of walking a long chat's whole document on every press.
@@ -118,47 +118,54 @@ function attachRef<T>(ref: Ref<T> | undefined, value: T): () => void {
   return () => undefined;
 }
 
+/** A ref that undoes `attach` once, whether React runs the returned cleanup or a composer that
+ * predates ref cleanups (use-composed-ref, inside react-textarea-autosize) drops it and calls
+ * `ref(null)`; skipping that left the composer registered after every chat switch. */
+function undoableRef<T>(attach: (element: T) => () => void): RefCallback<T> {
+  let held: (() => void) | null = null;
+  return (element: T | null) => {
+    held?.();
+    if (element === null) return;
+    const detach = attach(element);
+    const undo = () => {
+      if (held !== undo) return;
+      held = null;
+      detach();
+    };
+    held = undo;
+    return undo;
+  };
+}
+
 /** One ref feeding several, so a primitive's own ref and a caller's both see the element. */
 export function useMergedRefs<T>(
   ...refs: (Ref<T> | undefined)[]
 ): RefCallback<T> {
   // biome-ignore lint/correctness/useExhaustiveDependencies: the refs are the dependencies.
-  return useCallback((element: T | null) => {
-    if (element === null) return;
-    const detach = refs.map((ref) => attachRef(ref, element));
-    return () => {
-      for (const undo of detach) undo();
-    };
-  }, refs);
+  return useMemo(
+    () =>
+      undoableRef((element: T) => {
+        const detach = refs.map((ref) => attachRef(ref, element));
+        return () => {
+          for (const undo of detach) undo();
+        };
+      }),
+    refs,
+  );
 }
 
-/** The ref behind useSurfaceRef. A ref composer that predates ref cleanups (use-composed-ref, inside
- * react-textarea-autosize) drops the returned cleanup and detaches with `ref(null)`, which left the
- * element registered and its thread retained after every chat switch; both paths now undo, once. */
 export function surfaceRef<T extends Element>(
   key: string,
   forwarded?: Ref<T>,
 ): RefCallback<T> {
-  let held: (() => void) | null = null;
-  return (element: T | null) => {
-    held?.();
-    held = null;
-    if (element === null) return;
+  return undoableRef((element: T) => {
     const unregister = registerSurface(key, element);
     const detach = attachRef(forwarded, element);
-    let undone = false;
-    const undo = () => {
-      if (undone) return;
-      undone = true;
+    return () => {
       unregister();
       detach();
     };
-    held = undo;
-    return () => {
-      undo();
-      if (held === undo) held = null;
-    };
-  };
+  });
 }
 
 /** A ref that registers the element under `key` while mounted and still reaches `forwarded`. */

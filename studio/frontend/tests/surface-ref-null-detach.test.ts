@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// react-textarea-autosize composes refs with use-composed-ref, which drops a ref's returned cleanup
-// and detaches with `ref(null)`. The composer textarea's surface ref must unregister on that path
-// too, or every chat switch leaves the old thread reachable from the registry.
+// use-composed-ref (react-textarea-autosize) drops a ref's cleanup and detaches with `ref(null)`.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -24,7 +22,10 @@ function fakeElement(name: string) {
 }
 
 (globalThis as { document?: unknown }).document ??= {};
-trustSurfaceRegistry({ isConnected: true, parentElement: null } as unknown as Element);
+trustSurfaceRegistry({
+  isConnected: true,
+  parentElement: null,
+} as unknown as Element);
 
 function registered(): Element[] {
   return trackedSurfaces(KEY, SELECTOR) ?? [];
