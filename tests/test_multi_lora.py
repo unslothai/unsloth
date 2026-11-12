@@ -195,7 +195,7 @@ def _dense_per_adapter_loss(
     return losses.sum(), losses.detach()
 
 
-# Gradients: fp32 agrees to rounding, bf16 to one rounding into the logits dtype.
+# Losses agree to fp32 rounding; gradients to rounding in fp32, one rounding into the logits dtype in bf16.
 _CHUNKED_TOL = {
     torch.float32: dict(rtol = 1e-6, atol = 1e-7),
     torch.bfloat16: dict(rtol = 2**-7, atol = 1e-6),
@@ -241,7 +241,6 @@ def test_chunked_per_adapter_loss_matches_the_dense_loss(
 ):
     monkeypatch.setattr(ml, "_CE_CHUNK_ELEMENTS", chunk_elements)
     new, old = _chunked_vs_dense(dtype, per_token_ids)
-    assert torch.equal(new[0], old[0]) and torch.equal(new[1], old[1])
     _assert_chunked_matches(new, old, dtype)
     err = (new[2].float() - old[2].float()).abs().max().item()
     print(f"{dtype} chunk={chunk_elements} max |grad diff| {err:.3g}")
@@ -253,7 +252,7 @@ def test_chunked_per_adapter_loss_matches_the_dense_loss(
         # no onehot: the label's logit is never pushed up
         ("-torch.ones_like(g)[:, None]", "0 * torch.ones_like(g)[:, None]"),
         # no logsumexp: exp(x) instead of softmax
-        (" - lse[b, t:e, None]", ""),
+        (".sub_(lse[b, t:e, None])", ""),
     ],
 )
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])

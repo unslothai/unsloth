@@ -1525,32 +1525,37 @@ _CE_CHUNK_ELEMENTS = 1 << 25
 
 
 class _ChunkedTokenCrossEntropy(torch.autograd.Function):
-    """Chunked per-token cross entropy of ``logits[:, :-1]``; saves only logits, labels and per-token
-    fp32 logsumexp (no fp32 logits copy) and backward forms ``softmax - onehot`` from them."""
+    """Chunked per-token cross entropy of ``logits[:, :-1]``; saves only logits, labels and per-token fp32
+    max and log-sum-exp (no fp32 logits copy) and backward forms ``softmax - onehot`` from them."""
 
     @staticmethod
     def forward(ctx, logits, labels, ignore_index, chunk):
         B, T1 = labels.shape
         loss = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
+        # Max and log-sum-exp kept apart, as log_softmax rounds them: x - (max + lse) loses ulp(max).
+        mx = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
         lse = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
         for b in range(B):
             for t in range(0, T1, chunk):
                 e = min(t + chunk, T1)
-                x = logits[b, t:e].float()
                 y = labels[b, t:e]
                 valid = y != ignore_index
-                token = F.cross_entropy(x, y, ignore_index = ignore_index, reduction = "none")
-                picked = x.gather(1, torch.where(valid, y, 0)[:, None]).squeeze(1)
-                loss[b, t:e] = token
-                # logsumexp = loss + the label's logit; +inf on ignored tokens makes their softmax 0.
-                lse[b, t:e] = torch.where(valid, token + picked, float("inf"))
-        ctx.save_for_backward(logits, labels, lse)
+                z = logits[b, t:e].float()
+                m = z.amax(1, keepdim = True)
+                z = z - m
+                s = z.exp().sum(1).log()
+                picked = z.gather(1, torch.where(valid, y, 0)[:, None]).squeeze(1)
+                loss[b, t:e] = torch.where(valid, s - picked, 0.0)
+                mx[b, t:e] = m.squeeze(1)
+                # +inf on ignored tokens makes their softmax 0.
+                lse[b, t:e] = torch.where(valid, s, float("inf"))
+        ctx.save_for_backward(logits, labels, mx, lse)
         ctx.ignore_index, ctx.chunk = ignore_index, chunk
         return loss
 
     @staticmethod
     def backward(ctx, grad_loss):
-        logits, labels, lse = ctx.saved_tensors
+        logits, labels, mx, lse = ctx.saved_tensors
         grad = torch.zeros_like(logits)
         B, T1 = labels.shape
         for b in range(B):
@@ -1559,7 +1564,7 @@ class _ChunkedTokenCrossEntropy(torch.autograd.Function):
                 y = labels[b, t:e]
                 valid = y != ctx.ignore_index
                 g = torch.where(valid, grad_loss[b, t:e].float(), 0.0)
-                p = torch.exp(logits[b, t:e].float() - lse[b, t:e, None])
+                p = (logits[b, t:e].float() - mx[b, t:e, None]).sub_(lse[b, t:e, None]).exp_()
                 p.scatter_add_(1, torch.where(valid, y, 0)[:, None], -torch.ones_like(g)[:, None])
                 grad[b, t:e] = p.mul_(g[:, None])
         return grad, None, None, None
