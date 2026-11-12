@@ -267,11 +267,16 @@ export function RunSettingsPicker({
             >
               <Check on={entry.name === selected} />
               <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-              {entry.name === pinned && (
-                <span className="shrink-0 text-ui-11 font-normal text-muted-foreground">
-                  Always
-                </span>
-              )}
+              {/* Always rendered, hidden off the pinned set, so pinning never widens the menu. */}
+              <span
+                aria-hidden={entry.name !== pinned}
+                className={cn(
+                  "shrink-0 text-ui-11 font-normal text-muted-foreground",
+                  entry.name !== pinned && "invisible",
+                )}
+              >
+                Always
+              </span>
               <button
                 type="button"
                 aria-label={`Rename ${entry.name}`}
@@ -296,7 +301,8 @@ export function RunSettingsPicker({
                 aria-label={`Delete ${entry.name}`}
                 title="Delete (Del)"
                 tabIndex={-1}
-                className={ROW_ICON}
+                // Pulled in beside Rename: the item's 8px gap read as two separate controls.
+                className={cn(ROW_ICON, "-ml-1")}
                 onPointerDown={keepRow}
                 onPointerUp={keepRow}
                 onClick={(event) => {
@@ -344,7 +350,8 @@ export function RunSettingsPicker({
                     <HugeiconsIcon
                       icon={Tick02Icon}
                       strokeWidth={2.5}
-                      className="size-2.5"
+                      // Every element, paths included: the item's hover rule colours each descendant.
+                      className="size-2.5 !text-primary-foreground [&_*]:!text-primary-foreground"
                     />
                   ) : null}
                 </span>
