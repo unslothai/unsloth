@@ -1526,9 +1526,7 @@ def _truncations(lines):
 @pytest.mark.parametrize("stream", [True, False])
 def test_an_npu_chat_over_the_window_is_compacted_before_fastflowlm(flm, stream):
     recorded = flm()
-    status, body = _call(
-        stream = stream, messages = _long_chat(), context_overflow = "truncate_oldest"
-    )
+    status, body = _call(stream = stream, messages = _long_chat(), context_overflow = "truncate_oldest")
     assert status == 200
     sent = recorded[-1]["body"]["messages"]
     assert len(sent) < len(_long_chat())
