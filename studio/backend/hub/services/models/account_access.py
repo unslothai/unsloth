@@ -843,7 +843,6 @@ def shared_connection_view(row: dict) -> dict | None:
     provider_type = row.get("provider_type") or ""
     if not models and get_provider_info(provider_type) is not None:
         from routes.providers import cached_catalog_models
-
         models = list(provider_default_models(provider_type, cached_catalog_models()))
     view["models"] = [model for model in models if connection_model_allowed(model)]
     view["available_models"] = [
