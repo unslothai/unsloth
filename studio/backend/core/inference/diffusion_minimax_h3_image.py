@@ -2479,8 +2479,7 @@ def load_h3_image_text_encoder(
 
 
 def pin_room_bytes(plan: H3ImagePlan, pinned: Sequence[Any] = ()) -> Optional[int]:
-    """Host bytes left for pins: host budget less what the plan holds less ``pinned`` streamers' locks, except locks
-    that took the place of host copies the plan counts. None without a host budget."""
+    """Host bytes left for pins, net of ``pinned`` locks that did not replace counted host copies. None without a budget."""
     if plan.host_gb is None or plan.host_need_gb is None:
         return None
     room = int((float(plan.host_gb) - float(plan.host_need_gb)) * 1e9)
@@ -2493,8 +2492,7 @@ def pin_room_bytes(plan: H3ImagePlan, pinned: Sequence[Any] = ()) -> Optional[in
 
 
 def pins_replace_counted(plan: H3ImagePlan) -> bool:
-    """Whether the streamed members' pins may take the place of the host copies the plan counts: only where the plan
-    keeps every host copy (the encoder too), so a host it barely fits keeps its pins on top (or none)."""
+    """Pins may replace counted host copies only where the plan keeps every host copy (the encoder too)."""
     return bool(plan.host_gb is not None and plan.host_need_gb is not None and plan.te_kept_on_host)
 
 
@@ -2510,8 +2508,7 @@ def make_list_streamer(
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
 ) -> Any:
-    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``.
-    The encoder's pinned streamer releases its copy stream's cached blocks after each encode."""
+    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``."""
     streamer = None
     if pinned and pinned_stream_enabled():
         from .diffusion_offload_prefetch import stream_module_list
@@ -2697,8 +2694,7 @@ def _place_text_encoder(
     pinned_already: Sequence[Any] = (),
 ) -> Any:
     """``per_prompt`` (low-host tier, encoder reloaded each prompt) streams pageable: pinning would copy 27 GB per
-    prompt. ``pinned_already``: streamers whose pins count against the host room first (bar those that replaced
-    host copies the plan counts). Where the plan keeps the encoder on the host, its pins replace that copy."""
+    prompt. ``pinned_already``: streamers whose pins count against the host room first."""
     if encoder is None:
         return None
     if plan.placement == PLACE_RESIDENT:

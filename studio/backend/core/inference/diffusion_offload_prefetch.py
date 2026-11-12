@@ -17,8 +17,7 @@ from typing import Any, Iterator, Optional
 ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
 PREFETCH_DEPTH_ENV = "UNSLOTH_DIFFUSION_PREFETCH_DEPTH"
 CROSS_FORWARD_ENV = "UNSLOTH_DIFFUSION_PREFETCH_CROSS_FORWARD"
-# "0": a list streamer's pins count on top of the host copies they replace, even where the caller's plan already
-# counts those copies (the pageable fallback for an encoder the host could pin)
+# "0": pins always count on top of the host copies they replace
 PIN_REPLACES_HOST_ENV = "UNSLOTH_DIFFUSION_PIN_REPLACES_HOST"
 # Groups carried while the last streamed block still runs (see GroupPrefetcher._carry).
 TAIL_CARRY_GROUPS = 1
@@ -1373,7 +1372,6 @@ class PrefetchedListStreamer:
         self.prefetcher: Optional[GroupPrefetcher] = None
         self.streamed = 0
         self.pinned_bytes = 0
-        # pinned bytes that took the place of host copies the caller's plan already counts
         self.replaced_bytes = 0
         self.arena: Any = None
         # matches ModuleListStreamer, whose release path clears ``_host``
@@ -1431,8 +1429,7 @@ def _list_stream_refusal(device: Any) -> Optional[str]:
 
 
 def _end_stream_forward(pf: Any, release_after_forward: bool) -> None:
-    """End a streamed forward; with ``release_after_forward`` hand the copy stream's cached blocks back, never inside a
-    CUDA graph capture. ``end()`` clears ``capturing``, so it is read first, and CUDA is asked as well."""
+    """``end()`` clears ``capturing``, so read it first; never ``empty_cache`` inside a graph capture."""
     import torch
 
     capturing = bool(getattr(pf, "capturing", False))
@@ -1456,11 +1453,8 @@ def stream_module_list(
 ) -> Optional[PrefetchedListStreamer]:
     """A ``PrefetchedListStreamer`` over ``blocks``, or None (nothing changed) when it does not apply or cannot pin.
     Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given. ``replaces_counted``:
-    ``max_pin_bytes`` is room left beside host copies of ``blocks`` the caller already counts; the pins take their
-    place (the pageable tensors are dropped as each member pins), so only the live budget bounds them.
-    ``release_after_forward``: an owner that runs once per request (an encoder) hands its copy stream's cached blocks
-    back after each forward; they would otherwise stay reserved for that stream only, shrinking the free memory the
-    later stages size themselves by."""
+    pins replace host copies the caller already counts, so only the live budget bounds them.
+    ``release_after_forward``: empty the copy stream's cache after each forward (once-per-request owners)."""
     import torch
 
     refused = _list_stream_refusal(device)

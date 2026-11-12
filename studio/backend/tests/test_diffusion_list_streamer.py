@@ -280,8 +280,6 @@ def test_the_global_pin_opt_out_keeps_the_pageable_streamer(monkeypatch, value):
 
 
 class _Plan:
-    """A stand-in for the pinned prefetch streamer's accounting."""
-
     def __init__(self, pinned: int, replaced: int) -> None:
         self.pinned_bytes = pinned
         self.replaced_bytes = replaced
@@ -304,8 +302,7 @@ def test_pins_that_replace_counted_copies_cost_the_plan_nothing(host, credited):
 
 
 def _budget_only(monkeypatch, budget_mib: int) -> list:
-    """Refusals pass, ``_pin_budget_mib`` is ``budget_mib``, and reaching the pinning step is recorded (then raises,
-    so the call returns None with nothing changed)."""
+    """Records reaching the pinning step, then raises so the call returns None."""
     import core.inference.diffusion_memory as dm
 
     went_on: list = []
@@ -321,10 +318,8 @@ def _budget_only(monkeypatch, budget_mib: int) -> list:
 def test_replaces_counted_skips_the_callers_cap_but_not_the_live_budget(monkeypatch):
     stack = _Stack()
     went_on = _budget_only(monkeypatch, 1 << 20)
-    # the caller's cap refuses a stream that only adds to the host ...
     assert op.stream_module_list(stack, stack.layers, "cuda", 2, max_pin_bytes = 0) is None
     assert went_on == []
-    # ... and lets through one whose pins replace host copies it already counts
     assert (
         op.stream_module_list(
             stack, stack.layers, "cuda", 2, max_pin_bytes = 0, replaces_counted = True
@@ -332,7 +327,6 @@ def test_replaces_counted_skips_the_callers_cap_but_not_the_live_budget(monkeypa
         is None
     )
     assert went_on == [1]
-    # the live host budget still bounds it
     went_on = _budget_only(monkeypatch, 0)
     assert (
         op.stream_module_list(
@@ -359,8 +353,6 @@ def test_the_replace_kill_switch_restores_the_old_cap(monkeypatch, value):
 
 
 class _Encoder(torch.nn.Module):
-    """``encoder.model.language_model.layers`` like Qwen3-VL, over ``_Stack``."""
-
     def __init__(self) -> None:
         super().__init__()
         stack = _Stack()
@@ -499,7 +491,7 @@ class _CapturingPrefetcher:
 
     def end(self):
         self.ended += 1
-        self.capturing = False  # as GroupPrefetcher.end() does
+        self.capturing = False
 
 
 @pytest.mark.parametrize(
