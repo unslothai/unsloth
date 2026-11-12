@@ -5361,9 +5361,10 @@ def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
         ("gemma4", _QWEN38_PLE, [], {}, _QWEN38_PLE),
         # Another architecture's table of the same name is read like any tensor.
         ("qwen3moe", _QWEN38_PLE, [], {}, 0),
-        # At or under 4 GiB, auto loads it normally; "on" reads it lazily anyway.
+        # At or under 4 GiB, auto loads it normally; explicit "on" modes read it lazily anyway.
         ("qwen4exp", 4 * _GIB, [], {}, 0),
         ("qwen4exp", 4 * _GIB, ["-lzm", "on"], {}, 4 * _GIB),
+        ("qwen4exp", 4 * _GIB, ["-lzm", "on-direct"], {}, 4 * _GIB),
         ("qwen4exp", _QWEN38_PLE, ["-lzm", "off"], {}, 0),
         ("qwen4exp", _QWEN38_PLE, ["--lazy-mode=off"], {}, 0),
         ("qwen4exp", _QWEN38_PLE, [], {"LLAMA_ARG_LAZY_MODE": "off"}, 0),
@@ -5382,6 +5383,7 @@ def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
         "other_arch",
         "under_4gib",
         "on",
+        "on_direct",
         "lzm_off",
         "inline_off",
         "env_off",

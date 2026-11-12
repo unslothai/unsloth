@@ -7413,7 +7413,7 @@ def _effective_lazy_mode(
         return "off"
     if value:
         mode = value.strip().lower()
-    return mode if mode in ("auto", "on") else "off"
+    return mode if mode in ("auto", "on", "on-direct") else "off"
 
 
 def _lazy_read_bytes(
@@ -11340,7 +11340,7 @@ class LlamaCppBackend:
                 extra_args, _env, flag = str(caps.get("lazy_mode_flag") or "--lazy-mode")
             )
             if mode != "auto":
-                return mode == "on"
+                return mode in ("on", "on-direct")
             tensor = (
                 _effective_tensor_parallel(extra_args, False, _env)
                 if tensor_parallel is None
