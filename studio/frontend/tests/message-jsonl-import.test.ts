@@ -891,3 +891,14 @@ test("a reserialized function_call copy of a tool call is not duplicated", () =>
 
   assert.deepEqual(toolCallResults(conversation), ["R"]);
 });
+
+test("a legacy copy with a different explicit id stays its own call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}],"function_call":{"id":"b","name":"f","arguments":"{}"}}\n' +
+      '{"role":"tool","tool_call_id":"a","content":"A"}\n' +
+      '{"role":"tool","tool_call_id":"b","content":"B"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["A", "B"]);
+});

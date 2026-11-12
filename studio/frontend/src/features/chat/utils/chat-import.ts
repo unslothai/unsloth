@@ -140,7 +140,24 @@ function oaiMessagesToRecords(
   threadId: string,
   baseTs: number,
 ): MessageRecord[] {
-  const stashedResults: Array<{ id?: string; name?: string; result: string }> = [];
+  type Stashed = { id?: string; name?: string; result: string; used?: boolean };
+  const stashedResults: Stashed[] = [];
+  // Indexed so out-of-order imports stay linear.
+  const stashedBy = { id: new Map<string, Stashed[]>(), name: new Map<string, Stashed[]>() };
+  const stash = (entry: Stashed) => {
+    stashedResults.push(entry);
+    for (const [map, key] of [[stashedBy.id, entry.id], [stashedBy.name, entry.name]] as const) {
+      if (key === undefined) continue;
+      const list = map.get(key);
+      if (list) list.push(entry);
+      else map.set(key, [entry]);
+    }
+  };
+  const takeStashed = (map: Map<string, Stashed[]>, key: string, ok: (e: Stashed) => boolean = () => true) => {
+    const entry = map.get(key)?.find((e) => !e.used && ok(e));
+    if (entry) entry.used = true;
+    return entry?.result;
+  };
   const pending: Array<{
     turn: number;
     hasExplicitId: boolean;
@@ -184,7 +201,7 @@ function oaiMessagesToRecords(
           : nameKey !== undefined
             ? bindResult((entry) => entry.part.toolName === nameKey, result)
             : bindResult(() => true, result);
-      if (!bound) stashedResults.push({ id: idKey, name: nameKey, result });
+      if (!bound) stash({ id: idKey, name: nameKey, result });
       continue;
     }
 
@@ -214,8 +231,8 @@ function oaiMessagesToRecords(
         };
         parts.push(part);
         // A keyed result seen before its call binds now, before weaker name/anonymous matching.
-        const early = stashedResults.findIndex(({ id }) => id !== undefined && id === callId);
-        if (early !== -1) part.result = stashedResults.splice(early, 1)[0].result;
+        const early = typeof callId === "string" ? takeStashed(stashedBy.id, callId) : undefined;
+        if (early !== undefined) part.result = early;
         else pending.push({ turn: idx, part, hasExplicitId: typeof callId === "string" });
       };
       // LangChain nests both call shapes under additional_kwargs.
@@ -252,7 +269,7 @@ function oaiMessagesToRecords(
           return (
             p.type === "tool-call" &&
             p.toolName === name &&
-            ((typeof fn.id === "string" && p.toolCallId === fn.id) || JSON.stringify(p.args) === args)
+            (typeof fn.id === "string" ? p.toolCallId === fn.id : JSON.stringify(p.args) === args)
           );
         });
         if (!alreadyListed) addCall(fn, fn.id);
@@ -279,15 +296,15 @@ function oaiMessagesToRecords(
 
   for (const { part, hasExplicitId } of pending) {
     if (part.result !== undefined) continue;
-    const at = stashedResults.findIndex(
-      ({ id, name }) =>
-        (id === undefined || !hasExplicitId) && name !== undefined && name === part.toolName,
+    part.result = takeStashed(
+      stashedBy.name,
+      part.toolName,
+      ({ id }) => id === undefined || !hasExplicitId,
     );
-    if (at !== -1) part.result = stashedResults.splice(at, 1)[0].result;
   }
   // Keyed leftovers belong to calls that never appeared, so they drop rather than mislabel.
   const anonymous = stashedResults.filter(
-    ({ id, name }) => id === undefined && name === undefined,
+    ({ id, name, used }) => !used && id === undefined && name === undefined,
   );
   let next = 0;
   for (const { part } of pending) {
