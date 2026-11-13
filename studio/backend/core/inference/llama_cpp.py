@@ -1258,6 +1258,10 @@ def metal_unsupported_weight_types(
         return None
     if placement.get("overflow_layers") or placement.get("all_experts_in_ram"):
         return None
+    # A partial layer split fills host buffers on any build.
+    counts = next(filter(None, map(_OFFLOADED_LAYERS_RE.search, lines)), None)
+    if counts is None or counts.group(1) != counts.group(2):
+        return None
     on_metal = False
     after_header = False
     for line in lines:
@@ -33957,9 +33961,8 @@ class LlamaCppBackend:
                     self._stdout_lines,
                     None
                     if self._n_cpu_moe
-                    or _extra_args_set_any_flag(
-                        extra_args, _CPU_PLACEMENT_FLAGS | _CPU_FFN_COUNT_FLAGS
-                    )
+                    or _args_place_tensors_on_cpu(extra_args)
+                    or _env_places_tensors_on_cpu(env)
                     else self._weight_placement,
                 )
                 if self._metal_unsupported_weight_types:

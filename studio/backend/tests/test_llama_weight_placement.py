@@ -444,14 +444,16 @@ def test_metal_types_are_not_reported_off_metal_or_once_the_gpu_holds_them():
     assert metal_unsupported_weight_types(_METAL_NVFP4_LOG, None) is None
 
 
-def test_experts_the_fit_kept_in_ram_are_not_blamed_on_metal():
-    """A Mac too small for the experts spills them to CPU_Mapped on a build that runs nvfp4 on Metal."""
+def test_weights_put_in_ram_on_purpose_are_not_blamed_on_metal():
+    """An expert spill or a partial layer split fills host buffers on a build that runs nvfp4 on Metal."""
     placement = parse_weight_placement(_METAL_NVFP4_LOG)
     for spill in (
         {"overflow_layers": 40},
         {"all_experts_in_ram": True, "expert_cache_mib": 9000.0},
     ):
         assert metal_unsupported_weight_types(_METAL_NVFP4_LOG, {**placement, **spill}) is None
+    split = [line.replace("61/61", "10/61") for line in _METAL_NVFP4_LOG]
+    assert metal_unsupported_weight_types(split, parse_weight_placement(split)) is None
     f8 = [line.replace("nvfp4", "f8_e4m3") for line in _METAL_NVFP4_LOG]
     assert metal_unsupported_weight_types(f8, placement) == ["f8_e4m3"]
 
