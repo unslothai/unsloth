@@ -151,6 +151,8 @@ _NVIDIA_EXPECTED = {
     "sage": ("sage", "sage"),
     "xformers": ("xformers", "xformers"),
     "aiter": (None, None),
+    # the automatic native pick whatever the speed setting; the INT8 kernel is an overlay on it
+    "unsloth_int8": ("_native_cudnn", "_native_cudnn"),
 }
 
 

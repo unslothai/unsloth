@@ -200,6 +200,14 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
             levers.append("h3_qk_rope")
         if shared_qkv_count(transformer):
             levers.append("h3_shared_qkv_quant")
+        from . import diffusion_int8_attention as int8_attention
+
+        # the env switch engages the INT8 kernel on every strided processor; an INT8 checkpoint races it on its DiT
+        # blocks later (install_checkpoint_attention)
+        if int8_attention.mode() == "force" and int8_attention.install_int8_attention(
+            transformer, device = dev, dtype = dtype, force = True, logger = logger
+        ):
+            levers.append("h3_int8_attention")
     if not compile_enabled():
         from .video_minimax_h3_rowmod import install as install_row_mod
         if install_row_mod(transformer, logger = logger):

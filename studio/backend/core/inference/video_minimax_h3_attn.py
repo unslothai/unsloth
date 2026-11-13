@@ -86,7 +86,9 @@ def h3_attention_backend(
         return selected
     try:
         from .diffusion_attention import ATTN_AUTO, normalize_attention_backend
-        if normalize_attention_backend(requested) != ATTN_AUTO:
+
+        # unsloth_int8 is an overlay on the automatic native pick
+        if normalize_attention_backend(requested) not in (ATTN_AUTO, "unsloth_int8"):
             return selected
     except Exception:  # noqa: BLE001 -- unparseable request: leave it alone
         return selected
@@ -156,6 +158,10 @@ def _strided_processor_for(base: Any) -> Any:
         _unsloth_shared_qkv = False
         # set from UNSLOTH_H3_STRIDED_SAGE at install: a sage backend runs here, not in the stock processor
         _unsloth_sage = False
+        # set by diffusion_int8_attention.install_int8_attention: unmasked calls of at least this many tokens run the
+        # INT8 kernel instead of the native one
+        _unsloth_int8 = False
+        _unsloth_int8_min_tokens = 0
 
         def __call__(
             self,
@@ -213,7 +219,15 @@ def _strided_processor_for(base: Any) -> Any:
                     query = _apply_rotary_emb(query, *rotary_emb)
                     key = _apply_rotary_emb(key, *rotary_emb)
 
-            if sage:
+            if (
+                kernel is not None
+                and self._unsloth_int8
+                and query.shape[1] >= self._unsloth_int8_min_tokens
+            ):
+                # NHD in and out; the op itself runs native attention for a call the kernel cannot take
+                hidden_states = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
+                hidden_states = hidden_states.flatten(2, 3).type_as(query)
+            elif sage:
                 # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot
                 # take still run native there)
                 hidden_states = dispatch(

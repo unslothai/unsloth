@@ -12739,6 +12739,20 @@ class VideoBackend:
                         getattr(pipe, denoiser_component, None), logger = logger
                     ):
                         h3_attn_levers += ("h3_strided_attn",)
+                        from . import diffusion_int8_attention as int8_attention
+
+                        # by name or by its env switch: the strided processors run Studio's INT8 attention kernel
+                        if (
+                            int8_attention.requested(attention_backend)
+                            or int8_attention.mode() == "force"
+                        ) and int8_attention.install_int8_attention(
+                            getattr(pipe, denoiser_component, None),
+                            device = device,
+                            dtype = dtype,
+                            force = True,
+                            logger = logger,
+                        ):
+                            h3_attn_levers += ("h3_int8_attention",)
                 except Exception as exc:  # noqa: BLE001 -- stock processor stays
                     logger.warning("video.h3_attn: strided attention skipped: %s", exc)
             # FlashInfer SM120 H3 block kernels (opt-in, UNSLOTH_H3_FLASHINFER=1): resident fp8 / nvfp4 blocks, before
