@@ -108,6 +108,7 @@ import {
   modelConfigTarget,
   modelConfigTargetIsResident,
   modelDisplayName,
+  nativeAudioCheckpointIsLoadable,
   paramsFromId,
   pickerOrderedGgufVariants,
   pinDropAnchor,
@@ -1717,7 +1718,11 @@ export function ComposerModelPicker({
       });
     }
     for (const lora of loraModels ?? []) {
-      if (lora.audioType && !listsAudio) {
+      // Native-audio checkpoints load only as merged exports, as the header picker gated them.
+      if (
+        (lora.audioType && !listsAudio) ||
+        !nativeAudioCheckpointIsLoadable(lora.audioType, lora.exportType)
+      ) {
         continue;
       }
       device.push({

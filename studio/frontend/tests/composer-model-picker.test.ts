@@ -976,3 +976,24 @@ test("Enter on a row's own button is not a pick", () => {
     /if \(event\.key === "Enter"\) \{\s*if \(event\.target === event\.currentTarget\) \{\s*pick\(row\);/,
   );
 });
+
+test("native-audio adapters stay out of the picker unless merged", async () => {
+  const { nativeAudioCheckpointIsLoadable } = await import(
+    "../src/features/model-picker/components/model-selector/audio-picker-policy.ts"
+  );
+  assert.equal(
+    nativeAudioCheckpointIsLoadable("moss_tts_local", "adapter"),
+    false,
+  );
+  assert.equal(
+    nativeAudioCheckpointIsLoadable("moss_tts_local", "merged"),
+    true,
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /\(lora\.audioType && !listsAudio\) \|\|\s*!nativeAudioCheckpointIsLoadable\(lora\.audioType, lora\.exportType\)/,
+  );
+});

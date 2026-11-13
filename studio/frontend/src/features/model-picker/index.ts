@@ -139,5 +139,6 @@ export {
   audioPipelineTagFor,
   curatedAudioInventoryTask,
   macMlxSttRowIsRunnable,
+  nativeAudioCheckpointIsLoadable,
   taskForMediaPick,
 } from "./components/model-selector/audio-picker-policy";
