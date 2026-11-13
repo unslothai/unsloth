@@ -844,8 +844,7 @@ jobs:
           LONG_THREAD_FIREFOX: '1'
         run: python3 tests/studio/_firefox_leg.py
 
-  # Its own job: the build job runs close to its timeout. Exit 3 = the base cannot build with this
-  # node_modules, a warning, not a failure.
+  # Own job: the build job runs close to its timeout. Exit 3 (base cannot build) only warns.
   long-chat-ab:
     name: Long-chat cost against the base build
     if: github.event_name == 'pull_request'

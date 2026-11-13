@@ -200,7 +200,6 @@ areas.AREAS["stream_scroll"] = {
 }
 
 
-# The reader wheels up through the thread and back: the window mounts rows on almost every step.
 areas.AREAS["wheel_sweep"] = {
     "open": ("wheel_sweep", None),
     "ready": ("settle",),
