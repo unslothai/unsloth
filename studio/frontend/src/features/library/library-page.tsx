@@ -79,9 +79,9 @@ import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore } from "./store";
 import {
   SORT_STATES,
+  activityBeforeVisit,
   compareBySort,
   includedBySettings,
-  lastActivity,
   nextSort,
   sortParam,
   useLibrarySettingsStore,
@@ -337,6 +337,15 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   useEffect(() => {
     if (!folderId) setLibrarySettings({ lastTab: tab });
   }, [tab, folderId, setLibrarySettings]);
+  const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
+  const previewId = previewItem?.id ?? null;
+  // Opening an item counts as activity, which Suggested ranks by. Keep each opened item's earlier
+  // openedAt for the rest of the visit, so the grid does not reshuffle behind the viewer; the next
+  // visit shows the new order. Recorded during render, before the markOpened effect changes it.
+  const [openedBefore, setOpenedBefore] = useState<ReadonlyMap<string, number | null>>(new Map());
+  if (previewItem && !openedBefore.has(previewItem.id)) {
+    setOpenedBefore(new Map(openedBefore).set(previewItem.id, previewItem.openedAt ?? null));
+  }
   const visibleItems = useMemo(() => {
     let pool = items;
     if (folderId) pool = pool.filter((item) => item.folderId === folderId);
@@ -347,12 +356,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       (item) => nameMatches(item.name, needle) && matchesFilters(item, filters, !kindFilter),
     );
     if (tab === "suggested" && !folderId) {
-      const byActivity = [...pool].sort((a, b) => lastActivity(b) - lastActivity(a));
+      const activity = (item: LibraryItem) => activityBeforeVisit(item, openedBefore);
+      const byActivity = [...pool].sort((a, b) => activity(b) - activity(a));
       pool = needle || filtersActive(filters) ? byActivity : byActivity.slice(0, settings.suggestedLimit);
       if (sort.key === "modified") return sort.desc ? pool : pool.reverse();
     }
     return [...pool].sort(compareBySort(sort));
-  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort]);
+  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort, openedBefore]);
 
   // Only grid cards can pause a clip: stop it once its card is gone or the list view replaces them.
   useEffect(() => {
@@ -392,8 +402,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
   }, [visibleKeys]);
 
-  const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
-  const previewId = previewItem?.id ?? null;
   useEffect(() => {
     if (previewId) markOpened(previewId);
   }, [previewId, markOpened]);

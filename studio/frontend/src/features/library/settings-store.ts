@@ -174,6 +174,16 @@ export function lastActivity(item: { updatedAt: number; openedAt?: number | null
   return Math.max(item.updatedAt, item.openedAt ?? 0);
 }
 
+/** Last activity with opens from this visit left out: `openedBefore` maps each item opened during
+ * the visit to its `openedAt` before that, so opening an item does not reorder Suggested. */
+export function activityBeforeVisit(
+  item: { id: string; updatedAt: number; openedAt?: number | null },
+  openedBefore: ReadonlyMap<string, number | null>,
+): number {
+  const openedAt = openedBefore.has(item.id) ? openedBefore.get(item.id) : item.openedAt;
+  return lastActivity({ updatedAt: item.updatedAt, openedAt });
+}
+
 export function compareBySort({ key, desc }: LibrarySortState): (a: Sortable, b: Sortable) => number {
   const ascending =
     key === "name"
