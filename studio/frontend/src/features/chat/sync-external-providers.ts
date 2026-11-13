@@ -452,6 +452,14 @@ export function newModelCheckDue(
 
 const checkedThisLaunch = new Set<string>();
 const ticksInFlight = new Set<string>();
+// A failed or skipped check is not recorded, so it retries after this instead of on every focus.
+const RETRY_AFTER_MS = 10 * 60 * 1000;
+const lastAttemptAt = new Map<string, number>();
+
+function markChecked(providerId: string): void {
+  checkedThisLaunch.add(providerId);
+  saveNewModelCheckAt(providerId, Date.now());
+}
 
 type NewlyListedFor = (row: ExternalProviderConfig) => NewlyListed | null;
 
@@ -470,9 +478,9 @@ async function listForNewModels(
     loadNewModelChecksAt()[provider.id],
     now,
   );
-  if (!due) return null;
-  checkedThisLaunch.add(provider.id);
-  saveNewModelCheckAt(provider.id, now);
+  const attemptedAt = lastAttemptAt.get(provider.id);
+  if (!due || (attemptedAt !== undefined && now - attemptedAt < RETRY_AFTER_MS)) return null;
+  lastAttemptAt.set(provider.id, now);
   if (isCodex) {
     const listed = await fetchCodexSubscriptionModels(provider.id);
     // A newly ticked text-only slug must not inherit the provider's vision default.
@@ -561,10 +569,15 @@ async function tickNewlyListedModels(
       if (!updateFor || providerSavesInFlight.has(provider.id)) continue;
       // A save may have landed during the listing.
       const latest = currentRow(provider.id);
+      if (newModelCheckOf(latest ?? provider) === "off") continue;
       const update = updateFor(latest ?? provider);
-      if (!update) continue;
+      if (!update) {
+        markChecked(provider.id);
+        continue;
+      }
       const { models, availableModels } = update;
       await updateProviderConfig(provider.id, { models, availableModels });
+      markChecked(provider.id);
       if (isCurrent && !isCurrent()) return;
       if (currentRow(provider.id) !== latest) continue;
       const store = useExternalProvidersStore.getState();
