@@ -177,3 +177,34 @@ test("undo keeps an imported font the user selected after applying", () => {
   const untouched = { ...now, customization: applied.customization };
   assert.deepEqual(planUndo(BASE, applied, untouched).customization.importedFonts, []);
 });
+
+test("export without assets blanks only font selections, not a setting that shares a font's name", () => {
+  const current = { ...BASE, customization: sanitizeCustomization({ importedFonts: [font("wide")], chatWidth: "wide", uiFont: "wide" }) };
+  const exported = captureTheme(current, { name: "x", includeLayout: false, includeAssets: false }) as Record<string, Record<string, unknown>>;
+  assert.equal(exported.chat.width, "wide");
+  assert.equal(exported.typography.uiFont, null);
+});
+
+test("a selected font survives the cap when a theme adds fonts", () => {
+  const current = { ...BASE, customization: sanitizeCustomization({ importedFonts: [font("A"), font("B"), font("Mine")], codeFont: "Mine" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { codeFont: "Mine" }, assets: { fonts: [font("T1"), font("T2")] } })));
+  const plan = apply(current, theme);
+  assert.equal(plan.customization.codeFont, "Mine");
+  assert.ok(plan.customization.importedFonts.some((f) => f.name === "Mine"));
+});
+
+test("undo keeps every selected font under the cap", () => {
+  const before = { ...BASE, customization: sanitizeCustomization({ importedFonts: [font("A"), font("B"), font("C")], codeFont: "C" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { codeFont: "C" }, assets: { fonts: [font("New")] } })));
+  const applied = apply(before, theme);
+  const now = { ...before, palette: applied.palette, glass: applied.glass,
+    customization: { ...applied.customization, uiFont: "New" } };
+  const undone = planUndo(before, applied, now);
+  const names = undone.customization.importedFonts.map((f) => f.name);
+  for (const field of ["uiFont", "codeFont"] as const) {
+    const name = undone.customization[field];
+    assert.ok(name === null || names.includes(name), `${field}=${name} not in ${names}`);
+  }
+  assert.equal(undone.customization.uiFont, "New");
+  assert.equal(undone.customization.codeFont, "C");
+});

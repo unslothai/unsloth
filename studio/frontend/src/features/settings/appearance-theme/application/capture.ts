@@ -10,7 +10,7 @@ import {
   THEME_FILE_KIND,
   type ThemeMeta,
 } from "../domain/schema.ts";
-import type { AppearanceSnapshot } from "./plan-apply.ts";
+import { type AppearanceSnapshot, FONT_FIELDS } from "./plan-apply.ts";
 
 export type CaptureOptions = {
   name: string;
@@ -42,7 +42,7 @@ export function captureTheme(snapshot: AppearanceSnapshot, opts: CaptureOptions)
   const writeSection = (name: string, start: Dict = {}) => {
     for (const [field, key] of sectionFields(name)) {
       const value = c[field];
-      if (key) start[key] = typeof value === "string" && droppedFonts.has(value) ? null : value;
+      if (key) start[key] = (FONT_FIELDS as readonly string[]).includes(field) && droppedFonts.has(value as string) ? null : value;
     }
     file[name] = start;
   };

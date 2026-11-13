@@ -36,7 +36,13 @@ export type ThemeApplyPlan = Omit<AppearanceSnapshot, "background"> & {
   droppedFonts: string[];
 };
 
-const FONT_FIELDS = ["uiFont", "headingFont", "chatFont", "codeFont"] as const;
+export const FONT_FIELDS = ["uiFont", "headingFont", "chatFont", "codeFont"] as const;
+
+/** Selected fonts first, so the imported-font cap drops unused ones before any in use. */
+function selectedFirst(c: Pick<AppearanceCustomization, (typeof FONT_FIELDS)[number]>, fonts: ImportedFont[]) {
+  const selected = new Set(FONT_FIELDS.map((field) => c[field]));
+  return [...fonts.filter((f) => selected.has(f.name)), ...fonts.filter((f) => !selected.has(f.name))];
+}
 
 /**
  * Keeps font selections and imported fonts consistent: a selection naming one of `importedNames`
@@ -93,18 +99,23 @@ export function planThemeApply(
   theme: AppearanceTheme,
   opts: { applyLayout: boolean; applyAssets: boolean },
 ): ThemeApplyPlan {
-  const importedFonts =
-    opts.applyAssets && theme.fonts
-      ? mergeFonts(theme.fonts, current.customization.importedFonts)
-      : current.customization.importedFonts;
-  const customization = sanitizeCustomization({
+  const picked = {
     ...current.customization,
     ...theme.look,
     ...(opts.applyLayout && theme.layout ? theme.layout : {}),
-    importedFonts,
-  });
-  // A theme font the user chose not to import leaves its selections pointing at nothing.
-  const reconciled = reconcileFonts(customization, new Set((theme.fonts ?? []).map((font) => font.name)));
+  };
+  const importedFonts = selectedFirst(
+    picked,
+    opts.applyAssets && theme.fonts
+      ? mergeFonts(theme.fonts, current.customization.importedFonts)
+      : current.customization.importedFonts,
+  );
+  const customization = sanitizeCustomization({ ...picked, importedFonts });
+  // A selection whose imported font was left out or pushed past the cap would point at nothing.
+  const reconciled = reconcileFonts(
+    customization,
+    new Set([...(theme.fonts ?? []), ...current.customization.importedFonts].map((font) => font.name)),
+  );
   const kept = new Set(reconciled.importedFonts.map((font) => font.name));
   const { material } = theme.glass;
   const glass = { ...theme.glass, style: material === "solid" ? current.glass.style : material };
@@ -150,7 +161,10 @@ export function planUndo(
   const stillNeeded = now.customization.importedFonts.filter(
     (font) => selected.has(font.name) && !fonts.some((kept) => kept.name === font.name),
   );
-  customization.importedFonts = [...stillNeeded, ...fonts];
+  customization.importedFonts = selectedFirst(
+    customization as AppearanceCustomization,
+    [...stillNeeded, ...fonts],
+  );
   const glass = { ...now.glass } as Record<string, unknown>;
   for (const key of Object.keys(now.glass) as (keyof AppearanceSnapshot["glass"])[]) {
     glass[key] = revert(before.glass[key], applied.glass[key], now.glass[key]);
