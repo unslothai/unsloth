@@ -95,7 +95,6 @@ function NpuCatalogRow({
   const name = npuDisplayName(model);
   const repo = npuRepoLabel(model);
   const details = [
-    // The owner line, as GGUF rows show it.
     repo.includes("/") ? repo.slice(0, repo.indexOf("/")) : null,
     model.checkpoint,
     npuSizeLabel(model.size_gb),
