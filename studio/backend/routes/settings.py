@@ -1827,9 +1827,12 @@ def update_developer_mode(
 
 
 def _q4nx_export_response() -> Q4nxExportResponse:
+    from hub.services.models import account_access
+
+    # Managed accounts get no hardware facts, as in /api/npu/status.
     return Q4nxExportResponse(
         enabled = q4nx_export_settings.get_q4nx_export_setting(),
-        npu_supported = q4nx_export_settings.npu_supported(),
+        npu_supported = not account_access.managed_account() and q4nx_export_settings.npu_supported(),
     )
 
 

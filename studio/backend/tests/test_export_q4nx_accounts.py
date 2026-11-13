@@ -141,3 +141,14 @@ def test_q4nx_export_is_allowed_by_an_npu_or_the_setting(monkeypatch):
         monkeypatch.setattr(s, "npu_supported", lambda: npu)
         monkeypatch.setattr(s, "get_q4nx_export_setting", lambda: setting)
         assert s.q4nx_export_allowed() is allowed
+
+
+def test_q4nx_export_settings_hide_the_npu_from_a_managed_account(monkeypatch):
+    from routes import settings as settings_routes
+    from utils import q4nx_export_settings as s
+    from utils.account_context import run_as
+
+    monkeypatch.setattr(s, "npu_supported", lambda: True)
+    monkeypatch.setattr(s, "get_q4nx_export_setting", lambda: False)
+    assert run_as(OWNER, settings_routes._q4nx_export_response).npu_supported is True
+    assert run_as(ALICE, settings_routes._q4nx_export_response).npu_supported is False
