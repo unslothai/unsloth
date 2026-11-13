@@ -29896,19 +29896,36 @@ async def _proxy_to_external_provider(
             # After a checkpoint fit, later passes extend its result, as the GGUF loop does.
             seen = _checkpoint_pass.get("input")
             later = seen is not None and messages[: len(seen)] == seen
-            fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                _fit_external_context,
-                _checkpoint_pass["fitted"] + messages[len(seen) :] if later else messages,
-                payload,
-                tools = _external_fit_tools,
-                branch = _request_branch,
-                tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
-                # The NPU has no compaction of its own, so /compact resets here as on GGUF.
-                can_reset = managed is not None and not _tool_calls_are_disabled(payload),
-                first_pass = not later,
-            )
-            if not later and truncation and truncation.get("checkpoint") is True:
-                _checkpoint_pass.update(input = list(messages), fitted = fitted)
+
+            def fit(conversation, fit_payload, first_pass):
+                return _fit_external_context(
+                    conversation,
+                    fit_payload,
+                    tools = _external_fit_tools,
+                    branch = _request_branch,
+                    tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
+                    # The NPU has no compaction of its own, so /compact resets here as on GGUF.
+                    can_reset = managed is not None and not _tool_calls_are_disabled(payload),
+                    first_pass = first_pass,
+                )
+
+            if later:
+                fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                    fit, _checkpoint_pass["fitted"] + messages[len(seen) :], payload, False
+                )
+                if truncation and (
+                    truncation.get("dropped_messages") or not truncation.get("fits")
+                ):
+                    # Boundaries must count the full branch, so an overflow refits it without /compact.
+                    fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                        fit, messages, payload.model_copy(update = {"compact_context": None}), True
+                    )
+            else:
+                fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                    fit, messages, payload, True
+                )
+                if truncation and truncation.get("checkpoint") is True:
+                    _checkpoint_pass.update(input = list(messages), fitted = fitted)
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
                 _external_truncation = truncation

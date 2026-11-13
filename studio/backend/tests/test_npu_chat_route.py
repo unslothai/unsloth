@@ -76,12 +76,17 @@ _FULL_USAGE = {
 
 
 def _script(prompt: str) -> str:
-    if "PYCALL" in prompt and '"role": "tool"' not in prompt:
+    if "PYCALL" in prompt and prompt.count('"role": "tool"') < (2 if "PYBIG" in prompt else 1):
         call = {
             "index": 0,
             "id": "call_py",
             "type": "function",
-            "function": {"name": "python", "arguments": '{"code":"print(6*7)"}'},
+            "function": {
+                "name": "python",
+                "arguments": json.dumps(
+                    {"code": "print('word ' * 9000)" if "PYBIG" in prompt else "print(6*7)"}
+                ),
+            },
         }
         return (
             _chunk({"tool_calls": [call]}) + _chunk({}, "tool_calls", _USAGE) + "data: [DONE]\n\n"
@@ -1736,3 +1741,37 @@ def test_a_replay_recalls_inline_only_without_search_conversation(monkeypatch, o
     catalog = [{"type": "function", "function": {"name": name, "parameters": {}}}]
     ri._fit_external_context(_long_chat(), payload, tools = catalog, tool_loop = True, can_reset = True)
     assert seen["force_recall"] is recalled
+
+
+def test_a_later_pass_that_overflows_counts_the_full_branch(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-big-tool"
+    chat = _long_chat(turns = 4)
+    chat[-1] = {"role": "user", "content": "latest question PYCALL PYBIG"}
+    _seed_thread(studio_db, thread, chat)
+
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    flm(tools = True)
+    status, body = _call(
+        stream = True,
+        messages = chat,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    first, *later = _truncations(body)
+    assert later
+    # The second tool result evicts the first; counted against the client's branch, past /compact's cut.
+    assert later[-1]["dropped_messages"] > first["dropped_messages"]
