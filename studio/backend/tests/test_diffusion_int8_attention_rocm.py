@@ -212,7 +212,8 @@ _INTERPRET = textwrap.dedent(
             ref = F.scaled_dot_product_attention(*(t.double().permute(0, 2, 1, 3) for t in (q, k, v))).permute(0, 2, 1, 3)
             for pv in ("int8", "half", "half_strided"):
                 for cfg in ({"bm": 64, "bn": 64, "warps": 4, "stages": 1, "kscale": "key"},
-                            {"bm": 32, "bn": 32, "warps": 2, "stages": 1, "kscale": "tile"}):
+                            {"bm": 32, "bn": 32, "warps": 2, "stages": 1, "kscale": "tile", "long_keys": 150,
+                             "long": {"bm": 64}, "acc_in_dot": True}):
                     got = T.int8_attention(q, k, v, cfg, pv = pv).double()
                     key = f"{tokens}/{D}/{gain}/{pv}/{cfg['bm']}x{cfg['bn']}/{cfg['kscale']}"
                     out[key] = {"cos": float(F.cosine_similarity(got.flatten(), ref.flatten(), 0)),
@@ -223,7 +224,18 @@ _INTERPRET = textwrap.dedent(
 )
 
 
-@pytest.mark.skipif(not _triton_ok(), reason = "needs Triton")
+def _interpreter_ok() -> bool:
+    try:
+        import triton
+
+        return tuple(int(x) for x in triton.__version__.split(".")[:2]) >= (3, 7)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# Triton 3.6's interpreter fails on this kernel (InterpreterError on a 0-d array); 3.7 runs it. The card tests below
+# cover the compiled kernel wherever a ROCm card is present.
+@pytest.mark.skipif(not _interpreter_ok(), reason = "needs the Triton >= 3.7 interpreter")
 def test_triton_kernel_numerics_interpreted():
     """The kernel's algorithm (quantisers, online softmax, INT8 and 16-bit P.V, ragged key tiles) vs fp64 attention,
     run by the Triton interpreter on CPU (fp16: the interpreter has no bf16 dot)."""
@@ -331,3 +343,16 @@ def test_op_engages_on_the_card_and_kill_switch(monkeypatch):
     assert I.install_int8_attention(dit, device = str(dev), dtype = torch.bfloat16, force = True) == 0
     monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
     assert I.install_int8_attention(dit, device = str(dev), dtype = torch.bfloat16) == 3
+
+
+def test_long_sequences_take_the_long_config():
+    from core.inference import diffusion_int8_attention_triton as T
+
+    cfg = I.ROCM_KERNEL_CONFIGS["gfx1151"][128]
+    assert T.select_config(cfg, int(cfg["long_keys"]) - 1) == cfg
+    longer = T.select_config(cfg, int(cfg["long_keys"]))
+    assert longer == {**cfg, **cfg["long"]} and longer["bm"] > cfg["bm"]
+    plain = {"bm": 64, "bn": 32, "warps": 4, "stages": 1}
+    assert T.select_config(plain, 10**6) == plain
+    assert T._launch_options(plain) == {"num_warps": 4, "num_stages": 1}
+    assert T._launch_options(dict(plain, waves_per_eu = 2))["waves_per_eu"] == 2

@@ -31,8 +31,8 @@ STATS_STEP = 8
 HEAD_DIMS = (64, 128)
 # (BM, BN, warps, stages) per head dim; measured on gfx1151 (see the PR)
 DEFAULT_CONFIGS: dict = {
-    128: {"bm": 64, "bn": 64, "warps": 4, "stages": 1, "pv": "int8", "kscale": "key"},
-    64: {"bm": 64, "bn": 64, "warps": 4, "stages": 1, "pv": "int8", "kscale": "key"},
+    128: {"bm": 64, "bn": 32, "warps": 4, "stages": 1, "pv": "half_strided", "kscale": "tile"},
+    64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "half_strided", "kscale": "tile"},
 }
 
 
@@ -161,6 +161,7 @@ if triton is not None:
         q_sb, q_ss, q_sh, k_sb, k_ss, k_sh, v_sb, v_ss, v_sh, o_sb, o_ss, o_sh,
         BM: tl.constexpr, BN: tl.constexpr, D: tl.constexpr,
         QK_INT8: tl.constexpr, K_TILE: tl.constexpr, PV_MODE: tl.constexpr, EVEN_K: tl.constexpr,
+        ACC_IN_DOT: tl.constexpr,
     ):
         # PV_MODE 0: 16-bit P.V, V read from the strided input; 1: 16-bit P.V, V from a heads-major padded copy;
         # 2: INT8 P.V, P as 0..127 relative to each (row, key tile) maximum, V centred / gained, one scale per tile
@@ -226,7 +227,11 @@ if triton is not None:
                         v_ptr + b * v_sb + h * v_sh + keys[:, None].to(tl.int64) * v_ss + cols[None, :],
                         mask = (keys < sk)[:, None], other = 0.0,
                     )
-                acc = tl.dot(p.to(v.dtype), v, acc * alpha[:, None])
+                if ACC_IN_DOT:
+                    acc = tl.dot(p.to(v.dtype), v, acc * alpha[:, None])
+                else:
+                    acc = acc * alpha[:, None]
+                    acc += tl.dot(p.to(v.dtype), v)
                 l_i = l_i * alpha + tl.sum(p, axis = 1)
             m_i = m_new
         out = acc / l_i[:, None]
@@ -333,7 +338,7 @@ def attend(p: dict) -> Any:
         Sq, Sk, p["n_qpad"], p["n_kpad"], H, 1.0,
         0, 0, 0, 0, 0, 0, v.stride(0), v.stride(1), v.stride(2), out.stride(0), out.stride(1), out.stride(2),
         BM = bm, BN = bn, D = D, QK_INT8 = True, K_TILE = p["k_tile"], PV_MODE = mode, EVEN_K = Sk % bn == 0,
-        num_warps = int(cfg["warps"]), num_stages = int(cfg["stages"]),
+        ACC_IN_DOT = bool(cfg.get("acc_in_dot", False)), **_launch_options(cfg),
     )
     return out
 
@@ -343,7 +348,7 @@ def int8_attention(q: Any, k: Any, v: Any, config: Optional[dict] = None, pv: Op
     """``softmax(q k^T * scale) v`` with int8 Q.K^T (and int8 P.V for ``pv="int8"``) on ``[B, S, H, D]``."""
     import torch
 
-    config = config or DEFAULT_CONFIGS[int(q.shape[-1])]
+    config = select_config(config or DEFAULT_CONFIGS[int(q.shape[-1])], int(k.shape[1]))
     q, k, v = (x if x.stride(3) == 1 else x.contiguous() for x in (q, k, v))
     with torch.no_grad():
         return attend(quantise(q, k, v, config, pv, scale))
@@ -368,9 +373,26 @@ def half_attention(q: Any, k: Any, v: Any, config: Optional[dict] = None, scale:
         q.stride(0), q.stride(1), q.stride(2), k.stride(0), k.stride(1), k.stride(2),
         v2.stride(0), v2.stride(1), v2.stride(2), out.stride(0), out.stride(1), out.stride(2),
         BM = bm, BN = bn, D = D, QK_INT8 = False, K_TILE = False, PV_MODE = 0, EVEN_K = Sk % bn == 0,
-        num_warps = int(config["warps"]), num_stages = int(config["stages"]),
+        ACC_IN_DOT = bool(config.get("acc_in_dot", False)), **_launch_options(config),
     )
     return out
+
+
+def _launch_options(config: dict) -> dict:
+    out = {"num_warps": int(config["warps"]), "num_stages": int(config["stages"])}
+    if config.get("waves_per_eu"):
+        # AMD backend only: occupancy hint for the register allocator
+        out["waves_per_eu"] = int(config["waves_per_eu"])
+    return out
+
+
+def select_config(config: dict, keys: int) -> dict:
+    """``config`` with its ``long`` overrides applied from ``long_keys`` keys on (more query rows per program once
+    one head's K / V no longer stay in L2)."""
+    long_keys = config.get("long_keys")
+    if long_keys and keys >= int(long_keys):
+        return {**config, **config.get("long", {})}
+    return config
 
 
 def triton_cdiv(a: int, b: int) -> int:
