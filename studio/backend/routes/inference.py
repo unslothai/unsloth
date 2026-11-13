@@ -29089,7 +29089,8 @@ def _fit_external_context(
     )
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = {id(m) for m in messages if asked and m == asked} or None,
+        # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
+        anchor_ids = next(({id(m)} for m in reversed(messages) if asked and m == asked), None),
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,

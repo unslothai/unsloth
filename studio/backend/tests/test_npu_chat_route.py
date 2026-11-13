@@ -1864,3 +1864,30 @@ def test_a_reset_after_a_controller_reprompt_keeps_the_users_turn(
         loop, payload, tools = [], branch = chat, tool_loop = True, can_reset = True
     )
     assert {"role": "user", "content": "the real task"} in fitted
+
+
+def test_only_the_active_copy_of_a_repeated_prompt_is_pinned(monkeypatch):
+    import core.inference.llama_cpp as lc
+    import routes.inference as ri
+
+    seen = {}
+
+    def fit(messages, **kwargs):
+        seen.update(kwargs)
+        return messages, None
+
+    monkeypatch.setattr(lc, "_can_reset_epoch", lambda *a, **k: True)
+    monkeypatch.setattr(lc, "_fit_with_instruction_pins", fit)
+    chat = _long_chat(turns = 2)
+    for index in (1, 3, len(chat) - 1):
+        chat[index] = {"role": "user", "content": "continue"}
+    payload = ChatCompletionRequest(
+        messages = chat,
+        thread_id = "t",
+        context_overflow = "truncate_oldest",
+        context_window = 8192,
+        compaction_threshold = 6144,
+        compact_context = True,
+    )
+    ri._fit_external_context(chat, payload, tools = [], branch = chat, tool_loop = True, can_reset = True)
+    assert seen["anchor_ids"] == {id(chat[-1])}
