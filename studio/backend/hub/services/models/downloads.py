@@ -421,11 +421,16 @@ async def download_model_response(
                         status_code = 400,
                         detail = f"{repo_id} publishes no {engram_precision} Engram table.",
                     )
-                if requirement is not None:
+                if requirement is not None and (requirement.engram_precision or "").upper() == (
+                    engram_precision.upper()
+                ):
+                    # The quant's own table: the same job as naming none, so it dedupes like one.
+                    engram_precision = None
+                elif requirement is not None:
                     swapped = requirement.with_engram(engram_precision)
                     variant_blob_hashes = swapped.main_hashes
                     variant_progress_blob_hashes = swapped.required_hashes
-            else:
+            if scope_variant is None and not engram_precision:
                 variant_blob_hashes = await asyncio.to_thread(
                     gguf_variants.gguf_variant_blob_hashes,
                     repo_id,

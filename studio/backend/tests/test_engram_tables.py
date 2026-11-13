@@ -40,6 +40,23 @@ from utils.openai_auto_switch_settings import (  # noqa: E402
 )
 
 PLE = "per_layer_token_embd.weight"
+
+
+@pytest.fixture(autouse = True)
+def real_repo_snapshots(monkeypatch):
+    """Table lookups see only what a test puts in reach, never this machine's Hub cache."""
+    from core.inference import engram_tables as et
+
+    real = et.repo_snapshots
+    monkeypatch.setattr(et, "repo_snapshots", lambda repo_id: [])
+    return real
+
+
+def _tables_in(monkeypatch, *snapshots):
+    from core.inference import engram_tables as et
+    monkeypatch.setattr(et, "repo_snapshots", lambda repo_id: list(snapshots))
+
+
 IQ4_NL, Q8_0, F16 = 20, 8, 1
 
 # Sizes as published by unsloth/Qwen3.8-Flash-Next-GGUF.
@@ -284,11 +301,7 @@ class TestResolveSwap:
             _table_name("Q5_1"),
         ):
             _write(snap / name, b"x")
-        import hub.utils.gguf_sources as gs
-        import utils.models.model_config as mc
-
-        monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo, *a, **k: [snap])
-        monkeypatch.setattr(gs, "gguf_cache_snapshots", lambda repo: [])
+        _tables_in(monkeypatch, snap)
         swap = lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "Q5_1")
         # The one absent shard is the one llama.cpp tolerates missing.
         assert swap.bundled_shard == "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00003-of-00003.gguf"
@@ -657,7 +670,7 @@ class TestManualQaFindings:
             download_registry, "download_transport_unavailable_reason", lambda t: None
         )
         monkeypatch.setattr(download_registry, "_modelscope_is_source", lambda: False)
-        monkeypatch.setattr(lc, "_cached_engram_table_path", lambda *a: "/x" if cached else None)
+        monkeypatch.setattr(lc, "cached_table_path", lambda *a: "/x" if cached else None)
         reason = lc._engram_table_unfetchable_reason(
             REPO, EngramTable("Q8_0", _table_name("Q8_0"), size)
         )
@@ -699,6 +712,7 @@ class TestCachedQuantLoads:
 
         monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo, *a, **k: [snap])
         monkeypatch.setattr(lc, "_cached_gguf_snapshots", lambda repo: [snap])
+        _tables_in(monkeypatch, snap)
 
         def offline(*a, **k):
             raise OSError("no route to host")
@@ -749,22 +763,21 @@ class TestCachedQuantLoads:
         snap, _ = _swapped_snapshot(tmp_path, absent = absent, table = table)
         assert ("UD-IQ1_S" in _completed_gguf_variants(snap)) is complete
 
-    def test_offline_tables_are_found_in_a_remembered_cache_root(self, monkeypatch, tmp_path):
-        import huggingface_hub
-        import hub.utils.gguf_sources as gs
-        import utils.models.model_config as mc
+    def test_tables_are_looked_for_in_every_known_cache_root(
+        self, monkeypatch, tmp_path, real_repo_snapshots
+    ):
+        import hub.utils.hf_cache_state as hcs
+        import utils.hf_cache_settings as hcset
 
-        snap, names = _swapped_snapshot(tmp_path, absent = 3)
-        monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo, *a, **k: [])
-        monkeypatch.setattr(gs, "gguf_cache_snapshots", lambda repo: [snap])
-
-        def offline(*a, **k):
-            raise OSError("no route to host")
-
-        monkeypatch.setattr(huggingface_hub, "list_repo_files", offline)
-        monkeypatch.setattr(huggingface_hub.HfApi, "model_info", offline)
-        swap = lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "Q5_1")
-        assert swap.table.precision == "Q5_1" and swap.bundled_shard == names[2]
+        repo_dir = "models--" + REPO.replace("/", "--")
+        snaps = [tmp_path / root / repo_dir / "snapshots" / "r" for root in ("a", "b")]
+        for snap in snaps:
+            snap.mkdir(parents = True)
+        monkeypatch.setattr(hcs, "hf_cache_roots", lambda *a, **k: [tmp_path / "b"])
+        monkeypatch.setattr(
+            hcset, "get_hf_cache_paths", lambda: SimpleNamespace(hub_cache = tmp_path / "a")
+        )
+        assert real_repo_snapshots(REPO.lower()) == snaps
 
     @pytest.mark.parametrize("requested, resumes", [("Q5_1", True), ("Q8_0", False), (None, False)])
     def test_without_metadata_the_worker_resumes_only_the_same_table(
@@ -807,7 +820,7 @@ class TestCachedQuantLoads:
             f.truncate(size)
         monkeypatch.setattr(hf_constants, "HF_HUB_DISABLE_XET", True, raising = False)
         monkeypatch.setattr(download_registry, "_modelscope_is_source", lambda: False)
-        monkeypatch.setattr(lc, "_cached_gguf_snapshots", lambda repo: [snap])
+        _tables_in(monkeypatch, snap)
         table = EngramTable("Q8_0", _table_name("Q8_0"), size)
         assert lc._engram_table_unfetchable_reason(REPO, table) is None
         assert lc._engram_table_unfetchable_reason(REPO, table.__class__("Q8_0", "x", size))
@@ -875,7 +888,7 @@ class TestCachedQuantLoads:
 
         other = _write(tmp_path / "b" / "snapshots" / "r" / _table_name("Q5_1"), b"x" * 7)
         monkeypatch.setattr(lc, "_cached_hf_snapshot_file", lambda *a, **k: None)
-        monkeypatch.setattr(lc, "_cached_gguf_snapshots", lambda repo: [Path(other).parents[1]])
+        _tables_in(monkeypatch, Path(other).parents[1])
 
         def download(*a, **k):
             raise AssertionError("downloaded a table that is cached")
@@ -887,3 +900,65 @@ class TestCachedQuantLoads:
             hf_repo = REPO, table = EngramTable("Q5_1", _table_name("Q5_1"), 7), near_path = near
         )
         assert path == other
+
+
+class TestOwnTableAndOtherCacheRoots:
+    @pytest.mark.parametrize("requested, recorded", [("iq4_nl", None), ("Q8_0", "Q8_0")])
+    def test_a_download_naming_the_quant_own_table_is_a_plain_download(
+        self, monkeypatch, requested, recorded
+    ):
+        import asyncio
+
+        from hub.schemas.downloads import DownloadModelRequest
+        from hub.services import download_lifecycle
+        from hub.services.models import downloads, gguf_variants
+
+        siblings = [
+            SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": f"{i:064x}"})
+            for i, (name, size) in enumerate(_qwen_listing())
+        ]
+        plan = build_gguf_variant_plans(siblings)["ud-iq1_s"]
+        monkeypatch.setattr(download_lifecycle, "largest_download_file_bytes", lambda *a, **k: None)
+        monkeypatch.setattr(
+            download_lifecycle, "resolve_requested_use_xet", lambda *a, **k: (True, "test")
+        )
+        monkeypatch.setattr(gguf_variants, "gguf_variant_requirements", lambda *a, **k: plan)
+        monkeypatch.setattr(gguf_variants, "gguf_variant_blob_hashes", lambda *a, **k: frozenset())
+        seen = {}
+
+        class _Claimed(Exception):
+            pass
+
+        def claim(*a, **k):
+            seen.update(k)
+            raise _Claimed()
+
+        monkeypatch.setattr(downloads._registry, "claim", claim)
+        body = DownloadModelRequest(
+            repo_id = REPO, gguf_variant = "UD-IQ1_S", engram_precision = requested
+        )
+        with pytest.raises(_Claimed):
+            asyncio.run(downloads.download_model_response(body))
+        assert seen["engram_precision"] == recorded
+
+    def test_a_table_cached_in_another_root_completes_the_quant(
+        self, monkeypatch, tmp_path, real_repo_snapshots
+    ):
+        from core.inference import engram_tables as et
+
+        import hub.utils.hf_cache_state as hcs
+        import utils.hf_cache_settings as hcset
+        from hub.utils.inventory_scan import _completed_gguf_variants
+
+        snap, _ = _swapped_snapshot(tmp_path / "a", absent = 3, table = False)
+        other = tmp_path / "b"
+        _write(
+            other / snap.parent.parent.name / "snapshots" / "def" / _table_name("Q5_1"),
+            _gguf([(PLE, [160, 1024], Q8_0)]),
+        )
+        monkeypatch.setattr(et, "repo_snapshots", real_repo_snapshots)
+        monkeypatch.setattr(hcs, "hf_cache_roots", lambda *a, **k: [other])
+        monkeypatch.setattr(
+            hcset, "get_hf_cache_paths", lambda: SimpleNamespace(hub_cache = tmp_path / "a")
+        )
+        assert "UD-IQ1_S" in _completed_gguf_variants(snap)

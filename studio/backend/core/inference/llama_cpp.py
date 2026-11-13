@@ -86,10 +86,10 @@ from core.inference.context_window import (
 from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.llama_video_input import video_tools
 from core.inference.engram_tables import (
-    ENGRAM_FOLDER,
     EngramTable,
     bundled_table,
-    cached_engram_tables,
+    cached_sizes,
+    cached_table_path,
     engram_table_precision,
     engram_tables,
     find_engram_table,
@@ -4129,7 +4129,7 @@ def _engram_table_unfetchable_reason(hf_repo: str, table: EngramTable) -> Option
     is fixed at startup; HTTPS refuses a file over its size ceiling (50 GB)."""
     from hub.utils import download_registry
 
-    if _cached_engram_table_path(hf_repo, table):
+    if cached_table_path(hf_repo, table):
         return None
     try:
         from huggingface_hub import constants as hf_constants
@@ -4150,36 +4150,6 @@ def _engram_table_unfetchable_reason(hf_repo: str, table: EngramTable) -> Option
         "off for this Studio (HF_HUB_DISABLE_XET, UNSLOTH_DISABLE_XET or UNSLOTH_STABLE_DOWNLOADS, "
         "or hf_xet is not installed). Turn Xet on, or pick a table under the limit."
     )
-
-
-def _cached_engram_table_path(hf_repo: str, table: EngramTable) -> Optional[str]:
-    """A whole cached copy of ``table`` in the snapshots _cached_engram_listing reads."""
-    for snapshot in _cached_gguf_snapshots(hf_repo):
-        path = snapshot.joinpath(*table.filename.split("/"))
-        try:
-            if path.stat().st_size == table.size_bytes:
-                return str(path)
-        except OSError:
-            continue
-    return None
-
-
-def _cached_engram_listing(hf_repo: str, split: list[str]) -> dict[str, int]:
-    """Sizes of the cached split shards and Engram tables, for a load with no Hub listing."""
-    sizes: dict[str, int] = {}
-    # The same snapshots, remembered cache roots included, that resolved ``split`` offline.
-    for snapshot in _cached_gguf_snapshots(hf_repo):
-        names = split + [
-            f"{ENGRAM_FOLDER}/{entry.name}" for entry in cached_engram_tables(snapshot)
-        ]
-        for name in names:
-            if name in sizes:
-                continue
-            try:
-                sizes[name] = snapshot.joinpath(*name.split("/")).stat().st_size
-            except OSError:
-                continue
-    return sizes
 
 
 def _resolve_engram_swap(
@@ -4208,7 +4178,7 @@ def _resolve_engram_swap(
             raise
         logger.info("Engram tables of %s listed from the local cache (%s)", hf_repo, e)
         offline = True
-        sizes = _cached_engram_listing(hf_repo, split)
+        sizes = cached_sizes(hf_repo, split)
     tables = engram_tables(sizes.items())
     table = find_engram_table(tables, precision)
     if table is None:
@@ -20790,7 +20760,7 @@ class LlamaCppBackend:
         )
         cached = _cached_hf_snapshot_file(
             hf_repo, table.filename, expected_size = table.size_bytes, cache_dir = cache_dir
-        ) or _cached_engram_table_path(hf_repo, table)
+        ) or cached_table_path(hf_repo, table)
         if cached:
             logger.info("Reusing cached %s Engram table: %s", table.precision, cached)
             return cached

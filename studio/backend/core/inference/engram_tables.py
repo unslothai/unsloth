@@ -93,6 +93,52 @@ def _gguf_counts(path: Path, *, split_total: bool) -> Optional[int]:
     return None
 
 
+def repo_snapshots(repo_id: str) -> list[Path]:
+    """The cached snapshots of ``repo_id`` in the active and every known Hub cache root: the one
+    place a repo's standalone tables are looked for. A plain listing, so the inventory scan can
+    call it (gguf_cache_snapshots classifies, which reads the scan back)."""
+    target = f"models--{repo_id.replace('/', '--')}".lower()
+    snapshots: list[Path] = []
+    try:
+        from hub.utils.hf_cache_state import hf_cache_roots
+        from utils.hf_cache_settings import get_hf_cache_paths
+        for root in (get_hf_cache_paths().hub_cache, *hf_cache_roots()):
+            for repo_dir in Path(root).iterdir():
+                if repo_dir.name.lower() == target and (repo_dir / "snapshots").is_dir():
+                    snapshots += [
+                        s for s in (repo_dir / "snapshots").iterdir() if s not in snapshots
+                    ]
+    except Exception:  # noqa: BLE001 -- an unreadable root only narrows the search
+        pass
+    return snapshots
+
+
+def cached_table_path(repo_id: str, table: EngramTable) -> Optional[str]:
+    """A whole cached copy of ``table`` in any snapshot of the repo."""
+    for snapshot in repo_snapshots(repo_id):
+        path = snapshot.joinpath(*table.filename.split("/"))
+        try:
+            if path.stat().st_size == table.size_bytes:
+                return str(path)
+        except OSError:
+            continue
+    return None
+
+
+def cached_sizes(repo_id: str, split: Sequence[str]) -> dict[str, int]:
+    """Sizes of the cached ``split`` shards and standalone tables, for a load with no Hub listing."""
+    sizes: dict[str, int] = {}
+    for snapshot in repo_snapshots(repo_id):
+        names = [*split, *(f"{ENGRAM_FOLDER}/{t.name}" for t in cached_engram_tables(snapshot))]
+        for name in names:
+            if name not in sizes:
+                try:
+                    sizes[name] = snapshot.joinpath(*name.split("/")).stat().st_size
+                except OSError:
+                    continue
+    return sizes
+
+
 def table_shard_skipped(present: Sequence[Path], total: int) -> bool:
     """Whether a Hub-cache split set with one shard absent loads with a cached standalone table:
     ``present`` (shard 1 first) is ``total - 1`` shards one tensor short of split.tensors.count,
@@ -100,7 +146,10 @@ def table_shard_skipped(present: Sequence[Path], total: int) -> bool:
     if total < 2 or len(present) != total - 1:
         return False
     root = next((p for p in Path(present[0]).parents if p.parent.name == "snapshots"), None)
-    if root is None or not cached_engram_tables(root):
+    if root is None:
+        return False
+    repo_id = root.parent.parent.name[len("models--") :].replace("--", "/")
+    if not any(map(cached_engram_tables, [root, *repo_snapshots(repo_id)])):
         return False
     expected = _gguf_counts(present[0], split_total = True)
     counts = [_gguf_counts(path, split_total = False) for path in present]
