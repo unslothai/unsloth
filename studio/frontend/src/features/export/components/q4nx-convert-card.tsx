@@ -99,7 +99,6 @@ const LOCAL_SOURCE_HINT: Record<string, string> = {
 };
 const DEFAULT_SAVE_DIRECTORY = "q4nx";
 
-/** The card's data-tour value, which the export page uses to tell the card is in use. */
 export const Q4NX_CARD_MARK = "export-q4nx";
 
 export interface Q4nxSummary {
@@ -135,7 +134,6 @@ function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
-/** The chat picker's memory bar over the NPU window: weights, then the load margin. */
 function NpuMemoryBar({
   memory,
   windowGb,
@@ -206,7 +204,6 @@ export function Q4nxConvertCard({
   // Reported by the backend from #17531 on; without it rows show the need alone.
   const windowGb = npuStatus?.memory_window_gb ?? null;
   const [open, setOpen] = useState(false);
-  // The popover's second page, like the chat picker's run settings.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [source, setSource] = useState<Source>("hub");
   const [hubQuery, setHubQuery] = useState("");
@@ -332,7 +329,6 @@ export function Q4nxConvertCard({
             row.path.toLowerCase().includes(q)),
       )
       .map(toRow);
-    // A typed path that is not a known row is used as the file itself.
     const typed = localQuery.trim();
     for (const id of [GGUF_FILE_RE.test(typed) ? typed : "", localId]) {
       if (!id || rows.some((row) => row.id === id)) continue;
@@ -400,7 +396,6 @@ export function Q4nxConvertCard({
         : listGgufVariants(row.id, accessToken);
       const settle = (listing: Listing) => {
         inFlight.current.delete(flight);
-        // An answer for a replaced token is dropped.
         if (liveToken.current !== accessToken) return;
         setListed((prev) => ({
           token: accessToken,
@@ -423,7 +418,6 @@ export function Q4nxConvertCard({
     }
   }, [open, source, rows, repoId, selectedId, expansion, listings, accessToken]);
 
-  /** A model's files, the ones its converter packs directly first. */
   const filesOf = (row: SourceRow): GgufVariantDetail[] =>
     row.listingKey
       ? sortQ4nxVariants(
@@ -522,7 +516,6 @@ export function Q4nxConvertCard({
     setResult(null);
   }
 
-  /** A one-file row is its own variant, named by its file stem. */
   function ownVariant(row: SourceRow): GgufVariantDetail {
     const path = localById.get(row.id)?.path ?? row.id;
     return {
@@ -541,7 +534,6 @@ export function Q4nxConvertCard({
     );
   }
 
-  /** A model row's need is its picked file's, else its default file's. */
   function rowMemory(row: SourceRow): Q4nxMemory | null {
     const variant =
       (row.id === selectedId ? selectedVariant : null) ??
@@ -699,7 +691,6 @@ export function Q4nxConvertCard({
     });
   };
 
-  // The chat picker's list page: search, section tabs, then the rows.
   const listPage = (
     <div className="relative space-y-2">
       <div className="flex items-center gap-2 pb-1 pr-2">
@@ -866,7 +857,6 @@ export function Q4nxConvertCard({
     </div>
   );
 
-  // The popover's second page, laid out like the chat picker's run settings.
   const settingsPage = (
     <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
       <div className="flex flex-col" data-testid="q4nx-convert-settings">

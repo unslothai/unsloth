@@ -104,7 +104,6 @@ export function sortQ4nxVariants<T extends Q4nxVariant>(
     .map(({ variant }) => variant);
 }
 
-/** The card's base_model, else the repo id without its -GGUF suffix. */
 export function q4nxBaseModel(
   repoId: string | null | undefined,
   cardBaseModel: string | null | undefined,
@@ -117,7 +116,6 @@ export function q4nxBaseModel(
 // "Qwen3.5-9B", "Qwen3-0.6B-GGUF"; in "35B-A3B" the first, total count wins.
 const NAME_PARAMS_RE = /(?:^|[^A-Za-z0-9.])(\d+(?:\.\d+)?)B(?![A-Za-z0-9])/i;
 
-/** Parameter count read off a model name, for a row with no count from the Hub. */
 export function q4nxParamsFromName(name: string): number | null {
   const billions = Number(NAME_PARAMS_RE.exec(name)?.[1]);
   return billions > 0 ? billions * 1e9 : null;
@@ -288,7 +286,6 @@ export function q4nxMemoryWarning(
   return `Needs about ${memory.neededGb.toFixed(1)} GB of NPU memory; this PC can give the NPU about ${windowGb.toFixed(1)} GB.`;
 }
 
-/** The quant alone ("Q4_K_M") out of a variant key or a file stem such as "Qwen3-0.6B-Q4_K_M". */
 export function q4nxQuantName(quant: string): string {
   const label = q4nxQuantLabel(quant);
   const match = /(?:^|[-_.])((?:UD-)?I?Q\d\w*|BF16|F16|F32)$/i.exec(label);
@@ -316,13 +313,11 @@ export interface Q4nxSummaryInput {
   packing: Q4nxPacking | null;
   baseModel: string;
   saveDirectory: string;
-  /** Formatted size of the converted weights. */
   size: string | null;
   memory: Pick<Q4nxMemory, "fits" | "label"> | null;
   archFit: Q4nxArchFit | null;
 }
 
-/** The export page's summary rows while the Q4NX card is in use. */
 export function q4nxSummaryRows(
   input: Q4nxSummaryInput,
 ): { label: string; value: string; mono?: boolean }[] {
@@ -362,7 +357,6 @@ export function q4nxSummaryRows(
   ];
 }
 
-/** A local row's file: the row itself when it is a .gguf, else the variant inside its folder. */
 export function localGgufPath(
   rowPath: string,
   variant: { filename: string } | null,
