@@ -1125,7 +1125,7 @@ def fused_qkv_added_bytes(pipe: Any) -> int:
     try:
         import torch
 
-        if _quantised_projections(pipe):
+        if _quantised_projections(pipe) or _layerwise_cast_projections(pipe):
             return 0
         if unfused_projections_will_drop(unet):
             return 0  # the fused weights replace the projections they were built from
@@ -2188,11 +2188,39 @@ def _quantised_projections(pipe: Any) -> bool:
     return False
 
 
+def _layerwise_cast_projections(pipe: Any) -> bool:
+    """Whether a denoiser Linear carries diffusers' layerwise-casting hook (weights stored in one dtype, cast per call,
+    e.g. a memory-mapped small-host denoiser): a fused ``to_qkv`` is a plain Linear without that hook."""
+    import torch
+
+    for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):
+        if model is None or not callable(getattr(model, "modules", None)):
+            continue
+        try:
+            for m in model.modules():
+                reg = getattr(m, "_diffusers_hook", None)
+                if (
+                    isinstance(m, torch.nn.Linear)
+                    and reg is not None
+                    and reg.get_hook("layerwise_casting") is not None
+                ):
+                    return True
+        except Exception:  # noqa: BLE001 - unreadable: treat as not cast
+            continue
+    return False
+
+
 def _fuse_qkv(pipe: Any, logger: Any) -> bool:
     # Fusing reads each projection's .weight, which a quantised layer dequantises: a dense to_qkv beside its buffers.
     if _quantised_projections(pipe):
         if logger is not None:
             logger.info("diffusion.speed: fuse_qkv skipped (quantised projections stay unfused)")
+        return False
+    if _layerwise_cast_projections(pipe):
+        if logger is not None:
+            logger.info(
+                "diffusion.speed: fuse_qkv skipped (layerwise-cast projections stay unfused)"
+            )
         return False
     from . import diffusion_lora_quant_merge as lora_quant_merge
     from .diffusion_manual_cast import manual_cast_info
