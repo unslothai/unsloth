@@ -891,6 +891,7 @@ class _MarkdownRenderer(HTMLParser):
         self._replaying: bool = False
         # Credited only at </a> or a nested <a>: an <a> left open adopts body prose, which is not furniture.
         self._link_header_chars: int = 0
+        self._link_open_at: int = -1
 
         self._list_stack: list[str] = []  # "ul" or "ol"
         self._ol_counter: list[int] = []
@@ -1273,10 +1274,12 @@ class _MarkdownRenderer(HTMLParser):
         inner = frames[owner:]
         del frames[owner:]
         # likewise headings opened inside the link, which its </a> would have closed first
-        anchor_at = _innermost_index(self._open_tags, "a")
+        at = self._link_open_at
+        open_tags = self._open_tags
+        anchor_at = at if 0 <= at < len(open_tags) and open_tags[at] == "a" else len(open_tags)
         marks = self._heading_marks
         keep = len(marks)
-        while keep and anchor_at >= 0 and marks[keep - 1] > anchor_at:
+        while keep and marks[keep - 1] > anchor_at:
             keep -= 1
         inner_marks = marks[keep:]
         del marks[keep:]
@@ -1743,6 +1746,7 @@ class _MarkdownRenderer(HTMLParser):
             self._in_link = True
             self._link_seq += 1
             self._link_header_chars = 0
+            self._link_open_at = len(self._open_tags) - 1
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
