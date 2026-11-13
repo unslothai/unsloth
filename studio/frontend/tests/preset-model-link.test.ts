@@ -501,6 +501,65 @@ test("unlinking the model on screen puts the earlier pick back for good", async 
   useChatRuntimeStore.getState().setModelPreset(QWEN, RESEARCH.name);
 });
 
+test("a switch that merges no recommendation gets the earlier values back", async () => {
+  await switchTo(GEMMA);
+  await switchTo(QWEN);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, checkpoint: "unsloth/Compared-GGUF" });
+  await Promise.resolve();
+  assert.equal(live().activePreset, "Default");
+  assert.equal(live().temperature, 0.55, "not the link's 0.2");
+});
+
+test("a chat's cleared seed survives an edit over a link", async () => {
+  const store = useChatRuntimeStore.getState();
+  await switchTo(LLAMA);
+  store.setParams({ ...store.params, seed: 42 });
+  store.setActiveThreadId("chat-s");
+  store.applyThreadScopedSettings("chat-s", { seed: null });
+  try {
+    await switchTo(QWEN);
+    const s = useChatRuntimeStore.getState();
+    s.setParams({ ...s.params, topK: 21 });
+    await settled();
+    await switchTo(LLAMA);
+    assert.equal(useChatRuntimeStore.getState().params.seed, null);
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+  }
+});
+
+test("a linked preset's token budget stays within the loaded window", async () => {
+  const store = useChatRuntimeStore.getState();
+  const saved = store.customPresets;
+  const long = { name: "Long", params: { ...DEFAULT_INFERENCE_PARAMS, maxTokens: 131072 } };
+  store.setCustomPresets([...saved, long]);
+  store.setModelPreset(GEMMA, "Long");
+  try {
+    await switchTo(GEMMA);
+    const poll = () => {
+      const s = useChatRuntimeStore.getState();
+      s.setParams(
+        mergeBackendRecommendedInference({
+          current: s.params,
+          response: { inference: RECOMMENDED, is_gguf: true, context_length: 8192 },
+          modelId: GEMMA,
+          presetSource: presetSourceForModel(GEMMA),
+          loadedContextLength: 8192,
+        }),
+        { fromModelDefaults: true, maxTokensCap: 8192 },
+      );
+    };
+    poll();
+    poll();
+    assert.ok(useChatRuntimeStore.getState().params.maxTokens <= 8192);
+  } finally {
+    store.setModelPreset(GEMMA, null);
+    store.setCustomPresets(saved);
+  }
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);

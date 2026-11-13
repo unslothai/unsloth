@@ -6681,6 +6681,15 @@ let pickBeforeLink: {
   params: ReturnType<typeof getPresetOwnedParams>;
 } | null = null;
 let lastLinkCheckpoint = "";
+/** The unlinked model a status merge put its recommendation on since the link showed. */
+let recommendationMergedFor: string | null = null;
+
+/** The linked preset over `base`, its token budget held to the window the model loaded with. */
+function linkedParams(base: InferenceParams, preset: Preset): InferenceParams {
+  const applied = applyPresetForProvider(base, preset, null);
+  const cap = loadedContextFor(base.checkpoint);
+  return cap !== null && applied.maxTokens > cap ? { ...applied, maxTokens: cap } : applied;
+}
 let linkSyncSuspended = 0;
 
 /** A background load that puts the visible model back afterwards is no switch: links ignore it. */
@@ -6728,7 +6737,8 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
         params: getPresetOwnedParams(withoutActiveThreadParams(state, state.params)),
       };
     }
-    state.setParams(applyPresetForProvider(state.params, preset, null), { persist: false });
+    recommendationMergedFor = null;
+    state.setParams(linkedParams(state.params, preset), { persist: false });
     // Preset-backed, like a pick: a later edit files only itself into the model's memory.
     modelsShowingPresetPick.add(modelId);
     useChatRuntimeStore.setState({
@@ -6751,9 +6761,9 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
   state.setActivePreset(exists ? before.name : fallback.name);
   state.setActivePresetSource(exists ? before.source : getPresetSource(fallback.name));
   const live = useChatRuntimeStore.getState();
-  // Under Default the status merge already put a local model's recommendation on; keep it.
+  // Under Default a status merge for this model already put its recommendation on; keep it.
   const values =
-    exists && before.source === "builtin-default" && !isExternalModelId(modelId)
+    exists && before.source === "builtin-default" && recommendationMergedFor === modelId
       ? Object.fromEntries(
           Object.entries(before.params).filter(([key]) => !RECOMMENDED_KEYS.has(key)),
         )
@@ -6780,6 +6790,7 @@ export function presetSourceForModel(modelId: string): ChatPresetSource {
     state.activePreset === linkShown &&
     !getLinkedPreset(modelId, state.modelPresets, state.customPresets)
   ) {
+    recommendationMergedFor = modelId;
     return pickBeforeLink.source;
   }
   return state.activePresetSource;
@@ -6794,7 +6805,7 @@ function withLinkOverlay(params: InferenceParams): InferenceParams {
   const preset = getLinkedPreset(params.checkpoint, state.modelPresets, state.customPresets);
   if (preset?.name !== linkShown) return params;
   const live = getPresetOwnedParams(state.params);
-  const linked = getPresetOwnedParams(applyPresetForProvider(state.params, preset, null));
+  const linked = getPresetOwnedParams(linkedParams(state.params, preset));
   const kept = Object.fromEntries(
     Object.entries(linked).filter(
       ([key, value]) =>
@@ -6812,14 +6823,15 @@ function withoutLinkOverlay(settings: ThreadScopedSettings): void {
   if (state.activePreset !== linkShown) return;
   const preset = getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
   if (preset?.name !== linkShown) return;
-  const linked = getPresetOwnedParams(applyPresetForProvider(state.params, preset, null));
+  const linked = getPresetOwnedParams(linkedParams(state.params, preset));
   const own = settings as Record<string, unknown>;
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     if (explicitlyEditedThreadFields.has(key)) continue;
     if (JSON.stringify(own[key]) !== JSON.stringify(linked[key as keyof typeof linked])) continue;
+    const chatValue = (activeThreadScopedSettings as Record<string, unknown> | null)?.[key];
+    // undefined only: a chat's null seed is a choice.
     const underlying =
-      (activeThreadScopedSettings as Record<string, unknown> | null)?.[key] ??
-      pickBeforeLink?.params[key as keyof typeof linked];
+      chatValue !== undefined ? chatValue : pickBeforeLink?.params[key as keyof typeof linked];
     if (underlying !== undefined) own[key] = underlying;
   }
 }
