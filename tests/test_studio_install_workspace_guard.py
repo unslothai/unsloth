@@ -329,9 +329,8 @@ def test_setup_ps1_direct_update_in_place_route_is_the_last_escape():
 
 
 def test_setup_ps1_stale_sweep_runs_outside_the_rebuild_branch():
-    """The sweep collects leftovers from an earlier move-aside whose delete a lock cut short. Inside
-    the rebuild branch it would never run for the install that needs it most: one that renamed a
-    venv aside, failed to delete the copy, and thereafter always takes an in-place route."""
+    """The stale-venv sweep must run outside the rebuild branch, since an install whose move-aside
+    delete failed always takes an in-place route and would never reach it."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
     sweep = src.index("$_staleShape = ")
     rebuild = src.index("Stale venv detected ($reason) -- rebuilding")
@@ -1205,12 +1204,8 @@ def test_install_sh_rejects_an_id_holding_a_nul_byte(tmp_path):
 
 @pytest.mark.skipif(os.name != "posix", reason = "PATH-shadowed cat is a POSIX shape")
 def test_install_sh_reports_a_failed_read_instead_of_regenerating(tmp_path):
-    """A read that FAILS is not the same answer as a malformed id.
-
-    `-r` can pass while the read errors, on an NFS or FUSE backed root.
-    Flattening that into "no id" let the publish path replace a valid
-    incumbent a running backend still reports.
-    """
+    """A failed read is not a malformed id: -r can pass on NFS or FUSE roots while the read errors,
+    and treating that as no id let publish replace a valid incumbent a backend reports."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     assert (
         '_cvi_id=$({ cat "$1"; } 2>/dev/null) || return 1' in src
@@ -1247,11 +1242,8 @@ def test_install_sh_reports_a_failed_read_instead_of_regenerating(tmp_path):
     reason = "needs POSIX mode bits, and root reads regardless of them",
 )
 def test_install_sh_replaces_an_empty_id_even_when_it_cannot_read_it(tmp_path):
-    """Zero length is an answer stat can give: that file holds no id.
-
-    Refusing would fail an install that pre-validation simply completed. The
-    protection is for ids we cannot read, and an id is 64 bytes, never zero.
-    """
+    """An empty id file reads as no id, even when unreadable, since refusing would fail an install
+    that pre-validation completed; a real id is 64 bytes."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     assert '[ -s "$1" ] || return 0' in src, "an empty id file must read as no id"
 
@@ -1280,12 +1272,8 @@ def test_install_sh_replaces_an_empty_id_even_when_it_cannot_read_it(tmp_path):
     reason = "needs POSIX mode bits, and root reads regardless of them",
 )
 def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
-    """An id we cannot READ must not be treated as malformed and replaced.
-
-    In a shared root it can be a good id owned by someone else that a running
-    backend already reports, so the step refuses, as it did before the id was
-    validated at all.
-    """
+    """An unreadable id must not be treated as malformed and replaced: in a shared root it may be a
+    good id owned by someone else that a running backend reports, so refuse."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
     block = src[fn_start : fn_start + 4200]
@@ -1319,11 +1307,8 @@ def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this platform")
 def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
-    """A FIFO at the id path must not park the installer on the open.
-
-    `cat` blocks until a writer appears, so an unconditional read of a shared
-    or custom root hangs the install forever.
-    """
+    """A FIFO at the id path must not hang the installer: cat blocks until a writer appears, so
+    install.sh reads the id only from a regular file."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     assert '[ -f "$1" ] || return 0' in src, "install.sh must read the id only from a regular file"
 
@@ -1340,11 +1325,9 @@ def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
 
 @pytest.mark.skipif(os.name != "posix", reason = "runs the POSIX installer function")
 def test_create_studio_shortcuts_end_to_end_never_embeds_a_planted_id(tmp_path):
-    """The REAL create_studio_shortcuts, not a reconstruction of it.
-
-    Helper-level tests cannot catch a caller that validates then embeds
-    something else, so this inspects the launcher the shipped function writes.
-    """
+    """Runs the real create_studio_shortcuts, since helper-level tests cannot catch a caller that
+    validates an id and then embeds something else; it inspects the launcher that function
+    writes."""
     home = tmp_path / "home"
     studio_home = tmp_path / "studio"
     data_dir = tmp_path / "data"

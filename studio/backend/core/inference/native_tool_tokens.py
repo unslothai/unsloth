@@ -310,6 +310,9 @@ class _IncrementalNativeDecode:
     def text(self) -> str:
         return self._text.text
 
+    def reset(self):
+        self._text.reset()
+
     def feed(self, token_id) -> str:
         if self._decoder._special_ids and self._decoder.suppresses(token_id):
             return self._text.text

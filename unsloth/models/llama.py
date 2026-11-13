@@ -99,10 +99,12 @@ from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
     HAS_XFORMERS,
+    context_parallel_attention,
     run_attention,
     SDPA,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
 )
 from torch.nn.functional import scaled_dot_product_attention as _torch_sdpa
 from transformers import __version__ as transformers_version
@@ -1094,6 +1096,8 @@ def fast_layernorm_compiled(layernorm, X):
 
 
 # Ported from transformers models/llama/modeling_llama.py#L320
+@applies_prefix_seg_info
+@context_parallel_attention(rl = True)
 def LlamaAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -1288,10 +1292,9 @@ __DTYPE_MAP = {
 
 
 def _is_left_padded(attention_mask):
-    # Dropping the training mask is exact only for right padding, where causal attention never
-    # reaches the trailing pads. A label-less forward (custom losses, rerankers) zeroes pad embeddings,
-    # so attending to left pads sends gradients to NaN (#3705). Checked only then: it syncs, so read
-    # one column; a left-padded row always starts with a pad.
+    # Dropping the mask is exact only for right padding; in label-less forwards (custom losses,
+    # rerankers) left pads, whose embeddings are zeroed, send NaN gradients (issue 3705); the check
+    # syncs, so it reads column 0 only, where a left-padded row always starts with a pad.
     if attention_mask.dim() != 2 or attention_mask.shape[-1] < 2:
         return False
     return not bool(attention_mask[:, 0].all())
@@ -1628,10 +1631,9 @@ def LlamaModel_fast_forward(
             and isinstance(self.rotary_emb, LongRopeRotaryEmbedding)
             and rope_len <= original < rope_rows
         ):
-            # transformers' longrope_frequency_update picks the factors from max(position_ids) + 1, a host
-            # sync it pays too; other models and LongRoPE without position_ids stay sync-free.
-            # Also under compile (one graph break): an in-graph choice would rebuild full-size hybrid
-            # tables every forward, and this forward is not compiled by Unsloth.
+            # Mirrors transformers longrope_frequency_update (factors from max(position_ids) + 1, a
+            # host sync); other models and LongRoPE without position_ids stay sync-free; in-graph
+            # choice under compile would rebuild tables each forward.
             rope_len = max(rope_len, int(position_ids.max()) + 1)
         # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
         position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
@@ -2018,6 +2020,9 @@ def CausalLM_fast_forward(fast_forward_inference):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         # Not a named parameter: HF's find_labels would make it a required eval label.
         shift_labels = kwargs.pop("shift_labels", None)
+        # Training may resume without for_training() (trainer callback sampling): free kept graphs here.
+        if _decode_graphs.HELD in self.__dict__ and self.training and torch.is_grad_enabled():
+            _decode_graphs.release_if_training(self)
         past_key_values = _cache_as_legacy_tuple(past_key_values)
         if past_key_values is not None and len(past_key_values) == 0:
             past_key_values = None
@@ -2458,8 +2463,22 @@ class _PerDeviceRopeCache:
     allocate on their peers. A row depends only on its position, so a shorter cache matches the
     full one row for row."""
 
+    _rope_rows_pick_factors = False
+
     def _init_rope_cache_state(self, dtype):
         self._rope_cache_dtype = dtype
+        if not hasattr(self, "inv_freq") and not self._rope_rows_pick_factors:
+            # Keep Gemma's CPU FP32 constants before widening the compiled arithmetic.
+            exponents = (2.0 / self.dim) * torch.arange(
+                self.dim // 2, dtype = torch.int64, device = "cpu"
+            ).float()
+            self._rope_timescale_cpu = self.base**exponents
+            self._rope_reciprocal_cpu = self._rope_timescale_cpu.double().reciprocal()
+            self._rope_scaling_factor = float(
+                torch.tensor(
+                    getattr(self, "scaling_factor", 1.0), dtype = torch.float32, device = "cpu"
+                )
+            )
         # Bumped whenever the eager code rebuilt every device (growth), so stale devices rebuild.
         self._rope_cache_version = 0
         self._rope_cache_versions = [None] * DEVICE_COUNT
@@ -2549,6 +2568,8 @@ class _PerDeviceRopeCache:
     ):
         if position_ids is not None and seq_len is None:
             # Stock transformers call (a plain model built after the patch): per-position cos/sin.
+            if torch.compiler.is_compiling() and not self._rope_rows_pick_factors:
+                return self._compiled_position_embeddings(x, position_ids)
             rows = int(position_ids.max()) + 1
             if rows > self.current_rope_size:
                 self._grow_rope_cache(rows, x.dtype)
@@ -2562,6 +2583,20 @@ class _PerDeviceRopeCache:
         self._need_rope_rows(self.current_rope_size if seq_len is None else seq_len)
         device_index = self._ensure_rope_cache(x.device.index)
         return self._slice_rope_cache(device_index, seq_len)
+
+    def _compiled_position_embeddings(self, x, position_ids):
+        positions = position_ids.to(x.device).float()
+        # Arc and Metal do not support FP64 tensors.
+        compute_dtype = torch.float64 if x.device.type in ("cpu", "cuda") else torch.float32
+        positions = (positions.to(compute_dtype) / self._rope_scaling_factor).float()
+        if compute_dtype == torch.float64:
+            # FP64 reciprocals preserve FP32 division rounding without slow GPU divides.
+            reciprocal = self._rope_reciprocal_cpu.to(x.device)
+            freqs = (positions[..., None].double() * reciprocal).float()
+        else:
+            freqs = positions[..., None] / self._rope_timescale_cpu.to(x.device)
+        emb = torch.cat((freqs, freqs), dim = -1)
+        return emb.cos().to(x.dtype), emb.sin().to(x.dtype)
 
     def _slice_rope_cache(self, device_index, seq_len):
         return (
@@ -2641,6 +2676,8 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
 
         inv_freq = self._unsloth_recompute_inv_freq()
+        # Transformers may replace nonpersistent buffers while loading a stock model.
+        self._unsloth_inv_freq_cpu = inv_freq.detach().clone()
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Built per device on first use, not for every visible GPU here.
@@ -2653,6 +2690,15 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
 
+    def _compiled_position_embeddings(self, x, position_ids):
+        inv_freq = self._unsloth_inv_freq_cpu.to(device = x.device)
+        positions = self._apply_time_scaling(position_ids.to(x.device).float())
+        freqs = positions[..., None] * inv_freq
+        emb = torch.cat((freqs, freqs), dim = -1)
+        cos = (emb.cos() * self.attention_scaling).to(self._rope_cache_dtype)
+        sin = (emb.sin() * self.attention_scaling).to(self._rope_cache_dtype)
+        return cos.to(x.dtype), sin.to(x.dtype)
+
     def _apply_inv_freq_scaling(self, inv_freq):
         """Override to apply custom inv_freq scaling (e.g., extended RoPE)."""
         return inv_freq
@@ -2662,6 +2708,7 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         config = getattr(self, "_unsloth_rope_config", None)
         config_inv_freq = None
         rope_scaling = getattr(config, "rope_scaling", None) if config is not None else None
+        # Scaling subclasses here would apply their factor twice.
         if rope_scaling is not None and type(self) is LlamaRotaryEmbedding:
             config_inv_freq, self.attention_scaling = _compute_config_rope_inv_freq(
                 config,
@@ -2698,9 +2745,8 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         t = torch.arange(self.current_rope_size, device = inv_freq.device, dtype = torch.int64).float()
         t = self._apply_time_scaling(t)
 
-        # Rows are independent, so the build goes 32768 rows at a time into the output (bit-identical,
-        # the same elementwise ops): the fp32 temporaries no longer scale with the cache size (about
-        # 2 GiB at 1M rows in one shot).
+        # Rows are independent, so the build runs in 32768-row chunks (bit-identical), keeping fp32
+        # temporaries from scaling with cache size (about 2 GiB at 1M rows in one shot).
         rows = self._rope_build_chunk_rows
         cos = sin = None
         for start in range(0, max(seq_len, 1), rows):
@@ -2805,6 +2851,8 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
 
 class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     # For Phi 3.5 128K; see microsoft/Phi-3.5-mini-instruct modeling_phi3.py
+    _rope_rows_pick_factors = True
+
     def __init__(
         self,
         dim = None,
@@ -2986,6 +3034,30 @@ def _generation_max_len(self, args, kwargs):
         return 0
 
 
+def _generation_plan_len(self, args, kwargs):
+    """_generation_max_len, or a max_length the caller's own GenerationConfig sets explicitly (the call can grow
+    to it; the model's default config is not a request). Sizes both the plan and the cache growth cap."""
+    max_len = _generation_max_len(self, args, kwargs)
+    if max_len or kwargs.get("max_new_tokens", None) is not None:
+        return max_len
+    try:
+        config = kwargs.get("generation_config", None)
+        explicit = config.to_diff_dict() if config is not None else {}
+        if (
+            explicit.get("max_new_tokens", None) is None
+            and explicit.get("max_length", None) is not None
+        ):
+            return int(explicit["max_length"])
+    except Exception:
+        pass
+    return max_len
+
+
+def _generation_input_ids(args, kwargs):
+    ids = kwargs.get("input_ids", kwargs.get("inputs", args[0] if args else None))
+    return ids if ids is not None else kwargs.get("inputs_embeds", None)
+
+
 def unsloth_fast_generate(self, *args, **kwargs):
     restore_training_mode = self.training
     # Snapshot the real GC mode (e.g. unsloth) before for_inference clears it, so restore does not collapse it to a bool
@@ -3064,20 +3136,49 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
-    # Decided once per call (env / RL generation scope), so the prefill and every decode step agree.
-    graphs = _decode_graphs.enabled()
-    if graphs:
-        _decode_graphs.start_generation(_generation_max_len(self, args, kwargs))
-    # Mixed precision autocast.
-    try:
-        with (
-            _get_inference_mode_context_manager(self),
-            torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
-        ):
-            output = self._old_generate(*args, **kwargs)
-    finally:
+    # Decided once per call so the prefill and every decode step agree.
+    with _decode_graphs.generate_scope():
+        graphs = _decode_graphs.enabled()
+        plan, token = "graph", None
         if graphs:
-            _decode_graphs.end_generation()
+            plan_len = _generation_plan_len(self, args, kwargs)
+            try:
+                ids = _generation_input_ids(args, kwargs)
+                bsz = _decode_graphs.decode_batch(
+                    int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+                )
+                short = _decode_graphs.short_call(self, plan_len, int(ids.shape[1]), bsz)
+                if short and _decode_graphs.HELD not in self.__dict__:
+                    plan, token = "eager", None
+                else:
+                    plan, token = _decode_graphs.plan_call(
+                        self, ids, dtype, KV_CACHE_INCREMENT, plan_len, bsz = bsz, eager = short,
+                    )  # fmt: skip
+                    if short:
+                        plan, token = "eager", None
+            except Exception:
+                plan, token = "graph", None
+            if plan == "eager":
+                graphs = False
+            else:
+                _decode_graphs.start_generation(plan_len)
+        redos = _decode_graphs.EAGER_REDOS
+        # Mixed precision autocast.
+        try:
+            with (
+                _decode_graphs.eager_scope() if plan == "eager" else contextlib.nullcontext(),
+                _decode_graphs.plan_scope("graph" if graphs else "eager"),
+                _get_inference_mode_context_manager(self),
+                torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
+            ):
+                output = _decode_graphs.generate_with_fallback(
+                    self, self._old_generate, graphs, args, kwargs
+                )
+        finally:
+            if graphs:
+                _decode_graphs.end_generation()
+        if graphs and _decode_graphs.EAGER_REDOS == redos:
+            _decode_graphs.record_need(self, token)
     if graphs and restore_training_mode:
         # Back to training: the next optimizer step invalidates the graphs anyway; free them and the
         # decode buffers for training.
@@ -3086,6 +3187,16 @@ def unsloth_fast_generate(self, *args, **kwargs):
         # The returned cache views the persistent decode buffers: hand them over, so a later
         # generate() allocates its own instead of overwriting a cache the caller kept.
         _decode_graphs.release(self)
+    elif graphs:
+        # keep_only uses the expanded decode batch.
+        ids = _generation_input_ids(args, kwargs)
+        expected = None
+        if hasattr(ids, "shape") and len(ids.shape) >= 2:
+            expected = _decode_graphs.decode_batch(
+                int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+            )
+        _decode_graphs.keep_only(self, expected)
+        self.__dict__[_decode_graphs.HELD] = True
 
     if restore_training_mode:
         FastLlamaModel.for_training(
@@ -3352,13 +3463,20 @@ def runs_fast_forward(
 ):
     """True when `module` runs Unsloth's `fast` as its class `name`: directly, or through the gate that
     pre_patch installs (which runs `fast` only on modules marked by mark_unsloth_fast_path)."""
+    return fast is not None and running_forward(module, name) is fast
+
+
+def running_forward(module, name = "forward"):
+    """The function `module` runs as `name`; for pre_patch's gate, the wrapped fast forward only on marked modules."""
     method = getattr(type(module), name, None)
     method = getattr(method, "__func__", method)
-    if method is fast:
-        return True
-    if getattr(method, "_unsloth_gated", False) and getattr(method, "__wrapped__", None) is fast:
-        return bool(getattr(module, "_unsloth_fast_path", False))
-    return False
+    if getattr(method, "_unsloth_gated", False):
+        return (
+            getattr(method, "__wrapped__", None)
+            if getattr(module, "_unsloth_fast_path", False)
+            else None
+        )
+    return method
 
 
 def mark_unsloth_fast_path(model):
@@ -4616,6 +4734,8 @@ class FastLlamaModel:
         model.config.update({"unsloth_version": __version__})
 
         patch_saving_functions(model)
+        # The GGUF export keeps its converter to this consent, as FastBaseModel's stamp does.
+        model._unsloth_trust_remote_code = trust_remote_code
         Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Fix gradient accumulation; see #4982.
@@ -5645,6 +5765,7 @@ class FastLlamaModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
         _tensor_parallel_for_training(model)
+        _decode_graphs.release_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(

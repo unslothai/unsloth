@@ -130,9 +130,7 @@ def merge_text_streams(
 
 _HUNYUANVIDEO15_CLS = "HunyuanVideo15Transformer3DModel"
 
-# HunyuanVideo-1.5 (diffusers 0.36.0 through 0.40.0, unchanged): ``is_t2v`` is a 0-d device bool that
-# ``if`` reads on the host, then the per-batch merge of [image ; byt5 ; mllm] uses boolean-mask
-# indexing like HunyuanImage's, with the padded byt5/mllm rows replaced by zeros.
+# HunyuanVideo-1.5 (diffusers 0.36.0 to 0.40.0): is_t2v is a device bool an if reads on the host.
 _HV15_T2V_BLOCK: tuple[str, ...] = (
     "is_t2v = torch.all(image_embeds == 0)",
     "if is_t2v:",

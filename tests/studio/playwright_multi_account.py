@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timezone
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, expect, sync_playwright
@@ -50,13 +51,15 @@ def api(
 
 def open_login(page: Page) -> None:
     """After a log-out the open chat page's requests start failing with 401 and the app sends itself to
-    /login (redirectToAuth), which can abort this navigation with ERR_ABORTED. Retry that abort once.
+    /login (redirectToAuth), which can abort this navigation with ERR_ABORTED. When that redirect has
+    already loaded /login, use it instead of navigating again; otherwise retry the abort once.
 
     On CI this navigation has also timed out once in a while after the server answered /login: one of
     the page's requests never finished, so "load" never fired. Record which requests were still open,
-    then retry once. A second abort or timeout is a real failure."""
+    then retry once. Aborts and timeouts each get one retry, so an abort cannot use up the timeout's."""
     url = f"{BASE_URL}/login"
-    for attempt in (1, 2):
+    aborts = timeouts = 0
+    while True:
         pending: dict = {}
         on_request = lambda request: pending.__setitem__(request, request.url)
         on_done = lambda request: pending.pop(request, None)
@@ -67,13 +70,17 @@ def open_login(page: Page) -> None:
             page.goto(url)
             return
         except PlaywrightTimeoutError:
-            if attempt == 2:
+            timeouts += 1
+            if timeouts == 2:
                 raise
             record_stalled_login(page, sorted(pending.values()))
         except PlaywrightError as error:
-            if "ERR_ABORTED" not in str(error) or attempt == 2:
+            aborts += 1
+            if "ERR_ABORTED" not in str(error) or aborts == 2:
                 raise
             page.wait_for_load_state()
+            if urlsplit(page.url).path == "/login":
+                return
         finally:
             page.remove_listener("request", on_request)
             page.remove_listener("requestfinished", on_done)

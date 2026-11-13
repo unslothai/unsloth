@@ -15,8 +15,7 @@ CONFIG = HERE.parent / ".pre-commit-config.yaml"
 # One-off experiments only: commits made under it get reformatted by the hook.
 ANY_VERSION_ENV = "UNSLOTH_RUFF_FORMAT_ANY_VERSION"
 USAGE = "usage: run_ruff_format.py FILE [FILE ...]  (formats in place; no options)"
-# Worker count for the Python pass after ruff. The hook is require_serial (#14174), so
-# these chunks are the only parallelism; ruff itself runs once.
+# Worker count; the hook is require_serial, so these chunks are the only parallelism.
 JOBS_ENV = "UNSLOTH_RUFF_FORMAT_JOBS"
 _MAX_JOBS = 8
 # Below this many files per worker an extra interpreter costs more than it saves.
@@ -49,17 +48,13 @@ def pinned_ruff_version(config_text: str) -> str | None:
         match = _WHEEL_VERSION_RE.search(requirement) or _EXACT_VERSION_RE.match(requirement)
         if match:
             found.add(match.group(1))
-    # Two different pins is not a question this script can answer, and guessing
-    # would enforce the wrong one. Every platform's wheel carries the same version.
+    # Conflicting pins cannot be resolved here; guessing would enforce the wrong one.
     return found.pop() if len(found) == 1 else None
 
 
 def installed_ruff_version(python: str = sys.executable) -> str | None:
-    """The ruff-unsloth the format below would actually run, or None when it cannot say.
-
-    Read from the distribution, not `--version`: the binary reports the ruff it is
-    built on (0.6.9), which does not change between ruff-unsloth releases.
-    """
+    """Read from the distribution, not --version: the binary reports its base ruff (0.6.9), which
+    does not change across ruff-unsloth releases; None when it cannot say."""
     probe = f"from importlib.metadata import version; print(version({DISTRIBUTION!r}))"
     try:
         out = subprocess.run([python, "-c", probe], capture_output = True, text = True, timeout = 60)
@@ -89,13 +84,7 @@ def ruff_unavailable_reason(python: str = sys.executable) -> str | None:
 
 
 def version_mismatch(pinned: str | None, installed: str | None) -> bool:
-    """Whether running this ruff would produce formatting the hook then undoes.
-
-    An unreadable pin or an unreadable version string is not a mismatch:
-    refusing on a question we could not ask would break the hook wherever the
-    config moves. A ruff that cannot run at all is caught before this, by
-    ruff_unavailable_reason.
-    """
+    """Unreadable pin or version is not a mismatch; refusing would break the hook."""
     return bool(pinned and installed and pinned != installed)
 
 
@@ -165,8 +154,7 @@ def chunk_files(files: list[str], jobs: int) -> list[list[str]]:
     groups: dict[object, list[int]] = {}
     for index, name in enumerate(files):
         try:
-            # Device and inode: the one identity case-insensitive filesystems and
-            # hard links cannot fool. realpath is the fallback for a missing file.
+            # Device and inode, immune to case folding and hard links; realpath fallback.
             info = os.stat(name)
             key: object = (info.st_dev, info.st_ino)
         except OSError:
@@ -191,13 +179,8 @@ def chunk_files(files: list[str], jobs: int) -> list[list[str]]:
 
 
 def run_chunks(head: list[str], chunks: list[list[str]]) -> int:
-    """Run ``head + chunk`` for every chunk side by side; the first failure's code wins.
-
-    One chunk runs as before, output straight through. Several write to temporary
-    files that are replayed in chunk order, so the log reads the same from run to
-    run. Anything that stops this process early (Ctrl+C, a timeout raising in this
-    thread) kills the chunks still running instead of waiting for them.
-    """
+    """Chunks run in parallel with output replayed in chunk order, first failure code wins; Ctrl+C
+    or a timeout kills the chunks still running instead of waiting."""
     if not chunks:
         return 0
     if len(chunks) == 1:
@@ -220,8 +203,7 @@ def run_chunks(head: list[str], chunks: list[list[str]]) -> int:
             sink.seek(0)
             data = sink.read()
             sink.close()
-            # Bytes where the stream has them: a path the locale codec cannot decode
-            # would otherwise crash the replay after every file was formatted.
+            # Raw bytes, so an undecodable path does not crash the replay after formatting.
             if hasattr(stream, "buffer"):
                 stream.buffer.write(data)
                 stream.buffer.flush()
@@ -245,8 +227,7 @@ def main(argv: list[str]) -> int:
         f"(pre-commit run ruff-format-with-kwargs --files ...)"
     )
 
-    # Both checks are made before anything is rewritten. The override below is
-    # deliberately not honoured here: no ruff-unsloth formats nothing.
+    # Both checks run before any rewrite; the override is deliberately not honoured here.
     unavailable = ruff_unavailable_reason()
     if unavailable is not None:
         print(
@@ -275,8 +256,7 @@ def main(argv: list[str]) -> int:
         )
         return 1
 
-    # One ruff over every file: it parallelises itself, and one per chunk would
-    # stack its thread pools the way pre-commit's partitions did (#14174).
+    # One ruff over all files since it parallelises; per-chunk runs would stack pools.
     ruff_proc = subprocess.run([sys.executable, "-m", MODULE, "format", *files])
     if ruff_proc.returncode != 0:
         return ruff_proc.returncode

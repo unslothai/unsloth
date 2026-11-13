@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import html
 import itertools
 import operator
 import re
@@ -83,6 +82,36 @@ def _is_hidden_element(attr_dict: dict) -> bool:
         return True
     style = attr_dict.get("style")
     return bool(style) and _style_hides_element(style)
+
+
+_MATH_INVISIBLE = {0x2061: " ", 0x2062: None, 0x2063: None, 0x2064: None}
+_MATH_SPECIALS = re.compile(r"[{}%#&_$]")
+_MATH_SCRIPTS = {"msup": "^", "msub": "_", "munder": "_"}
+
+
+def _mathml_tex(tag: str, parts: list[str]) -> str:
+    if tag in ("annotation-xml", "mphantom"):
+        return ""
+    if tag == "mtext":
+        text = "".join(parts)
+        return f"\\text{{{text}}}" if text.strip() else " "
+    if tag == "mfrac" and len(parts) == 2:
+        return f"\\frac{{{parts[0]}}}{{{parts[1]}}}"
+    if tag == "msqrt":
+        return f"\\sqrt{{{''.join(parts)}}}"
+    if tag == "mroot" and len(parts) == 2:
+        return f"\\sqrt[{parts[1]}]{{{parts[0]}}}"
+    if tag in _MATH_SCRIPTS and len(parts) == 2:
+        return f"{parts[0]}{_MATH_SCRIPTS[tag]}{{{parts[1]}}}"
+    if tag == "mover" and len(parts) == 2:
+        return f"\\overset{{{parts[1]}}}{{{parts[0]}}}"
+    if tag in ("msubsup", "munderover") and len(parts) == 3:
+        return f"{parts[0]}_{{{parts[1]}}}^{{{parts[2]}}}"
+    if tag == "mtr":
+        return " & ".join(parts)
+    if tag == "mtable":
+        return " \\\\ ".join(parts)
+    return "".join(parts)
 
 
 def _span_attr(attr_dict: dict, name: str) -> int:
@@ -353,6 +382,11 @@ _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 _WHITESPACE_RUN = re.compile(r"\s+")
+# browsers collapse only ASCII whitespace, so text indented with &nbsp; or &emsp; keeps its indent
+_COLLAPSIBLE_RUN = re.compile(r"[ \t\n\r\f]+")
+# a space run holding a kept Unicode space; the lookbehind starts it only at a run's first char, keeping it linear
+_KEPT_SPACE_RUN = re.compile(r"(?<![^\S\n])[ \t\r\f\v]*[^\S \t\n\r\f\v][^\S\n]*")
+_KEPT_SPACE = re.compile(r"[^\S \t\n\r\f\v]")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -829,7 +863,8 @@ class _MarkdownRenderer(HTMLParser):
         site_links: SiteLinks | None = None,
         page_span_limit: int | None = None,
     ):
-        super().__init__(convert_charrefs = False)
+        # charrefs must decode inside their text run: decoded apart, they left <pre> and gained a stray ';' (#17199)
+        super().__init__(convert_charrefs = True)
         self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
@@ -844,6 +879,11 @@ class _MarkdownRenderer(HTMLParser):
         self._skip_html_at: list[int] = []
         self._skip_html_integration: list[bool] = []
         self._form_pointer: bool = False
+        # one list per skipped element of the formula being read: the TeX of its children so far
+        self._math: list[list[str]] | None = None
+        self._math_tex: str = ""
+        self._math_tex_at: int = -1
+        self._math_block: bool = False
 
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
@@ -960,6 +1000,8 @@ class _MarkdownRenderer(HTMLParser):
             if frame is not None and self._site_links is not None
             else text
         )
+        if frame is not None:
+            measured = _fold_kept_spaces(measured)
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(measured.strip())
@@ -1091,15 +1133,13 @@ class _MarkdownRenderer(HTMLParser):
         self._emit_replay(f"\n\n{fence}\n{raw}\n{fence}\n\n")
 
     def _drain_blockquote(self) -> None:
-        """Pop the innermost quote and emit it prefixed. Not used by ``flush_pending``,
-        which re-nests into the parent stack instead of emitting."""
+        """Pop the innermost quote and emit it prefixed; flush_pending re-nests it instead."""
         prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
         if prefixed:
             self._emit_replay("\n\n" + prefixed + "\n\n")
 
     def _emit_replay(self, text: str) -> None:
-        """Emit a flushed buffer's own output, which must not be teed as a heading
-        a second time (the raw text was teed when it entered the buffer)."""
+        """Flushed buffer output is not teed again; the raw text was teed on entry."""
         was, self._replaying = self._replaying, True
         try:
             self._emit(text)
@@ -1328,8 +1368,7 @@ class _MarkdownRenderer(HTMLParser):
         depth: int,
         own_tag: bool = False,
     ) -> None:
-        """Judge and emit every buffered header at or below *depth*. Only the
-        innermost frame can be the one its own ``</header>`` closed."""
+        """Emit buffered headers at or below depth; own-tag closes only the innermost frame."""
         closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
             self._finalize_nested_buffers(self._header_stack[-1])
@@ -1387,6 +1426,8 @@ class _MarkdownRenderer(HTMLParser):
         if not self._header_stack or self._heading_marks:
             return
         frame = self._header_stack[-1]
+        if not text.isascii():
+            text = _WHITESPACE_RUN.sub(" ", text)
         chars = len(text.strip())
         frame.text_chars += chars
         # anchors without usable hrefs render as prose
@@ -1429,7 +1470,24 @@ class _MarkdownRenderer(HTMLParser):
         encoding = (attrs.get("encoding") or "").strip().lower()
         return tag == "annotation-xml" and encoding in {"text/html", "application/xhtml+xml"}
 
+    def _close_math(self, index: int) -> None:
+        for position in range(len(self._skip_tags) - 1, index - 1, -1):
+            tex = _mathml_tex(self._skip_tags[position], self._math.pop())
+            if position == self._math_tex_at:
+                self._math_tex_at = -1
+                if tex.strip():
+                    self._math_tex = tex
+            elif position:
+                self._math[-1].append(tex)
+            else:
+                tex = " ".join((self._math_tex or tex).translate(_MATH_INVISIBLE).split())
+                self._math = None
+                if tex:
+                    self._emit(f"\n\n$${tex}$$\n\n" if self._math_block else f"${tex}$")
+
     def _truncate_skip_tags(self, index: int) -> None:
+        if self._math is not None:
+            self._close_math(index)
         for position, name in enumerate(self._skip_tags[index:], start = index):
             self._skip_at[name].pop()
             self._skip_ns_at[(self._skip_namespaces[position], name)].pop()
@@ -1440,6 +1498,8 @@ class _MarkdownRenderer(HTMLParser):
         del self._skip_html_integration[index:]
 
     def _clear_skip_tags(self) -> None:
+        if self._math is not None:
+            self._close_math(0)
         self._skip_tags.clear()
         self._skip_at.clear()
         self._skip_ns_at.clear()
@@ -1669,6 +1729,11 @@ class _MarkdownRenderer(HTMLParser):
                 self._skip_html_integration.append(
                     self._is_html_integration_point(tag, namespace, attr_dict)
                 )
+                if self._math is not None:
+                    self._math.append([])
+                    encoding = (attr_dict.get("encoding") or "").strip().lower()
+                    if tag == "annotation" and encoding == "application/x-tex":
+                        self._math_tex_at = position
             return
 
         if tag == "form" and self._form_pointer:
@@ -1683,6 +1748,10 @@ class _MarkdownRenderer(HTMLParser):
             self._prepare_table_start(tag)
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
+            if tag == "math" and not self._text_suppressed() and not _is_hidden_element(attr_dict):
+                self._math = [[]]
+                self._math_tex = (attr_dict.get("alttext") or "").strip()
+                self._math_block = (attr_dict.get("display") or "").strip().lower() == "block"
             self._skip_tags.append(tag)
             self._skip_at = {tag: [0]}
             namespace = self._html_start_namespace(tag)
@@ -2018,6 +2087,15 @@ class _MarkdownRenderer(HTMLParser):
         if self._title_scan is not None:
             self._title_scan.data(data)
         if self._skip_tags or self._hidden_marks or self._text_suppressed():
+            if self._math is None:
+                return
+            if len(self._skip_tags) - 1 == self._math_tex_at:
+                self._math[-1].append(data)
+            elif (
+                self._skip_namespaces[-1] == "math"
+                and self._skip_tags[-1] in _MATHML_TEXT_INTEGRATION_POINTS
+            ):
+                self._math[-1].append(_MATH_SPECIALS.sub(r"\\\g<0>", data))
             return
         if self._in_pre:
             self._count_header_text(data)
@@ -2028,38 +2106,21 @@ class _MarkdownRenderer(HTMLParser):
             self._count_header_text(data)
             self._emit(data)
             return
-        # Collapse all whitespace (including newlines) per HTML rules.
-        text = _WHITESPACE_RUN.sub(" ", data)
+        # Collapse ASCII whitespace (including newlines) per HTML rules.
+        text = _COLLAPSIBLE_RUN.sub(" ", data)
         # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
-        # Suppress whitespace-only nodes between table elements (source indentation).
-        if self._in_table and not self._in_cell and not text.strip():
+        # Drop whitespace-only nodes between table elements, except a caption's &nbsp; (Javadoc tab separators).
+        if (
+            self._in_table
+            and not self._in_cell
+            and not text.strip()
+            and not (self._open_at.get("caption") and not text.isascii())
+        ):
             return
         # Source indentation between <li> and its first block must not end the marker line.
         if self._li_marker_pending and not text.strip():
             return
-        self._emit(text)
-
-    def handle_entityref(self, name: str) -> None:
-        if self._record is not None:
-            self._record.append((3, name))
-        text = html.unescape(f"&{name};")
-        if self._title_scan is not None:
-            self._title_scan.data(text)
-        if self._text_suppressed():
-            return
-        self._count_header_text(text)
-        self._emit(text)
-
-    def handle_charref(self, name: str) -> None:
-        if self._record is not None:
-            self._record.append((4, name))
-        text = html.unescape(f"&#{name};")
-        if self._title_scan is not None:
-            self._title_scan.data(text)
-        if self._text_suppressed():
-            return
-        self._count_header_text(text)
         self._emit(text)
 
     def replay(self, events: list) -> None:
@@ -2071,15 +2132,16 @@ class _MarkdownRenderer(HTMLParser):
             elif kind == 0:
                 tag, attrs, self.lineno, self.offset = arg
                 start(tag, list(attrs))
-            elif kind == 1:
-                end(arg)
-            elif kind == 3:
-                self.handle_entityref(arg)
             else:
-                self.handle_charref(arg)
+                end(arg)
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
+        if self._math is not None:
+            # an annotation cut off mid-source must not override alttext or the MathML
+            if self._math_tex_at >= 0:
+                self._math[self._math_tex_at].clear()
+            self._close_math(0)
         # Headers first: a frame emits into the enclosing link or cell, which must still be open.
         self._flush_header_frames()
 
@@ -2189,9 +2251,7 @@ def _line_is_boilerplate(line: str) -> bool:
 
 
 def _fence_state(line: str, fence: int) -> int:
-    """Fence width after *line*, 0 outside a block. Every pass over rendered text
-    must agree with ``_fence_for``: a block opened with a longer fence is closed
-    only by a run at least as long, so a literal ``` inside it is content."""
+    """Fence width after a line, 0 outside a block; every pass must agree with _fence_for."""
     stripped = line.strip()
     if len(stripped) < 3 or stripped.count("`") != len(stripped):
         return fence
@@ -2224,8 +2284,8 @@ def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> 
 
 class _TokenLog:
     """Handler calls of one document, recorded by the first fed pass and replayed by later ones.
-    Sound only while the renderer overrides just these five handlers and reads parser state only
-    via ``getpos()`` in ``handle_starttag``."""
+    Sound only while the renderer overrides just ``handle_starttag``, ``handle_endtag`` and
+    ``handle_data`` and reads parser state only via ``getpos()`` in ``handle_starttag``."""
 
     __slots__ = ("events", "armed")
 
@@ -2337,6 +2397,7 @@ def _select_main_scope_render(
         )
         if site_links is not None:
             scored = site_links.clean(scored)
+        scored = _fold_kept_spaces(scored)
         visible = _visible_chars(scored)
         prose = visible - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
@@ -2384,8 +2445,17 @@ def _render_main_document(
     return _visible_chars(scored), rendered
 
 
+def _fold_kept_spaces(text: str) -> str:
+    """Scoring view of *text*: a space run holding U+00A0 or another kept Unicode space is layout
+    padding, so it counts as one space, while pure ASCII runs (code indentation) stay as rendered."""
+    if text.isascii() or not _KEPT_SPACE.search(text):
+        return text
+    return _KEPT_SPACE_RUN.sub(" ", text)
+
+
 def _visible_chars(text: str) -> int:
     """count visible nonblank characters without link targets; callers subtract tracked heading prose."""
+    text = _fold_kept_spaces(text)
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
@@ -2393,18 +2463,14 @@ _BACKTICK_RUN = re.compile(r"`+")
 
 
 def _fence_for(raw: str) -> str:
-    """Fence long enough to survive backticks in *raw*, as CommonMark requires:
-    a literal ``` line inside the block would otherwise close it early."""
+    """Must outrun backtick runs in raw (CommonMark), or a literal fence line closes it early."""
     if "`" not in raw:
         return "```"
     return "`" * max(3, max(map(len, _BACKTICK_RUN.findall(raw))) + 1)
 
 
 def _visible_len(line: str) -> int:
-    """Length of *line* without Markdown link destinations. A tracking URL is not
-    prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
-    characters off 4 and displaced the article. Linear: once a destination fails to
-    close, the rest are answered from one table instead of a rescan each."""
+    """Visible length without Markdown link destinations: a tracking URL is not prose; scan is linear."""
     if "[" not in line and "\\" not in line:
         return len(line)
     total, i, n = 0, 0, len(line)
@@ -2448,9 +2514,7 @@ def _visible_len(line: str) -> int:
 
 
 def _destination_ends(line: str) -> dict:
-    """End of the destination scan from each reachable position, for scans that close. All scans
-    step over the same positions, so a scan from p closes where the paren-depth prefix sum first
-    drops below its value at p."""
+    """Where a scan from each position closes: the paren-depth prefix sum first drops below its start."""
     steps: list[int] = []
     sums: list[int] = []
     depth, k, n = 0, 0, len(line)
@@ -2482,6 +2546,17 @@ _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
 _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 # absent text = no generated span cells, so a pass needs no span-free scoring re-render
 _SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
+_NOSCRIPT_TAG = re.compile(r"<(/?)noscript\b", re.IGNORECASE)
+# html.unescape raises once a decimal reference has more digits, leading zeros included, than
+# int()'s limit, which Python never sets below 640
+_LONG_DECIMAL_REF = re.compile(r"&#([0-9]{641,})")
+
+
+def _short_decimal_ref(match: re.Match[str]) -> str:
+    """The reference without its leading zeros, or &#65533 (U+FFFD, what html.unescape gives past
+    U+10FFFF) when 8 or more digits remain."""
+    digits = match.group(1).lstrip("0") or "0"
+    return "&#" + (digits if len(digits) < 8 else "65533")
 
 
 def html_to_markdown(
@@ -2493,6 +2568,7 @@ def html_to_markdown(
 ) -> str:
     """convert HTML to Markdown; main_content prefers a dominant article or main subtree, site_links records same-site links without changing output, and max_span_chars limits generated table cells."""
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
+    source_html = _LONG_DECIMAL_REF.sub(_short_decimal_ref, source_html)
     span_limit = 2 * len(source_html)
     if max_span_chars is not None:
         span_limit = min(span_limit, max_span_chars)
@@ -2535,4 +2611,16 @@ def html_to_markdown(
             rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)
+    if not rendered.strip() and _NOSCRIPT_TAG.search(source_html):
+        # read whole: scoped, a link card's <article> inside one post would stand in for the thread
+        exposed = _NOSCRIPT_TAG.sub(r"<\1div", source_html)
+        if main_content:
+            visible, fallback = _render_main_document(exposed, site_links, span_limit)
+        else:
+            fallback = _render(exposed, None, site_links = site_links, span_char_limit = span_limit)
+            visible = _visible_chars(
+                site_links.clean(fallback) if site_links is not None else fallback
+            )
+        if visible >= _MIN_MAIN_CONTENT_CHARS:
+            rendered = fallback
     return site_links.finish(rendered) if site_links is not None else rendered

@@ -13,6 +13,7 @@ from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
+    follow_os_reduced_motion,
     install_wall_clock_watchdog,
     report_failing_step,
     step_budget_s,
@@ -153,7 +154,7 @@ def check_widths(page):
         step(f"measure the {preset!r} preset across 7 viewports")
         page.set_viewport_size({"width": 1440, "height": 900})
         page.keyboard.press("Control+,")
-        page.get_by_role("dialog").get_by_role("button", name = "Appearance", exact = True).click()
+        page.get_by_role("dialog").get_by_role("button", name = "Chat", exact = True).click()
         page.get_by_role("combobox", name = "Chat width").click()
         # By position, not label: the option text is copy (#16408 renamed Standard to Default).
         page.get_by_role("listbox").get_by_role("option").nth(index).click()
@@ -216,6 +217,7 @@ if __name__ == "__main__":
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport = {"width": 1440, "height": 900}, reduced_motion = "reduce")
+        follow_os_reduced_motion(page.context)
         step("sign in and seed a thread")
         token = sign_in(page)
         thread_id = os.environ.get("CHAT_THREAD_ID") or seed_thread(page, token)

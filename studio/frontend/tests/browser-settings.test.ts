@@ -565,6 +565,9 @@ test("files that run code are recognised however the name is cased, padded or pa
   for (const { name, dangerous } of fixture.cases) assert.equal(isDangerousDownload(name), dangerous, name);
   assert.equal(isDangerousDownload("C:\\Users\\a\\setup.exe"), true);
   assert.equal(isDangerousDownload("dir.exe/readme.txt"), false);
+  // Terminal opens a .term and runs its ExecutionString; tcsh sits with csh, ksh and zsh.
+  assert.equal(isDangerousDownload("notes.term"), true);
+  assert.equal(isDangerousDownload("run.tcsh"), true);
   // Saved names are cut to 240 bytes: a tail too long to keep as the extension is cut off, leaving .exe last.
   assert.equal(isDangerousDownload(`${"a".repeat(236)}.exe${"x".repeat(40)}`), true);
   assert.equal(isDangerousDownload(`${"a".repeat(300)}.txt`), false);

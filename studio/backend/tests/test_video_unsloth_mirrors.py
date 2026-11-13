@@ -202,8 +202,7 @@ def test_the_fp8_repos_still_resolve_their_own_prequant_rows():
 
 
 def test_no_video_fetch_reads_a_comfy_or_third_party_repack(tmp_path, monkeypatch):
-    """Even with the old Comfy-Org / QuantStack repack fully cached, the H3 VAEs, the H3 conditioner and the Wan GGUFs
-    come from unsloth/*."""
+    """Even with Comfy-Org and QuantStack repacks cached, H3 and Wan files come from unsloth/*."""
     from core.inference.diffusion_families import legacy_source_repo
     from core.inference.video_minimax_h3 import H3_AUDIO_VAE, H3_VIDEO_VAE, h3_component_source
     from core.inference.video_minimax_h3_te import h3_te_quant_source
@@ -1083,8 +1082,7 @@ def _walk_a_load(
 ):
     import huggingface_hub
 
-    # The assembly stand-in drives the real diffusers config readers; without diffusers the load would record the
-    # ImportError as its error rather than skip.
+    # Needs diffusers: without the skip, the load records its ImportError instead of skipping.
     pytest.importorskip("diffusers")
 
     _HubRecorder.listings, _HubRecorder.downloads, _HubRecorder.config_reads = [], [], []
@@ -1176,8 +1174,7 @@ def test_every_hub_call_of_a_load_matches_its_plan(
     )
     pinned = {(p.repo, p.revision) for p in plan.values()}
     assert {(repo, rev) for repo, rev, _ in _HubRecorder.downloads} <= pinned
-    # Listings are read from the listing repos only (the mirror, never the vendor id), at the plan's commit or before
-    # the plan existed.
+    # Listings come from mirror repos only, never the vendor id, at the plan commit or before.
     assert {repo for repo, _ in _HubRecorder.listings} <= {_GGUF_REPO, _WAN_MIRROR}
     revisions = {p.revision for p in plan.values()} | {None}
     assert {rev for _, rev in _HubRecorder.listings} <= revisions
@@ -1290,8 +1287,7 @@ def test_expected_total_counts_identical_blobs_once(empty_cache, monkeypatch):
 
 @pytest.mark.parametrize("te_fetch_falls_back", [False, True])
 def test_roles_sharing_a_repo_share_one_commit(empty_cache, monkeypatch, te_fetch_falls_back):
-    """An FP8 pick from the carrier that also mirrors the base: both roles list that repo once and pin one commit,
-    even though its main moves mid-load."""
+    """A repo shared by two roles is listed once, pinned to one commit while its main moves."""
     plan, captured = _walk_a_load(
         empty_cache,
         monkeypatch,

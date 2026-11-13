@@ -6,6 +6,7 @@ import {
   getHfEndpoint,
   hasDatasetsServer,
 } from "@/lib/hf-endpoint";
+import type { ImageCheckpointFile } from "../download-manager/required-assets";
 import { LruMap } from "./lru-map";
 import { fetchWithTimeout } from "./network";
 import { fingerprintToken } from "./token-fingerprint";
@@ -79,7 +80,7 @@ function fetchCachedSize<T>(
     return Promise.resolve(entry.kind === "value" ? entry.value : null);
   }
   const existing = inflight.get(cacheKey);
-  if (existing) return attachInflight(existing, signal);
+  if (existing && !existing.cancelledByConsumers) return attachInflight(existing, signal);
 
   let timedOut = false;
   const controller = new AbortController();
@@ -98,6 +99,7 @@ function fetchCachedSize<T>(
   inflightEntry.promise = (async (): Promise<T | null> => {
     try {
       const result = await load(controller.signal);
+      if (inflightEntry.cancelledByConsumers) return null;
       if ("value" in result) {
         cache.set(cacheKey, { kind: "value", value: result.value });
         return result.value;
@@ -135,7 +137,7 @@ function fetchCachedSize<T>(
     } finally {
       clearTimeout(timeout);
       inflightEntry.settled = true;
-      inflight.delete(cacheKey);
+      if (inflight.get(cacheKey) === inflightEntry) inflight.delete(cacheKey);
     }
   })();
 
@@ -259,9 +261,13 @@ export function fetchDatasetSize(
 export interface ModelSizeInfo {
   totalBytes: number | null;
   weightsBytes: number | null;
+  revision?: string;
+  imageCheckpointCandidates?: ImageCheckpointFile[];
 }
 
 interface ModelInfoApiResponse {
+  sha?: string;
+  config?: { diffusers?: { _class_name?: string } };
   siblings?: Array<{
     rfilename?: string;
     size?: number;
@@ -314,6 +320,49 @@ function redundantTorchBinFiles(names: string[]): Set<string> {
       variant = index[1] ?? index[2];
     }
     if (variantShipsAsSafetensors(names, variant)) out.add(name);
+  }
+  return out;
+}
+
+// Mirrors pipeline_pickle_files (diffusers_safetensors.py, via diffusers_pickle_files in snapshot_filters.py):
+// a diffusers pipeline repo skips a .pt / .pth / .ckpt / .pkl inside a component folder or beside its same-stem
+// .safetensors twin (a root pickle with no twin is the only copy and stays), and a .bin beside safetensors weights.
+const PIPELINE_MANIFESTS = ["model_index.json", "modular_model_index.json"];
+const NEVER_READ_PICKLE_RE = /\.(pt|pth|ckpt|pkl|pickle)$/i;
+// Mirrors _MODEL_SAFETENSORS: only a component's own non-variant weights make its .bin redundant.
+const MODEL_SAFETENSORS_RE =
+  /^(diffusion_pytorch_model|model)(-\d+-of-\d+)?\.safetensors(\.index\.json)?$/;
+
+function folderOf(name: string): string {
+  const slash = name.lastIndexOf("/");
+  return slash >= 0 ? name.slice(0, slash) : "";
+}
+
+function diffusersPickleFiles(names: string[]): Set<string> {
+  const out = new Set<string>();
+  if (!names.some((n) => PIPELINE_MANIFESTS.includes(n))) return out;
+  const safetensorsFolders = new Set(
+    names
+      .filter((n) => MODEL_SAFETENSORS_RE.test(basename(n)))
+      .map(folderOf),
+  );
+  const safetensorsStems = new Set(
+    names
+      .filter((n) => n.toLowerCase().endsWith(".safetensors"))
+      .map((n) => n.slice(0, -".safetensors".length).toLowerCase()),
+  );
+  for (const n of names) {
+    const lower = n.toLowerCase();
+    if (NEVER_READ_PICKLE_RE.test(lower)) {
+      if (folderOf(n) !== "" || safetensorsStems.has(lower.slice(0, lower.lastIndexOf(".")))) {
+        out.add(n);
+      }
+    } else if (
+      (lower.endsWith(".bin") || lower.endsWith(".bin.index.json")) &&
+      safetensorsFolders.has(folderOf(n))
+    ) {
+      out.add(n);
+    }
   }
   return out;
 }
@@ -380,6 +429,7 @@ function isSnapshotIgnored(
   skipDuplicateFormats: boolean,
   redundantBins: Set<string>,
   precisionFolders: Set<string> = new Set(),
+  pipelinePickles: Set<string> = new Set(),
 ): boolean {
   const lower = filename.toLowerCase();
   const folder = filename.includes("/") ? filename.slice(0, filename.indexOf("/")) : "";
@@ -390,6 +440,7 @@ function isSnapshotIgnored(
     lower.startsWith("openvino/") ||
     lower.startsWith("mlx/") ||
     lower.endsWith(".bin.index.json.bak") ||
+    pipelinePickles.has(filename) ||
     (skipConsolidated && lower.startsWith("consolidated")) ||
     (skipDuplicateFormats &&
       (DUPLICATE_WEIGHT_FORMAT_RE.test(filename) || redundantBins.has(filename) ||
@@ -426,6 +477,14 @@ export function fetchModelSize(
       }
       const data = (await res.json()) as ModelInfoApiResponse;
       const siblings = data.siblings ?? [];
+      // SDXL repos can package alternate whole checkpoints alongside their Diffusers component folders.
+      const imageCheckpointCandidates = data.config?.diffusers?._class_name === "StableDiffusionXLPipeline"
+        ? siblings.flatMap(({ rfilename, size }) =>
+            rfilename && /^[^/\\]+\.safetensors$/i.test(rfilename) && !/[-_]\d+-of-\d+\./i.test(rfilename)
+              ? [{ filename: rfilename, bytes: size ?? null }]
+              : [],
+          )
+        : [];
       const skipConsolidated = shipsTransformersWeights(siblings);
       const skipDuplicateFormats = shipsRootSafetensors(siblings);
       const names = siblings.map((s) => s.rfilename ?? "");
@@ -433,6 +492,7 @@ export function fetchModelSize(
       const precisionFolders = names.includes("config.json")
         ? precisionVariantFolders(names)
         : new Set<string>();
+      const pipelinePickles = diffusersPickleFiles(names);
       let total = 0;
       let weights = 0;
       for (const s of siblings) {
@@ -446,6 +506,7 @@ export function fetchModelSize(
             skipDuplicateFormats,
             redundantBins,
             precisionFolders,
+            pipelinePickles,
           )
         ) {
           continue;
@@ -459,6 +520,7 @@ export function fetchModelSize(
         value: {
           totalBytes: total > 0 ? total : null,
           weightsBytes: weights > 0 ? weights : null,
+          ...(imageCheckpointCandidates.length ? { imageCheckpointCandidates, revision: data.sha } : {}),
         },
       };
     },
