@@ -377,11 +377,12 @@ AREAS: dict[str, dict] = {
         "covers": ["Search"],
     },
     "model_picker": {
-        "open": ("click", "button.unsloth-model-selector-trigger"),
+        # The composer's model chip; its label reads "Model: <name>" (or "Model: Select model").
+        "open": ("click", 'button[data-tour="chat-model-selector"]'),
         "ready": ("overlay",),
         "close": ("key", "Escape"),
         "gone": ("overlay_gone",),
-        "covers": ["popover-trigger:Select model", f"popover-trigger:{STUB_MODEL.split('/')[-1]}"],
+        "covers": ["popover-trigger:Model: "],
     },
     "composer_menu": {
         "open": ("key", "Mod+Shift+Period"),

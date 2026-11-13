@@ -13,6 +13,8 @@ import {
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning.ts";
 
+export type NewModelCheckInterval = "launch" | "daily" | "weekly" | "off";
+
 export interface ExternalProviderConfig {
   id: string;
   providerType: string;
@@ -40,6 +42,8 @@ export interface ExternalProviderConfig {
   promptCacheTtl?: "5m" | "1h";
   isReasoningModel?: boolean;
   autoReloadModels?: boolean;
+  /** Unset = daily. */
+  newModelCheck?: NewModelCheckInterval;
   openaiContainerTtlMinutes?: number;
   createdAt: number;
   updatedAt: number;
@@ -657,6 +661,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
       : undefined,
     autoReloadModels:
       providerType === "llama_cpp" ? raw.autoReloadModels === true : undefined,
+    newModelCheck: isNewModelCheckInterval(raw.newModelCheck) ? raw.newModelCheck : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof raw.openaiContainerTtlMinutes === "number" &&
@@ -720,6 +725,65 @@ export function saveConnectionsEnabled(enabled: boolean): void {
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(CONNECTIONS_ENABLED_KEY, enabled ? "true" : "false");
+  } catch {
+    // ignore
+  }
+}
+
+const NEW_CONNECTION_PREFIX = "new:";
+
+/** A Settings > Connections request that opens the add form, preset to `providerType` when given. */
+export function newConnectionRequest(providerType?: string | null): string {
+  return `${NEW_CONNECTION_PREFIX}${providerType ?? ""}`;
+}
+
+/** The provider type a `newConnectionRequest` asks for: "" for any, null when it is not one. */
+export function newConnectionRequestType(request: string): string | null {
+  return request.startsWith(NEW_CONNECTION_PREFIX)
+    ? request.slice(NEW_CONNECTION_PREFIX.length)
+    : null;
+}
+
+const NEW_MODEL_CHECKS_AT_KEY = "unsloth_chat_connections_new_model_checked_at";
+
+export const NEW_MODEL_CHECK_INTERVALS: readonly NewModelCheckInterval[] = [
+  "launch",
+  "daily",
+  "weekly",
+  "off",
+];
+
+export function isNewModelCheckInterval(value: unknown): value is NewModelCheckInterval {
+  return NEW_MODEL_CHECK_INTERVALS.some((interval) => interval === value);
+}
+
+export function newModelCheckOf(provider: { newModelCheck?: NewModelCheckInterval }) {
+  return provider.newModelCheck ?? "daily";
+}
+
+/** Persisted so "weekly" survives restarts. */
+export function loadNewModelChecksAt(): Record<string, number> {
+  if (!canUseStorage()) return {};
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(NEW_MODEL_CHECKS_AT_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, number] => typeof entry[1] === "number",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+export function saveNewModelCheckAt(providerId: string, at: number): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(
+      NEW_MODEL_CHECKS_AT_KEY,
+      JSON.stringify({ ...loadNewModelChecksAt(), [providerId]: at }),
+    );
   } catch {
     // ignore
   }

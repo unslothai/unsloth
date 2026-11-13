@@ -172,6 +172,8 @@ def test_qkv_fusion_skips_a_mapped_denoiser(mapped):
         torch.bfloat16
     )
     if mapped:
+        # mapping goes through diffusers' layerwise casting, like the bit-for-bit test above
+        pytest.importorskip("diffusers.hooks")
         sh.prepare_streamed_encoder_(transformer, torch.float16)
     calls = []
 

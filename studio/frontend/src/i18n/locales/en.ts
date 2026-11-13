@@ -1043,7 +1043,8 @@ export const en = {
       showMore: "Show more",
       showLess: "Show less",
       settings: "Settings",
-      api: "API Monitor",
+      api: "API",
+      apiMonitor: "API Monitor",
       lightMode: "Light Mode",
       darkMode: "Dark Mode",
       guidedTour: "Guided Tour",
@@ -3594,7 +3595,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth via the OpenAI- and Anthropic-compatible API.",
+      description: "Access Unsloth through an API compatible with OpenAI and Anthropic.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",

@@ -259,7 +259,7 @@ import {
   type NumericValueInputHandle,
 } from "./numeric-value-input";
 
-const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
+const ROW_CLASS = "config-row flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
   "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
@@ -3189,11 +3189,17 @@ export function ModelConfigPage({
   const contextAtDefault = !target.isGguf
     ? savedContextPin(config) == null
     : config.customContextLength == null;
+  // Normalized as the set store compares: a loaded config spells its defaults out
+  // (`speculativeType: "auto"`, `gpuLayers: -1`), which read raw made Default look edited.
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(
-      { ...config, customContextLength: null },
-      DEFAULT_PER_MODEL_CONFIG,
+      normalizePerModelConfig(
+        storedSpeculativeAuto({ ...config, customContextLength: null }, targetIsMlx),
+      ),
+      normalizePerModelConfig(
+        storedSpeculativeAuto(DEFAULT_PER_MODEL_CONFIG, targetIsMlx),
+      ),
     );
   const nativeMaxSeqLength =
     floorMaxSeqLength(
@@ -4074,7 +4080,7 @@ export function ModelConfigPage({
     >
       {variant === "page" && showHeader && (
         // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
-        <div className="flex items-center gap-2.5 pb-5">
+        <div data-config-header="" className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
@@ -4090,17 +4096,11 @@ export function ModelConfigPage({
             </button>
           )}
           <div className="min-w-0 flex-1">
-            <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+            <div data-config-eyebrow="" className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
+            <div data-config-title="" className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
-            </div>
-            <div
-              className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground"
-              aria-live="polite"
-            >
-              {saveStatus || "\u00a0"}
             </div>
           </div>
         </div>
@@ -4324,12 +4324,13 @@ export function ModelConfigPage({
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
       <div
+        data-pinned-footer={variant === "page" || undefined}
         className={cn(
           "mt-5",
           // Sticky offsets start inside the scroller's 18px padding: -bottom-4.5 reaches the panel edge,
           // and the negative margins cover that padding with the panel's fill.
           variant === "page" &&
-            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4.5 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
+            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-[var(--run-settings-pad-l,calc(var(--spacing)*7))] -mr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] bg-popover pb-4.5 pl-[var(--run-settings-pad-l,calc(var(--spacing)*7))] pr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] dark:bg-sidebar",
         )}
       >
       {/* pt-4.25 plus the 1px rule: 18px above the picker, as below the buttons. */}
@@ -4354,12 +4355,13 @@ export function ModelConfigPage({
         <div
           className={cn(
             "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2",
-            naming && (variant === "sidebar" ? "hidden" : "invisible"),
+            // The sidebar's name box takes this row; the page keeps it, its checkbox disabled meanwhile.
+            naming && variant === "sidebar" && "hidden",
           )}
         >
           <Checkbox
             id={alwaysLoadId}
-            className="size-3.5 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
+            className="size-[calc(13px*var(--ui-space-scale,1))] rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
             aria-label="Always load with these settings"
             aria-describedby={saveStatusId}
             checked={selectedSet !== null && selectedSet === pinnedSet}
@@ -4398,6 +4400,7 @@ export function ModelConfigPage({
             variant="dark"
             type="button"
             size="sm"
+            className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/85"
             disabled={
               sharedVariantUnresolved ||
               ((config.engine ?? "auto") !== "auto" && !engineReady) ||
