@@ -112,6 +112,7 @@ import {
   paramsFromId,
   pickerOrderedGgufVariants,
   pinDropAnchor,
+  searchRowFitsDevice,
   taskForMediaPick,
   useChatPickerInventory,
   useModelLoadTimes,
@@ -1496,7 +1497,8 @@ export function ComposerModelPicker({
   const npuModels = npuCatalog?.models ?? null;
   const online = useOnlineStatus();
   const hfToken = useHfTokenStore((s) => s.token);
-  const quantFormats = useGpuInfo(open).checkpointQuantFormats;
+  const gpuInfo = useGpuInfo(open);
+  const quantFormats = gpuInfo.checkpointQuantFormats;
   const isMac = usePlatformStore((s) => s.deviceType === "mac");
   // The field already waits SEARCH_DEBOUNCE_MS; together they keep the Hub's 300 ms.
   const hubQuery = useDebouncedValue(
@@ -1562,6 +1564,34 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults, fitOf]);
+  // MLX and safetensors rows have no quant to size: the header picker's checkpoint rule judges them.
+  const hubCheckpointFits = useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const r of hubResults) {
+      if (r.isGguf) {
+        continue;
+      }
+      map.set(
+        r.id.toLowerCase(),
+        searchRowFitsDevice(
+          {
+            id: r.id,
+            totalParams: r.totalParams,
+            estimatedSizeBytes: r.estimatedSizeBytes,
+            quantMethod: r.quantMethod,
+          },
+          {
+            isGguf: false,
+            gpu: gpuInfo,
+            inferenceGpu,
+            taskScoped: false,
+            budgetFraction,
+          },
+        ),
+      );
+    }
+    return map;
+  }, [hubResults, gpuInfo, inferenceGpu, budgetFraction]);
   const hubParams = useMemo(() => {
     const map = new Map<string, string>();
     for (const r of hubResults) {
@@ -2194,6 +2224,10 @@ export function ComposerModelPicker({
         ) {
           return true;
         }
+        const checkpointFits = hubCheckpointFits.get(row.id.toLowerCase());
+        if (checkpointFits !== undefined) {
+          return checkpointFits;
+        }
         const fit = hubFit.get(row.id.toLowerCase());
         return !isOverBudget(fit) || (fit === "ram" && noGpu);
       });
@@ -2241,6 +2275,7 @@ export function ComposerModelPicker({
     loadTimes,
     fitOnDeviceOnly,
     hubFit,
+    hubCheckpointFits,
     noGpu,
     chosenId,
     connectedSort,

@@ -18,6 +18,7 @@ export {
 export {
   hfModelFitsDevice,
   loadScopedGpu,
+  searchRowFitsDevice,
 } from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,

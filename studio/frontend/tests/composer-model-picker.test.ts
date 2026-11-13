@@ -997,3 +997,14 @@ test("native-audio adapters stay out of the picker unless merged", async () => {
     /\(lora\.audioType && !listsAudio\) \|\|\s*!nativeAudioCheckpointIsLoadable\(lora\.audioType, lora\.exportType\)/,
   );
 });
+
+test("Only models that fit judges MLX and safetensors results by the checkpoint rule", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /searchRowFitsDevice\(\s*\{\s*id: r\.id,/);
+  assert.match(
+    picker,
+    /const checkpointFits = hubCheckpointFits\.get\(row\.id\.toLowerCase\(\)\);\s*if \(checkpointFits !== undefined\) \{\s*return checkpointFits;/,
+  );
+});
