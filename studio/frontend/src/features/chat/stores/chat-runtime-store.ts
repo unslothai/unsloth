@@ -3723,12 +3723,13 @@ function getHydratedSettingsState(
   }
   if (serverFullAccess === true) {
     if (state.permissionMode !== "full") fullAccessRestoredUnconfirmed = true;
-    Object.assign(nextState, appFullAccessState(), {
-      codeToolsDeclinedUnderFullAccess:
-        state.permissionMode === "full"
-          ? codeDeclinedOnEnteringFullAccess(state)
-          : codeDeclinedOnRestore(nextState.codeToolsEnabled ?? state.codeToolsEnabled),
-    });
+    const codeToolsDeclinedUnderFullAccess =
+      state.permissionMode === "full"
+        ? codeDeclinedOnEnteringFullAccess(state)
+        : codeDeclinedOnRestore(nextState.codeToolsEnabled ?? state.codeToolsEnabled);
+    // Saved here too, or the next reload starts with Code back on under Full access.
+    rememberFullAccessCodeOff(codeToolsDeclinedUnderFullAccess);
+    Object.assign(nextState, appFullAccessState(), { codeToolsDeclinedUnderFullAccess });
   } else if (leavesAppFullAccess) {
     const permissionMode =
       nextState.permissionMode ??

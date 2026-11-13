@@ -162,6 +162,11 @@ test("a server restore of Full access keeps Code off when its switch is off", as
   await state().hydratePersistedSettings();
   assert.equal(state().permissionMode, "full");
   assert.equal(state().codeToolsDeclinedUnderFullAccess, true);
+
+  const reloaded = await restart("server-code-off-reload", { fullAccess: true, codeToolsEnabled: false });
+  assert.equal(reloaded.state().codeToolsDeclinedUnderFullAccess, true, "before hydration");
+  await reloaded.state().hydratePersistedSettings();
+  assert.equal(reloaded.state().codeToolsDeclinedUnderFullAccess, true, "after hydration");
 });
 
 test("ask, auto and off still restore as before and never turn on Full access", async () => {
