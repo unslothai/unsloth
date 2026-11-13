@@ -4,7 +4,6 @@
 import { streamOneShotCompletion } from "@/features/chat";
 import { cleanTranslation } from "./translate-prompt";
 
-/** Room for a long passage. */
 const TRANSLATE_MAX_TOKENS = 4096;
 
 export class TranslateLengthError extends Error {
@@ -13,7 +12,6 @@ export class TranslateLengthError extends Error {
   }
 }
 
-/** Streams one translation on `checkpoint`; `onText` gets the cleaned text so far. */
 export async function streamTranslation({
   checkpoint,
   systemPrompt,

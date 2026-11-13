@@ -5,11 +5,7 @@ import { streamChatCompletions } from "../api/chat-api";
 import { buildTitleRequest } from "./chat-title";
 import { extractDeltaText } from "./parse-assistant-content";
 
-/**
- * One system + user turn on `checkpoint` (a local model or a connected provider) with tools and
- * thinking off, outside any chat. The title request already routes both kinds and gates their
- * sampling fields, so this only lifts its token cap. Null when the connection is unavailable.
- */
+// Reuses the title request's routing and sampling gates; only the token cap is lifted.
 export async function streamOneShotCompletion({
   checkpoint,
   systemPrompt,
@@ -23,7 +19,6 @@ export async function streamOneShotCompletion({
   prompt: string;
   maxTokens: number;
   signal: AbortSignal;
-  /** The raw text so far, after each delta. */
   onText?: (text: string) => void;
 }): Promise<{ text: string; finishReason: string | null } | null> {
   const base = await buildTitleRequest(checkpoint, prompt, systemPrompt);

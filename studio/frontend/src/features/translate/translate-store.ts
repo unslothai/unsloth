@@ -9,6 +9,7 @@ import {
   type TranslateSourceLanguage,
   type TranslateTone,
   type TranslationEntry,
+  capHistory,
   isTranslateLanguage,
   isTranslateMode,
   isTranslateSource,
@@ -16,8 +17,6 @@ import {
 } from "./translate-prompt";
 
 export const TRANSLATE_STORAGE_KEY = "unsloth_translate";
-/** Keeps the persisted record well under localStorage quotas; the oldest entries go first. */
-export const MAX_TRANSLATE_HISTORY = 200;
 
 export interface TranslateState {
   source: TranslateSourceLanguage;
@@ -25,7 +24,6 @@ export interface TranslateState {
   mode: TranslateMode;
   tone: TranslateTone;
   showSystemPrompt: boolean;
-  /** Newest first. */
   history: TranslationEntry[];
   setSource: (source: TranslateSourceLanguage) => void;
   setTarget: (target: TranslateLanguageCode) => void;
@@ -69,7 +67,7 @@ function sanitize(persisted: unknown, current: TranslateState): TranslateState {
         ? raw.showSystemPrompt
         : current.showSystemPrompt,
     history: Array.isArray(raw.history)
-      ? raw.history.filter(isEntry).slice(0, MAX_TRANSLATE_HISTORY)
+      ? capHistory(raw.history.filter(isEntry))
       : current.history,
   };
 }
@@ -90,7 +88,7 @@ export const useTranslateStore = create<TranslateState>()(
       setShowSystemPrompt: (showSystemPrompt) => set({ showSystemPrompt }),
       addEntry: (entry) =>
         set((state) => ({
-          history: [entry, ...state.history].slice(0, MAX_TRANSLATE_HISTORY),
+          history: capHistory([entry, ...state.history]),
         })),
       removeEntry: (id) =>
         set((state) => ({
@@ -100,7 +98,6 @@ export const useTranslateStore = create<TranslateState>()(
     }),
     {
       name: TRANSLATE_STORAGE_KEY,
-      // pinned so later shape changes can migrate from this version.
       version: 1,
       // drop newer versions that may reuse these field names.
       migrate: (persisted, version) =>

@@ -13,9 +13,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  NEW_CHAT_DRAFT_ID,
   composerDraftKey,
   latestDraft,
   publishDraft,
+  useChatPreferencesStore,
   useChatRuntimeStore,
   writeComposerDraft,
 } from "@/features/chat";
@@ -61,7 +63,6 @@ import {
 } from "./translate-prompt";
 import { useTranslateStore } from "./translate-store";
 
-/** How many of the newest translations "Chat with translated text" carries into the chat. */
 const CHAT_HANDOFF_ENTRIES = 5;
 const AUTO = "auto";
 
@@ -76,7 +77,6 @@ const TONE_LABEL = {
   casual: "translate.tones.casual",
 } as const satisfies Record<TranslateTone, TranslationKey>;
 
-// The picker reads in the UI language; the prompt always names languages in English.
 function useLanguageLabel(): (code: string) => string {
   const locale = useLocale();
   return useMemo(() => {
@@ -84,7 +84,7 @@ function useLanguageLabel(): (code: string) => string {
     try {
       names = new Intl.DisplayNames([locale, "en"], { type: "language" });
     } catch {
-      // Older engines without DisplayNames fall back to the English names.
+      // No Intl.DisplayNames: the English names below.
     }
     return (code: string) =>
       names?.of(code) ??
@@ -230,11 +230,17 @@ export function TranslatePage() {
   function chatWithTranslations(entries: readonly TranslationEntry[]) {
     const handoff = buildChatHandoff(entries);
     if (!handoff) return;
-    // The composer draft follows the user into the new chat; an unsent draft stays after it.
-    const draft = latestDraft();
+    const shared = useChatPreferencesStore.getState().shareComposerDraft;
+    const key = composerDraftKey(NEW_CHAT_DRAFT_ID, shared);
+    const draft = latestDraft(key);
     const text = draft.trim() ? `${handoff}${draft}` : handoff;
-    writeComposerDraft(composerDraftKey(), text);
-    publishDraft(text, TRANSLATE_DRAFT_SOURCE);
+    writeComposerDraft(key, text);
+    if (shared) publishDraft(text, TRANSLATE_DRAFT_SOURCE);
+    // As the sidebar's New chat: an incognito composer would hide the seeded draft.
+    const runtime = useChatRuntimeStore.getState();
+    runtime.setActiveThreadId(null);
+    runtime.setActiveProjectId(null);
+    runtime.setIncognito(false);
     void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
   }
 

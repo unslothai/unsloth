@@ -33,7 +33,6 @@ export const TRANSLATE_LANGUAGES = [
 
 export type TranslateLanguageCode =
   (typeof TRANSLATE_LANGUAGES)[number]["code"];
-/** "auto" lets the model detect the source language. */
 export type TranslateSourceLanguage = TranslateLanguageCode | "auto";
 
 export const TRANSLATE_MODES = ["automatic", "literal", "semantic"] as const;
@@ -111,7 +110,6 @@ const TONE_RULES: Record<TranslateTone, string> = {
     "Use a casual, conversational register. Everyday slang is allowed when it fits.",
 };
 
-/** The translator's instructions, also shown by the "Show system prompt" toggle. */
 export function buildTranslateSystemPrompt(options: TranslateOptions): string {
   const target = languageName(options.target);
   const source =
@@ -140,7 +138,7 @@ export function buildTranslateSystemPrompt(options: TranslateOptions): string {
   ].join("\n");
 }
 
-/** Drops reasoning (closed, still streaming, or opened by the chat template) and outer whitespace. */
+// Reasoning may be closed, still streaming, or opened by the chat template.
 export function cleanTranslation(raw: string): string {
   return raw
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
@@ -153,7 +151,6 @@ function entryLabel(entry: TranslationEntry): string {
   return `${languageName(entry.source)} -> ${languageName(entry.target)}`;
 }
 
-/** The text a "Chat with translated text" handoff puts in the composer: the recent pairs, oldest first. */
 export function buildChatHandoff(entries: readonly TranslationEntry[]): string {
   const blocks = [...entries]
     .sort((a, b) => a.createdAt - b.createdAt)
@@ -165,7 +162,6 @@ export function buildChatHandoff(entries: readonly TranslationEntry[]): string {
   return `Here are my recent translations:\n\n${blocks.join("\n\n---\n\n")}\n\n`;
 }
 
-/** Plain text with a timestamp per entry, oldest first, for UnslothTranslateFullHistory.txt. */
 export function exportTranslateHistory(
   entries: readonly TranslationEntry[],
 ): string {
@@ -184,3 +180,20 @@ export function exportTranslateHistory(
 }
 
 export const TRANSLATE_HISTORY_FILE_NAME = "UnslothTranslateFullHistory.txt";
+
+// A write over the localStorage quota would throw out of addEntry.
+export const MAX_TRANSLATE_HISTORY = 200;
+export const MAX_TRANSLATE_HISTORY_CHARS = 1_000_000;
+
+export function capHistory(
+  history: readonly TranslationEntry[],
+): TranslationEntry[] {
+  let chars = 0;
+  let keep = 0;
+  for (const entry of history.slice(0, MAX_TRANSLATE_HISTORY)) {
+    chars += entry.input.length + entry.output.length;
+    if (chars > MAX_TRANSLATE_HISTORY_CHARS && keep > 0) break;
+    keep += 1;
+  }
+  return history.slice(0, keep);
+}

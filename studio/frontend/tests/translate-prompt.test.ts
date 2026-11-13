@@ -4,11 +4,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  MAX_TRANSLATE_HISTORY,
+  MAX_TRANSLATE_HISTORY_CHARS,
   TRANSLATE_HISTORY_FILE_NAME,
   TRANSLATE_LANGUAGES,
   type TranslationEntry,
   buildChatHandoff,
   buildTranslateSystemPrompt,
+  capHistory,
   cleanTranslation,
   exportTranslateHistory,
   isTranslateLanguage,
@@ -101,4 +104,27 @@ test("the exported history timestamps each entry", () => {
   );
   assert.equal(exportTranslateHistory([]), "");
   assert.equal(TRANSLATE_HISTORY_FILE_NAME, "UnslothTranslateFullHistory.txt");
+});
+
+test("the history keeps the newest entries under both caps", () => {
+  const many = Array.from({ length: MAX_TRANSLATE_HISTORY + 5 }, (_, i) =>
+    entry({ id: String(i) }),
+  );
+  assert.equal(capHistory(many).length, MAX_TRANSLATE_HISTORY);
+  const half = "x".repeat(MAX_TRANSLATE_HISTORY_CHARS / 2);
+  const big = [0, 1, 2].map((i) =>
+    entry({ id: String(i), input: half, output: "" }),
+  );
+  assert.deepEqual(
+    capHistory(big).map((e) => e.id),
+    ["0", "1"],
+  );
+  const huge = entry({
+    id: "h",
+    input: "x".repeat(MAX_TRANSLATE_HISTORY_CHARS * 2),
+  });
+  assert.deepEqual(
+    capHistory([huge, ...big]).map((e) => e.id),
+    ["h"],
+  );
 });
