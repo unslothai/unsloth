@@ -296,7 +296,9 @@ def check_skills_command_draft(page, draft_key):
     saved_at_open = page.evaluate("window.draftAtSkillsOpen")
     page.reload(wait_until = "domcontentloaded")
     expect(composer).to_be_visible()
-    assert saved_at_open is None, f"{draft_key} still contained {saved_at_open!r} when Skills opened"
+    assert (
+        saved_at_open is None
+    ), f"{draft_key} still contained {saved_at_open!r} when Skills opened"
     expect(composer).to_have_value("")
     expect(user_messages).to_have_count(0)
 
@@ -1288,11 +1290,14 @@ with sync_playwright() as p:
                 """const key = "unsloth_chat_preferences";
                 const prefs = JSON.parse(localStorage.getItem(key)) ?? {state: {}, version: 1};
                 prefs.state.shareComposerDraft = %s;
-                localStorage.setItem(key, JSON.stringify(prefs));""" % json.dumps(shared)
+                localStorage.setItem(key, JSON.stringify(prefs));"""
+                % json.dumps(shared)
             )
             draft_page = draft_ctx.new_page()
             draft_page.goto(f"{BASE}/chat", wait_until = "domcontentloaded")
-            check_skills_command_draft(draft_page, "chat-draft:latest" if shared else "chat-draft:__new__")
+            check_skills_command_draft(
+                draft_page, "chat-draft:latest" if shared else "chat-draft:__new__"
+            )
 
     # The frontend stores the bearer under "unsloth_auth_token" (auth/session.ts).
     token = robust_evaluate(
