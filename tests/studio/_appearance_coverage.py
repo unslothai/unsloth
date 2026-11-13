@@ -18,7 +18,7 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[2] / "studio" / "frontend" / "src"
 MODEL_TS = SRC / "features" / "chat-background" / "model.ts"
-CUSTOM_TS = SRC / "features" / "settings" / "stores" / "appearance-custom-store.ts"
+CUSTOM_TS = SRC / "features" / "settings" / "lib" / "appearance-customization.ts"
 THEMES_TS = SRC / "features" / "settings" / "lib" / "color-themes.ts"
 
 # Measured by the `+custom` modes: the costliest value of each setting.
