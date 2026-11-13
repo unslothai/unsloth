@@ -605,6 +605,27 @@ def test_auto_falls_to_fp8_then_bf16_when_int8_is_ruled_out(h3i, monkeypatch):
     assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = 95.0)[0] == "int8"
 
 
+@pytest.mark.parametrize(
+    "rocm, cap",
+    [(True, (9, 4)), (True, (11, 5)), (True, (11, 0)), (False, (7, 0)), (False, (6, 1))],
+)
+def test_auto_keeps_the_fit_choice_on_rocm_and_pre_turing(h3i, monkeypatch, rocm, cap):
+    """ROCm capability is a gfx version and pre-Turing has no int8 tensor cores: auto stays bf16 where bf16 fits
+    (MI300X, a large Strix Halo carve-out) and int8 where it does not (V100 32 GB, P100), as before the order."""
+    pytest.importorskip("torchao")
+    import core._torchao_stub as stub
+
+    monkeypatch.setattr(stub, "torch_is_rocm", lambda: rocm)
+    _fake_card(monkeypatch, cap)
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 192.0)[0] is None
+    te = h3i.te_gb_for("int8")
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 192.0, host_gb = 512.0, te_gb = te)[0] is None
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 32.0)[0] == "int8"
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 16.0)[0] == "int8"
+    assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = 192.0)[0] == "int8"
+    assert h3i.resolve_dit_scheme("bf16", device = "cuda", vram_gb = 16.0)[0] is None
+
+
 def test_auto_off_cuda_stays_bf16(h3i):
     assert h3i.resolve_dit_scheme(None, device = "cpu", vram_gb = None)[0] is None
     assert h3i.resolve_dit_scheme("int8", device = "cpu", vram_gb = None)[0] is None
