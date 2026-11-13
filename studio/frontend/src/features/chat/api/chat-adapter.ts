@@ -5932,8 +5932,13 @@ export function createOpenAIStreamAdapter(
       let contextWindowExceeded = false;
       let quoteCut = false;
       // Provisional reason per yield since aborts skip terminal yields; a reported window outranks it.
+      // Attributes the token allowance pool even when a failed reply never gets responseDetails.
+      const tokenUsageProvider = isExternalRequest
+        ? externalProvider?.providerType
+        : undefined;
       const liveCustom = () => ({
         tokenUsageParentId: continuation?.sourceMessageId,
+        tokenUsageProvider,
         ...reasoningDurationTracker.metadata(),
         resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
         openaiCodexReasoning: codexReasoningLedger,
@@ -8940,6 +8945,7 @@ export function createOpenAIStreamAdapter(
             custom: {
               ...reasoningDurationTracker.metadata(),
               tokenUsageParentId: continuation?.sourceMessageId,
+              tokenUsageProvider,
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
@@ -9124,6 +9130,7 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 tokenUsageParentId: continuation?.sourceMessageId,
+                tokenUsageProvider,
                 contextTruncation,
                 compactionMarkers,
                 providerCompaction,

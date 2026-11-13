@@ -31,7 +31,8 @@ def _usage_columns(row: str) -> str:
              ELSE {timing_completion} END AS completion_tokens,
         {_count(row, "$.contextUsage.totalTokens")} AS reported_total,
         NULLIF({_count(row, "$.contextUsage.contextTokens")}, 0) AS context_tokens,
-        CASE WHEN COALESCE(json_extract({row}, '$.responseDetails.providerType'), 'local')
+        CASE WHEN COALESCE(json_extract({row}, '$.responseDetails.providerType'),
+                           json_extract({row}, '$.tokenUsageProvider'), 'local')
                   IN ('local', '') THEN 'local' ELSE 'external' END AS source
     """
 
@@ -155,7 +156,8 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
 
 def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None:
     metadata = {}
-    usage = chunk.get("usage")
+    # A tool-loop pass reports its usage before an approval wait the run may never leave.
+    usage = chunk if chunk.get("type") == "context_usage" else chunk.get("usage")
     if isinstance(usage, dict):
         metadata["contextUsage"] = {
             camel: usage.get(snake, 0)

@@ -419,7 +419,11 @@ def _append_events_locked(
         if (
             event_type == "chunk"
             and isinstance(payload, dict)
-            and (isinstance(payload.get("usage"), dict) or isinstance(payload.get("timings"), dict))
+            and (
+                isinstance(payload.get("usage"), dict)
+                or isinstance(payload.get("timings"), dict)
+                or payload.get("type") == "context_usage"
+            )
         ):
             from storage.token_usage_ledger import record_run_usage
             record_run_usage(conn, run_id, payload)

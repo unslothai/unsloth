@@ -287,6 +287,29 @@ def test_split_mode_keeps_local_chats_apart_from_api_and_providers():
         token_limit.enforce(api = False)
 
 
+def test_a_failed_provider_reply_is_charged_to_the_api_pool():
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "partial",
+            "threadId": "t1",
+            "role": "assistant",
+            "createdAt": now + 1,
+            "content": [{"type": "text", "text": "half an answer"}],
+            "metadata": {
+                "timing": {"tokenCount": 100},
+                "tokenUsageProvider": "openai",
+                "incomplete": {"reason": "interrupted"},
+            },
+        }
+    )
+    _enable(mode = "split", localLimit = 1000, apiLimit = 1000)
+    pools = _pools()
+    assert pools["local"]["used"] == 0
+    assert pools["api"]["used"] == 100
+
+
 def test_usage_before_the_period_does_not_count():
     start, end = token_limit.period_window("day", "UTC")
     _thread("t1", start - 10_000)
@@ -342,6 +365,52 @@ def test_no_override_is_granted_below_the_cap():
     with pytest.raises(HTTPException) as refused:
         token_limit.grant_override("combined")
     assert refused.value.status_code == 409
+
+
+@pytest.mark.parametrize("final_usage", [False, True])
+def test_an_interrupted_tool_run_still_debits_its_finished_pass(final_usage):
+    from storage import chat_generation_runs_db as runs
+
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "user",
+            "threadId": "t1",
+            "role": "user",
+            "createdAt": now,
+            "content": [{"type": "text", "text": "hi"}],
+        }
+    )
+    runs.create_run(
+        run_id = "run",
+        owner_subject = "owner",
+        thread_id = "t1",
+        user_message_id = "user",
+        assistant_message_id = "assistant",
+        request_payload = {"model": "local", "messages": [], "stream": True},
+    )
+    token = runs.get_worker_token("run")
+    runs.mark_running("run", token)
+    pass_end = {
+        "type": "context_usage",
+        "prompt_tokens": 900,
+        "completion_tokens": 100,
+        "context_tokens": 1000,
+        "cached_tokens": 0,
+    }
+    events = [("chunk", pass_end)]
+    if final_usage:
+        events.append(
+            (
+                "chunk",
+                {"usage": {"prompt_tokens": 1100, "completion_tokens": 150, "total_tokens": 1250}},
+            )
+        )
+    runs.append_events("run", token, events)
+    runs.finish_run("run", worker_token = token, status = "completed" if final_usage else "cancelled")
+    _enable(limit = 100)
+    assert _pools()["combined"]["used"] == (1250 if final_usage else 1000)
 
 
 @pytest.mark.parametrize("via_api_key", [False, True])
