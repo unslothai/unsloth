@@ -19,6 +19,7 @@ import { useChatRuntimeStore } from "@/features/chat";
 import {
   detectBaseModel,
   type GgufVariantDetail,
+  type HfModelResult,
   type LocalModelInfo,
   hfApiToken,
   listGgufVariants,
@@ -282,7 +283,11 @@ export function Q4nxConvertCard({
   }, [source]);
 
   // The Hub's "Base" chip reads base_model from the card tags; a typed repo is looked up.
-  const hubResult = hubResults.find((r) => r.id === repoId);
+  // The picked repo's search row, kept once a new query no longer returns it.
+  const [pickedHub, setPickedHub] = useState<HfModelResult | null>(null);
+  const hubResult =
+    hubResults.find((r) => r.id === repoId) ??
+    (pickedHub?.id === repoId ? pickedHub : undefined);
   const looked = cardInfo?.repoId === repoId ? cardInfo : null;
   const lookedArchitecture = looked?.architecture ?? null;
 
@@ -309,12 +314,17 @@ export function Q4nxConvertCard({
         label: id,
         listingKey: q4nxVariantLookup("hub", id, null).key,
         folder: null,
-        architecture: id === repoId ? lookedArchitecture : null,
-        totalParams: q4nxParamsFromName(id),
+        architecture:
+          id === repoId
+            ? (hubResult?.ggufArchitecture ?? lookedArchitecture)
+            : null,
+        totalParams:
+          (id === repoId ? hubResult?.totalParams : null) ??
+          q4nxParamsFromName(id),
       });
     }
     return rows;
-  }, [hubResults, hubQuery, repoId, lookedArchitecture]);
+  }, [hubResults, hubQuery, repoId, hubResult, lookedArchitecture]);
 
   const localById = useMemo(
     () => new Map(localModels.map((row) => [row.id, row])),
@@ -534,7 +544,11 @@ export function Q4nxConvertCard({
 
   function pick(id: string, file: string) {
     if (id !== selectedId) setBaseModel(null);
-    if (source === "hub") setRepoId(id);
+    if (source === "hub") {
+      setRepoId(id);
+      const found = hubResults.find((r) => r.id === id);
+      if (found) setPickedHub(found);
+    }
     else setLocalId(id);
     setFilename(file);
     setResult(null);
