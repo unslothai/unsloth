@@ -98,18 +98,22 @@ def repo_snapshots(repo_id: str) -> list[Path]:
     place a repo's standalone tables are looked for. A plain listing, so the inventory scan can
     call it (gguf_cache_snapshots classifies, which reads the scan back)."""
     target = f"models--{repo_id.replace('/', '--')}".lower()
-    snapshots: list[Path] = []
     try:
         from hub.utils.hf_cache_state import hf_cache_roots
         from utils.hf_cache_settings import get_hf_cache_paths
-        for root in (get_hf_cache_paths().hub_cache, *hf_cache_roots()):
+        roots = [get_hf_cache_paths().hub_cache, *hf_cache_roots()]
+    except Exception:  # noqa: BLE001 -- no readable cache settings: nothing to search
+        return []
+    snapshots: list[Path] = []
+    for root in roots:
+        try:
             for repo_dir in Path(root).iterdir():
                 if repo_dir.name.lower() == target and (repo_dir / "snapshots").is_dir():
                     snapshots += [
                         s for s in (repo_dir / "snapshots").iterdir() if s not in snapshots
                     ]
-    except Exception:  # noqa: BLE001 -- an unreadable root only narrows the search
-        pass
+        except OSError:  # an unreadable root only narrows the search
+            continue
     return snapshots
 
 

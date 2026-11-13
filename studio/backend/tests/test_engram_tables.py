@@ -962,3 +962,35 @@ class TestOwnTableAndOtherCacheRoots:
             hcset, "get_hf_cache_paths", lambda: SimpleNamespace(hub_cache = tmp_path / "a")
         )
         assert "UD-IQ1_S" in _completed_gguf_variants(snap)
+
+
+class TestSnapshotPathsAndRoots:
+    def test_a_symlinked_quant_missing_its_table_shard_loads_from_its_snapshot(
+        self, monkeypatch, tmp_path
+    ):
+        import os
+
+        from utils.models.model_config import ModelConfig
+
+        snap, names = _swapped_snapshot(tmp_path, absent = 3)
+        blobs = snap.parent.parent / "blobs"
+        blobs.mkdir()
+        for index, name in enumerate(names[:2]):
+            os.replace(snap / name, blobs / f"h{index}")
+            (snap / name).symlink_to(blobs / f"h{index}")
+        config = ModelConfig.from_identifier(model_id = str(snap), gguf_variant = "UD-IQ1_S")
+        assert config.gguf_file == str(snap / names[0])
+
+    def test_an_unreadable_root_does_not_end_the_search(
+        self, monkeypatch, tmp_path, real_repo_snapshots
+    ):
+        import hub.utils.hf_cache_state as hcs
+        import utils.hf_cache_settings as hcset
+
+        snap = tmp_path / "b" / ("models--" + REPO.replace("/", "--")) / "snapshots" / "r"
+        snap.mkdir(parents = True)
+        monkeypatch.setattr(hcs, "hf_cache_roots", lambda *a, **k: [tmp_path / "b"])
+        monkeypatch.setattr(
+            hcset, "get_hf_cache_paths", lambda: SimpleNamespace(hub_cache = tmp_path / "gone")
+        )
+        assert real_repo_snapshots(REPO) == [snap]
