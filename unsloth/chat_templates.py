@@ -2891,6 +2891,8 @@ def get_chat_template(
             "{%- endif -%}" + \
             "{%- if message.get(" + content + ") is not none -%}" + \
             "{%- set turn = dict(turn, content = message[" + content + "]) -%}" + \
+            "{%- elif " + content + " in message and message.get('content') is none -%}" + \
+            "{%- set turn = dict(turn, content = none) -%}" + \
             "{%- endif -%}" + \
             "{%- set sharegpt.messages = sharegpt.messages + [turn] -%}" + \
             "{%- endfor -%}" + \
