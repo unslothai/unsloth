@@ -339,6 +339,7 @@ import {
   unloadDiffusionModel,
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
+import { collectGalleryWindow } from "./lib/gallery-window";
 import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
@@ -2817,18 +2818,12 @@ export function ImagesPage({
       const ticket = (resyncSeq.current += 1);
       for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
         const paged = pageEpoch.current;
-        const wanted = Math.max(count, galleryCache.images.length, PAGE_SIZE);
-        const collected: GalleryImage[] = [];
-        let more = false;
-        while (collected.length < wanted) {
-          const page = await getGallery(
-            collected.length,
-            Math.min(PAGE_SIZE, wanted - collected.length),
-          );
-          collected.push(...page.images);
-          more = page.has_more;
-          if (!page.has_more || page.images.length === 0) break;
-        }
+        const { images: collected, hasMore: more } = await collectGalleryWindow(
+          (offset, limit) => getGallery(offset, limit),
+          Math.max(count, galleryCache.images.length, PAGE_SIZE),
+          PAGE_SIZE,
+          galleryCache.selectedId,
+        );
         if (stillFresh && !stillFresh()) return;
         if (resyncSeq.current !== ticket) return;
         if (pageEpoch.current !== paged) continue;
