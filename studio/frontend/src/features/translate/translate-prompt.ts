@@ -138,18 +138,13 @@ export function buildTranslateSystemPrompt(options: TranslateOptions): string {
   ].join("\n");
 }
 
-// Only a leading reasoning block is dropped (closed, still streaming, or opened by the chat
-// template); tags later in the text are the translation's own.
+// Only a reasoning block that opens the reply is dropped (closed or still streaming); tags
+// elsewhere are the translation's own. Thinking is requested off, so no template opens one.
 export function cleanTranslation(raw: string): string {
-  const text = raw.trimStart();
+  const text = raw.trim();
+  if (!/^<think>/i.test(text)) return text;
   const close = text.search(/<\/think>/i);
-  if (/^<think>/i.test(text)) {
-    return close < 0 ? "" : text.slice(close + "</think>".length).trim();
-  }
-  if (close >= 0 && !/<think>/i.test(text.slice(0, close))) {
-    return text.slice(close + "</think>".length).trim();
-  }
-  return text.trim();
+  return close < 0 ? "" : text.slice(close + "</think>".length).trim();
 }
 
 function entryLabel(entry: TranslationEntry): string {

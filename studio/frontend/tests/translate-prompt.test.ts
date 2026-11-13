@@ -74,7 +74,10 @@ test("the system prompt names the languages and follows the mode and tone", () =
 
 test("reasoning never reaches the translation, finished or still streaming", () => {
   assert.equal(cleanTranslation("<think>hmm</think>\n\nHello\n"), "Hello");
-  assert.equal(cleanTranslation("plan it</think>Hello"), "Hello");
+  assert.equal(
+    cleanTranslation("The closing marker is </think>."),
+    "The closing marker is </think>.",
+  );
   assert.equal(cleanTranslation("<think>still thinking"), "");
   assert.equal(
     cleanTranslation("<think>a</think>Use <think>...</think> tags here"),
