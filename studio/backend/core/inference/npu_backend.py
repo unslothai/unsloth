@@ -38,7 +38,6 @@ from utils.process_lifetime import (
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
-# A JSON record in the server log, like the chat proxy's, for the one warning users go looking for.
 _events = structlog.get_logger(__name__)
 
 MODEL_PREFIX = "lemonade:"
