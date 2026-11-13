@@ -212,6 +212,50 @@ def test_skip_does_not_leak_to_other_threads(fake_triton):
     assert counts == [1]
 
 
+def test_concurrent_first_installs_share_one_skip_flag(fake_triton, monkeypatch):
+    """Two threads installing at once must not leave make_ttgir and add_prefetch on different flags."""
+    both_read, second_done = threading.Barrier(2, timeout = 0.5), threading.Event()
+    stores = []
+
+    class _RacyGPUIR:
+        def __init__(self, fn):
+            self.__dict__["_fn"] = fn
+
+        def __getattr__(self, name):
+            if name != "add_prefetch":
+                raise AttributeError(name)
+            fn = self.__dict__["_fn"]
+            if threading.current_thread() is not threading.main_thread() and not stores:
+                try:
+                    both_read.wait()  # without the lock both threads read the stock pass
+                except threading.BrokenBarrierError:
+                    pass
+            return fn
+
+        def __setattr__(self, name, value):
+            self.__dict__["_fn"] = value
+            stores.append(threading.current_thread().name)
+            if len(stores) == 1:
+                second_done.wait(0.5)  # the first writer finishes last when nothing serialises them
+
+    monkeypatch.setattr(_passes, "ttgpuir", _RacyGPUIR(_stock_add_prefetch))
+    results = []
+
+    def install(name):
+        results.append(patches.fix_triton_sm8x_8bit_prefetch())
+        if stores and stores[0] != name:
+            second_done.set()
+
+    threads = [threading.Thread(target = install, args = (n,), name = n) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert results == [True, True]
+    assert _compile(fake_triton.backend, _I8, 89) == 0
+    assert _compile(fake_triton.backend, _F16, 89) == 1
+
+
 def test_no_triton_is_a_no_op(monkeypatch):
     monkeypatch.setitem(sys.modules, "triton", None)
     assert patches.fix_triton_sm8x_8bit_prefetch() is False

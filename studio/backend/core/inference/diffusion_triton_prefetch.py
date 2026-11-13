@@ -24,6 +24,7 @@ _TRITON_PREFETCH_FIRST = (3, 8)  # the first release whose prefetch pass splits 
 _TRITON_PREFETCH_PIPELINE = re.compile(
     r"if\s+capability\s*//\s*10\s*==\s*8\s*:\s*\n\s*passes\.ttgpuir\.add_prefetch\(pm\)"
 )
+_INSTALL_LOCK = threading.Lock()
 _TRITON_8BIT_DOT = re.compile(r"\btt\.dot\b[^\n]*?:\s*tensor<[0-9x]*x(?:i8|f8E[0-9A-Za-z]+)>")
 
 
@@ -71,42 +72,50 @@ def fix_triton_sm8x_8bit_prefetch():
     if _TRITON_PREFETCH_PIPELINE.search(source) is None:
         return False  # this Triton no longer adds the pass for sm_8x where we expect it
 
-    # skip flag lives on the pass wrapper, shared by any second copy of this fix
-    state = getattr(original_prefetch, _TRITON_PREFETCH_SENTINEL, None)
-    if not isinstance(state, threading.local):
-        state = threading.local()
+    # concurrent first calls must not pair one thread's make_ttgir wrapper with another's skip flag
+    with _INSTALL_LOCK:
+        stage = backend.__dict__.get("make_ttgir")
+        if getattr(getattr(stage, "__func__", stage), _TRITON_PREFETCH_SENTINEL, False):
+            return True
+        original_prefetch = getattr(ttgpuir, "add_prefetch", None)
+        if not callable(original_prefetch):
+            return False
+        # skip flag lives on the pass wrapper, shared by any second copy of this fix
+        state = getattr(original_prefetch, _TRITON_PREFETCH_SENTINEL, None)
+        if not isinstance(state, threading.local):
+            state = threading.local()
 
-        def add_prefetch(*args, **kwargs):
-            if getattr(state, "active", False):
-                return None
-            return original_prefetch(*args, **kwargs)
+            def add_prefetch(*args, **kwargs):
+                if getattr(state, "active", False):
+                    return None
+                return original_prefetch(*args, **kwargs)
 
-        setattr(add_prefetch, _TRITON_PREFETCH_SENTINEL, state)
-        add_prefetch.__wrapped__ = original_prefetch
-        ttgpuir.add_prefetch = add_prefetch
+            setattr(add_prefetch, _TRITON_PREFETCH_SENTINEL, state)
+            add_prefetch.__wrapped__ = original_prefetch
+            ttgpuir.add_prefetch = add_prefetch
 
-    @functools.wraps(make_ttgir)
-    def patched_make_ttgir(*args, **kwargs):
-        mod = args[0] if args else kwargs.get("mod")
-        capability = args[3] if len(args) > 3 else kwargs.get("capability")
-        skip = (
-            isinstance(capability, int)
-            and capability // 10 == 8
-            and _triton_8bit_prefetch_fix_mode() not in ("0", "off", "false", "no")
-            and _triton_ttir_has_8bit_dot(mod)
-        )
-        if not skip:
-            return make_ttgir(*args, **kwargs)
-        previous = getattr(state, "active", False)
-        state.active = True
-        try:
-            return make_ttgir(*args, **kwargs)
-        finally:
-            state.active = previous
+        @functools.wraps(make_ttgir)
+        def patched_make_ttgir(*args, **kwargs):
+            mod = args[0] if args else kwargs.get("mod")
+            capability = args[3] if len(args) > 3 else kwargs.get("capability")
+            skip = (
+                isinstance(capability, int)
+                and capability // 10 == 8
+                and _triton_8bit_prefetch_fix_mode() not in ("0", "off", "false", "no")
+                and _triton_ttir_has_8bit_dot(mod)
+            )
+            if not skip:
+                return make_ttgir(*args, **kwargs)
+            previous = getattr(state, "active", False)
+            state.active = True
+            try:
+                return make_ttgir(*args, **kwargs)
+            finally:
+                state.active = previous
 
-    setattr(patched_make_ttgir, _TRITON_PREFETCH_SENTINEL, True)
-    backend.make_ttgir = staticmethod(patched_make_ttgir)
-    return True
+        setattr(patched_make_ttgir, _TRITON_PREFETCH_SENTINEL, True)
+        backend.make_ttgir = staticmethod(patched_make_ttgir)
+        return True
 
 
 # Inductor's compile sidecar would cache spilling cubins; it imports the pickler by name, so ours installs the fix there.
