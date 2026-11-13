@@ -41,8 +41,9 @@ _ROTQ_K_TILES: dict = {
 _ROTQ_QPARAMS = {
     "v1": (-127.0, 127.0, 127.0, 1e-5),
     "v2": (-128.0, 127.0, 127.5, 1.1920928955078125e-07),
-    # diffusion_native_quant ``_int_mm_rows`` (NativeWeightOnlyLinear W8A8): EPS is the clamp floor before the divide
-    "native": (-127.0, 127.0, 127.0, 1e-12),
+    # diffusion_native_quant ``_int_mm_rows`` (NativeWeightOnlyLinear W8A8): EPS is the clamp floor, DIV the fp32
+    # reciprocal of 127 ATen's CUDA ``div_(127.0)`` multiplies by
+    "native": (-127.0, 127.0, 0.007874015718698502, 1e-12),
 }
 # device index -> probed rotq tile (None = stock), and the per-K rules whose tile passed the probe there.
 _ROTQ_DEVICE: dict = {}
@@ -185,7 +186,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         DIV: tl.constexpr,  # amax divisor (127)
         EPS: tl.constexpr,  # norm epsilon, per model
         FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
-        NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear's quant: fp32 s = max(amax, EPS) / DIV, fp32 1 / s
+        NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear's quant: fp32 s = max(amax, EPS) * DIV, fp32 1 / s
     ):
         # one program = ROWS whole activation rows, so the per-row amax closes inside the tile
         pid = tl.program_id(0)
@@ -211,8 +212,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         sel = lr[:, None] == j[None, :]
         amax = tl.max(tl.where(sel, tl.max(tl.abs(z), axis = 1)[:, None], 0.0), axis = 0)
         if NATIVE:
-            # ``_int_mm_rows``: clamp_(min = EPS).div_(127), reciprocal(), x * recip, all fp32 IEEE
-            s = libdevice.div_rn(tl.maximum(amax, EPS), DIV)
+            # ``_int_mm_rows`` on CUDA: clamp_(min = EPS).div_(127) multiplies by fp32(1 / 127) (DIV here, as ATen does
+            # for a scalar divisor), then reciprocal() and x * recip, all fp32 round-to-nearest
+            s = libdevice.mul_rn(tl.maximum(amax, EPS), DIV)
             inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
         else:
             s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))

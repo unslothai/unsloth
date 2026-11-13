@@ -213,7 +213,10 @@ def test_native_kernel_mode_is_passed_to_the_launch(cr, monkeypatch):
 
     from core.inference import diffusion_convrot_quant as cq
 
-    assert cq._ROTQ_QPARAMS["native"] == (-127.0, 127.0, 127.0, 1e-12)
+    qmin, qmax, rcp, eps = cq._ROTQ_QPARAMS["native"]
+    assert (qmin, qmax, eps) == (-127.0, 127.0, 1e-12)
+    # the fp32 reciprocal ATen's CUDA div by a scalar multiplies with
+    assert rcp == (torch.tensor(1.0) / torch.tensor(127.0)).item()
     assert (
         "NATIVE" in inspect.signature(cq._kernels().rotq_i8.fn).parameters
         if cq._kernels()
