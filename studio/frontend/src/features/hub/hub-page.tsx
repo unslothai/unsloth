@@ -2267,7 +2267,12 @@ export function ModelsPage() {
               className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1"
             >
               {selectedNpu && npuCatalog ? (
-                <HubDetailShell onBack={handleCloseNpu} compact={true}>
+                // Keyed: a pending Delete confirmation must not carry over to the next model.
+                <HubDetailShell
+                  key={selectedNpu.id}
+                  onBack={handleCloseNpu}
+                  compact={true}
+                >
                   <NpuModelDetail
                     model={selectedNpu}
                     catalog={npuCatalog}

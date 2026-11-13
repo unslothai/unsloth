@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from urllib.parse import unquote
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -94,7 +95,7 @@ def read_model_repo(
     match = _HF_REPO_URL.match(url) if isinstance(url, str) else None
     if match is None:
         return None, None
-    return match["repo"], match["revision"]
+    return match["repo"], unquote(match["revision"]) if match["revision"] else None
 
 
 def read_model_files(

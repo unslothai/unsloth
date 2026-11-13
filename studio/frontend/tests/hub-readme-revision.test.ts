@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type * as HfReadme from "../src/features/hub/lib/hf-readme.ts";
 import { LruMap } from "../src/features/hub/lib/lru-map.ts";
@@ -47,6 +48,16 @@ test("a README pinned to a revision is read from that revision only", async () =
     r.api.readmeBaseUrl("FastFlowLM/Qwen3.5-9B-NPU2", "model", fetched!.branch),
     "https://huggingface.co/FastFlowLM/Qwen3.5-9B-NPU2/resolve/flm_q4k_high_precision/",
   );
+  // Relative image links resolve against the same, encoded, revision the README came from.
+  assert.equal(
+    r.api.readmeBaseUrl("FastFlowLM/Branch-1B-NPU2", "model", "release/v2"),
+    "https://huggingface.co/FastFlowLM/Branch-1B-NPU2/resolve/release%2Fv2/",
+  );
+});
+
+test("a different NPU model gets a fresh detail pane", () => {
+  const source = readFileSync(new URL("../src/features/hub/hub-page.tsx", import.meta.url), "utf8");
+  assert.match(source, /<HubDetailShell\s+key=\{selectedNpu\.id\}/);
 });
 
 test("without a revision the README falls back from main to master", async () => {

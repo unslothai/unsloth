@@ -310,6 +310,7 @@ def test_the_model_card_repo_comes_from_fastflowlm_model_list(tmp_path):
                     "llama3.2": {"1b": {"url": url.format("Llama-3.2-1B-NPU2/")}},
                     "mirror": {"1b": {"url": "https://example.com/FastFlowLM/Mirror-1B-NPU2"}},
                     "tree": {"1b": {"url": url.format("Tree-1B-NPU2/tree/main")}},
+                    "branch": {"1b": {"url": url.format("Branch-1B-NPU2/resolve/release%2Fv2")}},
                 },
             }
         )
@@ -322,6 +323,7 @@ def test_the_model_card_repo_comes_from_fastflowlm_model_list(tmp_path):
     assert ff.read_model_repo(flm, "llama3.2:1b") == ("FastFlowLM/Llama-3.2-1B-NPU2", None)
     assert ff.read_model_repo(flm, "mirror:1b") == (None, None)
     assert ff.read_model_repo(flm, "tree:1b") == (None, None)
+    assert ff.read_model_repo(flm, "branch:1b") == ("FastFlowLM/Branch-1B-NPU2", "release/v2")
     assert ff.read_model_repo(flm, "gemma3:4b") == (None, None)
     assert ff.read_model_repo(flm, "no-size") == (None, None)
     assert ff.read_model_repo(None, "qwen3:0.6b") == (None, None)
