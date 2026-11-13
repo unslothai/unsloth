@@ -58,7 +58,6 @@ def free_ram(monkeypatch):
         return state["mib"]
 
     monkeypatch.setattr(nc, "_available_mib", _read)
-    # No NPU window unless a test sets one: the free-RAM budget alone.
     monkeypatch.setattr(nc, "_npu_window_gb", lambda: state.get("window_gb"))
     return state
 
@@ -308,14 +307,12 @@ def test_a_pin_that_fits_is_not_logged_and_is_capped_at_the_limit(tmp_path, free
 def test_windows_auto_fits_the_npu_window_not_all_free_ram(
     tmp_path, free_ram, entry, config, total_gb, free_gib, expected, fits
 ):
-    # Windows maps about half of RAM to the NPU (lemonade-sdk/lemonade#839), as the fit warning prices it.
     free_ram["mib"] = int(free_gib * _GIB)
     model = _model(*entry, 262144)
     files = _files(tmp_path, config)
     assert nc.plan_context(model, files, None).context_length == 65536
     free_ram["window_gb"] = npu_memory.npu_memory_window_gb(total_gb, "win32")
     assert nc.plan_context(model, files, None) == nc.ContextPlan(expected, fits)
-    # Priced with FastFlowLM's own allocation: power-of-two KV capacity plus the prefix slots.
     budget = nc._npu_window_bytes(int(entry[2] * nc._GIB))
     kv = nc._kv_layout(files.folder / "config.json")
     assert nc._cost(fits, kv) <= budget < nc._cost(fits + 1, kv)
@@ -444,7 +441,6 @@ def test_auto_reload_samples_free_ram_after_releasing_weights_and_caches(
 def test_a_windows_reload_releases_the_resident_and_still_caps_to_the_npu_window(
     backend, monkeypatch, tmp_path
 ):
-    # Both apply: RAM is sampled after the resident is unloaded, then held to the Windows window.
     model = _serve(backend, monkeypatch, tmp_path, QWEN36_35B, 262144, _QWEN36_35B)
     monkeypatch.setattr(
         nc, "_available_mib", lambda: int((29 if backend._server.ctx is None else 3.15) * _GIB)
