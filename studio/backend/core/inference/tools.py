@@ -8318,7 +8318,8 @@ def _runner_source_is_high_risk(source: str) -> bool:
     token = _RUNNER_SOURCES_ACTIVE.set((*active, source))
     try:
         return _python_is_high_risk(source)
-    except RecursionError:
+    except (RecursionError, ValueError):
+        # Too deep, or unencodable (a lone surrogate): unanalyzable source asks.
         return True
     finally:
         _RUNNER_SOURCES_ACTIVE.reset(token)
@@ -8776,8 +8777,12 @@ def _python_is_high_risk(code: str) -> bool:
         # An unparsable combination could hide what setup binds for stmt.
         key = ("timeit", program)
         if key not in runner_verdicts:
+            try:
+                unparsable = _parse_python(program)[1] is not None
+            except (RecursionError, ValueError):
+                unparsable = True
             runner_verdicts[key] = bool(program.strip()) and (
-                _parse_python(program)[1] is not None or _cached_runner_verdict(program)
+                unparsable or _cached_runner_verdict(program)
             )
         return runner_verdicts[key]
 

@@ -1844,6 +1844,17 @@ def test_long_source_alias_chain_does_not_exhaust_the_stack():
     assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import timeit\ntimeit.timeit('pass # \\ud800', number=1)",
+        "import cProfile\ncProfile.run('pass # \\ud800')",
+    ],
+)
+def test_unencodable_runner_source_asks_instead_of_raising(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
 def test_deep_runner_source_asks_instead_of_raising():
     source = "x = " + "+".join(["1"] * 550)
     code = f"import timeit\ntimeit.timeit({source!r}, number=1)"
