@@ -22,7 +22,6 @@ class VirtualBackend(Backend):
     name = "virtual"
     shortcut_modifier = "ctrl"
     os_name = "a test desktop"
-    captures_pointer = True
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -79,16 +78,6 @@ class VirtualBackend(Backend):
                 f"Pressed {self.presses}, scrolled {self.scrolled}",
                 fill = "white",
                 font = font,
-            )
-            x, y = self.pointer
-            draw.polygon(
-                [
-                    (x * SCALE, y * SCALE),
-                    (x * SCALE, (y + 16) * SCALE),
-                    ((x + 11) * SCALE, (y + 11) * SCALE),
-                ],
-                fill = "black",
-                outline = "white",
             )
             return image
 

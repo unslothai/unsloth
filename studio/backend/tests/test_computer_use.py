@@ -360,6 +360,26 @@ def test_an_action_that_changes_nothing_sends_no_picture(desktop):
     assert len(split_images(run({"action": "screenshot"}))[1]) == 1
 
 
+def test_a_small_change_under_the_pointer_is_still_shown(desktop):
+    look()
+    original = desktop.capture
+    ticked = []
+
+    def capture(display):
+        image = original(display)
+        if ticked:
+            # A checkbox a few pixels wide, right where the pointer now is.
+            from PIL import ImageDraw
+            x, y = (round(value * virtual.SCALE) for value in OUTSIDE)
+            ImageDraw.Draw(image).rectangle([x - 6, y - 6, x + 6, y + 6], fill = "white")
+        return image
+
+    desktop.capture = capture
+    desktop.click = lambda *args: ticked.append(True)
+    text, images = split_images(run({"action": "click", **at(*OUTSIDE)}))
+    assert "Nothing changed" not in text and len(images) == 1
+
+
 def test_a_click_without_a_screenshot_shows_the_screen_instead(desktop):
     text, images = split_images(run({"action": "click", "x": 10, "y": 10}, approved = True))
     assert text.startswith("Error:") and "no screenshot" in text

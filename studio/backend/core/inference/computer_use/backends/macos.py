@@ -115,8 +115,6 @@ class MacBackend(Backend):
     name = "macos"
     shortcut_modifier = "cmd"
     os_name = "macOS"
-    # screencapture -C draws the pointer into the capture.
-    captures_pointer = True
 
     def __init__(self) -> None:
         self._lib, self._cf = _load()
@@ -190,7 +188,7 @@ class MacBackend(Backend):
         with tempfile.TemporaryDirectory(prefix = "unsloth-screen-") as folder:
             path = os.path.join(folder, "screen.png")
             done = subprocess.run(
-                ["/usr/sbin/screencapture", "-x", "-C", f"-D{display.index}", "-t", "png", path],
+                ["/usr/sbin/screencapture", "-x", f"-D{display.index}", "-t", "png", path],
                 check = False,
                 timeout = 20,
                 stdout = subprocess.DEVNULL,

@@ -200,7 +200,6 @@ class _Run:
         self.wants_shot = False
         self.shown: Any = None
         self.before: Any = self.session.frame
-        self.before_pointer = self._cursor()
         # Counted before the call was authorised, so a switch-off while it waited ends it too.
         self.halts = halts
 
@@ -453,9 +452,6 @@ class _Run:
                 if self._stopped():
                     break
 
-    def _pointer_in(self, frame: screen.Frame, point: Optional[tuple]) -> Optional[tuple]:
-        return frame.from_desktop(*point) if point is not None else None
-
     def _screen_note(self, frame: screen.Frame) -> str:
         if self.session.coordinates == "grid":
             return "Screenshot attached. x and y run from 0 to 1000 across it, from its top-left corner."
@@ -524,18 +520,10 @@ class _Run:
             elif acted or self.wants_shot:
                 shot = screen.settle(self._shoot, self._sleep) if acted else self._shoot()
                 self._adopt(shot)
-                pointers = [
-                    point
-                    for point in (
-                        self._pointer_in(shot.frame, self.before_pointer),
-                        self._pointer_in(shot.frame, self._cursor()),
-                    )
-                    if point is not None
-                ]
                 if (
                     not self.wants_shot
                     and self.before is not None
-                    and screen.unchanged(self.before, shot.frame, pointers)
+                    and screen.unchanged(self.before, shot.frame)
                 ):
                     lines.append("Nothing changed on the screen.")
                 else:

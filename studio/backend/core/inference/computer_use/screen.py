@@ -29,7 +29,6 @@ _PATCH_RADIUS = 80
 # "Nothing changed" has to notice one digit ticking over, so it looks for any real step at all.
 _STILL_STEP = 10
 _STILL_PIXELS = 4
-_POINTER_MASK = 20
 _SETTLE_FIRST_S = 0.3
 _SETTLE_STEP_S = 0.3
 _SETTLE_STEPS = 3
@@ -98,19 +97,20 @@ def take(backend: Backend, display: Display) -> Shot:
     size = fit_size(display.width, display.height)
     image = full.resize(size, Image.Resampling.LANCZOS, reducing_gap = 2.0)
     frame = Frame(display, size[0], size[1])
-    if not getattr(backend, "captures_pointer", False):
-        try:
-            x, y = frame.from_desktop(*backend.cursor())
-        except Exception:  # noqa: BLE001 - the picture is still worth sending without a pointer
-            x = y = -1.0
-        if 0 <= x < size[0] and 0 <= y < size[1]:
-            ImageDraw.Draw(image).polygon(
-                [(x, y), (x, y + 17), (x + 4.5, y + 13), (x + 8, y + 20), (x + 11, y + 18.5),
-                 (x + 7.5, y + 12), (x + 12.5, y + 12)],
-                fill = "black",
-                outline = "white",
-            )  # fmt: skip
+    # Kept without the pointer, which is drawn on afterwards: comparing two screens must see a
+    # checkbox that changed under the pointer, and must not see the pointer having moved.
     frame.gray = image.convert("L")
+    try:
+        x, y = frame.from_desktop(*backend.cursor())
+    except Exception:  # noqa: BLE001 - the picture is still worth sending without a pointer
+        x = y = -1.0
+    if 0 <= x < size[0] and 0 <= y < size[1]:
+        ImageDraw.Draw(image).polygon(
+            [(x, y), (x, y + 17), (x + 4.5, y + 13), (x + 8, y + 20), (x + 11, y + 18.5),
+             (x + 7.5, y + 12), (x + 12.5, y + 12)],
+            fill = "black",
+            outline = "white",
+        )  # fmt: skip
     return Shot(frame, image, full)
 
 
@@ -148,18 +148,13 @@ def target_moved(frame: Frame, now: Frame, x: float, y: float) -> bool:
     return changed / total > _PATCH_CHANGED
 
 
-def unchanged(before: Frame, after: Frame, pointers: list[tuple[float, float]]) -> bool:
-    """True when nothing but the pointer differs, so the picture need not be sent again."""
+def unchanged(before: Frame, after: Frame) -> bool:
+    """True when the screen is the same, so the picture need not be sent again."""
     if before.gray is None or after.gray is None or before.gray.size != after.gray.size:
         return False
-    from PIL import ImageChops, ImageDraw
+    from PIL import ImageChops
 
     diff = ImageChops.difference(before.gray, after.gray)
-    draw = ImageDraw.Draw(diff)
-    for x, y in pointers:
-        draw.rectangle(
-            [x - _POINTER_MASK, y - _POINTER_MASK, x + _POINTER_MASK, y + _POINTER_MASK], fill = 0
-        )
     return sum(diff.histogram()[_STILL_STEP:]) <= _STILL_PIXELS
 
 
