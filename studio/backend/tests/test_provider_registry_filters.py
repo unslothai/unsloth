@@ -235,6 +235,8 @@ def test_anthropic_surfaces_every_live_model_including_dated_ids():
 
 
 def test_anthropic_default_models_match_filter():
-    info = PROVIDER_REGISTRY["anthropic"]
-    surviving = _apply("anthropic", list(info["default_models"]))
-    assert surviving == list(info["default_models"]), surviving
+    from core.inference.providers import provider_default_models
+
+    defaults = provider_default_models("anthropic")
+    surviving = _apply("anthropic", list(defaults))
+    assert defaults and surviving == defaults, surviving

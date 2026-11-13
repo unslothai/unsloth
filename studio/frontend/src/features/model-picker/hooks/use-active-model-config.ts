@@ -73,6 +73,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
+  const engramPrecision = useChatRuntimeStore((s) => s.engramPrecision);
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -146,6 +147,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       cacheRam: cacheRam ?? null,
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
+      engramPrecision: isGguf ? (engramPrecision ?? null) : null,
       chatTemplateOverride: chatTemplateOverride ?? null,
       ...(isGguf || isMlx ? {} : { loadIn4bit }),
     };
@@ -210,6 +212,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     cacheRam,
     tensorParallel,
     disableVision,
+    engramPrecision,
     chatTemplateOverride,
     loadedLlamaExtraArgs,
     gpuMemoryMode,

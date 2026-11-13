@@ -1730,7 +1730,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1852,7 +1852,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1994,7 +1994,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -3266,7 +3266,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -4433,7 +4433,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -4587,14 +4587,8 @@
   ],
   "family_auto_bf16_when_resident": {
    "anima": "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled",
-   "flux.2-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "flux.3-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "flux.3-klein-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
-   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
-   "moss-image": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "moss-image-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "z-image": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)"
+   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
   },
   "family_auto_prefer": {
    "flux.1": {

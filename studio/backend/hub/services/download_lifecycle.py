@@ -152,8 +152,10 @@ def largest_download_file_bytes(
     hf_token: Optional[str] = None,
     allow_ambient_token: bool = True,
     hub_cache: Optional[str] = None,
+    engram_precision: Optional[str] = None,
 ) -> Optional[int]:
-    """None means unmeasurable, 0 nothing left; a caller denied ambient login measures anonymously."""
+    """None means unmeasurable, 0 nothing left; a caller denied ambient login measures anonymously.
+    ``engram_precision`` sizes the plan that fetches that table instead of the quant's own."""
     siblings = _repo_siblings(
         repo_type, repo_id, hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     )
@@ -169,6 +171,7 @@ def largest_download_file_bytes(
         if plan is None:
             # An unresolvable variant is the worker's error to report, not a transport verdict.
             return None
+        plan = plan.with_engram(engram_precision)
         chosen = None
         candidates = list(plan.expected_files)
     elif repo_type == "model":
@@ -209,6 +212,7 @@ def _largest_file_bytes_for_job(
             hf_token = hf_token,
             allow_ambient_token = allow_ambient_token,
             hub_cache = getattr(metadata, "hub_cache", None),
+            engram_precision = getattr(metadata, "engram_precision", None),
         )
     except Exception as exc:  # noqa: BLE001 - unknown size, same as it was before the probe existed
         logger.debug("Largest-file probe failed for %s %s: %s", repo_type, repo_id, exc)
@@ -846,6 +850,8 @@ def _try_transport_retry(
             xet_cache = original_metadata.xet_cache,
             # Carry the scoped file list across the reclaim: the record it overwrites is what a later start is compared against, so dropping it makes an identical start 409 instead of adopting.
             scoped_files = original_metadata.scoped_files or None,
+            # And the table, for the same reason and so the recovery worker fetches it.
+            engram_precision = original_metadata.engram_precision,
         )
         if claimed:
             break
@@ -882,6 +888,8 @@ def _try_transport_retry(
         args.append("--dataset")
     elif variant:
         args.extend(["--variant", variant])
+        if original_metadata.engram_precision:
+            args.extend(["--engram", original_metadata.engram_precision])
     peer_hashes = registry.peer_blob_hashes(key) if variant else frozenset()
 
     if retry_over_xet:
@@ -1667,6 +1675,7 @@ def active_download_refs(
                 state = ref.state,
                 generation = ref.generation,
                 files = scoped_files or None,
+                engram_precision = metadata.engram_precision if metadata is not None else None,
             )
         )
     return downloads

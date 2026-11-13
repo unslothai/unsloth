@@ -888,6 +888,20 @@ def _context_budget_http_error(exc) -> "HTTPException":
     )
 
 
+def _refuse_what_ollama_would_cut(provider_type, truncation, window) -> None:
+    """Ollama drops the middle of an oversized prompt (instructions included) instead of refusing it."""
+    if (
+        provider_type != "ollama"
+        or not window
+        or not truncation
+        or truncation.get("fits", True)
+        or int(truncation.get("irreducible_tokens") or 0) < window
+    ):
+        return
+    context_refusal.record_fit({**truncation, "context_length": window})
+    raise context_refusal.ContextBudgetExceeded(truncation["irreducible_tokens"], window)
+
+
 def _openai_stream_error_sse(error: dict) -> str:
     # Flag failed so the middleware does not claim a preview-owned model on a failed stream.
     from core.inference.llama_keepwarm import mark_current_response_failed
@@ -3762,6 +3776,7 @@ from core.inference.sse_control_frames import (
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
     ToolLoopRun,
+    _delta_text,
     stream_with_studio_tools,
 )
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -4982,6 +4997,18 @@ def _reject_confirm_gate_without_channel(
     )
 
 
+def _mark_claude_code_thinking(payload, request) -> None:
+    """Claude Code omits `thinking` when thinking is off on a model id it does not know."""
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return
+    betas = (beta.strip() for beta in headers.get("anthropic-beta", "").split(","))
+    if headers.get("user-agent", "").startswith("claude-cli/") or any(
+        beta.startswith("claude-code-") for beta in betas
+    ):
+        payload._omitted_thinking_is_off = True
+
+
 def _anthropic_reasoning_args(payload) -> dict:
     """Forwards /v1/messages thinking and x-unsloth reasoning fields; else the load-time default sticks."""
     # x-unsloth controls outrank `thinking`; consult reasoning_effort before the native block.
@@ -6004,6 +6031,8 @@ def _roster_scopes(rag_scope: dict) -> list[str]:
     return scopes
 
 
+# Runs per document, 3x per row, every RAG turn. typed: 1 and 1.0 hash alike but str() differently.
+@functools.lru_cache(maxsize = 65536, typed = True)
 def _roster_name(raw: object) -> str:
     """Linked-folder names are raw disk paths; newlines, quotes and direction overrides are neutralized."""
     name = _re.sub(r"\s+", " ", str(raw or "").translate(_ROSTER_STRIP)).strip()
@@ -7568,7 +7597,19 @@ def _monitor_openai_chunk(
             choice_index = idx
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
-        if isinstance(delta, dict) and delta.get("reasoning_content"):
+        raw_content = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(delta, dict) and (
+            delta.get("reasoning_content")
+            or (
+                isinstance(raw_content, list)
+                and any(
+                    isinstance(part, dict)
+                    and part.get("type") == "thinking"
+                    and _delta_text(part.get("thinking"))
+                    for part in raw_content
+                )
+            )
+        ):
             api_monitor.mark_first_token(monitor_id)
 
         streamed_tool_delta = False
@@ -7584,7 +7625,7 @@ def _monitor_openai_chunk(
                     choice_index,
                     delta.get("function_call"),
                 )
-        content = delta.get("content") if isinstance(delta, dict) else None
+        content = _delta_text(raw_content)
         if content:
             if streaming:
                 _flush_monitor_stream_tool_calls(
@@ -7684,7 +7725,10 @@ def _monitor_openai_sse_data(
         if error_message:
             api_monitor.fail(monitor_id, error_message)
             return "error"
-        _monitor_openai_chunk(monitor_id, data, context_length, streaming = True)
+        try:
+            _monitor_openai_chunk(monitor_id, data, context_length, streaming = True)
+        except Exception as exc:
+            logger.warning("api_monitor.chunk_failed", error = str(exc))
     return None
 
 
@@ -8205,6 +8249,7 @@ _REPLAY_LOAD_FIELDS = frozenset(
         "cache_ram",
         "tensor_parallel",
         "disable_vision",
+        "engram_precision",
         "gpu_memory_mode",
         "gpu_layers",
         "n_cpu_moe",
@@ -19623,6 +19668,12 @@ async def _load_model_impl(
                 ),
             )
 
+        if request.engram_precision and not config.is_gguf:
+            raise HTTPException(
+                status_code = 400,
+                detail = "An Engram table precision applies only to a GGUF model run by llama.cpp.",
+            )
+
         # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
         if effective_load_in_4bit != request.load_in_4bit:
@@ -25497,7 +25548,9 @@ async def openai_audio_translations(
 
     sidecar_model = None if model in (None, "", "whisper-1") else model
     # mtmd / audio.cpp engines and turbo checkpoints would just transcribe.
-    if _stt_engine_for_model(sidecar_model) is not None or not can_translate(sidecar_model):
+    if _stt_engine_for_model(sidecar_model) is not None or not await asyncio.to_thread(
+        can_translate, sidecar_model
+    ):
         raise HTTPException(
             status_code = 400,
             detail = openai_error_body(
@@ -25948,11 +26001,28 @@ async def stt_status(
     audio_cpp_runtime = await asyncio.to_thread(_audio_cpp_runtime_status)
     # The first probe imports torch, Transformers and PyAV (seconds); keep it off the event loop.
     transformers_available = await asyncio.to_thread(is_available)
-    transformers_downloaded = [
-        model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
-    ]
-    if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
-        transformers_downloaded.append(model)
+
+    def downloaded_ids() -> tuple[list[str], list[str], list[str]]:
+        transformers = [
+            model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
+        ]
+        if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
+            transformers.append(model)
+        mtmd_ids = [
+            model_id
+            for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
+            if stt_mtmd_sidecar.is_model_downloaded(model_id)
+        ]
+        gguf_ids = [
+            model_id
+            for model_id in stt_ggml_sidecar.GGML_STT_MODELS
+            if stt_ggml_sidecar._cached_model_path(model_id) is not None
+        ]
+        return transformers, mtmd_ids, gguf_ids
+
+    transformers_downloaded, mtmd_downloaded, gguf_downloaded = await asyncio.to_thread(
+        downloaded_ids
+    )
     response = JSONResponse(
         content = {
             "available": transformers_available,
@@ -25983,11 +26053,7 @@ async def stt_status(
                 "keep_alive_seconds": mtmd.keep_alive_seconds,
                 "default_model": None,
                 "models": list(stt_mtmd_sidecar.MTMD_STT_MODELS),
-                "downloaded_models": [
-                    model_id
-                    for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
-                    if stt_mtmd_sidecar.is_model_downloaded(model_id)
-                ],
+                "downloaded_models": mtmd_downloaded,
                 "download": stt_mtmd_sidecar.download_status(),
             },
             # whisper.cpp (GGUF) engine.
@@ -25999,11 +26065,7 @@ async def stt_status(
                 "keep_alive_seconds": ggml.keep_alive_seconds,
                 "default_model": stt_ggml_sidecar.DEFAULT_GGML_STT_MODEL,
                 "models": list(stt_ggml_sidecar.GGML_STT_MODELS.keys()),
-                "downloaded_models": [
-                    model_id
-                    for model_id in stt_ggml_sidecar.GGML_STT_MODELS
-                    if stt_ggml_sidecar._cached_model_path(model_id) is not None
-                ],
+                "downloaded_models": gguf_downloaded,
                 "download": stt_ggml_sidecar.download_status(),
             },
             # models: recommended list plus downloads; downloaded_models: found by GGUF header in the HF cache.
@@ -29265,6 +29327,7 @@ async def _proxy_to_external_provider(
             offered_subscription_model_ids,
             forget_subscription_models,
             mark_subscription_catalog_stale,
+            restore_subscription_catalog,
             subscription_catalog_known,
             saved_models_proven_for,
             subscription_catalog_matches_account,
@@ -29288,11 +29351,6 @@ async def _proxy_to_external_provider(
                 status_code = 400, detail = "ChatGPT subscription chat requires stream=true."
             )
         model = payload.external_model or payload.model
-        from core.inference.providers import get_provider_info as _get_codex_provider_info
-
-        info = _get_codex_provider_info("openai_codex") or {}
-
-        # /codex/models may list slugs newer than the seed. Drop a catalog from another account.
         current_bundle = load_oauth_bundle(payload.provider_id)
         current_account = current_bundle.get("account_id") if current_bundle else None
         if current_account and not subscription_catalog_matches_account(
@@ -29300,6 +29358,7 @@ async def _proxy_to_external_provider(
         ):
             forget_subscription_models(payload.provider_id)
             mark_subscription_catalog_stale(payload.provider_id)
+        restore_subscription_catalog(payload.provider_id, current_bundle)
 
         def _allowed_codex_models() -> set[str]:
             """Once read, the plan catalog is the authority; a saved slug survives hide, not a plan dropping it."""
@@ -29311,11 +29370,11 @@ async def _proxy_to_external_provider(
                     if offered_subscription_model(payload.provider_id, slug) is not None
                 }
             if subscription_catalog_stale(payload.provider_id):
-                return set(info.get("default_models", []))
+                return set()
             if not saved_models_proven_for(payload.provider_id, current_account):
                 # Saved models unproven for this account: a rebind before restart or on another worker leaves this.
-                return set(info.get("default_models", []))
-            return set(info.get("default_models", [])) | saved
+                return set()
+            return saved
 
         allowed_models = _allowed_codex_models()
         if model not in allowed_models:
@@ -29329,17 +29388,12 @@ async def _proxy_to_external_provider(
         if model not in allowed_models:
             raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
 
-        capabilities = info.get("model_capabilities", {})
         image_requested = any(
             isinstance(message.content, list)
             and any(part.type == "image_url" for part in message.content)
             for message in payload.messages
         )
-        listed_model = (
-            None
-            if model in capabilities
-            else offered_subscription_model(payload.provider_id, model)
-        )
+        listed_model = offered_subscription_model(payload.provider_id, model)
         # Vision flag is fixed for the run; an MCP tool may return a picture later.
         _may_receive_image = (
             image_requested
@@ -29352,7 +29406,7 @@ async def _proxy_to_external_provider(
             # A conversation already carrying an image needs the capability even with MCP off, or it is stripped.
             or _request_has_promotable_mcp_images(payload, exact = False)
         )
-        if _may_receive_image and model not in capabilities and listed_model is None:
+        if _may_receive_image and listed_model is None:
             # No catalog read this process; fetch modalities only when an image may be sent.
             try:
                 await ensure_subscription_models(payload.provider_id)
@@ -29362,11 +29416,10 @@ async def _proxy_to_external_provider(
             except Exception:
                 pass
             listed_model = offered_subscription_model(payload.provider_id, model)
-        if model in capabilities:
-            model_supports_vision = bool(capabilities[model].get("vision"))
-        else:
-            # A slug the registry never listed: the plan's own entry is all we know.
-            model_supports_vision = bool(listed_model and listed_model.get("vision"))
+        model_supports_vision = listed_model.get("vision") if listed_model else None
+        if model_supports_vision is None:
+            from routes.providers import cached_catalog_model_inputs
+            model_supports_vision = "image" in (cached_catalog_model_inputs("openai", model) or ())
         if not model_supports_vision:
             for message in payload.messages:
                 if isinstance(message.content, list) and any(
@@ -29717,6 +29770,27 @@ async def _proxy_to_external_provider(
     _supports_vision = (
         managed.supports_vision if managed is not None else _pinfo.get("supports_vision", False)
     )
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        api_type = api_type,
+        **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
+        **({"extra_headers": extra_headers} if extra_headers else {}),
+        **({"managed_loopback": True} if managed is not None else {}),
+    )
+    # Metadata preflights (served context window, template) run before streaming starts.
+    if extra_headers:
+        client.set_header_context(payload.thread_id, model)
+    _takes_tool_images = _external_takes_mcp_images(provider_type, _supports_vision, model, _pinfo)
+    if (
+        _takes_tool_images
+        and provider_type in ("ollama", "llama_cpp")
+        and (studio_tool_loop or _messages_mention_mcp_images(payload.messages))
+    ):
+        # An unread flag keeps the image: a vision model must not lose it to a silent server.
+        _takes_tool_images = await client.served_model_reads_images(model) is not False
     _external_promoted_parts: list = []
     chat_messages = await _build_external_messages_async(
         payload.messages,
@@ -29726,9 +29800,7 @@ async def _proxy_to_external_provider(
         base_url = base_url,
         api_type = api_type,
         promoted_out = _external_promoted_parts,
-        promote_mcp_images = _external_takes_mcp_images(
-            provider_type, _supports_vision, model, _pinfo
-        ),
+        promote_mcp_images = _takes_tool_images,
         model = model,
         preserve_thinking = payload.preserve_thinking,
     )
@@ -29746,19 +29818,6 @@ async def _proxy_to_external_provider(
             subject = current_subject,
         )
 
-    client = await asyncio.to_thread(
-        ExternalProviderClient,
-        provider_type = provider_type,
-        base_url = base_url,
-        api_key = api_key,
-        api_type = api_type,
-        **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
-        **({"extra_headers": extra_headers} if extra_headers else {}),
-        **({"managed_loopback": True} if managed is not None else {}),
-    )
-    # Metadata preflights (served context window, template) run before streaming starts.
-    if extra_headers:
-        client.set_header_context(payload.thread_id, model)
     _non_stream_custom_responses = (
         provider_type == "custom" and api_type == "responses" and payload.stream is False
     )
@@ -29779,9 +29838,7 @@ async def _proxy_to_external_provider(
     if studio_tool_loop:
         external_studio_tools = await _select_request_tools(
             payload,
-            supports_vision = _external_takes_mcp_images(
-                provider_type, _supports_vision, model, _pinfo
-            ),
+            supports_vision = _takes_tool_images,
             tools_on = _effective_enable_tools(payload) is True,
             mcp_allowed = bool(payload.mcp_enabled),
             ui_events = _ui_events,
@@ -29863,6 +29920,11 @@ async def _proxy_to_external_provider(
                     ),
                 }
             )
+
+    async def _tool_result_window() -> Optional[int]:
+        served = await client.served_context_window(model)
+        return min(served, payload.context_window or served) if served else None
+
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
     _external_context_fitter = None
@@ -29870,16 +29932,18 @@ async def _proxy_to_external_provider(
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
         _request_branch = chat_messages
 
-        async def _external_context_fitter(messages):
+        # The loop passes this turn's catalogue: a withdrawn one (tool_choice "none", spent budget) costs nothing.
+        async def _external_context_fitter(messages, tools = _external_fit_tools):
             nonlocal _external_truncation
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                 _fit_external_context,
                 messages,
                 payload,
-                tools = _external_fit_tools,
+                tools = tools,
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
                 _external_truncation = truncation
@@ -29909,6 +29973,12 @@ async def _proxy_to_external_provider(
             payload,
             tools = _external_fit_tools,
         )
+        try:
+            _refuse_what_ollama_would_cut(
+                provider_type, _external_truncation, payload.context_window
+            )
+        except context_refusal.ContextBudgetExceeded as exc:
+            raise _context_budget_http_error(exc)
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
 
     cancel_event = threading.Event()
@@ -29987,10 +30057,10 @@ async def _proxy_to_external_provider(
                     model = model,
                     tool_choice = payload.tool_choice,
                     continue_final_message = _continue_final_message(payload),
-                    supports_vision = _external_takes_mcp_images(
-                        provider_type, _supports_vision, model, _pinfo
-                    ),
+                    supports_vision = _takes_tool_images,
                     promoted_image_parts = tuple(_external_promoted_parts),
+                    served_window = _tool_result_window if managed is None else None,
+                    max_tokens = _external_max_tokens,
                 ),
                 policy = ToolLoopPolicy(
                     tools = external_studio_tools,
@@ -30147,17 +30217,16 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            error = (
+                _openai_stream_error_chunk(exc)
+                if isinstance(exc, context_refusal.ContextBudgetExceeded)
+                else {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+            )
             if _non_stream_custom_responses:
-                yield json.dumps(
-                    {"error": {"message": _friendly_error(exc), "type": "server_error"}}
-                )
+                yield json.dumps(error)
                 return
             # A bare EOF reads as success to the chat client; surface the failure.
-            yield (
-                "data: "
-                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
-                + "\n\n"
-            )
+            yield "data: " + json.dumps(error) + "\n\n"
             yield "data: [DONE]\n\n"
         finally:
             cancel_event.set()
@@ -43765,6 +43834,7 @@ async def anthropic_count_tokens(
     tokenizer, or a resident MLX model's through the chat count route, and returns
     ``{"input_tokens": int}`` only. Unlike /messages, max_tokens is NOT required here.
     """
+    _mark_claude_code_thinking(payload, request)
     if _connection_model_ref(payload.model) is not None:
         raise HTTPException(
             status_code = 400,
@@ -44425,6 +44495,7 @@ async def anthropic_messages(
     responses in Anthropic Messages API format (streaming SSE or non-streaming
     JSON).
     """
+    _mark_claude_code_thinking(payload, request)
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
     if connection is not None:
@@ -52010,7 +52081,7 @@ async def prompt_upsampler_download(
     from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
 
     account_access.require_installation_owner()
-    if flux3_prompt_upsampler.status().get("override"):
+    if flux3_prompt_upsampler._overridden():
         raise HTTPException(
             status_code = 409,
             detail = "The prompt upsampler files come from UNSLOTH_FLUX3_UPSAMPLER_GGUF / _MMPROJ; set both instead.",
@@ -52243,7 +52314,8 @@ async def mask_segmenter_download(
 
     account_access.require_installation_owner()
     if not diffusion_segment.transformers_supports_sam3():
-        raise HTTPException(status_code = 501, detail = diffusion_segment.status()["reason"])
+        status = await asyncio.to_thread(diffusion_segment.status)
+        raise HTTPException(status_code = 501, detail = status["reason"])
     variant = await asyncio.to_thread(diffusion_segment.active_variant)
     if (os.environ.get(diffusion_segment.ENV_PATH_OVERRIDE) or "").strip():
         raise HTTPException(
@@ -52261,7 +52333,7 @@ async def mask_segmenter_download(
         download_id = await asyncio.to_thread(diffusion_segment.start_download, token, variant.id)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
-    plan = diffusion_segment.download_plan(variant)
+    plan = await asyncio.to_thread(diffusion_segment.download_plan, variant)
     return JSONResponse(
         content = {
             **diffusion_segment.download_status(),

@@ -342,10 +342,14 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
     true,
   );
   assert.equal(
-    stage({ version: 15, customContextLength: 32768 }).remembered,
+    stage({ version: 14, customContextLength: 32768 }).remembered,
     true,
   );
-  assert.equal(stage({ version: 16, customContextLength: 32768 }).remembered, false);
+  assert.equal(
+    stage({ version: 16, customContextLength: 32768 }).remembered,
+    true,
+  );
+  assert.equal(stage({ version: 17, customContextLength: 32768 }).remembered, false);
 });
 
 

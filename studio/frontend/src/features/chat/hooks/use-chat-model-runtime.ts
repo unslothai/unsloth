@@ -1940,6 +1940,8 @@ export function useChatModelRuntime() {
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       let offloadCounts: OffloadCounts = {};
+      // Set once the load asks for a standalone Engram table, so the download bar counts it.
+      let progressEngramPrecision: string | null = null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -2218,6 +2220,9 @@ export function useChatModelRuntime() {
               pendingLoadConfig?.ctxCheckpoints ??
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
+            engramPrecision:
+              pendingLoadConfig?.engramPrecision ??
+              stateBeforeUnload.engramPrecision,
           };
           const loadIn4bitChoice = stateBeforeUnload.params.loadIn4bit !== false;
           let loadEngineFields = {
@@ -2259,6 +2264,7 @@ export function useChatModelRuntime() {
                   pendingLoadConfig?.specDraftCacheDtype ?? null,
                 ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
                 cacheRam: pendingLoadConfig?.cacheRam ?? null,
+                engramPrecision: pendingLoadConfig?.engramPrecision ?? null,
               };
               loadKvCacheDtype = pendingLoadConfig?.kvCacheDtype ?? null;
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
@@ -2614,6 +2620,7 @@ export function useChatModelRuntime() {
             // Bind the request ID before the POST so an early cancel lands as a backend tombstone.
             loadRun.loadAttemptPath = loadPath;
 
+            progressEngramPrecision = loadRequest().engram_precision ?? null;
             const loadResponse = await loadModel({
               ...loadRequest(),
               load_request_id: loadRun.requestId,
@@ -2991,6 +2998,7 @@ export function useChatModelRuntime() {
                       rollbackState.loadedSpecDraftCacheDtype,
                     ctxCheckpoints: rollbackState.loadedCtxCheckpoints,
                     cacheRam: rollbackState.loadedCacheRam,
+                    engramPrecision: rollbackState.loadedEngramPrecision,
                   }),
                   // Explicit: the target is resident now, so an omitted field would inherit across models.
                   ...(rollbackState.loadedLlamaExtraArgs != null
@@ -3055,6 +3063,9 @@ export function useChatModelRuntime() {
                     rollbackState.loadedCtxCheckpoints ?? null,
                   cacheRam: previousServerTuning.cacheRam ?? null,
                   loadedCacheRam: rollbackState.loadedCacheRam ?? null,
+                  engramPrecision: previousServerTuning.engramPrecision ?? null,
+                  loadedEngramPrecision:
+                    rollbackState.loadedEngramPrecision ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
@@ -3200,6 +3211,7 @@ export function useChatModelRuntime() {
                       ggufVariant,
                       expectedBytes,
                       hfToken,
+                      progressEngramPrecision,
                     ),
                   ]
                 : await Promise.all(

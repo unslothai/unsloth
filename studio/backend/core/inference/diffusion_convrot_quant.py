@@ -1830,14 +1830,32 @@ def swiglu_call_count() -> int:
     return _SWIGLU_CALLS[0]
 
 
-def convrot_act_quant(x2d: Any, group: int, v2: bool) -> Optional[tuple]:
+def convrot_act_quant(
+    x2d: Any,
+    group: int,
+    v2: bool,
+    exact: bool = False,
+) -> Optional[tuple]:
     """``(int8 [M, K], scale [M])`` of ``x2d @ blockdiag(H_group)`` quantized like torchao (v2 = ``Int8Tensor``, else
     the v1 per-token quant), from the fused kernel; None when this device / shape / group is not covered, so the caller
-    keeps its own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time."""
+    keeps its own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time.
+    ``exact`` (eager only; ignored while tracing): the dense ``rotq_i8`` tile, bit-identical to the stock rotation +
+    quant, never ``rotq_h16``."""
     import torch
 
     if _ROTQ_HANDLE is None or x2d.dim() != 2 or x2d.dtype != torch.bfloat16 or not x2d.is_cuda:
         return None
+    if exact and not torch.compiler.is_compiling():
+        cfg = rotq_tile_for(x2d.device.index, x2d.shape[-1], group)
+        if not rotquant_supported(x2d, group, cfg):
+            return None
+        _ROTQ_CALLS[0] += 1
+        try:
+            return _rotq_launch(
+                x2d if x2d.is_contiguous() else x2d.contiguous(), group, "v2" if v2 else "v1", cfg
+            )
+        except Exception:  # noqa: BLE001 - the caller keeps the stock rotation + quant
+            return None
     if not (
         _h16_ok(x2d, group)
         or rotquant_supported(x2d, group, rotq_tile_for(x2d.device.index, x2d.shape[-1], group))

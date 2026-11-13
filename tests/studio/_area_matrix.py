@@ -277,6 +277,15 @@ STREAMED = """(end) => {
 }"""
 
 # Answers /v1/chat/completions from the page with STREAM's frames, one per STREAM_MS.
+# The thread mounts only the rows near the reader, so "loaded" is the length its rows publish
+# (aria-setsize); a thread short enough to mount whole publishes none and is counted instead.
+THREAD_LOADED = """(n) => {
+  const rows = document.querySelectorAll('[data-role]');
+  if (rows.length >= n) return true;
+  const last = rows[rows.length - 1];
+  return !!last && Number(last.getAttribute('aria-setsize')) >= n;
+}"""
+
 STREAM_SHIM = """(([frames, ms]) => {
   const realFetch = window.fetch.bind(window);
   window.__gateStreams = 0;
@@ -1056,7 +1065,7 @@ class Page:
                 f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000
             )
             page.wait_for_function(
-                "(n) => document.querySelectorAll('[data-role]').length >= n",
+                THREAD_LOADED,
                 arg = 2 * turns,
                 timeout = 120_000,
             )

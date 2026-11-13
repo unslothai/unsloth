@@ -59,6 +59,7 @@ from core.training.dataset_bounds import (
     max_train_rows_for_config,
     record_row_bound,
     row_bound_for_resume,
+    slice_dataset_rows,
     world_size_from_env,
 )
 from core.training.resume import _checkpoint_state, session_eta_seconds
@@ -3509,12 +3510,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if dataset_streaming:
             return _slice_streaming_dataset(ds, slice_start, slice_end)
         if slice_start is not None or slice_end is not None:
-            start = slice_start if slice_start is not None else 0
-            end = slice_end if slice_end is not None else len(ds) - 1
-            if end < start:
-                return ds.select([])
             # The user named these rows; the bound below defers to that.
-            return ds.select(range(start, min(end + 1, len(ds))))
+            return slice_dataset_rows(ds, slice_start, slice_end)[0]
         if mlx_split_names_rows:
             return ds
         return bound_dataset_rows(
@@ -6201,9 +6198,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         slice_start = config.get("dataset_slice_start")
         slice_end = config.get("dataset_slice_end")
         if slice_start is not None or slice_end is not None:
-            start = slice_start if slice_start is not None else 0
-            end = slice_end if slice_end is not None else len(dataset)
-            dataset = dataset.select(range(start, min(end + 1, len(dataset))))
+            dataset = slice_dataset_rows(dataset, slice_start, slice_end)[0]
 
         if csv_text_columns:
             kept = dataset.filter(
