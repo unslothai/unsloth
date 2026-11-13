@@ -1866,6 +1866,7 @@ def test_a_reset_after_a_controller_reprompt_keeps_the_users_turn(
         loop, payload, tools = [], branch = chat, tool_loop = True, can_reset = True
     )
     assert {"role": "user", "content": "the real task"} in fitted
+    assert any(m.get("content") == "RESULT" for m in fitted)
 
 
 def test_only_the_active_copy_of_a_repeated_prompt_is_pinned(monkeypatch):
@@ -1941,3 +1942,11 @@ def test_a_replaced_trailing_turn_keeps_the_checkpoint():
     call = {"role": "assistant", "content": "x"}
     assert ri._extend_checkpoint_fit(state, seen + [call]) == fitted + [call]
     assert ri._extend_checkpoint_fit(state, [{"role": "user", "content": "other"}]) is None
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}
+    parts = [{"type": "text", "text": "look"}, image]
+    seen = [{"role": "user", "content": parts}]
+    state = {"input": seen, "fitted": [{"role": "user", "content": "<recalled>\nlook"}]}
+    nudge = {"type": "text", "text": "\n\nUse a tool now."}
+    assert ri._extend_checkpoint_fit(state, [{"role": "user", "content": parts + [nudge]}]) == [
+        {"role": "user", "content": [{"type": "text", "text": "<recalled>\nlook"}, nudge]}
+    ]

@@ -28984,6 +28984,23 @@ _EXTERNAL_COMPACTION_HEADROOM = 0.25
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
+def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
+    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
+    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+    asked = next((m for m in reversed(branch or ()) if m.get("role") == "user"), None)
+    # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
+    start = next(
+        (i for i in range(len(messages) - 1, -1, -1) if asked and messages[i] == asked), None
+    )
+    if start is None:
+        return None
+    latest = next(
+        (i for i in range(len(messages) - 1, start, -1) if messages[i].get("role") == "assistant"),
+        len(messages),
+    )
+    return {id(messages[start])} | {id(m) for m in messages[latest:]}
+
+
 def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
     """The cached checkpoint fit plus the loop's new turns, or None when ``messages`` diverged.
 
@@ -29015,6 +29032,10 @@ def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[d
         and new.startswith(old)
     ):
         last = {**fitted[-1], "content": kept + new[len(old) :]}
+    elif isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old:
+        # A multipart turn gains parts; keep the fitted copy's recall text in front of them.
+        parts = kept if isinstance(kept, list) else [{"type": "text", "text": kept or ""}]
+        last = {**fitted[-1], "content": parts + new[len(old) :]}
     else:
         last = messages[n - 1]
     return fitted[:-1] + [last] + messages[n:]
@@ -29120,13 +29141,9 @@ def _fit_external_context(
     # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     # A controller re-prompt is not the user's turn: anchor the branch's own, as the GGUF loop does.
-    asked = (can_reset or replays_manual) and next(
-        (m for m in reversed(branch or ()) if m.get("role") == "user"), None
-    )
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
-        anchor_ids = next(({id(m)} for m in reversed(messages) if asked and m == asked), None),
+        anchor_ids = _active_turn_anchors(messages, branch) if can_reset or replays_manual else None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
