@@ -250,6 +250,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         BLOCK_N: tl.constexpr,  # block size along N (out features)
         BLOCK_K: tl.constexpr,  # block size along K (in features)
         GROUP_M: tl.constexpr,  # M tiles per swizzle group
+        PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -414,11 +415,28 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
             BLOCK_N = bn,
             BLOCK_K = bk,
             GROUP_M = gm,
+            PREFETCH_FIX = _prefetch_fix_key(),
             num_warps = warps,
             num_stages = stages,
             enable_fp_fusion = False,
         )
     return out
+
+
+_PREFETCH_FIX_ON = False
+
+
+def _prefetch_fix_key() -> bool:
+    """True once the sm_8x prefetch fix is installed: keeps cubins compiled without it (an older Studio, or the fix
+    switched off) out of the Triton cache entries the fixed route reuses."""
+    global _PREFETCH_FIX_ON
+    if not _PREFETCH_FIX_ON:
+        try:
+            from .diffusion_triton_prefetch import fix_triton_sm8x_8bit_prefetch
+            _PREFETCH_FIX_ON = bool(fix_triton_sm8x_8bit_prefetch())
+        except Exception:  # noqa: BLE001 - no fix: the key stays False
+            return False
+    return _PREFETCH_FIX_ON
 
 
 @lru_cache(maxsize = 1)

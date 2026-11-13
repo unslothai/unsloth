@@ -1592,3 +1592,26 @@ def test_h16_probe_covers_the_one_pass_branch_and_rejects_nan_scales(forced):
         mp.setattr(cq, "_h16_launch", nan_row)
         assert cq._h16_probe(index) is False
         assert cq._swiglu_probe(index) is False
+
+
+def test_the_sm8x_prefetch_fix_is_part_of_the_kernel_cache_key(monkeypatch):
+    import ast
+    import inspect
+
+    import core.inference.diffusion_triton_prefetch as tp
+
+    src = inspect.getsource(g8)
+    tree = ast.parse(src)
+    kernel = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "i8mm_dq"
+    )
+    assert "PREFETCH_FIX" in [a.arg for a in kernel.args.args]
+    launch = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_launch"
+    )
+    assert any(isinstance(k, ast.keyword) and k.arg == "PREFETCH_FIX" for k in ast.walk(launch))
+    monkeypatch.setattr(g8, "_PREFETCH_FIX_ON", False)
+    monkeypatch.setattr(tp, "fix_triton_sm8x_8bit_prefetch", lambda: False)
+    assert g8._prefetch_fix_key() is False
+    monkeypatch.setattr(tp, "fix_triton_sm8x_8bit_prefetch", lambda: True)
+    assert g8._prefetch_fix_key() is True
