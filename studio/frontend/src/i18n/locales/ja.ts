@@ -3392,6 +3392,9 @@ export const ja = {
     connections: {
       title: "接続",
       description: "プロバイダーと外部接続を管理します。",
+      useSiteIcon: "サイトのアイコンを使用",
+      fetchingSiteIcon: "取得中…",
+      removeSiteIcon: "サイトのアイコンを削除",
     },
     remoteLan: {
       title: "リモートとLAN",

@@ -3362,6 +3362,9 @@ export const zhCN = {
     connections: {
       title: "连接",
       description: "管理提供方和外部服务的连接。",
+      useSiteIcon: "使用站点图标",
+      fetchingSiteIcon: "获取中…",
+      removeSiteIcon: "移除站点图标",
     },
     remoteLan: {
       title: "远程与局域网",

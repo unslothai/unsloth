@@ -865,6 +865,7 @@ export function ModelSelector({
             providerType={externalModel.providerType}
             className="size-4"
             title={externalModel.providerName}
+            faviconDataUrl={externalModel.faviconDataUrl}
           />
         ),
       });

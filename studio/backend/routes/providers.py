@@ -44,6 +44,10 @@ from core.inference.providers import (
 )
 from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
+from core.inference.provider_favicon import (
+    ProviderFaviconError,
+    fetch_provider_favicon,
+)
 
 from core.inference import openai_codex_auth, openai_codex_client
 from core.inference.provider_model_capabilities import (
@@ -57,6 +61,8 @@ from models.providers import (
     ModelCatalogResponse,
     ProviderCreate,
     ProviderCredentialMigration,
+    ProviderFaviconRequest,
+    ProviderFaviconResponse,
     ProviderModelsRequest,
     ProviderModelCapabilityInfo,
     ProviderModelInfo,
@@ -169,6 +175,7 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
+        favicon_data_url = row.get("favicon_data_url"),
         # Header values can carry credentials; other accounts and API keys never read them.
         extra_headers = (
             {}
@@ -316,6 +323,29 @@ async def list_registry(
     )
 
 
+@router.post("/favicon", response_model = ProviderFaviconResponse)
+async def fetch_provider_site_favicon(
+    payload: ProviderFaviconRequest, _current_subject: str = Depends(get_current_subject)
+):
+    """Fetch the site favicon for a custom provider's origin (opt-in, user-clicked).
+
+    The fetch happens server-side so browser and desktop builds share one path,
+    and it never sends provider credentials. Returns a size-capped PNG data URL,
+    or null when the site exposes no usable icon.
+    """
+    try:
+        data_url = await fetch_provider_favicon(payload.base_url)
+    except ProviderFaviconError as exc:
+        raise HTTPException(status_code = exc.status_code, detail = str(exc)) from None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("providers.favicon_fetch_failed", error = str(exc))
+        raise HTTPException(
+            status_code = 502,
+            detail = "Could not fetch a favicon from this site.",
+        ) from None
+    return ProviderFaviconResponse(favicon_data_url = data_url)
+
+
 @router.get("/pricing")
 async def get_pricing_snapshot(current_subject: str = Depends(get_current_subject)):
     """Static per-MTok pricing table the frontend uses to convert upstream
@@ -398,6 +428,7 @@ async def create_provider_config(
             max_output_tokens = payload.max_output_tokens,
             api_type = payload.api_type,
             reasoning_config = payload.reasoning_config,
+            favicon_data_url = payload.favicon_data_url,
             extra_headers = payload.extra_headers,
             shared = payload.shared,
         )
@@ -445,6 +476,7 @@ async def update_provider_config(
 
     existing_info = get_provider_info(existing["provider_type"]) or {}
     max_output_tokens_requested = "max_output_tokens" in payload.model_fields_set
+    favicon_data_url_requested = "favicon_data_url" in payload.model_fields_set
     _validate_max_output_tokens_contract(
         existing["provider_type"],
         max_output_tokens_requested,
@@ -502,6 +534,7 @@ async def update_provider_config(
         "max_output_tokens",
         "api_type",
         "reasoning_config",
+        "favicon_data_url",
         "extra_headers",
         "shared",
     }
@@ -544,6 +577,8 @@ async def update_provider_config(
                 if payload.reasoning_config is not None
                 else None
             )
+        if favicon_data_url_requested:
+            metadata_updates["favicon_data_url"] = payload.favicon_data_url
         if "extra_headers" in payload.model_fields_set:
             metadata_updates["extra_headers"] = payload.extra_headers or {}
 
@@ -557,6 +592,7 @@ async def update_provider_config(
         max_output_tokens = existing.get("max_output_tokens"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
+        favicon_data_url = existing.get("favicon_data_url"),
         extra_headers = existing.get("extra_headers") or {},
         shared = bool(existing.get("shared")),
     )
@@ -582,6 +618,7 @@ async def update_provider_config(
             if written is None and field not in {
                 "max_output_tokens",
                 "reasoning_config",
+                "favicon_data_url",
                 "extra_headers",
             }:
                 continue

@@ -3425,6 +3425,9 @@ export const hi = {
     connections: {
       title: "कनेक्शन",
       description: "प्रदाता और बाहरी कनेक्शन प्रबंधित करें।",
+      useSiteIcon: "साइट आइकन उपयोग करें",
+      fetchingSiteIcon: "लाया जा रहा है…",
+      removeSiteIcon: "साइट आइकन हटाएँ",
     },
     remoteLan: {
       title: "रिमोट और LAN",

@@ -3429,6 +3429,9 @@ export const ptBR = {
     connections: {
       title: "Conexões",
       description: "Gerencie provedores e conexões externas.",
+      useSiteIcon: "Usar ícone do site",
+      fetchingSiteIcon: "Buscando…",
+      removeSiteIcon: "Remover ícone do site",
     },
     remoteLan: {
       title: "Remoto e LAN",

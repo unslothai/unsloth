@@ -3416,6 +3416,9 @@ export const ar = {
     connections: {
       title: "الاتصالات",
       description: "إدارة المزوّدين والاتصالات الخارجية.",
+      useSiteIcon: "استخدام أيقونة الموقع",
+      fetchingSiteIcon: "جارٍ الجلب…",
+      removeSiteIcon: "إزالة أيقونة الموقع",
     },
     remoteLan: {
       title: "الوصول عن بُعد والشبكة المحلية",

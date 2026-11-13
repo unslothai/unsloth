@@ -3596,6 +3596,9 @@ export const sv = {
     connections: {
       title: "Anslutningar",
       description: "Hantera leverantörer och externa anslutningar.",
+      useSiteIcon: "Använd webbplatsens ikon",
+      fetchingSiteIcon: "Hämtar…",
+      removeSiteIcon: "Ta bort webbplatsens ikon",
     },
     remoteLan: {
       title: "Fjärråtkomst och LAN",

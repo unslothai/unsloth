@@ -63,6 +63,7 @@ import {
   type ProviderRegistryEntry,
   createProviderConfig,
   deleteProviderConfig,
+  fetchProviderFavicon,
   fetchCodexSubscriptionModels,
   listProviderModels,
   listProviderRegistry,
@@ -356,6 +357,9 @@ export function ChatProvidersSettings({
   const [reasoningConfig, setReasoningConfig] = useState<CustomReasoningConfig | null>(null);
   const [autoReloadModels, setAutoReloadModels] = useState(false);
   const [sharedDraft, setSharedDraft] = useState(false);
+  // Opt-in site icon draft; only persisted for custom providers via the backend favicon endpoint.
+  const [faviconDataUrlDraft, setFaviconDataUrlDraft] = useState<string | null>(null);
+  const [fetchingSiteIcon, setFetchingSiteIcon] = useState(false);
   const isAccountOwner = useIsAccountOwner();
   const loginMode = useLoginMode();
   const modelFieldsAtOpenRef = useRef<string | null>(null);
@@ -709,6 +713,8 @@ export function ChatProvidersSettings({
     setAutoReloadModels(false);
     setNewModelCheckDraft("daily");
     setSharedDraft(false);
+    setFaviconDataUrlDraft(null);
+    setFetchingSiteIcon(false);
     modelFieldsAtOpenRef.current = null;
   }
 
@@ -786,6 +792,34 @@ export function ChatProvidersSettings({
       );
     }
     return value;
+  }
+
+  async function fetchSiteIcon() {
+    const url = baseUrlDraft.trim();
+    if (!url) return;
+    setFetchingSiteIcon(true);
+    try {
+      const normalized = normalizeProviderBaseUrl(url, {
+        appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerType),
+      });
+      if (!normalized) {
+        toast.error("Enter a Base URL before fetching a site icon.");
+        return;
+      }
+      const icon = await fetchProviderFavicon(normalized);
+      if (icon) {
+        setFaviconDataUrlDraft(icon);
+        toast.success("Site icon added.");
+      } else {
+        toast.info("No site icon found at this address.");
+        setFaviconDataUrlDraft(null);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Could not fetch a site icon: ${message}`);
+    } finally {
+      setFetchingSiteIcon(false);
+    }
   }
 
   async function loadModels({
@@ -1083,6 +1117,7 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        faviconDataUrl: isCustomProvider ? faviconDataUrlDraft : undefined,
         extraHeaders,
         ...(showShareToggle && sharedDraft ? { shared: true } : {}),
         apiKey: apiKey.trim(),
@@ -1113,6 +1148,7 @@ export function ChatProvidersSettings({
         reasoningConfig: created.provider_type === "custom"
           ? normalizeCustomReasoningConfig(created.reasoning_config)
           : undefined,
+        faviconDataUrl: created.favicon_data_url ?? undefined,
 
         hasApiKey: created.has_api_key,
         shared: created.shared === true,
@@ -1266,6 +1302,7 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        faviconDataUrl: isEditingCustomProvider ? faviconDataUrlDraft : undefined,
         extraHeaders,
         ...(showShareToggle && sharedDraft !== (existing.shared === true)
           ? { shared: sharedDraft }
@@ -1303,6 +1340,7 @@ export function ChatProvidersSettings({
         reasoningConfig: updated.provider_type === "custom"
           ? normalizeCustomReasoningConfig(updated.reasoning_config)
           : undefined,
+        faviconDataUrl: updated.favicon_data_url ?? undefined,
 
         hasApiKey: updated.has_api_key,
         shared: updated.shared === true,
@@ -1446,6 +1484,8 @@ export function ChatProvidersSettings({
     setAutoReloadModels(provider.autoReloadModels === true);
     setNewModelCheckDraft(newModelCheckOf(provider));
     setSharedDraft(provider.shared === true);
+    setFaviconDataUrlDraft(provider.faviconDataUrl ?? null);
+    setFetchingSiteIcon(false);
     modelFieldsAtOpenRef.current = null;
     setApiType(
       provider.decisionsOnly ? "systemone" : (provider.apiType ?? "chat_completions"),
@@ -1716,6 +1756,7 @@ export function ChatProvidersSettings({
                             providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
                             className="size-4"
                             title={CUSTOM_PROVIDER_DISPLAY_NAME}
+                            faviconDataUrl={faviconDataUrlDraft}
                           />
                           <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
                         </span>
@@ -1931,14 +1972,51 @@ export function ChatProvidersSettings({
                         : "OpenAI-compatible endpoint."}
                     </p>
                   </div>
-                  <Input
-                    id="provider-base-url"
-                    type="text"
-                    value={baseUrlDraft}
-                    onChange={(event) => setBaseUrlDraft(event.target.value)}
-                    placeholder={customProviderBaseUrlPlaceholder(providerType)}
-                    className="mt-[var(--ui-title-cap-inset)] h-9 text-sm @max-[520px]:mt-0"
-                  />
+                  <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
+                    <Input
+                      id="provider-base-url"
+                      type="text"
+                      value={baseUrlDraft}
+                      onChange={(event) => setBaseUrlDraft(event.target.value)}
+                      placeholder={customProviderBaseUrlPlaceholder(providerType)}
+                      className="h-9 text-sm"
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={fetchingSiteIcon || !baseUrlDraft.trim()}
+                        onClick={() => void fetchSiteIcon()}
+                      >
+                        {fetchingSiteIcon ? (
+                          <>
+                            <Spinner className="mr-2 size-3.5" />
+                            {t("settings.connections.fetchingSiteIcon")}
+                          </>
+                        ) : (
+                          t("settings.connections.useSiteIcon")
+                        )}
+                      </Button>
+                      {faviconDataUrlDraft ? (
+                        <>
+                          <ApiProviderLogo
+                            providerType={providerType}
+                            faviconDataUrl={faviconDataUrlDraft}
+                            className="size-4"
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setFaviconDataUrlDraft(null)}
+                          >
+                            {t("settings.connections.removeSiteIcon")}
+                          </Button>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               ) : null}
 
@@ -2628,6 +2706,7 @@ export function ChatProvidersSettings({
                           providerType={provider.providerType}
                           className="size-5"
                           title={provider.name}
+                          faviconDataUrl={provider.faviconDataUrl}
                         />
                       </div>
                       <div className="min-w-0 pt-px">

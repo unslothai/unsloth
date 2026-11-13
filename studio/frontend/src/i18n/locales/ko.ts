@@ -3406,6 +3406,9 @@ export const ko = {
     connections: {
       title: "연결",
       description: "제공자 및 외부 연결을 관리합니다.",
+      useSiteIcon: "사이트 아이콘 사용",
+      fetchingSiteIcon: "가져오는 중…",
+      removeSiteIcon: "사이트 아이콘 제거",
     },
     remoteLan: {
       title: "원격 및 LAN",

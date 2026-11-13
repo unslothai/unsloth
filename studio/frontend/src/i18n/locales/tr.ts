@@ -3690,6 +3690,9 @@ export const tr = {
     connections: {
       title: "Bağlantılar",
       description: "Sağlayıcıları ve harici bağlantıları yönetin.",
+      useSiteIcon: "Site simgesini kullan",
+      fetchingSiteIcon: "Getiriliyor…",
+      removeSiteIcon: "Site simgesini kaldır",
     },
     remoteLan: {
       title: "Uzak ve LAN",

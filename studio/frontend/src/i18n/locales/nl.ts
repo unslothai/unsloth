@@ -3736,6 +3736,9 @@ export const nl = {
     connections: {
       title: "Verbindingen",
       description: "Beheer providers en externe verbindingen.",
+      useSiteIcon: "Site-icoon gebruiken",
+      fetchingSiteIcon: "Ophalen…",
+      removeSiteIcon: "Site-icoon verwijderen",
     },
     remoteLan: {
       title: "Extern en LAN",

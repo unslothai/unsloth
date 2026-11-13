@@ -3692,6 +3692,9 @@ export const vi = {
     connections: {
       title: "Kết nối",
       description: "Quản lý nhà cung cấp và các kết nối bên ngoài.",
+      useSiteIcon: "Dùng biểu tượng trang web",
+      fetchingSiteIcon: "Đang lấy…",
+      removeSiteIcon: "Gỡ biểu tượng trang web",
     },
     remoteLan: {
       title: "Từ xa và LAN",

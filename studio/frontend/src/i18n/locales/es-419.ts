@@ -3749,6 +3749,9 @@ export const es419 = {
     connections: {
       title: "Conexiones",
       description: "Administra proveedores y conexiones externas.",
+      useSiteIcon: "Usar icono del sitio",
+      fetchingSiteIcon: "Obteniendo…",
+      removeSiteIcon: "Quitar icono del sitio",
     },
     remoteLan: {
       title: "Remoto y LAN",

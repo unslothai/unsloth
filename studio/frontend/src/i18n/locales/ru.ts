@@ -3428,6 +3428,9 @@ export const ru = {
     connections: {
       title: "Подключения",
       description: "Управление провайдерами и внешними подключениями.",
+      useSiteIcon: "Использовать иконку сайта",
+      fetchingSiteIcon: "Загрузка…",
+      removeSiteIcon: "Убрать иконку сайта",
     },
     remoteLan: {
       title: "Удалённый доступ и LAN",

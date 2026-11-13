@@ -3512,6 +3512,9 @@ export const zhTW = {
     connections: {
       title: "連線",
       description: "管理供應商與外部連線。",
+      useSiteIcon: "使用網站圖示",
+      fetchingSiteIcon: "取得中…",
+      removeSiteIcon: "移除網站圖示",
     },
     remoteLan: {
       title: "遠端與區域網路",

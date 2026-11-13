@@ -3691,6 +3691,9 @@ export const id = {
     connections: {
       title: "Koneksi",
       description: "Kelola penyedia dan koneksi eksternal.",
+      useSiteIcon: "Gunakan ikon situs",
+      fetchingSiteIcon: "Mengambil…",
+      removeSiteIcon: "Hapus ikon situs",
     },
     remoteLan: {
       title: "Jarak jauh & LAN",

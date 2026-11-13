@@ -3533,6 +3533,9 @@ export const th = {
     connections: {
       title: "การเชื่อมต่อ",
       description: "จัดการผู้ให้บริการและการเชื่อมต่อภายนอก",
+      useSiteIcon: "ใช้ไอคอนเว็บไซต์",
+      fetchingSiteIcon: "กำลังดึงข้อมูล…",
+      removeSiteIcon: "นำไอคอนเว็บไซต์ออก",
     },
     remoteLan: {
       title: "ระยะไกลและ LAN",

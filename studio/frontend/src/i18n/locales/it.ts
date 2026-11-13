@@ -3355,6 +3355,9 @@ export const it = {
     connections: {
       title: "Connessioni",
       description: "Gestisci provider e connessioni esterne.",
+      useSiteIcon: "Usa icona del sito",
+      fetchingSiteIcon: "Recupero…",
+      removeSiteIcon: "Rimuovi icona del sito",
     },
     remoteLan: {
       title: "Remoto e LAN",

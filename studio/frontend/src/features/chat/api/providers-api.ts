@@ -55,6 +55,7 @@ export interface ProviderConfig {
   available_models?: string[];
   max_output_tokens?: number | null;
   reasoning_config?: CustomReasoningConfig | null;
+  favicon_data_url?: string | null;
   extra_headers?: Record<string, string>;
   shared?: boolean;
   shared_by_owner?: boolean;
@@ -226,6 +227,7 @@ export async function createProviderConfig(payload: {
   availableModels?: string[];
   maxOutputTokens?: number | null;
   reasoningConfig?: CustomReasoningConfig | null;
+  faviconDataUrl?: string | null;
   extraHeaders?: Record<string, string>;
   shared?: boolean;
   apiKey?: string;
@@ -247,6 +249,9 @@ export async function createProviderConfig(payload: {
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.faviconDataUrl === undefined
+          ? {}
+          : { favicon_data_url: payload.faviconDataUrl }),
         ...(payload.extraHeaders === undefined
           ? {}
           : { extra_headers: payload.extraHeaders }),
@@ -283,6 +288,7 @@ export async function updateProviderConfig(
     availableModels?: string[];
     maxOutputTokens?: number | null;
     reasoningConfig?: CustomReasoningConfig | null;
+    faviconDataUrl?: string | null;
     extraHeaders?: Record<string, string>;
     shared?: boolean;
     apiKey?: string;
@@ -308,6 +314,9 @@ export async function updateProviderConfig(
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.faviconDataUrl === undefined
+          ? {}
+          : { favicon_data_url: payload.faviconDataUrl }),
         ...(payload.extraHeaders === undefined
           ? {}
           : { extra_headers: payload.extraHeaders }),
@@ -414,6 +423,20 @@ export async function listProviderModels(payload: {
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
   });
+}
+
+export async function fetchProviderFavicon(
+  baseUrl: string,
+): Promise<string | null> {
+  const response = await authFetch("/api/providers/favicon", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ base_url: baseUrl }),
+  });
+  const body = await parseJsonOrThrow<{ favicon_data_url: string | null }>(
+    response,
+  );
+  return body.favicon_data_url ?? null;
 }
 
 export async function fetchModelCatalog(): Promise<ModelCatalogResponse> {

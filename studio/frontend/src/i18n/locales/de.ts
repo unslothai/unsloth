@@ -3462,6 +3462,9 @@ export const de = {
     connections: {
       title: "Verbindungen",
       description: "Verwalten Sie Anbieter und externe Verbindungen.",
+      useSiteIcon: "Website-Symbol verwenden",
+      fetchingSiteIcon: "Wird geladen…",
+      removeSiteIcon: "Website-Symbol entfernen",
     },
     remoteLan: {
       title: "Remote & LAN",

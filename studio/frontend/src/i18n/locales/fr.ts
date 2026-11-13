@@ -3462,6 +3462,9 @@ export const fr = {
     connections: {
       title: "Connexions",
       description: "Gérez les fournisseurs et les connexions externes.",
+      useSiteIcon: "Utiliser l'icône du site",
+      fetchingSiteIcon: "Récupération…",
+      removeSiteIcon: "Retirer l'icône du site",
     },
     remoteLan: {
       title: "Accès distant et LAN",
