@@ -536,6 +536,20 @@ def test_a_security_prompt_is_left_to_the_user(desktop):
     assert not [event for event in desktop.events if event[0] == "click"]
 
 
+def test_a_security_prompt_showing_from_behind_is_left_alone_too(desktop):
+    look()
+    desktop.behind = [FrontWindow(app = "pinentry", title = "Passphrase", bounds = (1050, 0, 230, 800))]
+    end = at(1150, 400)
+    for call in (
+        {"action": "click", **end},
+        {"action": "drag", **at(*FIELD), "to_x": end["x"], "to_y": end["y"]},
+        {"action": "scroll", **end, "direction": "down"},
+    ):
+        refused = run(call, approved = True, full_access = True)
+        assert refused.startswith("Error:") and "security prompt" in refused
+    assert not [e for e in desktop.events if e[0] in ("click", "drag", "scroll")]
+
+
 def test_the_pointer_in_a_corner_stops_computer_use(desktop):
     look()
     run({"action": "click", **at(*OUTSIDE)})

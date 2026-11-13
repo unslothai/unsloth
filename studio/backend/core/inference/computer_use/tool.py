@@ -31,6 +31,10 @@ _DRAG_STEPS = 12
 _CORNER = 2.0
 _OPEN_APP_WAIT_S = 0.8
 _TYPE_CHUNK = 40
+_SECURITY_PROMPT = (
+    "an operating system security prompt is there, and only the user can answer it. Ask the "
+    "user to deal with it."
+)
 _BLOCKED_APP = (
     "{app} is blocked in Unsloth's settings, so nothing is done in it. Do not try again; tell "
     "the user."
@@ -250,10 +254,7 @@ class _Run:
         self._failsafe()
         front = self.backend.front_window()
         if policy.is_security_prompt(front):
-            raise _Halt(
-                "an operating system security prompt is in front, and only the user can answer "
-                "it. Ask the user to deal with it."
-            )
+            raise _Halt(_SECURITY_PROMPT)
         if not self.allowed and action["op"] != "move":
             risky = policy.risks([action], front)
             if risky:
@@ -293,6 +294,8 @@ class _Run:
         return under is not None and policy.is_own_window(under)
 
     def _use(self, window: FrontWindow) -> None:
+        if policy.is_security_prompt(window):
+            raise _Halt(_SECURITY_PROMPT)
         blocked = policy.blocked_window(window)
         if blocked:
             raise _Halt(_BLOCKED_APP.format(app = blocked))
