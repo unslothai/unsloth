@@ -69,9 +69,15 @@ def test_force_enables_unmeasured_sm80_plus_only(monkeypatch):
     assert g8.arch_config((7, 5)) is None
 
 
+@pytest.mark.parametrize("fixed", [False, True])
 @pytest.mark.parametrize("newer", [False, True])
-def test_triton38_keeps_every_sm8x_stock(monkeypatch, newer):
+def test_triton38_keeps_every_sm8x_stock(monkeypatch, newer, fixed):
+    """Without the prefetch fix every sm8x stays stock on Triton >= 3.8; with it, as on 3.7."""
+    from core.inference import diffusion_triton_prefetch
+
     monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: newer)
+    monkeypatch.setattr(diffusion_triton_prefetch, "fix_triton_sm8x_8bit_prefetch", lambda: fixed)
+    newer = newer and not fixed
     for cap, cfg in g8._ARCH_CONFIG.items():
         stock = newer and cap[0] == 8
         assert g8.arch_config(cap, "auto") == (None if stock else cfg)
@@ -100,16 +106,20 @@ def test_triton_at_least_parses_the_installed_version(monkeypatch, version, newe
         g8._triton_at_least.cache_clear()
 
 
-def test_triton38_runtime_turns_sm80_sm89_stock(monkeypatch):
+@pytest.mark.parametrize("fixed", [False, True])
+def test_triton38_runtime_turns_sm80_sm89_stock(monkeypatch, fixed):
     import sys
 
+    from core.inference import diffusion_triton_prefetch
+
     monkeypatch.setitem(sys.modules, "triton", types.SimpleNamespace(__version__ = "3.8.0"))
+    monkeypatch.setattr(diffusion_triton_prefetch, "fix_triton_sm8x_8bit_prefetch", lambda: fixed)
     clear = getattr(getattr(g8, "_triton_at_least", None), "cache_clear", lambda: None)
     clear()
     try:
-        assert g8.arch_config((8, 0), "auto") is None
-        assert g8.arch_config((8, 9), "auto") is None
-        assert not g8.unlisted_wanted((8, 6), "auto")
+        assert g8.arch_config((8, 0), "auto") == (g8._ARCH_CONFIG[(8, 0)] if fixed else None)
+        assert g8.arch_config((8, 9), "auto") == (g8._ARCH_CONFIG[(8, 9)] if fixed else None)
+        assert g8.unlisted_wanted((8, 6), "auto") is fixed
         assert g8.arch_config((12, 0), "auto") == g8._ARCH_CONFIG[(12, 0)]
     finally:
         clear()
@@ -1586,6 +1596,35 @@ def test_h16_probe_covers_the_one_pass_branch_and_rejects_nan_scales(forced):
         mp.setattr(cq, "_h16_launch", nan_row)
         assert cq._h16_probe(index) is False
         assert cq._swiglu_probe(index) is False
+
+
+def test_the_sm8x_prefetch_fix_is_part_of_the_kernel_cache_key(monkeypatch):
+    import ast
+    import inspect
+
+    import core.inference.diffusion_triton_prefetch as tp
+
+    src = inspect.getsource(g8)
+    tree = ast.parse(src)
+    kernel = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "i8mm_dq"
+    )
+    assert "PREFETCH_FIX" in [a.arg for a in kernel.args.args]
+    launch = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_launch"
+    )
+    assert any(isinstance(k, ast.keyword) and k.arg == "PREFETCH_FIX" for k in ast.walk(launch))
+    for installed in (False, True):
+        calls = []
+        monkeypatch.setattr(g8, "_PREFETCH_FIX_ON", None)
+        monkeypatch.setattr(
+            tp,
+            "fix_triton_sm8x_8bit_prefetch",
+            lambda installed = installed: calls.append(1) or installed,
+        )
+        # asked once, not on every launch (Triton 3.7 or the kill switch would pay it per Linear)
+        assert [g8._prefetch_fix_key() for _ in range(3)] == [installed] * 3
+        assert len(calls) == 1
 
 
 def test_install_eager_kill_switch_keeps_torchao(monkeypatch):

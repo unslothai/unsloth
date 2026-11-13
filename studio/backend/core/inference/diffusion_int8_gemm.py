@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured (every sm8x stock on
-Triton >= 3.8, whose int8 dot spills there), other sm80+ behind a bit-exact probe and a latency check
+"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured (sm8x on Triton >= 3.8
+only behind diffusion_triton_prefetch, without which its int8 dot spills), other sm80+ behind a bit-exact probe and a latency check
 (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock (ROCm and CPU never reach it);
 Linear output bit-identical, compiled block not end to end; sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
 an uncompiled denoiser gets the bit-identical subset (``install_eager``: dense rotation kernel, no SwiGLU fusion;
@@ -165,8 +165,14 @@ def _triton_at_least(major: int, minor: int) -> bool:
 
 
 def _triton38_sm8x(cap: tuple) -> bool:
-    """Triton >= 3.8 spills sm8x int8 tiles (triton-lang/triton#12486); even spill-free ones trail cuBLAS."""
-    return cap[0] == 8 and _triton_at_least(3, 8)
+    """Triton >= 3.8 spills sm8x int8 tiles (triton-lang/triton#12486) unless the prefetch fix compiles them."""
+    if cap[0] != 8 or not _triton_at_least(3, 8):
+        return False
+    try:
+        from .diffusion_triton_prefetch import fix_triton_sm8x_8bit_prefetch
+        return not fix_triton_sm8x_8bit_prefetch()
+    except Exception:  # noqa: BLE001 - no fix means the spilling tiles stay off
+        return True
 
 
 def unlisted_mode() -> str:
@@ -221,6 +227,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     except Exception:  # noqa: BLE001 - no Triton means the stock path
         return None
     globals().update(triton = triton, tl = tl)
+    try:
+        from .diffusion_triton_prefetch import fix_triton_sm8x_8bit_prefetch
+        fix_triton_sm8x_8bit_prefetch()
+    except Exception:  # noqa: BLE001 - kernels compile as stock Triton would
+        pass
 
     @triton.jit
     def _rbf16(x):
@@ -248,6 +259,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         BLOCK_N: tl.constexpr,  # block size along N (out features)
         BLOCK_K: tl.constexpr,  # block size along K (in features)
         GROUP_M: tl.constexpr,  # M tiles per swizzle group
+        PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -412,11 +424,29 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
             BLOCK_N = bn,
             BLOCK_K = bk,
             GROUP_M = gm,
+            PREFETCH_FIX = _prefetch_fix_key(),
             num_warps = warps,
             num_stages = stages,
             enable_fp_fusion = False,
         )
     return out
+
+
+_PREFETCH_FIX_ON = None
+
+
+def _prefetch_fix_key() -> bool:
+    """True once the sm_8x prefetch fix is installed: keeps cubins compiled without it (an older Studio, or the fix
+    switched off) out of the Triton cache entries the fixed route reuses. Settled once: _kernels() already tried the
+    install, and a False answer re-asked on every launch costs microseconds per Linear."""
+    global _PREFETCH_FIX_ON
+    if _PREFETCH_FIX_ON is None:
+        try:
+            from .diffusion_triton_prefetch import fix_triton_sm8x_8bit_prefetch
+            _PREFETCH_FIX_ON = bool(fix_triton_sm8x_8bit_prefetch())
+        except Exception:  # noqa: BLE001 - no fix: the key stays False
+            _PREFETCH_FIX_ON = False
+    return _PREFETCH_FIX_ON
 
 
 @lru_cache(maxsize = 1)
