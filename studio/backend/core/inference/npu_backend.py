@@ -782,8 +782,8 @@ class LemonadeNpuBackend:
         # A failed pull keeps its files to resume, but lemond calls that model not downloaded.
         on_disk = {checkpoint for _, checkpoint in self.model_folders() if checkpoint is not None}
         try:
-            model_ids = [
-                str(row.get("id"))
+            rows = [
+                row
                 for row in self._flm_rows()
                 if row.get("downloaded") or row.get("checkpoint") in on_disk
             ]
@@ -791,6 +791,14 @@ class LemonadeNpuBackend:
             return 0, [str(exc)]
         deleted = 0
         errors: list[str] = []
+        resident = self.resident()
+        if resident is not None:
+            # A twin's delete would take the resident's shared folder with it.
+            held = folder_checkpoints(self._flm_binary(), resident.model.checkpoint)
+            if any(row.get("checkpoint") in held for row in rows):
+                errors.append(f"Unload {resident.model.id} before deleting its folder.")
+            rows = [row for row in rows if row.get("checkpoint") not in held]
+        model_ids = [str(row.get("id")) for row in rows]
         for model_id in model_ids:
             try:
                 self.delete(model_id)
