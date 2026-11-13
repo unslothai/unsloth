@@ -472,8 +472,8 @@ def test_statistics_cover_every_key():
 
 def test_v_range_over_every_key_keeps_a_short_sequence_accurate(monkeypatch):
     """16 tokens, one of them with V thirty times the rest (a text refiner call). With the range of V taken over
-    every 8th key (keys 0 and 8 here) the gain of most channels came out far too small and the output lost a
-    quarter of its value; over every key it is as accurate as a long call."""
+    every 8th key (keys 0 and 8 here) the gain of most channels came out far too small and the error is more than
+    four times larger; over every key it is as accurate as a long call."""
     q, k, v = I.probe_inputs("cpu", torch.float32, 16, 2, 128)
     v = v.clone()
     v[:, 3] *= 30.0

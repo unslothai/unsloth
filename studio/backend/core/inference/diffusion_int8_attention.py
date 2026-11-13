@@ -146,8 +146,8 @@ def stats_plan(n_keys: int) -> tuple:
     """(kstep, vstep, nvc, vrows): the K mean is taken over every kstep-th key (at least K_MEAN_KEYS of them where
     there are that many: any mean is a valid shift, it only has to be representative), the V range over every
     vstep-th key in nvc row chunks of vrows keys. vstep is 1: a channel whose range is underestimated costs every
-    other channel of the tile its resolution (16 text-refiner tokens sampled every 8th key lost a quarter of the
-    output)."""
+    other channel of the tile its resolution (16 text-refiner tokens with the range from every 8th key: rel L1 0.55
+    against fp64)."""
     kstep = max(1, min(K_MEAN_STEP, n_keys // K_MEAN_KEYS))
     vstep = max(1, int(V_RANGE_STEP))
     nvc = max(1, min(V_RANGE_CHUNKS, -(-n_keys // (256 * vstep))))
@@ -168,12 +168,17 @@ class Operands(dict):
 
 def _aligned(x: Any) -> Any:
     """``x`` with last-dim stride 1 and every row 16-byte aligned (what the quantisers' vector loads need)."""
-    if x.stride(3) != 1:
-        return x.contiguous()
+    import torch
+
     size = x.element_size()
-    if x.data_ptr() % 16 or any((x.stride(d) * size) % 16 for d in range(3) if x.shape[d] > 1):
-        return x.clone(memory_format = __import__("torch").contiguous_format)
-    return x
+    if (
+        x.stride(3) == 1
+        and x.data_ptr() % 16 == 0
+        and all((x.stride(d) * size) % 16 == 0 for d in range(3) if x.shape[d] > 1)
+    ):
+        return x
+    # a copy even where the view is already contiguous: a fresh allocation starts aligned
+    return x.clone(memory_format = torch.contiguous_format)
 
 
 def _device_index(device: Any) -> int:
