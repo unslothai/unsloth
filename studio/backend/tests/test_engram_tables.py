@@ -846,9 +846,10 @@ class TestCachedQuantLoads:
         import huggingface_hub.constants as hf_constants
 
         snap, _ = _swapped_snapshot(tmp_path, absent = 3)
-        size = 54_400_261_312
-        with open(_write(snap / _table_name("Q8_0"), b""), "ab") as f:
-            f.truncate(size)
+        # A small file over a lowered ceiling: truncate() allocates on NTFS, so 54 GB filled Windows CI.
+        size = 4096
+        _write(snap / _table_name("Q8_0"), b"\0" * size)
+        monkeypatch.setattr(download_registry, "http_max_file_bytes", lambda: size - 1)
         monkeypatch.setattr(hf_constants, "HF_HUB_DISABLE_XET", True, raising = False)
         monkeypatch.setattr(download_registry, "_modelscope_is_source", lambda: False)
         _tables_in(monkeypatch, snap)
