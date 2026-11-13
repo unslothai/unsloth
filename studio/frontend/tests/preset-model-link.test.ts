@@ -139,7 +139,7 @@ test("switching to a linked model applies its preset", async () => {
   });
 });
 
-test("each linked model gets its own preset, and an unlinked one keeps the current pick", async () => {
+test("each linked model gets its own preset, and an unlinked one gets the pick from before", async () => {
   useChatRuntimeStore.getState().setModelPreset(GEMMA, CREATIVE.name);
   await switchTo(GEMMA);
   assert.equal(live().activePreset, "Creative");
@@ -150,12 +150,58 @@ test("each linked model gets its own preset, and an unlinked one keeps the curre
   assert.equal(live().temperature, 0.2);
 
   await switchTo(LLAMA);
-  assert.equal(live().activePreset, "Research", "no link, so nothing is replaced");
+  assert.equal(live().activePreset, "Default", "no link, so the pick from before the links");
 
   await switchTo(GEMMA);
   assert.equal(live().activePreset, "Creative");
   assert.equal(live().systemPrompt, "Be imaginative.");
   useChatRuntimeStore.getState().setModelPreset(GEMMA, null);
+});
+
+test("a linked preset does not leak into the next unlinked model", async () => {
+  await switchTo(QWEN);
+  assert.equal(live().systemPrompt, "Cite your sources.");
+  await switchTo(LLAMA);
+  assert.deepEqual(
+    { ...live(), temperature: undefined },
+    { activePreset: "Default", activePresetSource: "builtin-default", temperature: undefined, systemPrompt: "" },
+  );
+  loadOrPoll(LLAMA);
+  await Promise.resolve();
+  assert.equal(live().temperature, RECOMMENDED.temperature, "the next status lays the recommendation on");
+});
+
+test("leaving a linked model keeps an unlinked model's own edits", async () => {
+  await switchTo(LLAMA);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, temperature: 0.77 });
+  await switchTo(QWEN);
+  assert.equal(live().temperature, 0.2);
+  store.clearCheckpoint();
+  await Promise.resolve();
+  await switchTo(LLAMA);
+  assert.equal(live().activePreset, "Default");
+  assert.equal(live().temperature, 0.77);
+});
+
+test("a custom pick from before the link comes back, a pick made on the linked model stays", async () => {
+  await switchTo(LLAMA);
+  pickPreset(CREATIVE);
+  await switchTo(QWEN);
+  assert.equal(live().activePreset, "Research");
+  await switchTo(GEMMA);
+  assert.deepEqual(live(), {
+    activePreset: "Creative",
+    activePresetSource: "custom",
+    temperature: 1.3,
+    systemPrompt: "Be imaginative.",
+  });
+
+  await switchTo(QWEN);
+  pickPreset(DEFAULT);
+  pickPreset(CREATIVE);
+  await switchTo(LLAMA);
+  assert.equal(live().activePreset, "Creative", "picked by hand, so it is not the link's");
 });
 
 test("an unlinked model under Default still follows its recommendation", async () => {

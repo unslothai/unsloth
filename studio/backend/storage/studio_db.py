@@ -5761,7 +5761,6 @@ def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) ->
                 del pruned[model_id]
         current = {**current, "inferenceParamsByModel": pruned}
     merged = _deep_merge_settings(current, updates)
-    # A null link is the patch removing it, so it is dropped rather than stored.
     links = merged.get(_MODEL_PRESETS_KEY)
     if isinstance(links, dict) and any(value is None for value in links.values()):
         merged[_MODEL_PRESETS_KEY] = {

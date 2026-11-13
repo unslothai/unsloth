@@ -760,7 +760,6 @@ export function ChatSettingsPanel({
       BUILTIN_PRESETS.find((preset) => preset.name === activePreset) ?? null,
     [activePreset],
   );
-  // The preset this model takes on every switch, if it still exists.
   const linkedPreset = useMemo(
     () => getLinkedPreset(currentCheckpoint, modelPresets, customPresets),
     [currentCheckpoint, modelPresets, customPresets],
@@ -1038,7 +1037,7 @@ export function ChatSettingsPanel({
       BUILTIN_PRESETS.find((preset) => preset.name === "Default") ?? null;
     const next = customPresets.filter((preset) => preset.name !== name);
     setCustomPresets(next);
-    // A later preset saved under the same name is a different preset, so it inherits no links.
+    // A later preset saved under this name must not inherit the links.
     for (const [modelId, linkedName] of Object.entries(modelPresets)) {
       if (linkedName === name) setModelPreset(modelId, null);
     }
@@ -1405,10 +1404,10 @@ export function ChatSettingsPanel({
                     Use for this model
                   </span>
                   <InfoHint>
-                    Apply this preset automatically whenever this model is
-                    selected. Edits you make afterwards stay temporary until
-                    you save them. Load settings in the preset still need a
-                    reload.
+                    Apply this preset's sampling and system prompt whenever
+                    this model is selected. Edits stay temporary until you
+                    save them. Its load settings apply only when you pick the
+                    preset by hand.
                   </InfoHint>
                 </div>
                 <Switch

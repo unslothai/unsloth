@@ -45,6 +45,7 @@ import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
+  BUILTIN_PRESETS,
   applyPresetForProvider,
   getLinkedPreset,
   getPresetOwnedParams,
@@ -6655,38 +6656,78 @@ export function syncKeepModelsLoaded(mode: unknown): void {
   }
 }
 
-/** Put a model's linked preset on, as picking it in Run settings would. `onHydration` is the
- *  settings landing under a model already resident: there the restored pick stands if it is the
- *  linked one, edits included, so a reload does not throw away a temporary override. */
-function applyLinkedPreset(modelId: string, onHydration: boolean): void {
+/** The pick in force before a link took over: leaving the linked model for one with no link puts
+ *  it back, or the link's sampling and system prompt leak into every other model (#14900). */
+let pickBeforeLink: { name: string; source: ChatPresetSource } | null = null;
+let lastLinkCheckpoint = "";
+
+function providerTypeFor(modelId: string): string | null {
+  const external = isExternalModelId(modelId) ? parseExternalModelId(modelId) : null;
+  if (!external) return null;
+  return (
+    useExternalProvidersStore
+      .getState()
+      .providers.find((provider) => provider.id === external.providerId)
+      ?.providerType ?? null
+  );
+}
+
+/** `onHydration`: settings landed under a resident model, so a restored pick of the linked preset
+ *  stands, edits included, and a reload keeps a temporary override. */
+function syncLinkedPreset(modelId: string, outgoing: string, onHydration: boolean): void {
   const state = useChatRuntimeStore.getState();
   if (!state.settingsHydrated || !modelId || state.params.checkpoint !== modelId) {
     return;
   }
   const preset = getLinkedPreset(modelId, state.modelPresets, state.customPresets);
-  if (!preset || (onHydration && state.activePreset === preset.name)) return;
-  const external = isExternalModelId(modelId) ? parseExternalModelId(modelId) : null;
-  const providerType = external
-    ? (useExternalProvidersStore
-        .getState()
-        .providers.find((provider) => provider.id === external.providerId)
-        ?.providerType ?? null)
-    : null;
-  state.setParams(applyPresetForProvider(state.params, preset, providerType), {
-    minPChoiceEdited: true,
-    fromPreset: true,
-  });
-  state.setActivePreset(preset.name);
-  state.setActivePresetSource(getPresetSource(preset.name));
+  const outgoingLink = getLinkedPreset(outgoing, state.modelPresets, state.customPresets);
+  const linkActive = outgoingLink != null && state.activePreset === outgoingLink.name;
+  if (preset) {
+    if (onHydration && state.activePreset === preset.name) return;
+    if (!linkActive) {
+      pickBeforeLink = { name: state.activePreset, source: state.activePresetSource };
+    }
+    state.setParams(applyPresetForProvider(state.params, preset, null), {
+      minPChoiceEdited: true,
+      fromPreset: true,
+    });
+    state.setActivePreset(preset.name);
+    state.setActivePresetSource(getPresetSource(preset.name));
+    return;
+  }
+  if (!linkActive) {
+    pickBeforeLink = null;
+    return;
+  }
+  // As if the link had never applied: the earlier pick's values, then this model's memory over them.
+  const before =
+    (pickBeforeLink &&
+      [...BUILTIN_PRESETS, ...state.customPresets].find(
+        (saved) => saved.name === pickBeforeLink?.name,
+      )) ||
+    BUILTIN_PRESETS[0];
+  pickBeforeLink = null;
+  state.setActivePreset(before.name);
+  state.setActivePresetSource(getPresetSource(before.name));
+  useChatRuntimeStore
+    .getState()
+    .setParams(applyPresetForProvider(state.params, before, providerTypeFor(modelId)), {
+      fromModelDefaults: true,
+    });
 }
 
-// Deferred a microtask: a switch moves the checkpoint inside the load path's own setParams, and
-// the preset goes on after that call has filed the model's defaults, as a pick right after would.
+// Deferred a microtask: a switch moves the checkpoint inside the load path's own setParams, and the
+// preset goes on after that call has filed the model's defaults. An unload in between keeps the
+// last model as the outgoing one.
 useChatRuntimeStore.subscribe((state, previous) => {
   const modelId = state.params.checkpoint;
   if (modelId !== previous.params.checkpoint) {
-    queueMicrotask(() => applyLinkedPreset(modelId, false));
+    if (!modelId) return;
+    const outgoing = lastLinkCheckpoint;
+    lastLinkCheckpoint = modelId;
+    queueMicrotask(() => syncLinkedPreset(modelId, outgoing, false));
   } else if (state.settingsHydrated && !previous.settingsHydrated) {
-    queueMicrotask(() => applyLinkedPreset(modelId, true));
+    lastLinkCheckpoint = modelId;
+    queueMicrotask(() => syncLinkedPreset(modelId, modelId, true));
   }
 });
