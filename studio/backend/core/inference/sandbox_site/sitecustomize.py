@@ -456,7 +456,10 @@ def _read_pth_files(entries):
 # an install lacks the new portion, and flat-layout editable installs are mapped, not on sys.path.
 class _SessionPackagesFinder:
     # Bound up front: an import inside find_spec would re-enter this finder.
-    from importlib.machinery import PathFinder as _path_finder
+    from importlib.util import spec_from_file_location as _from_file
+
+    _from_file = staticmethod(_from_file)
+
     def __init__(self, entries, editable):
         self._entries = entries
         self._editable = editable
@@ -473,11 +476,20 @@ class _SessionPackagesFinder:
                 del cache[entry]
         if path is None:
             located = self._editable.get(name)
-            if located and os.path.splitext(os.path.basename(located))[0] == name:
-                return self._path_finder.find_spec(name, [os.path.dirname(located)], target)
+            if located and os.path.isfile(os.path.join(located, "__init__.py")):
+                return self._from_file(
+                    name,
+                    os.path.join(located, "__init__.py"),
+                    submodule_search_locations = [located],
+                )
+            if located and located.endswith(".py") and os.path.isfile(located):
+                return self._from_file(name, located)
             return None
         parent = getattr(sys.modules.get(name.rpartition(".")[0]), "__spec__", None)
-        if parent is not None and parent.origin in (None, "namespace") and hasattr(path, "append"):
+        namespace = parent is not None and (
+            parent.origin in (None, "namespace") or _HostPackagesFinder._extends_path(parent.origin)
+        )
+        if namespace and hasattr(path, "append"):
             for entry in self._entries:
                 portion = os.path.join(entry, *parent.name.split("."))
                 if portion not in list(path) and os.path.isdir(portion):

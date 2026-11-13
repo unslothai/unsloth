@@ -806,7 +806,9 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
     assert f"{expected}{os.sep}" in out, out
 
 
-@pytest.mark.parametrize("case", ["editable_fork", "editable_finder", "upgrade", "namespace"])
+@pytest.mark.parametrize(
+    "case", ["editable_fork", "editable_finder", "upgrade", "namespace", "pkgutil_namespace"]
+)
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path, case):
     """Editable forks, an upgrade imported in the installing process, and a new namespace portion all load."""
@@ -828,10 +830,11 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
         command, expected = f'{_PIP} {wheel} && python -c "{show}"', str(workdir / "src")
     elif case == "editable_finder":
         # setuptools' flat-layout editable wheel: an import-only .pth and a finder module with a MAPPING.
-        (workdir / "proj" / name).mkdir(parents = True)
-        (workdir / "proj" / name / "__init__.py").write_text("")
+        # package_dir remap: the source folder is not named after the package.
+        (workdir / "proj" / "implementation").mkdir(parents = True)
+        (workdir / "proj" / "implementation" / "__init__.py").write_text("")
         finder = f"__editable___{name}_1_0_finder"
-        mapping = {name: str(workdir / "proj" / name)}
+        mapping = {name: str(workdir / "proj" / "implementation")}
         wheel = _wheel(
             workdir,
             name,
@@ -840,13 +843,20 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
                 f"{finder}.py": f"MAPPING: dict = {mapping!r}\ndef install():\n    raise SystemExit(9)\n",
             },
         )
-        command, expected = f'{_PIP} {wheel} && python -c "{show}"', str(workdir / "proj" / name)
+        command = f'{_PIP} {wheel} && python -c "{show}"'
+        expected = str(workdir / "proj" / "implementation")
     elif case == "upgrade":
         wheel = _wheel(workdir, name, {f"{name}.py": ""})
         command, expected = in_process.format(pre = "", post = show) + f" {wheel}", packages
     else:
+        init = "from pkgutil import extend_path; __path__ = extend_path(__path__, __name__)\n"
         studio_files = {f"{name}/a.py": ""}
-        wheel = _wheel(workdir, f"{name}_b", {f"{name}/b.py": ""})
+        if case == "pkgutil_namespace":
+            studio_files[f"{name}/__init__.py"] = init
+        chat_files = {f"{name}/b.py": ""}
+        if case == "pkgutil_namespace":
+            chat_files[f"{name}/__init__.py"] = init
+        wheel = _wheel(workdir, f"{name}_b", chat_files)
         post = (
             f"import pkgutil, {name}.b; print({name}.b.__file__); "
             f"print(sorted(m.name for m in pkgutil.iter_modules({name}.__path__)))"
@@ -866,7 +876,7 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
             capture_output = True,
         )
     assert f"{expected}{os.sep}" in out, out
-    if case == "namespace":
+    if case.endswith("namespace"):
         assert "['a', 'b']" in out, out
 
 
