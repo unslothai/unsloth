@@ -336,6 +336,93 @@ class _HostPackagesFinder:
         )
 
 
+def _route_pip():
+    try:
+        prefix = os.environ.get("_UNSLOTH_PIP_PREFIX")
+        owner = os.environ.get("_UNSLOTH_PIP_PREFIX_FOR")
+        if not prefix or not owner:
+            return
+
+        def key(path):
+            return os.path.normcase(os.path.realpath(path))
+
+        if key(sys.prefix) == key(owner):
+            os.environ["PIP_PREFIX"] = prefix
+            os.environ["PIP_IGNORE_INSTALLED"] = "1"
+        elif os.environ.get("PIP_PREFIX") == prefix:
+            # Inherited from a Studio-interpreter parent: this venv's pip installs into this venv.
+            os.environ.pop("PIP_PREFIX", None)
+            os.environ.pop("PIP_IGNORE_INSTALLED", None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_route_pip()
+
+
+def _session_entries():
+    prefix = os.environ.get("PIP_PREFIX")
+    if not prefix:
+        return []
+    root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
+    return [e for e in sys.path if e and os.path.normcase(os.path.abspath(e)).startswith(root)]
+
+
+# PYTHONPATH skips .pth files: add their path lines (what editable installs use), never run their import lines.
+def _add_pth_paths(entries):
+    try:
+        for entry in entries:
+            try:
+                names = sorted(n for n in os.listdir(entry) if n.endswith(".pth"))
+            except OSError:
+                continue
+            for name in names:
+                try:
+                    with open(os.path.join(entry, name), encoding = "utf-8") as f:
+                        lines = f.read().splitlines()
+                except (OSError, ValueError):
+                    continue
+                for line in lines:
+                    line = line.strip()
+                    if not line or line.startswith(("#", "import ", "import\t")):
+                        continue
+                    path = os.path.abspath(os.path.join(entry, line))
+                    if path not in sys.path and os.path.isdir(path):
+                        sys.path.append(path)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# A session dir pip creates after startup stays cached as missing; retry the path finder once it exists.
+class _LateSessionDirsFinder:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if path is not None:
+            return None
+        cache = sys.path_importer_cache
+        stale = [e for e in self._entries if e in cache and cache[e] is None and os.path.isdir(e)]
+        if not stale:
+            return None
+        for entry in stale:
+            cache.pop(entry, None)
+        import importlib.machinery
+
+        return importlib.machinery.PathFinder.find_spec(name, None, target)
+
+
+_entries = _session_entries()
+if _entries and not any(isinstance(f, _LateSessionDirsFinder) for f in sys.meta_path):
+    _add_pth_paths(_entries)
+    sys.meta_path.append(_LateSessionDirsFinder(_entries))
+
+
 # --ignore-installed never uninstalls, so a reinstall leaves stale dist-info importlib.metadata may pick;
 # RECORD is written last, so the newest RECORD per project is the finished install.
 def _prune_stale_dist_info():

@@ -9471,6 +9471,7 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
             env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(private)
         argv = tuple(plan.argv)
         packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+        env.update(os_sandbox.studio_pip_prefix(packages))
         if os.path.isdir(packages):
             # Served by sitecustomize's last-resort finder, not sys.path, so plugin discovery never sees them.
             env["_UNSLOTH_HOST_SESSION_PACKAGES"] = os.pathsep.join(

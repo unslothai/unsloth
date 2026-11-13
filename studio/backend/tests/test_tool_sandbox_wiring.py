@@ -738,24 +738,48 @@ def test_session_package_commands_stay_on_path(monkeypatch, tmp_path, os_name, s
     assert env["PATH"].split(os.pathsep) == ["/usr/bin", str(packages / scripts)]
 
 
-def test_a_pip_install_without_os_isolation_stays_in_the_chat(monkeypatch, tmp_path):
-    name = "unsloth_chat_only_pkg"
-    workdir = tmp_path / "chat"
-    workdir.mkdir()
-    wheel = workdir / f"{name}-1.0-py3-none-any.whl"
+def _wheel(workdir, name, files):
     info = f"{name}-1.0.dist-info"
+    wheel = workdir / f"{name}-1.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as whl:
-        whl.writestr(f"{name}.py", "")
+        for path, text in files.items():
+            whl.writestr(path, text)
         whl.writestr(f"{info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
         whl.writestr(
             f"{info}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
         )
         whl.writestr(f"{info}/RECORD", "")
+    return wheel.name
+
+
+_PIP = "python -m pip install -q --no-index --no-deps"
+
+
+@pytest.mark.parametrize("case", ["chat", "same_process", "editable", "project_venv"])
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp_path, case):
+    """Studio's interpreter installs into the chat folder; another venv's pip still installs into that venv."""
+    name = f"unsloth_chat_only_{case}"
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    packages = str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
+    files = {f"{name}.py": ""}
+    if case == "editable":
+        (workdir / "src").mkdir()
+        (workdir / "src" / f"{name}.py").write_text("")
+        files = {f"__editable__.{name}-1.0.pth": str(workdir / "src") + "\n"}
+    wheel = _wheel(workdir, name, files)
+    show = f"python -c 'import {name}; print({name}.__file__)'"
+    command = {
+        "chat": f"{_PIP} {wheel} && {show}",
+        "editable": f"{_PIP} {wheel} && {show}",
+        # Python caches the session dirs as missing at startup, before pip creates them.
+        "same_process": 'python -c "import subprocess, sys; subprocess.check_call(sys.argv[1:]); '
+        f'import {name}; print({name}.__file__)" python -m pip install -q --no-index --no-deps {wheel}',
+        "project_venv": f"python -m venv venv && venv/bin/{_PIP} {wheel} && "
+        f"env -u PYTHONPATH venv/bin/{show}",
+    }[case]
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
-    command = (
-        f"python -m pip install -q --no-index --no-deps {wheel.name} && "
-        f"python -c 'import {name}; print({name}.__file__)'"
-    )
     try:
         out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
     finally:
@@ -763,7 +787,15 @@ def test_a_pip_install_without_os_isolation_stays_in_the_chat(monkeypatch, tmp_p
             [sys.executable, "-m", "pip", "uninstall", "-y", "-q", name], capture_output = True
         )
     assert tools._last_tool_execution_record.os_isolation is False
-    assert str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH) in out, out
+    expected = {
+        "chat": packages,
+        "same_process": packages,
+        "editable": str(workdir / "src"),
+        "project_venv": str(workdir / "venv"),
+    }[case]
+    assert f"{expected}{os.sep}" in out, out
+    if case == "project_venv":
+        assert not os.path.exists(packages)
 
 
 def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
