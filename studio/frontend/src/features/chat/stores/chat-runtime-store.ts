@@ -427,7 +427,6 @@ export type LoadedPlacement = {
   hostWeightsMib: number | null;
   /** Set when every routed expert is in RAM with a GPU cache of the busiest (--moe-cache-mib auto). */
   expertCacheMib: number | null;
-  /** Weight types Metal cannot run, so llama.cpp keeps them on the CPU (e.g. ["nvfp4"]). */
   cpuWeightTypes?: string[] | null;
 };
 // x = uncached kilotokens, y = server seconds; sums: n, x, x², x³, x⁴, y, xy, x²y.

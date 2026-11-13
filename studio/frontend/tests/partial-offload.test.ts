@@ -313,7 +313,6 @@ test("weights Metal cannot run are reported even when every layer is offloaded",
   assert.match(warning?.description ?? "", /Metal cannot run this model's NVFP4 weights/);
   assert.match(warning?.description ?? "", /Update llama\.cpp: newer builds run NVFP4 on the GPU\.$/);
   assert.equal(expertSpillNote(counts), null);
-  // A pinned layer split does not explain these weights away.
   assert.notEqual(offloadWarning({ ...counts, gpuMemoryMode: "manual", gpuLayers: 61 }), null);
   const both = offloadWarning({ ...counts, metalUnsupportedWeightTypes: ["nvfp4", "tq1_0"] });
   assert.match(both?.description ?? "", /NVFP4 and TQ1_0 weights/);

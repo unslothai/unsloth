@@ -403,8 +403,7 @@ def test_an_mmap_span_over_gpu_tensors_is_capped_at_the_file_minus_the_gpu_side(
     assert parse_weight_placement(host, model_bytes)["host_mib"] == 25600.0
 
 
-# MiniMax-M3.1-Flash UD-Q8_K_XL on an M3 Ultra (trimmed from the #15409 report): Metal rejects NVFP4
-# matmuls, so the routed experts sit in CPU_Mapped although every layer is logged as offloaded.
+# MiniMax-M3.1-Flash UD-Q8_K_XL on an M3 Ultra, trimmed from the #15409 report.
 _METAL_NVFP4_LOG = """\
 device_info:
   - MTL0    : Apple M3 Ultra (475136 MiB, 475135 MiB free)
@@ -424,7 +423,6 @@ def test_metal_nvfp4_weights_left_on_the_cpu_are_reported():
     placement = parse_weight_placement(_METAL_NVFP4_LOG)
     assert placement["gpu_mib"] == 23110.5
     assert metal_unsupported_weight_types(_METAL_NVFP4_LOG, placement) == ["nvfp4"]
-    # Older builds without the device table still name the device they load onto.
     no_table = [line for line in _METAL_NVFP4_LOG if not line.startswith(("device_info", "  -"))]
     no_table.insert(
         0, "llama_model_load_from_file_impl: using device MTL0 (Apple M3 Ultra) - 475135 MiB free"
@@ -436,13 +434,11 @@ def test_metal_types_are_not_reported_off_metal_or_once_the_gpu_holds_them():
     placement = parse_weight_placement(_METAL_NVFP4_LOG)
     cuda = [line.replace("MTL0", "CUDA0") for line in _METAL_NVFP4_LOG]
     assert metal_unsupported_weight_types(cuda, parse_weight_placement(cuda)) is None
-    # A build that runs NVFP4 on Metal maps the experts into MTL0: nothing to report.
     supported = _METAL_NVFP4_LOG[:-2] + [
         "load_tensors:   CPU_Mapped model buffer size =  1200.00 MiB",
         "load_tensors:  MTL0_Mapped model buffer size = 245871.00 MiB",
     ]
     assert metal_unsupported_weight_types(supported, parse_weight_placement(supported)) is None
-    # A quantization without those types, or no placement at all, reports nothing either.
     q4 = [line for line in _METAL_NVFP4_LOG if "nvfp4" not in line]
     assert metal_unsupported_weight_types(q4, placement) is None
     assert metal_unsupported_weight_types(_METAL_NVFP4_LOG, None) is None

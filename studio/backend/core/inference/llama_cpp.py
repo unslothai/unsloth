@@ -8616,7 +8616,6 @@ class LlamaCppBackend:
         self._gpu_offload_layers: Optional[tuple[int, int]] = None
         # parse_weight_placement's result for this load.
         self._weight_placement: Optional[dict] = None
-        # metal_unsupported_weight_types' result for this load.
         self._metal_unsupported_weight_types: Optional[list[str]] = None
         # Whether the user's own extras pinned the layer split for this load.
         self._offload_overridden: bool = False

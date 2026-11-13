@@ -57,7 +57,6 @@ export function offloadCountsFrom(
   };
 }
 
-/** "NVFP4", "NVFP4 and TQ1_0": llama.cpp's type names, upper-cased; null for none. */
 function weightTypeList(types: readonly unknown[] | null | undefined): string | null {
   const names = (types ?? [])
     .filter((t): t is string => typeof t === "string" && t.length > 0)
