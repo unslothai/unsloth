@@ -39,10 +39,20 @@ export type ThemeApplyPlan = Omit<AppearanceSnapshot, "background"> & {
 
 export const FONT_FIELDS = ["uiFont", "headingFont", "chatFont", "codeFont"] as const;
 
+/** Font families match case-insensitively, as in CSS. */
+const fontKey = (name: string | null | undefined) => name?.toLowerCase() ?? "";
+
+/** Families `c` selects that it does not import: installed on this device. */
+function localFamilies(c: AppearanceCustomization): Set<string> {
+  const imported = new Set(c.importedFonts.map((font) => fontKey(font.name)));
+  return new Set(FONT_FIELDS.map((field) => fontKey(c[field])).filter((name) => name && !imported.has(name)));
+}
+
 /** Selected fonts first, so the imported-font cap drops unused ones before any in use. */
 function selectedFirst(c: Pick<AppearanceCustomization, (typeof FONT_FIELDS)[number]>, fonts: ImportedFont[]) {
-  const selected = new Set(FONT_FIELDS.map((field) => c[field]));
-  return [...fonts.filter((f) => selected.has(f.name)), ...fonts.filter((f) => !selected.has(f.name))];
+  const selected = new Set(FONT_FIELDS.map((field) => fontKey(c[field])));
+  const inUse = (f: ImportedFont) => selected.has(fontKey(f.name));
+  return [...fonts.filter(inUse), ...fonts.filter((f) => !inUse(f))];
 }
 
 /**
@@ -54,8 +64,7 @@ function reconcileFonts(
   importedNames: Set<string>,
   keep: ImportedFont[] = [],
 ): AppearanceCustomization {
-  // Family names match case-insensitively, as in CSS.
-  const key = (name: string | null) => name?.toLowerCase() ?? "";
+  const key = fontKey;
   const imported = new Set([...importedNames].map(key));
   const selected = new Set(FONT_FIELDS.map((field) => key(customization[field])));
   const present = new Set(customization.importedFonts.map((font) => key(font.name)));
@@ -117,7 +126,11 @@ export function planThemeApply(
   // A selection whose imported font was left out or pushed past the cap would point at nothing.
   const reconciled = reconcileFonts(
     customization,
-    new Set([...(theme.fonts ?? []), ...current.customization.importedFonts].map((font) => font.name)),
+    new Set(
+      [...(theme.fonts ?? []), ...current.customization.importedFonts]
+        .map((font) => font.name)
+        .filter((name) => !localFamilies(current.customization).has(fontKey(name))),
+    ),
   );
   const kept = new Set(reconciled.importedFonts.map((font) => font.name));
   const { material } = theme.glass;
@@ -173,23 +186,24 @@ export function planUndo(
   customization.colors = colors;
   // Per font: entries untouched since Apply go back to their pre-Apply bytes (or away if Apply
   // added them and nothing selects them); fonts Apply evicted under the cap come back.
-  const byName = (list: ImportedFont[]) => new Map(list.map((font) => [font.name, font]));
+  const byName = (list: ImportedFont[]) => new Map(list.map((font) => [fontKey(font.name), font]));
   const was = byName(before.customization.importedFonts);
   const set = byName(applied.customization.importedFonts);
   const is = byName(now.customization.importedFonts);
   // Only selections made after Apply keep a theme-added face; a restored local family does not.
   const selected = new Set(
     FONT_FIELDS.filter((field) => now.customization[field] !== applied.customization[field])
-      .map((field) => now.customization[field]),
+      .map((field) => fontKey(now.customization[field])),
   );
   const fonts: ImportedFont[] = [];
   for (const font of now.customization.importedFonts) {
-    if (set.get(font.name)?.dataUrl !== font.dataUrl) fonts.push(font);
-    else if (was.has(font.name)) fonts.push(was.get(font.name)!);
-    else if (selected.has(font.name)) fonts.push(font);
+    const k = fontKey(font.name);
+    if (set.get(k)?.dataUrl !== font.dataUrl) fonts.push(font);
+    else if (was.has(k)) fonts.push(was.get(k)!);
+    else if (selected.has(k)) fonts.push(font);
   }
   for (const font of before.customization.importedFonts) {
-    if (!set.has(font.name) && !is.has(font.name)) fonts.push(font);
+    if (!set.has(fontKey(font.name)) && !is.has(fontKey(font.name))) fonts.push(font);
   }
   customization.importedFonts = selectedFirst(customization as AppearanceCustomization, fonts);
   const glass = { ...now.glass } as Record<string, unknown>;
@@ -203,13 +217,10 @@ export function planUndo(
   const reverted = sanitizeCustomization(customization);
   // Every imported name seen, so a restored selection whose font was since deleted is cleared.
   // A family that was local (not imported) before Apply stays selectable after Undo.
-  const localBefore = new Set(
-    FONT_FIELDS.map((field) => before.customization[field])
-      .filter((name) => name && !was.has(name)),
-  );
+  const localBefore = localFamilies(before.customization);
   const knownNames = new Set(
     [before, applied, now].flatMap((s) => s.customization.importedFonts.map((font) => font.name))
-      .filter((name) => !localBefore.has(name)),
+      .filter((name) => !localBefore.has(fontKey(name))),
   );
   return {
     palette: revert(before.palette, applied.palette, now.palette),

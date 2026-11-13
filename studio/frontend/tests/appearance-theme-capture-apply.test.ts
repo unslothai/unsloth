@@ -301,3 +301,25 @@ test("a theme selection matches an imported font that differs only in case", () 
   const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "brand sans" }, assets: { fonts: [font("brand sans")] } })));
   assert.equal(apply(current, theme, true, false).customization.uiFont, "brand sans");
 });
+
+test("the cap keeps a selected font whose name differs only in case", () => {
+  const current = withFonts([font("First"), font("Second"), font("Brand Sans")]);
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "brand sans" }, assets: { fonts: [font("New")] } })));
+  const plan = apply(current, theme);
+  assert.equal(plan.customization.uiFont, "brand sans");
+  assert.ok(plan.customization.importedFonts.some((f) => f.name === "Brand Sans"));
+});
+
+test("skipping assets keeps a local family the user already selects", () => {
+  const current = { ...BASE, customization: sanitizeCustomization({ uiFont: "Georgia" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "Georgia" }, assets: { fonts: [font("Georgia")] } })));
+  assert.equal(apply(current, theme, true, false).customization.uiFont, "Georgia");
+});
+
+test("undo keeps a local family whose case differs from the theme's font", () => {
+  const before = { ...BASE, customization: sanitizeCustomization({ uiFont: "Brand Sans" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "brand sans" }, assets: { fonts: [font("brand sans")] } })));
+  const applied = apply(before, theme);
+  const now = { ...before, palette: applied.palette, glass: applied.glass, customization: applied.customization };
+  assert.equal(planUndo(before, applied, now).customization.uiFont, "Brand Sans");
+});
