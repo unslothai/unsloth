@@ -48,8 +48,8 @@ const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "liquid",
 const LIGHT_OUTLINE_LOGOS = new Set(["openrouter"]);
 
 /**
- * A letter in its circle, centred on its ink: flex centres the glyph's advance and line box, which
- * leave a capital high and its side bearings off by a pixel in most fonts.
+ * A letter in its circle, painted on a canvas and placed by its measured ink: HTML and SVG text
+ * centre the glyph's advance and snap it to device pixels, which left letters a pixel off.
  */
 function LetterTile({
   letter,
@@ -57,45 +57,41 @@ function LetterTile({
   title,
   className,
 }: { letter: string; name: string; title?: string; className?: string }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const [nudge, setNudge] = useState<{ x: number; y: number } | null>(null);
+  const ref = useRef<HTMLCanvasElement>(null);
+  const color = letterTileColor(name);
   useLayoutEffect(() => {
-    const el = ref.current;
-    const ctx = el && document.createElement("canvas").getContext("2d");
-    if (!(el && ctx)) {
+    const canvas = ref.current;
+    const ctx = canvas?.getContext("2d");
+    if (!(canvas && ctx)) {
       return;
     }
-    const style = getComputedStyle(el);
-    ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    // Layout size; a CSS scale on an ancestor only raises the backing resolution.
+    const size = canvas.offsetWidth;
+    const dpr = (window.devicePixelRatio || 1) * (canvas.getBoundingClientRect().width / size || 1);
+    canvas.width = Math.round(size * dpr);
+    canvas.height = Math.round(size * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size, size);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = `600 ${size * 0.54}px ${getComputedStyle(canvas).fontFamily}`;
     const m = ctx.measureText(letter);
-    setNudge({
-      x: (m.width - m.actualBoundingBoxRight + m.actualBoundingBoxLeft) / 2,
-      y:
-        (m.fontBoundingBoxAscent -
-          m.fontBoundingBoxDescent -
-          (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent)) /
-        2,
-    });
-  }, [letter]);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(
+      letter,
+      size / 2 - (m.actualBoundingBoxRight - m.actualBoundingBoxLeft) / 2,
+      size / 2 + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2,
+    );
+  }, [letter, color]);
   return (
-    <span
+    <canvas
       ref={ref}
       title={title}
       aria-hidden
-      className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-full font-semibold leading-none text-white",
-        className,
-      )}
-      style={{ backgroundColor: letterTileColor(name), fontSize: "0.62em" }}
-    >
-      <span
-        style={
-          nudge ? { transform: `translate(${nudge.x}px, ${nudge.y}px)` } : undefined
-        }
-      >
-        {letter}
-      </span>
-    </span>
+      className={cn("shrink-0 rounded-full", className)}
+    />
   );
 }
 
