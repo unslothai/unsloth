@@ -2975,6 +2975,7 @@ export function useChatModelRuntime() {
                   mlx_fast_verify: rollbackState.loadedMlxFastVerifyRequested,
                   mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
                   mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
+                  ...npuLoadFields(rollbackState),
                   speculative_type:
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:

@@ -149,6 +149,7 @@ class NpuResident:
     requested_context_length: Optional[int]
     base_url: str
     api_key: str
+    flm_args: Optional[str] = None
 
 
 def is_npu_model_path(model_path: Optional[str]) -> bool:
@@ -305,6 +306,7 @@ class LemonadeNpuBackend:
             requested_context_length = loaded.requested_context_length,
             base_url = f"http://127.0.0.1:{port}",
             api_key = api_key or "",
+            flm_args = loaded.flm_args,
         )
 
     @property

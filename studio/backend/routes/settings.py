@@ -2896,7 +2896,14 @@ def update_openai_auto_switch_override(
                 and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
-                and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
+                and not {
+                    "mlx_ple_offload",
+                    "mlx_expert_offload",
+                    "npu_power_mode",
+                    "npu_prefill_chunk_len",
+                    "npu_img_pre_resize",
+                }
+                & payload.model_fields_set
                 and not {
                     key: value
                     for key, value in saved_fields.items()

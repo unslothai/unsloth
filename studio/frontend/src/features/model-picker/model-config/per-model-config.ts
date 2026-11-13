@@ -413,7 +413,7 @@ export function normalizeNpuImgPreResize(value: unknown): number | null {
 
 /** The /load fields an NPU load sends; unset ones are left out. */
 export function npuLoadFields(
-  config: PerModelConfig,
+  config: Pick<PerModelConfig, "npuPowerMode" | "npuPrefillChunkLen" | "npuImgPreResize">,
 ): Pick<LoadModelRequest, "npu_power_mode" | "npu_prefill_chunk_len" | "npu_img_pre_resize"> {
   const powerMode = normalizeNpuPowerMode(config.npuPowerMode);
   const prefillChunkLen = normalizeNpuPrefillChunkLen(config.npuPrefillChunkLen);

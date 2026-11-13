@@ -18945,10 +18945,6 @@ def _npu_flm_args(request: LoadRequest, model, requested_ctx: Optional[int]) -> 
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
 
-def _npu_loaded_flm_args(npu) -> Optional[str]:
-    return getattr(getattr(npu, "_loaded", None), "flm_args", None)
-
-
 async def _load_npu_model(
     request: LoadRequest,
     *,
@@ -18990,10 +18986,10 @@ async def _load_npu_model(
         and clamp_prefill_chunk(
             _npu_flm_args(request, resident.model, requested_ctx), resident.context_length
         )
-        == _npu_loaded_flm_args(npu)
+        == resident.flm_args
     ):
         account_access.join_resident("chat")
-        return _npu_load_response(resident, "already_loaded", _npu_loaded_flm_args(npu))
+        return _npu_load_response(resident, "already_loaded", resident.flm_args)
     try:
         model = await asyncio.to_thread(npu.loadable_model, model_id)
     except NpuError as exc:
@@ -19075,7 +19071,7 @@ async def _load_npu_model(
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     account_access.publish_resident("chat", request.model_path)
     api_monitor.record_lifecycle(event = "load", model = request.model_path)
-    return _npu_load_response(resident, "loaded", _npu_loaded_flm_args(npu))
+    return _npu_load_response(resident, "loaded", resident.flm_args)
 
 
 async def _load_model_impl(
@@ -22799,7 +22795,7 @@ async def _slot_status(current_subject: str):
                 inference = load_inference_config(_npu_model.id),
                 context_length = _npu_resident.context_length,
                 requested_context_length = _npu_resident.requested_context_length,
-                **flm_args_status(_npu_loaded_flm_args(_npu)),
+                **flm_args_status(_npu_resident.flm_args),
                 max_context_length = _npu_model.max_context_length,
                 native_context_length = _npu_model.max_context_length,
                 context_length_enforced = True,

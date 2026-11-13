@@ -181,3 +181,9 @@ test("Run settings lists the NPU catalog itself, so Image Pre-resize shows witho
   );
   assert.match(page, /showImagePreResize=\{target\.meta\.isVision === true \|\| npuCatalogVision\}/);
 });
+
+test("a failed switch restores the previous NPU model with the settings it was serving", () => {
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  const rollback = source.slice(source.indexOf("const rollbackResponse = await loadModel({"));
+  assert.match(rollback.slice(0, 4000), /\.\.\.npuLoadFields\(rollbackState\)/);
+});

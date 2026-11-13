@@ -180,6 +180,7 @@ def test_the_load_body_carries_flm_args_only_when_set(backend):
         "flm_args": "--pmode turbo",
     }
     assert npu._loaded.flm_args == "--pmode turbo"
+    assert npu.resident().flm_args == "--pmode turbo"
 
 
 def test_the_load_holds_the_prefill_chunk_to_the_context_it_resolves(backend):
@@ -255,6 +256,7 @@ def _route_npu(
                 requested_context_length = self.requested,
                 base_url = "http://127.0.0.1:1",
                 api_key = "key",
+                flm_args = self._loaded.flm_args,
             )
 
         def loadable_model(self, model_id):
@@ -407,6 +409,12 @@ def test_a_save_that_omits_the_npu_settings_keeps_them(monkeypatch):
     assert settings.get_model_override(npu) == {
         "max_seq_length": 8192,
         "npu_power_mode": "turbo",
+        "npu_prefill_chunk_len": 2048,
+        "npu_img_pre_resize": 0,
+    }
+    # Clearing one setting by name keeps the others.
+    _put(npu, npu_power_mode = None)
+    assert settings.get_model_override(npu) == {
         "npu_prefill_chunk_len": 2048,
         "npu_img_pre_resize": 0,
     }
