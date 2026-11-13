@@ -8708,6 +8708,33 @@ def _python_is_high_risk(code: str) -> bool:
                 sources.append(folded)
         return sources, unresolved
 
+    def _string_shaped(node, seen) -> bool:
+        # A str built at runtime ("...".strip(), f-strings): unscreenable, so it asks; callables do not.
+        if isinstance(node, ast.Name):
+            if node.id in seen:
+                return False
+            seen.add(node.id)
+            bindings = name_bindings.get(node.id, ())
+            return any(v is not None and _string_shaped(v, seen) for v in bindings)
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (str, bytes))
+        if isinstance(node, ast.JoinedStr):
+            return True
+        if isinstance(node, ast.BinOp):
+            return _string_shaped(node.left, seen) or _string_shaped(node.right, seen)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            return _string_shaped(node.func.value, seen)
+        if isinstance(node, ast.Subscript):
+            return _string_shaped(node.value, seen)
+        return False
+
+    runner_verdicts: "dict[str, bool]" = {}
+
+    def _cached_runner_verdict(source: str) -> bool:
+        if source not in runner_verdicts:
+            runner_verdicts[source] = _runner_source_is_high_risk(source)
+        return runner_verdicts[source]
+
     def _runner_arg(node, index, keywords):
         if len(node.args) > index:
             return node.args[index]
@@ -8723,22 +8750,24 @@ def _python_is_high_risk(code: str) -> bool:
             # timeit also takes callables: screen resolvable strings, setup + stmt as one program.
             stmt = _runner_arg(node, 0, ("stmt",))
             setup = _runner_arg(node, 1, ("setup",))
-            parts = [
-                *(_code_strings(setup)[0] if setup is not None else ()),
-                *(_code_strings(stmt)[0] if stmt is not None else ()),
-            ]
+            parts = []
+            for arg in (setup, stmt):
+                if arg is None:
+                    continue
+                sources, unresolved = _code_strings(arg)
+                if unresolved and _string_shaped(arg, set()):
+                    return True
+                parts.extend(sources)
             parts = list(dict.fromkeys(parts))
             if len(parts) > 1:
                 parts.append("\n".join(parts))
-            if any(_runner_source_is_high_risk(part) for part in parts):
+            if any(_cached_runner_verdict(part) for part in parts):
                 return True
         elif runner is not None:
             arg = _runner_arg(node, 0, _PY_CODE_RUNNER_SOURCE_KWARGS)
             if arg is not None:
                 sources, unresolved = _code_strings(arg)
-                if unresolved or any(
-                    _runner_source_is_high_risk(src) for src in dict.fromkeys(sources)
-                ):
+                if unresolved or any(map(_cached_runner_verdict, dict.fromkeys(sources))):
                     return True
         name = None
         if isinstance(func, ast.Name):
@@ -18185,6 +18214,13 @@ def _check_signal_escape_patterns(code: str):
         **{f"os.exec{s}": 1 for s in ("l", "le", "lp", "lpe")},
         **{f"os.spawn{s}": 2 for s in ("l", "le", "lp", "lpe")},
     }
+    # Vector argv APIs: index of the executable; the argv list follows it, its [0] only a label.
+    _VECTOR_PROGRAM_INDEX = {
+        **{f"os.exec{s}": 0 for s in ("v", "ve", "vp", "vpe")},
+        **{f"os.spawn{s}": 1 for s in ("v", "ve", "vp", "vpe")},
+        "os.posix_spawn": 0,
+        "os.posix_spawnp": 0,
+    }
 
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
@@ -18610,9 +18646,18 @@ def _check_signal_escape_patterns(code: str):
                         shell_commands.append(shlex.join(argv))
                 shell_kw = expanded_kwargs.get("shell")
                 runs_shell = isinstance(shell_kw, ast.Constant) and bool(shell_kw.value)
+                program_index = _VECTOR_PROGRAM_INDEX.get(shell_func)
+                vector = None
+                if program_index is not None and len(positional) > program_index + 1:
+                    program = _extract_string_from_node(positional[program_index])
+                    if program is not None:
+                        vector = positional[program_index + 1]
                 for a in all_call_args:
                     if isinstance(a, (ast.List, ast.Tuple)):
-                        shell_commands.append(shlex.join(_extract_strings_from_list(a)))
+                        strings = _extract_strings_from_list(a)
+                        if a is vector and a.elts:
+                            strings = [program, *_extract_strings_from_list(ast.List(a.elts[1:]))]
+                        shell_commands.append(shlex.join(strings))
                         # POSIX shell=True runs args[0] as shell source.
                         if runs_shell and a.elts:
                             head = _extract_string_from_node(a.elts[0])

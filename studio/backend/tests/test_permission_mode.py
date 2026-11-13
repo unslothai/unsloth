@@ -1733,6 +1733,14 @@ def test_python_shell_command_terminal_asks_about_is_high_risk(command, template
             True,
         ),
         ("import timeit\ns = 'sum(range(9))'\ntimeit.timeit(s)", False),
+        (
+            "import timeit\ntimeit.timeit(\"import shutil; shutil.rmtree('junk_dir')\".strip(), number=1)",
+            True,
+        ),
+        ("import timeit\ndef f():\n    return 1\ntimeit.timeit(f, number=10)", False),
+        ("import timeit\ndef bench(fn):\n    return timeit.timeit(fn, number=10)", False),
+        ("import os\nos.execvp('git', ['worker', 'push', '--force'])", True),
+        ("import os\nos.execvp('git', ['git', 'status'])", False),
         ("from timeit import timeit\ntimeit(\"__import__('os').remove('x')\", number=1)", True),
         ("import timeit as t\nt.timeit('sum(range(100))', number=1000)", False),
         ("import timeit\ns = 'sum(range(100))'\ntimeit.timeit(s, number=1000)", False),
@@ -1769,6 +1777,14 @@ def test_rebound_runner_alias_keeps_the_builtin_import_check():
 def test_self_reproducing_runner_source_asks_instead_of_recursing():
     code = "import timeit;s='import timeit;s={0!r};timeit.timeit(s.format(s))';timeit.timeit(s.format(s))"
     assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+def test_many_timeit_calls_over_many_bindings_stay_fast():
+    lines = [f"stmt = 'x = {i}'\ntimeit.timeit(stmt, number=1)" for i in range(80)]
+    code = "import timeit\n" + "\n".join(lines)
+    started = time.perf_counter()
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+    assert time.perf_counter() - started < 5
 
 
 def test_repeated_timeit_bindings_are_screened_linearly():
