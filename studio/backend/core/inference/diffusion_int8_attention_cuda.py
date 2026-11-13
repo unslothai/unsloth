@@ -32,9 +32,9 @@ KERNEL_SOURCE = r"""
 // No int <-> float conversion instruction runs in the tile loop: the int32 accumulators start at the bit pattern of
 // MAGIC_F = 2^23 + 2^22, so their bits read as a float are that constant plus the integer sum, and probabilities are
 // rounded by adding the same constant. The output accumulators take the P.V sums with the constant still in them
-// (one fused multiply-add per element); the constant times the sum of the tile weights comes off once at the end.
-// The rounding this adds is a few units of the last place of MAGIC_F per row, against int8 rounding noise of
-// hundreds of units.
+// (one fused multiply-add per element); the constant times the sum of the tile weights comes off every FLUSH tiles,
+// so the rounding it adds stays a few units of the last place of MAGIC_F per row whatever the key count, against
+// int8 rounding noise of hundreds of units.
 //
 // Method notes (ideas, not code): int8 Q/K with a softmax-invariant K shift and block scales follows SageAttention
 // (arXiv 2410.02367); one K scale per accumulator lane group follows SageAttention2 (arXiv 2411.10958); integer
@@ -63,6 +63,9 @@ typedef long long i64;
 #endif
 #ifndef NQ
 #define NQ 1
+#endif
+#ifndef FLUSH
+#define FLUSH 16  // tiles between removals of MAGIC_F from the output accumulators (a power of two; 0 = only at the end)
 #endif
 #ifndef WPC
 #define WPC 4
@@ -331,7 +334,26 @@ extern "C" __global__ void unsloth_i8attn(
       // The running state stays in the frame of a fixed reference maximum; it is rebased only when a tile maximum
       // rises far above it (rare), so the output accumulators are not rescaled per tile.
       float d0 = mt0 - mref[qt][0], d1 = mt1 - mref[qt][1];
+#if FLUSH > 0
+      // Every FLUSH tiles MAGIC_F times the weights since the last time comes off the output accumulators, so they
+      // stay near the size of the P.V sums however many keys there are (left in until the end, the constant grows
+      // with the key count and the sums lose their low bits to it). It shares the rare branch of the rebase: as a
+      // block of its own after P.V it cost 3-5% of the call on sm80 / sm89.
+      const bool flush = (j & (FLUSH - 1)) == FLUSH - 1;
+      if (__any_sync(0xffffffffu, (d0 > GUARD) | (d1 > GUARD)) || flush) {
+        if (flush) {
+#pragma unroll
+          for (int nb = 0; nb < NBD; ++nb) {
+            acc[qt][nb][0] = fmaf(-MAGIC_F, wsum[qt][0], acc[qt][nb][0]);
+            acc[qt][nb][1] = fmaf(-MAGIC_F, wsum[qt][0], acc[qt][nb][1]);
+            acc[qt][nb][2] = fmaf(-MAGIC_F, wsum[qt][1], acc[qt][nb][2]);
+            acc[qt][nb][3] = fmaf(-MAGIC_F, wsum[qt][1], acc[qt][nb][3]);
+          }
+          wsum[qt][0] = wsum[qt][1] = 0.f;
+        }
+#else
       if (__any_sync(0xffffffffu, (d0 > GUARD) | (d1 > GUARD))) {
+#endif
         if (d0 > GUARD) {
           const float r = ex2(-d0);
           l[qt][0] *= r;

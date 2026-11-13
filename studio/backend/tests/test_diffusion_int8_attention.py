@@ -907,6 +907,20 @@ def test_padded_keys_get_no_weight_when_the_score_scale_underflows(tokens):
 
 
 @needs_kernel
+def test_the_output_does_not_drift_with_the_key_count():
+    """fp32 in and out, 65536 keys: the kernel against the plain-torch model of itself. With the rounding constant
+    left in the output accumulators until the end, the gap grew with the key count (2e-3 here)."""
+    q, k, v = I.probe_inputs("cuda", torch.float32, 65536, 2, 128, seed = 7)
+    q = q[:, :256].contiguous()
+    config = _cuda_config(128)
+    p = I.quantise(q, k, v, config)
+    out = I.attend(p)
+    want = emulate(p)
+    rel = float((out - want).abs().mean() / want.abs().mean())
+    assert rel < 3e-4, rel
+
+
+@needs_kernel
 def test_op_runs_the_kernel_only_where_it_was_verified(monkeypatch):
     q, k, v = I.probe_inputs("cuda", torch.bfloat16, 512, 2, 128)
     I.int8_attention_op()
