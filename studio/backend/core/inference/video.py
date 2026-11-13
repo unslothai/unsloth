@@ -327,9 +327,9 @@ from .video_minimax_h3 import (
     h3_transformer_task,
 )
 from .video_minimax_h3_te import (
-    H3_TE_QUANT_DEFAULT,
-    H3_TE_QUANT_REPO,
+    h3_te_auto_scheme,
     h3_te_quant_scheme,
+    h3_te_quant_source,
     h3_te_resident_gb,
 )
 from .video_encode import encode_x264
@@ -952,7 +952,7 @@ def _assert_video_precision_for_target(
     if (
         te_mode == "int8"
         and model_kind in ("pipeline", "single_file")
-        and family_te_int8_convrot(fam, "text_encoder") is not None
+        and family_te_int8_convrot(fam, "text_encoder", include_pending = True) is not None
         and int8_convrot_te_runs_on(target)
     ):
         # An unpublished file otherwise failed inside the load, after the eviction.
@@ -1213,6 +1213,17 @@ class _CompletedStepTicker:
             self._events.append((enqueued, event))
             self._event_backed = True
 
+    def caught_up(self, lead: int) -> bool:
+        """Whether the device has finished every step but the last ``lead`` enqueued; never blocks."""
+        with self._lock:
+            if self._enqueued >= self.total or len(self._events) <= lead:
+                return True
+            event = self._events[-1 - lead][1]
+        try:
+            return bool(event.query())
+        except Exception:  # noqa: BLE001 -- an unqueryable marker counts as finished
+            return True
+
     def completed(self) -> int:
         """Steps the GPU has finished. Never decreases, never exceeds what was enqueued, never
         blocks, and never raises."""
@@ -1246,6 +1257,19 @@ def _hold_off_cuda_graph_capture():
         return
     with guard() as clear:
         yield clear
+
+
+def _hold_for_device(
+    ticker: Any,
+    cancel: Any,
+    lead: int = 1,
+) -> None:
+    """Keeps the host at most ``lead`` steps ahead of the device: an enqueued step cannot be cancelled."""
+    while not cancel.is_set():
+        with _hold_off_cuda_graph_capture() as clear:
+            if not clear or ticker.caught_up(lead):
+                return
+        cancel.wait(0.002)
 
 
 @contextlib.contextmanager
@@ -6411,7 +6435,9 @@ class VideoBackend:
                     # under the assembly, while the base snapshot that no longer carries a dense encoder is still coming
                     # down). Same registration the native H3 path makes for its companions.
                     if h3_te_scheme:
-                        self._loading.asset_repos = self._loading.asset_repos + (H3_TE_QUANT_REPO,)
+                        self._loading.asset_repos = self._loading.asset_repos + (
+                            h3_te_quant_source(h3_te_scheme),
+                        )
                     # The same for a hosted pre-cast encoder (unsloth/Wan2.2-TI2V-5B-FP8 for every Wan base).
                     te_repos = tuple(
                         src.location
@@ -7539,10 +7565,10 @@ class VideoBackend:
             if _h3_precision_pinned_dense(text_encoder_quant):
                 return None
             if _h3_precision_unset(text_encoder_quant):
+                auto = h3_te_auto_scheme()
                 return (
-                    H3_TE_QUANT_DEFAULT
-                    if h3_te_quant_scheme(H3_TE_QUANT_DEFAULT) is not None
-                    and _h3_auto_precision_ok(target)
+                    auto
+                    if h3_te_quant_scheme(auto) is not None and _h3_auto_precision_ok(target)
                     else None
                 )
             return h3_te_quant_scheme(normalize_te_quant(text_encoder_quant))
@@ -7928,10 +7954,9 @@ class VideoBackend:
         filename = h3_te_quant_filename(scheme)
         if filename is None:
             return None, []
-        # Cached check uses the fetch repo; size comes from the mirror, as the repack may be gone.
         repo = h3_te_quant_source(scheme)
         try:
-            info = api.model_info(H3_TE_QUANT_REPO, files_metadata = True)
+            info = api.model_info(repo, files_metadata = True)
         except Exception:  # noqa: BLE001 -- an unavailable artifact keeps the dense encoder
             return None, []
         files = [
@@ -12124,7 +12149,7 @@ class VideoBackend:
                 pipe.update_components(text_encoder = text_encoder)
                 text_encoder_quant_engaged = te_scheme
                 text_encoder_quant_reason = (
-                    f"hosted quantized {te_scheme} conditioner ({H3_TE_QUANT_REPO})"
+                    f"hosted quantized {te_scheme} conditioner ({h3_te_quant_source(te_scheme)})"
                 )
                 logger.info(
                     "video.text_encoder_quant: %s quantized conditioner seeded for %s",
@@ -14213,6 +14238,7 @@ class VideoBackend:
                             return
                         ticker.record(enqueued)
                         _report(ticker.completed())
+                    _hold_for_device(ticker, cancel)
 
                 def _finish_denoise() -> None:
                     """Finish the bar once the denoise is over: H3 makes 29 scheduler.step calls for
@@ -14260,15 +14286,14 @@ class VideoBackend:
                     if static_skip:
                         mark_step_end(_skip_pipe(state, pipe))
                     # Called after scheduler.step, so the step's latent update is already submitted.
+                    if not cancel.is_set():
+                        _tick(step_index + 1)
+                        if previewer is not None:
+                            previewer.on_step(
+                                callback_kwargs.get("latents"), getattr(p, "scheduler", None)
+                            )
                     if cancel.is_set():
                         p._interrupt = True
-                        cross_forward_step(p, step_index, timestep = timestep)
-                        return callback_kwargs
-                    _tick(step_index + 1)
-                    if previewer is not None:
-                        previewer.on_step(
-                            callback_kwargs.get("latents"), getattr(p, "scheduler", None)
-                        )
                     cross_forward_step(p, step_index, timestep = timestep)
                     return callback_kwargs
 

@@ -760,6 +760,9 @@ def run_safetensors_tool_loop(
                 conversation, active_tools, _extend_live_branch(conversation)
             )
             conversation = list(fit_result.get("messages") or conversation)
+            for gone in reversed(fit_result.get("dropped_images") or ()):
+                del images_sink[gone]
+                caller_images = tuple(i - (i > gone) for i in caller_images if i != gone)
             yield from fit_result.get("events") or ()
 
         # Cumulative snapshots: keep scans incremental with overlap for split literals.

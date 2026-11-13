@@ -19929,6 +19929,13 @@ class LlamaCppBackend:
             if chosen and chosen > 0:
                 self._effective_context_length = chosen
                 self._max_context_length = chosen
+            if n_ctx and n_ctx > 0 and self._effective_context_length != n_ctx:
+                logger.warning(
+                    "DiffusionGemma is running with a %s-token context, not the requested %d: "
+                    "the runner did not apply that value and sized the context to fit memory.",
+                    self._effective_context_length,
+                    n_ctx,
+                )
             self._requested_n_ctx = int(n_ctx)
             if cancelled is not None and cancelled():
                 logger.info("DiffusionGemma start cancelled after it became healthy")

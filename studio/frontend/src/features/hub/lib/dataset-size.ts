@@ -6,6 +6,7 @@ import {
   getHfEndpoint,
   hasDatasetsServer,
 } from "@/lib/hf-endpoint";
+import type { ImageCheckpointFile } from "../download-manager/required-assets";
 import { LruMap } from "./lru-map";
 import { fetchWithTimeout } from "./network";
 import { fingerprintToken } from "./token-fingerprint";
@@ -79,7 +80,7 @@ function fetchCachedSize<T>(
     return Promise.resolve(entry.kind === "value" ? entry.value : null);
   }
   const existing = inflight.get(cacheKey);
-  if (existing) return attachInflight(existing, signal);
+  if (existing && !existing.cancelledByConsumers) return attachInflight(existing, signal);
 
   let timedOut = false;
   const controller = new AbortController();
@@ -98,6 +99,7 @@ function fetchCachedSize<T>(
   inflightEntry.promise = (async (): Promise<T | null> => {
     try {
       const result = await load(controller.signal);
+      if (inflightEntry.cancelledByConsumers) return null;
       if ("value" in result) {
         cache.set(cacheKey, { kind: "value", value: result.value });
         return result.value;
@@ -135,7 +137,7 @@ function fetchCachedSize<T>(
     } finally {
       clearTimeout(timeout);
       inflightEntry.settled = true;
-      inflight.delete(cacheKey);
+      if (inflight.get(cacheKey) === inflightEntry) inflight.delete(cacheKey);
     }
   })();
 
@@ -259,9 +261,13 @@ export function fetchDatasetSize(
 export interface ModelSizeInfo {
   totalBytes: number | null;
   weightsBytes: number | null;
+  revision?: string;
+  imageCheckpointCandidates?: ImageCheckpointFile[];
 }
 
 interface ModelInfoApiResponse {
+  sha?: string;
+  config?: { diffusers?: { _class_name?: string } };
   siblings?: Array<{
     rfilename?: string;
     size?: number;
@@ -471,6 +477,14 @@ export function fetchModelSize(
       }
       const data = (await res.json()) as ModelInfoApiResponse;
       const siblings = data.siblings ?? [];
+      // SDXL repos can package alternate whole checkpoints alongside their Diffusers component folders.
+      const imageCheckpointCandidates = data.config?.diffusers?._class_name === "StableDiffusionXLPipeline"
+        ? siblings.flatMap(({ rfilename, size }) =>
+            rfilename && /^[^/\\]+\.safetensors$/i.test(rfilename) && !/[-_]\d+-of-\d+\./i.test(rfilename)
+              ? [{ filename: rfilename, bytes: size ?? null }]
+              : [],
+          )
+        : [];
       const skipConsolidated = shipsTransformersWeights(siblings);
       const skipDuplicateFormats = shipsRootSafetensors(siblings);
       const names = siblings.map((s) => s.rfilename ?? "");
@@ -506,6 +520,7 @@ export function fetchModelSize(
         value: {
           totalBytes: total > 0 ? total : null,
           weightsBytes: weights > 0 ? weights : null,
+          ...(imageCheckpointCandidates.length ? { imageCheckpointCandidates, revision: data.sha } : {}),
         },
       };
     },

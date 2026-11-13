@@ -952,7 +952,7 @@ export const ptBR = {
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
-      api: "API",
+      api: "Monitor de API",
       lightMode: "Modo claro",
       darkMode: "Modo escuro",
       guidedTour: "Tour guiado",
@@ -3078,11 +3078,11 @@ export const ptBR = {
       showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
       showReplyTimesKeywords:
         "carimbo de data hora data quando terminou resposta mensagem timestamp time clock date reply",
-      showGenerationDetails: "Informações detalhadas de velocidade e carregamento",
+      showGenerationDetails: "Informações detalhadas de velocidade",
       showGenerationDetailsDescription:
-        "Adiciona às leituras ao vivo a velocidade de leitura do prompt, a contagem de tokens e a aceitação de rascunhos, e mostra onde as camadas do modelo foram carregadas.",
+        "Adiciona às leituras ao vivo a velocidade de leitura do prompt, a contagem de tokens e a aceitação de rascunhos.",
       showGenerationDetailsKeywords:
-        "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "detalhes geração velocidade tokens estatísticas desenvolvedor verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Estatísticas de velocidade e contexto",
       generationStatsUpdatesDescription:
         "Em tempo real conta tokens por segundo e uso do contexto enquanto uma resposta é transmitida. Ao terminar atualiza quando cada resposta termina.",

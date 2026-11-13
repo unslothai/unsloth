@@ -6660,8 +6660,6 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     }
     _assert_env_cwd(result.output, "OPENCLAW_WORKSPACE_DIR")
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
-    # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
-    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -7091,7 +7089,6 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
         "disabled_providers": [],
     }
     assert _launch_command(result.output) == ["opencode"]
-    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
 def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypatch):
@@ -7852,7 +7849,6 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     assert config["providers"]["unsloth"]["models"] == [
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
-    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
     assert (home / ".pi" / "agent" / "extensions" / "mine.ts").is_file()
     settings = json.loads((home / ".pi" / "agent" / "settings.json").read_text())
     assert settings == {"packages": ["npm:pi-mine"]}
@@ -8425,6 +8421,51 @@ def test_write_dsh_patch_is_idempotent_and_follows_the_server(dsh_patch, capsys)
     assert provider["baseURL"] == "http://127.0.0.1:9999/v1"
     assert provider["models"] == [{"id": "other"}]
     assert entries["agent-default-model"]["config"]["model"] == "other"
+
+
+def _generated_image_input(tmp_path, agent, vibe_env):
+    agents = tmp_path / "agents"
+    if agent == "opencode":
+        config = json.loads((agents / "opencode" / "opencode.json").read_text())
+        model = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]
+        return model.get("attachment", False) and "image" in model["modalities"]["input"]
+    if agent == "openclaw":
+        config = json.loads((agents / "openclaw" / "openclaw.json").read_text())
+        return "image" in config["models"]["providers"]["unsloth"]["models"][0].get("input", ())
+    if agent == "pi":
+        return "image" in _pi_generated_model(tmp_path, False).get("input", ())
+    if agent == "pi-subagent":
+        return _pi_generated_model(tmp_path, True).get("vision", False)
+    if agent == "dsh":
+        entries = _dsh_entries(agents / "dsh" / start._DSH_PATCH_FILE)
+        model = entries["llm-pi-ai"]["config"]["providers"]["unsloth"]["models"][0]
+        return "image" in model.get("input", ())
+    return json.loads(vibe_env["VIBE_MODELS"])[0].get("supports_images") is True
+
+
+@pytest.mark.parametrize("vision", [True, False])
+@pytest.mark.parametrize("agent", ["opencode", "openclaw", "pi", "pi-subagent", "dsh", "vibe"])
+def test_agent_config_declares_image_input_only_for_a_vision_model(
+    fake_studio, tmp_path, monkeypatch, agent, vision
+):
+    http_json = start._http_json
+
+    def with_vision(method, url, *args, **kwargs):
+        answer = http_json(method, url, *args, **kwargs)
+        if url.split("?")[0].endswith("/api/inference/status"):
+            answer["is_vision"] = vision
+        return answer
+
+    monkeypatch.setattr(start, "_http_json", with_vision)
+    vibe_env = {}
+    vibe_env_fn = start._vibe_env
+    monkeypatch.setattr(
+        start, "_vibe_env", lambda *a, **k: vibe_env.update(vibe_env_fn(*a, **k)) or vibe_env
+    )
+    args = ["pi", "--as-subagent"] if agent == "pi-subagent" else [agent]
+    result = CliRunner().invoke(start.start_app, [*args, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert _generated_image_input(tmp_path, agent, vibe_env) is vision
 
 
 @pytest.mark.parametrize(

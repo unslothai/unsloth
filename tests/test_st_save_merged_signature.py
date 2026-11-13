@@ -352,7 +352,7 @@ def test_the_reference_normalizes_before_validating():
     body = ast.get_source_segment(
         SAVE_PY.read_text(encoding = "utf-8"), _defs("unsloth_save_model", SAVE_PY)[0]
     )
-    assert 'save_method.lower().replace(" ", "_")' in body
+    assert 'save_method.lower().strip().replace("-", "_").replace(" ", "_")' in body
 
 
 @pytest.mark.parametrize("method", ["MERGED_16BIT", "merged 16bit", "Merged_16bit"])

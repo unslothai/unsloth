@@ -691,8 +691,21 @@ def native_linear_class():
             if not self.rot_group and (torch.compiler.is_compiling() or not xq.is_contiguous()):
                 op = getattr(self, "_row_major", None)
                 xq = op(xq) if op is not None else xq.contiguous()
-            acc = torch._int_mm(xq, self.weight_q.t())
             w_scale = self.weight_scale.view(torch.float32)
+            if (
+                self.bias is None
+                and x2.dtype == torch.float16
+                and x2.is_cuda
+                and not torch.compiler.is_compiling()
+            ):
+                from . import diffusion_int8_cutlass as _cut  # noqa: PLC0415
+                tile = _cut.native_tile(xq, self.weight_q, x_scale, w_scale)
+                if tile is not None:
+                    try:
+                        return _cut.native_gemm(xq, self.weight_q, x_scale, w_scale, tile)
+                    except Exception:  # noqa: BLE001 - the stock maths below
+                        _cut._NATIVE_PLAN.clear()
+            acc = torch._int_mm(xq, self.weight_q.t())
             out = torch.mul(acc, x_scale)
             if self.bias is not None:
                 out = torch.addcmul(self.bias.float(), out, w_scale)
@@ -857,6 +870,16 @@ def native_linear_class():
             return out.reshape(*x.shape[:-1], self.out_features)
 
         def forward(self, x: Any) -> Any:
+            if (
+                self.act_int8
+                and self.bias is None
+                and x.is_cuda
+                and x.dtype == torch.float16
+                and not torch.compiler.is_compiling()
+            ):
+                # race once per card and shape, before any graph capture
+                from . import diffusion_int8_cutlass as _cut  # noqa: PLC0415
+                _cut.native_prepare(self.weight_q, x.dtype, False)
             if self._int8pack_ok(x):
                 out = self._forward_int8pack(x)
                 if out is not None:
