@@ -152,6 +152,8 @@ const COERCED: ReadonlyArray<
     ["prompt", "resultPrompt", "size", "quality", "mime"],
   ],
   ["tool-fallback.tsx", "ToolFallbackTrigger", ["name"]],
+  // Reads no arguments; its result text goes through stringifyToolResult.
+  ["tool-ui-memory.tsx", "MemoryToolUI", []],
 ];
 
 const COERCION_CALL = /^toolArgText\(/;

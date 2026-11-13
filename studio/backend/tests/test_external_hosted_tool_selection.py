@@ -238,31 +238,35 @@ def test_custom_mixed_tools_keep_local_search_and_scope_hosted_tools(
     assert transport._request_kwargs["enabled_tools"] == expected_hosted_tools
 
 
-@pytest.mark.parametrize("enable_tools", [False, None])
-def test_memory_preserves_external_client_tools(monkeypatch, enable_tools):
+@pytest.fixture
+def _memory_on(monkeypatch):
     from core import chat_memory
-
     monkeypatch.setattr(chat_memory, "thread_context", lambda thread_id: {"projectId": None})
     monkeypatch.setattr(chat_memory, "offer", lambda thread_id: [chat_memory.TOOL])
+
+
+def _proxy(monkeypatch, **overrides):
     inf = _install(monkeypatch, "openai")
-    catalog = [
-        {
-            "type": "function",
-            "function": {"name": "client_weather", "parameters": {"type": "object"}},
-        }
-    ]
-    choice = {"type": "function", "function": {"name": "client_weather"}}
 
     async def go():
-        response = await inf._proxy_to_external_provider(
-            _payload(
-                thread_id = "saved-chat", enable_tools = enable_tools, tools = catalog, tool_choice = choice
-            ),
-            _request(),
-            current_subject = "t",
+        resp = await inf._proxy_to_external_provider(
+            _payload(thread_id = "saved-chat", **overrides), _request(), current_subject = "t"
         )
-        return [chunk async for chunk in response.body_iterator]
+        return [chunk async for chunk in resp.body_iterator]
 
     _drive(go())
-    assert _FakeExternalClient.last["request"]["tools"] == catalog
-    assert _FakeExternalClient.last["request"]["tool_choice"] == choice
+    return _FakeExternalClient.last["request"]
+
+
+@pytest.mark.parametrize("enable_tools", [False, None])
+def test_memory_keeps_the_client_tool_catalog(monkeypatch, _memory_on, enable_tools):
+    catalog = [{"type": "function", "function": {"name": "client_weather", "parameters": {}}}]
+    choice = {"type": "function", "function": {"name": "client_weather"}}
+    sent = _proxy(monkeypatch, enable_tools = enable_tools, tools = catalog, tool_choice = choice)
+    assert sent["tools"] == catalog
+    assert sent["tool_choice"] == choice
+
+
+def test_memory_keeps_hosted_search_with_the_provider(monkeypatch, _memory_on):
+    sent = _proxy(monkeypatch, enabled_tools = ["web_search"])
+    assert sent["enabled_tools"] == ["web_search"]

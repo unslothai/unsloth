@@ -4579,6 +4579,7 @@ def _memory_tool_requested(payload) -> bool:
     if (
         getattr(payload, "tools", None)
         or getattr(payload, "tool_choice", None) == "none"
+        or (getattr(payload, "n", None) or 1) > 1
         or _response_format_constrains_decoding(payload)
         or (
             _has_openai_tool_history(getattr(payload, "messages", None) or [])
@@ -4667,8 +4668,6 @@ def _selects_only_provider_hosted_tools(
     enabled_skills: list[dict] | None = None,
 ) -> bool:
     """Provider-hosted names alone stay with the provider; Unsloth-only names or MCP keep the local loop."""
-    if _memory_tool_requested(payload):
-        return False
     if getattr(payload, "mcp_enabled", False):
         return False
     # Armed research needs Studio's local deep_research tool, so it is never purely hosted.
@@ -4702,7 +4701,7 @@ def _selects_only_provider_hosted_tools(
     return True
 
 
-_LEGACY_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation", "update_memory"})
+_LEGACY_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
 
 
 def _tool_call_names(message) -> list[Optional[str]]:
