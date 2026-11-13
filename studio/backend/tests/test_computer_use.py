@@ -726,6 +726,36 @@ def test_typing_ends_where_it_is_when_control_is_taken_back(desktop):
     assert run({"action": "type", "text": "hi", "submit": True}).startswith("Done:")
 
 
+def test_a_stop_ends_a_key_action_between_its_chords(desktop):
+    look()
+    key = state.session_key(SESSION)
+    original = desktop.key
+    sent = []
+
+    def stop_after_first(mods, name):
+        original(mods, name)
+        sent.append(name)
+        state.revoke_account(key[0])
+
+    desktop.key = stop_after_first
+    result = run({"action": "key", "keys": "ctrl+a backspace enter"}, approved = True)
+    assert "was not done: it was stopped." in result
+    assert sent == ["a"]
+    # The chat's Stop does the same.
+    state.resume_account(key[0])
+    look()
+    sent.clear()
+    cancel = threading.Event()
+
+    def cancel_after_first(mods, name):
+        sent.append(name)
+        cancel.set()
+
+    desktop.key = cancel_after_first
+    run({"action": "key", "keys": "tab", "repeat": 5}, cancel_event = cancel)
+    assert sent == ["tab"]
+
+
 def test_switching_off_ends_the_actions_running_now(desktop):
     look()
     original = desktop.click

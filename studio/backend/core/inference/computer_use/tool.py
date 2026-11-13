@@ -232,6 +232,9 @@ class _Run:
         self.session.frame = shot.frame
 
     def _failsafe(self) -> None:
+        """Before every piece of input: the user's ways of taking control back."""
+        if self._stopped():
+            raise _Halt("it was stopped.")
         x, y = self.backend.cursor()
         ours = self.session.pointer
         if ours is not None and abs(x - ours[0]) <= _CORNER and abs(y - ours[1]) <= _CORNER:
