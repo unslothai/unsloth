@@ -351,7 +351,7 @@ test("Hub settings configure the cached alias and share the row selection", () =
   const render = new Function(
     "React", "isKnownGgufRepo", "onConfigure", "downloadedRowShellClassName",
     "isValueRow", "ROW_ACTIONS_CLASS", "ModelLoadSettingsAction", "cachedIdFor", "pipelineTagById",
-    "modelConfigTarget", "ModelRowMenu",
+    "modelConfigTarget", "ModelRowMenu", "isAudioCppFolderId",
     `${compiled}; return render;`,
   )(
     React, () => false, (...args: unknown[]) => calls.push(args),
@@ -359,6 +359,7 @@ test("Hub settings configure the cached alias and share the row selection", () =
     "actions", "settings", (id: string) => id === "mirror/model" ? "vendor/model" : null,
     new Map([["mirror/model", "text-generation"]]),
     (id: string, meta: unknown) => ({ id, meta }), "menu",
+    (id: string) => id.startsWith("audio-cpp/"),
   );
   const row = render("mirror/model", "model row");
   assert.equal(row.props.className, "selected");
@@ -370,6 +371,8 @@ test("Hub settings configure the cached alias and share the row selection", () =
   }]);
   assert.deepEqual(gear.savedFor, { id: calls[0][0], meta: calls[0][1] });
   assert.deepEqual(row.children[1].children[1].props.info, { repoId: "mirror/model" });
+  // A package folder is not a Hub repo, so it gets no Model info.
+  assert.equal(render("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF", "row").children[1].children[1], null);
   render("new/model", "model row").children[1].children[0].props.onConfigure();
   assert.deepEqual(calls[1], ["new/model", {
     source: "hub", isLora: false, isGguf: false, isDownloaded: false, pipelineTag: null,

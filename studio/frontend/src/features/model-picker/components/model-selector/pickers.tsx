@@ -7058,7 +7058,8 @@ export function HubModelPicker({
 
   const renderHubModelRow = (id: string, row: ReactNode) => {
     // Repo-level: no quant is named, so no local GGUF probe (it would pick an arbitrary file).
-    const infoMenu = (
+    // audio.cpp package ids are folders inside one repo, not repos the Hub can describe.
+    const infoMenu = isAudioCppFolderId(id) ? null : (
       <ModelRowMenu ariaLabel={`More options for ${id}`} info={{ repoId: id }} />
     );
     // GGUF repos configure per quant, so they carry the menu alone.
