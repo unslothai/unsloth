@@ -2101,6 +2101,15 @@ export const fr = {
         saveError:
           "Impossible de mettre à jour le réglage de lancement à la connexion.",
       },
+      power: {
+        sectionTitle: "Alimentation",
+        keepAwake: "Empêcher la mise en veille",
+        keepAwakeDescription:
+          "Empêche cet ordinateur de se mettre en veille tout seul tant qu'Unsloth est en cours d'exécution. L'écran peut quand même s'éteindre.",
+        keepAwakeKeywords: "veille sommeil suspension hibernation énergie sleep caffeinate",
+        loadError: "Impossible de charger le réglage d'empêchement de la mise en veille.",
+        saveError: "Impossible de mettre à jour le réglage d'empêchement de la mise en veille.",
+      },
       hub: {
         source: "Source des modèles",
         sourceDescription: "Où le hub de modèles recherche et télécharge. Choisissez ModelScope si Hugging Face est bloqué ou lent sur votre réseau.",

@@ -2161,6 +2161,15 @@ export const zhTW = {
         loadError: "無法載入「登入時啟動」設定。",
         saveError: "無法更新「登入時啟動」設定。",
       },
+      power: {
+        sectionTitle: "電源",
+        keepAwake: "讓電腦保持喚醒",
+        keepAwakeDescription:
+          "在 Unsloth 執行期間防止這台電腦自動進入睡眠。螢幕仍可關閉。",
+        keepAwakeKeywords: "睡眠 休眠 待機 暫停 電源 sleep caffeinate",
+        loadError: "無法載入讓電腦保持喚醒設定。",
+        saveError: "無法更新讓電腦保持喚醒設定。",
+      },
       hub: {
         source: "模型來源",
         sourceDescription:

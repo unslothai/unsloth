@@ -2097,6 +2097,15 @@ export const es = {
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
+      power: {
+        sectionTitle: "Energía",
+        keepAwake: "Mantener el equipo activo",
+        keepAwakeDescription:
+          "Evita que este equipo entre en suspensión por sí solo mientras Unsloth está en ejecución. La pantalla puede apagarse igualmente.",
+        keepAwakeKeywords: "suspensión reposo hibernar energía sleep caffeinate",
+        loadError: "No se pudo cargar la opción de mantener el equipo activo.",
+        saveError: "No se pudo actualizar la opción de mantener el equipo activo.",
+      },
       hub: {
         source: "Origen de los modelos",
         sourceDescription: "Dónde busca y descarga el hub de modelos. Elige ModelScope si Hugging Face está bloqueado o es lento en tu red.",

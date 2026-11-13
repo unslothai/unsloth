@@ -2075,6 +2075,15 @@ export const ko = {
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
+      power: {
+        sectionTitle: "전원",
+        keepAwake: "컴퓨터 절전 모드 방지",
+        keepAwakeDescription:
+          "Unsloth가 실행되는 동안 이 컴퓨터가 자동으로 절전 모드로 전환되지 않도록 합니다. 디스플레이는 꺼질 수 있습니다.",
+        keepAwakeKeywords: "절전 수면 대기 최대 절전 전원 sleep caffeinate",
+        loadError: "절전 모드 방지 설정을 불러오지 못했습니다.",
+        saveError: "절전 모드 방지 설정을 업데이트하지 못했습니다.",
+      },
       hub: {
         source: "모델 소스",
         sourceDescription: "모델 허브가 검색하고 다운로드하는 곳입니다. 네트워크에서 Hugging Face가 차단되었거나 느리면 ModelScope를 선택하세요.",

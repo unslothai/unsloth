@@ -2303,6 +2303,15 @@ export const pl = {
         saveError:
           "Nie udało się zaktualizować ustawienia uruchamiania po zalogowaniu.",
       },
+      power: {
+        sectionTitle: "Zasilanie",
+        keepAwake: "Nie usypiaj komputera",
+        keepAwakeDescription:
+          "Zapobiega samoczynnemu przejściu komputera w tryb uśpienia, gdy Unsloth działa. Ekran nadal może się wyłączyć.",
+        keepAwakeKeywords: "uśpienie hibernacja wstrzymanie zasilanie sleep caffeinate",
+        loadError: "Nie udało się wczytać ustawienia nieusypiania komputera.",
+        saveError: "Nie udało się zaktualizować ustawienia nieusypiania komputera.",
+      },
       hub: {
         source: "Źródło modeli",
         sourceDescription:

@@ -2020,6 +2020,15 @@ export const it = {
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
       },
+      power: {
+        sectionTitle: "Alimentazione",
+        keepAwake: "Mantieni il computer attivo",
+        keepAwakeDescription:
+          "Impedisce a questo computer di andare in sospensione da solo mentre Unsloth è in esecuzione. Lo schermo può comunque spegnersi.",
+        keepAwakeKeywords: "sospensione stop standby ibernazione energia sleep caffeinate",
+        loadError: "Impossibile caricare l'impostazione per mantenere il computer attivo.",
+        saveError: "Impossibile aggiornare l'impostazione per mantenere il computer attivo.",
+      },
       hub: {
         source: "Origine dei modelli",
         sourceDescription: "Dove l'hub dei modelli cerca e scarica. Scegli ModelScope se Hugging Face è bloccato o lento sulla tua rete.",
