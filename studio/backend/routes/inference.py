@@ -28984,13 +28984,27 @@ _EXTERNAL_COMPACTION_HEADROOM = 0.25
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
+def _extends_turn(old: Any, new: Any) -> bool:
+    """``new`` is ``old`` with text or parts appended, as the loop's ``_append_user_turn`` merges."""
+    if isinstance(old, str) and isinstance(new, str):
+        return new.startswith(old)
+    return isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old
+
+
 def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
     """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
     as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
     asked = next((m for m in reversed(branch or ()) if m.get("role") == "user"), None)
     # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
     start = next(
-        (i for i in range(len(messages) - 1, -1, -1) if asked and messages[i] == asked), None
+        (
+            i
+            for i in range(len(messages) - 1, -1, -1)
+            if asked
+            and messages[i].get("role") == "user"
+            and _extends_turn(asked.get("content"), messages[i].get("content"))
+        ),
+        None,
     )
     if start is None:
         return None

@@ -1950,3 +1950,15 @@ def test_a_replaced_trailing_turn_keeps_the_checkpoint():
     assert ri._extend_checkpoint_fit(state, [{"role": "user", "content": parts + [nudge]}]) == [
         {"role": "user", "content": [{"type": "text", "text": "<recalled>\nlook"}, nudge]}
     ]
+
+
+def test_a_merged_reprompt_still_marks_the_users_turn(monkeypatch):
+    import routes.inference as ri
+
+    chat = _long_chat(turns = 2)
+    merged = {"role": "user", "content": chat[-1]["content"] + "\n\nAct now."}
+    call = {"role": "assistant", "content": "", "tool_calls": []}
+    result = {"role": "tool", "tool_call_id": "c1", "content": "RESULT"}
+    notice = {"role": "user", "content": "You are out of tool calls. Answer now."}
+    loop = chat[:-1] + [merged, call, result, notice]
+    assert ri._active_turn_anchors(loop, chat) == {id(merged), id(call), id(result), id(notice)}
