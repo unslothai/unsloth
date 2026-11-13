@@ -11,7 +11,21 @@ import {
   providerHubOrgs,
   providerSearchTerms,
 } from "../src/features/hub/lib/provider-search.ts";
+import { parseOwnerSearchQuery } from "../src/features/hub/lib/search-text.ts";
 import { readSrc } from "./helpers/kit.ts";
+
+test("owner/model searches stay scoped, including an owner-only trailing slash", () => {
+  assert.deepEqual(parseOwnerSearchQuery("Atomic-Germ/Qwen"), {
+    owner: "Atomic-Germ",
+    query: "Qwen",
+  });
+  assert.deepEqual(parseOwnerSearchQuery("Atomic-Germ/"), {
+    owner: "Atomic-Germ",
+    query: "",
+  });
+  assert.equal(parseOwnerSearchQuery("Qwen"), null);
+  assert.equal(parseOwnerSearchQuery("https://huggingface.co/Atomic-Germ/Qwen"), null);
+});
 
 test("maker names, orgs and common aliases resolve; partial words do not", () => {
   assert.equal(matchProviderByQuery("Meta")?.id, "meta-llama");
@@ -38,6 +52,8 @@ test("search terms cover the maker's families without redundant requests", () =>
 test("both typed-search paths put the maker's Unsloth uploads first, never for owner/repo", () => {
   const hook = readSrc("features/hub/hooks/use-hub-model-search.ts");
   assert.match(hook, /isPublisherQuery \|\| !trimmed \? null : matchProviderByQuery\(trimmed\)/);
+  assert.match(hook, /if \(publisherOwner\) \{\s*return ownerModelIterator\(/);
+  assert.match(hook, /search: \{\n\s*owner,\n\s*\.\.\.\(query \? \{ query \} : \{\}\),/);
   assert.equal(hook.match(/providerUnslothFirstIterator\(queryProvider, /g)?.length, 2);
   assert.match(hook, /resolveOwnerProviderLogo\("unsloth", name\.split\("\/"\)\[1\]\)\?\.id === provider\.id/);
 });
