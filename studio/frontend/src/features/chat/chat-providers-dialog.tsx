@@ -127,7 +127,11 @@ import {
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 import { SettingsRow } from "@/features/settings/components/settings-row";
-import { learnModelDisplayNames, providerModelDisplayName } from "./model-display-names";
+import {
+  learnModelDisplayNames,
+  providerModelDisplayName,
+  useModelDisplayNamesVersion,
+} from "./model-display-names";
 
 const PROVIDER_FORM_EASE: [number, number, number, number] = [
   0.165, 0.84, 0.44, 1,
@@ -302,6 +306,8 @@ export function ChatProvidersSettings({
   onOpenProviderConsumed,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
+  // Re-render when a listing learns model names.
+  useModelDisplayNamesVersion();
   const seededProviderTypeRef = useRef<string | null>(null);
   const seededModelsRef = useRef<string[]>([]);
   // One object per automatic load: a reopened form reuses the key, never the request.

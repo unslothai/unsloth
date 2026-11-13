@@ -1,10 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useSyncExternalStore } from "react";
+
 // Labels only: requests always send the id.
 const MODEL_DISPLAY_NAMES_KEY = "unsloth_chat_provider_model_names";
 const NAMES = new Map<string, Record<string, string>>();
 let hydrated = false;
+let version = 0;
+const listeners = new Set<() => void>();
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/** Changes whenever a listing learns names, so memoized labels recompute. */
+export function useModelDisplayNamesVersion(): number {
+  return useSyncExternalStore(subscribe, () => version, () => version);
+}
 
 function hydrate(): void {
   if (hydrated) return;
@@ -55,6 +71,8 @@ export function learnModelDisplayNames(
   }
   if (!changed) return;
   NAMES.set(providerType, names);
+  version += 1;
+  for (const listener of listeners) listener();
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(

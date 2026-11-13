@@ -36,6 +36,7 @@ import {
   getExternalReasoningCapabilities,
   providerModelDisplayName,
   useChatProjects,
+  useModelDisplayNamesVersion,
   useChatRuntimeStore,
   useExternalProvidersStore,
 } from "@/features/chat";
@@ -232,6 +233,8 @@ export function TaskDialog({
   onClose: () => void;
   onDelete?: (task: ScheduledTask) => void;
 }) {
+  // Re-render when a listing learns model names.
+  useModelDisplayNamesVersion();
   const t = useT();
   const locale = useLocale();
   useTimeFormat();

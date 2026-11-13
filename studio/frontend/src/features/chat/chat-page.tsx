@@ -346,7 +346,7 @@ import {
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./components/export-format-items";
-import { providerModelDisplayName } from "./model-display-names";
+import { providerModelDisplayName, useModelDisplayNamesVersion } from "./model-display-names";
 import { lazyWithoutSuspense, preloadWhenIdle } from "@/lib/lazy-without-suspense";
 
 // Not lazy(): a Suspense reveal is held up to 300 ms, which was most of the pane's first open.
@@ -4465,6 +4465,7 @@ export function ChatPage({
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
+  const modelNamesVersion = useModelDisplayNamesVersion();
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
       externalProvidersForChat
@@ -4499,7 +4500,7 @@ export function ChatPage({
             };
           }),
         ),
-    [externalProvidersForChat, lastOpenRouterChosenModel],
+    [externalProvidersForChat, lastOpenRouterChosenModel, modelNamesVersion],
   );
   // An unticked model looks like a withdrawn one; the connection's cached catalog tells them apart.
   const externalConnections = useMemo<ExternalConnectionRef[]>(
