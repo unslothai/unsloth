@@ -387,7 +387,9 @@ class _Run:
             front = self._front(action)
             start = self._target(action["x"], action["y"], front)
             end = self._target(action["to_x"], action["to_y"], front)
+            # Both ends: a drop is input to the app it lands in.
             self._use(self._under(*start, front))
+            self._use(self._under(*end, front))
             points = [
                 (
                     start[0] + (end[0] - start[0]) * step / _DRAG_STEPS,

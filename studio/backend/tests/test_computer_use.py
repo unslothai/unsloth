@@ -711,6 +711,20 @@ def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
     assert "Terminal has not been allowed" in run({"action": "click", **at(1150, 400)})
 
 
+def test_a_drag_is_charged_to_the_app_it_ends_in_too(desktop):
+    look()
+    desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
+    end = at(1150, 400)
+    drag = {"action": "drag", **at(*FIELD), "to_x": end["x"], "to_y": end["y"]}
+    assert policy.call_asks(drag, SESSION)["apps"] == ["Mail"]
+    assert _asks("auto", drag)
+    assert "Mail has not been allowed" in run(drag)
+    policy.block_app("Mail")
+    for kwargs in ({}, {"approved": True}, {"full_access": True}):
+        assert "Mail is blocked" in run(drag, **kwargs)
+    assert not [event for event in desktop.events if event[0] == "drag"]
+
+
 def test_opening_an_app_asks_and_then_covers_what_follows(desktop):
     look()
     open_and_type = {

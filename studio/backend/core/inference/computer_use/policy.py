@@ -299,7 +299,12 @@ def asks_every_time(name: str) -> bool:
     return _sensitive_app_name(name) is not None
 
 
-def _app_at(action: dict, session: Any, backend: Backend) -> str:
+def _app_at(
+    action: dict,
+    session: Any,
+    backend: Backend,
+    prefix: str = "",
+) -> str:
     """The app whose window a click at the action's point would land in, or "" if unknown."""
     from . import screen
 
@@ -307,7 +312,8 @@ def _app_at(action: dict, session: Any, backend: Backend) -> str:
     if frame is None:
         return ""
     try:
-        x, y = screen.image_point(frame, session.coordinates, action["x"], action["y"])
+        point = (action[f"{prefix}x"], action[f"{prefix}y"])
+        x, y = screen.image_point(frame, session.coordinates, *point)
         window = backend.window_at(*frame.to_desktop(x, y))
     except Exception:  # noqa: BLE001 - the run itself reports a bad point
         return ""
@@ -336,6 +342,10 @@ def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontW
             # A click brings its window forward, so the keys after it go there.
             current = _app_at(action, session, backend) or current
             used.append(current)
+            if op == "drag":
+                # A drop is input to the app it lands in, which then also takes the keys.
+                current = _app_at(action, session, backend, "to_") or current
+                used.append(current)
         elif op == "scroll":
             used.append((_app_at(action, session, backend) if "x" in action else "") or current)
         elif op in ("type", "key"):
