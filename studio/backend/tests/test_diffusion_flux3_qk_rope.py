@@ -20,6 +20,7 @@ from core.inference import diffusion_flux3_qk_rope as qr  # noqa: E402
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(qr.QK_NORM_ROPE_ENV, raising = False)
+    monkeypatch.delenv(qr.PATCH_ENV, raising = False)
     qr.reset()
     qr.STATS.update(fused = 0, stock = 0)
     yield
@@ -158,12 +159,14 @@ def test_unproven_or_slower_or_unprobed_card_takes_the_stock_chain(monkeypatch, 
     assert calls == [] and qr.STATS == {"fused": 0, "stock": 1}
 
 
+@pytest.mark.parametrize("env", ["QK_NORM_ROPE_ENV", "PATCH_ENV"])
 @pytest.mark.parametrize("value", ["0", "off", "false", "no"])
-def test_kill_switch(monkeypatch, value):
+def test_kill_switch(monkeypatch, value, env):
+    """Either switch (the op's own, or the load-patch registry's) restores the stock chain on every path."""
     attn = _attn(torch.float16)
     q, k = _qk(attn)
     calls = _fake_card(monkeypatch)
-    monkeypatch.setenv(qr.QK_NORM_ROPE_ENV, value)
+    monkeypatch.setenv(getattr(qr, env), value)
     with torch.no_grad():
         qr.qk_norm_rope(attn, q, k, torch.float16, _rope(9), tf3.apply_rotary_emb)
     assert calls == [] and qr.STATS["stock"] == 1

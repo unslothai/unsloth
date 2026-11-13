@@ -31,6 +31,8 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 QK_NORM_ROPE_ENV = "UNSLOTH_DIFFUSION_FLUX3_QK_NORM_ROPE"
+# the load-patch registry's switch for this op; the strided and ConvRot paths call the helper without the swap
+PATCH_ENV = "UNSLOTH_DIFFUSION_PATCH_FLUX3_QK_ROPE"
 _MODULE = "diffusers.models.transformers.transformer_flux3"
 _LOCK = threading.Lock()
 # (device index, activation dtype, weight dtype, head dim, eps) -> {"exact": bool, "faster": bool, "ms": {...}}
@@ -43,11 +45,10 @@ _WARPS = 4
 
 
 def enabled() -> bool:
-    return (os.environ.get(QK_NORM_ROPE_ENV) or "1").strip().lower() not in (
-        "0",
-        "off",
-        "false",
-        "no",
+    off = ("0", "off", "false", "no")
+    return all(
+        (os.environ.get(env) or "1").strip().lower() not in off
+        for env in (QK_NORM_ROPE_ENV, PATCH_ENV)
     )
 
 
