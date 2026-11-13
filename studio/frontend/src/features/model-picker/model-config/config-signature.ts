@@ -73,6 +73,7 @@ export function loadedConfigSignature(
     config.cacheRam ?? "",
     config.tensorParallel ? "1" : "0",
     config.disableVision ? "1" : "0",
+    config.engramPrecision?.toUpperCase() ?? "",
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,

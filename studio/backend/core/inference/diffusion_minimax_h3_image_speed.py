@@ -4,9 +4,10 @@
 """MiniMax-H3-Image speed levers, reusing the MiniMax-H3 video ones (same attention layout).
 ``UNSLOTH_H3_IMAGE_SPEED=0`` disables all; each also honours its video switch.
 
-Exact: h3_int8_gemm, h3_fused_qkv, h3_strided_attn, h3_shared_qkv_quant, the _native_flash pin on sm80 / sm89.
-Tolerance-level: h3_qk_rope (last-bit rstd drift changes the 6-step image, so off by default on the streamed tier;
-UNSLOTH_H3_IMAGE_QK_ROPE forces it), h3_fused_swiglu, h3_compiled (opt-in via UNSLOTH_H3_IMAGE_COMPILE=1: workspace
+Exact: h3_int8_gemm, h3_fused_qkv, h3_strided_attn, h3_shared_qkv_quant,
+h3_qk_rope (bit-identical to the eager norm + rope, checked per device; on for every tier, UNSLOTH_H3_IMAGE_QK_ROPE=0
+turns it off), the _native_flash pin on sm80 / sm89.
+Tolerance-level: h3_fused_swiglu, h3_compiled (opt-in via UNSLOTH_H3_IMAGE_COMPILE=1: workspace
 unmeasured beside the 37.5 GB A100-40 dit_resident peak). The streamed tier gets attention levers only: its blocks
 move per forward, so resident-projection levers cannot engage."""
 
@@ -32,13 +33,11 @@ def compile_enabled() -> bool:
 
 
 def image_qk_rope_enabled(resident: bool = False) -> bool:
-    """The fused q/k norm + rope for H3-Image: forced by UNSLOTH_H3_IMAGE_QK_ROPE, else on for the resident tiers."""
+    """The fused q/k norm + rope for H3-Image: on for every tier (``resident`` no longer matters: the op is bit-exact
+    and falls back to the stock math wherever its device check did not pass); UNSLOTH_H3_IMAGE_QK_ROPE=0 turns it
+    off."""
     value = (os.environ.get(QK_ROPE_ENV) or "").strip().lower()
-    if value in ("1", "on", "true", "yes"):
-        return True
-    if value in ("0", "off", "false", "no"):
-        return False
-    return bool(resident)
+    return value not in ("0", "off", "false", "no")
 
 
 def _row_pads(transformer: Any) -> list:

@@ -25,7 +25,8 @@ from typing import NamedTuple, Optional
 from fastapi import HTTPException
 from loggers import get_logger
 
-from hub.schemas.inventory import GgufVariantDetail, GgufVariantsResponse
+from core.inference.engram_tables import cached_engram_tables, engram_table_precision, engram_tables
+from hub.schemas.inventory import EngramTableDetail, GgufVariantDetail, GgufVariantsResponse
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
@@ -210,6 +211,18 @@ _VARIANT_REQUIREMENT_LAST_KNOWN: "OrderedDict[tuple[str, str], _GgufVariantRequi
 # After any eviction an absent entry may be a forgotten companion.
 _VARIANT_REQUIREMENT_LAST_KNOWN_MAX = 65536
 _VARIANT_REQUIREMENT_FORGOTTEN = False
+
+
+def _llama_loads_engram_tables() -> Optional[bool]:
+    """Whether the selected llama-server takes --ple; None when it cannot be probed."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        caps = LlamaCppBackend.probe_server_capabilities()
+    except Exception:  # noqa: BLE001 -- an unprobed build is unknown, not unsupported
+        return None
+    if not caps.get("found") or not caps.get("help_probe_ok"):
+        return None
+    return bool(caps.get("supports_ple"))
 
 
 def _variant_requirement_last_known(key: tuple[str, ...]) -> Optional[_GgufVariantRequirement]:
@@ -2240,6 +2253,12 @@ async def get_gguf_variants_answer(
                         continue
                     q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
+                # Standalone Engram tables are not .gguf, so the walk above skips them.
+                for f in cached_engram_tables(snap):
+                    try:
+                        by_filename[f.relative_to(snap).as_posix().lower()] = f.stat().st_size
+                    except (OSError, RuntimeError, ValueError):
+                        continue
                 if by_filename or by_quant:
                     cached_snapshots.append((by_filename, by_quant))
 
@@ -2517,10 +2536,42 @@ async def get_gguf_variants_answer(
             else {}
         )
 
+        def _engram_ready(
+            requirement: Optional[_GgufVariantRequirement], downloaded: bool
+        ) -> list[str]:
+            """Table precisions this quant loads with, nothing to download (see the schema)."""
+            own = requirement.engram_precision if requirement is not None else None
+            if own is None:
+                return []
+            ready = [own] if downloaded else []
+            shard = requirement.engram_shard
+            rest = frozenset(name for name in requirement.main_filenames if name != shard.path)
+            companions = _non_mmproj_companions(requirement)
+            backbone = any(
+                _filenames_cached_in_snapshot(
+                    by_filename, rest, requirement.main_size_bytes - int(shard.size or 0)
+                )
+                and _snapshot_has_companions(by_filename, companions)
+                for by_filename, _by_quant in cached_snapshots
+            ) and (
+                not requirement.mmproj_filenames or _any_mmproj_cached(requirement.mmproj_filenames)
+            )
+            if backbone:
+                ready += [
+                    precision
+                    for table in requirement.engram_tables
+                    if (precision := engram_table_precision(table.path)) != own
+                    and _filenames_cached(frozenset({table.path}), int(table.size or 0))
+                ]
+            return ready
+
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
             downloaded = _is_fully_downloaded(v) and not is_partial
+            engram_ready = _engram_ready(requirement, downloaded)
+            # A quant whose own table shard was skipped for a cached standalone table is on disk too.
+            downloaded = downloaded or (bool(engram_ready) and not is_partial)
             pending_drafter = _pending_drafter(requirement, v.quant)
             return GgufVariantDetail(
                 filename = v.filename,
@@ -2555,14 +2606,32 @@ async def get_gguf_variants_answer(
                     is_partial and _partial_resumable_for_variant(repo_id, v.quant, repo_cache_dir)
                 ),
                 dependency_key = _variant_dependency_key(repo_id, v.filename),
+                engram_precision = (
+                    requirement.engram_precision if requirement is not None else None
+                ),
+                engram_ready = engram_ready,
             )
 
+        engram_files = next(
+            (r.engram_tables for r in requirements_by_quant.values() if r and r.engram_tables),
+            (),
+        )
         return GgufVariantsResponse(
             repo_id = repo_id,
             variants = [_variant_detail(v) for v in variants],
             has_vision = has_vision,
             default_variant = default_variant,
             dependencies_resolved = siblings is not None,
+            engram_tables = [
+                EngramTableDetail(
+                    precision = table.precision,
+                    filename = table.filename,
+                    size_bytes = table.size_bytes,
+                    downloaded = _filenames_cached(frozenset({table.filename}), table.size_bytes),
+                )
+                for table in engram_tables((f.path, int(f.size or 0)) for f in engram_files)
+            ],
+            engram_supported = _llama_loads_engram_tables() if engram_files else None,
         )
 
     def _compute_with_cleanables() -> VariantsAnswer:
