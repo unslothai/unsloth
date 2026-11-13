@@ -50,9 +50,9 @@ test("long API examples are capped and scroll inside a keyboard-reachable region
   // wrapped lines broke mid-token and ran back to the line-number gutter
   const cls =
     highlightedCode.match(/<section[\s\S]*?className="([^"]+)"/)?.[1] ?? "";
-  assert.match(cls, /\[&_pre\]:!whitespace-pre(?!-)/);
+  assert.match(cls, /\[html:not\(\[data-code-wrap\]\)_&_pre\]:!whitespace-pre(?!-)/);
   assert.doesNotMatch(cls, /break-words|break-all|whitespace-pre-wrap/);
-  assert.match(cls, /\[&_\[data-streamdown=code-block\]\]:!min-w-max\b/);
+  assert.match(cls, /\[html:not\(\[data-code-wrap\]\)_&_\[data-streamdown=code-block\]\]:!min-w-max\b/);
   // all three example sections share one code box
   for (const caller of [USAGE, AUDIO, MEDIA]) {
     assert.match(

@@ -7,11 +7,15 @@ import { Button } from "@/components/ui/button";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { Download01Icon, Edit03Icon } from "@hugeicons/core-free-icons";
+import {
+  Download01Icon,
+  Edit03Icon,
+  FlimSlateIcon,
+  ImageIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { ImageIcon, VideoIcon } from "lucide-react";
 import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
@@ -28,6 +32,14 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useSandboxImage } from "./use-sandbox-image";
+
+function ImageGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={ImageIcon} {...props} />;
+}
+
+function VideoGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={FlimSlateIcon} {...props} />;
+}
 
 /**
  * Renders the synthetic `_toolEvent` chunks emitted by
@@ -303,8 +315,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     (name): name is string => typeof name === "string" && name.length > 0,
   );
   const errorText = toolErrorText(result);
-  // Coerced for the same reason `prompt` is: these reach `.match`,
-  // `.toLowerCase` and `Array.join`, all of which throw on a non-string.
+  // Coerced like `prompt`: .match, .toLowerCase and Array.join throw on a non-string.
   const size = toolArgText(imageResult?.size);
   const quality = toolArgText(imageResult?.quality);
   const imageDimensions = parseImageSize(size);
@@ -451,7 +462,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={isRunning ? runningLabel : completedLabel}
         status={status}
-        icon={ImageIcon}
+        icon={ImageGlyph}
       />
       <ToolFallbackContent>
         {errorText ? (
@@ -599,7 +610,7 @@ const VideoGenerationToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={isRunning ? runningLabel : completedLabel}
         status={status}
-        icon={VideoIcon}
+        icon={VideoGlyph}
       />
       <ToolFallbackContent>
         {errorText ? (

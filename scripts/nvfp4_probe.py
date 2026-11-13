@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Probe NVFP4 via torchao with use_triton_kernel=False (no MSLK) on the real dense
-Z-Image transformer: is it a genuine FP4-tensor-core speedup over fp8, and is quality
-in-bar? Reference for LPIPS is dense bf16 eager. Run on one CUDA (Blackwell) GPU."""
+"""Probes NVFP4 via torchao (use_triton_kernel=False, no MSLK) on dense Z-Image vs bf16 eager."""
 
 from __future__ import annotations
 

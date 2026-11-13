@@ -11,13 +11,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""`UNSLOTH_FORCE_CUSTOM_DTYPE` carries executable code in two of its five fields.
-
-Every value unsloth ships is a literal in `models/loader.py` and both readers run in
-the process that set it, so a value this process did not set has no legitimate source
-and its code fields are dropped rather than executed. The wire format is unchanged,
-since `unsloth_zoo` parses the same five fields on its own release schedule.
-"""
+"""UNSLOTH_FORCE_CUSTOM_DTYPE code fields run only if this process set the value, else dropped; wire
+format unchanged, unsloth_zoo parses the same five fields."""
 
 __all__ = [
     "register_custom_dtype",
@@ -115,8 +110,7 @@ def neutralize_inherited_custom_dtype():
 
 
 def trusted_custom_dtype():
-    """Returns (value, code_is_trusted); False means honour the dtype fields and drop
-    the two code fields."""
+    """Returns (value, code_is_trusted); when False, drop the two code fields."""
     value = os.environ.get(_ENV_KEY, "")
     if value == "":
         return "", False

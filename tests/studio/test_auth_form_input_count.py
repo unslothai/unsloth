@@ -311,6 +311,8 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
             export const reset = (a = null, r = null) => { access = a; refresh = r; passwordChange = false; };
             export const clearAuthTokens = () => { access = null; refresh = null; };
             export const getAuthToken = () => access;
+            export const getAuthSessionMark = () => null;
+            export const ensureAuthSessionMark = () => null;
             export const getRefreshToken = () => refresh;
             export const mustChangePassword = () => passwordChange;
             export const setMustChangePassword = (value) => { passwordChange = value; };

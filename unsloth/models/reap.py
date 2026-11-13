@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""REAP expert pruning (Router-weighted Expert Activation Pruning, arXiv:2510.13999).
-
-Same saliency, expert selection and schedule as llm-compressor's ``REAPPruningModifier``: each
-decoder layer is calibrated on the outputs of the already pruned layers before it, its lowest
-saliency experts are dropped, and the pruned layer produces the next layer's inputs. Expert
-outputs come from the model's own fused experts kernel (one call with every routed (token, slot)
-pair as its own row) instead of per-expert Linear modules, so no extra dependency is needed.
-"""
+"""REAP expert pruning (llm-compressor REAPPruningModifier), layer by layer on already-pruned inputs."""
 
 import inspect
 import json
@@ -1121,13 +1114,3 @@ def raise_if_unsaved_reap(model):
             'expert. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
             "model and load it again) before `get_peft_model`."
         )
-
-
-def _is_token_rows(dataset):
-    if isinstance(dataset, (list, tuple)) and dataset:
-        first = dataset[0]
-        return isinstance(first, (list, tuple)) or (
-            isinstance(first, dict) and "input_ids" in first
-        )
-    column_names = getattr(dataset, "column_names", None)
-    return bool(column_names) and "input_ids" in column_names

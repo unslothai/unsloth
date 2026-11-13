@@ -23,22 +23,21 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
+import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Download01Icon,
+  LeftToRightListBulletIcon,
   Search01Icon,
   Cancel01Icon,
   Edit03Icon,
   PlusSignIcon,
+  UndoIcon,
   Upload01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  BookmarkIcon,
-  LayoutListIcon,
   PlayIcon,
-  RotateCcwIcon,
 } from "lucide-react";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { SortablePromptItems } from "./sortable-prompt-items";
@@ -113,9 +112,17 @@ import {
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
 } from "../utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_MIME_TYPE,
+  CONVERSATION_PDF_MIME_TYPE,
+  type NamedConversationHtml,
+  buildConversationHtmlBody,
+  buildConversationHtmlDocument,
+} from "../utils/conversation-html";
+import { renderConversationPdf } from "../api/chat-export-api";
 import { planChatItemSources } from "../utils/project-source-plan";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
-import { saveMarkdownAsProjectSource } from "@/features/rag";
+import { saveMarkdownAsProjectSource } from "@/features/rag/api/save-markdown-source";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -134,7 +141,7 @@ async function downloadBlob(
   filename: string,
   mimeType: string,
 ): Promise<void> {
-  return downloadFile(content, filename, mimeType);
+  await downloadFile(content, filename, mimeType);
 }
 
 function exportPromptJsonl(entry: PromptEntry): Promise<void> {
@@ -241,15 +248,15 @@ async function loadConversationMessages(
     emptyMessage?: string;
     includeSiblings?: boolean;
     includeInstructions?: boolean;
+    liveBranch?: string[] | null;
   } = {},
 ) {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
     includeInstructions = true,
+    liveBranch = liveThreadBranch(threadId),
   } = options;
-  // read before awaiting storage so a chat switch cannot redirect the lookup
-  const liveBranch = liveThreadBranch(threadId);
   const [raw, instructions] = await Promise.all([
     listStoredChatMessages(threadId),
     includeInstructions ? chatInstructionsTurn(threadId) : [],
@@ -475,9 +482,13 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
 }
 
 // ShareGPT training JSONL (human/system/gpt turns).
-export async function exportConversationShareGPT(threadId: string): Promise<void> {
+export async function exportConversationShareGPT(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings("sharegpt"),
+    liveBranch,
   });
   if (!messages) return;
 
@@ -498,22 +509,30 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 }
 
 // OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation; Unsloth reads this as a ChatML dataset.
-export async function exportConversationRawJsonl(threadId: string): Promise<void> {
-  return exportConversationJsonl(threadId, "training");
+export async function exportConversationRawJsonl(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
+  return exportConversationJsonl(threadId, "training", liveBranch);
 }
 
-export async function exportConversationMessagesJsonl(threadId: string): Promise<void> {
-  return exportConversationJsonl(threadId, "messages");
+export async function exportConversationMessagesJsonl(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
+  return exportConversationJsonl(threadId, "messages", liveBranch);
 }
 
 async function exportConversationJsonl(
   threadId: string,
   layout: ConversationJsonlLayout,
+  liveBranch?: string[] | null,
 ): Promise<void> {
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings(
       layout === "training" ? "jsonl-raw" : "jsonl-messages",
     ),
+    liveBranch,
   });
   if (!messages) return;
 
@@ -526,8 +545,11 @@ async function exportConversationJsonl(
   );
 }
 
-export async function exportConversationCsv(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+export async function exportConversationCsv(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
+  const messages = await loadConversationMessages(threadId, { liveBranch });
   if (!messages) return;
 
   const rows = ["role,content"];
@@ -547,7 +569,11 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string; includeInstructions?: boolean } = {},
+  options: {
+    emptyMessage?: string;
+    includeInstructions?: boolean;
+    liveBranch?: string[] | null;
+  } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
 export const buildConversationMarkdownForThread =
@@ -556,13 +582,82 @@ export const buildConversationMarkdownForThread =
     renderMessage: messageToMarkdown,
   });
 
-export const exportConversationMarkdown = createConversationMarkdownExporter({
-  loadMessages: loadDisplayedBranchMessages,
+export const exportConversationMarkdown = (
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> => createConversationMarkdownExporter<MessageRecord>({
+  loadMessages: (id) => loadDisplayedBranchMessages(id, { liveBranch }),
   renderMessage: messageToMarkdown,
   download: downloadBlob,
   exportBasename: conversationBasename,
   notifyNoContent: () => toast.info("No exportable content."),
-});
+})(threadId);
+
+async function loadConversationForHtml(
+  threadId: string,
+  title?: string,
+  liveBranch?: string[] | null,
+): Promise<NamedConversationHtml | null> {
+  const messages = await loadDisplayedBranchMessages(threadId, { liveBranch });
+  if (!messages) return null;
+  const thread =
+    title === undefined
+      ? await getStoredChatThread(threadId).catch(() => undefined)
+      : undefined;
+  return {
+    title: title ?? (thread?.title?.trim() || "Conversation"),
+    messages: messages.map((msg) => ({
+      role: String(msg.role ?? ""),
+      content: stripSearchImageTokens(
+        msg.role === "user" ? messageToText(msg) : messageToMarkdown(msg),
+      ),
+    })),
+  };
+}
+
+async function pdfBytes(title: string, body: string): Promise<Uint8Array> {
+  const pending = toast.loading("Rendering PDF...");
+  try {
+    return await renderConversationPdf(title, body);
+  } finally {
+    toast.dismiss(pending);
+  }
+}
+
+async function exportConversationDocument(
+  threadId: string,
+  format: "html" | "pdf",
+  liveBranch?: string[] | null,
+): Promise<void> {
+  const conversation = await loadConversationForHtml(threadId, undefined, liveBranch);
+  if (!conversation) return;
+  const body = buildConversationHtmlBody([conversation]);
+  if (!body) { toast.info("No exportable content."); return; }
+  const basename = await conversationBasename(threadId);
+  if (format === "html") {
+    await downloadBlob(
+      buildConversationHtmlDocument(conversation.title, body),
+      `${basename}.html`,
+      CONVERSATION_HTML_MIME_TYPE,
+    );
+    return;
+  }
+  await downloadBlob(
+    await pdfBytes(conversation.title, body),
+    `${basename}.pdf`,
+    CONVERSATION_PDF_MIME_TYPE,
+  );
+}
+
+export const exportConversationHtml = (
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> => exportConversationDocument(threadId, "html", liveBranch);
+
+export const exportConversationPdf = (
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> => exportConversationDocument(threadId, "pdf", liveBranch);
 
 // "skipped" must not stop a pair; "failed" already toasted, so stop.
 type SaveSourceOutcome = "saved" | "skipped" | "failed";
@@ -619,18 +714,22 @@ export async function saveChatItemAsProjectSource(
 }
 
 /** A sidebar row as one markdown document. Compare halves are named by model, since their order is not stable. */
-export async function buildChatItemMarkdown(item: {
-  id: string;
-  title: string;
-  type: string;
-}): Promise<string> {
+export async function buildChatItemMarkdown(
+  item: { id: string; title: string; type: string },
+  liveBranch?: string[] | null,
+): Promise<string> {
   const plans = planChatItemSources(
     item,
     item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
   );
   return buildNamedConversationsMarkdown(
     plans,
-    buildConversationMarkdownForThread,
+    liveBranch === undefined
+      ? buildConversationMarkdownForThread
+      : createConversationMarkdownBuilder<MessageRecord>({
+          loadMessages: (id) => loadDisplayedBranchMessages(id, { liveBranch }),
+          renderMessage: messageToMarkdown,
+        }),
   );
 }
 
@@ -639,7 +738,9 @@ export type ConvExportFormat =
   | "jsonl-messages"
   | "csv"
   | "sharegpt"
-  | "markdown";
+  | "markdown"
+  | "html"
+  | "pdf";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   "jsonl-raw": "Training JSONL",
@@ -647,6 +748,8 @@ const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
   markdown: "Markdown",
+  html: "HTML",
+  pdf: "PDF",
 };
 
 export const EXPORT_FORMATS_LIST = (
@@ -706,12 +809,15 @@ function csvHeader(format: ConvExportFormat): string {
 function exportExt(format: ConvExportFormat): string {
   if (format === "csv") return "csv";
   if (format === "markdown") return "md";
+  if (format === "html" || format === "pdf") return format;
   return "jsonl";
 }
 
 function exportMime(format: ConvExportFormat): string {
   if (format === "csv") return CSV_MIME;
   if (format === "markdown") return CONVERSATION_MARKDOWN_MIME_TYPE;
+  if (format === "html") return CONVERSATION_HTML_MIME_TYPE;
+  if (format === "pdf") return CONVERSATION_PDF_MIME_TYPE;
   return "application/x-ndjson";
 }
 
@@ -726,30 +832,27 @@ export async function exportBulkConversationsMerged(
     return;
   }
 
+  if (format === "html" || format === "pdf") {
+    const conversations: NamedConversationHtml[] = [];
+    for (const { id, title } of await titledConversations(threadIds)) {
+      const conversation = await loadConversationForHtml(id, title);
+      if (conversation) conversations.push(conversation);
+    }
+    const body = buildConversationHtmlBody(conversations);
+    if (!body) { toast.info("No exportable content."); return; }
+    const title = conversations.length === 1 ? conversations[0].title : basename;
+    await downloadBlob(
+      format === "html"
+        ? buildConversationHtmlDocument(title, body)
+        : await pdfBytes(title, body),
+      `${basename}.${format}`,
+      exportMime(format),
+    );
+    return;
+  }
+
   if (format === "markdown" && threadIds.length > 1) {
-    const conversations: Array<{ id: string; title: string }> = [];
-    const pairs = new Map<string, ThreadRecord[]>();
-    for (const id of threadIds) {
-      const thread = await getStoredChatThread(id);
-      conversations.push({ id, title: thread?.title?.trim() || id });
-      if (thread?.pairId) {
-        const halves = pairs.get(thread.pairId) ?? [];
-        halves.push(thread);
-        pairs.set(thread.pairId, halves);
-      }
-    }
-    const pairedTitles = new Map<string, string>();
-    for (const [pairId, halves] of pairs) {
-      if (halves.length < 2) continue;
-      const plans = planChatItemSources(
-        { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
-        halves,
-      );
-      for (const plan of plans) pairedTitles.set(plan.id, plan.title);
-    }
-    for (const conversation of conversations) {
-      conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
-    }
+    const conversations = await titledConversations(threadIds);
     const body = await buildNamedConversationsMarkdown(
       conversations,
       buildConversationMarkdownForThread,
@@ -786,6 +889,36 @@ export async function exportBulkConversationsMerged(
   );
 }
 
+/** Thread titles, with compare halves named by model so the two can be told apart. */
+async function titledConversations(
+  threadIds: string[],
+): Promise<Array<{ id: string; title: string }>> {
+  const conversations: Array<{ id: string; title: string }> = [];
+  const pairs = new Map<string, ThreadRecord[]>();
+  for (const id of threadIds) {
+    const thread = await getStoredChatThread(id);
+    conversations.push({ id, title: thread?.title?.trim() || id });
+    if (thread?.pairId) {
+      const halves = pairs.get(thread.pairId) ?? [];
+      halves.push(thread);
+      pairs.set(thread.pairId, halves);
+    }
+  }
+  const pairedTitles = new Map<string, string>();
+  for (const [pairId, halves] of pairs) {
+    if (halves.length < 2) continue;
+    const plans = planChatItemSources(
+      { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
+      halves,
+    );
+    for (const plan of plans) pairedTitles.set(plan.id, plan.title);
+  }
+  for (const conversation of conversations) {
+    conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
+  }
+  return conversations;
+}
+
 export async function exportBulkConversationsSeparate(
   threadIds: string[],
   format: ConvExportFormat,
@@ -799,6 +932,16 @@ export async function exportBulkConversationsSeparate(
   const files: Record<string, Uint8Array> = {};
 
   for (const id of threadIds) {
+    if (format === "html" || format === "pdf") {
+      const conversation = await loadConversationForHtml(id);
+      const body = conversation ? buildConversationHtmlBody([conversation]) : "";
+      if (!conversation || !body) continue;
+      files[`${id}.${ext}`] =
+        format === "html"
+          ? strToU8(buildConversationHtmlDocument(conversation.title, body))
+          : await pdfBytes(conversation.title, body);
+      continue;
+    }
     const content = await buildThreadContent(id, format);
     if (!content) continue;
     const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
@@ -811,24 +954,33 @@ export async function exportBulkConversationsSeparate(
   await downloadBlob(zipped, `${basename}.zip`, "application/zip");
 }
 
-// "recents" = chats outside projects; "all" adds project chats.
+const SCOPE_BASENAMES = {
+  recents: "recents",
+  all: "all-chats",
+  history: "unsloth-chats",
+  archived: "unsloth-archived-chats",
+} as const;
+
+// "recents" = chats outside projects; "all" adds project chats; "history" adds archived ones too.
 export async function bulkExportConversationsByScope(
-  scope: "recents" | "all",
+  scope: keyof typeof SCOPE_BASENAMES,
   format: ConvExportFormat,
   merged: boolean,
 ): Promise<void> {
   try {
-    const threads = await listStoredChatThreads({
-      includeArchived: false,
+    const listed = await listStoredChatThreads({
+      includeArchived: scope === "history" || scope === "archived",
       ...(scope === "recents" ? { projectId: null } : {}),
     });
+    const threads =
+      scope === "archived" ? listed.filter((t) => t.archived) : listed;
     const ids = [...new Set(threads.map((t) => t.id))];
     if (ids.length === 0) {
       toast.info("No conversations to export.");
       return;
     }
     const ts = new Date().toISOString().slice(0, 10);
-    const basename = scope === "all" ? `all-chats-${ts}` : `recents-${ts}`;
+    const basename = `${SCOPE_BASENAMES[scope]}-${ts}`;
     if (merged) {
       await exportBulkConversationsMerged(ids, format, basename);
     } else {
@@ -1724,7 +1876,7 @@ function PromptDetail({
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
         >
-          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+          <HugeiconsIcon icon={BookmarkIcon} className={cn("size-4", isPinned && "fill-primary")} />
         </button>
         <button
           type="button"
@@ -1741,12 +1893,12 @@ function PromptDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
           <Button size="sm" variant="ghost" onClick={() => onDraftChange(undefined)}>
-            <RotateCcwIcon className="size-3.5 mr-1" />Revert
+            <HugeiconsIcon icon={UndoIcon} className="size-3.5 mr-1" />Revert
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
@@ -2062,7 +2214,7 @@ function PromptListDetail({
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
         >
-          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+          <HugeiconsIcon icon={BookmarkIcon} className={cn("size-4", isPinned && "fill-primary")} />
         </button>
         <button
           type="button"
@@ -2079,12 +2231,12 @@ function PromptListDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
           <Button size="sm" variant="ghost" onClick={() => onDraftChange(undefined)}>
-            <RotateCcwIcon className="size-3.5 mr-1" />Revert
+            <HugeiconsIcon icon={UndoIcon} className="size-3.5 mr-1" />Revert
           </Button>
         )}
         {editorMounted && (
@@ -2585,8 +2737,9 @@ export function PromptStorageDialog({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="px-6 pt-4 pb-3 shrink-0 flex flex-col gap-3">
-            {/* */}
+          {/* relative z-10: on WebKit glass each dialog child is its own layer, so the inline
+              suggestions must ride a toolbar stacked above the editor grid that follows. */}
+          <div className="relative z-10 px-6 pt-4 pb-3 shrink-0 flex flex-col gap-3">
             <div className="flex items-center gap-1 self-start rounded-full bg-muted/60 p-1">
               {(["prompts", "lists"] as Tab[]).map((tab) => (
                 <button
@@ -2671,7 +2824,7 @@ export function PromptStorageDialog({
                       dirty={promptDrafts.has(entry.id)}
                       leading={
                         pinnedPromptIds.includes(entry.id) ? (
-                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                          <HugeiconsIcon icon={BookmarkIcon} className="size-3 shrink-0 fill-primary text-primary" />
                         ) : null
                       }
                       onSelect={() => {
@@ -2693,7 +2846,7 @@ export function PromptStorageDialog({
                       dirty={listDrafts.has(entry.id)}
                       leading={
                         pinnedListIds.includes(entry.id) ? (
-                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                          <HugeiconsIcon icon={BookmarkIcon} className="size-3 shrink-0 fill-primary text-primary" />
                         ) : null
                       }
                       onSelect={() => {
@@ -2757,7 +2910,7 @@ export function PromptStorageDialog({
                   />
                 ) : (
                   <EmptyDetail
-                    icon={<BookmarkIcon className="size-5 text-muted-foreground/40" />}
+                    icon={<HugeiconsIcon icon={BookmarkIcon} className="size-5 text-muted-foreground/40" />}
                     title={searchQuery.trim() ? `No prompts match “${searchQuery}”` : "No saved prompts yet"}
                     hint={searchQuery.trim() ? undefined : "Save prompts you use often for quick reuse"}
                     onClearSearch={searchQuery.trim() ? () => setSearchQuery("") : undefined}
@@ -2798,7 +2951,7 @@ export function PromptStorageDialog({
                   />
                 ) : (
                   <EmptyDetail
-                    icon={<LayoutListIcon className="size-5 text-muted-foreground/40" />}
+                    icon={<HugeiconsIcon icon={LeftToRightListBulletIcon} className="size-5 text-muted-foreground/40" />}
                     title={searchQuery.trim() ? `No prompt lists match “${searchQuery}”` : "No prompt lists yet"}
                     hint={searchQuery.trim() ? undefined : "A prompt list queues a sequence of prompts for quick reuse"}
                     onClearSearch={searchQuery.trim() ? () => setSearchQuery("") : undefined}

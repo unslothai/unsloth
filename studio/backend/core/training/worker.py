@@ -59,6 +59,7 @@ from core.training.dataset_bounds import (
     max_train_rows_for_config,
     record_row_bound,
     row_bound_for_resume,
+    slice_dataset_rows,
     world_size_from_env,
 )
 from core.training.resume import _checkpoint_state, session_eta_seconds
@@ -127,11 +128,6 @@ def _dataset_local_files_only(config: dict) -> bool:
     return bool(config.get("dataset_snapshot_path"))
 
 
-def _uses_mlx_training_backend() -> bool:
-    from core.training.training import should_use_mlx_training_backend
-    return should_use_mlx_training_backend()
-
-
 def _adapter_trains_embeddings(model) -> bool:
     """Whether a loaded adapter already trains embed_tokens or lm_head in full (#13140)."""
     for adapter in (getattr(model, "peft_config", None) or {}).values():
@@ -172,11 +168,9 @@ def _untrainable_model_format_error(config: dict) -> str | None:
         return "GGUF models are inference-only and cannot be trained."
     if model_format == "adapter":
         # LoRA / CPT may continue from a saved adapter; full finetune still cannot (#13140).
-        # The embedding, decision and MLX runners wrap a fresh adapter; only the CUDA trainer continues one.
+        # The embedding and decision runners wrap a fresh adapter, so they still need a base.
         if config.get("training_type") in ("LoRA/QLoRA", "Continued Pretraining") and not (
-            config.get("is_embedding", False)
-            or config.get("is_decision", False)
-            or _uses_mlx_training_backend()
+            config.get("is_embedding", False) or config.get("is_decision", False)
         ):
             from utils.paths import is_local_path
 
@@ -232,6 +226,38 @@ def _effective_training_load_in_4bit(
 ) -> bool:
     from .provenance import effective_training_load_in_4bit
     return effective_training_load_in_4bit(config, model_load_target, hf_token)
+
+
+def _training_weight_prefetch(config, trainer, hf_token, event_queue):
+    """Resolve only the ordinary SFT checkpoint; uncertain routes keep the existing sequential load."""
+    try:
+        from .model_weight_prefetch import ModelWeightPrefetch, prefetch_repo
+        from utils.hf_cache_settings import get_hf_cache_paths
+        from utils.hardware import dataset_map_num_proc
+
+        repo = prefetch_repo(
+            config,
+            trainer,
+            load_in_4bit = lambda: _effective_training_load_in_4bit(
+                config, _resolve_cached_model_load_name(config), hf_token
+            ),
+            capabilities = sys.modules.get("unsloth.device_type"),
+            offline = _model_offline_mode_enabled(),
+            formatting_can_fork = (
+                not config.get("dataset_streaming", False) and (dataset_map_num_proc() or 1) > 1
+            ),
+        )
+        if repo is not None:
+            return ModelWeightPrefetch(
+                repo,
+                token = hf_token,
+                cache_dir = get_hf_cache_paths().hub_cache,
+                emit = event_queue.put,
+                should_stop = lambda: trainer.should_stop,
+            )
+    except Exception as error:  # noqa: BLE001
+        logger.info("Skipping model checkpoint prefetch: %s", error)
+    return None
 
 
 def _drop_model_pin(config: dict) -> str:
@@ -579,6 +605,7 @@ def _load_hf_train_and_eval_datasets(
     from core.training.eval_dataset import (
         EVAL_SPLIT_CANDIDATES,
         MIN_EVAL_ROWS,
+        STREAMING_EVAL_MAX_SAMPLES,
         evaluation_enabled,
     )
 
@@ -601,13 +628,24 @@ def _load_hf_train_and_eval_datasets(
         else:
             logger.warning(message)
 
-    def load_remote(split: str):
+    def load_remote(split: str, streaming: bool = False):
         kwargs = {"split": split, "token": token}
         if subset:
             kwargs["name"] = subset
         if revision:
             kwargs["revision"] = revision
+        if streaming:
+            kwargs["streaming"] = True
         return load_dataset(hf_dataset, **kwargs)
+
+    if config.get("dataset_streaming"):
+        # As on CUDA: eval needs its own split, capped so each pass ends.
+        status_callback(f"Streaming dataset: {hf_dataset}")
+        dataset = load_remote(train_split, streaming = True)
+        eval_dataset = None
+        if eval_enabled and eval_split and eval_split != train_split:
+            eval_dataset = load_remote(eval_split, streaming = True).take(STREAMING_EVAL_MAX_SAMPLES)
+        return dataset, eval_dataset
 
     if _dataset_local_files_only(config):
         status_callback(f"Loading cached dataset: {hf_dataset}")
@@ -908,6 +946,58 @@ def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
 
 # On CPT, MLX trains these regardless of the layer-family flags.
 _CPT_TARGET_NAMES = frozenset({"embed_tokens", "lm_head"})
+_MLX_DEFAULT_LORA_TARGETS = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
+
+
+def _trains_embedding_modules(trainable_names, full_module_keys = ()) -> bool:
+    """Whether the embedding or output head trains in full, from a fresh CPT wrap or a continued adapter.
+
+    ``full_module_keys`` are the weights zoo resolved for embed_tokens / lm_head, which cover heads named otherwise.
+    """
+    for name in trainable_names:
+        if name in full_module_keys:
+            return True
+        parts = set(name.split("."))
+        if parts & _CPT_TARGET_NAMES and not parts & {"lora_a", "lora_b"}:
+            return True
+    return False
+
+
+def _mlx_quantized_cpt_modules(model, names) -> set:
+    """The requested embed_tokens / lm_head this load quantized (a 4-bit checkpoint or load), which zoo cannot
+    train in full. A tied head is the embedding, so it goes with it."""
+    quantized, found = set(), set()
+    for path, module in model.named_modules():
+        leaf = path.rsplit(".", 1)[-1]
+        if leaf in names:
+            found.add(leaf)
+            if any(hasattr(child, "scales") for _, child in module.named_modules()):
+                quantized.add(leaf)
+    if "embed_tokens" in quantized and "lm_head" in names and "lm_head" not in found:
+        quantized.add("lm_head")
+    return quantized
+
+
+def _mlx_cpt_embedding_learning_rate(requested, lr_value, *, trains_embeddings):
+    """The CUDA CPT rule: lr/10 unless set, and dropped when no embedding module trains."""
+    if not trains_embeddings:
+        if requested is not None:
+            logger.warning(
+                "CPT: embedding_learning_rate was provided but neither embed_tokens "
+                "nor lm_head is being trained; ignoring the override."
+            )
+        return None
+    if requested is None:
+        return lr_value / 10.0
+    return float(requested)
 
 
 def _names_a_cpt_target(target_modules) -> bool:
@@ -1095,9 +1185,9 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
         return None
     return {
         "error": (
-            f"Model '{decision.model_name}' ships custom code flagged as "
-            f"{decision.max_severity} by the security scan. Review it and "
-            f"re-run with approval to proceed.\n\n{decision.findings_summary}"
+            f"{decision.blocked_message()}\n\n{decision.findings_summary}"
+            if decision.max_severity
+            else decision.blocked_message()
         ),
         "error_kind": "remote_code_blocked",
         "remote_code": decision.response_payload(),
@@ -1254,9 +1344,7 @@ _IMPORT_PROBE_TIMEOUT = 300
 
 
 def _is_importable_isolated(import_name: str) -> bool:
-    """Probe the import in a child process. A wrong-arch wheel can abort or segfault in its
-    initialiser instead of raising, which would kill this worker rather than fall back. A child
-    turns that into a return code (negative = fatal signal)."""
+    """Probe the import in a child: a wrong-arch wheel can abort or segfault, killing this worker."""
     return _import_probe_isolated(
         import_name, "import importlib, sys; importlib.import_module(sys.argv[1])"
     )
@@ -1339,14 +1427,8 @@ def _install_package_wheel_first(
     extension: str | None = None,
     **kwargs: Any,
 ) -> bool:
-    """Install a fast-path package, wheel first, and never leave an unusable one behind. The two
-    "touch nothing" guards run here, outside the cleanup: an already-working package returns
-    before any subprocess, and offline changes nothing. Everything after them is an install
-    attempt, so ANY unsuccessful exit -- timeout, failed install, bad import -- discards what is
-    left rather than leaving metadata the in-process import would pick up. Enforced here rather
-    than at each return because four separate exits have now been found that forgot to clean up.
-    With *extension*, a copy without that compiled module (the extension-free mamba_ssm wheel) is
-    replaced rather than accepted."""
+    """Install a wheel-first fast-path package; any unsuccessful exit discards what it left; offline
+    changes nothing; with extension, an extension-free copy is replaced, not accepted."""
     from utils.ssm_runtime import _unblock_import, forget_imported_modules
 
     _unblock_import(import_name)  # an earlier in-process block; this call probes afresh
@@ -1359,9 +1441,8 @@ def _install_package_wheel_first(
         return True
 
     def drop_extension_free_copy() -> None:
-        # The CUDA route cannot use an extension-free copy: left in place, transformers takes
-        # mamba_ssm's fast path and fails in selective_scan_fn. Removing it is local (allowed
-        # offline) and runs under the same per-env lock as an install.
+        # CUDA route cannot keep an extension-free mamba_ssm (transformers takes its fast path and
+        # fails); removal is allowed offline and runs under the same per-env lock as installs.
         if extension is None or not _is_importable(import_name):
             return
         from utils.kernel_install import OPTIONAL_KERNEL_LOCK_WAIT, kernel_install_lock
@@ -1411,9 +1492,8 @@ def _install_package_wheel_first(
         kernel_install_lock,
     )
 
-    # One install per package and environment at a time, across Studio workers: precheck, install,
-    # verify and cleanup are one transaction, or a failed peer could remove what another verified.
-    # An optional acceleration does not hold a run for a peer's half-hour build.
+    # One install per package and env across workers: precheck, install, verify and cleanup are one
+    # transaction; an optional acceleration does not hold a run for a peer's build.
     with kernel_install_lock(
         import_name,
         on_wait = lambda: _send_status(
@@ -1744,19 +1824,15 @@ def _ensure_mamba_ssm(
     essential: bool | None = None,
     triton_only: bool = False,
 ) -> bool | None:
-    # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
-    # `essential`: Nemotron-H, Falcon-H1, Granite-4.0-H, which may build it from source. Training
-    # stays best effort as at 9f5b13325: their native transformers path can run without it, so a
-    # missing mamba-ssm is left to the model load. The others have a torch path and get mamba-ssm
-    # only as a prebuilt wheel where unsloth_zoo keeps its fast path on, never as a source build.
+    # Only Nemotron-H, Falcon-H1, Granite-4.0-H may build mamba-ssm from source, best effort: a
+    # missing one is left to the model load; others get prebuilt wheels only.
     if required is None:
         required = _model_is_ssm(model_name)
     if not required:
         return
     if essential is None:
-        # Unspecified (the worker passes the config's answer): only the families named for it
-        # (Nemotron-H, Falcon-H1, Granite-4.0-H) may build from source, never Mamba / Mamba2 /
-        # Jamba / Zamba / Bamba, which a caller leaving it out must not turn into a source build.
+        # Unspecified: only Nemotron-H, Falcon-H1 and Granite-4.0-H may build from source, never
+        # other SSMs.
         from utils.ssm_runtime import model_requires_mamba_ssm
         essential = model_requires_mamba_ssm(model_name)
 
@@ -1797,9 +1873,7 @@ def _ensure_mamba_ssm(
     )
 
 
-# Integrated-only Radeon names for the other APU targets, as whole tokens (a substring would read "RX 7600M" as "600M"):
-# 820M Krackan Point 2 (gfx1153), 8040S Strix Halo (gfx1151), 780M / 760M / 740M Phoenix / Hawk Point (gfx1103),
-# 680M / 660M Rembrandt (gfx1035), 610M Raphael / Dragon Range / Mendocino (gfx1036 / gfx1037).
+# Integrated-only Radeon names match as whole tokens (a substring reads RX 7600M as 600M).
 _ROCM_APU_NAME_RE = re.compile(r"(?<![\w-])(?:820m|8040s|780m|760m|740m|680m|660m|610m)(?!\w)")
 
 
@@ -2078,6 +2152,38 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
 
 
 _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
+
+
+def _install_metadata_scan_cache() -> Any:
+    """Share one packages_distributions() scan between transformers and TRL (unsloth's own window
+    opens after this worker's first transformers import). Loaded by path: the package would run
+    unsloth's whole init. None when the helper is missing (older unsloth) or fails."""
+    try:
+        spec = importlib.util.find_spec("unsloth")
+        for root in list(getattr(spec, "submodule_search_locations", None) or ()):
+            path = os.path.join(root, "_import_metadata_cache.py")
+            if not os.path.isfile(path):
+                continue
+            helper_spec = importlib.util.spec_from_file_location(
+                "_unsloth_studio_import_metadata_cache", path
+            )
+            helper = importlib.util.module_from_spec(helper_spec)
+            helper_spec.loader.exec_module(helper)
+            token = helper.install()
+            return None if token is None else (helper, token)
+    except Exception:
+        pass
+    return None
+
+
+def _uninstall_metadata_scan_cache(installed: Any) -> None:
+    if installed is None:
+        return
+    helper, token = installed
+    try:
+        helper.uninstall(token)
+    except Exception:
+        pass
 
 
 def _guard_fla_tilelang() -> None:
@@ -2433,6 +2539,82 @@ def _resize_mlx_vlm_images(
     return _resize_mlx_vlm_image(value, resize, image_layout = image_layout)
 
 
+_MLX_VIDEO_UNSUPPORTED = (
+    "Training on video is not supported on Apple Silicon (MLX) yet. "
+    "Train this dataset on an NVIDIA or AMD GPU, or drop the video column."
+)
+
+
+_RESOLVE_IMAGE_COLUMN = object()
+
+
+def _mlx_audio_rows(
+    dataset,
+    processor,
+    custom_format_mapping = None,
+    image_col = _RESOLVE_IMAGE_COLUMN,
+    warn = None,
+) -> tuple:
+    """The CUDA transcription rows, with each clip left decoded so zoo can check its rate, and
+    the row's images (a mixed audio + image dataset) beside them. Returns (rows, image column);
+    an eval split takes the train split's image column, None for none."""
+    from datasets import Audio
+    from unsloth_zoo.mlx.utils import audio_extractor_sampling_rate
+
+    from utils.datasets.audio_decode import ensure_audio_decoding
+    from utils.datasets.audio_rows import (
+        audio_transcription_messages,
+        prepare_audio_vlm_image_column,
+        resolve_audio_columns,
+        resolve_audio_vlm_image_column,
+    )
+    from utils.datasets.cells import cell_text
+
+    if not ensure_audio_decoding():
+        raise RuntimeError(
+            "No audio decoder is available: install the audio runtime (librosa and soundfile)."
+        )
+    columns = resolve_audio_columns(dataset, custom_format_mapping)
+    audio_col, text_col = columns["audio_col"], columns["text_col"]
+    if not audio_col or not text_col:
+        raise ValueError(
+            f"Audio dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
+        )
+    train_split = image_col is _RESOLVE_IMAGE_COLUMN
+    if train_split:
+        image_col = resolve_audio_vlm_image_column(
+            dataset, custom_format_mapping, audio_col, text_col, columns["speaker_col"]
+        )
+    elif image_col not in dataset.column_names:
+        image_col = None
+    rate = audio_extractor_sampling_rate(processor) or 16000
+    dataset = dataset.cast_column(audio_col, Audio(sampling_rate = rate))
+    if image_col:
+        dataset = prepare_audio_vlm_image_column(dataset, image_col)
+    rows = []
+    blank = 0
+    for row in dataset:
+        text = cell_text(row[text_col])
+        if not text.strip():
+            blank += 1
+            continue
+        images = row[image_col] if image_col else None
+        if not isinstance(images, list):
+            images = [] if images is None else [images]
+        images = [image for image in images if image is not None]
+        item = {"messages": audio_transcription_messages(row[audio_col], text, len(images))}
+        if images:
+            item["images"] = images
+        rows.append(item)
+    if not rows and train_split:
+        raise ValueError(f"Every transcript in the '{text_col}' column is blank.")
+    if blank:
+        (warn or logger.warning)(
+            f"Skipped {blank:,} of {blank + len(rows):,} audio rows with a blank transcript."
+        )
+    return rows, image_col
+
+
 def _adapt_for_mlx_vlm(
     items,
     resize = None,
@@ -2448,6 +2630,8 @@ def _adapt_for_mlx_vlm(
             if isinstance(content, list):
                 new_content = []
                 for part in content:
+                    if isinstance(part, dict) and part.get("type") == "video":
+                        raise ValueError(_MLX_VIDEO_UNSUPPORTED)
                     if isinstance(part, dict) and part.get("type") == "image":
                         img = part.get("image")
                         if img is not None:
@@ -2703,6 +2887,15 @@ def _resolve_mlx_training_steps(
     )
 
 
+def _slice_streaming_dataset(dataset, slice_start, slice_end):
+    """A stream slices lazily, as on CUDA, and has no length to bound."""
+    if slice_start:
+        dataset = dataset.skip(slice_start)
+    if slice_end is not None:
+        dataset = dataset.take(max(0, slice_end - (slice_start or 0) + 1))
+    return dataset
+
+
 def _configure_mlx_training_schedule(
     trainer,
     requested_max_steps,
@@ -2723,9 +2916,9 @@ def _configure_mlx_training_schedule(
     )
     trainer.args.max_steps = max_steps
     if warmup_ratio is not None:
-        trainer.args.warmup_steps = int(round(warmup_ratio * max_steps))
+        trainer.args.warmup_steps = math.ceil(warmup_ratio * max_steps)
     if eval_steps_ratio is not None:
-        trainer.args.eval_steps = max(1, int(eval_steps_ratio * max_steps))
+        trainer.args.eval_steps = max(1, math.ceil(eval_steps_ratio * max_steps))
     return max_steps, int(trainer.args.eval_steps)
 
 
@@ -2937,9 +3130,7 @@ def _resolve_mlx_max_grad_norm(value):
 
 
 def _run_mlx_training(event_queue, stop_queue, config):
-    """Self-contained MLX training path for Apple Silicon. Uses unsloth_zoo's MLXTrainer directly
-    (no torch/SFTTrainer). Mirrors the event_queue protocol so the parent process pump works
-    unchanged."""
+    """Apple Silicon MLX path via unsloth_zoo's MLXTrainer, no torch; same event_queue protocol."""
     import time
     import math
     from pathlib import Path
@@ -2961,6 +3152,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _send("status", status_message = "Loading MLX libraries...")
 
     import mlx.core as mx
+    from mlx.utils import tree_flatten
 
     try:
         from unsloth_zoo.mlx.loader import FastMLXModel
@@ -2969,6 +3161,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             MLXTrainingConfig,
             train_on_responses_only,
         )
+        from unsloth_zoo.mlx.utils import iter_mlx_lora_modules
     except ImportError as e:
         raise ImportError(
             "Unsloth: MLX training requires unsloth-zoo with the MLX modules "
@@ -3002,10 +3195,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
-    if config.get("training_type") == "Continued Pretraining":
-        message = "Continued Pretraining is not supported for MLX training yet."
-        _send("error", error = message)
-        raise NotImplementedError(message)
     # Decided before the model loads, so version skew does not cost a download.
     try:
         mlx_dora_kwargs = _mlx_dora_peft_kwargs(config, FastMLXModel.get_peft_model)
@@ -3017,14 +3206,20 @@ def _run_mlx_training(event_queue, stop_queue, config):
     lr_scheduler_type = _normalize_mlx_studio_scheduler(config.get("lr_scheduler_type", "linear"))
 
     # Force text-only for non-image datasets even on vision-capable models (e.g. Qwen3.5-VL on alpaca).
-    _send("status", status_message = f"Loading {model_name}...")
     # Forward resume_from_checkpoint to MLXTrainer.train(); else Resume silently restarts from step 0.
     resume_from_checkpoint = config.get("resume_from_checkpoint") or None
-    is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
-    use_lora = training_type == "LoRA/QLoRA"
+    is_cpt = training_type == "Continued Pretraining"
+    # As on CUDA, CPT trains on raw text, so an image dataset loads and formats as text.
+    is_dataset_image = bool(config.get("is_dataset_image", False)) and not is_cpt
+    # CUDA takes its raw-text path (CPT or format "raw") before the audio one.
+    is_dataset_audio = bool(config.get("is_dataset_audio", False)) and not (
+        is_cpt or config.get("format_type") == "raw"
+    )
+    use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
     # Before the download/load below: unlike the CUDA path, this needs none of the model.
-    if use_lora:
+    # A continued adapter keeps its own targets, and CPT builds its adapter from target_modules alone.
+    if use_lora and not is_cpt and config.get("model_format") != "adapter":
         _check_mlx_finetune_targets(config)
     # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
@@ -3040,12 +3235,85 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("error", **security_error)
         return
 
+    # Fetch the dataset before the model so a dataset error does not wait on the model download.
+    _send("status", status_message = "Loading dataset...")
+    if config.get("is_dataset_audio"):
+        # Raw-text runs still read rows carrying the Audio column, so install the decoder for them too.
+        from utils.datasets.audio_decode import ensure_audio_decoding
+        ensure_audio_decoding()
+    hf_dataset = config.get("hf_dataset", "")
+    dataset_streaming = bool(hf_dataset and config.get("dataset_streaming"))
+    config["_dataset_loaded_from_exact_snapshot"] = False
+
+    def _load_local(file_paths):
+        from utils.datasets.saved import load_saved_dataset
+
+        if len(file_paths) == 1:
+            saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
+            if saved is not None:
+                return saved
+        all_files = _resolve_mlx_local_dataset_files(file_paths)
+        if not all_files:
+            raise ValueError("No local dataset files found")
+        from utils.datasets.cells import csv_as_text_kwargs
+
+        loader = _mlx_local_dataset_loader_for_files(all_files)
+        return load_dataset(
+            loader,
+            data_files = all_files,
+            split = "train",
+            **csv_as_text_kwargs(all_files),
+        )
+
+    eval_dataset = None
+    if hf_dataset:
+        dataset, eval_dataset = _load_hf_train_and_eval_datasets(
+            config,
+            hf_token,
+            load_dataset,
+            lambda message: _send("status", status_message = message),
+            lambda message: _send("warning", message = message),
+        )
+    elif config.get("local_datasets"):
+        dataset = _load_local(config["local_datasets"])
+    elif config.get("s3_config"):
+        from core.training.s3_dataset import (
+            S3DownloadCancelled,
+            prepare_s3_dataset_download,
+        )
+        _send("status", status_message = "Downloading dataset from S3...")
+        try:
+            s3_download = prepare_s3_dataset_download(
+                config["s3_config"],
+                cancel_callback = _is_stop_requested,
+            )
+            try:
+                dataset = _load_local(s3_download.files)
+            finally:
+                s3_download.cleanup()
+        except S3DownloadCancelled:
+            _send("complete", output_dir = None, status_message = "Training cancelled")
+            return
+    else:
+        raise ValueError("No dataset specified")
+
+    from core.training.eval_dataset import evaluation_enabled
+
+    eval_enabled = evaluation_enabled(config.get("eval_steps"))
+    if eval_enabled and not hf_dataset and config.get("local_eval_datasets"):
+        eval_dataset = _load_local(config["local_eval_datasets"])
+
+    if _is_stop_requested():
+        _send("complete", output_dir = None, status_message = "Training cancelled")
+        return
+
+    _send("status", status_message = f"Loading {model_name}...")
     try:
         model, tokenizer = FastMLXModel.from_pretrained(
             model_load_name,
             load_in_4bit = config.get("load_in_4bit", True),
             full_finetuning = not use_lora,
-            text_only = None if is_dataset_image else True,
+            text_only = None if is_dataset_image or is_dataset_audio else True,
             token = hf_token,
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
@@ -3080,7 +3348,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             model_load_name,
             load_in_4bit = config.get("load_in_4bit", True),
             full_finetuning = not use_lora,
-            text_only = None if is_dataset_image else True,
+            text_only = None if is_dataset_image or is_dataset_audio else True,
             token = hf_token,
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
@@ -3101,8 +3369,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
 
     loaded_model_for_provenance = model
-    is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
+    is_vlm = bool((is_dataset_image or is_dataset_audio) and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
+    if is_dataset_audio and not is_vlm:
+        # zoo trains audio only as input to an audio-capable vision-language model.
+        raise ValueError(
+            "Audio dataset training on Apple Silicon needs an audio-input model such as "
+            "Gemma 3n or Gemma 4; text-to-speech and speech-recognition checkpoints are not "
+            "supported on MLX yet."
+        )
     vision_image_size = config.get("vision_image_size")
     # DeepSeek OCR uses a coupled preset tuple; skip resize like the Torch path.
     _model_name_lower = str(config.get("model_name", "")).lower()
@@ -3130,7 +3405,42 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         use_grad_checkpoint = gc_setting
 
-    if use_lora:
+    # A reloaded adapter stays trainable; never stack a second one on it (#13140).
+    continues_adapter = use_lora and next(iter_mlx_lora_modules(model), None) is not None
+    if continues_adapter:
+        _send(
+            "status",
+            status_message = "Continuing from existing LoRA adapters (kept the adapter's settings)",
+        )
+    elif is_cpt:
+        _send("status", status_message = "Configuring LoRA for continued pretraining...")
+        # As on CUDA, embed_tokens / lm_head train as full modules rather than through LoRA.
+        user_modules = config.get("target_modules") or []
+        leaf = lambda module: str(module).rsplit(".", 1)[-1]  # noqa: E731
+        full_modules = {leaf(m) for m in user_modules} & _CPT_TARGET_NAMES
+        quantized = _mlx_quantized_cpt_modules(model, full_modules)
+        if quantized:
+            _send(
+                "warning",
+                message = (
+                    f"This 4-bit load quantized {' and '.join(sorted(quantized))}, which cannot "
+                    "train in full, so continued pretraining leaves them frozen. Load the 16-bit "
+                    "model to train them."
+                ),
+            )
+            full_modules -= quantized
+        peft_kwargs = dict(
+            r = config.get("lora_r", 128),
+            lora_alpha = config.get("lora_alpha", 32),
+            lora_dropout = config.get("lora_dropout", 0.0),
+            use_rslora = config.get("use_rslora", False),
+            random_state = lora_random_state,
+            target_modules = [m for m in user_modules if leaf(m) not in _CPT_TARGET_NAMES]
+            or list(_MLX_DEFAULT_LORA_TARGETS),
+            modules_to_save = sorted(full_modules) or None,
+            use_gradient_checkpointing = use_grad_checkpoint,
+        )
+    elif use_lora:
         _send("status", status_message = "Configuring LoRA adapters...")
         peft_kwargs = dict(
             r = config.get("lora_r", 16),
@@ -3139,23 +3449,16 @@ def _run_mlx_training(event_queue, stop_queue, config):
             use_rslora = config.get("use_rslora", False),
             init_lora_weights = config.get("init_lora_weights", True),
             random_state = lora_random_state,
-            target_modules = config.get("target_modules")
-            or [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
+            target_modules = config.get("target_modules") or list(_MLX_DEFAULT_LORA_TARGETS),
             use_gradient_checkpointing = use_grad_checkpoint,
         )
-        peft_kwargs.update(mlx_dora_kwargs)
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
         finetune_mlp = config.get("finetune_mlp_modules", True)
-        finetune_vision = config.get("finetune_vision_layers", False) if is_vlm else False
+        # Audio-only rows give vision LoRA no gradient, and zoo refuses Gemma 3n's linear-free vision tower.
+        finetune_vision = (
+            config.get("finetune_vision_layers", False) if is_vlm and is_dataset_image else False
+        )
 
         if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
@@ -3172,13 +3475,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         peft_kwargs["finetune_mlp_modules"] = finetune_mlp
         if is_vlm:
             peft_kwargs["finetune_vision_layers"] = finetune_vision
+    if use_lora and not continues_adapter:
+        peft_kwargs.update(mlx_dora_kwargs)
         model = FastMLXModel.get_peft_model(model, **peft_kwargs)
 
-    _send("status", status_message = "Loading dataset...")
-    hf_dataset = config.get("hf_dataset", "")
     slice_start = config.get("dataset_slice_start")
     slice_end = config.get("dataset_slice_end")
-    config["_dataset_loaded_from_exact_snapshot"] = False
 
     # max_steps runs cannot reach the whole dataset; bound rows before mapping.
     mlx_raw_text_mode = (
@@ -3205,13 +3507,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("status", status_message = f"Using {kept} of {total} rows (max_steps run)")
 
     def _slice(ds):
+        if dataset_streaming:
+            return _slice_streaming_dataset(ds, slice_start, slice_end)
         if slice_start is not None or slice_end is not None:
-            start = slice_start if slice_start is not None else 0
-            end = slice_end if slice_end is not None else len(ds) - 1
-            if end < start:
-                return ds.select([])
             # The user named these rows; the bound below defers to that.
-            return ds.select(range(start, min(end + 1, len(ds))))
+            return slice_dataset_rows(ds, slice_start, slice_end)[0]
         if mlx_split_names_rows:
             return ds
         return bound_dataset_rows(
@@ -3221,79 +3521,20 @@ def _run_mlx_training(event_queue, stop_queue, config):
             on_bound = _on_bound,
         )
 
-    def _load_local(file_paths):
-        from utils.datasets.saved import load_saved_dataset
+    dataset = _slice(dataset)
 
-        if len(file_paths) == 1:
-            saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
-            if saved is not None:
-                return saved
-        all_files = _resolve_mlx_local_dataset_files(file_paths)
-        if not all_files:
-            raise ValueError("No local dataset files found")
-        from utils.datasets.cells import csv_as_text_kwargs
-
-        loader = _mlx_local_dataset_loader_for_files(all_files)
-        return load_dataset(
-            loader,
-            data_files = all_files,
-            split = "train",
-            **csv_as_text_kwargs(all_files),
-        )
-
-    eval_dataset = None
-    if hf_dataset:
-        dataset, eval_dataset = _load_hf_train_and_eval_datasets(
-            config,
-            hf_token,
-            load_dataset,
-            lambda message: _send("status", status_message = message),
-            lambda message: _send("warning", message = message),
-        )
-        dataset = _slice(dataset)
-    elif config.get("local_datasets"):
-        dataset = _load_local(config["local_datasets"])
-        dataset = _slice(dataset)
-    elif config.get("s3_config"):
-        from core.training.s3_dataset import (
-            S3DownloadCancelled,
-            prepare_s3_dataset_download,
-        )
-
-        _send("status", status_message = "Downloading dataset from S3...")
-        try:
-            s3_download = prepare_s3_dataset_download(
-                config["s3_config"],
-                cancel_callback = _is_stop_requested,
-            )
-            try:
-                dataset = _load_local(s3_download.files)
-            finally:
-                s3_download.cleanup()
-        except S3DownloadCancelled:
-            _send("complete", output_dir = None, status_message = "Training cancelled")
-            return
-        dataset = _slice(dataset)
-    else:
-        raise ValueError("No dataset specified")
-
-    _emit_resource_provenance(
+    if not _emit_resource_provenance(
         event_queue,
         config,
         loaded_model_for_provenance,
         model_load_target = model_load_name,
         model_load_in_4bit = bool(config.get("load_in_4bit")),
         dataset_loaded_from_exact_snapshot = bool(config.get("_dataset_loaded_from_exact_snapshot")),
-    )
-
-    from core.training.eval_dataset import evaluation_enabled
-
-    eval_enabled = evaluation_enabled(config.get("eval_steps"))
-    if eval_enabled and not hf_dataset and config.get("local_eval_datasets"):
-        eval_dataset = _load_local(config["local_eval_datasets"])
+    ):
+        return
 
     # Reuse the GPU format pipeline for VLM (OCR/caption/llava/sharegpt+images) and text.
-    format_type = config.get("format_type", "")
+    format_type = "raw" if is_cpt else config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
     dataset_final_format = ""
     eval_final_format = ""
@@ -3302,7 +3543,45 @@ def _run_mlx_training(event_queue, stop_queue, config):
         def _fmt_progress(status_message = "", **_kw):
             _send("status", status_message = status_message)
 
-        if is_vlm:
+        if is_dataset_audio:
+            _send("status", status_message = "Formatting audio dataset...")
+            _warn = lambda message: _send("warning", message = message)
+            dataset, audio_image_col = _mlx_audio_rows(
+                dataset, tokenizer, custom_format_mapping, warn = _warn
+            )
+            if eval_dataset is not None:
+                eval_dataset, _ = _mlx_audio_rows(
+                    eval_dataset, tokenizer, custom_format_mapping, audio_image_col, warn = _warn
+                )
+                if not eval_dataset:
+                    _send(
+                        "warning",
+                        message = "The eval dataset is empty after preprocessing, so this run has no evaluation.",
+                    )
+                    eval_dataset = None
+                    eval_enabled = False
+            if audio_image_col:
+                image_layout = (
+                    _mlx_vlm_resized_image_layout(tokenizer)
+                    if vision_image_size is not None
+                    else None
+                )
+                dataset = _adapt_for_mlx_vlm(
+                    dataset, resize = vision_image_size, image_layout = image_layout
+                )
+                if eval_dataset is not None:
+                    eval_dataset = _adapt_for_mlx_vlm(
+                        eval_dataset, resize = vision_image_size, image_layout = image_layout
+                    )
+        elif is_vlm:
+            from utils.datasets.format_detection import detect_video_columns, video_sample
+
+            # Before formatting: conversion would fetch every Hub clip only to be refused.
+            first_row = next(iter(dataset), None)
+            if isinstance(first_row, dict) and detect_video_columns(
+                video_sample(dataset, first_row)
+            ):
+                raise ValueError(_MLX_VIDEO_UNSUPPORTED)
             _send("status", status_message = "Formatting VLM dataset...")
             vlm_info = format_and_template_dataset(
                 dataset,
@@ -3310,6 +3589,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 tokenizer = tokenizer,
                 is_vlm = True,
                 dataset_name = hf_dataset or "local",
+                dataset_revision = config.get("dataset_revision"),
                 custom_format_mapping = custom_format_mapping,
                 progress_callback = _fmt_progress,
             )
@@ -3334,6 +3614,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     tokenizer = tokenizer,
                     is_vlm = True,
                     dataset_name = hf_dataset or "local",
+                    dataset_revision = config.get("dataset_revision"),
                     custom_format_mapping = custom_format_mapping,
                 )
                 if ev_info.get("success"):
@@ -3454,7 +3735,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
     batch_size = config.get("batch_size", 4)
     grad_accum = config.get("gradient_accumulation_steps", 4)
 
-    lr_value = float(config.get("learning_rate", "2e-4"))
+    lr_value = float(config.get("learning_rate", "5e-5" if is_cpt else "2e-4"))
+    embedding_lr_value = (
+        _mlx_cpt_embedding_learning_rate(
+            config.get("embedding_learning_rate"),
+            lr_value,
+            trains_embeddings = _trains_embedding_modules(
+                (name for name, _ in tree_flatten(model.trainable_parameters())),
+                getattr(model, "_unsloth_cpt_full_module_weight_keys", None) or (),
+            ),
+        )
+        if is_cpt
+        else None
+    )
 
     # Warmup: prefer warmup_steps; fall back to warmup_ratio
     warmup_steps = config.get("warmup_steps")
@@ -3502,7 +3795,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
-    # `streaming` stays off: without a pass length zoo cannot end an epoch on an optimizer step or report a real epoch.
+    # A sized dataset stays eager: without a pass length zoo cannot end an epoch on an optimizer step.
     mlx_config_kwargs = dict(
         per_device_train_batch_size = batch_size,
         gradient_accumulation_steps = grad_accum,
@@ -3521,6 +3814,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         compile = True,
         gradient_checkpointing = use_grad_checkpoint,
         packing = bool(config.get("packing", False)),
+        streaming = dataset_streaming,
         output_dir = output_dir,
         save_steps = int(config.get("save_steps", 0) or 0),
         eval_steps = eval_steps_val,
@@ -3538,7 +3832,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             True if _raw_cast is None else bool(_raw_cast)
         )
     if "dataset_order" in _supported_fields:
-        mlx_config_kwargs["dataset_order"] = "torch_randperm"
+        # CUDA's trainer reads a stream in source order; a sized dataset gets its RandomSampler order.
+        mlx_config_kwargs["dataset_order"] = "sequential" if dataset_streaming else "torch_randperm"
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "report_grad_norm" in _supported_fields:
@@ -3555,6 +3850,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if patience and eval_dataset is not None and eval_steps_value > 0:
             mlx_config_kwargs["early_stopping_patience"] = patience
             mlx_config_kwargs["load_best_model_at_end"] = True
+    if embedding_lr_value is not None:
+        mlx_config_kwargs["embedding_learning_rate"] = embedding_lr_value
     if "append_eos" in _supported_fields:
         # Unsloth SFT formatting owns rendered examples; raw/CPT text still needs MLX to append EOS.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
@@ -3569,7 +3866,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     max_steps, eval_steps_val = _configure_mlx_training_schedule(
         trainer,
         requested_max_steps,
-        len(dataset),
+        None if dataset_streaming else len(dataset),
         batch_size,
         grad_accum,
         num_epochs,
@@ -3827,17 +4124,6 @@ def run_mlx_training_process(
         )
         return
 
-    if config.get("is_dataset_audio"):
-        event_queue.put(
-            {
-                "type": "error",
-                "error": "Audio dataset training is not yet supported on Apple Silicon.",
-                "stack": "",
-                "ts": time.time(),
-            }
-        )
-        return
-
     try:
         try:
             if config.get("is_decision"):
@@ -3848,7 +4134,6 @@ def run_mlx_training_process(
                 if security_error:
                     event_queue.put({"type": "error", **security_error, "ts": time.time()})
                 else:
-                    _download_decision_checkpoint(event_queue, config)
                     from core.training.decision_trainer import run_decision_training
                     run_decision_training(event_queue, stop_queue, config)
             else:
@@ -3867,12 +4152,17 @@ def run_mlx_training_process(
                 "ts": time.time(),
             }
         )
+    _end_abandoned_decision_download(event_queue)
+
+
+def _end_abandoned_decision_download(event_queue: Any) -> None:
+    trainer = sys.modules.get("core.training.decision_trainer")
+    if trainer is not None:
+        trainer.end_abandoned_download(event_queue)
 
 
 def _training_job_is_local(config) -> bool:
-    """True when neither the model nor the dataset needs the Hub, so the probe is wasted. Fail
-    closed: anything unresolvable counts as remote, since skipping a needed probe costs the retry
-    backoff the probe exists to avoid."""
+    """True when neither model nor dataset needs the Hub; unresolvable means remote (fail closed)."""
     try:
         from utils.paths import is_local_path
     except Exception:
@@ -3943,14 +4233,14 @@ def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
 
 
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    """Subprocess entrypoint. Fresh Python, no stale module state. ``event_queue`` carries
-    progress/status/error events to the parent, ``stop_queue`` carries stop commands from it, and
-    ``config`` is the training config dict."""
+    """Fresh subprocess entrypoint: events out on event_queue, stop commands in on stop_queue."""
     # Off on Linux: forked map() workers deadlock.
     os.environ["TOKENIZERS_PARALLELISM"] = (
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
+    # Until unsloth is imported below; transformers is first imported well before that.
+    metadata_scan_cache = _install_metadata_scan_cache()
 
     from utils.security.hub_data_files import install as guard_hub_data_files
     from utils.security.dataset_media import allow_dataset_repos, install as guard_dataset_media
@@ -4077,6 +4367,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
+    if _hw.trains_on_cpu(_hw.CHAT_ONLY_REASON):
+        # Studio's verdict wins over the inherited UNSLOTH_DISABLE_CPU_FALLBACK=1 and zoo's own CPU refusals.
+        os.environ["UNSLOTH_FORCE_CPU"] = "1"
     if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
         diffusion_error = _mlx_diffusion_lm_error(config, model_load_target)
         if diffusion_error:
@@ -4165,8 +4458,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             wants_causal_conv1d = kernels.causal_conv1d
             from utils.ssm_runtime import mamba2_runs_on_triton
 
-            # Mamba-2 families on a zoo with the Triton conv drop-ins: no causal-conv1d, and the
-            # extension-free mamba_ssm wheel.
+            # Mamba-2 on Triton drop-ins: no causal-conv1d, extension-free mamba_ssm wheel.
             triton_only = mamba2_runs_on_triton(kernels)
             if triton_only:
                 # The extension-free wheel first. Not published, refused or not importable: this
@@ -4628,6 +4920,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             }
         )
         return
+    finally:
+        _uninstall_metadata_scan_cache(metadata_scan_cache)
 
     if config.get("offload_layers"):
         from utils.models.diffusion_lm import diffusion_lm_profile_for_model
@@ -4647,8 +4941,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 }
             )
 
-    # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
-    # and two runs on one card can each take their share.
+    # Offload layers auto-size to allocator budget, so two runs on one card each take a share.
     # ── 2b. Training VRAM budget ──
     # Only "auto" sizes to a budget, and only LoRA runs outside decision / embedding offload.
     _wants_budget = bool(
@@ -4687,7 +4980,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     if config.get("is_decision", False):
         try:
-            _download_decision_checkpoint(event_queue, config)
             from core.training.decision_trainer import run_decision_training
             run_decision_training(event_queue, stop_queue, config)
         except Exception as exc:
@@ -4699,6 +4991,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "ts": time.time(),
                 }
             )
+        _end_abandoned_decision_download(event_queue)
         return
 
     if config.get("batch_members"):
@@ -4716,8 +5009,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         return
 
-    # Embedding models use a different pipeline (FastSentenceTransformer + SentenceTransformerTrainer +
-    # MultipleNegativesRankingLoss), so branch early.
+    # Embedding models branch early: FastSentenceTransformer plus MultipleNegativesRankingLoss.
     if config.get("is_embedding", False):
         try:
             _run_embedding_training(event_queue, stop_queue, config)
@@ -4880,7 +5172,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 return
 
         _send_status(event_queue, "Loading and formatting dataset...")
-        dataset, eval_dataset = _load_training_dataset()
+        from .model_weight_prefetch import prepare_dataset_with_prefetch
+
+        dataset, eval_dataset = prepare_dataset_with_prefetch(
+            _load_training_dataset,
+            _training_weight_prefetch(config, trainer, hf_token, event_queue),
+        )
 
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
@@ -5070,7 +5367,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
             return
 
-        _emit_resource_provenance(
+        if not _emit_resource_provenance(
             event_queue,
             config,
             trainer.model,
@@ -5079,7 +5376,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             dataset_loaded_from_exact_snapshot = bool(
                 getattr(trainer, "dataset_loaded_from_exact_snapshot", False)
             ),
-        )
+        ):
+            return
 
         if eval_dataset is not None:
             event_queue.put(
@@ -5211,8 +5509,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
-        # Pin the subset before any checkpoint lands here, so a resume reads it back rather than deriving it from a
-        # config the user may have edited in between.
+        # Pinned before any checkpoint, so resume reads it back rather than re-deriving it.
         if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
             # Not fatal, no fallback: the dataset is already bounded; a resume will read this run as unbounded.
             logger.warning(
@@ -5368,10 +5665,12 @@ def _emit_resource_provenance(
     model_load_target: str,
     model_load_in_4bit: bool,
     dataset_loaded_from_exact_snapshot: bool,
-) -> None:
+) -> bool:
+    """False, after reporting why, when a resumed run loaded a different base than it trained on."""
     from core.training.provenance import (
         build_worker_provenance_event,
         incomplete_worker_provenance_event,
+        resumed_model_mismatch,
     )
 
     try:
@@ -5386,7 +5685,15 @@ def _emit_resource_provenance(
         logger.warning("Could not attest training resource provenance", exc_info = True)
         event = incomplete_worker_provenance_event("provenance_attestation_failed")
     event["ts"] = time.time()
+    expected = config.get("resume_expected_model")
+    mismatch = resumed_model_mismatch(expected, event) if expected else None
+    if mismatch:
+        # Record only the dataset, so the next resume still checks this run's expected base.
+        event_queue.put({**event, "model": incomplete_worker_provenance_event()["model"]})
+        event_queue.put({"type": "error", "error": mismatch, "stack": "", "ts": time.time()})
+        return False
     event_queue.put(event)
+    return True
 
 
 def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
@@ -5399,8 +5706,7 @@ def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
 
 
 def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
-    """Write a full resume checkpoint for a stopped MLX run. Returns True when a checkpoint for the
-    current training step exists."""
+    """Writes a resume checkpoint for a stopped MLX run; True if the current step is covered."""
     step = int(getattr(trainer, "_global_step", 0) or 0)
     # A periodic save or a resumed run may already cover the current step.
     if _mlx_has_checkpoint_at_step(output_dir, step):
@@ -5505,6 +5811,9 @@ def _create_embedding_progress_callback(
     """TrainerCallback that reports embedding training progress to the parent. ``should_stop`` is
     polled in on_train_begin and on_step_end, so a stop signal arriving mid-run is seen."""
     from transformers import TrainerCallback
+    from core.training.startup_progress import TrainingStartupProgress
+
+    startup = TrainingStartupProgress()
 
     class _EmbeddingProgressCallback(TrainerCallback):
         _start_step = 0
@@ -5514,10 +5823,17 @@ def _create_embedding_progress_callback(
             self._start_step = state.global_step
             if state.global_step > 0:
                 self._training_start_time = time.time()
-            # Progress events carry an empty status, else the parent keeps showing "Starting...".
             if should_stop():
                 return
-            _send_status(event_queue, "Training in progress...")
+            _send_status(event_queue, startup.begin(args, state))
+
+        def on_step_begin(self, args, state, control, **kwargs):
+            if not should_stop() and (message := startup.step_begin()):
+                _send_status(event_queue, message)
+
+        def on_substep_end(self, args, state, control, **kwargs):
+            if not should_stop() and (message := startup.substep_end()):
+                _send_status(event_queue, message)
 
         def on_log(
             self,
@@ -5568,7 +5884,7 @@ def _create_embedding_progress_callback(
                     "grad_norm": logs.get("grad_norm"),
                     "num_tokens": getattr(state, "num_input_tokens_seen", None),
                     "eval_loss": logs.get("eval_loss"),
-                    "status_message": "",
+                    "status_message": "" if should_stop() else startup.log(logs) or "",
                     "ts": time.time(),
                 }
             )
@@ -5578,6 +5894,8 @@ def _create_embedding_progress_callback(
                 logger.info("Embedding training: stop at step %d", state.global_step)
                 control.should_training_stop = True
                 return control
+            if message := startup.step_end(state):
+                _send_status(event_queue, message)
 
     return _EmbeddingProgressCallback()
 
@@ -5880,9 +6198,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         slice_start = config.get("dataset_slice_start")
         slice_end = config.get("dataset_slice_end")
         if slice_start is not None or slice_end is not None:
-            start = slice_start if slice_start is not None else 0
-            end = slice_end if slice_end is not None else len(dataset)
-            dataset = dataset.select(range(start, min(end + 1, len(dataset))))
+            dataset = slice_dataset_rows(dataset, slice_start, slice_end)[0]
 
         if csv_text_columns:
             kept = dataset.filter(
@@ -5919,14 +6235,15 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
         return
 
-    _emit_resource_provenance(
+    if not _emit_resource_provenance(
         event_queue,
         config,
         loaded_model_for_provenance,
         model_load_target = model_load_name,
         model_load_in_4bit = False,
         dataset_loaded_from_exact_snapshot = bool(config.get("_dataset_loaded_from_exact_snapshot")),
-    )
+    ):
+        return
 
     loss = MultipleNegativesRankingLoss(model)
 

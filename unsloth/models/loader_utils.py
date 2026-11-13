@@ -20,7 +20,10 @@ import tempfile
 import types
 import shutil
 import contextlib
+import contextvars
+import copy
 import threading as _threading
+from time import monotonic as _time_monotonic
 import functools
 import inspect
 from typing import Union
@@ -201,14 +204,30 @@ def fsdp2_keeps_fused_lora():
     return fsdp2_requested()
 
 
+def _zoo_gathers_fsdp2_lora():
+    """unsloth_zoo hands vLLM whole adapters from FSDP2 DTensor shards (older ones pass the shards)."""
+    try:
+        from unsloth_zoo import vllm_utils
+    except Exception:
+        return False
+    return hasattr(vllm_utils, "_lora_state_dict")
+
+
 def raise_if_fast_inference_under_fsdp2(fast_inference):
-    """Unsupported combination: refuse it before vLLM loads instead of failing mid-run (unsloth#3551)."""
-    if fast_inference and fsdp2_requested():
-        raise NotImplementedError(
-            "Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\n"
-            "Load the model with `fast_inference = False` to train with FSDP2, "
-            "or launch without FSDP2 to use vLLM."
-        )
+    """Refuse vLLM under accelerate's FSDP2 early (unsloth#3551); native FSDP2 keeps it (one engine per rank)."""
+    if not fast_inference or not fsdp2_requested():
+        return
+    from ..fsdp2_launch import unsloth_fsdp2_native_requested
+
+    if unsloth_fsdp2_native_requested() and _zoo_gathers_fsdp2_lora():
+        return
+    raise NotImplementedError(
+        "Unsloth: `fast_inference = True` (vLLM) is not supported with accelerate's FSDP2, or with an "
+        "unsloth_zoo that cannot gather FSDP2 adapters for vLLM (update unsloth_zoo).\n"
+        "Load the model with `fast_inference = False` to train with FSDP2, launch with "
+        "`UNSLOTH_FSDP2=1 torchrun ...` (Unsloth's native FSDP2 keeps vLLM), "
+        "or launch without FSDP2 to use vLLM."
+    )
 
 
 def prepare_device_map():
@@ -601,6 +620,30 @@ def _single_device_index(device_map):
     return None
 
 
+def no_placement_matcher(model, names = None):
+    """Predicate: is this tensor name one of `model._no_placement_params`? transformers reads the names relative to a
+    `_no_split_modules` module: a bare name ("weight", DeepSeek-V4.1's engram table) matches only a direct tensor of
+    such a module (a suffix match would take every weight in the model); a dotted one (Qwen4Exp's
+    "ple.ple_embedding.ngram_embedding.weight") keeps the suffix match."""
+    names = list(getattr(model, "_no_placement_params", None) or [] if names is None else names)
+    dotted = [n for n in names if "." in n]
+    bare = {n for n in names if "." not in n}
+    roots = set()
+    if bare:
+        no_split = set(getattr(model, "_no_split_modules", None) or [])
+        roots = {
+            path for path, module in model.named_modules() if type(module).__name__ in no_split
+        }
+
+    def match(name):
+        if any(name == n or name.endswith("." + n) for n in dotted):
+            return True
+        owner, _, leaf = name.rpartition(".")
+        return leaf in bare and owner in roots
+
+    return match
+
+
 def no_placement_tensor_names(model):
     """Every tensor name under a module owning one of the model's `_no_placement_params`."""
     names = getattr(model, "_no_placement_params", None)
@@ -609,11 +652,8 @@ def no_placement_tensor_names(model):
     tensors = list(model.named_parameters(remove_duplicate = False)) + list(
         model.named_buffers(remove_duplicate = False)
     )
-    owners = {
-        name.rsplit(".", 1)[0]
-        for name, _ in tensors
-        if any(name == n or name.endswith("." + n) for n in names)
-    }
+    match = no_placement_matcher(model, names)
+    owners = {name.rsplit(".", 1)[0] for name, _ in tensors if match(name)}
     return {name for name, _ in tensors if any(name.startswith(o + ".") for o in owners)}
 
 
@@ -643,10 +683,11 @@ def exclude_no_placement_params(device_map, model_class, config):
             f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error})."
         )
         return device_map
+    match = no_placement_matcher(meta, names)
     matched = {
         name
         for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
-        if any(name == n or name.endswith("." + n) for n in names)
+        if match(name)
     }
     if not matched:
         return device_map
@@ -1638,7 +1679,6 @@ def _get_new_mapper():
                         table[ast.literal_eval(target.slice)] = ast.literal_eval(node.value)
                     except ValueError:
                         continue
-                pass
             elif isinstance(node, ast.Delete):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
@@ -1785,6 +1825,101 @@ def _prefer_legacy_lowercase_cache(
     return repo_id
 
 
+_LOAD_PROBE_MEMO = contextvars.ContextVar("_unsloth_load_probe_memo", default = None)
+
+
+def _load_probe_memo_scope(fn):
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        if _LOAD_PROBE_MEMO.get() is not None:
+            return fn(*args, **kwargs)
+        scope = _LOAD_PROBE_MEMO.set({})
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _LOAD_PROBE_MEMO.reset(scope)
+
+    return _wrapper
+
+
+# Failed fetches retry after a short pause, not per load: a firewall would cost each load the timeout.
+_NEW_MAPPER_TTL_S = 3600.0
+_NEW_MAPPER_RETRY_S = 300.0
+_NEW_MAPPER_CACHE = {"entry": None}  # (tables, fetched_at): one slot, never a torn pair
+
+
+def _new_mapper_tables():
+    memo = _LOAD_PROBE_MEMO.get()
+    if memo is not None and "new_mapper" in memo:
+        return tuple(dict(table) for table in memo["new_mapper"])
+    entry = _NEW_MAPPER_CACHE["entry"]
+    tables = None
+    if entry is not None:
+        cached, at = entry
+        age = _time_monotonic() - at
+        if 0 <= age < (_NEW_MAPPER_TTL_S if any(cached) else _NEW_MAPPER_RETRY_S):
+            tables = tuple(dict(table) for table in cached)
+    if tables is None:
+        # No lock around the fetch: a fork while another thread is fetching must not leave the child waiting.
+        tables = _get_new_mapper()
+        _NEW_MAPPER_CACHE["entry"] = (tuple(dict(table) for table in tables), _time_monotonic())
+    if memo is not None and any(tables):
+        memo["new_mapper"] = tuple(dict(table) for table in tables)
+    return tables
+
+
+def _copy_error(error):
+    try:
+        clone = copy.copy(error)
+    except Exception:
+        return None
+    if type(clone) is not type(error) or str(clone) != str(error):
+        return None
+    # copy.copy shares exception notes.
+    notes = getattr(error, "__notes__", None)
+    if isinstance(notes, list):
+        clone.__notes__ = list(notes)
+    clone.__cause__ = error.__cause__
+    clone.__context__ = error.__context__
+    clone.__suppress_context__ = error.__suppress_context__
+    clone.__traceback__ = None
+    return clone
+
+
+def _memo_config_probe(loader, model_name, **kwargs):
+    memo = _LOAD_PROBE_MEMO.get()
+    if memo is None or kwargs.get("trust_remote_code") or not isinstance(model_name, str):
+        return loader(model_name, **kwargs)
+    if kwargs.get("cache_dir", 0) is None:
+        kwargs.pop("cache_dir")
+    try:
+        key = (loader, model_name, tuple(sorted(kwargs.items())), _env_says_offline())
+        hash(key)
+    except TypeError:
+        return loader(model_name, **kwargs)
+    hit = memo.get(key)
+    if hit is not None:
+        result, error = hit
+        if error is not None:
+            raise _copy_error(error)
+        return copy.deepcopy(result)
+    try:
+        result = loader(model_name, **kwargs)
+    except ImportError:
+        raise
+    except Exception as error:
+        if not _is_offline_related_error(error):
+            stored = _copy_error(error)
+            if stored is not None and _copy_error(stored) is not None:
+                memo[key] = (None, stored)
+        raise
+    try:
+        memo[key] = (copy.deepcopy(result), None)
+    except Exception:
+        pass
+    return result
+
+
 def get_model_name(
     model_name,
     load_in_4bit = True,
@@ -1826,7 +1961,7 @@ def get_model_name(
             NEW_MAP_TO_UNSLOTH_16bit,
             NEW_FP8_BLOCK_MAPPER,
             NEW_FP8_ROW_MAPPER,
-        ) = _get_new_mapper()
+        ) = _new_mapper_tables()
         upgraded_model_name = _resolve_with_mappers(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
@@ -2032,9 +2167,7 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
 
 
 def _drop_fp8_dequantize_conversions(model):
-    """Forget the Fp8Dequantize load conversions of a dequantizing fp8 load. save_pretrained reverses
-    them into Fp8Quantize, writing fp8 weights under a config with no quantization_config, so a reload
-    reads the raw fp8 values as 16bit weights. Returns how many conversions changed."""
+    """Drop reverse FP8 conversions that would save unmarked FP8 weights as a 16-bit checkpoint."""
     conversions = getattr(model, "_weight_conversions", None)
     if not conversions:
         return 0
@@ -2048,9 +2181,12 @@ def _drop_fp8_dequantize_conversions(model):
         return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
 
     def _sources(patterns):
-        # The dequantizing copy anchors `.weight` sources with `$` and adds `.weight_scale_inv$` ones.
         patterns = [p[:-1] if p.endswith("$") else p for p in patterns or []]
-        return tuple(sorted(p for p in patterns if not p.endswith(".weight_scale_inv")))
+        return tuple(
+            sorted(
+                p for p in patterns if not p.endswith((".weight_scale_inv", ".activation_scale"))
+            )
+        )
 
     def _source_forms(conversion):
         return {
@@ -2078,7 +2214,6 @@ def _drop_fp8_dequantize_conversions(model):
 
     plain = None
     kept, changed = [], 0
-    # Converters the load left untouched stay as they are; a counterpart equal to one is not re-added.
     retained = {_signature(c) for c in conversions if not _has_dequant(c)}
     for conversion in conversions:
         operations = getattr(conversion, "operations", None) or []
@@ -2089,19 +2224,15 @@ def _drop_fp8_dequantize_conversions(model):
             # transformers dropped the fp8 config: 16bit weights, so no bitsandbytes stamp either.
             model._unsloth_fp8_dequantized = True
         if all(isinstance(op, Fp8Dequantize) for op in operations):
-            # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
             changed += 1
             continue
-        # A model converter (expert merge, ...) with the dequant prepended: keep its quantizer-free form.
         if plain is None:
             try:
                 from transformers.conversion_mapping import get_model_conversion_mapping
                 plain = get_model_conversion_mapping(model, None, None)
             except Exception:
                 plain = []
-        # A composite model scopes one converter per submodel; the dequantizing copy can lose its
-        # scope_prefix, so an unscoped conversion is replaced by every scoped counterpart with the same
-        # sources, targets and operations (another submodel's converter can share type and targets).
+        # Dequantization can lose scope_prefix; restore every matching scoped counterpart.
         scope = getattr(conversion, "scope_prefix", None)
         sources = _source_forms(conversion)
         matches = [
@@ -2283,6 +2414,50 @@ def _fp8_block_size_from_config(model):
     return [int(block[0]), int(block[1])]
 
 
+def backfill_fp8_modules_to_convert(
+    config,
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    subfolder = None,
+    cache_dir = None,
+    variant = None,
+):
+    """List per-tensor fp8 tables (`.weight_scale`) a config leaves out of `modules_to_convert` (Qwen3.8-Flash-Next-FP8)."""
+    quant = getattr(config, "quantization_config", None)
+    if (
+        not isinstance(quant, dict)
+        or quant.get("quant_method") != "fp8"
+        or quant.get("modules_to_convert")
+    ):
+        return None
+    try:
+        weight_map = _load_fp8_weight_map(
+            model_name,
+            local_files_only,
+            token,
+            revision,
+            subfolder,
+            cache_dir,
+            variant = variant,
+            index_only = True,  # runs before the guarded weight download: never fetch the weights here
+        )
+    except Exception:
+        return None
+    skip = set(quant.get("modules_to_not_convert") or [])
+    modules = {k[: -len(".weight_scale")] for k in weight_map or {} if k.endswith(".weight_scale")}
+    # Linear blocks carry weight_scale_inv; only embeddings match, and the quantizer converts nn.Embedding only.
+    # Keep the layer index: the quantizer matches by suffix, so a bare name would also convert another layer's dense table.
+    found = sorted({re.sub(r"^.*\.(?=layers\.\d+\.)", "", m) for m in modules - skip})
+    if found:
+        quant["modules_to_convert"] = found
+        print(
+            f"Unsloth: {model_name} ships fp8 scales for {found} without listing them in modules_to_convert; added."
+        )
+    return found or None
+
+
 def _load_fp8_weight_map(
     model_name,
     local_files_only,
@@ -2291,8 +2466,10 @@ def _load_fp8_weight_map(
     subfolder = None,
     cache_dir = None,
     variant = None,
+    index_only = False,
 ):
-    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`."""
+    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`.
+    `index_only` never downloads a remote single file just to list its keys."""
 
     def _local_path(filename):
         return (
@@ -2337,7 +2514,7 @@ def _load_fp8_weight_map(
     try:
         if is_local and os.path.exists(_local_path(single_file)):
             single_path = _local_path(single_file)
-        elif not is_local:
+        elif not is_local and not index_only:
             single_path = _remote_path(single_file)
         else:
             return None
@@ -3337,25 +3514,107 @@ def enable_composite_gradient_checkpointing(model, verbose = True):
     return True
 
 
+def _move_compressed_tensors_inputs(value, device):
+    if isinstance(value, torch.Tensor):
+        return value.to(device = device)
+    if isinstance(value, list):
+        return [_move_compressed_tensors_inputs(item, device) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_move_compressed_tensors_inputs(item, device) for item in value)
+    from dataclasses import fields, is_dataclass
+
+    if is_dataclass(value):
+        return type(value)(
+            **{
+                field.name: _move_compressed_tensors_inputs(getattr(value, field.name), device)
+                for field in fields(value)
+            }
+        )
+    if isinstance(value, dict):
+        return {key: _move_compressed_tensors_inputs(item, device) for key, item in value.items()}
+    return value
+
+
+def _align_compressed_tensors_inputs(module, args, kwargs):
+    reference = next((p for p in module._parameters.values() if p is not None), None)
+    if reference is None:
+        reference = next((b for b in module._buffers.values() if b is not None), None)
+    if reference is None:
+        reference = next(module.parameters(), None)
+    if reference is None:
+        reference = next(module.buffers(), None)
+    if reference is None:
+        return args, kwargs
+    if len(args) == 1 and not kwargs and isinstance(args[0], torch.Tensor):
+        if args[0].device == reference.device:
+            return None
+        return (args[0].to(device = reference.device),), kwargs
+    return _move_compressed_tensors_inputs((args, kwargs), reference.device)
+
+
+def _compressed_tensors_input_forward(original_forward, module):
+    from functools import wraps
+
+    mapping_name, tensor_name = next(
+        (
+            (mapping, name)
+            for mapping in ("_parameters", "_buffers")
+            for name, value in getattr(module, mapping).items()
+            if value is not None
+        ),
+        (None, None),
+    )
+
+    @wraps(original_forward)
+    def forward(module, *args, **kwargs):
+        if (
+            mapping_name is not None
+            and len(args) == 1
+            and not kwargs
+            and isinstance(args[0], torch.Tensor)
+        ):
+            reference = getattr(module, mapping_name).get(tensor_name)
+            if reference is not None:
+                value = args[0]
+                if value.device != reference.device:
+                    value = value.to(device = reference.device)
+                return original_forward(module, value)
+        aligned = _align_compressed_tensors_inputs(module, args, kwargs)
+        if aligned is not None:
+            args, kwargs = aligned
+        return original_forward(module, *args, **kwargs)
+
+    return forward
+
+
 def _remove_same_device_compressed_tensors_offload(model):
-    """Unwrap compressed-tensors >= 0.19 non-offloading OffloadCaches, which torch.compile cannot trace."""
     try:
         from compressed_tensors.offload.cache import OffloadCache
         from compressed_tensors.offload.module import remove_module_offload
     except Exception:
         return 0
-    removed = 0
+    same_device = []
+    onload_devices = set()
     for module in model.modules():
         cache = module._parameters
         if not isinstance(cache, OffloadCache):
             continue
         onload = getattr(cache, "onload_device", None)
         offload = getattr(cache, "offload_device", None)
+        if onload is not None:
+            onload_devices.add(torch.device(onload))
         if onload is None or offload is None or torch.device(onload) != torch.device(offload):
             continue
+        same_device.append(module)
+    split = len(onload_devices) > 1
+    for module in same_device:
         remove_module_offload(module)
-        removed += 1
-    return removed
+        if split:
+            # The original mover disables autograd and compares data pointers.
+            module.forward = _compressed_tensors_input_forward(
+                module.forward.__func__, module
+            ).__get__(module)
+    return len(same_device)
 
 
 def _decompress_compressed_tensors_model(model):
@@ -4177,13 +4436,14 @@ def _hub_live_commit(
 _ESCAPING_WEIGHTS_FILENAME = object()
 
 
-def _explicit_weights_filename(transformers_weights):
-    """File transformers loads instead of standard names; None if unused, sentinel if it escapes the model dir."""
+def _explicit_weights_filename(transformers_weights, model_dir = None):
+    """File transformers loads instead of standard names; None if unused, sentinel if it escapes the model dir.
+    `model_dir` is the real local dir (+ subfolder): transformers accepts an absolute name inside it."""
     if not isinstance(transformers_weights, str) or not transformers_weights.endswith(
         (".safetensors", ".safetensors.index.json")
     ):
         return None
-    base = os.path.abspath("model_dir")
+    base = os.path.abspath(model_dir or "model_dir")
     try:
         contained = (
             os.path.commonpath([base, os.path.abspath(os.path.join(base, transformers_weights))])
@@ -4209,7 +4469,10 @@ def _checkpoint_tensor_dtypes(
     file order, `variant`, `use_safetensors` and `transformers_weights`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
     if not isinstance(model_name, str) or not model_name:
         return None
-    explicit = _explicit_weights_filename(transformers_weights)
+    local_root = None
+    if os.path.isdir(model_name):
+        local_root = os.path.join(model_name, subfolder) if subfolder else model_name
+    explicit = _explicit_weights_filename(transformers_weights, local_root)
     if explicit is _ESCAPING_WEIGHTS_FILENAME:
         return None
     st_index, st_single = (
@@ -4712,12 +4975,14 @@ _LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
 _LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
 
 
-def _mark_loaded_revision(result, revision):
-    """Stamp the ref a tokenizer/processor was loaded at onto the returned objects."""
-    if revision is None:
-        return result
+def _mark_loaded_revision(
+    result,
+    revision,
+    cache_dir = None,
+    load_kwargs = None,
+):
+    from ..save import _capture_source_tokenizer_class
     for obj in result if isinstance(result, (tuple, list)) else (result,):
-        # Objects that reject new attributes (__slots__) are skipped.
         try:
             targets = (obj, getattr(obj, "tokenizer", None))
         except Exception:
@@ -4726,7 +4991,23 @@ def _mark_loaded_revision(result, revision):
             if target is None:
                 continue
             try:
-                setattr(target, _LOADED_REVISION_ATTR, str(revision))
+                if revision is not None:
+                    setattr(target, _LOADED_REVISION_ATTR, str(revision))
+                if cache_dir and not getattr(target, _LOADED_CACHE_DIR_ATTR, None):
+                    setattr(target, _LOADED_CACHE_DIR_ATTR, str(cache_dir))
+                source_tokenizer = getattr(target, "tokenizer", target)
+                context = load_kwargs or {}
+                _capture_source_tokenizer_class(
+                    target,
+                    source = getattr(source_tokenizer, "name_or_path", None)
+                    if load_kwargs is not None
+                    else None,
+                    cache_dir = _tokenizer_cache_dir(source_tokenizer),
+                    revision = _tokenizer_revision(source_tokenizer)
+                    or context.get("tokenizer_revision")
+                    or context.get("revision"),
+                    subfolder = context.get("subfolder") or "",
+                )
             except Exception:
                 pass
     return result
@@ -5050,14 +5331,21 @@ def _offline_aware_load(fn):
 
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
+        def finish(result):
+            return _mark_loaded_revision(
+                result, None, cache_dir = kwargs.get("cache_dir"), load_kwargs = kwargs
+            )
+
         if _get_effective_local_files_only(kwargs):
             kwargs["local_files_only"] = True
             with _force_hf_offline():
                 # Stamp inside the window: the env vars are restored on exit, so the request has to travel on the objects themselves to reach saving.
-                return _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
+                return finish(
+                    _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
+                )
         _pb_were_disabled = _progress_bars_were_disabled()
         try:
-            return fn(*args, **kwargs)
+            return finish(fn(*args, **kwargs))
         except Exception as e:
             # Skip if not network-related, or already retried by a nested decorator (else outer layers reload the whole model again).
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
@@ -5076,7 +5364,7 @@ def _offline_aware_load(fn):
         kwargs["local_files_only"] = True
         try:
             with _force_hf_offline():
-                return fn(*args, **kwargs)
+                return finish(fn(*args, **kwargs))
         except Exception as e:
             # A real retry failure (corrupt checkpoint, OOM) is news and goes out as itself; only the empty-cache artifact is worth replacing.
             if not _empty_cache_artifact(e):

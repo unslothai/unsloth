@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat history API routes backed by studio.db.
-
-SQLite-backed handlers are sync defs unless they also perform asynchronous cleanup; those mixed
-handlers explicitly send their database transaction through Starlette's threadpool.
-"""
+"""Chat history API; sync SQLite handlers, except mixed ones that use Starlette's threadpool."""
 
 import asyncio
+import json
 import os
 import re
 import sqlite3
@@ -113,6 +110,8 @@ def _reject_boolean(value: Any) -> Any:
 
 
 NotABoolean = Annotated[Optional[int], BeforeValidator(_reject_boolean)]
+# sqlite INTEGER is signed 64-bit: a wider value raises OverflowError (a 500) where it is bound.
+SqliteInt = Annotated[int, Field(ge = -(2**63), le = 2**63 - 1)]
 
 # llama.cpp spends 0xFFFFFFFF on its "draw one" sentinel, so a pin stops one below it.
 MAX_SAMPLING_SEED = 2**32 - 2
@@ -189,8 +188,8 @@ class ChatThread(BaseModel):
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: bool = False
-    createdAt: int
-    updatedAt: Optional[int] = None
+    createdAt: SqliteInt
+    updatedAt: Optional[SqliteInt] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
     forkedFromThreadId: Optional[str] = None
@@ -290,8 +289,8 @@ class ChatThreadPatch(BaseModel):
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: Optional[bool] = None
-    createdAt: Optional[int] = None
-    updatedAt: Optional[int] = None
+    createdAt: Optional[SqliteInt] = None
+    updatedAt: Optional[SqliteInt] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
     # Replaces the whole snapshot, except for anything the client could not read.
@@ -311,7 +310,7 @@ class ChatMessage(BaseModel):
     content: Any = Field(default_factory = list)
     attachments: Optional[Any] = None
     metadata: Optional[dict[str, Any]] = None
-    createdAt: int
+    createdAt: SqliteInt
 
 
 class ChatProject(BaseModel):
@@ -323,8 +322,8 @@ class ChatProject(BaseModel):
     # Read only: a saved record cannot set the folder.
     workingFolder: Optional[str] = None
     archived: bool = False
-    createdAt: int
-    updatedAt: int
+    createdAt: SqliteInt
+    updatedAt: SqliteInt
     lastActivityAt: Optional[int] = None
 
 
@@ -351,12 +350,20 @@ class ChatProjectPatch(BaseModel):
     name: Optional[str] = None
     instructions: Optional[str] = None
     archived: Optional[bool] = None
-    createdAt: Optional[int] = None
-    updatedAt: Optional[int] = None
+    createdAt: Optional[SqliteInt] = None
+    updatedAt: Optional[SqliteInt] = None
+
+
+# Advertised on the thread lists so the title repair skips fetching /openapi.json (older backends still need it).
+_THREAD_PATCH_GUARD_FIELDS = ("expectedTitle", "expectedOpeningMessageId")
+THREAD_PATCH_GUARDS = all(
+    name in ChatThreadPatch.model_fields for name in _THREAD_PATCH_GUARD_FIELDS
+)
 
 
 class ChatThreadListResponse(BaseModel):
     threads: list[ChatThread]
+    threadPatchGuards: bool = False
 
 
 class ChatProjectListResponse(BaseModel):
@@ -399,6 +406,7 @@ class ChatSidebarRowsResponse(BaseModel):
     nextCursor: Optional[str] = None
     hasMore: bool
     total: int
+    threadPatchGuards: bool = False
 
 
 class ChatSidebarThreadRowsResponse(BaseModel):
@@ -716,6 +724,7 @@ class ChatPinsMigrationRequest(BaseModel):
 
 class ChatMessagesBatchRequest(BaseModel):
     threadIds: list[str]
+    view: Literal["full", "search"] = "full"
 
 
 class ChatMessagesBatchResponse(BaseModel):
@@ -764,7 +773,10 @@ def list_threads(
         project_id = project_id,
         include_archived = include_archived,
     )
-    return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
+    return ChatThreadListResponse(
+        threads = [thread_from_row(t) for t in threads],
+        threadPatchGuards = THREAD_PATCH_GUARDS,
+    )
 
 
 @router.post(
@@ -790,7 +802,7 @@ def list_sidebar_rows(
         )
     except SidebarCursorError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    return ChatSidebarRowsResponse(**page)
+    return ChatSidebarRowsResponse(**page, threadPatchGuards = THREAD_PATCH_GUARDS)
 
 
 _SIDEBAR_THREAD_ROWS_MAX = 500
@@ -1036,11 +1048,8 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
 def _fork_document_cutoff(
     source_thread_id: str, branch_message_id: Optional[str], client_now_ms: int
 ) -> Optional[str]:
-    """Uploads made once the source moved past the fork point stay behind; None at the tip.
-
-    Message times come from the browser's clock and upload times from this server's, so the
-    cutoff is shifted by the skew the fork request itself shows (its browser ``createdAt``
-    against server now)."""
+    """Uploads made after the fork point stay behind (None at the tip); the cutoff is shifted by the
+    browser-to-server clock skew the fork request shows."""
     import time
     from datetime import datetime, timezone
 
@@ -1059,8 +1068,7 @@ def _copy_thread_rag_documents(
     *,
     created_before: Optional[str] = None,
 ) -> bool:
-    """Copy the source's uploads into the fork. False when the fork should warn that some were
-    left behind."""
+    """Copy the source's uploads into the fork; False if some were left behind, so warn."""
     try:
         from core.rag import conversation_archive
         from storage import rag_db
@@ -1088,9 +1096,7 @@ def _copy_thread_rag_documents(
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
-    """Drop each thread's sandbox off the event loop. Never raises. Returns how many went and which ids
-    still have files. The chat is the only way to those files, so a caller that never offered the
-    choice can offer it once it knows there was something to keep."""
+    """Remove sandboxes off the event loop, never raising; returns count and ids still holding files."""
     from starlette.concurrency import run_in_threadpool
 
     def _remove() -> "tuple[int, list[str]]":
@@ -1108,8 +1114,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             if get_chat_thread(thread_id) is not None:
                 continue
             _drop_file_history(thread_id)
-            # A fork clones the message content, cards and all, so the source
-            # chat's files are still on screen in a chat the user kept.
+            # A fork clones message cards, so the source's files still show in a kept chat.
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):
                 if session_sandbox_has_files(thread_id):
                     kept.append(thread_id)
@@ -1141,7 +1146,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
 @router.get("/attachments")
 def list_attachments(
     limit: Annotated[int, Query(ge = 1, le = 100)] = 50,
-    offset: Annotated[int, Query(ge = 0)] = 0,
+    offset: Annotated[int, Query(ge = 0, le = 2**63 - 1)] = 0,
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     """One bounded page of chat uploads for the settings Data tab."""
@@ -1150,9 +1155,8 @@ def list_attachments(
 
 
 def _decode_attachment_base64(payload: str) -> bytes:
-    """Strict base64 decode of a stored payload. Normalizes first: strips whitespace, fixes padding,
-    accepts the URL-safe alphabet. validate=False would silently drop bad characters and serve
-    corrupted bytes, so raise 422."""
+    """Strict base64 decode; validate=False would silently drop bad characters and serve corrupt
+    bytes, so raise 422 instead."""
     import base64
 
     # An imported file part can keep its data URL; base64 has no ':', so this never cuts a payload.
@@ -1678,16 +1682,171 @@ def get_thread_messages(thread_id: str, current_subject: str = Depends(get_curre
     )
 
 
+# Part types extractText (frontend use-chat-search-index.ts) reads; a frontend test guards drift.
+_SEARCH_PART_TYPES = frozenset(("text", "reasoning", "thinking", "tool-call", "source"))
+_PASTED_TEXT_PREFIX = "<pasted_text name="
+
+
+def _search_view_attachment_part(part: Any) -> bool:
+    """Keep what attachmentsPastedText reads; malformed parts stay so the index fails as before."""
+    if not isinstance(part, dict):
+        return True
+    if part.get("type") != "text" or "text" not in part:
+        return False
+    text = part["text"]
+    return not isinstance(text, str) or text.startswith(_PASTED_TEXT_PREFIX)
+
+
+# Mirrors searchableText: tool output keeps only text it would index, so images and widget seeds stay home.
+# ASCII: JavaScript's /i never folds a non-ASCII letter such as "ı" onto an ASCII one.
+_SEARCH_SKIPPED_KEY = re.compile(r"b64|base64|^(?:images?|audio|video)\Z", re.IGNORECASE | re.ASCII)
+_MCP_IMAGES_MARKER = "\n__MCP_IMAGES__:"
+_IMAGES_MARKER = "\n__IMAGES__:"
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise ValueError(name)
+
+
+def _split_mcp_images(text: str) -> str:
+    """splitMcpImages: only a valid image envelope after the last marker is cut."""
+    at = text.rfind(_MCP_IMAGES_MARKER)
+    if at == -1:
+        return text
+    try:
+        # parse_int: JSON.parse takes integers past Python's digit limit.
+        images = json.loads(
+            text[at + len(_MCP_IMAGES_MARKER) :],
+            parse_constant = _reject_json_constant,
+            parse_int = float,
+        )
+    except ValueError:
+        return text
+    valid = (
+        isinstance(images, list)
+        and len(images) > 0
+        and all(
+            isinstance(image, dict)
+            and isinstance(image.get("data"), str)
+            and isinstance(image.get("mimeType"), str)
+            for image in images
+        )
+    )
+    return text[:at] if valid else text
+
+
+# JavaScript's \s, which differs from Python's (no \x1c-\x1f or \x85, adds \ufeff).
+_JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_DATA_URL = re.compile(f"data:[^;,{_JS_SPACE}]+;base64,[A-Za-z0-9+/=]+")
+
+
+def _searchable_string(text: str) -> str:
+    """searchableText on a string, minus stripBase64Runs, which is far slower in Python."""
+    text = _split_mcp_images(text)
+    at = text.find(_IMAGES_MARKER)
+    if at != -1:
+        text = text[:at]
+    return _DATA_URL.sub(" ", text)
+
+
+def _search_view_string(text: str) -> str:
+    try:
+        cut = _searchable_string(text)
+        # Sent only when the browser would read it back unchanged, else the original.
+        stable = _searchable_string(cut) == cut
+    except RecursionError:
+        # JSON.parse may still read nesting this deep, so leave the string to the browser.
+        return text
+    return cut if stable else text
+
+
+def _search_view_value(
+    value: Any,
+    depth: int = 0,
+    tool_name: Any = None,
+) -> Any:
+    if isinstance(value, str):
+        return _search_view_string(value)
+    if value is None or depth > 4:
+        return None
+    if isinstance(value, list):
+        return [_search_view_value(v, depth + 1) for v in value]
+    if isinstance(value, dict):
+        ui = value.get("ui")
+        if (
+            depth == 0
+            and isinstance(tool_name, str)
+            and tool_name.startswith("mcp__")
+            and isinstance(value.get("text"), str)
+            and isinstance(ui, dict)
+            and isinstance(ui.get("resourceUri"), str)
+        ):
+            return {"text": _search_view_string(value["text"])}
+        return {
+            k: _search_view_value(v, depth + 1)
+            for k, v in value.items()
+            if not _SEARCH_SKIPPED_KEY.search(k)
+        }
+    return value
+
+
+def _search_view_tool_call(part: dict) -> dict:
+    out = {key: part[key] for key in ("type", "toolName", "provenance") if key in part}
+    if isinstance(part.get("argsText"), str):
+        out["argsText"] = _search_view_string(part["argsText"])
+    elif "args" in part:
+        out["args"] = _search_view_value(part["args"])
+    if "result" in part:
+        out["result"] = _search_view_value(part["result"], 0, part.get("toolName"))
+    return out
+
+
+def _search_view_message(message: dict) -> dict:
+    """What the search index reads of a message: no metadata, media or document bodies."""
+    out = {
+        key: message[key]
+        for key in ("id", "threadId", "parentId", "role", "createdAt")
+        if key in message
+    }
+    # Absent stays absent, so ChatMessage fills [] exactly as it does for the full view.
+    if "content" in message:
+        content = message["content"]
+        if isinstance(content, list):
+            content = [
+                _search_view_tool_call(part) if part["type"] == "tool-call" else part
+                for part in content
+                if isinstance(part, dict)
+                and isinstance(part.get("type"), str)
+                and part["type"] in _SEARCH_PART_TYPES
+            ]
+        out["content"] = content
+    attachments = message.get("attachments")
+    if isinstance(attachments, list):
+        kept = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict) or not isinstance(attachment.get("content"), list):
+                kept.append(attachment)
+                continue
+            parts = [part for part in attachment["content"] if _search_view_attachment_part(part)]
+            if parts:
+                kept.append({"content": parts})
+        attachments = kept
+    if attachments is not None:
+        out["attachments"] = attachments
+    return out
+
+
 @router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
 def batch_thread_messages(
     payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
     by_thread: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.threadIds}
-    for m in list_chat_messages_for_threads(payload.threadIds):
+    search_view = payload.view == "search"
+    for m in list_chat_messages_for_threads(payload.threadIds, include_metadata = not search_view):
         tid = m["threadId"]
         if tid in by_thread:
-            by_thread[tid].append(ChatMessage(**m))
+            by_thread[tid].append(ChatMessage(**(_search_view_message(m) if search_view else m)))
     return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
 
 
@@ -1981,7 +2140,7 @@ class ChatForkRequest(BaseModel):
     # an omitted message selects the tip within the fork transaction.
     messageId: Optional[str] = None
     newThreadId: str
-    createdAt: int
+    createdAt: SqliteInt
 
 
 class ChatForkResponse(BaseModel):

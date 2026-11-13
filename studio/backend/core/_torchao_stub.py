@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared Windows-ROCm import stubs.
-
-torchao (pulled in by transformers.quantizers) imports distributed_c10d.py
-unconditionally, which crashes on Windows ROCm because the RCCL backend
-(torch._C._distributed_c10d) is absent. Stubbing torchao short-circuits its
-import chain; _StubSubpackageFinder handles any depth of torchao.xxx.yyy.
-Worker subprocesses call install_torchao_windows_rocm_stub() before importing
-transformers / unsloth_zoo.
-
-xformers hits the same absent backend and takes diffusers with it, so the diffusion paths
-install both stubs before importing diffusers. They also hide an xformers built for a newer
-torch than the venv has, which fails the same import on any platform.
-"""
+"""Stubs torchao and xformers on Windows ROCm, which lack RCCL; install before transformers/diffusers."""
 
 from __future__ import annotations
 
@@ -135,8 +123,7 @@ def _version_is_rocm_tagged() -> Optional[bool]:
 
 
 def _hip_field_is_set() -> Optional[bool]:
-    """Whether torch/version.py's ``hip`` field names a ROCm version, None if unreadable.
-    find_spec resolves the path without executing torch."""
+    """Whether torch/version.py's hip field is set; None if unreadable. Never imports torch."""
     try:
         spec = importlib.util.find_spec("torch")
         origin = getattr(spec, "origin", None) if spec is not None else None
@@ -311,9 +298,8 @@ def _transformers_torchao_min() -> Optional[str]:
 
 
 def torchao_too_old_for_export() -> Optional[str]:
-    """The installed torchao version when the installed transformers' TorchAoConfig refuses it (below
-    0.15 on transformers 5.5, which then reports torchao as not installed at all), else None. Reads
-    metadata and source only: never imports torchao or transformers, so it is safe at server startup."""
+    """Installed torchao version if TorchAoConfig refuses it (below 0.15 on transformers 5.5), else
+    None; never imports torchao or transformers, so it is safe at startup."""
     try:
         version = importlib.metadata.version("torchao")
     except Exception:  # noqa: BLE001 -- absent or unreadable: nothing to name

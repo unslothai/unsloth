@@ -363,8 +363,8 @@ def _converter_dir(print_output = False) -> Path:
     tag = os.environ.get("UNSLOTH_LLAMA_CPP_CONVERTER_TAG", "").strip() or DECISION_LLAMA_CPP_TAG
     stage = None
     try:
-        from unsloth_zoo.llama_cpp import _stage_converter_sources
-        stage = _stage_converter_sources(tag)
+        from unsloth_zoo.llama_cpp import _fork_release_tag_for, _stage_converter_sources
+        stage = _stage_converter_sources(_fork_release_tag_for(tag))
     except Exception as error:
         if print_output:
             print(f"Unsloth: could not stage llama.cpp {tag} converter sources: {error}")
@@ -604,9 +604,7 @@ def export_decision_gguf(
     source_folder = None,
     print_output = False,
 ) -> dict:
-    """Converts a merged decision checkpoint (Clef or Laya layout) to GGUF in output_dir
-    (default <checkpoint_folder>/gguf): model-<QUANT>.gguf, mmproj-<QUANT>.gguf for a Clef
-    vision tower, and export.json, written last. Returns export.json's content."""
+    """Writes model-<QUANT>.gguf (and mmproj for vision), then export.json last; returns its content."""
     with _exit_on_sigterm():
         return _export_decision_gguf(
             checkpoint_folder, quantization_method, output_dir, source_folder, print_output

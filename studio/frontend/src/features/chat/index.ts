@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
+export { validateChatSearch, type ChatSearch } from "./chat-search";
+export {
+  loadChatPage,
+  loadedChatPage,
+  prefetchChatPage,
+} from "./load-chat-page";
 export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
   browseFolders,
@@ -41,6 +46,7 @@ export {
 export type {
   ApiMonitorEntry,
   BackendModelDetails,
+  EngramTableDetail,
   GgufVariantDetail,
   GgufVariantsResponse,
   InferenceStatusResponse,
@@ -67,11 +73,6 @@ export { requestReplyFinishedPermission } from "./utils/reply-finished-notificat
 export { forgetAgentsMd } from "./utils/agents-md";
 export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
-  hydrateModelDisclaimerPreference,
-  refreshModelDisclaimerPreference,
-  saveModelDisclaimerPreference,
-} from "./sync-model-disclaimer-preference";
-export {
   ChatComposerFocusableContext,
   pythonToolRunsInStudio,
   useChatActive,
@@ -92,13 +93,17 @@ export {
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export type { PlacementPool } from "./lib/partial-offload";
 export {
+  betweenToolRounds,
+  runningReplyTail,
   formatLiveDecode,
   formatPrefillDetails,
   formatPrefillTimeLeft,
   prefillPercent,
 } from "./lib/generation-progress";
 export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
+export { useThrottledLiveGeneration } from "./hooks/use-throttled-live-generation";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -418,6 +423,7 @@ export {
   OpenProjectFolderItem,
 } from "./components/open-chat-folder-item";
 export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
+export { ExportFormatItems } from "./components/export-format-items";
 export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
@@ -425,6 +431,7 @@ export { showForkCreatedToast, showForkFailedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { stopRecoveredRun } from "./utils/chat-generation-recovery";
 export { readIncompleteInfo } from "./utils/continuation";
+export { priorPassTiming } from "./utils/continued-timing";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
@@ -459,6 +466,8 @@ export {
   pastedTextPreview,
   shouldAttachPastedText,
 } from "./utils/pasted-text";
+export { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
+export { useBookmarkedTurnsStore } from "./stores/bookmarked-turns-store";
 export {
   type DocumentAnnotation,
   type DocumentAnnotations,
@@ -486,13 +495,15 @@ export {
   onChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
-export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  emitChatAttachmentDeleted,
+  prepareChatAttachmentDeletion,
+} from "./utils/chat-attachment-events";
 export { forkCountFor, subscribeForkCounts } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
   reasoningTailCapped,
-  reasoningTailFlexBox,
   resolveReasoningOpen,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
@@ -522,7 +533,11 @@ export {
 } from "./utils/export-chat-history";
 export {
   adoptLegacyDraft,
+  flushComposerDraft,
   latestDraft,
+  latestPasteDraft,
+  NEW_CHAT_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,
@@ -536,6 +551,12 @@ export {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
+export {
+  CONVERSATION_HTML_FORMAT,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_FORMAT,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html-format";
 export {
   COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
@@ -596,13 +617,16 @@ export {
 export { subscribeDictationLevel } from "./adapters/dictation-level";
 export {
   dictationFailed,
+  dictationProducedClip,
   dictationProducedTranscript,
 } from "./adapters/dictation-outcome";
 export {
   StudioDictationAdapter,
   cancelActiveStudioDictation,
   isStudioDictationAvailable,
+  micRecordsForModel,
   notifyStudioDictationUnavailable,
+  setMicAudioClipTarget,
 } from "./adapters/studio-dictation-adapter";
 export {
   StudioModelDictationAdapter,
@@ -647,10 +671,12 @@ export {
   effectiveSendShortcut,
   followUpSubmitIntent,
   imeKeydownBlocksComposerSubmit,
+  parkedSendSteer,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
+  type ParkedSendSteerState,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
 

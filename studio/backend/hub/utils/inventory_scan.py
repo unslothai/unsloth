@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Awaitable, Callable, Hashable, NamedTuple, Optional, TypeVar
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo, invalidate_scan_memos
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,7 @@ from hub.utils.hf_tokens import (
 from hub.utils.host_paths import scrub_paths, short_path_for_log
 from hub.utils.state_dir import RepoType
 
+from hub.utils import partial_verdict_cache
 from hub.utils.hf_cache_state import (
     has_incomplete_blobs,
     hf_cache_roots,
@@ -92,12 +94,23 @@ async def shared_scan(
     return await asyncio.shield(flight)
 
 
-def invalidate_hf_cache_scans() -> None:
+def invalidate_hf_cache_scans(*, sizes: bool = True) -> None:
+    """``sizes=False`` is for a Settings purge, which has already forgotten the caches it cleared."""
     global _hf_cache_scans_result, _hf_cache_scans_cached_at, _hf_cache_scans_epoch
     with _hf_cache_scans_lock:
         _hf_cache_scans_result = None
         _hf_cache_scans_cached_at = 0.0
         _hf_cache_scans_epoch += 1
+        invalidate_scan_memos()
+    partial_verdict_cache.invalidate()
+    # Settings may answer a slow cache from its last walk; a download or delete must not show the old size.
+    if sizes:
+        try:
+            from utils.cache_inventory import invalidate_cache_size
+            for key in ("hf_hub", "hf_xet", "hf_datasets", "hf_assets"):
+                invalidate_cache_size(key)
+        except Exception:  # noqa: BLE001 - the Settings sizes are best effort
+            pass
     try:
         from core.inference.audio_cpp_models import forget
     except Exception:  # noqa: BLE001 - no audio.cpp support, nothing memoized
@@ -398,6 +411,7 @@ def _with_repos_dropped_by_scan(
         return scan
 
 
+@in_scan_memo
 def _compute_all_hf_cache_scans() -> list:
     from huggingface_hub import HFCacheInfo, scan_cache_dir
 
@@ -736,12 +750,14 @@ _UNJUDGEABLE_FAMILY = object()
 def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     if snapshot_dir is None:
         return set()
-    # A load id can name the .gguf file itself, so resolve to its parent like the lister.
+    from core.inference.engram_tables import table_shard_skipped
     from hub.utils.gguf import _resolve_gguf_dir
 
+    # A load id can name the .gguf file itself, so resolve to its parent like the lister.
     snapshot_dir = _resolve_gguf_dir(snapshot_dir) or snapshot_dir
     # Keyed on quant, then on shard family (directory, prefix, total); one quant can cover several.
     split_groups: dict[str, dict[tuple[str, str, int], set[int]]] = {}
+    split_paths: dict[tuple[str, tuple[str, str, int], int], Path] = {}
     # Lister and loader both take the lexicographically first file, hence the sort. None = no total named; _UNJUDGEABLE_FAMILY = bad spec.
     selected: dict[str, object] = {}
     try:
@@ -792,13 +808,21 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         )
         # Record every shard: the rest of the selected family sorts after the one that selected it.
         split_groups.setdefault(quant, {}).setdefault(family, set()).add(index)
+        split_paths.setdefault((quant, family, index), path)
         selected.setdefault(quant, family)
     complete: set[str] = set()
     for quant, family in selected.items():
         if family is None:
             complete.add(quant)
         elif isinstance(family, tuple):
-            if _shard_family_is_whole(family, split_groups.get(quant, {}).get(family) or set()):
+            indices = split_groups.get(quant, {}).get(family) or set()
+            # Or a --ple download that left out the quant's own Engram table shard.
+            if _shard_family_is_whole(family, indices) or (
+                1 in indices
+                and table_shard_skipped(
+                    [split_paths[(quant, family, i)] for i in sorted(indices)], family[2]
+                )
+            ):
                 complete.add(quant)
     return complete
 
@@ -1387,6 +1411,56 @@ def _manifest_snapshot_dirs(
     return snapshots
 
 
+_COMPONENT_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf"})
+_SUPPORTING_COMPONENT_DIRS = frozenset(
+    {"text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "vae"}
+)
+
+
+def snapshot_is_encoder_companion(
+    repo_id: str, repo_cache_dir: Optional[Path], snapshot: Optional[Path]
+) -> bool:
+    """Whether *snapshot* holds only whole encoder or VAE files of a repo that hosts them for other models. Its transfer signals stay with :func:`is_snapshot_partial`; a dangling ref is an interrupted attempt, so it never qualifies."""
+    if snapshot is None or repo_cache_dir is None:
+        return False
+    try:
+        from hub.utils.companion_assets import hosted_supporting_names
+
+        hosted = hosted_supporting_names(repo_id)
+        if not hosted or snapshot_has_pipeline_index(snapshot):
+            return False
+        if _repo_has_a_dangling_ref(repo_cache_dir):
+            return False
+        root = Path(snapshot)
+        weights = [p for p in root.rglob("*") if p.suffix.lower() in _COMPONENT_WEIGHT_SUFFIXES]
+        if not weights:
+            return False
+        for weight in weights:
+            rel = weight.relative_to(root)
+            if (
+                rel.as_posix().lower() not in hosted
+                and rel.parts[0] not in _SUPPORTING_COMPONENT_DIRS
+            ):
+                return False
+            if not weight.is_file() or weight.stat().st_size == 0:
+                return False
+            match = _WEIGHT_SHARD_RE.search(weight.name)
+            if match:
+                index = weight.name[: match.start()] + weight.name[match.end() :] + ".index.json"
+                if not (weight.parent / index).is_file():
+                    return False
+                template = weight.name[: match.start(1)] + "{}" + weight.name[match.end(1) :]
+                for number in range(1, int(match.group(2)) + 1):
+                    sibling = weight.parent / template.format(
+                        str(number).zfill(len(match.group(1)))
+                    )
+                    if not sibling.is_file() or sibling.stat().st_size == 0:
+                        return False
+        return all(_read_index_shards(index) is not False for index in root.rglob("*.index.json"))
+    except (OSError, ValueError):
+        return False
+
+
 def is_snapshot_partial(
     repo_type: RepoType,
     repo_id: str,
@@ -1787,6 +1861,23 @@ def is_gguf_repo_partial(
         else:
             has_clean = True
     return has_broken and not has_clean
+
+
+def repo_listing_partial(
+    repo_id: str,
+    repo_cache_dir: Path,
+    *,
+    variant_state = None,
+) -> bool:
+    """``is_snapshot_partial`` or ``is_gguf_repo_partial``, reused while the repo and Hub state are unchanged."""
+
+    def compute() -> bool:
+        return is_snapshot_partial(
+            "model", repo_id, repo_cache_dir, variant_state = variant_state
+        ) or is_gguf_repo_partial(repo_id, repo_cache_dir, variant_state = variant_state)
+
+    key = ("listing", repo_id, variant_state is None, is_snapshot_partial, is_gguf_repo_partial)
+    return partial_verdict_cache.cached_verdict(key, repo_cache_dir, compute)
 
 
 def partial_transport_for(

@@ -26,6 +26,23 @@ H3_AUDIO_VAE = "vae/official/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
 H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 
+# diffusers' H3 grid of n points (terminal 0 included) runs n - 1 evaluations; SGLang/ComfyUI/sd.cpp run n. "0" = old grid.
+H3_STEP_EVALUATIONS_ENV = "UNSLOTH_H3_STEP_EVALUATIONS"
+
+
+def h3_step_evaluations_enabled() -> bool:
+    return os.environ.get(H3_STEP_EVALUATIONS_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def h3_num_inference_steps(steps: int) -> int:
+    return int(steps) + 1 if h3_step_evaluations_enabled() else int(steps)
+
+
 # Measured (Diffusers T2VA, component CPU offload, 960x544..1344x768, 124-345 frames); base is largest component plus overhead; margin = allocator variance.
 H3_DIFFUSERS_VRAM_BASE_GB = 68.5
 H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME = 0.08
@@ -46,8 +63,7 @@ H3_TRANSFORMER_PREQUANT_GB: dict[str, float] = {"int8": 20.3, "fp8": 20.3}
 
 
 def h3_transformer_resident_gb(scheme: Optional[str]) -> float:
-    """Resident decimal GB of the denoiser this load holds: the hosted pre-quantized size for an
-    ENGAGED scheme, else the released bfloat16 one."""
+    """Resident GB: the hosted pre-quantized size for an engaged scheme, else the bf16 size."""
     return H3_TRANSFORMER_PREQUANT_GB.get(scheme or "", H3_TRANSFORMER_BF16_GB)
 
 
@@ -98,18 +114,26 @@ def estimate_h3_diffusers_vram_gb(
             H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
         )
         activations = H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames
+        from .video_minimax_h3_sol_vae import sol_decode_need_gb
+
         return max(
             text_encoder + H3_DIFFUSERS_VRAM_OVERHEAD_GB,
             max(H3_TRANSFORMER_STREAMED_GB, H3_VAE_RESIDENT_GB)
             + H3_DIFFUSERS_VRAM_OVERHEAD_GB
-            + activations,
+            + max(activations, sol_decode_need_gb(width, height, num_frames)),
         )
     base = h3_diffusers_vram_base_gb(
         text_encoder_gb = text_encoder_gb,
         transformer_gb = transformer_gb,
         transformer_pinned = transformer_pinned,
     )
-    return base + (H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames)
+    from .video_minimax_h3_sol_vae import sol_decode_need_gb
+
+    # 0.0 unless UNSLOTH_H3_SOL_VAE=1: the Sol decode runs after the denoise, so it is a max, not a sum
+    return base + max(
+        H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames,
+        sol_decode_need_gb(width, height, num_frames),
+    )
 
 
 # Shipped values kept: offload tier at 132 GB VRAM; no measurement here justifies moving it.
@@ -605,7 +629,9 @@ def _fit_h3_video_frame(
 ) -> tuple[Any, tuple[int, int]]:
     from PIL import Image
 
-    image = frame.to_image().convert("RGB")
+    image = frame.to_image()
+    if image.mode != "RGB":  # PyAV already returns a fresh RGB image; convert only copies it
+        image = image.convert("RGB")
     if fitted_size is None:
         fitted_size = h3_reference_frame_size(*image.size)
     if image.size != fitted_size:
@@ -975,6 +1001,40 @@ class MiniMaxH3References:
 
 
 @dataclass(frozen = True)
+class DecodedReferenceAudios:
+    """Untrimmed ``decode_h3_reference_audio`` results for ``sources``, reused only for those exact inputs."""
+
+    sources: tuple = ()
+    decoded: tuple = ()
+
+    def for_inputs(self, audios: list) -> Optional[tuple]:
+        return self.decoded if tuple(audios) == self.sources else None
+
+
+@dataclass(frozen = True)
+class DecodedReferenceImages:
+    """One RGB image and its pre-EXIF dimensions per input slot."""
+
+    entries: tuple = ()
+
+    def pool(self) -> list:
+        return list(self.entries)
+
+
+def take_decoded_image(
+    pool: Optional[list], source: str, *, max_side: int, max_pixels: Optional[int]
+) -> Any:
+    from .diffusion import decode_b64_image, refuse_oversized_image
+    if pool:
+        for index, (known, size, image) in enumerate(pool):
+            if known is source or known == source:
+                del pool[index]
+                refuse_oversized_image(*size, max_side, max_pixels)
+                return image
+    return decode_b64_image(source, mode = "RGB", max_side = max_side, max_pixels = max_pixels)
+
+
+@dataclass(frozen = True)
 class MiniMaxH3StagedReferences:
     """``MiniMaxH3References`` written to disk the way sd-cli reads them back."""
 
@@ -985,6 +1045,46 @@ class MiniMaxH3StagedReferences:
     audios: tuple[str, ...] = ()
 
 
+# Pillow's zlib encoder releases the GIL, so a few threads write a reference video's PNGs in parallel.
+H3_REF_FRAME_WRITERS = 4
+
+
+def _write_h3_reference_frames(directory: Path, frames: Any) -> None:
+    """Write ``frames`` as 00000.png onward, encoding a repeated frame object (24 fps fill) once."""
+    import io
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Keyed by identity: ``frames`` holds every object, so no id is reused while this runs.
+    slots: dict[int, tuple[Any, list[Path]]] = {}
+    for frame_index, frame in enumerate(frames):
+        slots.setdefault(id(frame), (frame, []))[1].append(directory / f"{frame_index:05d}.png")
+
+    def write(slot: tuple[Any, list[Path]]) -> None:
+        frame, paths = slot
+        if len(paths) == 1:
+            frame.save(paths[0], format = "PNG", compress_level = 1)
+            return
+        buffer = io.BytesIO()
+        frame.save(buffer, format = "PNG", compress_level = 1)
+        data = buffer.getvalue()
+        for path in paths:
+            path.write_bytes(data)
+
+    work = list(slots.values())
+    workers = min(H3_REF_FRAME_WRITERS, len(work), os.cpu_count() or 1)
+    if workers <= 1:
+        for slot in work:
+            write(slot)
+        return
+    pool = ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "h3-ref-frames")
+    try:
+        futures = [pool.submit(write, slot) for slot in work]
+        for future in futures:
+            future.result()  # first failure in frame order, as the sequential loop raised
+    finally:
+        pool.shutdown(wait = True, cancel_futures = True)
+
+
 def stage_h3_references(
     references: MiniMaxH3References, scratch: Path
 ) -> MiniMaxH3StagedReferences:
@@ -992,7 +1092,8 @@ def stage_h3_references(
     images: list[str] = []
     for index, image in enumerate(references.images):
         path = scratch / f"ref-image-{index:02d}.png"
-        image.save(path, format = "PNG")
+        # Scratch files sd-cli decodes once: zlib level 1 is lossless and faster than Pillow's default.
+        image.save(path, format = "PNG", compress_level = 1)
         images.append(str(path))
 
     videos: list[str] = []
@@ -1001,8 +1102,7 @@ def stage_h3_references(
     for index, (frames, waveform, sample_rate) in enumerate(references.videos):
         directory = scratch / f"ref-video-{index:02d}"
         directory.mkdir()
-        for frame_index, frame in enumerate(frames):
-            frame.save(directory / f"{frame_index:05d}.png", format = "PNG")
+        _write_h3_reference_frames(directory, frames)
         videos.append(str(directory))
         if waveform is None:
             # Positional pairing cannot express "skip this one", so stop pairing here.
@@ -1307,8 +1407,7 @@ def amdgpu_gtt_reading(
 def amdgpu_vram_free_bytes(
     pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
 ) -> Optional[int]:
-    """Free VRAM of the amdgpu card at ``pci_slot``, or of the only amdgpu card when no slot is given. None when no
-    such single card reports both readings."""
+    """Free VRAM of the amdgpu card at pci_slot, or the sole one; None without both readings."""
     want = pci_slot.lower() if pci_slot else None
     found: list[int] = []
     for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_vram_total"):
@@ -2102,6 +2201,34 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
         target.unlink(missing_ok = True)
 
 
+def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:
+    """Frames of a VP8 track whose every packet is a shown key frame (sd.cpp's WebM), from headers; else None."""
+    if getattr(stream.codec_context, "name", None) != "vp8":
+        return None
+    count = 0
+    try:
+        for packet in container.demux(stream):
+            size = int(packet.size)
+            if size == 0:
+                continue
+            head = bytes(memoryview(packet)[:10])
+            if len(head) < 10:
+                return None
+            tag = head[0] | (head[1] << 8) | (head[2] << 16)
+            # RFC 6386 9.1: bit 0 = 0 key frame, bit 4 show_frame, bits 5-23 first partition size
+            if (
+                tag & 0x1
+                or not tag & 0x10
+                or head[3:6] != b"\x9d\x01\x2a"
+                or (tag >> 5) > size - 10
+            ):
+                return None
+            count += 1
+    except Exception:  # noqa: BLE001
+        return None
+    return count or None
+
+
 def inspect_video(path: Path) -> tuple[int, int, int, bool]:
     """Return width, height, decoded frame count, and audio presence."""
     import av
@@ -2112,9 +2239,11 @@ def inspect_video(path: Path) -> tuple[int, int, int, bool]:
         height = int(stream.codec_context.height)
         frames = int(stream.frames or 0)
         has_audio = bool(container.streams.audio)
-        if frames <= 0:
-            frames = sum(1 for _ in container.decode(video = 0))
-    return width, height, frames, has_audio
+        counted = _shown_vp8_key_frames(container, stream) if frames <= 0 else frames
+    if counted is None:
+        with av.open(str(path)) as container:
+            counted = sum(1 for _ in container.decode(video = 0))
+    return width, height, counted, has_audio
 
 
 def _full_scale_constant(samples: Any) -> Optional[float]:
@@ -2133,10 +2262,8 @@ def _full_scale_constant(samples: Any) -> Optional[float]:
 
 
 def h3_native_clip_is_nan_render(path: Path) -> bool:
-    """True when a clip is an sd.cpp NaN render: every frame one flat 0 or 255 AND a constant full-scale PCM soundtrack.
-
-    ggml's clamp maps NaN to 0 on CUDA and to the max on CPU. A flat frame alone is not enough (lossy encode flattens
-    near-black clips). A clip without audio, or one that cannot be read, is never flagged."""
+    """True for an sd.cpp NaN render: flat 0/255 frames AND constant full-scale PCM, since frames
+    alone false-flag lossy near-black clips; no audio or unreadable is never flagged"""
     import av
 
     with av.open(str(path)) as container:

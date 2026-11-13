@@ -23,6 +23,7 @@ const QUEUED_SETTING_KEYS = [
   "confirmToolCalls",
   "bypassPermissions",
   "permissionMode",
+  "chatFullAccessPreviousMode",
   "sandboxLevel",
   "webFetchToolsEnabled",
   "deepResearchEnabled",

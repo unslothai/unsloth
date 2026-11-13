@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a drafter costs the training coexistence guard.
-
-The guard admits an inference load only if it fits beside a running training
-job, so it has to price the drafter that load will actually make resident. It
-sees a repository listing, never a header, which is what makes this its own
-problem rather than a detail of discovery: the rules that decide WHICH sidecar
-lands cannot all be evaluated here, so the budget bounds them instead.
-"""
+"""Drafter cost for the training coexistence guard; sees only repo listings, so it bounds the sidecar."""
 
 from typing import Callable, Mapping
 

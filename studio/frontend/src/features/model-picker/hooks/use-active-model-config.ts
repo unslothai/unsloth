@@ -41,6 +41,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
   const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
+  const mlxAnePrefill = useChatRuntimeStore((s) => s.mlxAnePrefill);
+  const mlxFastVerify = useChatRuntimeStore((s) => s.mlxFastVerify);
   const mlxPleOffload = useChatRuntimeStore((s) => s.mlxPleOffload);
   const mlxExpertOffload = useChatRuntimeStore((s) => s.mlxExpertOffload);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
@@ -68,6 +70,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
+  const engramPrecision = useChatRuntimeStore((s) => s.engramPrecision);
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -101,6 +104,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   // Null off MLX, or the model compares unequal to its own defaults.
   const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
   const effectiveMlxInt8Prefill = isMlx && mlxInt8Prefill;
+  const effectiveMlxAnePrefill = isMlx && mlxAnePrefill;
+  const effectiveMlxFastVerify = isMlx && mlxFastVerify;
   const effectiveMlxPleOffload = isMlx ? (mlxPleOffload ?? null) : null;
   const effectiveMlxExpertOffload = isMlx ? (mlxExpertOffload ?? null) : null;
 
@@ -118,6 +123,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvQuant: effectiveMlxKvQuant,
       mlxInt8Prefill: effectiveMlxInt8Prefill,
+      mlxAnePrefill: effectiveMlxAnePrefill,
+      mlxFastVerify: effectiveMlxFastVerify,
       mlxPleOffload: effectiveMlxPleOffload,
       mlxExpertOffload: effectiveMlxExpertOffload,
       speculativeType: speculativeType ?? "auto",
@@ -133,6 +140,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       cacheRam: cacheRam ?? null,
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
+      engramPrecision: isGguf ? (engramPrecision ?? null) : null,
       chatTemplateOverride: chatTemplateOverride ?? null,
       ...(isGguf || isMlx ? {} : { loadIn4bit }),
     };
@@ -177,6 +185,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     kvCacheDtype,
     effectiveMlxKvQuant,
     effectiveMlxInt8Prefill,
+    effectiveMlxAnePrefill,
+    effectiveMlxFastVerify,
     effectiveMlxPleOffload,
     effectiveMlxExpertOffload,
     speculativeType,
@@ -192,6 +202,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     cacheRam,
     tensorParallel,
     disableVision,
+    engramPrecision,
     chatTemplateOverride,
     loadedLlamaExtraArgs,
     gpuMemoryMode,

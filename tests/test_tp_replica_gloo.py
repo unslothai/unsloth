@@ -476,6 +476,45 @@ def _case_workspace(rank, world, tmp):
     return out
 
 
+def _case_save_lora(rank, world, tmp):
+    """model.save_lora (save_lora_adapter, what the GRPO notebooks call) on every rank after a generate: rank 0
+    writes the one-process adapter (its state_dict is built from the gathered LoRA tensors, not the DTensors)."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import torch.distributed as dist
+    from unsloth.models import tp_native, tp_replica
+    from unsloth.models._utils import save_lora_adapter
+    from unsloth.save import patch_saving_functions
+
+    model, ref = build(LLAMA), build(LLAMA)
+    ids = _batch(model)
+    tp_native.apply_tensor_parallel(model, _mesh(world))
+    _train(model, ids, 2, tp_native.tp_clip_grad_norm_)
+    ref.load_state_dict(tp_native.tp_full_state_dict(model))
+    patch_saving_functions(model)
+    with torch.no_grad():
+        model.generate(
+            input_ids = ids[:, :4], max_new_tokens = 3, do_sample = False, use_cache = True, pad_token_id = 0
+        )
+    out = {}
+    tp_dir, ref_dir = os.path.join(tmp, "tp"), os.path.join(tmp, "ref")
+    _slow_rank0(model, "original_model_save_pretrained")
+    try:
+        save_lora_adapter(model, tp_dir)
+        out["error"] = None
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    out["still_sharded"] = not _all_plain(model) and not tp_replica.replica_active(model)
+    if rank == 0:
+        patch_saving_functions(ref)
+        save_lora_adapter(ref, ref_dir)
+    dist.barrier()
+    out["files_tp"] = _files(tp_dir) if out["error"] is None else {}
+    out["files_ref"] = _files(ref_dir)
+    return out
+
+
 CASES = {
     "workspace": _case_workspace,
     "destructive": _case_destructive,
@@ -483,6 +522,7 @@ CASES = {
     "generate": _case_generate,
     "qlora": _case_qlora,
     "save": _case_save,
+    "save_lora": _case_save_lora,
     "merged": _case_merged,
     "refuse": _case_refuse,
 }
@@ -627,6 +667,19 @@ def test_tp2_adapter_and_tokenizer_saves_equal_one_process():
         assert res["reload_err"] == 0.0, res["reload_err"]
     assert results[0]["tok_return"] == results[1]["tok_return"]
     assert "adapter_model.safetensors" in results[0]["files_ref"]
+
+
+def test_tp2_save_lora_after_generate_equals_one_process():
+    for rank, res in enumerate(_spawn("save_lora", 2)):
+        assert res["error"] is None, (rank, res["error"])
+        assert res["still_sharded"], rank
+        assert "adapter_model.safetensors" in res["files_ref"]
+        assert res["files_tp"].keys() == res["files_ref"].keys(), (
+            sorted(res["files_tp"]),
+            sorted(res["files_ref"]),
+        )
+        for name in res["files_ref"]:
+            assert res["files_tp"][name] == res["files_ref"][name], name
 
 
 def test_tp2_merged_save_equals_one_process():

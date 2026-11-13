@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSettingsDialogStore } from "@/features/settings";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 import {
-  ChipIcon,
   CpuIcon,
   Database02Icon,
   PackageIcon,

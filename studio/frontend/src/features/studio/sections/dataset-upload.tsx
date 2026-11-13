@@ -37,7 +37,7 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   return (
     <div className="flex flex-col gap-2">
-      <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         {t("studio.wizard.uploadLocalLabel")}
         <Tooltip>
           <TooltipTrigger asChild={true}>

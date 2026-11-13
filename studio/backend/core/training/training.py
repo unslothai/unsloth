@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Training backend — subprocess orchestrator.
-
-Each job runs in a fresh spawn subprocess (solving transformers version-switching);
-the in-process UnslothTrainer singleton is only used inside the worker. This file
-orchestrates the subprocess lifecycle, pumps events from the worker's mp.Queue, and
-exposes the same API to routes/training.py. Pattern follows data_recipe/jobs/manager.py.
-"""
+"""Each job runs in a fresh spawn subprocess so transformers versions can switch between jobs."""
 
 from core.inference.inference_gate import pauses_background_embedding
 from core.training.account_jobs import (
@@ -278,6 +271,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "model_revision": values.get("model_revision"),
         "actual_model_repo_id": values.get("actual_model_repo_id"),
         "resume_model_load_mode": values.get("resume_model_load_mode"),
+        "resume_expected_model": values.get("resume_expected_model"),
         "dataset_known_cached": values.get("dataset_known_cached", False),
         "dataset_local_path": values.get("dataset_local_path"),
         "dataset_snapshot_path": values.get("dataset_snapshot_path"),
@@ -301,6 +295,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "is_decision": values.get("is_decision", False),
         "model_subfolder": values.get("model_subfolder"),
         "decision_layout": values.get("decision_layout"),
+        "decision_head": values.get("decision_head"),
         "num_epochs": values.get("num_epochs", 3),
         "learning_rate": values.get("learning_rate", "2e-4"),
         "embedding_learning_rate": values.get("embedding_learning_rate"),
@@ -600,9 +595,16 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
 
     hf_dataset = config.get("hf_dataset") or ""
     requested_ds_pin = config.get("dataset_snapshot_path")
+    requested_revision = config.get("dataset_revision")
     ds_claimed = bool(config.get("dataset_known_cached") or config.get("dataset_local_path"))
     config["dataset_revision"] = None
-    if not hf_dataset or config.get("dataset_streaming"):
+    if hf_dataset and config.get("dataset_streaming"):
+        config["dataset_snapshot_path"] = None
+        # A resume replays the commit the route took from its run; a new run pins the current one.
+        config["dataset_revision"] = (
+            requested_revision if resume else _hub_dataset_commit(config, hf_dataset, warnings)
+        )
+    elif not hf_dataset:
         config["dataset_snapshot_path"] = None
     elif resume and requested_ds_pin:
         from hub.utils.dataset_cache import (
@@ -653,6 +655,27 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
         config["dataset_snapshot_path"] = None
 
     config["cache_pin_warnings"] = warnings
+
+
+def _hub_dataset_commit(
+    config: dict[str, Any], hf_dataset: str, warnings: list[str]
+) -> Optional[str]:
+    """The commit a new streaming run reads, so a resume can replay the same rows."""
+    from huggingface_hub import HfApi
+
+    token = hf_token_arg(
+        config.get("hf_token") or "", allow_ambient_token = config.get("allow_ambient", True)
+    )
+    try:
+        commit = HfApi().dataset_info(hf_dataset, token = token, timeout = 15).sha
+    except Exception as exc:
+        logger.info("Could not resolve the commit of streamed dataset %s: %s", hf_dataset, exc)
+        commit = None
+    if not commit:
+        warnings.append(
+            f"Streaming {hf_dataset} from its latest revision, so this run cannot be resumed."
+        )
+    return commit
 
 
 def _finite_or_none(value: Any) -> Optional[float]:
@@ -970,13 +993,6 @@ class _MLXTrainerAdapter:
             return False
         if not self._dataset_config:
             self._update_progress(error = "Dataset not loaded")
-            return False
-        if self.is_cpt:
-            self._update_progress(
-                error = "Continued Pretraining is not supported for MLX training yet.",
-                is_training = False,
-                is_completed = False,
-            )
             return False
 
         config = self._build_worker_config(training_args)
@@ -1861,10 +1877,9 @@ class TrainingBackend:
                     "retry when it completes."
                 )
 
-            if (
-                config.get("require_exact_resume_resources")
-                or config.get("require_exact_model_resource")
-            ) and config.get("load_in_4bit"):
+            from .provenance import resume_requires_original_load_mode
+
+            if resume_requires_original_load_mode(config) and config.get("load_in_4bit"):
                 from .provenance import effective_training_load_in_4bit
                 effective_training_load_in_4bit(
                     config,
@@ -2334,8 +2349,7 @@ class TrainingBackend:
             # A completed run keeps its message; reaping a wedged worker must not relabel it.
         if self._batch_members:
             self._finalize_batch_members(status, error_message, clear_output_dir)
-        # Create the row if a start-time create failed; skipped while the pump is mid-create, whose create-
-        # then-finalize records the run instead.
+        # Creates the row if a start-time create failed; a pump mid-create records it instead.
         self._ensure_db_run_created()
         with self._provenance_lock:
             with self._lock:
@@ -2477,9 +2491,8 @@ class TrainingBackend:
         return True
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
-        """Force-kill the training subprocess so state can be reset immediately. With
-        ``target_proc``, terminate only that handle and no-op if a new run has replaced
-        it, so the watchdog can never kill a fresh worker."""
+        """Force-kill the subprocess to reset state; with target_proc only that handle is killed,
+        and a superseded run is a no-op so the watchdog can never kill a fresh worker."""
         with self._lock:
             proc = self._proc
             if target_proc is not None and proc is not target_proc:
@@ -2518,7 +2531,12 @@ class TrainingBackend:
         """First model-load stall respawns the worker over HTTP; later stalls surface as errors."""
         msg = event.get("message", "Download stalled")
         with self._lock:
-            recover = self._in_model_load and not self._xet_fallback_used
+            # A stall queued behind an error or completion must not respawn a finished run.
+            recover = (
+                self._in_model_load
+                and not self._xet_fallback_used
+                and not self._complete_seen.is_set()
+            )
             proc = self._proc
             run_id = self.current_job_id
             if recover:
@@ -3031,8 +3049,7 @@ class TrainingBackend:
             return
 
     def _has_current_resume_checkpoint(self, output_dir, step) -> bool:
-        # A valid checkpoint at the current step means the stop-and-save landed on disk even if the worker
-        # died before confirming it.
+        # A valid checkpoint at this step means the save landed, even if the worker died.
         if not output_dir or not isinstance(step, int) or step <= 0:
             return False
         from core.training.resume import get_resume_checkpoint_path
@@ -3443,9 +3460,7 @@ class TrainingBackend:
             logger.warning("Failed to persist output_dir", exc_info = True)
 
     def _log_training_progress(self) -> None:
-        """One throttled training-status line to the server log (the per-step stream
-        still goes to the UI via SSE): first step, then at most every 30s, plus the
-        final step; resyncs on a new run. Runs on the pump thread."""
+        """Throttled server-log status line: first step, then at most every 30s, plus the final step."""
         p = self._progress
         step = int(p.step or 0)
         if step <= 0:
@@ -3644,9 +3659,10 @@ class TrainingBackend:
                 loss = None
             duration = self._progress.elapsed_seconds
         try:
-            from storage.studio_db import insert_metrics_batch, update_run_progress
-            insert_metrics_batch(target, batch)
-            update_run_progress(id = target, step = step, loss = loss, duration_seconds = duration)
+            from storage.studio_db import insert_metrics_with_progress
+            insert_metrics_with_progress(
+                target, batch, step = step, loss = loss, duration_seconds = duration
+            )
         except Exception:
             # Re-queue the claimed batch at the front so it retries on the next flush.
             with self._lock:
@@ -3769,9 +3785,8 @@ class TrainingBackend:
             return
         from storage.studio_db import (
             create_run,
-            insert_metrics_batch,
+            insert_metrics_with_progress,
             update_run_output_dir,
-            update_run_progress,
             update_run_total_steps,
         )
 
@@ -3807,8 +3822,9 @@ class TrainingBackend:
                     del member["metrics"][: len(batch)]
                     step, loss, elapsed = member["step"], member["loss"], member["elapsed"]
                 try:
-                    insert_metrics_batch(run_id, batch)
-                    update_run_progress(id = run_id, step = step, loss = loss, duration_seconds = elapsed)
+                    insert_metrics_with_progress(
+                        run_id, batch, step = step, loss = loss, duration_seconds = elapsed
+                    )
                 except Exception:
                     with self._lock:
                         member["metrics"][:0] = batch

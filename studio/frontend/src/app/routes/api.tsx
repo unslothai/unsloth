@@ -14,7 +14,7 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   // Not "/api": the backend owns that prefix and its SPA fallback 404s those paths.
   path: "/api-monitor",
-  staticData: { title: "API" },
+  staticData: { titleKey: "routes.api" },
   beforeLoad: () => requireAuth(),
   component: ApiMonitorPage,
 });

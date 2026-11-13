@@ -25,11 +25,16 @@ HELPERS = {
     "_unsloth_text_configs",
     "_unsloth_get_final_logit_softcapping",
     "_unsloth_resolve_logit_scales",
+    "_unsloth_grpo_nanmin",
+    "_unsloth_grpo_nanmax",
+    "_unsloth_grpo_flush_metrics",
+    "_unsloth_grpo_defer_metric",
+    "_unsloth_grpo_refuse_boundary_blind_packing",
 }
 BATCH, PROMPT, COMPLETION = 2, 3, 4
 
 
-def _compute_loss(completion_length):
+def _compute_loss(completion_length, coef_1 = None):
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"), filename = str(SOURCE_PATH))
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in HELPERS]
     namespace = {"torch": torch, "inspect": inspect}
@@ -46,7 +51,7 @@ def _compute_loss(completion_length):
             torch.tensor(0.25),
             None,
             None,
-            ones,
+            ones if coef_1 is None else coef_1,
             ones,
         )
 
@@ -83,6 +88,7 @@ def _trainer(training, should_evaluate):
         _metrics = {"train": defaultdict(list), "eval": defaultdict(list)},
         _get_per_token_logps = lambda *args, **kwargs: torch.zeros(BATCH, COMPLETION),
         processing_class = None,
+        log = lambda logs, start_time = None: None,
     )
 
 
@@ -111,6 +117,7 @@ def _inputs():
 def test_metrics_follow_model_training(training, should_evaluate, bucket):
     trainer = _trainer(training, should_evaluate)
     _compute_loss(4.0)(trainer, trainer.model, _inputs())
+    trainer.log({})
     other = "eval" if bucket == "train" else "train"
     assert trainer._metrics[bucket]["completion_length"] == [4.0]
     assert trainer._metrics[bucket]["kl"] == [0.25]
@@ -122,5 +129,6 @@ def test_eval_pass_does_not_change_the_logged_train_length():
     _compute_loss(4.0)(trainer, trainer.model, _inputs())
     trainer.model.training = True
     _compute_loss(8.0)(trainer, trainer.model, _inputs())
+    trainer.log({})
     lengths = trainer._metrics["train"]["completion_length"]
     assert sum(lengths) / len(lengths) == 8.0

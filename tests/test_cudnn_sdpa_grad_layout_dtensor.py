@@ -6,7 +6,6 @@ raises "aten.copy_.default got mixed torch.Tensor and DTensor"."""
 
 import json
 import os
-import socket
 import subprocess
 import sys
 import textwrap
@@ -66,9 +65,8 @@ def _context_parallel_available():
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 @pytest.mark.gpu

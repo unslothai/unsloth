@@ -18,6 +18,7 @@ for _up in _iso.parents:
 
 import contextlib
 import errno
+import functools
 import itertools
 import os
 import shutil
@@ -103,6 +104,141 @@ def _no_vae_structural_verdict_cache(monkeypatch):
     monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
 
 
+def _cuda_device_info_from_the_test_torch():
+    """The devices the test's fake torch describes; none for the real torch (never this host's driver)."""
+    torch = sys.modules.get("torch")
+    cuda = getattr(torch, "cuda", None)
+    props = getattr(cuda, "get_device_properties", None)
+    if props is None or str(getattr(props, "__module__", "") or "").startswith("torch"):
+        return []
+    try:
+        count = int(cuda.device_count())
+    except Exception:
+        return None
+    devices = []
+    for ordinal in range(count):
+        try:
+            p = props(ordinal)
+        except Exception:
+            devices.append(None)
+            continue
+        integrated = bool(getattr(p, "is_integrated", False) or getattr(p, "integrated", False))
+        devices.append(
+            (
+                f"0000:{ordinal + 1:02x}:00.0",
+                integrated,
+                int(getattr(p, "total_memory", 0) or 0),
+                str(getattr(p, "name", "") or ""),
+            )
+        )
+    return devices
+
+
+def _c_cuda_mask():
+    """CUDA_VISIBLE_DEVICES as cuInit reads it: the C environment, which os.environ writes reach."""
+    import ctypes
+
+    getenv = ctypes.CDLL(None).getenv
+    getenv.restype, getenv.argtypes = ctypes.c_char_p, [ctypes.c_char_p]
+    raw = getenv(b"CUDA_VISIBLE_DEVICES")
+    return None if raw is None else raw.decode(errors = "replace").strip()
+
+
+# A run that hid every GPU must never open a context: a CPU test that rewrites the mask and reaches a real CUDA
+# init would open one on each card it names (xdist workers held 600-900 MiB on six GPUs), so that init fails it.
+_SESSION_HID_GPUS = os.name != "nt" and _c_cuda_mask() in ("", "-1")
+_cuda_init_state = {"cpu_test": False, "attempts": []}
+
+
+def _refuse_cuda_init_once_unhidden(torch):
+    c = getattr(torch, "_C", None)
+    real = getattr(c, "_cuda_init", None)
+    if real is None or getattr(real, "_studio_cpu_test_check", False):
+        return
+
+    def _cuda_init(*a, **k):
+        mask = _c_cuda_mask()
+        if _cuda_init_state["cpu_test"] and mask not in ("", "-1"):
+            import traceback
+            _cuda_init_state["attempts"].append(
+                (mask, "".join(traceback.format_stack(limit = 12)[:-1]))
+            )
+            raise RuntimeError("a CPU test initialised CUDA after unhiding the GPUs (refused)")
+        return real(*a, **k)
+
+    _cuda_init._studio_cpu_test_check = True
+    c._cuda_init = _cuda_init
+
+
+class _AfterTorchImport:
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if name != "torch" or "torch" in sys.modules:
+            return None
+        sys.meta_path.remove(self)
+        spec = _ilu.find_spec("torch")
+        if spec is None or spec.loader is None:
+            return spec
+        exec_module = spec.loader.exec_module
+
+        def _exec(module):
+            exec_module(module)
+            _refuse_cuda_init_once_unhidden(module)
+
+        spec.loader.exec_module = _exec
+        return spec
+
+
+if _SESSION_HID_GPUS:
+    if "torch" in sys.modules:
+        _refuse_cuda_init_once_unhidden(sys.modules["torch"])
+    else:
+        sys.meta_path.insert(0, _AfterTorchImport())
+
+
+@pytest.fixture(autouse = True)
+def _no_cuda_context_from_a_cpu_test(request):
+    if not _SESSION_HID_GPUS or request.node.get_closest_marker("gpu") is not None:
+        yield
+        return
+    _cuda_init_state["cpu_test"], _cuda_init_state["attempts"] = True, []
+    try:
+        yield
+    finally:
+        _cuda_init_state["cpu_test"] = False
+    if _cuda_init_state["attempts"]:
+        mask, stack = _cuda_init_state["attempts"][0]
+        pytest.fail(
+            f"this CPU test initialised CUDA with CUDA_VISIBLE_DEVICES={mask!r} after the run had hidden "
+            f"every GPU; its next device call opens a context on each card it names. Fake the device query (torch.cuda, "
+            f"utils.hardware.nvidia.get_cuda_device_info) or mark the test gpu. First call:\n{stack}",
+            pytrace = False,
+        )
+
+
+@pytest.fixture(autouse = True)
+def _no_real_cuda_device_query(monkeypatch):
+    try:
+        from utils.hardware import nvidia
+    except Exception:
+        return
+    monkeypatch.setattr(
+        nvidia, "get_cuda_device_info", _cuda_device_info_from_the_test_torch, raising = False
+    )
+    monkeypatch.setattr(nvidia, "_CUDA_DEVICE_INFO_CACHE", {}, raising = False)
+
+
+@pytest.hookimpl(trylast = True)
+def pytest_collection_modifyitems(config, items):
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    from xdist_group_check import check
+    check(config, items)
+
+
 @pytest.fixture(autouse = True)
 def _no_deleted_torch_config_entries():
     """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
@@ -175,6 +311,21 @@ def _forget_mcp_discovery_state():
 
 
 @pytest.fixture(autouse = True)
+def _forget_queued_media_requests():
+    def _forget():
+        video_routes = sys.modules.get("routes.video")
+        if video_routes is not None:
+            video_routes._VIDEO_QUEUE.clear()
+        batching = sys.modules.get("core.inference.image_request_batching")
+        if batching is not None:
+            batching._OPEN.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_load_budget_snapshots():
     def _forget():
         for name, module in list(sys.modules.items()):
@@ -206,6 +357,18 @@ def _forget_embedding_device_setting():
         settings = sys.modules.get("utils.embedding_model_settings")
         if settings is not None:
             settings.forget_cached_embedding_device()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_stt_device_setting():
+    def _forget():
+        settings = sys.modules.get("utils.stt_device_settings")
+        if settings is not None:
+            settings.forget_cached_stt_device()
 
     _forget()
     yield
@@ -351,6 +514,48 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
             monkeypatch.setattr(module, "_schema_ready", set())
 
 
+def _drain_sandbox_movers(timeout: float = 30.0) -> None:
+    import threading
+
+    from .thread_drain import join_when_started
+    for thread in threading.enumerate():
+        if thread.name == "sandbox-migrate" and not join_when_started(thread, timeout = timeout):
+            raise RuntimeError("a background sandbox migration did not finish within 30s")
+
+
+@pytest.fixture(autouse = True)
+def _no_sandbox_mover_outlives_its_test(monkeypatch):
+    # get_sandbox_workdir starts a background mover that reads the legacy root from HOME when it gets
+    # scheduled, not when it starts: one left running moved the next test's legacy folder into the
+    # previous test's root. Requesting monkeypatch drains it before HOME is put back, so a late mover
+    # never reads the real home either.
+    _drain_sandbox_movers()
+    yield
+    _drain_sandbox_movers()
+
+
+@pytest.fixture(autouse = True)
+def _no_crash_watchdog_outlives_its_test(monkeypatch):
+    # Every load arms the crash watchdog, and one left running replays a real load_model in a later test.
+    llama = sys.modules.get("core.inference.llama_cpp")
+    backend = getattr(llama, "LlamaCppBackend", None)
+    if backend is None:
+        yield
+        return
+    armed = []
+    start = backend._start_mtp_crash_watchdog
+
+    @functools.wraps(start)
+    def _tracked(self):
+        armed.append(self)
+        return start(self)
+
+    monkeypatch.setattr(backend, "_start_mtp_crash_watchdog", _tracked)
+    yield
+    for armed_backend in armed:
+        armed_backend._stop_mtp_crash_watchdog()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -476,14 +681,23 @@ def _forget_the_cached_owner_identity():
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
     its own."""
-    from storage import studio_db
+    from storage import rag_db, studio_db
 
     before = set(studio_db._wal_keepers)
     unsupported = set(studio_db._wal_unsupported)
+    rag_before = set(rag_db._wal_keepers)
+    rag_enabled = rag_db._wal_keepers_enabled
+    rag_db.start_wal_keepers()
     yield
     for path in set(studio_db._wal_keepers) - before:
         studio_db.close_wal_keeper_for(path)
     studio_db._wal_unsupported.intersection_update(unsupported)
+    for path in set(rag_db._wal_keepers) - rag_before:
+        rag_db.close_wal_keeper_for(path)
+    if rag_enabled:
+        rag_db.start_wal_keepers()
+    else:
+        rag_db.close_wal_keeper()
 
 
 @pytest.fixture(autouse = True)
@@ -539,17 +753,137 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
 
 
+_REAL_APPLE_METAL_BUDGET = None
+
+
 @pytest.fixture(autouse = True)
 def _no_live_metal_wired_ceiling(monkeypatch):
     """Keep Metal context verdicts off the host's live GPU memory."""
+    import inspect
+
     from core.inference.llama_cpp import LlamaCppBackend
 
+    global _REAL_APPLE_METAL_BUDGET
+    if _REAL_APPLE_METAL_BUDGET is None:
+        _REAL_APPLE_METAL_BUDGET = inspect.getattr_static(
+            LlamaCppBackend, "_apple_metal_memory_budget_bytes"
+        )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
     )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
+    # On a Mac the real budget is non-zero, which sends every GGUF load down the Metal
+    # context-fit path and adds its "cannot size the KV cache" notice to loads that tests
+    # written against a CPU or CUDA host expect to be silent. Tests of the budget itself,
+    # or of the Metal path, set it explicitly or ask for real_apple_metal_budget.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+    )
+
+
+@pytest.fixture
+def real_apple_metal_budget(monkeypatch):
+    """The real budget probe, for the tests of the probe itself."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", _REAL_APPLE_METAL_BUDGET
+    )
+
+
+# Below the ephemeral range on Linux (32768+), macOS and Windows (49152+), one block per xdist worker.
+_ENGINE_PORT_BASE = 21000
+_ENGINE_PORT_SPAN = 10000
+_ENGINE_PORTS_PER_WORKER = 250
+_engine_port_counter = itertools.count()
+
+
+_engine_port_slots = {}
+
+
+def _engine_port_block(slot, worker_count):
+    """(first port, size); past 40 workers blocks shrink so each stays disjoint inside the span.
+    Without a controller slot a replacement gwN (N >= count) uses the span's spare blocks first."""
+    count = max(worker_count, 1)
+    size = min(_ENGINE_PORTS_PER_WORKER, _ENGINE_PORT_SPAN // count)
+    if size < 1:
+        raise RuntimeError(f"{count} xdist workers do not fit {_ENGINE_PORT_SPAN} engine ports")
+    return _ENGINE_PORT_BASE + (slot % (_ENGINE_PORT_SPAN // size)) * size, size
+
+
+@pytest.hookimpl(optionalhook = True)
+def pytest_configure_node(node):
+    """xdist controller: a replacement worker gets a new gwN, so hand it the lowest slot no live
+    worker holds (the crashed one's) instead of deriving the slot from N."""
+    taken = set(_engine_port_slots.values())
+    slot = next(i for i in itertools.count() if i not in taken)
+    _engine_port_slots[node.gateway.id] = slot
+    node.workerinput["engine_port_slot"] = slot
+
+
+@pytest.hookimpl(optionalhook = True)
+def pytest_testnodedown(node, error):
+    _engine_port_slots.pop(node.gateway.id, None)
+
+
+@pytest.fixture
+def engine_port_block():
+    return _engine_port_block
+
+
+@pytest.fixture
+def engine_port_slot_hooks(monkeypatch):
+    """The controller-side slot hooks, on an empty slot table."""
+    monkeypatch.setitem(globals(), "_engine_port_slots", {})
+    return pytest_configure_node, pytest_testnodedown
+
+
+@pytest.fixture(autouse = True)
+def _engine_ports_no_other_worker_can_take(monkeypatch, request):
+    """managed_engine._free_port releases an ephemeral port that the engine binds later. In that
+    gap any bind(0) on the runner, such as another worker's test server, can be handed the same
+    port and answer /health, and a start that should time out returns ready. Each worker gets its
+    own ports below the ephemeral range instead, which bind(0) never hands out."""
+    module = sys.modules.get("core.inference.managed_engine")
+    if module is None:
+        return
+    import socket
+
+    count = os.environ.get("PYTEST_XDIST_WORKER_COUNT", "")
+    slot = getattr(request.config, "workerinput", {}).get("engine_port_slot")
+    if slot is None:
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")[2:]
+        slot = int(worker) if worker.isdigit() else 0
+    base, size = _engine_port_block(slot, int(count) if count.isdigit() else 1)
+
+    def _worker_port(limit = None):
+        for _ in range(size):
+            port = base + next(_engine_port_counter) % size
+            with socket.socket() as sock:
+                try:
+                    sock.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+            return port
+        raise RuntimeError("no free engine port left in this worker's block")
+
+    _worker_port.__wrapped__ = module._free_port
+    monkeypatch.setattr(module, "_free_port", _worker_port)
+
+
+@pytest.fixture
+def real_engine_free_port(monkeypatch):
+    """The real allocator, for the tests of the allocator itself."""
+    from core.inference import managed_engine
+    monkeypatch.setattr(managed_engine, "_free_port", managed_engine._free_port.__wrapped__)
+
+
+@pytest.fixture(autouse = True)
+def _not_on_metal(monkeypatch):
+    """Keep co-residency verdicts off the host's device: on a Mac they take the Metal paths."""
+    from core.inference import gpu_residency
+    monkeypatch.setattr(gpu_residency, "_on_metal", lambda: False)
 
 
 @pytest.fixture(autouse = True)
@@ -915,14 +1249,26 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
         root.mkdir(parents = True, exist_ok = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
     monkeypatch.setattr(rag_db, "_schema_ready", set())
-    return root
+    yield root
+    from core.rag import vec_cache
+
+    # A background build still holding the db would block its removal on Windows.
+    vec_cache.drain()
+    vec_cache.clear()
 
 
 @pytest.fixture
 def rag_conn(rag_home):
     """A fresh RAG connection bound to the isolated ``rag_home`` database."""
+    import sqlite3
+
     from storage import rag_db
 
+    # Same gate as the RAG tests that skip on their own: an interpreter whose sqlite3 cannot load
+    # extensions (the macos-15 runner's) never has RAG, and the product reports that rather than
+    # failing. Anything else that stops sqlite-vec loading still errors here.
+    if not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"):
+        pytest.skip("sqlite-vec cannot be loaded by this Python's sqlite3")
     conn = rag_db.get_connection()
     try:
         yield conn
@@ -1027,8 +1373,16 @@ def healthy_diffusers(monkeypatch):
                 return object
             raise AttributeError(name)
 
+    from core.inference import diffusion_families as _df
+
+    # A present class below its floor is refused, so a healthy stand-in must also clear every floor.
+    version = str(getattr(_real, "__version__", "0.39.0"))
+    for floor in _df._PIPELINE_MIN_DIFFUSERS.values():
+        if not _df._installed_at_least(version, floor):
+            version = floor
+
     proxy = _AnyPipeline("diffusers")
-    proxy.__version__ = str(getattr(_real, "__version__", "0.39.0"))
+    proxy.__version__ = version
     for attr in ("__path__", "__file__", "__spec__", "__loader__"):
         if _real is not None and hasattr(_real, attr):
             setattr(proxy, attr, getattr(_real, attr))

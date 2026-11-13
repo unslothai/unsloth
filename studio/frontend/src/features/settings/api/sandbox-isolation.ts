@@ -20,7 +20,7 @@ export type SandboxToolStatus = {
 
 export type TerminalShell = "bash" | "cmd_isolated" | "cmd_fallback";
 
-// MXC needs x64 Windows 11 build 26100 or newer.
+// MXC needs x64 or ARM64 Windows 11 build 26100 or newer.
 export type RuntimeUnsupported = "arch" | "build";
 
 export type WindowsSandboxStatus = {

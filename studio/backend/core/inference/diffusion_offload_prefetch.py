@@ -1,24 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Event-fenced prefetch for a block-streamed denoiser's diffusers offload groups.
-
-diffusers fences its stream prefetch on the host (``stream.synchronize()`` per onload) and copies one group ahead.
-Here the compute stream waits on a per-group CUDA event instead, and up to ``depth`` streamed groups are copied ahead
-in the order the first forward recorded.
-
-A forward's first copies are queued at the first block's onload (behind a compute-stream event when the top-level
-group uploads on the compute stream): queued earlier they hold that upload back on the copy engine.
-
-Memory stays bounded without a host wait: each offload records a compute-stream event the copy stream waits on, so a
-freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
-Unpinned copies' temporary pinned staging is capped at ``window`` (else T4 Z-Image pinned the whole denoiser).
-Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
-
-Cross-forward carry: past the last recorded group, the NEXT forward's first groups are copied into free window
-bytes. Only while a render arms it (never into the last step's decode); held off under a slot ring, step graph,
-capture, or another prefetcher's forward in between (its copies would not be read next).
-"""
+"""Event-fenced prefetch of streamed offload groups, no host sync; a freed block is reused only
+after the compute that read it; bytes in flight never pass window; carry held off under slot
+ring, step graph or capture"""
 
 from __future__ import annotations
 
@@ -32,6 +17,8 @@ from typing import Any, Iterator, Optional
 ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
 PREFETCH_DEPTH_ENV = "UNSLOTH_DIFFUSION_PREFETCH_DEPTH"
 CROSS_FORWARD_ENV = "UNSLOTH_DIFFUSION_PREFETCH_CROSS_FORWARD"
+# "0": pins always count on top of the host copies they replace
+PIN_REPLACES_HOST_ENV = "UNSLOTH_DIFFUSION_PIN_REPLACES_HOST"
 # Groups carried while the last streamed block still runs (see GroupPrefetcher._carry).
 TAIL_CARRY_GROUPS = 1
 DEFAULT_PREFETCH_DEPTH = 2
@@ -63,6 +50,15 @@ def async_prefetch_enabled() -> bool:
 
 def cross_forward_enabled() -> bool:
     return (os.environ.get(CROSS_FORWARD_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def pin_replaces_host_enabled() -> bool:
+    return (os.environ.get(PIN_REPLACES_HOST_ENV) or "").strip().lower() not in (
         "0",
         "off",
         "false",
@@ -455,11 +451,9 @@ class GroupPrefetcher:
                     _copy_into(buffers[i], src)
                     _point_at(t, buffers[i], is_torchao(t), swap)
                     continue
-                moved = _to_device(src, self.device)
-                if is_torchao(t) and swap is not None:
-                    swap(t, moved)
-                else:
-                    t.data = moved
+                # a wrapper already on the device takes the new inner tensors: swap_tensors would refuse a weight a
+                # compile traced (its fake-mode memo keeps a weakref to it after the compile)
+                _point_at(t, _to_device(src, self.device), is_torchao(t), swap)
         if buffers is not None:
             self.slot_owner[where] = id(group)
             self.stats["slot_fills"] = self.stats.get("slot_fills", 0) + 1
@@ -523,6 +517,12 @@ class GroupPrefetcher:
         carried = getattr(self, "carried", None)
         if carried:
             carried.discard(gid)
+        if gid in self.ready and self._keeps_for_next(gid):
+            # the next forward runs it first: re-uploading the same weights would only wait on the copy
+            self.__dict__.setdefault("carried", set()).add(gid)
+            self.stats["kept"] = self.stats.get("kept", 0) + 1
+            self._fill()
+            return
         if gid in self.ready:
             self._release(group, self.ready.pop(gid))
         else:
@@ -601,6 +601,19 @@ class GroupPrefetcher:
         if ahead < self.depth and self.pos >= len(self.order) and self.may_carry():
             self._carry(ahead)
 
+    def _keeps_for_next(self, gid: int) -> bool:
+        """``keep_first``: keep the top-level group on device; the next forward needs it first."""
+        order = self.order
+        return bool(
+            getattr(self, "keep_first", False)
+            and self.active
+            and self.on_order
+            and order
+            and self.pos >= len(order)
+            and order[0] == gid
+            and self.may_carry()
+        )
+
     def carry_usable(self) -> bool:
         return bool(
             not getattr(self, "interleaved", False)
@@ -617,9 +630,7 @@ class GroupPrefetcher:
         )
 
     def _carry(self, ahead: int) -> None:
-        """While the last block runs, at most ``TAIL_CARRY_GROUPS``: its activations are live and the allocator's peak
-        follows host order, so a second group beside them lifts the peak (FLUX at 32k tokens); after it frees, the
-        rest of the depth follows."""
+        """While the last block runs, carry at most TAIL_CARRY_GROUPS: a second group lifts the peak."""
         carried = self.__dict__.setdefault("carried", set())
         running = any(gid not in carried for gid in self.ready)
         limit = min(self.depth, TAIL_CARRY_GROUPS) if running else self.depth
@@ -1119,6 +1130,31 @@ def module_prefetcher(module: Any) -> Optional[GroupPrefetcher]:
     return getattr(module, PREFETCHER_ATTR, None)
 
 
+def match_skipped_order(module: Any, skipped: list, *, skipping: bool) -> None:
+    """Call after ``begin``: drop (``skipping``) or restore the groups wholly inside ``skipped`` in the order."""
+    pf = module_prefetcher(module)
+    if pf is None or not pf.active or pf.seen or pf.pos or not pf.order:
+        return
+    inside = {id(m) for block in skipped for m in block.modules()}
+    ids = {
+        gid
+        for gid, group in pf.by_id.items()
+        if getattr(group, "modules", None) and all(id(m) in inside for m in group.modules)
+    }
+    if not ids:
+        return
+    kept = [gid for gid in pf.order if gid not in ids]
+    if skipping:
+        if len(kept) != len(pf.order):
+            pf.__dict__["_unsloth_full_order"] = list(pf.order)
+            pf.order = kept
+    else:
+        full = pf.__dict__.get("_unsloth_full_order")
+        if full and len(kept) == len(pf.order) and [g for g in full if g not in ids] == kept:
+            pf.order = list(full)
+    pf.on_order = bool(pf.order)
+
+
 def _pinned_done(pinner: Any, group: Any) -> bool:
     event = getattr(pinner, "_done", {}).get(id(group))
     return event is None or event.is_set()
@@ -1134,6 +1170,10 @@ def capture_refusal(module: Any) -> Optional[str]:
         for group in _offload_groups(module):
             if getattr(group, "offload_to_disk_path", None):
                 return "a group streams from disk"
+            if getattr(group, "_unsloth_pinned_top", False) and getattr(
+                group, "_unsloth_top_gguf", False
+            ):
+                return "a GGUF top-level group onloads from its pinned copy (streamed graphs unmeasured there)"
             if getattr(group, "_unsloth_resident", False) or getattr(
                 group, "_unsloth_pinned_top", False
             ):
@@ -1195,6 +1235,18 @@ def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
                 _disarm(pf)
             except Exception:  # noqa: BLE001 - leave the render's own error to surface
                 pass
+
+
+def end_cross_forward(pipe: Any) -> int:
+    """Disarm ``pipe``'s prefetchers, drop their carry; returns carried copies read so far."""
+    hits = 0
+    for pf in _pipe_prefetchers(pipe):
+        try:
+            _disarm(pf)
+            hits += int(pf.stats.get("carried_hits", 0))
+        except Exception:  # noqa: BLE001 - leave the render's own error to surface
+            pass
+    return hits
 
 
 _UNKNOWN = object()
@@ -1305,3 +1357,262 @@ def cross_forward_step(
                     pf.drop_carried()  # the next step runs another expert: these copies would not be read
             elif nxt2 is not pf:
                 pf.armed = False  # the expert switches after the next step: carry nothing past it
+
+
+LIST_STREAM_DEPTH = 1
+
+
+class PrefetchedListStreamer:
+    """Streams ``blocks[resident:]`` via pinned slabs and event-fenced copies ``depth`` members ahead, from the second
+    forward on (the first records the order); a forward that raises still releases its queued copies."""
+
+    def __init__(self) -> None:
+        self.handles: list = []
+        self.groups: list = []
+        self.prefetcher: Optional[GroupPrefetcher] = None
+        self.streamed = 0
+        self.pinned_bytes = 0
+        self.replaced_bytes = 0
+        self.arena: Any = None
+        # matches ModuleListStreamer, whose release path clears ``_host``
+        self._host: dict = {}
+
+    def stats(self) -> dict:
+        pf = self.prefetcher
+        out = dict(pf.stats) if pf is not None else {}
+        out["pinned_bytes"] = int(self.pinned_bytes)
+        return out
+
+    def remove(self) -> None:
+        for handle in self.handles:
+            handle.remove()
+        self.handles = []
+        pf = self.prefetcher
+        if pf is not None and getattr(pf, "active", False):
+            pf.end()
+        for group in self.groups:
+            for name in ("onload_", "offload_", "_unsloth_prefetch_onload", "_unsloth_prefetcher"):
+                group.__dict__.pop(name, None)
+            cpu = getattr(group, "cpu_param_dict", None)
+            if isinstance(cpu, dict):
+                cpu.clear()
+        self.groups = []
+        self.prefetcher = None
+        self.arena = None
+
+
+def _list_stream_refusal(device: Any) -> Optional[str]:
+    if not async_prefetch_enabled():
+        return f"{ASYNC_PREFETCH_ENV}=0"
+    import torch
+
+    from .diffusion_memory import GROUP_OFFLOAD_PIN_ENV
+
+    if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return f"{GROUP_OFFLOAD_PIN_ENV}=0"
+    if torch.device(device).type != "cuda" or not torch.cuda.is_available():
+        return "not a CUDA device"
+    from .host_pinning import host_pinning_allowed
+
+    if not host_pinning_allowed(torch.device(device)):
+        return "pinned host memory is not used on this device"
+    from .diffusion_memory import _pinned_memory_capped
+
+    if _pinned_memory_capped():
+        return "pinned host memory is capped on this OS"
+    return None
+
+
+def _end_stream_forward(pf: Any, release_after_forward: bool) -> None:
+    """``end()`` clears ``capturing``, so read it first; never ``empty_cache`` inside a graph capture."""
+    import torch
+
+    capturing = bool(getattr(pf, "capturing", False))
+    pf.end()
+    if release_after_forward and not capturing and not torch.cuda.is_current_stream_capturing():
+        torch.cuda.empty_cache()
+
+
+def stream_module_list(
+    owner: Any,
+    blocks: Any,
+    device: Any,
+    resident: int,
+    *,
+    logger: Any = None,
+    depth: int = LIST_STREAM_DEPTH,
+    reserve_bytes: int = 0,
+    max_pin_bytes: Optional[int] = None,
+    replaces_counted: bool = False,
+    release_after_forward: bool = False,
+) -> Optional[PrefetchedListStreamer]:
+    """A ``PrefetchedListStreamer`` over ``blocks``, or None (nothing changed) when it does not apply or cannot pin.
+    Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given. ``replaces_counted``:
+    pins replace host copies the caller already counts, so only the live budget bounds them.
+    ``release_after_forward``: empty the copy stream's cache after each forward (once-per-request owners)."""
+    import torch
+
+    refused = _list_stream_refusal(device)
+    blocks = list(blocks)
+    resident = max(0, min(len(blocks), int(resident)))
+    streamed = blocks[resident:]
+    if refused is None and not streamed:
+        refused = "nothing streams"
+    need = replaced = 0
+    if refused is None:
+        from .diffusion_memory import _pin_budget_mib, _storage_nbytes
+
+        need = sum(
+            sum(_storage_nbytes(t))
+            for b in streamed
+            for t in list(b.parameters()) + list(b.buffers())
+        )
+        budget = _pin_budget_mib()
+        replaced = need if replaces_counted and pin_replaces_host_enabled() else 0
+        # only where the credit is what lets the pin fit (that owner streamed pageable before): pinned owners keep
+        # their cache as they did
+        release_after_forward = bool(
+            release_after_forward
+            and replaced
+            and max_pin_bytes is not None
+            and need > int(max_pin_bytes)
+        )
+        if max_pin_bytes is not None and need - replaced > int(max_pin_bytes):
+            refused = (
+                f"{need / 1e9:.1f} GB to pin exceeds the {max(0, int(max_pin_bytes)) / 1e9:.1f} GB the host plan "
+                "leaves for pinned copies"
+            )
+        elif budget is not None and need + int(reserve_bytes) > int(budget) << 20:
+            refused = (
+                f"{need / 1e9:.1f} GB to pin (+{int(reserve_bytes) / 1e9:.1f} GB reserved) exceeds the "
+                f"{budget / 1024:.1f} GiB host pin budget"
+            )
+    if refused is None:
+        try:
+            go = _go()
+            group_cls = go.ModuleGroup
+        except Exception as exc:  # noqa: BLE001 - an older diffusers
+            refused = f"diffusers has no ModuleGroup ({type(exc).__name__})"
+    if refused is not None:
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: %s keeps its pageable streamer (%s)",
+                type(owner).__name__,
+                refused,
+            )
+        return None
+    onload = torch.device(device)
+    streamer = PrefetchedListStreamer()
+    try:
+        from .diffusion_memory import install_group_offload_buffer_restore
+
+        # diffusers restores only parameters; buffer weights (int8 encoder) would otherwise stay on the device
+        install_group_offload_buffer_restore()
+        from .diffusion_pinned_arena import packable_bytes, pinned_arena_for_group_offload
+
+        for block in streamed:
+            block.to("cpu")
+        tensors = [t for b in streamed for t in list(b.parameters()) + list(b.buffers())]
+        try:
+            expected = packable_bytes(tensors)
+        except Exception:  # noqa: BLE001 - whole slabs, as without a size
+            expected = None
+        stream = torch.cuda.Stream(device = onload)
+        with pinned_arena_for_group_offload(expected_bytes = expected) as arena:
+            for block in streamed:
+                group = group_cls(
+                    modules = [block],
+                    offload_device = torch.device("cpu"),
+                    onload_device = onload,
+                    offload_leader = block,
+                    onload_leader = block,
+                    non_blocking = True,
+                    stream = stream,
+                    record_stream = True,
+                    low_cpu_mem_usage = False,
+                )
+                type(group).offload_(group)
+                streamer.groups.append(group)
+        streamer.arena = arena
+        for block in blocks[:resident]:
+            block.to(onload)
+        pf = GroupPrefetcher(owner, streamer.groups, onload, depth)
+        pf.fence_first = True
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+
+        def _eager(fn: Any) -> Any:
+            return disable(fn) if callable(disable) else fn
+
+        for group, block in zip(streamer.groups, streamed):
+
+            def onload_(
+                *_a: Any,
+                _g: Any = group,
+                **_k: Any,
+            ) -> None:
+                pf.onload(_g)
+
+            def offload_(
+                *_a: Any,
+                _g: Any = group,
+                **_k: Any,
+            ) -> None:
+                pf.offload(_g)
+
+            group.onload_ = _eager(onload_)
+            group.offload_ = _eager(offload_)
+            group._unsloth_prefetch_onload = group.onload_
+            group._unsloth_prefetcher = pf
+            streamer.handles.append(
+                block.register_forward_pre_hook(_eager(lambda *_a, _g = group: _g.onload_()))
+            )
+            streamer.handles.append(
+                block.register_forward_hook(_eager(lambda *_a, _g = group: _g.offload_()))
+            )
+
+        def _begin(*_a: Any, **_k: Any) -> None:
+            pf.begin()
+            pf.kick()  # the first streamed members copy while the resident ones run
+
+        def _end(*_a: Any, **_k: Any) -> None:
+            _end_stream_forward(pf, release_after_forward)
+
+        streamer.handles.append(owner.register_forward_pre_hook(_eager(_begin)))
+        streamer.handles.append(owner.register_forward_hook(_eager(_end), always_call = True))
+        streamer.prefetcher = pf
+        streamer.streamed = len(streamed)
+        streamer.pinned_bytes = int(need)
+        streamer.replaced_bytes = int(replaced)
+        bump_placement_epoch()
+    except Exception as exc:  # noqa: BLE001 - the caller's pageable streamer takes the members as they are now
+        streamer.remove()
+        for block in streamed:
+            try:
+                block.to("cpu")
+            except Exception:  # noqa: BLE001
+                pass
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: pinned prefetch streaming unavailable for %s (%s)",
+                type(owner).__name__,
+                exc,
+            )
+        return None
+    if logger is not None:
+        payload = getattr(arena, "payload_bytes", 0) if arena is not None else 0
+        logger.info(
+            "diffusion.memory: %s streams %d of %d members with pinned copies (%.2f GB) and event-fenced prefetch "
+            "(%d ahead)%s",
+            type(owner).__name__,
+            len(streamed),
+            len(blocks),
+            payload / 1e9,
+            depth,
+            " in place of the host copies the plan counts" if replaced else "",
+        )
+    return streamer

@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end smoke for the native stable-diffusion.cpp engine.
-
-Drives the real ``SdCppEngine`` over a built ``sd-cli`` and a set of split GGUF
-assets (the same the diffusers path consumes), running one txt2img generation
-and reporting wall time. This is the GPU/native analogue of
-``scripts/diffusion_bench.py``: it proves the engine wiring (finder -> command
-builder -> subprocess -> output PNG) works against real weights.
-
-Example (Z-Image-Turbo on one GPU):
-
-    SD_CLI_PATH=.../sd-cli CUDA_VISIBLE_DEVICES=6 python scripts/sd_cpp_smoke.py \\
-        --family z-image \\
-        --diffusion-model .../z-image-turbo-Q4_K_M.gguf \\
-        --vae .../ae.safetensors \\
-        --llm .../Qwen3-4B-Instruct-2507-Q4_K_M.gguf \\
-        --memory-mode balanced --steps 8 --cfg-scale 1.0 --width 512 --height 512
-"""
+"""Real-weights txt2img smoke for SdCppEngine and sd-cli; needs a GPU and split GGUF assets."""
 
 from __future__ import annotations
 

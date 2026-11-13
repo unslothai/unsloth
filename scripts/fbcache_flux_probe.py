@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Validate First-Block-Cache (FBCache) on a MANY-step DiT (Flux.1-dev), vs the compiled
-baseline. FBCache reuses the transformer tail across denoise steps when the first block's
-residual barely changes -- a real speedup only when there are enough steps (it is why it is
-gated OFF for few-step distilled models like Z-Image-Turbo). Reports median latency,
-speedup, peak VRAM, and LPIPS vs the no-cache baseline. One CUDA GPU."""
+"""Probes FBCache on Flux.1-dev; it only pays off on many-step DiTs, so Z-Image-Turbo gates it off."""
 
 from __future__ import annotations
 

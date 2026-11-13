@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Probe: does regional ``torch.compile`` work on the GGUF diffusion transformer?
-
-The speed layer gates ``compile_repeated_blocks`` OFF for GGUF (it dequantises
-per-op). Since the backend is GGUF-only, that makes regional compile dead on
-every shipping model. This probe loads a GGUF transformer exactly as
-``diffusion.py`` does, runs an eager generation, then compiles the repeated
-denoiser block and runs the same seed again, reporting: whether compile raised,
-per-generation latency eager vs compiled, and PSNR(compiled vs eager). If compile
-is clean and PSNR is high, the gate can be relaxed for this family.
-
-Run on one CUDA GPU. Read-only w.r.t. the backend (does not import the gate).
-"""
+"""Checks whether regional torch.compile works on GGUF transformers, which the speed gate disables."""
 
 from __future__ import annotations
 

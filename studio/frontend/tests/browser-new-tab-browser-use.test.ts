@@ -19,11 +19,12 @@ test("the new tab page's Browser use switch drives the composer's store", () => 
   );
 });
 
-test("the switch sits just under Suggested, outside its show setting", () => {
+test("the switch sits under the leading section, outside both show settings", () => {
   assert.match(
     PAGE,
-    /<SuggestedSite key=\{site\.url\} site=\{site\} tabId=\{tabId\} \/>\s*\)\)\}\s*<\/div>\s*<\/section>\s*\) : null\}\s*<BrowserUseToggle \/>\s*\{showRecents/,
+    /\{visited \? recentsSection : suggestedSection\}\s*<BrowserUseToggle \/>\s*\{visited \? suggestedSection : null\}/,
   );
+  assert.match(PAGE, /const visited = recentsSection !== null;/);
 });
 
 test("every locale has the switch's strings", () => {

@@ -144,8 +144,7 @@ def test_credentials_in_the_log_never_reach_the_response(client):
 
 
 def test_an_api_key_session_cannot_read_the_logs():
-    """Log lines and a local realpath are UI-operator material, not something a
-    remote API key should be able to pull."""
+    """Log lines and local paths are for UI operators; an API key session must not read them."""
     app = FastAPI()
     app.include_router(settings_route.router, prefix = "/api/settings")
     app.dependency_overrides[settings_route.get_current_subject] = lambda: "admin"
@@ -157,9 +156,8 @@ def test_an_api_key_session_cannot_read_the_logs():
 
 
 def test_the_endpoints_stay_out_of_the_access_log():
-    """Load bearing, not tidiness. These paths are polled while the tab is open
-    and they read the very file the access log writes to, so without the
-    suppression each poll appends a line the next poll reads back."""
+    """Load-bearing: these polled paths read the access log file itself, so each unsuppressed poll
+    appends a line the next poll reads back."""
     from loggers.handlers import _is_quiet_success
 
     assert _is_quiet_success("GET", "/api/settings/debug/logs", 200, False) is True

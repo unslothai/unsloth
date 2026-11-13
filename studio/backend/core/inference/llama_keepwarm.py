@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in idle auto-unload (TTL keep-warm) for the local llama.cpp model.
+"""Opt-in idle auto-unload (TTL keep-warm) for the local llama.cpp or MLX chat model.
 
-Off by default (idle seconds = 0). A background loop unloads the GGUF after the TTL, and a
+Off by default (idle seconds = 0). A background loop unloads the model after the TTL, and a
 pure-ASGI middleware tracks in-flight requests so a long stream is never unloaded mid-response.
 The resident model is shared, so any account's activity resets the one global idle clock. The
 same loop and middleware drive media_keepwarm.
@@ -40,15 +40,21 @@ _preview_swap_generation = 0
 _preview_swap_inflight = 0
 _last_active = time.monotonic()
 # _last_active minus scheduled runs and their swaps: one run must not make the next look attended.
-_last_attended = _last_active
+# Starts at -inf: a Studio nobody has used yet is away, not in use.
+_last_attended = float("-inf")
 _unattended: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "keepwarm_unattended", default = False
 )
 # The (id, quant) idle-unload last freed, so an alias/unknown request that would otherwise 503 against an empty backend
 # can reload it (set on unload, cleared on reload). The quant lets the reload restore the exact freed variant.
 _last_unloaded_model = None
+_last_unloaded_mlx = False
+_last_unloaded_intent = None
 # Slot KV manifest saved by the idle unload; whoever pops it owns deleting its files.
 _kv_resume = None
+# Slot saves of manually unloaded GGUFs, oldest first, until that GGUF loads again.
+_unload_kv: list = []
+_loaded_by = None
 # Process-wide, not per-loop: the backend slot is shared across every event loop.
 _lifecycle_lock = threading.Lock()
 
@@ -378,6 +384,16 @@ _current_response_scope: contextvars.ContextVar = contextvars.ContextVar(
 )
 
 
+def current_request_counted() -> bool:
+    """Whether the request this context serves is in the in-flight count (an external-provider chat drops out)."""
+    scope = _current_response_scope.get()
+    return (
+        isinstance(scope, dict)
+        and bool(scope.get(_TRACKED_SCOPE_KEY))
+        and not scope.get(_UNTRACKED_SCOPE_KEY)
+    )
+
+
 def set_current_response_scope(scope) -> None:
     _current_response_scope.set(scope if isinstance(scope, dict) else None)
 
@@ -515,9 +531,19 @@ def model_load_gate():
 
 def note_model_loaded(backend = None) -> None:
     """Stamp activity and synchronously drop any reload stash."""
+    global _loaded_by
     _note_activity()
+    gguf = getattr(backend, "_gguf_path", None)
+    if gguf:
+        from utils.account_context import current_account_id
+        _loaded_by = (str(gguf), current_account_id())
     resume = take_kv_resume()
     _set_last_unloaded(None)
+    kept = _take_unload_kv(gguf)
+    if kept is not None and (resume is None or resume.get("gguf") != kept.get("gguf")):
+        resume, kept = kept, resume
+    if kept:
+        _delete_resume_files(kept)
     if resume is None:
         return
     if backend is not None:
@@ -536,11 +562,28 @@ def get_last_unloaded_model():
         return _last_unloaded_model
 
 
-def _set_last_unloaded(value) -> None:
-    global _last_unloaded_model, _kv_resume
+def stash_is_mlx(identity) -> bool:
+    """Whether ``identity``, as get_last_unloaded_model() returned it, is an MLX model idle unload freed."""
+    with _lock:
+        return _last_unloaded_mlx and _last_unloaded_model is identity
+
+
+def get_last_unloaded_intent(identity):
+    with _lock:
+        return _last_unloaded_intent if _last_unloaded_model is identity else None
+
+
+def _set_last_unloaded(
+    value,
+    mlx: bool = False,
+    intent = None,
+) -> None:
+    global _last_unloaded_model, _last_unloaded_mlx, _last_unloaded_intent, _kv_resume
     stale = None
     with _lock:
         _last_unloaded_model = value
+        _last_unloaded_mlx = mlx and value is not None
+        _last_unloaded_intent = intent if value is not None else None
         if value is None and _kv_resume is not None:
             stale, _kv_resume = _kv_resume, None
     if stale:
@@ -561,15 +604,22 @@ def _delete_resume_files(manifest) -> None:
         pass
 
 
+def loaded_account(gguf) -> Optional[str]:
+    loaded = _loaded_by
+    return loaded[1] if gguf and loaded and loaded[0] == str(gguf) else None
+
+
 def _set_kv_resume(value) -> None:
     global _kv_resume
-    stale = None
+    stale = []
     with _lock:
         if _kv_resume is not None and _kv_resume is not value:
-            stale = _kv_resume
+            stale.append(_kv_resume)
         _kv_resume = value
-    if stale:
-        _delete_resume_files(stale)
+        if value is not None:
+            _trim_unload_kv(stale, keep_newest = False)
+    for old in stale:
+        _delete_resume_files(old)
 
 
 def take_kv_resume():
@@ -577,6 +627,50 @@ def take_kv_resume():
     with _lock:
         manifest, _kv_resume = _kv_resume, None
         return manifest
+
+
+def _resume_bytes(manifest) -> int:
+    total = 0
+    for entry in manifest.get("slots") or []:
+        with contextlib.suppress(OSError):
+            total += (Path(manifest.get("dir") or "") / str(entry.get("filename"))).stat().st_size
+    return total
+
+
+def _trim_unload_kv(stale: list, *, keep_newest: bool) -> None:
+    """Caller holds _lock. Evicts the oldest unload saves until every kept save fits the one cap."""
+    global _kv_resume
+    from core.inference.llama_cpp import _SLOT_SAVE_MAX_BYTES
+
+    def _kept_bytes() -> int:
+        resume = _resume_bytes(_kv_resume) if _kv_resume else 0
+        return resume + sum(map(_resume_bytes, _unload_kv))
+
+    while len(_unload_kv) > (1 if keep_newest else 0) and _kept_bytes() > _SLOT_SAVE_MAX_BYTES:
+        stale.append(_unload_kv.pop(0))
+    if keep_newest and _kv_resume is not None and _kept_bytes() > _SLOT_SAVE_MAX_BYTES:
+        stale.append(_kv_resume)
+        _kv_resume = None
+
+
+def stash_unload_kv(manifest) -> None:
+    with _lock:
+        stale = [m for m in _unload_kv if m.get("gguf") == manifest.get("gguf")]
+        _unload_kv[:] = [m for m in _unload_kv if m.get("gguf") != manifest.get("gguf")]
+        _unload_kv.append(manifest)
+        _trim_unload_kv(stale, keep_newest = True)
+    for old in stale:
+        _delete_resume_files(old)
+
+
+def _take_unload_kv(gguf):
+    if not gguf:
+        return None
+    with _lock:
+        for index, manifest in enumerate(_unload_kv):
+            if manifest.get("gguf") == str(gguf):
+                return _unload_kv.pop(index)
+    return None
 
 
 def purge_kv_resume(*, origin: Optional[str] = None) -> None:
@@ -588,8 +682,13 @@ def purge_kv_resume(*, origin: Optional[str] = None) -> None:
             _kv_resume = None
         else:
             resume = None
+        unloaded = [] if origin is not None else _unload_kv[:]
+        if origin is None:
+            _unload_kv.clear()
     if resume:
         _delete_resume_files(resume)
+    for manifest in unloaded:
+        _delete_resume_files(manifest)
 
 
 def restore_kv_resume(backend, manifest) -> None:
@@ -793,15 +892,41 @@ def _loaded_identity(backend):
     return (*identity, companion_roots) if companion_roots else identity
 
 
+def _resident_mlx(standard):
+    name = getattr(standard, "active_model_name", None)
+    entry = (getattr(standard, "models", None) or {}).get(name) if name else None
+    if not isinstance(entry, dict) or not entry.get("is_mlx"):
+        return None
+    # Speech models (TTS, STT) stay loaded: the reload-stash path skips their audio preflights.
+    return None if entry.get("is_audio") else standard
+
+
+def _mlx_identity(standard):
+    # The auto-switch reload stash shape: no quant, the advertised id keys the saved overrides.
+    name = standard.active_model_name
+    return (name, None, getattr(standard, "_openai_advertised_id", None) or name)
+
+
 def loaded_identity():
     """The loaded GGUF's reload identity (path, quant, advertised id), or None when none is loaded."""
     from routes.inference import get_llama_cpp_backend
     return _loaded_identity(get_llama_cpp_backend())
 
 
-def stash_for_reload(identity) -> None:
+def launch_to_replay(backend = None):
+    if backend is None:
+        from routes.inference import get_llama_cpp_backend
+        backend = get_llama_cpp_backend()
+    launch = getattr(backend, "replay_launch", None)
+    if not backend.is_loaded or launch is None:
+        return None
+    intent = getattr(backend, "last_load_intent", None)
+    return {"kwargs": launch, "cpu_fallback": bool(getattr(intent, "cpu_fallback", False))}
+
+
+def stash_for_reload(identity, launch = None) -> None:
     """Let the next reload-only request bring ``identity`` back, as after an idle unload."""
-    _set_last_unloaded(identity)
+    _set_last_unloaded(identity, intent = launch)
 
 
 def _note_idle_unload_event(freed, reason: str = "idle") -> None:
@@ -821,7 +946,7 @@ def _note_idle_unload_event(freed, reason: str = "idle") -> None:
 
 
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
-    """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
+    """Unload the loaded GGUF or MLX model once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import (
         get_auto_unload_api_only,
         get_auto_unload_idle_seconds,
@@ -831,7 +956,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     def _user_pinned(b) -> bool:
         """Whether the setting spares this model. Re-read like the other
         settings: a KV save can outlive the user turning this on. getattr keeps
-        a foreign backend (tests, MLX) on the old unload-everything path."""
+        a foreign backend (tests) on the old unload-everything path."""
         return get_auto_unload_api_only() and getattr(b, "_loaded_by_user_action", False)
 
     seen_model = None
@@ -848,7 +973,11 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             if ttl <= 0:
                 continue
             from core.inference.model_slots import unload_extra_models
-            from routes.inference import get_llama_cpp_backend, release_chat_gpu_claim
+            from routes.inference import (
+                _peek_inference_backend,
+                get_llama_cpp_backend,
+                release_chat_gpu_claim,
+            )
 
             backend = get_llama_cpp_backend()
             # A (re)loaded model counts as activity so it survives one TTL before its first request.
@@ -857,33 +986,37 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     unload_extra_models, _user_pinned, True
                 ):
                     await asyncio.to_thread(release_chat_gpu_claim)
+                mlx = None if backend.is_loaded else _resident_mlx(_peek_inference_backend())
+                resident = backend if backend.is_loaded else mlx
                 # Purging the stash mid-reload would race the restore.
-                current = _loaded_identity(backend)
+                current = _loaded_identity(backend) if mlx is None else _mlx_identity(mlx)
                 if current != seen_model:
                     seen_model = current
                     if current is not None:
                         # The loop's own context: whoever loaded it already stamped whether it was attended.
                         _note_activity(attended = False)
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
-                if backend.is_loaded and await asyncio.to_thread(_user_pinned, backend):
+                if resident is not None and await asyncio.to_thread(_user_pinned, resident):
                     # loaded from the UI, so the user wants it resident; only models the API loaded are freed
                     continue
-                if backend.is_loaded and _is_idle(ttl):
-                    freed = _loaded_identity(backend)
+                if resident is not None and _is_idle(ttl):
+                    freed = current
                     manifest = None
                     if await asyncio.to_thread(get_auto_unload_keep_kv):
+                        save = (
+                            backend.save_slots_for_resume
+                            if mlx is None
+                            else mlx.save_prompt_cache_for_resume
+                        )
                         try:
-                            manifest = await asyncio.to_thread(
-                                backend.save_slots_for_resume,
-                                lambda: not _is_idle(ttl),
-                            )
+                            manifest = await asyncio.to_thread(save, lambda: not _is_idle(ttl))
                         except Exception as exc:
-                            logger.debug("slot save before idle unload failed: %s", exc)
+                            logger.debug("chat KV save before idle unload failed: %s", exc)
                     ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
                     if (
                         ttl <= 0
                         or not _is_idle(ttl)
-                        or await asyncio.to_thread(_user_pinned, backend)
+                        or await asyncio.to_thread(_user_pinned, resident)
                     ):
                         if manifest:
                             _delete_resume_files(manifest)
@@ -896,16 +1029,22 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         continue
+                    launch = launch_to_replay(backend) if mlx is None else None
                     try:
-                        await asyncio.to_thread(backend.unload_model)
+                        if mlx is None:
+                            await asyncio.to_thread(backend.unload_model)
+                        else:
+                            await asyncio.to_thread(mlx.unload_model, freed[0])
                     except Exception:
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    _set_last_unloaded(freed)  # let an alias request reload it
+                    _set_last_unloaded(
+                        freed, mlx = mlx is not None, intent = launch
+                    )  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
-                        logger.info("Idle auto-unload: saved slot KV for restore on reload")
+                        logger.info("Idle auto-unload: saved chat KV for restore on reload")
                     elif manifest:
                         _delete_resume_files(manifest)
                     # After the stash, so a failed release never loses the reload identity.
@@ -917,7 +1056,11 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         await asyncio.to_thread(release_chat_gpu_claim)
                     except Exception as exc:  # noqa: BLE001 - the unload already happened
                         logger.debug("Idle auto-unload: claim release failed: %s", exc)
-                    logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
+                    logger.info(
+                        "Idle auto-unload: freed %s after %ss idle",
+                        "GGUF" if mlx is None else "MLX model",
+                        ttl,
+                    )
                     # An idle unload stashes for reload and skips note_model_unloaded.
                     _note_idle_unload_event(freed)
                     seen_model = None

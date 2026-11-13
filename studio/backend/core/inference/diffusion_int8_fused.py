@@ -1,31 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused int8 activation path between two torchao int8 GEMMs of a DiT feed-forward: one Triton kernel
-reads the int32 ``_int_mm`` output, applies dequant + GELU(tanh) / SwiGLU and writes int8 + the fp32 row scale.
-
-NUMERICS: bit-identical to EAGER torchao + ATen (every bf16 rounding kept, ATen's GELU(tanh) formula op for op (equal
-on every bf16 input), fp contraction off so
-``y * w_scale + bias`` rounds twice, row scale ``bf16(amax / 127.5)`` clamped at fp32 eps, quantizer multiplies by
-the correctly rounded reciprocal). The compiled stock path is NOT eager-exact (Inductor keeps fp32 chains).
-Activation-scale contract follows the incoming scale's dtype: fp32 on torchao >= 0.18; bf16 on <= 0.17, where
-``int32 * bf16`` rounds twice (int32 -> fp32 -> bf16) and ``1 / s`` and ``x * (1 / s)`` round to bf16.
-
-Anything but a plain dynamic symmetric per-row ``Int8Tensor`` on CUDA + Triton >= 3.2 keeps the stock path.
-
-ConvRot (Z-Image int8 default): w1 and w3 rotate the same input, so the SwiGLU's fused in-projection is a ConvRotLinear
-(one rotation + one activation quant for both halves). A rotated w2 needs its input rotated BEFORE the quant, which the
-kernel's fused quant cannot do, so that MLP computes the bf16 SiLU product with the stock epilogue ops and hands it to
-w2's own (rotating) forward. Same ops on the same values as the three stock rotated Linears.
-
-``int8_linear`` (also used by Z-Image's fused attention) runs a plain or rotated Int8Tensor Linear as torchao's act
-quant + ``_int_mm`` + epilogue without torchao 0.17's always-on zero-point pass, and the act quant itself as one probed
-Triton kernel (``int8_act_quant_rows``, bit-identical to torchao 0.17 and 0.18): Inductor's codegen of the same per-row
-quant ran 2-3x slower on B200 (Z-Image shapes, M 4224: K 3840 24-32 -> 11 us, K 10240 53-70 -> 32 us).
-A rotated input (ConvRot) is rotated and quantized by one kernel (``_rotated_act_quant``: ``rotq_h16`` of
-``diffusion_convrot_quant``) on an unlisted-arch card it was armed for, else rotation GEMM + act quant.
-Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0`` (all of the above).
-"""
+"""Fused int8 FFN activation kernel, bit-identical to eager; only a plain dynamic symmetric per-row
+Int8Tensor on CUDA with Triton 3.2 or newer takes it, else stock path;
+UNSLOTH_DIFFUSION_INT8_FUSED=0 disables."""
 
 from __future__ import annotations
 
@@ -38,6 +16,7 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 INT8_FUSED_ENV = "UNSLOTH_DIFFUSION_INT8_FUSED"
+MLP_FAST_ACT_QUANT_ENV = "UNSLOTH_DIFFUSION_INT8_MLP_FAST_ACT_QUANT"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs more than 16 rows; torchao's own safe_int_mm handles the rest, so small M keeps the stock path.
 _MIN_ROWS = 17
@@ -58,6 +37,8 @@ _RQ_HANDLE: Any = None
 _RQ_DEVICES: frozenset = frozenset()
 # UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
 _LINEAR_OFF = False
+# MLP_FAST_ACT_QUANT_ENV at the last install: a global, so traced forwards never read os.environ
+_MLP_FAST_ACTQ = True
 # torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
 _INTMM_MODULE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
@@ -129,12 +110,12 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         b_ptr,
         offs,
         mask,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        EVICT: tl.constexpr,
-        FINAL_ROUND: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        EVICT: tl.constexpr,  # load eviction policy
+        FINAL_ROUND: tl.constexpr,  # round to bf16 at the end
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
     ):
         # Epilogue as torchao: (int32 * x_scale) to bf16, * w_scale, + bias, then bf16; FINAL_ROUND=False defers the last round (it commutes with row max).
         c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT)
@@ -183,14 +164,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         p_sb,
         p_ss,
         p_sh,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        HAS_PREFIX: tl.constexpr,
-        HEAD_DIM: tl.constexpr,
-        CHUNK: tl.constexpr,
-        CHUNK_A: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        HAS_PREFIX: tl.constexpr,  # fused prefix (attn output) columns
+        HEAD_DIM: tl.constexpr,  # hd of the prefix
+        CHUNK: tl.constexpr,  # columns per loop step
+        CHUNK_A: tl.constexpr,  # prefix columns per loop step
     ):
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
@@ -323,11 +304,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         v0,
         offs,
         m,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        EVICT: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        EVICT: tl.constexpr,  # load eviction policy
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
     ):
         g = _pre(
             crow + g0,
@@ -373,11 +354,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         V0,
         stride_c,
         stride_q,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        CHUNK: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        CHUNK: tl.constexpr,  # columns per loop step
     ):
         # Pass 1 parks the bf16 product in a scratch row: recomputing two int32 rows is ALU-bound.
         row = tl.program_id(0).to(tl.int64)
@@ -435,9 +416,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         K,
         stride_x,
         stride_q,
-        BLOCK: tl.constexpr,
-        ONE_PASS: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        BLOCK: tl.constexpr,  # block size along the row
+        ONE_PASS: tl.constexpr,  # row fits one block
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         # Matches torchao from_hp PerRow: torchao <=0.17 rounds s, 1/s and x*(1/s) to bf16; >=0.18 keeps them fp32; q = clamp(rint, -128, 127).
         row = tl.program_id(0).to(tl.int64)
@@ -477,7 +458,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 tl.store(qrow + k + offs, p.to(tl.int8), mask = m)
 
     @triton.jit
-    def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
+    def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):  # block size along the row
         offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         m = offs < n
         y = tl.load(x_ptr + offs, mask = m, other = 0.0).to(tl.float32)
@@ -491,11 +472,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         b_ptr,
         o_ptr,
         N,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        CHUNK: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        CHUNK: tl.constexpr,  # columns per loop step
     ):
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
@@ -847,6 +828,13 @@ def _fast_act_quant(x2d: Any, weight: Any) -> tuple:
     return _act_quant(x2d, weight)
 
 
+def _mlp_act_quant(x2d: Any, weight: Any) -> tuple:
+    """``_fast_act_quant`` for ``_plain_int8_weight`` weights, torchao's quant under the kill switch."""
+    if _MLP_FAST_ACTQ:
+        return _fast_act_quant(x2d, weight)
+    return _act_quant(x2d, weight)
+
+
 @lru_cache(maxsize = 8)
 def _device_ok(index: int) -> bool:
     """CUDA NVIDIA, Triton new enough, toolchain present, kernel compiles and matches the reference once."""
@@ -1120,7 +1108,7 @@ def _ff_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any
         or hidden_states.dtype != torch.bfloat16
     ):
         return type(self).forward(self, hidden_states, *args, **kwargs)
-    xq, xs = _act_quant(x2d, proj.weight)
+    xq, xs = _mlp_act_quant(x2d, proj.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), proj.weight)
     q, s = _OP_HANDLE.gelu(c, xs.reshape(-1), proj.weight.scale.flatten(), proj.bias, None)
     y = _linear_from_q(q, s, down.weight, down.bias, hidden_states.dtype)
@@ -1156,7 +1144,7 @@ def _flux_single_forward(
     residual = hidden_states
     norm_hidden_states, gate = self.norm(hidden_states, emb = temb)
     x2d = norm_hidden_states.reshape(rows, -1)
-    xq, xs = _act_quant(x2d, self.proj_mlp.weight)
+    xq, xs = _mlp_act_quant(x2d, self.proj_mlp.weight)
     c = _int_mm(xq.reshape(rows, -1), self.proj_mlp.weight)
     joint_attention_kwargs = joint_attention_kwargs or {}
     attn_output = self.attn(
@@ -1395,7 +1383,7 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     if in_group:
         xq, xs = _rotated_act_quant(x2d, in_group, fused_in.weight)
     else:
-        xq, xs = _act_quant(x2d, fused_in.weight)
+        xq, xs = _mlp_act_quant(x2d, fused_in.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), fused_in.weight)
     if down_group:
         ws = fused_in.weight.scale.flatten()
@@ -1603,7 +1591,13 @@ def install(
     offload_active: bool = False,
 ) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
-    global _ACTQ_HANDLE, _ACTQ_DEVICES, _RQ_DEVICES, _LINEAR_OFF
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _RQ_DEVICES, _LINEAR_OFF, _MLP_FAST_ACTQ
+    _MLP_FAST_ACTQ = (os.environ.get(MLP_FAST_ACT_QUANT_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
     if int8_fused_disabled():
         # process-global: a previous load's probe must not outlive the kill switch
         _ACTQ_HANDLE = None
@@ -1808,11 +1802,9 @@ _OFF_TREE_RECORDS = (
 
 
 def relocate_after_layer_split(transformer: Any, logger: Any = None) -> dict:
-    """A layer split moved blocks to other cards after their fused records were built on one card. Each off-tree
-    fused Linear (which shared its parts' storage there) is rebuilt on its parts' new card, freeing the stale copy, or
-    its record is dropped (the module then runs its stock path). Regions on a card whose fused kernels fail the probe
-    get their stock forward back. Returns counts; idempotent. Must run before the first forward (the regional compile
-    traces what it finds)."""
+    """After a layer split, off-tree fused Linears are rebuilt on their parts' new card or dropped
+    to the stock path, and cards failing the probe get stock forwards back; idempotent, must run
+    before the first forward."""
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
     out = {"rebuilt": 0, "dropped": 0, "restored": 0}

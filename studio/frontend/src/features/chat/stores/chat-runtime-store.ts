@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "@/features/auth/session-events";
+import {
+  revokeChatFullAccess,
+  withChatFullAccess,
+  type ChatFullAccessGrant,
+  type ChatFullAccessGrants,
+} from "../utils/chat-full-access.ts";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
@@ -13,6 +20,8 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { persistReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
   loadedContextFields,
   type MlxKvQuant,
@@ -122,7 +131,7 @@ import {
   type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
-import { prefillLabelShown } from "../lib/generation-progress";
+import { prefillLabelShown, withPrefillFit } from "../lib/generation-progress";
 import { adoptFirstTurnConfirmations } from "../utils/adopt-first-turn-confirmations";
 import type { MmprojFallbackReason } from "../types/api";
 import type {
@@ -216,7 +225,7 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
   allowedDomains: [],
   blockedDomains: [],
 };
-export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
+export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 0;
 
 /** The patch and run routes reject anything other than 0 or a finite budget with 400. */
 function isSupportedResearchModelTimeout(value: number): boolean {
@@ -419,11 +428,15 @@ export type LoadedPlacement = {
   /** Set when every routed expert is in RAM with a GPU cache of the busiest (--moe-cache-mib auto). */
   expertCacheMib: number | null;
 };
+// x = uncached kilotokens, y = server seconds; sums: n, x, x², x³, x⁴, y, xy, x²y.
+export type LivePrefillFit = { first: number; done: number; sums: readonly number[] };
 export type LivePrefillProgress = {
   processed: number;
   total: number | null;
   cached: number | null;
   tokPerS: number | null;
+  elapsedMs: number | null;
+  fit: LivePrefillFit | null;
 };
 export type LiveDecodeProgress = {
   tokens: number;
@@ -437,6 +450,10 @@ export type LiveGenerationProgress = {
   /** Whether "Processing prompt" is up for this pass; see prefillLabelShown. */
   prefillShown: boolean;
   decode: LiveDecodeProgress | null;
+  /** The context fit is evicting turns; ends with this pass's context_truncated or its first prefill sample. */
+  compacting?: boolean;
+  /** This pass's own context_usage has landed: it counts the reply exactly, so live figures step aside. */
+  settled?: boolean;
 };
 export type PendingImageEditReference = {
   threadId: string | null;
@@ -1051,11 +1068,16 @@ function pendingSnapshotReadsLive(key: ClampedPillKey): boolean {
   );
 }
 
+// Connections keep their own defaults in chat-page: hosted search and code execution are billed.
+function pillDefault(key: ClampedPillKey): boolean {
+  return key === "toolsEnabled" || key === "codeToolsEnabled";
+}
+
 function pillPreference(key: ClampedPillKey): boolean {
   return (
     pillOnRecord(key) ??
     loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ??
-    false
+    pillDefault(key)
   );
 }
 
@@ -1175,7 +1197,11 @@ function firstSetThreadScopedValue(...values: unknown[]): unknown {
   return values.find((value) => value !== undefined);
 }
 
+/** The model-derived params the latest restore laid the open chat's values over. */
+let paramsUnderChatValues: InferenceParams | null = null;
+
 function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
+  paramsUnderChatValues = params;
   const kept: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     const held = firstSetThreadScopedValue(
@@ -1258,6 +1284,35 @@ function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   return false;
 }
 
+/** Puts the chat's own values back where the store shows the loaded model's or a provider's. */
+function restoreChatOwnedValues(
+  threadId: string,
+  settings: ThreadScopedSettings,
+): void {
+  // A model that cannot stop thinking forces thinking on: that true is the model's, so
+  // persisting it would erase a chat's stored false.
+  if (
+    threadId === threadScopedSettingsThreadId &&
+    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
+    activeThreadScopedSettings?.reasoningEnabled === false &&
+    settings.reasoningEnabled !== false &&
+    useChatRuntimeStore.getState().reasoningAlwaysOn
+  ) {
+    settings.reasoningEnabled = false;
+  }
+  if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
+    const onRecord = reasoningEffortOnRecord();
+    if (onRecord !== undefined) settings.reasoningEffort = onRecord;
+  }
+  // A provider constraint moves pills without persisting: the chat keeps its stored value.
+  if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
+    settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
+  }
+  if (keepsStoredValueUnderConstraint("toolsEnabled", threadId, settings)) {
+    settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
+  }
+}
+
 function buildThreadScopedSnapshot(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
@@ -1272,29 +1327,7 @@ function buildThreadScopedSnapshot(
   ) {
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
-  // And for thinking, which a model that cannot stop thinking forces on: that true is the
-  // model's, so persisting it would erase a chat's stored false.
-  if (
-    threadId === threadScopedSettingsThreadId &&
-    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
-    activeThreadScopedSettings?.reasoningEnabled === false &&
-    settings.reasoningEnabled !== false &&
-    useChatRuntimeStore.getState().reasoningAlwaysOn
-  ) {
-    settings.reasoningEnabled = false;
-  }
-  if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
-    const onRecord = reasoningEffortOnRecord();
-    if (onRecord !== undefined) settings.reasoningEffort = onRecord;
-  }
-  // And for pills a provider constraint moved without persisting: the store holds the
-  // provider's value, so the chat keeps the one it was stored with.
-  if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
-    settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
-  }
-  if (keepsStoredValueUnderConstraint("toolsEnabled", threadId, settings)) {
-    settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
-  }
+  restoreChatOwnedValues(threadId, settings);
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
@@ -1959,6 +1992,48 @@ function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
     : false;
 }
 
+/** `state` with the paired chat's own values where the store shows its model's (pill clamps, a pin). */
+export function withChatOwnedSettings<T extends ChatRuntimeStore>(state: T): T {
+  const owned: ThreadScopedSettings = {
+    reasoningEnabled: state.reasoningEnabled,
+    reasoningEffort: state.reasoningEffort,
+  };
+  for (const key of CLAMPED_PILL_KEYS) {
+    owned[key] = readThreadScopedValue(state, key) === true;
+  }
+  if (threadScopedSettingsThreadId !== null) {
+    restoreChatOwnedValues(threadScopedSettingsThreadId, owned);
+  }
+  // Sampling the chat does not own is left unset: a new model's load supplies it (restoreThreadScopedParams).
+  const params: Record<string, unknown> = { ...state.params };
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (firstSetThreadScopedValue(heldThreadScopedParamValue(key), threadScopedOverride(key)) === undefined) {
+      params[key] = undefined;
+    }
+  }
+  return { ...state, ...owned, params: params as unknown as T["params"] };
+}
+
+/** `run`, which carries the model `live` just loaded, with what that load sets: pill clamps, its effort pin, Think, unowned sampling. */
+export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, live: T): T {
+  const next: Record<string, unknown> = { ...run };
+  for (const key of CLAMPED_PILL_KEYS) {
+    next[key] = run[key] === true && !isPillClampedOff(run, key);
+  }
+  if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
+  // Every load writes Think from the model (pin, forced gates, default), not from the chat.
+  next.reasoningEnabled = live.reasoningEnabled;
+  const loaded = (paramsUnderChatValues?.checkpoint === live.params.checkpoint
+    ? paramsUnderChatValues
+    : live.params) as unknown as Record<string, unknown>;
+  const params: Record<string, unknown> = { ...run.params };
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (params[key] === undefined) params[key] = loaded[key];
+  }
+  next.params = params;
+  return next as T;
+}
+
 /** Read the level live: Full access outlives a chat switch but codeToolsEnabled does not. */
 export function codeToolsOn(
   state: Pick<
@@ -1977,6 +2052,22 @@ export function codeToolsOn(
       !isExternalModelId(state.params.checkpoint))
   );
 }
+
+function chatFullAccessPermissionPatch(
+  state: ChatRuntimeStore,
+  grants: ChatFullAccessGrants,
+  threadId: string | null,
+) {
+  const permissions = withChatFullAccess(state, grants, threadId);
+  return {
+    permissionMode: permissions.permissionMode,
+    bypassPermissions: permissions.bypassPermissions,
+    confirmToolCalls: permissions.confirmToolCalls,
+    chatFullAccessPreviousMode: permissions.chatFullAccessPreviousMode,
+    deepResearchEnabled: permissions.deepResearchEnabled,
+  };
+}
+
 
 function loadString(key: string, fallback: string): string {
   return readStorageValue(key) ?? fallback;
@@ -2406,6 +2497,13 @@ type ChatRuntimeStore = {
   bypassPermissions: boolean;
   /** Source of truth; bypassPermissions and confirmToolCalls mirror it. */
   permissionMode: PermissionMode;
+  /** A newer explicit permission choice wins over a delayed approval response. */
+  chatPermissionChoiceVersion: number;
+  chatFullAccessPreviousMode: Exclude<PermissionMode, "full"> | null;
+  /** In-memory grants only: never saved in defaults, thread snapshots or browser storage. */
+  chatFullAccessGrants: ChatFullAccessGrants;
+  chatFullAccessPendingRunId: string | null;
+  chatFullAccessThreadByRunId: Record<string, string>;
   sandboxLevel: SandboxLevel;
   /** Whether the bypass warning dialog is open. Lifted out of the composer menu so confirming
    *  it does not leave the menu frozen. */
@@ -2423,6 +2521,7 @@ type ChatRuntimeStore = {
       autoAllowKey: string;
       threadId: string;
       imageDisclosure?: ImageDisclosure;
+      runId?: string;
     }
   >;
   webFetchToolsEnabled: boolean;
@@ -2446,6 +2545,10 @@ type ChatRuntimeStore = {
   mlxKvQuantNote: string | null;
   mlxInt8Prefill: boolean;
   loadedMlxInt8PrefillRequested: boolean;
+  mlxAnePrefill: boolean;
+  loadedMlxAnePrefillRequested: boolean;
+  mlxFastVerify: boolean;
+  loadedMlxFastVerifyRequested: boolean;
   /** MLX offload knobs as chosen (null = Auto), as the resident load asked for them, the
    *  fraction it applied (null = none), and why a request was not applied. */
   mlxPleOffload: MlxOffload;
@@ -2496,6 +2599,9 @@ type ChatRuntimeStore = {
   loadedCtxCheckpoints: number | null;
   cacheRam: number | null;
   loadedCacheRam: number | null;
+  /** GGUF only: standalone Engram table precision as chosen and as the resident load ran it. */
+  engramPrecision: string | null;
+  loadedEngramPrecision: string | null;
   tensorParallel: boolean;
   loadedTensorParallel: boolean | null;
   loadedDisableVision: boolean | null;
@@ -2566,7 +2672,7 @@ type ChatRuntimeStore = {
       fromModelDefaults?: boolean;
       maxTokensCap?: number;
       migrateOwnedGlobalQwenDefaults?: boolean;
-      /** A preset pick: not an edit of the loaded model, so its remembered params are dropped
+      /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
     },
@@ -2639,6 +2745,10 @@ type ChatRuntimeStore = {
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  grantChatFullAccess: (grant: ChatFullAccessGrant) => void;
+  adoptChatFullAccessRun: (runId: string, threadId: string) => void;
+  clearUnadoptedChatFullAccessRun: (runId: string) => void;
+  clearChatFullAccessGrants: () => void;
   setSandboxLevel: (level: SandboxLevel) => void;
   setBypassConfirmOpen: (open: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
@@ -2649,6 +2759,7 @@ type ChatRuntimeStore = {
     autoAllowKey: string,
     threadId: string,
     imageDisclosure?: ImageDisclosure,
+    runId?: string,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -2688,7 +2799,9 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setLivePrefill: (threadId: string | null, prefill: LivePrefillProgress) => void;
   setLiveDecode: (threadId: string | null, decode: LiveDecodeProgress) => void;
+  setLiveCompacting: (threadId: string | null, compacting: boolean) => void;
   clearLiveGenerationForThread: (threadId: string | null) => void;
+  settleLiveGeneration: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
@@ -4156,11 +4269,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinCodeExecution: false,
   supportsBuiltinImageGeneration: false,
   supportsBuiltinWebFetch: false,
-  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, pillDefault("toolsEnabled")),
   keepModelsLoaded: false,
   localImageModelReady: false,
   localVideoModelReady: false,
-  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
+  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, pillDefault("codeToolsEnabled")),
   codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
@@ -4180,6 +4293,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // no stored bypass: sandbox and gate removal needs a warning each session.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
+  chatPermissionChoiceVersion: 0,
+  chatFullAccessPreviousMode: null,
+  chatFullAccessGrants: {},
+  chatFullAccessPendingRunId: null,
+  chatFullAccessThreadByRunId: {},
   sandboxLevel: loadSandboxLevel(),
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
@@ -4222,6 +4340,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   mlxKvQuantNote: null,
   mlxInt8Prefill: false,
   loadedMlxInt8PrefillRequested: false,
+  mlxAnePrefill: false,
+  loadedMlxAnePrefillRequested: false,
+  mlxFastVerify: false,
+  loadedMlxFastVerifyRequested: false,
   mlxPleOffload: null,
   mlxExpertOffload: null,
   loadedMlxPleOffloadRequested: null,
@@ -4263,6 +4385,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedCtxCheckpoints: null,
   cacheRam: null,
   loadedCacheRam: null,
+  engramPrecision: null,
+  loadedEngramPrecision: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   loadedDisableVision: null,
@@ -4902,7 +5026,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
         : null;
       return {
+        ...chatFullAccessPermissionPatch(state, state.chatFullAccessGrants, activeThreadId),
         activeThreadId,
+        chatFullAccessPendingRunId: null,
         activeThreadEpoch: state.activeThreadEpoch + 1,
         contextUsage:
           own && own.modelId && own.modelId !== state.params.checkpoint ? null : own,
@@ -5016,7 +5142,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             stored?.permissionMode ??
             globalThreadScopedDefaults?.permissionMode ??
             loadPermissionMode();
-          if (underneath !== "full") applied[key] = underneath;
+          if (underneath !== "full") {
+            applied[key] = underneath;
+            if (state.chatFullAccessPreviousMode !== null) nextState.chatFullAccessPreviousMode = underneath;
+          }
           continue;
         }
         // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
@@ -5152,6 +5281,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       mlxKvQuantNote: null,
       mlxInt8Prefill: false,
       loadedMlxInt8PrefillRequested: false,
+      mlxAnePrefill: false,
+      loadedMlxAnePrefillRequested: false,
+      mlxFastVerify: false,
+      loadedMlxFastVerifyRequested: false,
       mlxPleOffload: null,
       mlxExpertOffload: null,
       loadedMlxPleOffloadRequested: null,
@@ -5193,6 +5326,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedCtxCheckpoints: null,
       cacheRam: null,
       loadedCacheRam: null,
+      engramPrecision: null,
+      loadedEngramPrecision: null,
       tensorParallel: false,
       loadedTensorParallel: null,
   loadedDisableVision: null,
@@ -5227,6 +5362,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+        if (
+          state.params.checkpoint &&
+          state.supportsReasoning &&
+          !state.reasoningAlwaysOn &&
+          state.supportsReasoningOff
+        ) {
+          persistReasoningEnabled(state.params.checkpoint, reasoningEnabled);
+        }
       } else {
         noteConstraintSuppressedThreadField("reasoningEnabled");
       }
@@ -5388,6 +5531,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             webFetchToolsEnabled: false,
             bypassPermissions: false,
             permissionMode,
+            chatFullAccessPreviousMode: null,
+            chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
+            chatFullAccessPendingRunId: null,
+            chatFullAccessGrants: revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId),
             confirmToolCalls:
               permissionMode === "ask" || permissionMode === "auto",
             queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5465,6 +5612,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (state.permissionMode === "full") {
         return {
           confirmToolCalls,
+          chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5473,6 +5621,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         confirmToolCalls,
         permissionMode,
+        chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5489,10 +5638,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
           permissionMode,
+          chatFullAccessPreviousMode: null,
           bypassPermissions: true,
           confirmToolCalls: false,
           deepResearchEnabled: false,
           codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
+          chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5501,9 +5652,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
       return {
         permissionMode,
+        chatFullAccessPreviousMode: null,
+        chatFullAccessPendingRunId: null,
+        chatFullAccessGrants: revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId),
         bypassPermissions: false,
         confirmToolCalls,
         codeToolsDeclinedUnderFullAccess: false,
+        chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5515,9 +5670,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         return {
           bypassPermissions,
           permissionMode: "full" as PermissionMode,
+          chatFullAccessPreviousMode: null,
           confirmToolCalls: false,
           deepResearchEnabled: false,
           codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
+          chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5526,8 +5683,77 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         bypassPermissions,
         permissionMode,
+        chatFullAccessPreviousMode: null,
+        chatFullAccessPendingRunId: null,
+        chatFullAccessGrants: revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId),
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
         codeToolsDeclinedUnderFullAccess: false,
+        chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  grantChatFullAccess: (grant) =>
+    set((state) => {
+      if (!grant.runId || !grant.sessionId) return state;
+      grant = {
+        ...grant,
+        threadId: grant.threadId || state.chatFullAccessThreadByRunId[grant.runId] || "",
+        choiceVersion: state.chatPermissionChoiceVersion,
+      };
+      const grants = { ...state.chatFullAccessGrants, [grant.runId]: grant };
+      return {
+        chatFullAccessGrants: grants,
+        chatFullAccessPendingRunId: !grant.threadId && state.activeThreadId === null
+          ? grant.runId : state.chatFullAccessPendingRunId,
+        ...chatFullAccessPermissionPatch(state, grants, state.activeThreadId),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  adoptChatFullAccessRun: (runId, threadId) =>
+    set((state) => {
+      if (!runId || !threadId || threadId === "__default") return state;
+      const grant = state.chatFullAccessGrants[runId];
+      const recorded = state.chatFullAccessThreadByRunId[runId];
+      if (recorded && recorded !== threadId) return state;
+      const runThreads = recorded
+        ? state.chatFullAccessThreadByRunId
+        : { ...state.chatFullAccessThreadByRunId, [runId]: threadId };
+      if (!grant || grant.threadId) return recorded ? state : { chatFullAccessThreadByRunId: runThreads };
+      const grants = { ...state.chatFullAccessGrants };
+      if (grant.choiceVersion === state.chatPermissionChoiceVersion) grants[runId] = { ...grant, threadId };
+      else delete grants[runId];
+      return {
+        chatFullAccessGrants: grants,
+        chatFullAccessThreadByRunId: runThreads,
+        chatFullAccessPendingRunId: state.chatFullAccessPendingRunId === runId ? null : state.chatFullAccessPendingRunId,
+        ...chatFullAccessPermissionPatch(state, grants, state.activeThreadId),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  clearUnadoptedChatFullAccessRun: (runId) =>
+    set((state) => {
+      // The run's thread mapping stays: a first-turn upgrade acknowledged after the run ended binds through it.
+      const grant = state.chatFullAccessGrants[runId];
+      if (!grant || grant.threadId) return state;
+      const grants = { ...state.chatFullAccessGrants };
+      delete grants[runId];
+      return {
+        chatFullAccessGrants: grants,
+        chatFullAccessPendingRunId: state.chatFullAccessPendingRunId === runId
+          ? null : state.chatFullAccessPendingRunId,
+      };
+    }),
+  clearChatFullAccessGrants: () =>
+    set((state) => {
+      const permissions = withChatFullAccess(state, {}, state.activeThreadId);
+      return {
+        chatFullAccessGrants: {},
+        chatFullAccessPendingRunId: null,
+        chatFullAccessThreadByRunId: {},
+        permissionMode: permissions.permissionMode,
+        bypassPermissions: permissions.bypassPermissions,
+        confirmToolCalls: permissions.confirmToolCalls,
+        chatFullAccessPreviousMode: null,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5548,6 +5774,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     autoAllowKey,
     threadId,
     imageDisclosure,
+    runId,
   ) =>
     set((state) => ({
       toolConfirmations: {
@@ -5558,6 +5785,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           autoAllowKey,
           threadId,
           imageDisclosure,
+          runId,
         },
       },
     })),
@@ -5817,7 +6045,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setLivePrefill: (threadId, prefill) =>
     set((state) => {
       const key = threadId || "__default";
-      const prefillShown = prefillLabelShown(state.liveGenerationByThreadId[key], prefill);
+      const previous = state.liveGenerationByThreadId[key];
+      prefill = withPrefillFit(previous, prefill);
+      const prefillShown = prefillLabelShown(previous, prefill);
       // A new prompt pass (the next round of a tool loop) starts over, so its decode figures go too.
       return {
         liveGenerationByThreadId: {
@@ -5837,8 +6067,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             prefill: current?.prefill ?? null,
             prefillShown: current?.prefillShown ?? false,
             decode,
+            ...(current?.settled ? { settled: true } : {}),
           },
         },
+      };
+    }),
+  setLiveCompacting: (threadId, compacting) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (!compacting && !current?.compacting) return state;
+      // A new pass: the last round's prefill and decode figures describe a prompt the fit is replacing.
+      const next: LiveGenerationProgress = compacting
+        ? { prefill: null, prefillShown: false, decode: null, compacting: true }
+        : { ...current!, compacting: false };
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: next },
+      };
+    }),
+  settleLiveGeneration: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (current === undefined || current.settled) return state;
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: { ...current, settled: true } },
       };
     }),
   clearLiveGenerationForThread: (threadId) =>
@@ -6005,9 +6258,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
 }));
 
+const clearChatFullAccessOnAuthChange = () => useChatRuntimeStore.getState().clearChatFullAccessGrants();
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
+  window.addEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
+}
+
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);
+  import.meta.hot.dispose(() => {
+    window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
+    window.removeEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
+  });
 }
 
 export function resolveSpeculativeSettingsForLoad({

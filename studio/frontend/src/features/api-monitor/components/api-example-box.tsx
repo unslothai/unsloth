@@ -52,17 +52,19 @@ export function ApiExampleBox({
   choices,
   code,
   fitContent,
+  hasRealKey = false,
 }: {
   choices: ApiExampleChoices;
   code: string;
   fitContent?: boolean;
+  hasRealKey?: boolean;
 }) {
   return (
     <ExampleCodeBox
       code={code}
       language={apiExampleShikiLanguage(choices.language, choices.os)}
       label="Example request"
-      redactFromReload={false}
+      redactFromReload={hasRealKey}
       pills={
         <ExampleToggle
           label="Language"

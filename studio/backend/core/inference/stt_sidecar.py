@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Standalone speech-to-text (STT) sidecar for dictation.
-
-Loads a Whisper model (via Transformers) in a spawn child of its own, separate from the chat model's
-inference subprocess, so dictation works with any chat model without evicting it. Curated defaults
-plus any Transformers-compatible Whisper repo; weights come through Unsloth's Model Hub and stay
-warm briefly between dictations. CUDA runs float16; MPS and CPU run float32.
-
-Everything except the model itself stays here: device choice, the Hub cache, audio decoding,
-windowing and the idle timer. Only the load and the generate happen in
-core/inference/stt_transformers_worker.py, because an accelerator context is never returned while
-the process holding it lives and the backend must not be the process that takes one.
-"""
+"""Whisper dictation sidecar; load and generate run in stt_transformers_worker.py in a spawn child."""
 
 from __future__ import annotations
 
@@ -222,6 +211,14 @@ class SttAudioDecodeError(ValueError):
 
 class SttAudioTooLongError(ValueError):
     """The decoded audio exceeds the bounded transcription duration."""
+
+
+class SttContextSizeError(ValueError):
+    """A recording cannot fit the selected context, or Auto cannot size it reliably."""
+
+
+class SttIncompleteTranscriptionError(ValueError):
+    """The server stopped at a limit instead of completing the transcription."""
 
 
 class SttLanguageError(ValueError):
@@ -516,11 +513,16 @@ def _fallback_revisions(repo: str, *, hub_cache: Optional[Path] = None) -> list[
     return candidates
 
 
-def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
-    """Resolve a canonical SHA below this repository's active snapshots dir."""
+def _safe_snapshot_for_revision(
+    repo: str,
+    revision: str,
+    *,
+    hub_cache: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve a canonical SHA below this repository's snapshots dir in *hub_cache* (default: the active cache)."""
     if not _HF_COMMIT_SHA.fullmatch(revision):
         return None
-    snapshots = _repo_cache_dir(repo) / "snapshots"
+    snapshots = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots"
     candidate = snapshots / revision
     try:
         snapshots_resolved = snapshots.resolve()
@@ -546,27 +548,36 @@ def _snapshot_usable(model_id: str, snapshot: Path) -> bool:
 
 
 def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
-    """Find one complete local snapshot without contacting the Hub."""
+    """Find one complete local snapshot in any cache find_in_hub_caches covers, without contacting the Hub."""
     model_id = resolve_model_id(model)
     repo = resolve_model_repo(model_id)
+    from core.inference.model_cache_search import find_in_hub_caches
 
     recorded = _read_revision_record(repo)
+    return find_in_hub_caches(
+        repo, lambda hub_cache: _complete_snapshot_in(model_id, repo, recorded, hub_cache)
+    )
+
+
+def _complete_snapshot_in(
+    model_id: str, repo: str, recorded: Optional[str], hub_cache: Path
+) -> Optional[Path]:
     if recorded:
-        snapshot = _safe_snapshot_for_revision(repo, recorded)
+        snapshot = _safe_snapshot_for_revision(repo, recorded, hub_cache = hub_cache)
         if snapshot is not None and _snapshot_usable(model_id, snapshot):
             return snapshot
 
-    ref = _repo_cache_dir(repo) / "refs" / "main"
+    ref = _repo_cache_dir(repo, hub_cache = hub_cache) / "refs" / "main"
     try:
         revision = ref.read_text(encoding = "utf-8").strip()
     except OSError:
         revision = ""
-    snapshot = _safe_snapshot_for_revision(repo, revision)
+    snapshot = _safe_snapshot_for_revision(repo, revision, hub_cache = hub_cache)
     if snapshot is not None and _snapshot_usable(model_id, snapshot):
         _write_revision_record(repo, revision)
         return snapshot
 
-    snapshots = _repo_cache_dir(repo) / "snapshots"
+    snapshots = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots"
     try:
         revisions = sorted(
             (
@@ -579,7 +590,7 @@ def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
     except OSError:
         return None
     for _mtime, revision in revisions:
-        snapshot = _safe_snapshot_for_revision(repo, revision)
+        snapshot = _safe_snapshot_for_revision(repo, revision, hub_cache = hub_cache)
         if snapshot is not None and _snapshot_usable(model_id, snapshot):
             _write_revision_record(repo, revision)
             return snapshot
@@ -1471,14 +1482,14 @@ class WhisperSttSidecar:
     ):
         """An explicit device differing from the resident one reloads the model; None keeps what is
         resident."""
-        from core.inference.audio_device import audio_device_default, normalize_audio_device
+        from core.inference.audio_device import normalize_audio_device, stt_device_default
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         model_id = resolve_model_id(model)
         # None means no opinion, not auto: do not move a model another surface placed.
         requested = None if device is None else normalize_audio_device(device)
-        preference = audio_device_default() if requested is None else requested
+        preference = stt_device_default() if requested is None else requested
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
