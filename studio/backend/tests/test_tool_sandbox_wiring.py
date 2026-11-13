@@ -770,6 +770,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "isolated",
         "pip_python",
         "pth_zip",
+        "own_prefix",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -801,6 +802,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # --isolated ignores PIP_TARGET, so it chooses nothing here.
         "isolated": f"PIP_TARGET=vendor python -m pip --isolated install -q --no-index --no-deps {wheel} && {show}",
         "pth_zip": f"{_PIP} {wheel} && {show}",
+        # A PIP_PREFIX the command sets itself is kept.
+        "own_prefix": f'PIP_PREFIX="$PWD/deps" {_PIP} {wheel} && find "$PWD/deps" -name "{name}.py"',
         "pip_python": f"python -m venv venv && python -m pip --isolated --python venv/bin/python install -q "
         f"--no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
         "editable": f"{_PIP} {wheel} && {show}",
@@ -832,6 +835,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "pip_user_off": packages,
         "isolated": packages,
         "pth_zip": packages,
+        "own_prefix": str(workdir / "deps"),
         "pip_python": str(workdir / "venv"),
         "same_process": packages,
         "editable": str(workdir / "src"),
@@ -970,12 +974,20 @@ def test_the_shim_never_loads_a_chat_planted_stdlib_module(monkeypatch, tmp_path
         (site_dir / f"__editable__.planted-1.0.pth").write_text(
             f"import {finder}; {finder}.install()\n"
         )
-        (site_dir / f"{finder}.py").write_text("MAPPING = {}\nNAMESPACES = {}\n")
+        # A mapping that names a built-in module must not replace it.
+        planted = site_dir / "planted_atexit.py"
+        planted.write_text(f"open({str(marker)!r}, 'w').close()\n")
+        (site_dir / f"{finder}.py").write_text(
+            f"MAPPING = {{'atexit': {str(planted)[:-3]!r}}}\nNAMESPACES = {{}}\n"
+        )
     # What reading the finder data imports; types and pathlib are shadowable on main already.
     for helper in ("sysconfig", "ast"):
         (site_dir / f"{helper}.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
     command = "python -c 'import collections.abc, xml.dom; print(41 + 1)'"
+    if editable:
+        # A pip process imports atexit in the shim; pip's own imports already shadow on main.
+        command = "python -m pip --version >/dev/null; " + command
     out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
     assert "42" in out, out
     assert not marker.exists()

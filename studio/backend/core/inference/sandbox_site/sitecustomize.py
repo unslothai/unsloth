@@ -403,6 +403,7 @@ def _route_pip():
                     os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT", "PIP_HOME")
                 )
                 placed = placed or os.environ.get("PIP_USER", "").strip().lower() in truthy
+                placed = placed or os.environ.get("PIP_PREFIX", prefix) not in ("", prefix)
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
@@ -592,7 +593,13 @@ class _SessionPackagesFinder:
 _entries = _session_entries()
 if _entries and not any(isinstance(f, _SessionPackagesFinder) for f in sys.meta_path):
     try:
-        sys.meta_path.insert(0, _SessionPackagesFinder(_entries, _read_pth_files(_entries)))
+        _finder = _SessionPackagesFinder(_entries, _read_pth_files(_entries))
+        # Behind the built-in and frozen importers, so an editable mapping can never replace those modules.
+        _at = next(
+            (i for i, f in enumerate(sys.meta_path) if getattr(f, "__name__", "") == "PathFinder"),
+            len(sys.meta_path),
+        )
+        sys.meta_path.insert(_at, _finder)
     except Exception:  # noqa: BLE001
         pass
 
