@@ -4,11 +4,16 @@
 """MiniMax-H3-Image speed levers, reusing the MiniMax-H3 video ones (same attention layout).
 ``UNSLOTH_H3_IMAGE_SPEED=0`` disables all; each also honours its video switch.
 
-Exact: h3_int8_gemm, h3_fused_qkv, h3_strided_attn, h3_shared_qkv_quant, the _native_flash pin on sm80 / sm89.
-Tolerance-level: h3_qk_rope (last-bit rstd drift changes the 6-step image, so off by default on the streamed tier;
-UNSLOTH_H3_IMAGE_QK_ROPE forces it), h3_fused_swiglu, h3_compiled (opt-in via UNSLOTH_H3_IMAGE_COMPILE=1: workspace
-unmeasured beside the 37.5 GB A100-40 dit_resident peak). The streamed tier gets attention levers only: its blocks
-move per forward, so resident-projection levers cannot engage."""
+Exact: h3_int8_gemm, h3_fused_qkv, h3_strided_attn, h3_shared_qkv_quant, h3_row_mod (AdaLN rows read through the
+row index instead of gathered, eager roundings kept, checked per device; every tier unless the opt-in compile is on,
+UNSLOTH_H3_ROW_MOD=0 turns it off),
+h3_qk_rope (bit-identical to the eager norm + rope, checked per device; on for every tier, UNSLOTH_H3_IMAGE_QK_ROPE=0
+turns it off), the _native_flash pin on sm80 / sm89.
+Tolerance-level: h3_int8_gemm_streamed (the streamed tier's int8 Linears take the int8 GEMM while their weight is on
+the card; not byte-identical to the stock streamed path, the same GEMM the resident tiers run;
+UNSLOTH_H3_IMAGE_INT8_GEMM_STREAMED=0 keeps the stock path), h3_fused_swiglu, h3_compiled (opt-in via UNSLOTH_H3_IMAGE_COMPILE=1: workspace
+unmeasured beside the 37.5 GB A100-40 dit_resident peak). The streamed tier gets the attention levers and the
+streamed int8 GEMM; the resident-only ones (fused QKV, fused SwiGLU) need projections that stay on the card."""
 
 from __future__ import annotations
 
@@ -19,6 +24,8 @@ from typing import Any, Optional
 SPEED_ENV = "UNSLOTH_H3_IMAGE_SPEED"
 COMPILE_ENV = "UNSLOTH_H3_IMAGE_COMPILE"
 QK_ROPE_ENV = "UNSLOTH_H3_IMAGE_QK_ROPE"
+# "0": the streamed tier's int8 Linears keep the stock dequantize + matmul path
+STREAMED_GEMM_ENV = "UNSLOTH_H3_IMAGE_INT8_GEMM_STREAMED"
 LEVERS_ATTR = "_unsloth_h3_speed_levers"
 _RESIDENT_PLACEMENTS = ("resident", "dit_resident")
 
@@ -27,18 +34,25 @@ def speed_enabled() -> bool:
     return (os.environ.get(SPEED_ENV) or "1").strip().lower() not in ("0", "off", "false", "no")
 
 
+def streamed_gemm_enabled() -> bool:
+    return (os.environ.get(STREAMED_GEMM_ENV) or "1").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
 def compile_enabled() -> bool:
     return (os.environ.get(COMPILE_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
 def image_qk_rope_enabled(resident: bool = False) -> bool:
-    """The fused q/k norm + rope for H3-Image: forced by UNSLOTH_H3_IMAGE_QK_ROPE, else on for the resident tiers."""
+    """The fused q/k norm + rope for H3-Image: on for every tier (``resident`` no longer matters: the op is bit-exact
+    and falls back to the stock math wherever its device check did not pass); UNSLOTH_H3_IMAGE_QK_ROPE=0 turns it
+    off."""
     value = (os.environ.get(QK_ROPE_ENV) or "").strip().lower()
-    if value in ("1", "on", "true", "yes"):
-        return True
-    if value in ("0", "off", "false", "no"):
-        return False
-    return bool(resident)
+    return value not in ("0", "off", "false", "no")
 
 
 def _row_pads(transformer: Any) -> list:
@@ -111,6 +125,19 @@ def install_h3_image_speed(
     return out
 
 
+def _dit_streamer_keeps_parameters(pipe: Any) -> bool:
+    """Only the pinned streamer copies into the same parameters; ``ModuleListStreamer`` swaps in new ones per call,
+    so the GEMM would always fall back while the row pads were already lost."""
+    from .diffusion_minimax_h3_image import ModuleListStreamer
+
+    streamers = [
+        s
+        for s in getattr(pipe, "_unsloth_h3_streamers", None) or ()
+        if getattr(s, "_unsloth_role", None) == "transformer"
+    ]
+    return bool(streamers) and not any(isinstance(s, ModuleListStreamer) for s in streamers)
+
+
 def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
     import torch
 
@@ -129,6 +156,15 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
         if int8_gemm.install(transformer, logger):
             _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
             levers.append("h3_int8_gemm")
+    elif (
+        getattr(plan, "placement", None) == "stream"
+        and streamed_gemm_enabled()
+        and _dit_streamer_keeps_parameters(pipe)
+    ):
+        from . import diffusion_int8_gemm as int8_gemm
+        if int8_gemm.install(transformer, logger, device = dev):
+            _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
+            levers.append("h3_int8_gemm_streamed")
     from .diffusion_attention import apply_attention_backend, select_attention_backend
     from .video_minimax_h3_attn import (
         h3_attention_backend,
@@ -164,6 +200,10 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
             levers.append("h3_qk_rope")
         if shared_qkv_count(transformer):
             levers.append("h3_shared_qkv_quant")
+    if not compile_enabled():
+        from .video_minimax_h3_rowmod import install as install_row_mod
+        if install_row_mod(transformer, logger = logger):
+            levers.append("h3_row_mod")
     if "h3_int8_gemm" in levers:
         from .video_minimax_h3_ffn import install as install_ffn
         if install_ffn(transformer, device = dev, logger = logger):

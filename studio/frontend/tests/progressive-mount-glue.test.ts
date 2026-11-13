@@ -636,6 +636,18 @@ test("a copy from a field leaves the window alone", () => {
   assert.match(GLUE, /const EDITABLE = "input, textarea, \[contenteditable=true\]";/);
 });
 
+test("rows get their role and ordinals before anything reads their style", () => {
+  // Published only in the layout effect, the role restyled every newly mounted row a second time.
+  const early = section(GLUE, "useInsertionEffect(() => {\n    const viewport = viewportRef.current;\n    if (!viewport) return;\n    const windowed", "}, [win, count, readMetas, viewportRef]);");
+  assert.match(early, /publishOrdinals\(viewport, readMetas\(\), windowed\);/);
+  assert.match(early, /ordinalsRef\.current = windowed;/);
+  assert.ok(
+    GLUE.indexOf("publishOrdinals(viewport, readMetas(), windowed);") <
+      GLUE.indexOf("useLayoutEffect(() => {\n    winRef.current = win;"),
+    "the ordinals go on before the layout effect's anchor reads",
+  );
+});
+
 test("a commit that can wait does not start while a reply streams", () => {
   // React restarts a transition render on every chunk: one issued mid-stream lands after the reply.
   const step = section(GLUE, "const step = useCallback(", "stepRef.current = step;");
