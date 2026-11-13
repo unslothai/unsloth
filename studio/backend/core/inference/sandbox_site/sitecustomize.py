@@ -378,6 +378,10 @@ def _route_pip():
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
+                if "--isolated" in sys.argv and "install" in sys.argv:
+                    # --isolated ignores PIP_* variables: pass the same options on the command line.
+                    at = sys.argv.index("install") + 1
+                    sys.argv[at:at] = ["--prefix", prefix, "--ignore-installed"]
             elif os.environ.get("PIP_PREFIX") == prefix:
                 os.environ.pop("PIP_PREFIX", None)
                 os.environ.pop("PIP_IGNORE_INSTALLED", None)
@@ -454,17 +458,13 @@ def _install_editable_finder(entry, module):
     exec(compile(code, "<" + module + ">", "exec"), finder_module.__dict__)
     sys.modules[module] = finder_module
     finder_module.install()
-    # First, so a chat's editable fork wins over Studio's copy like its other installs.
-    finder = finder_module._EditableFinder
-    if finder in sys.meta_path:
-        sys.meta_path.remove(finder)
-        sys.meta_path.insert(0, finder)
+    return finder_module._EditableFinder
 
 
 # PYTHONPATH skips .pth files: take their path lines and setuptools' editable finders, never run their imports.
 # Paths go right after the session dirs, so a chat's editable fork wins over Studio's copy like its other installs.
 def _read_pth_files(entries):
-    added = []
+    added, finders = [], []
     for entry in entries:
         try:
             names = sorted(n for n in os.listdir(entry) if n.endswith(".pth"))
@@ -479,7 +479,7 @@ def _read_pth_files(entries):
                     if line.startswith(("import ", "import\t")):
                         module = line[len("import ") :].split(";")[0].strip()
                         if module.startswith("__editable___") and module.endswith("_finder"):
-                            _install_editable_finder(entry, module)
+                            finders.append((entry, module))
                         continue
                     path = os.path.abspath(os.path.join(entry, line))
                     if (
@@ -491,16 +491,32 @@ def _read_pth_files(entries):
                         added.append(path)
             except Exception:  # noqa: BLE001
                 continue
+    installed = []
+    if finders:
+        # The helpers they import (ast, sysconfig, pathlib, ...) come from the stdlib, never a chat-planted copy.
+        saved = sys.path[:]
+        sys.path[:] = [e for e in saved if e not in entries]
+        try:
+            for entry, module in finders:
+                try:
+                    installed.append(_install_editable_finder(entry, module))
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            sys.path[:] = saved + [e for e in sys.path if e not in saved]
     if added:
         at = max(i for i, e in enumerate(sys.path) if e in entries) + 1
         sys.path[at:at] = added
+    return [f for f in installed if f is not None]
 
 
-# First on meta_path: a session dir pip creates mid-process is cached as missing, and a namespace imported
-# before an install lacks the new portion.
+# First on meta_path: a session dir pip creates mid-process is cached as missing, a namespace imported before an
+# install lacks the new portion, and an editable fork's concrete module wins over Studio's copy (namespaces are
+# left to the normal aggregation, which the editable finders still join from their usual place).
 class _SessionPackagesFinder:
-    def __init__(self, entries):
+    def __init__(self, entries, editable):
         self._entries = entries
+        self._editable = editable
 
     def find_spec(
         self,
@@ -512,6 +528,10 @@ class _SessionPackagesFinder:
         for entry in self._entries:
             if entry in cache and cache[entry] is None and os.path.isdir(entry):
                 del cache[entry]
+        for finder in self._editable:
+            spec = finder.find_spec(name, path, target)
+            if spec is not None and spec.loader is not None:
+                return spec
         if path is None:
             return None
         parent = getattr(sys.modules.get(name.rpartition(".")[0]), "__spec__", None)
@@ -529,8 +549,7 @@ class _SessionPackagesFinder:
 _entries = _session_entries()
 if _entries and not any(isinstance(f, _SessionPackagesFinder) for f in sys.meta_path):
     try:
-        _read_pth_files(_entries)
-        sys.meta_path.insert(0, _SessionPackagesFinder(_entries))
+        sys.meta_path.insert(0, _SessionPackagesFinder(_entries, _read_pth_files(_entries)))
     except Exception:  # noqa: BLE001
         pass
 

@@ -758,7 +758,16 @@ _PIP = "python -m pip install -q --no-index --no-deps"
 
 @pytest.mark.parametrize(
     "case",
-    ["chat", "same_process", "editable", "project_venv", "target", "env_target", "pip_user_off"],
+    [
+        "chat",
+        "same_process",
+        "editable",
+        "project_venv",
+        "target",
+        "env_target",
+        "pip_user_off",
+        "isolated",
+    ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp_path, case):
@@ -780,6 +789,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "target": f"{_PIP} --target vendor {wheel} && PYTHONPATH=vendor {show}",
         "env_target": f"PIP_TARGET=vendor {_PIP} {wheel} && PYTHONPATH=vendor {show}",
         "pip_user_off": f"PIP_USER=0 {_PIP} {wheel} && {show}",
+        "isolated": f"python -m pip --isolated install -q --no-index --no-deps {wheel} && {show}",
         "editable": f"{_PIP} {wheel} && {show}",
         # Python caches the session dirs as missing at startup, before pip creates them.
         "same_process": 'python -c "import subprocess, sys; subprocess.check_call(sys.argv[1:]); '
@@ -807,6 +817,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "target": str(workdir / "vendor"),
         "env_target": str(workdir / "vendor"),
         "pip_user_off": packages,
+        "isolated": packages,
         "same_process": packages,
         "editable": str(workdir / "src"),
         "project_venv": str(workdir / "venv"),
@@ -928,6 +939,30 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
     assert f"{expected}{os.sep}" in out, out
     if case in ("namespace", "pkgutil_namespace"):
         assert "['a', 'b']" in out, out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_an_editable_finder_never_loads_a_chat_planted_stdlib_module(monkeypatch, tmp_path):
+    """Building an editable finder imports its helpers from the stdlib, not from the tool-writable chat folder."""
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    marker = tmp_path / "planted_ran"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    site_dir.mkdir(parents = True)
+    finder = "__editable___planted_1_0_finder"
+    (site_dir / f"__editable__.planted-1.0.pth").write_text(
+        f"import {finder}; {finder}.install()\n"
+    )
+    (site_dir / f"{finder}.py").write_text("MAPPING = {}\nNAMESPACES = {}\n")
+    # What reading the finder data imports; types and pathlib are shadowable on main already.
+    for helper in ("sysconfig", "ast"):
+        (site_dir / f"{helper}.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    out = tools._bash_exec(
+        "python -c 'print(41 + 1)'", None, 60, _SESSION, tool_execution_mode = "software"
+    )
+    assert "42" in out, out
+    assert not marker.exists()
 
 
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
