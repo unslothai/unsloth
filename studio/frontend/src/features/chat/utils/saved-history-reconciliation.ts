@@ -125,6 +125,50 @@ export function reconcileOrdinarySavedMessagesInExport(
   return { messages, changed };
 }
 
+function isStillStreaming(stored: MessageRecord): boolean {
+  const meta = (stored.metadata ?? {}) as Record<string, unknown>;
+  const runId = meta.generationRunId;
+  return (
+    typeof runId === "string" &&
+    (isLiveGenerationRun(runId) || generationNeedsRecovery(meta))
+  );
+}
+
+export function appendExternalStoredTurns(
+  exported: ExportedMessageRepository,
+  storedMessages: readonly MessageRecord[],
+  toThreadMessage: (record: MessageRecord) => ThreadMessage,
+): ExportedMessageRepository | null {
+  if (exported.messages.some((item) => item.message.status?.type === "running")) {
+    return null;
+  }
+  const known = new Set(exported.messages.map((item) => item.message.id));
+  const pending = storedMessages
+    .filter((message) => !known.has(message.id) && !isStillStreaming(message))
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const appended: ExportedMessageRepository["messages"][number][] = [];
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const message of pending) {
+      if (known.has(message.id)) continue;
+      if (!message.parentId || !known.has(message.parentId)) continue;
+      known.add(message.id);
+      appended.push({ parentId: message.parentId, message: toThreadMessage(message) });
+      progressed = true;
+    }
+  }
+  if (appended.length === 0) return null;
+
+  let headId = exported.headId ?? null;
+  for (;;) {
+    const children = appended.filter((item) => item.parentId === headId);
+    if (children.length === 0) break;
+    headId = children[children.length - 1].message.id;
+  }
+  return { ...exported, headId, messages: [...exported.messages, ...appended] };
+}
+
 type ThreadImportExport = {
   export: () => ExportedMessageRepository;
   import: (data: ExportedMessageRepository) => void;
@@ -139,7 +183,10 @@ export function reconcileOrdinarySavedMessagesInView(
   view: ReconcileView,
   threadId: string,
   storedMessages: readonly MessageRecord[],
-  options: { editingMessageId: string | null },
+  options: {
+    editingMessageId: string | null;
+    toThreadMessage?: (record: MessageRecord) => ThreadMessage;
+  },
 ): boolean {
   if (view.threadListItem().getState().remoteId !== threadId) {
     return false;
@@ -152,10 +199,14 @@ export function reconcileOrdinarySavedMessagesInView(
       storedMessages,
       options,
     );
-    if (!changed) {
+    const patched = { ...exported, messages };
+    const extended = options.toThreadMessage
+      ? appendExternalStoredTurns(patched, storedMessages, options.toThreadMessage)
+      : null;
+    if (!changed && !extended) {
       return false;
     }
-    thread.import({ ...exported, messages });
+    thread.import(extended ?? patched);
     return true;
   } catch {
     return false;

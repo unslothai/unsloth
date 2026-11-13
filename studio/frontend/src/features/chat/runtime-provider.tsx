@@ -2536,6 +2536,7 @@ function useStudioRuntimeAdapters(
             reconcileOrdinarySavedMessagesInView(aui, remoteId, messages, {
               editingMessageId:
                 useChatRuntimeStore.getState().editingMessageId ?? null,
+              toThreadMessage,
             });
           }
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
@@ -2553,12 +2554,23 @@ function useStudioRuntimeAdapters(
         })
         .catch(() => {});
     };
-    return subscribeGenerationRecoveryTriggers(
+    const unsubscribeWake = subscribeGenerationRecoveryTriggers(
       globalThis,
       document,
       recoverCurrentThread,
       { wakeKey: () => aui.threadListItem().getState().remoteId },
     );
+    let switchTimer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribeSwitch = useChatRuntimeStore.subscribe((state, prev) => {
+      if (!state.activeThreadId || state.activeThreadId === prev.activeThreadId) return;
+      clearTimeout(switchTimer);
+      switchTimer = setTimeout(recoverCurrentThread, 0);
+    });
+    return () => {
+      clearTimeout(switchTimer);
+      unsubscribeSwitch();
+      unsubscribeWake();
+    };
   }, [aui]);
 
   // Mirror Data-tab deletions, or a later sync writes the attachment back.

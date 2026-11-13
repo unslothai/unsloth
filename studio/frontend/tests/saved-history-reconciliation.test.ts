@@ -198,3 +198,92 @@ test("recoverCurrentThread reconciles ordinary saved messages", () => {
   }
   assert.ok(reconcileGuarded, "reconciliation must skip legacy fallback reads");
 });
+
+const userRuntime = (id: string, text: string) =>
+  ({
+    id,
+    role: "user" as const,
+    createdAt: new Date(0),
+    content: [{ type: "text" as const, text }],
+    attachments: [],
+    metadata: { custom: {} },
+  });
+
+const stored = (id: string, role: "user" | "assistant", parentId: string | null, createdAt: number) => ({
+  id,
+  threadId: "thread-1",
+  parentId,
+  role,
+  content: [{ type: "text" as const, text: id }],
+  createdAt,
+});
+
+const toRuntime = (record: { id: string; role: string }) =>
+  (record.role === "user" ? userRuntime(record.id, record.id) : assistantRuntime(record.id, record.id)) as never;
+
+const { appendExternalStoredTurns } = await import(
+  "../src/features/chat/utils/saved-history-reconciliation.ts"
+);
+
+const openView = () => ({
+  headId: "a1",
+  messages: [
+    { parentId: null, message: userRuntime("u1", "u1") },
+    { parentId: "u1", message: assistantRuntime("a1", "a1") },
+  ],
+});
+
+test("turns added by another client are appended and become the head", () => {
+  const next = appendExternalStoredTurns(
+    openView() as never,
+    [stored("u1", "user", null, 1), stored("a1", "assistant", "u1", 2), stored("a2", "assistant", "u2", 4), stored("u2", "user", "a1", 3)],
+    toRuntime,
+  );
+  assert.ok(next);
+  assert.deepEqual(next.messages.map((item) => item.message.id), ["u1", "a1", "u2", "a2"]);
+  assert.equal(next.messages[2].parentId, "a1");
+  assert.equal(next.headId, "a2");
+});
+
+test("nothing is appended when the view already has every stored turn", () => {
+  assert.equal(
+    appendExternalStoredTurns(openView() as never, [stored("u1", "user", null, 1), stored("a1", "assistant", "u1", 2)], toRuntime),
+    null,
+  );
+});
+
+test("a running view is left alone", () => {
+  const view = openView();
+  (view.messages[1].message as { status: unknown }).status = { type: "running" };
+  assert.equal(
+    appendExternalStoredTurns(view as never, [stored("u2", "user", "a1", 3)], toRuntime),
+    null,
+  );
+});
+
+test("a turn on another branch is added without moving the head", () => {
+  const next = appendExternalStoredTurns(
+    openView() as never,
+    [stored("a1b", "assistant", "u1", 3)],
+    toRuntime,
+  );
+  assert.ok(next);
+  assert.equal(next.headId, "a1");
+  assert.equal(next.messages.length, 3);
+});
+
+test("the open view imports external turns on reconcile", () => {
+  let imported: { headId?: string | null; messages: unknown[] } | null = null;
+  const view = {
+    threadListItem: () => ({ getState: () => ({ remoteId: "thread-1" }) }),
+    thread: () => ({ export: () => openView() as never, import: (data: never) => { imported = data; } }),
+  };
+  const changed = reconcileOrdinarySavedMessagesInView(
+    view,
+    "thread-1",
+    [stored("u1", "user", null, 1), stored("a1", "assistant", "u1", 2), stored("u2", "user", "a1", 3)] as never,
+    { editingMessageId: null, toThreadMessage: toRuntime },
+  );
+  assert.equal(changed, true);
+  assert.equal(imported!.headId, "u2");
+});
