@@ -1272,12 +1272,21 @@ class _MarkdownRenderer(HTMLParser):
             owner -= 1
         inner = frames[owner:]
         del frames[owner:]
+        # likewise headings opened inside the link, which its </a> would have closed first
+        anchor_at = _innermost_index(self._open_tags, "a")
+        marks = self._heading_marks
+        keep = len(marks)
+        while keep and anchor_at >= 0 and marks[keep - 1] > anchor_at:
+            keep -= 1
+        inner_marks = marks[keep:]
+        del marks[keep:]
         try:
             if frames:
                 frames[-1].link_chars += self._link_header_chars
             self._finish_link()
         finally:
             frames.extend(inner)
+            marks.extend(inner_marks)
 
     # Link text helper: normalize whitespace so block content in <a> stays single-line.
     def _finish_link(self) -> None:

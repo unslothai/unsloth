@@ -94,3 +94,9 @@ def test_nested_anchor_in_long_header_still_strips_as_furniture():
     nav = "x" * 160
     html = f'<main><header><a href="/o">{nav} <a href="/i">inner</a></header><article><p>body text</p></article></main>'
     assert html_to_markdown(html, main_content = True) == "body text"
+
+
+def test_heading_inside_the_outer_link_is_not_teed_twice():
+    nav = "Navigation link " * 12
+    html = f"<header><a href='/o'>{nav}<h1>Title<a href='/i'>Inner</a></h1></a></header>"
+    assert html_to_markdown(html, main_content = True) == "# Title\n\n[Inner](/i)"
