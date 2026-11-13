@@ -784,6 +784,7 @@ export const en = {
     emptyChat: "Send a message first to use /context",
     noUsageYet: "Send a message first: API models report token usage with each reply.",
     usedOnly: "{used} tokens used",
+    totalOnly: "This server returned only the total token count.",
     apiNoBreakdown: "API models report only a total, so there is no breakdown.",
     showPrompt: "Show prompt",
     hidePrompt: "Hide prompt",

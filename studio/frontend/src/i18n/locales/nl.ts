@@ -887,6 +887,7 @@ export const nl = {
     emptyChat: "Stuur eerst een bericht om /context te gebruiken",
     noUsageYet: "Stuur eerst een bericht: API-modellen melden het tokengebruik bij elk antwoord.",
     usedOnly: "{used} tokens gebruikt",
+    totalOnly: "Deze server gaf alleen het totale aantal tokens terug.",
     apiNoBreakdown: "API-modellen melden alleen een totaal, dus er is geen uitsplitsing.",
     showPrompt: "Prompt tonen",
     hidePrompt: "Prompt verbergen",

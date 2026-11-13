@@ -884,6 +884,7 @@ export const pl = {
     emptyChat: "Najpierw wyślij wiadomość, aby użyć /context",
     noUsageYet: "Najpierw wyślij wiadomość: modele API raportują użycie tokenów przy każdej odpowiedzi.",
     usedOnly: "Użyto {used} tokenów",
+    totalOnly: "Serwer zwrócił tylko łączną liczbę tokenów.",
     apiNoBreakdown: "Modele API raportują tylko sumę, więc nie ma podziału.",
     showPrompt: "Pokaż prompt",
     hidePrompt: "Ukryj prompt",

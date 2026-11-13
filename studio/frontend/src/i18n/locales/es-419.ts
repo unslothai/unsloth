@@ -883,6 +883,7 @@ export const es419 = {
     emptyChat: "Envía primero un mensaje para usar /context",
     noUsageYet: "Envía primero un mensaje: los modelos de API informan el uso de tokens con cada respuesta.",
     usedOnly: "{used} tokens usados",
+    totalOnly: "Este servidor solo devolvió la cantidad total de tokens.",
     apiNoBreakdown: "Los modelos de API solo informan un total, así que no hay desglose.",
     showPrompt: "Mostrar prompt",
     hidePrompt: "Ocultar prompt",

@@ -42839,16 +42839,13 @@ async def _mlx_count_chat_tokens(
             detail = "Cannot count tokens while a generation is in progress.",
         )
 
-    def _count(count_messages, tools) -> int:
+    def _count(count_messages, tools, *, include_system = True) -> int:
+        instructions = system_prompt if include_system else ""
+        if instructions and _tools_to_use and not tools:
+            instructions = _without_tool_nudge(instructions, _nudge)
         count, _counted = backend.count_chat_tokens(
             count_messages,
-            # The breakdown's tool-free render; every other render keeps the nudge it was sent with.
-            (
-                _without_tool_nudge(system_prompt, _nudge)
-                if _tools_to_use and not tools
-                else system_prompt
-            )
-            or "",
+            instructions or "",
             tools = tools,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
@@ -42891,25 +42888,22 @@ async def _mlx_count_chat_tokens(
 
 
 def _count_breakdown(count, messages: list[dict], tools) -> tuple[int, dict]:
-    """The total, split into system, tools and messages (Studio's /context).
+    """Attribute marginal token costs on the conversation the model actually renders.
 
-    Priced as cumulative renders so the parts sum to the total: everything first, then the
-    leading system turns with and without the tools. The prefixes sit behind an empty user turn
-    because a template may refuse a render without one, which leaves that turn and the
-    template's own markup in ``system``. ``count(messages, tools)`` is the exact-count call."""
-    base = []
-    for message in messages:
-        if message.get("role") != "system":
-            break
-        base.append(message)
-    base.append({"role": "user", "content": ""})
+    Messages include the template's default framing. A template may get longer when an
+    instruction or catalog is removed, so cap each marginal cost at the remaining total.
+    """
     total = count(messages, tools)
-    bare = count(base, None)
-    with_tools = count(base, tools) if tools else bare
-    tool_tokens = max(0, with_tools - bare)
-    message_tokens = max(0, total - with_tools)
+    without_tools = count(messages, None) if tools else total
+    tool_tokens = max(0, total - without_tools)
+    remainder = total - tool_tokens
+    history = [m for m in messages if m.get("role") not in ("system", "developer")]
+    # A system-only request has no conversation to attribute.
+    message_tokens = (
+        min(remainder, count(history, None, include_system = False)) if history else 0
+    )
     return total, {
-        "system": total - tool_tokens - message_tokens,
+        "system": remainder - message_tokens,
         "tools": tool_tokens,
         "messages": message_tokens,
         "tool_names": [(t.get("function") or {}).get("name") for t in tools or []],
@@ -42926,7 +42920,9 @@ def _without_tool_nudge(text: str, nudge: str) -> str:
     return text.replace(nudge, "", 1)
 
 
-def _count_response(payload, total: int, model, parts: Optional[dict], context_length, prompt):
+def _count_response(
+    payload, total: int, model, parts: Optional[dict], context_length, prompt, *, passthrough = False
+):
     content = {"input_tokens": int(total), "model": model}
     if parts is not None:
         from core.inference.context_window import prompt_budget
@@ -42935,7 +42931,7 @@ def _count_response(payload, total: int, model, parts: Optional[dict], context_l
             context_length = context_length,
             # Where the fitter starts compacting, only when this request would let it.
             compaction_budget = prompt_budget(context_length, payload.max_tokens)
-            if context_length and _overflow_truncation_requested(payload)
+            if context_length and not passthrough and _rolling_context_policy(payload) is not None
             else None,
             prompt = prompt,
         )
@@ -43039,8 +43035,8 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
             out.append(message)
         return out
 
-    def priced(candidate, candidate_tools):
-        if not candidate_tools:
+    def priced(candidate, candidate_tools, *, include_system = True):
+        if include_system and not candidate_tools:
             candidate = without_nudge(candidate)
         return count_tokens(
             candidate,
@@ -43366,6 +43362,7 @@ async def chat_count_tokens(
         breakdown,
         getattr(llama_backend, "context_length", None),
         prompt,
+        passthrough = _takes_passthrough,
     )
 
 

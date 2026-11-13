@@ -5574,6 +5574,7 @@ def _select_only(*names):
     [
         pytest.param("truncate_oldest", 8192 - 2048, id = "compacting"),
         pytest.param("error", None, id = "not_compacting"),
+        pytest.param("truncate_middle", None, id = "retry_only"),
     ],
 )
 @pytest.mark.parametrize("system", ["be brief", None], ids = ["system_prompt", "no_system_prompt"])
@@ -5612,41 +5613,32 @@ def test_chat_count_tokens_breakdown_splits_the_total(monkeypatch, overflow, bud
     )
     body = _counted_body(payload)
     parts = body["breakdown"]
-    # The template's 3 and the system prompt; the tool nudge counts under tools, with the schema's 40.
-    assert parts["system"] == 3 + len((system or "").split())
+    # Default template framing belongs to the conversation. The tool nudge follows the catalog.
+    assert parts["system"] == len((system or "").split())
     assert parts["tools"] > 40
-    assert parts["messages"] == 5
+    assert parts["messages"] == 3 + 5
     assert parts["system"] + parts["tools"] + parts["messages"] == body["input_tokens"]
     assert parts["tool_names"] == ["web_search"]
     assert body["context_length"] == 8192
     assert body["compaction_budget"] == budget
-    # Full prompt, then the system turns behind an empty user turn without and with the tools.
-    # With no system prompt set the nudge is the whole system turn, so without tools there is none.
+    history = ["user", "assistant"]
     assert renders == [
-        (["system", "user", "assistant"], True),
-        (["system", "user"] if system else ["user"], False),
-        (["system", "user"], True),
+        (["system", *history], True),
+        (["system", *history] if system else history, False),
+        (history, False),
     ]
 
 
-def test_count_breakdown_parts_sum_to_the_total_when_a_difference_clamps():
-    # A template can render tools differently once history follows them, so the system+tools
-    # prefix may outweigh the full prompt; the parts must still add up to what was priced.
-    renders = {("system", "user", "user"): 100, ("system", "user"): 30}
+def test_breakdown_does_not_price_tools_omitted_after_an_assistant_reply():
+    messages = [{"role": "system"}, {"role": "user"}, {"role": "assistant"}]
 
-    def count(messages, tools):
-        roles = tuple(m["role"] for m in messages)
-        return 110 if tools and roles == ("system", "user") else renders[roles]
+    def count(history, tools, *, include_system = True):
+        schema = 272 if tools and history[-1]["role"] == "user" else 0
+        return 20 + (4 if include_system else 0) + schema
 
-    messages = [
-        {"role": "system", "content": "s"},
-        {"role": "user", "content": "u"},
-        {"role": "user", "content": "v"},
-    ]
     total, parts = inference_route._count_breakdown(count, messages, [{"function": {"name": "t"}}])
-    assert total == 100
-    assert parts["messages"] == 0
-    assert parts["system"] + parts["tools"] + parts["messages"] == total
+    assert total == 24
+    assert parts == {"system": 4, "tools": 0, "messages": 20, "tool_names": ["t"]}
 
 
 def test_chat_count_tokens_breakdown_returns_the_full_prompt_it_priced(monkeypatch):

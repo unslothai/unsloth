@@ -780,6 +780,7 @@ export const ja = {
     emptyChat: "/context を使うには、まずメッセージを送信してください",
     noUsageYet: "先にメッセージを送ってください。API モデルは応答ごとにトークン使用量を報告します。",
     usedOnly: "{used} トークン使用",
+    totalOnly: "このサーバーは合計トークン数のみを返しました。",
     apiNoBreakdown: "API モデルは合計のみを報告するため、内訳はありません。",
     showPrompt: "プロンプトを表示",
     hidePrompt: "プロンプトを隠す",

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { branchSignature } from "../utils/refresh-context-usage";
 import type { ThreadMessage } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
@@ -26,6 +27,7 @@ export async function countContext(
   const refusal = uncountable(branch, start.loadedIsGguf);
   if (refusal) throw new Error(refusal);
   const checkpoint = start.params.checkpoint;
+  const signature = branchSignature(branch);
   const history = await buildLocalTokenCountHistory(branch, threadId);
   const extras = await buildLocalTokenCountExtras(threadId, history.messages);
   const counted = await countChatInputTokens({
@@ -36,24 +38,33 @@ export async function countContext(
     breakdown: true,
   });
   if (counted.model != null && counted.model !== checkpoint) return null;
-  // The header ring shows the same number, so the two never disagree on screen. The recount's
-  // own guards: not after a switch, a load, or a run that wrote fresher usage meanwhile.
   const now = useChatRuntimeStore.getState();
   if (
-    now.params.checkpoint === checkpoint &&
+    now.params.checkpoint !== checkpoint ||
+    branchSignature(readBranch()) !== signature
+  ) {
+    return null;
+  }
+  if (
     now.activeThreadId === (threadId ?? null) &&
     now.contextUsage === start.contextUsage &&
-    !Object.values(now.runningByThreadId).some(Boolean) &&
-    // An edit or a rewind mid-count leaves every check above passing, but the count is stale.
-    sameMessageIds(readBranch(), branch)
+    !Object.values(now.runningByThreadId).some(Boolean)
   ) {
-    now.setContextUsage({
-      promptTokens: counted.input_tokens,
-      completionTokens: 0,
-      totalTokens: counted.input_tokens,
-      cachedTokens: 0,
-      cacheWriteTokens: 0,
-    });
+    const usage = now.contextUsage;
+    if (
+      usage &&
+      !usage.estimated &&
+      (!usage.modelId || usage.modelId === checkpoint)
+    ) {
+      now.setContextUsage({ ...usage, recountedTokens: counted.input_tokens });
+    } else {
+      now.setContextUsage({
+        promptTokens: counted.input_tokens,
+        completionTokens: 0,
+        totalTokens: counted.input_tokens,
+        cachedTokens: 0,
+      });
+    }
   }
   return counted;
 }
@@ -81,11 +92,4 @@ function uncountable(
     return "Cannot count tokens for a compacted chat on this model.";
   }
   return null;
-}
-
-function sameMessageIds(
-  a: readonly ThreadMessage[],
-  b: readonly ThreadMessage[],
-): boolean {
-  return a.length === b.length && a.every((m, i) => m.id === b[i]?.id);
 }

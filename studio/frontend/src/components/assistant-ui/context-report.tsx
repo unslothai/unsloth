@@ -5,6 +5,7 @@ import { Progress } from "@/components/ui/progress";
 import {
   type ContextView,
   countContext,
+  contextReportBranch,
   deriveContextView,
   externalModelContextLength,
   formatTokenCountFull,
@@ -26,29 +27,41 @@ import { type FC, useEffect, useMemo, useRef, useState } from "react";
 type Count =
   | { state: "loading" }
   | { state: "done"; view: ContextView }
+  | { state: "total"; used: number }
   | { state: "error"; message?: string };
 
 /** Mounted once per Thread, under the last message. The report goes once a turn lands after it. */
 export const ContextReport: FC = () => {
   const threadKey = useAuiState(({ threadListItem }) => threadListItem.id);
-  const lastMessageId = useAuiState(
-    ({ thread }) => thread.messages.at(-1)?.id ?? null,
-  );
-  const report = useContextReportStore((s) =>
-    shownContextReport(s.report, threadKey, lastMessageId),
-  );
+  const messages = useAuiState(({ thread }) => thread.messages);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const request = useContextReportStore((s) => s.report);
+  const branch = useMemo(() => contextReportBranch(messages), [messages]);
+  const report = shownContextReport(request, threadKey, branch, checkpoint);
   const dismissContext = useContextReportStore((s) => s.dismissContext);
+  useEffect(() => {
+    if (
+      request?.threadKey === threadKey &&
+      !report &&
+      useContextReportStore.getState().report === request
+    ) {
+      dismissContext();
+    }
+  }, [request, threadKey, report, dismissContext]);
   return report ? (
-    <ContextCard key={report.nonce} onDismiss={dismissContext} />
+    <ContextCard
+      key={report.nonce}
+      checkpoint={report.checkpoint}
+      onDismiss={dismissContext}
+    />
   ) : null;
 };
 
-const ContextCard: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
+const ContextCard: FC<{ checkpoint: string; onDismiss: () => void }> = ({
+  checkpoint,
+  onDismiss,
+}) => {
   const t = useT();
-  // Read once: the report describes the model it was asked under.
-  const [checkpoint] = useState(
-    () => useChatRuntimeStore.getState().params.checkpoint,
-  );
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     ref.current?.scrollIntoView({ block: "nearest" });
@@ -142,7 +155,10 @@ const LocalCount: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
             counted,
             useChatRuntimeStore.getState().loadedContextLength,
           );
-        setCount(view ? { state: "done", view } : { state: "error" });
+        if (view) setCount({ state: "done", view });
+        else if (counted)
+          setCount({ state: "total", used: counted.input_tokens });
+        else setCount({ state: "error" });
       },
       (error: unknown) => {
         if (cancelled) return;
@@ -164,15 +180,22 @@ const LocalCount: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
           window: formatTokenCountFull(count.view.window),
           percent: count.view.percent,
         })
-      : count.state === "loading"
-        ? t("context.loading")
-        : count.message
-          ? t("context.failed", { error: count.message })
-          : t("context.modelChanged");
+      : count.state === "total"
+        ? t("context.usedOnly", { used: formatTokenCountFull(count.used) })
+        : count.state === "loading"
+          ? t("context.loading")
+          : count.message
+            ? t("context.failed", { error: count.message })
+            : t("context.modelChanged");
   return (
     <>
       <Header summary={summary} onDismiss={onDismiss} />
       {count.state === "done" ? <Breakdown view={count.view} /> : null}
+      {count.state === "total" ? (
+        <p className="text-muted-foreground text-xs">
+          {t("context.totalOnly")}
+        </p>
+      ) : null}
     </>
   );
 };

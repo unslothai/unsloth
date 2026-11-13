@@ -99,6 +99,7 @@ import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import {
+  contextReportBranch,
   isContextCommand,
   isRewindCommand,
   useContextReportStore,
@@ -5803,7 +5804,8 @@ const Composer: FC<{
           .getState()
           .showContext(
             aui.threadListItem().getState().id,
-            aui.thread().getState().messages.at(-1)?.id ?? null,
+            contextReportBranch(aui.thread().getState().messages),
+            runtime.params.checkpoint,
           );
         return;
       }

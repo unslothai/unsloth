@@ -8358,12 +8358,11 @@ def test_an_mlx_breakdown_sums_to_the_total_and_has_no_prompt(monkeypatch):
     )
     body = json.loads(served.body)
     parts = body["breakdown"]
-    # Renders: the full prompt, then the system prompt without and with the tools.
-    full, bare, with_tools = backend.systems
-    assert full == with_tools and with_tools.startswith(bare) and len(with_tools) > len(bare)
+    full, bare, no_instructions = backend.systems
+    assert no_instructions == "" and full.startswith(bare) and len(full) > len(bare)
     # The tool nudge is in the prompt only for the tools, so it counts under them.
     assert parts["system"] == len(bare)
-    assert parts["tools"] == 5 + len(with_tools) - len(bare)
+    assert parts["tools"] == 5 + len(full) - len(bare)
     assert parts["messages"] == 2
     assert parts["system"] + parts["tools"] + parts["messages"] == body["input_tokens"]
     assert parts["tool_names"] == ["web_search"]

@@ -779,6 +779,7 @@ export const fr = {
     emptyChat: "Envoyez d’abord un message pour utiliser /context",
     noUsageYet: "Envoyez d'abord un message : les modèles d'API indiquent l'utilisation des tokens à chaque réponse.",
     usedOnly: "{used} tokens utilisés",
+    totalOnly: "Ce serveur a uniquement renvoyé le nombre total de jetons.",
     apiNoBreakdown: "Les modèles d'API n'indiquent qu'un total, il n'y a donc pas de détail.",
     showPrompt: "Afficher le prompt",
     hidePrompt: "Masquer le prompt",

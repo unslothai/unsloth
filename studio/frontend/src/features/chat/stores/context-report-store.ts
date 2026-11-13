@@ -1,32 +1,38 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ThreadMessage } from "@assistant-ui/react";
 import { create } from "zustand";
 
-/**
- * The /context report shown under the last message. UI only: it is never a message, so it is
- * neither saved nor sent. `threadKey` is the assistant-ui thread list item id, so only the Thread
- * that asked shows it when compare panes mount several; `lastMessageId` is the message it was
- * counted under, and the report goes once the conversation moves past it. `nonce` recounts a
- * repeated /context.
- */
+/** Only message identities and edit revisions are needed to retire an open card.
+ *  Keep media and prompt text out of the UI store. */
+export function contextReportBranch(
+  messages: readonly ThreadMessage[],
+): string {
+  return JSON.stringify(
+    messages.map((m) => [m.id, m.metadata?.custom?.revision]),
+  );
+}
+
 interface ContextReportRequest {
   threadKey: string;
-  lastMessageId: string | null;
+  branch: string;
+  checkpoint: string;
   nonce: number;
 }
 
 export const useContextReportStore = create<{
   report: ContextReportRequest | null;
-  showContext: (threadKey: string, lastMessageId: string | null) => void;
+  showContext: (threadKey: string, branch: string, checkpoint: string) => void;
   dismissContext: () => void;
 }>((set) => ({
   report: null,
-  showContext: (threadKey, lastMessageId) =>
+  showContext: (threadKey, branch, checkpoint) =>
     set((state) => ({
       report: {
         threadKey,
-        lastMessageId,
+        branch,
+        checkpoint,
         nonce: (state.report?.nonce ?? 0) + 1,
       },
     })),
@@ -37,10 +43,12 @@ export const useContextReportStore = create<{
 export function shownContextReport(
   report: ContextReportRequest | null,
   threadKey: string,
-  lastMessageId: string | null,
+  branch: string,
+  checkpoint: string,
 ): ContextReportRequest | null {
   return report?.threadKey === threadKey &&
-    report.lastMessageId === lastMessageId
+    report.branch === branch &&
+    report.checkpoint === checkpoint
     ? report
     : null;
 }

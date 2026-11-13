@@ -150,6 +150,7 @@ function loadCount(
   const module = loadWithStubs<CountModule>(
     new URL("../src/features/chat/api/context-breakdown.ts", import.meta.url),
     {
+      "../utils/refresh-context-usage": { branchSignature: JSON.stringify },
       "../stores/chat-runtime-store": {
         useChatRuntimeStore: { getState: () => state },
       },
@@ -184,7 +185,13 @@ function runtimeState(overrides: Record<string, unknown> = {}) {
     published,
     state: {
       activeThreadId: "t1",
-      contextUsage: { totalTokens: 349 },
+      contextUsage: {
+        promptTokens: 300,
+        completionTokens: 49,
+        totalTokens: 349,
+        cachedTokens: 75,
+        cacheWriteTokens: 4,
+      },
       params: { checkpoint: "org/A-GGUF" },
       runningByThreadId: {},
       setContextUsage: (usage: unknown) => published.push(usage),
@@ -220,11 +227,8 @@ test("the ring takes /context's count, so the two never disagree", async () => {
   await module.countContext([], "t1", () => []);
   assert.deepEqual(published, [
     {
-      promptTokens: 348,
-      completionTokens: 0,
-      totalTokens: 348,
-      cachedTokens: 0,
-      cacheWriteTokens: 0,
+      ...state.contextUsage,
+      recountedTokens: 348,
     },
   ]);
 });
@@ -257,6 +261,16 @@ test("the ring keeps its number when the branch moved during the count", async (
   await module.countContext([{ id: "m1" }, { id: "m2" }], "t1", () => [
     { id: "m1" },
   ]);
+  assert.deepEqual(published, []);
+});
+
+test("a same-ID edit while counting invalidates both the card and the header update", async () => {
+  const { state, published } = runtimeState();
+  const { module } = loadCount(state, { input_tokens: 348 });
+  const message = { id: "m1", content: [{ type: "text", text: "before" }] };
+  const counting = module.countContext([message], "t1", () => [message]);
+  message.content[0].text = "edited";
+  assert.equal(await counting, null);
   assert.deepEqual(published, []);
 });
 
@@ -325,16 +339,30 @@ test("/compact clears a /context report, whose numbers the reset makes stale", (
 });
 
 test("the card shows only in the thread that asked, until a message lands after it", async () => {
-  const { shownContextReport } = await import(
+  const { shownContextReport, contextReportBranch } = await import(
     "../src/features/chat/stores/context-report-store.ts"
   );
-  const report = { threadKey: "pane-a", lastMessageId: "m2", nonce: 1 };
-  assert.equal(shownContextReport(report, "pane-a", "m2"), report);
-  // A turn since makes the numbers stale.
-  assert.equal(shownContextReport(report, "pane-a", "m3"), null);
-  // Another compare pane, or no report at all.
-  assert.equal(shownContextReport(report, "pane-b", "m2"), null);
-  assert.equal(shownContextReport(null, "pane-a", "m2"), null);
+  const messages = [
+    {
+      id: "m2",
+      role: "user" as const,
+      content: [],
+      attachments: [],
+      createdAt: new Date(0),
+      metadata: { custom: { revision: 0 } },
+    },
+  ];
+  const branch = contextReportBranch(messages);
+  const report = { threadKey: "pane-a", branch, checkpoint: "A", nonce: 1 };
+  assert.equal(shownContextReport(report, "pane-a", branch, "A"), report);
+  assert.equal(shownContextReport(report, "pane-b", branch, "A"), null);
+  assert.equal(shownContextReport(report, "pane-a", branch, "B"), null);
+  messages[0].metadata.custom.revision++;
+  assert.equal(
+    shownContextReport(report, "pane-a", contextReportBranch(messages), "A"),
+    null,
+  );
+  assert.equal(shownContextReport(null, "pane-a", branch, "A"), null);
 });
 
 test("an API model's window comes from the catalogue entry of its saved connection", (t) => {

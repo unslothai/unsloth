@@ -878,6 +878,7 @@ export const vi = {
     emptyChat: "Gửi một tin nhắn trước để dùng /context",
     noUsageYet: "Gửi một tin nhắn trước: mô hình API báo cáo lượng token đã dùng sau mỗi phản hồi.",
     usedOnly: "Đã dùng {used} token",
+    totalOnly: "Máy chủ này chỉ trả về tổng số token.",
     apiNoBreakdown: "Mô hình API chỉ báo cáo tổng số, nên không có bảng phân tích.",
     showPrompt: "Hiện prompt",
     hidePrompt: "Ẩn prompt",

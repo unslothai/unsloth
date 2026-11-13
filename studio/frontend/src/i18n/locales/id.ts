@@ -876,6 +876,7 @@ export const id = {
     emptyChat: "Kirim pesan terlebih dahulu untuk menggunakan /context",
     noUsageYet: "Kirim pesan terlebih dahulu: model API melaporkan penggunaan token di setiap balasan.",
     usedOnly: "{used} token terpakai",
+    totalOnly: "Server ini hanya mengembalikan jumlah total token.",
     apiNoBreakdown: "Model API hanya melaporkan total, jadi tidak ada rinciannya.",
     showPrompt: "Tampilkan prompt",
     hidePrompt: "Sembunyikan prompt",

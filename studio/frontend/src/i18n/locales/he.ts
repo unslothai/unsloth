@@ -818,6 +818,7 @@ export const he = {
     emptyChat: "שלחו הודעה קודם כדי להשתמש ב-/context",
     noUsageYet: "שלחו קודם הודעה: מודלי API מדווחים על השימוש בטוקנים בכל תשובה.",
     usedOnly: "{used} טוקנים בשימוש",
+    totalOnly: "השרת החזיר רק את מספר הטוקנים הכולל.",
     apiNoBreakdown: "מודלי API מדווחים רק על סך הכול, ולכן אין פירוט.",
     showPrompt: "הצגת ההנחיה",
     hidePrompt: "הסתרת ההנחיה",

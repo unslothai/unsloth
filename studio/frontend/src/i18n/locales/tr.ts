@@ -872,6 +872,7 @@ export const tr = {
     emptyChat: "/context kullanmak için önce bir mesaj gönderin",
     noUsageYet: "Önce bir mesaj gönderin: API modelleri token kullanımını her yanıtla bildirir.",
     usedOnly: "{used} token kullanıldı",
+    totalOnly: "Bu sunucu yalnızca toplam token sayısını döndürdü.",
     apiNoBreakdown: "API modelleri yalnızca toplamı bildirir, bu yüzden döküm yok.",
     showPrompt: "İstemi göster",
     hidePrompt: "İstemi gizle",

@@ -183,6 +183,7 @@ export {
 } from "./stores/compact-request-store";
 export { countContext } from "./api/context-breakdown";
 export {
+  contextReportBranch,
   shownContextReport,
   useContextReportStore,
 } from "./stores/context-report-store";

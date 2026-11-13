@@ -779,6 +779,7 @@ export const de = {
     emptyChat: "Sende zuerst eine Nachricht, um /context zu nutzen",
     noUsageYet: "Sende zuerst eine Nachricht: API-Modelle melden die Token-Nutzung mit jeder Antwort.",
     usedOnly: "{used} Tokens belegt",
+    totalOnly: "Dieser Server hat nur die Gesamtzahl der Tokens zurückgegeben.",
     apiNoBreakdown: "API-Modelle melden nur eine Gesamtzahl, daher gibt es keine Aufschlüsselung.",
     showPrompt: "Prompt anzeigen",
     hidePrompt: "Prompt ausblenden",

@@ -779,6 +779,7 @@ export const zhCN = {
     emptyChat: "请先发送一条消息再使用 /context",
     noUsageYet: "请先发送一条消息：API 模型会在每次回复时报告 token 用量。",
     usedOnly: "已使用 {used} 个 token",
+    totalOnly: "此服务器仅返回了词元总数。",
     apiNoBreakdown: "API 模型只报告总数，因此没有细分。",
     showPrompt: "显示提示词",
     hidePrompt: "隐藏提示词",

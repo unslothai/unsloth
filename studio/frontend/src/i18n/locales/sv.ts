@@ -833,6 +833,7 @@ export const sv = {
     emptyChat: "Skicka ett meddelande först för att använda /context",
     noUsageYet: "Skicka ett meddelande först: API-modeller rapporterar tokenanvändning med varje svar.",
     usedOnly: "{used} token används",
+    totalOnly: "Servern returnerade bara det totala antalet token.",
     apiNoBreakdown: "API-modeller rapporterar bara en summa, så det finns ingen uppdelning.",
     showPrompt: "Visa prompt",
     hidePrompt: "Dölj prompt",
