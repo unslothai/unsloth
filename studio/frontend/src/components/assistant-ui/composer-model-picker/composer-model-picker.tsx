@@ -1572,6 +1572,23 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults, fitOf, listedFits]);
+  const noteListedFit = useCallback(
+    (repoId: string, list: GgufVariantDetail[]) => {
+      const id = repoId.toLowerCase();
+      // As its quant rows read: one with no warning (it fits, or runs from RAM) clears the repo.
+      const runs = list.some((v) => {
+        const fit = classifyVariantFitOnCard(quantBudget.fitOf, v, 0);
+        return fit === "fits" || fit === "ram";
+      });
+      setListedFits((now) =>
+        new Map(now).set(
+          id,
+          runs ? null : (now.get(id) ?? hubFit.get(id) ?? null),
+        ),
+      );
+    },
+    [quantBudget, hubFit],
+  );
   // Non-GGUF rows have no quant to size: the header picker's checkpoint rule judges them.
   const hubCheckpointFits = useMemo(() => {
     const map = new Map<string, boolean>();
@@ -2175,6 +2192,67 @@ export function ComposerModelPicker({
         (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
         DEVICE_TAB)
       : RECOMMENDED_TAB);
+  // The size estimate flags a repo by a mid quant; its listing says whether a smaller one runs,
+  // so flagged rows are checked before anyone opens them.
+  const checkedFits = useRef(new Set<string>());
+  const fitCheck = useRef({ hubFit, noteListedFit });
+  fitCheck.current = { hubFit, noteListedFit };
+  useEffect(() => {
+    if (!(open && viewed === RECOMMENDED_TAB)) {
+      return;
+    }
+    const queue = hubResults.filter((r) => {
+      const id = r.id.toLowerCase();
+      return (
+        r.isGguf &&
+        isOverBudget(fitCheck.current.hubFit.get(id)) &&
+        !checkedFits.current.has(id)
+      );
+    });
+    if (queue.length === 0) {
+      return;
+    }
+    for (const r of queue) {
+      checkedFits.current.add(r.id.toLowerCase());
+    }
+    const abort = new AbortController();
+    const inFlight = new Set<string>();
+    const next = async (): Promise<void> => {
+      const r = queue.shift();
+      if (!r || abort.signal.aborted) {
+        return;
+      }
+      inFlight.add(r.id.toLowerCase());
+      try {
+        const { quants: list, mlx } = await rowQuants(
+          {
+            id: r.id,
+            localPath: null,
+            local: false,
+            remote: true,
+            everyQuant: true,
+          },
+          abort.signal,
+        );
+        // Noted even after a close: the listing stands.
+        if (!mlx && list.length > 0) {
+          fitCheck.current.noteListedFit(r.id, list);
+        }
+      } catch {
+        // A failure keeps the estimate's verdict.
+      }
+      inFlight.delete(r.id.toLowerCase());
+      return next();
+    };
+    void Promise.all([next(), next(), next()]);
+    return () => {
+      abort.abort();
+      // Unfinished ones are checked again on the next look.
+      for (const id of [...inFlight, ...queue.map((r) => r.id.toLowerCase())]) {
+        checkedFits.current.delete(id);
+      }
+    };
+  }, [open, viewed, hubResults]);
   useEffect(() => {
     setOnRecommended(viewed === RECOMMENDED_TAB);
   }, [viewed]);
@@ -2556,14 +2634,7 @@ export function ComposerModelPicker({
         return;
       }
       if (!mlx && list.length > 0) {
-        const verdicts = list.map((v) =>
-          classifyVariantFitOnCard(quantBudget.fitOf, v, 0),
-        );
-        const id = row.id.toLowerCase();
-        const best = verdicts.some((v) => !isOverBudget(v))
-          ? null
-          : (hubFit.get(id) ?? null);
-        setListedFits((now) => new Map(now).set(id, best));
+        noteListedFit(row.id, list);
       }
       if (mlxRepo && !(mlx && list.length > 0)) {
         pickWhole();
