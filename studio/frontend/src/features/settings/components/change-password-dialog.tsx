@@ -195,11 +195,13 @@ async function requestPasswordChange(
  */
 export function ChangePasswordDialog({
   initial = false,
+  forAccountCreation = false,
   onDone,
   open: controlledOpen,
   onOpenChange,
 }: {
   initial?: boolean;
+  forAccountCreation?: boolean;
   onDone?: () => void;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -303,8 +305,10 @@ export function ChangePasswordDialog({
       >
         <form onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>{copy.title}</DialogTitle>
-            <DialogDescription>{copy.description}</DialogDescription>
+            <DialogTitle>{forAccountCreation ? copy.submit : copy.title}</DialogTitle>
+            <DialogDescription>
+              {forAccountCreation ? t("settings.accounts.ownerPasswordDescription") : copy.description}
+            </DialogDescription>
           </DialogHeader>
           <div className="mt-4 space-y-3">
             {initial ? null : (

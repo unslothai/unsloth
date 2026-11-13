@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { QueryDraftContext } from "./query-draft-context";
-import type { QueryDraft } from "./utils/query-draft";
 import { readGenerationProgress } from "./lib/generation-progress";
+import { NewChatNonceContext } from "./query-draft";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { isMcpToolOnly, mcpImageMappingsEnabled } from "./api/mcp-image";
@@ -43,7 +42,6 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { toast } from "sonner";
 import { useBrowserAgentStore } from "@/features/browser/agent/agent-store";
@@ -92,6 +90,7 @@ import {
   withAttachmentOriginal,
 } from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
+import { DraftScopedAttachmentAdapter } from "./draft-attachment-adapter";
 import {
   isBinaryPropertyList,
   isBinaryTrackerModule,
@@ -1417,6 +1416,27 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       },
     };
   }
+  if (m.role === "system") {
+    const textPart = {
+      type: "text" as const,
+      text: content
+        .filter(
+          (part): part is Extract<typeof part, { type: "text" }> =>
+            part.type === "text",
+        )
+        .map((part) => part.text)
+        .join("\n"),
+    };
+    return {
+      id: m.id,
+      createdAt: new Date(m.createdAt),
+      role: "system" as const,
+      content: [textPart],
+      metadata: {
+        custom: (m.metadata as Record<string, unknown>) ?? {},
+      },
+    };
+  }
   const custom = (m.metadata as Record<string, unknown>) ?? {};
   const savedTiming = custom.timing as
     | import("@assistant-ui/react").MessageTiming
@@ -1767,6 +1787,12 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
                 quote_cut?: boolean;
               };
+              if (
+                caughtUp(update.run) &&
+                (chunk as { _toolEvent?: { type?: unknown } })._toolEvent?.type === "tool_end"
+              ) {
+                useChatRuntimeStore.getState().clearLiveGenerationForThread(threadId);
+              }
               // Live figures only once caught up: a replayed backlog would flash every old sample.
               if ("_generationProgress" in chunk) {
                 if (caughtUp(update.run)) {
@@ -1776,6 +1802,13 @@ function scheduleGenerationRecovery(
                     store.setLivePrefill(threadId, progress.prefill);
                   } else if (progress?.phase === "decode") {
                     store.setLiveDecode(threadId, progress.decode);
+                  } else if (progress?.phase === "compacting") {
+                    store.setLiveCompacting(threadId, true);
+                  }
+                  // A frame can end the replay: show what it rebuilt, or a replayed tool result stays hidden.
+                  if (update.run.status !== lastPublishedStatus) {
+                    lastPublishedStatus = update.run.status;
+                    await publish(update.run);
                   }
                 }
                 continue;
@@ -1798,6 +1831,7 @@ function scheduleGenerationRecovery(
                 firstChunkAt ??= update.event.createdAt;
               }
               if (chunk.context_truncated) {
+                useChatRuntimeStore.getState().setLiveCompacting(threadId, false);
                 const toolCalls = carried
                   .map((entry) => entry.part as { type?: unknown } | null)
                   .filter((part) => part?.type === "tool-call") as Array<{
@@ -2094,6 +2128,7 @@ function createStudioDbAdapter(
   pairId?: string,
   projectId?: string | null,
   listThreads = true,
+  newThreadSwitchStateRef?: { current: NewThreadSwitchState },
 ): unstable_RemoteThreadListAdapter {
   return {
     async fetch(remoteId: string) {
@@ -2138,6 +2173,8 @@ function createStudioDbAdapter(
     },
 
     initialize(threadId: string) {
+      // Recorded synchronously: a pending attachment may finish after several later drafts.
+      const attachmentDraft = getAttachmentDraft(newThreadSwitchStateRef?.current, threadId);
       // Tracked, not awaited: assistant-ui withholds the first message until this resolves.
       const claim = readThreadCreationClaim(threadId);
       const runtimeStateAtInit = useChatRuntimeStore.getState();
@@ -2166,6 +2203,7 @@ function createStudioDbAdapter(
       );
       // Re-key handles a running stream filed under "__default".
       useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
+      if (attachmentDraft) attachmentDraft.initialized = true;
       return Promise.resolve({ remoteId: threadId, externalId: undefined });
     },
 
@@ -2520,6 +2558,7 @@ function useStudioRuntimeAdapters(
       globalThis,
       document,
       recoverCurrentThread,
+      { wakeKey: () => aui.threadListItem().getState().remoteId },
     );
   }, [aui]);
 
@@ -3060,7 +3099,8 @@ function useStudioRuntimeAdapters(
     const text = new TextAttachmentAdapter();
     const largeFallback = (browser: AttachmentAdapter) =>
       new LargeDocumentFallbackAdapter(browser, server);
-    return new PreStreamAwareAttachmentAdapter(
+    return new DraftScopedAttachmentAdapter(
+      new PreStreamAwareAttachmentAdapter(
         new CompositeAttachmentAdapter([
           new VisionImageAdapter(),
           new AudioAttachmentAdapter(),
@@ -3085,8 +3125,32 @@ function useStudioRuntimeAdapters(
             useChatRuntimeStore.getState().activeThreadId,
           );
         },
-      );
-  }, [aui]);
+      ),
+      () => {
+        const { id, remoteId } = aui.threadListItem().getState();
+        const switchState = newThreadSwitchStateRef?.current;
+        const attempt = switchState?.attempt;
+        // Saved background runtimes must not replace the foreground draft's token.
+        const draft = remoteId ? undefined : getAttachmentDraft(switchState, id);
+        return () => {
+          let current: ReturnType<ReturnType<typeof aui.threadListItem>["getState"]>;
+          try {
+            current = aui.threadListItem().getState();
+          } catch {
+            return false; // The thread was deleted while the adapter read it.
+          }
+          if (current.id !== id) return false;
+          if (isChatThreadDeleted(current.remoteId ?? id)) return false;
+          // Saved runtimes remain their own destination while backgrounded.
+          if (remoteId) return true;
+          const latest = newThreadSwitchStateRef?.current;
+          if (latest?.attempt === attempt) return true;
+          // Only this add's own draft saving qualifies, not a later draft reusing the runtime.
+          return Boolean(current.remoteId && draft?.initialized);
+        };
+      },
+    );
+  }, [aui, newThreadSwitchStateRef]);
   const adapters = useMemo(
     () => ({ history, dictation, speech, attachments }),
     [history, dictation, speech, attachments],
@@ -3147,11 +3211,15 @@ const MAX_PENDING_SAVED_THREAD_SWITCHES = 16;
 
 type PendingSavedThreadSwitch = { id: string; settled: boolean };
 
+type AttachmentDraft = { attempt: number; threadId: string; initialized: boolean };
+
 type NewThreadSwitchState = {
   activeNonce: string | null;
   hasSwitched: boolean;
   // Bumped per switch: two switches for the same nonce can be in flight.
   attempt: number;
+  // Current draft only: pending adds hold their captured token, so no thread-ID map grows.
+  attachmentDraft?: AttachmentDraft;
   // One entry per switch started, matched by id, not id shape.
   pendingSavedThreadIds: PendingSavedThreadSwitch[];
   // ?new= survives materialization, so the nonce/thread pair tells return from new.
@@ -3159,6 +3227,17 @@ type NewThreadSwitchState = {
   // Only record ownership from a thread this nonce's switch actually opened.
   landedAttempt: number;
 };
+
+function getAttachmentDraft(
+  state: NewThreadSwitchState | undefined,
+  threadId: string,
+): AttachmentDraft | undefined {
+  if (!state) return undefined;
+  if (state.attachmentDraft?.attempt !== state.attempt || state.attachmentDraft.threadId !== threadId) {
+    state.attachmentDraft = { attempt: state.attempt, threadId, initialized: false };
+  }
+  return state.attachmentDraft;
+}
 
 function ThreadAutoSwitch({
   threadId,
@@ -3256,12 +3335,10 @@ function ThreadAutoSwitch({
 }
 
 function ThreadNewChatSwitch({
-  onReady,
   nonce,
   paused,
   newThreadSwitchStateRef,
 }: {
-  onReady: (nonce: string, threadId: string) => void;
   nonce: string;
   paused: boolean;
   newThreadSwitchStateRef: { current: NewThreadSwitchState };
@@ -3362,8 +3439,6 @@ function ThreadNewChatSwitch({
           const switchStateNow = newThreadSwitchStateRef.current;
           if (switchStateNow.attempt === attempt) {
             switchStateNow.landedAttempt = attempt;
-            const threadId = aui.threads().getState().mainThreadId;
-            if (threadId) onReady(nonce, threadId);
           }
         }
         if (!clearAfterSwitch) return;
@@ -3386,7 +3461,7 @@ function ThreadNewChatSwitch({
       },
     );
     useChatRuntimeStore.getState().setActiveThreadId(null);
-  }, [aui, isLoading, newThreadSwitchStateRef, nonce, onReady, paused]);
+  }, [aui, isLoading, newThreadSwitchStateRef, nonce, paused]);
 
   // Reassert this view's thread if a stale switch lands anyway.
   useEffect(() => {
@@ -4336,7 +4411,6 @@ export function ChatRuntimeProvider({
   pairId,
   projectId,
   initialThreadId,
-  queryDraft = null,
   newThreadNonce,
   syncActiveThreadId = true,
   listThreads = true,
@@ -4349,7 +4423,6 @@ export function ChatRuntimeProvider({
   pairId?: string;
   projectId?: string | null;
   initialThreadId?: string;
-  queryDraft?: QueryDraft | null;
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
   listThreads?: boolean;
@@ -4358,22 +4431,6 @@ export function ChatRuntimeProvider({
   onCompactionCountChange?: (threadId: string, count: number) => void;
 }): ReactElement {
   const signalReady = useAppShellReadySignal();
-  const [readyQueryThread, setReadyQueryThread] = useState<{
-    nonce: string;
-    threadId: string;
-  } | null>(null);
-  const onNewThreadReady = useCallback((nonce: string, threadId: string) => {
-    if (nonce.startsWith("query-")) setReadyQueryThread({ nonce, threadId });
-  }, []);
-  const queryDraftContext = useMemo(
-    () => queryDraft ? {
-      draft: queryDraft,
-      threadId: readyQueryThread?.nonce === newThreadNonce
-        ? readyQueryThread?.threadId ?? null
-        : null,
-    } : null,
-    [queryDraft, readyQueryThread, newThreadNonce],
-  );
   // A ref so the memo never sees it change and rebuild the runtime.
   const backgroundedRef = useRef(backgrounded);
   backgroundedRef.current = backgrounded;
@@ -4399,7 +4456,7 @@ export function ChatRuntimeProvider({
   );
   const runtime = useRemoteThreadListRuntime({
     runtimeHook,
-    adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads),
+    adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads, newThreadSwitchStateRef),
   });
   const signalFailedInitialSwitchReady = useCallback(() => {
     if (onInitialHistoryReady) {
@@ -4477,7 +4534,6 @@ export function ChatRuntimeProvider({
         )}
         {!initialThreadId && newThreadNonce && (
           <ThreadNewChatSwitch
-            onReady={onNewThreadReady}
             nonce={newThreadNonce}
             paused={backgrounded}
             newThreadSwitchStateRef={newThreadSwitchStateRef}
@@ -4485,9 +4541,9 @@ export function ChatRuntimeProvider({
         )}
         {/* The view stays mounted (only CSS-hidden) while off-route so the run stays attached and the
             stream alive; unmounting aborts generation. */}
-        <QueryDraftContext.Provider value={queryDraftContext}>
+        <NewChatNonceContext.Provider value={initialThreadId ? null : newThreadNonce ?? null}>
           {children}
-        </QueryDraftContext.Provider>
+        </NewChatNonceContext.Provider>
         </ComparePaneContext.Provider>
       </ToolPaneScopeContext.Provider>
       </ChatProjectScopeContext.Provider>

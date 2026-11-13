@@ -37,7 +37,6 @@ DRAFTER_NOT_FOUND = "drafter_not_found"
 DRAFTER_INCOMPATIBLE = "drafter_incompatible"
 DRAFTER_NO_MEMORY = "drafter_no_memory"
 RUNTIME_ERROR = "runtime_error"
-KV_QUANT = "kv_quant"
 AUTO_CONTEXT_COST = "auto_context_cost"
 
 
@@ -319,10 +318,8 @@ _MAX_COPY = 16
 _EXACT_HEAD_DEPTH = 3  # MTP heads and assistants chain a forward per drafted token
 
 
-def speculation_refusal(*, kv_quant: bool, distributed: bool, lora: bool) -> Optional[str]:
+def speculation_refusal(*, distributed: bool, lora: bool) -> Optional[str]:
     """The reason an MLX load cannot speculate at all, or None."""
-    if kv_quant:
-        return KV_QUANT
     if distributed or lora:
         return RUNTIME_ERROR
     try:
@@ -375,22 +372,25 @@ def build_draft(
     fits,
     stretch = None,
     draft_n_max: Optional[int] = None,
+    fast_verify: Optional[bool] = None,
 ) -> tuple:
     """``(draft, kind, reason, context)`` for the first source ``fits`` accepts that builds, else copies
     alone when the mode allows. ``reason`` names a passed-over choice, so a substitute never attaches silently.
-    A chosen mode with none that fits attaches an unfit source ``stretch`` (its fit under MLX's own cap) admits."""
+    A chosen mode with none that fits attaches an unfit source ``stretch`` (its fit under MLX's own cap) admits.
+    ``fast_verify`` is None under a zoo without it, whose factories take no such argument."""
     from unsloth_zoo.mlx.speculative import companion_drafter, native_mtp_drafter
 
     if _carries_encoder_state(target):
         logger.info("MLX speculative decoding: %s carries encoder state", type(target).__name__)
         return None, None, None if resolution.mode == "auto" else RUNTIME_ERROR, None
     reason, incompatible, unfit = resolution.reason, False, []
+    decision = {} if fast_verify is None else {"fast_verify": fast_verify}
 
     def build(source):
         nonlocal reason, incompatible
         try:
             drafter = (native_mtp_drafter if source.builtin else companion_drafter)(
-                source.path, target
+                source.path, target, **decision
             )
             if drafter is None:
                 raise ValueError("no MTP splitter knows this checkpoint")

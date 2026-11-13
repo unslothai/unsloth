@@ -732,6 +732,7 @@ def test_session_package_commands_stay_on_path(monkeypatch, tmp_path, os_name, s
     packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
     packages.mkdir(parents = True)
     monkeypatch.setattr(os_sandbox.os, "name", os_name)
+    monkeypatch.setattr(os_sandbox, "_PIP_PREFIX_SCRIPTS_DIR", scripts)
     env = os_sandbox.with_session_packages({"PATH": "/usr/bin"}, str(workdir))
     assert env["PATH"].split(os.pathsep) == ["/usr/bin", str(packages / scripts)]
 

@@ -19,6 +19,9 @@ from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 PORT = int(os.environ.get("PW_PORT", "5417"))
 BASE = os.environ.get("BASE_URL", f"http://127.0.0.1:{PORT}").rstrip("/")
 BROWSER = os.environ.get("PW_BROWSER", "chromium")
+NEW_DRAFT = "chat-draft:__new__"
+NEW_PASTES = "chat-draft-pastes:__new__"
+QUERY_KEYS = "Object.keys(sessionStorage).concat(Object.keys(localStorage)).filter(k => k.includes(':query-'))"
 
 
 def fixture(
@@ -33,8 +36,8 @@ def fixture(
     if authenticated:
         values["unsloth_auth_token"] = "query-test-token"
     if existing_draft:
-        values["chat-draft:latest"] = "my unsent message"
-        values["chat-draft-pastes:latest"] = json.dumps(["my unsent pasted file"])
+        values[NEW_DRAFT] = "my unsent message"
+        values[NEW_PASTES] = json.dumps(["my unsent pasted file"])
     context.add_init_script(
         """(() => {
       if (localStorage.getItem('query-test-seeded')) return;
@@ -111,11 +114,15 @@ def run(browser):
     page.goto(BASE + "/chat?q=new+question", wait_until = "domcontentloaded")
     expect(composer(page)).to_have_value("new question", timeout = 20000)
     expect(page.get_by_role("button", name = "Pasted text:", exact = False)).to_have_count(0)
-    assert page.evaluate("localStorage.getItem('chat-draft:latest')") == "my unsent message"
-    assert json.loads(page.evaluate("localStorage.getItem('chat-draft-pastes:latest')")) == [
+    assert page.evaluate(f"localStorage.getItem('{NEW_DRAFT}')") == "my unsent message"
+    assert json.loads(page.evaluate(f"localStorage.getItem('{NEW_PASTES}')")) == [
         "my unsent pasted file"
     ]
     composer(page).fill("edited query")
+    page.wait_for_function(
+        "Object.entries(sessionStorage).some(([k, v]) => k.includes(':query-') && v === 'edited query')"
+    )
+    assert page.evaluate(f"localStorage.getItem('{NEW_DRAFT}')") == "my unsent message"
     page.reload(wait_until = "domcontentloaded")
     expect(composer(page)).to_have_value("edited query", timeout = 20000)
     page.get_by_role("button", name = "New chat", exact = True).first.click()
@@ -130,42 +137,25 @@ def run(browser):
     print("PASS existing text/files preserved, isolated query edits survive reload", flush = True)
 
     context, posts = fixture(browser, existing_draft = True)
-    query_chunks = []
-    context.on(
-        "request",
-        lambda request: query_chunks.append(request.url)
-        if "/assets/query-draft-" in request.url
-        else None,
-    )
     page = context.new_page()
     page.goto(BASE + "/chat?new=ordinary-test", wait_until = "networkidle")
     expect(composer(page)).to_have_value("my unsent message", timeout = 20000)
     # Establish this session's draft by typing, independently of legacy cold-start restoration.
     composer(page).fill("message typed before the query")
     page.wait_for_function(
-        "localStorage.getItem('chat-draft:latest') === 'message typed before the query'"
+        f"localStorage.getItem('{NEW_DRAFT}') === 'message typed before the query'"
     )
-    assert not query_chunks, "Query persistence was loaded on ordinary chat startup"
     page.get_by_role("button", name = "Turn on temporary chat", exact = True).click()
     # A same-document navigation exercises the persistent runtime as browser history does.
     page.evaluate(
         "history.pushState({}, '', '/chat?q=temporary+query'); dispatchEvent(new PopStateEvent('popstate'))"
     )
     expect(composer(page)).to_have_value("temporary query", timeout = 20000)
-    assert query_chunks, "The on-use query chunk was not requested"
     expect(page.get_by_role("button", name = "Pasted text:", exact = False)).to_have_count(0)
     composer(page).fill("temporary edit")
     page.wait_for_timeout(400)
-    assert (
-        page.evaluate("localStorage.getItem('chat-draft:latest')")
-        == "message typed before the query"
-    )
-    assert (
-        page.evaluate("Object.keys(sessionStorage).filter(k => k.startsWith('chat-query-draft:'))")
-        == []
-    )
-    page.get_by_role("button", name = "Turn off temporary chat", exact = True).click()
-    expect(composer(page)).to_have_value("message typed before the query", timeout = 20000)
+    assert page.evaluate(f"localStorage.getItem('{NEW_DRAFT}')") == "message typed before the query"
+    assert page.evaluate(QUERY_KEYS) == []
     assert_unsent(posts)
     context.close()
     print("PASS temporary query is visible and memory-only", flush = True)

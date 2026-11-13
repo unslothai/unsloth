@@ -55,7 +55,11 @@ def test_every_snapshot_download_call_uses_the_transport_budget():
     seen = 0
     for node in ast.walk(tree):
         values = []
-        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "snapshot_download":
+        # _pinned_snapshot_download forwards its keywords to snapshot_download unchanged.
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) in (
+            "snapshot_download",
+            "_pinned_snapshot_download",
+        ):
             values = [kw.value for kw in node.keywords if kw.arg == "max_workers"]
             if not values:
                 # The dataset path passes a kwargs dict; checked below.

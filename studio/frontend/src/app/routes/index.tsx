@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getPostAuthRoute } from "@/features/auth";
-import { chatQueryParam } from "@/features/chat";
 import { createRoute, redirect } from "@tanstack/react-router";
+import { getPostAuthRoute } from "@/features/auth";
+import { queryParam } from "@/features/chat/chat-search";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
@@ -11,16 +11,11 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   beforeLoad: async ({ location }) => {
-    // `/?q=...` is the shorter search-engine URL; carry the query on to the chat it opens.
-    const q = chatQueryParam(
-      (location.search as Record<string, unknown> | undefined)?.q,
-    );
+    // `/?q=...` is the shorter search-engine URL.
+    const q = queryParam(location.search);
     await requireAuth(q);
     const to = getPostAuthRoute();
-    if (to === "/chat" && q) {
-      throw redirect({ to, search: { q } });
-    }
-    throw redirect({ to });
+    throw redirect(to === "/chat" ? { to, search: { q } } : { to });
   },
   component: () => null,
 });

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Memo for lookups a model inventory scan repeats per repo (root path resolves, the Hugging Face
-cache setting, registered scan folders). Scoped to one scan, never kept across requests, so a
-change is seen on the next one; outside a scope every lookup runs as before."""
+"""Memoises per-repo lookups a model inventory scan repeats (root path, HF cache setting, scan
+folders); scoped to one scan, never kept across requests."""
 
 from __future__ import annotations
 
@@ -42,6 +41,12 @@ def scan_memo() -> Iterator[None]:
     finally:
         memo[_CLOSED] = True
         _scope.reset(token)
+
+
+def scan_memo_active() -> bool:
+    """Whether the caller runs inside an open scan_memo() scope."""
+    memo = _scope.get()
+    return memo is not None and _CLOSED not in memo
 
 
 def memoized(key: Hashable, compute: Callable[[], _T]) -> _T:

@@ -333,8 +333,11 @@ export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
       // Not carried by presets: enabling it always goes through its confirmation.
       mlxInt8Prefill: store.mlxInt8Prefill,
       mlxAnePrefill: store.mlxAnePrefill,
+      mlxFastVerify: store.mlxFastVerify,
       mlxPleOffload: store.mlxPleOffload,
       mlxExpertOffload: store.mlxExpertOffload,
+      // Model specific, so a preset keeps the current table.
+      engramPrecision: store.engramPrecision,
       gpuMemoryMode: config.gpuMemoryMode,
       gpuLayers: config.gpuLayers,
       nCpuMoe: config.nCpuMoe,

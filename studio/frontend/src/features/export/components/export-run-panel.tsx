@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/tooltip";
 import { FolderBrowser } from "@/features/model-picker";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   CancelCircleIcon,
   CheckmarkCircle02Icon,
   Key01Icon,
@@ -470,7 +470,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       {run.phase === "error" && run.error && (
         <div className="flex items-start gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
           <HugeiconsIcon
-            icon={AlertCircleIcon}
+            icon={Alert02Icon}
             className="size-4 mt-0.5 shrink-0"
           />
           <span>{run.error}</span>
