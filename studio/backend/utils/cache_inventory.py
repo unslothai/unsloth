@@ -983,7 +983,6 @@ def _npu_breakdown() -> dict:
         except OSError:
             continue
         row = {"name": path.name, "path": str(path), "size_bytes": size}
-        # The Hub's NPU delete takes a lemond id; the browser maps this checkpoint to one.
         if checkpoint is not None:
             row["checkpoint"] = checkpoint
         rows.append({**row, "delete_allowed": checkpoint is not None})

@@ -185,7 +185,6 @@ export async function deleteNpuModel(id: string): Promise<void> {
   }
 }
 
-/** Settings > Storage names NPU folders by FastFlowLM checkpoint; the backend maps it to lemond's id. */
 export async function deleteNpuModelByCheckpoint(
   checkpoint: string,
 ): Promise<string> {
