@@ -3301,7 +3301,7 @@ def test_streamed_eager_int8_gemm_engages_behind_the_prefetcher(monkeypatch):
     dit, calls = _streamed_gemm_spy(monkeypatch)
     assert ds_mod.install_streamed_eager_int8_gemm(object(), "cuda:0") is True
     assert calls == [(dit, "cuda:0")] and dit._unsloth_int8_gemm == 5
-    # idempotent: a second call (another view of the same denoiser) installs nothing more
+    # idempotent
     assert ds_mod.install_streamed_eager_int8_gemm(object(), "cuda:0") is False
     assert len(calls) == 1
 

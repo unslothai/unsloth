@@ -1875,10 +1875,8 @@ def install_streamed_eager(
     device: Any,
     logger: Any = None,
 ) -> int:
-    """``install_eager``'s routes on an uncompiled denoiser whose blocks stream onto ``device``: each call takes them
-    only while the Linear's own weight sits on the activation's card, else torchao's path. Callers gate it on a
-    streamer that copies into the same parameters (the pinned prefetcher); one that swaps in new ones per call
-    would only ever fall back."""
+    """``install_eager``'s routes, taken only while a Linear's weight is on the activation's card. Needs a streamer
+    that copies into the same parameters; one that swaps them would always fall back."""
     if not (eager_enabled() and streamed_eager_enabled()) or device is None:
         return 0
     return install(transformer, logger, device = device, exact = True)

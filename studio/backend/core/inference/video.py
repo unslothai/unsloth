@@ -11422,7 +11422,7 @@ class VideoBackend:
                 # fell back to a hooked placement: compiled through them, each block splits at the hook's
                 # torch.compiler.disable'd pre / post forward.
                 compile_pipe_below_offload_hooks(pipe, logger)
-            # An uncompiled int8 denoiser the pinned prefetcher streams: the bit-identical int8 routes, per call.
+            # Streamed uncompiled int8 denoiser: bit-identical int8 routes per call.
             for view in views:
                 try:
                     if (
@@ -12790,8 +12790,7 @@ class VideoBackend:
                     getattr(pipe, denoiser_component, None), logger = logger
                 )
             elif denoiser_streamed:
-                # Uncompiled (speed off / eager, or a declined compile): the bit-identical int8 routes, taken per call
-                # while a Linear's weight is on the card.
+                # Uncompiled: bit-identical int8 routes per call while a weight is on the card.
                 try:
                     if install_streamed_eager_int8_gemm(speed_view, device, logger):
                         speed_optims += ("int8_gemm_streamed",)
