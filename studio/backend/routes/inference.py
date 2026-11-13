@@ -19897,6 +19897,11 @@ async def _load_model_impl(
             # every rejection and drain has completed. the load now owns the slot for studio.
             _set_preview_resident(None)
 
+            # Save slot KV before replacing llama-server, as /unload does (#9037).
+            if replacing and llama_backend.is_loaded:
+                from core.inference.chat_swap_kv import save_chat_kv_before_unload
+                await save_chat_kv_before_unload()
+
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
                 logger.info(
@@ -20064,6 +20069,10 @@ async def _load_model_impl(
             )
         # every rejection and drain has completed. the load now owns the slot for studio.
         _set_preview_resident(None)
+        # Save slot KV before teardown, as /unload does (#9037).
+        if replacing and llama_backend.is_loaded:
+            from core.inference.chat_swap_kv import save_chat_kv_before_unload
+            await save_chat_kv_before_unload()
         # Off-loop: a 600 GB teardown takes ~160s.
         try:
             await _unload_llama_before_standard_load(llama_backend)
