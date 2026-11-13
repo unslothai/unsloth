@@ -291,8 +291,13 @@ def _chunk_text(text, tokenizer, chunk_size, overlap):
         raise ValueError("The tokenizer produced no tokens for the ebook text")
     ends = [b for _, b in offsets]
     starts = [a for a, _ in offsets]
+    # CJK text has no space after 。！？, so they end a sentence, closing quotes included.
     boundaries = [
-        m.end() for m in re.finditer(r'(?<=[.!?。！？])["\u201d\u2019\)\]]*\s+|\n\s*\n', text)
+        m.end()
+        for m in re.finditer(
+            r'(?<=[.!?])["\u201d\u2019\)\]]*\s+|(?<=[。！？])[！？」』）"\u201d\u2019\)\]]*\s*|\n\s*\n',
+            text,
+        )
     ]
     start = 0
     char_start = 0
