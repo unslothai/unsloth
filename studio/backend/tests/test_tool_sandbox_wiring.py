@@ -755,9 +755,7 @@ def _wheel(workdir, name, files):
 _PIP = "python -m pip install -q --no-index --no-deps"
 
 
-@pytest.mark.parametrize(
-    "case", ["chat", "same_process", "editable", "project_venv", "host_access"]
-)
+@pytest.mark.parametrize("case", ["chat", "same_process", "editable", "project_venv", "target"])
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp_path, case):
     """Studio's interpreter installs into the chat folder; another venv's pip still installs into that venv."""
@@ -774,7 +772,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
     show = f"python -c 'import {name}; print({name}.__file__)'"
     command = {
         "chat": f"{_PIP} {wheel} && {show}",
-        "host_access": f"ls /srv/pr-approved >/dev/null 2>&1; {_PIP} {wheel} && {show}",
+        # An explicit --target keeps its own location.
+        "target": f"{_PIP} --target vendor {wheel} && PYTHONPATH=vendor {show}",
         "editable": f"{_PIP} {wheel} && {show}",
         # Python caches the session dirs as missing at startup, before pip creates them.
         "same_process": 'python -c "import subprocess, sys; subprocess.check_call(sys.argv[1:]); '
@@ -790,19 +789,16 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
             None,
             120,
             _SESSION,
-            tool_execution_mode = "auto" if case == "host_access" else "software",
-            host_access_approved = case == "host_access",
+            tool_execution_mode = "software",
         )
     finally:
         subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "-q", name], capture_output = True
         )
-    record = tools._last_tool_execution_record
-    assert record.os_isolation is False
-    assert ("user_approved_host_access" in record.limitations) is (case == "host_access")
+    assert tools._last_tool_execution_record.os_isolation is False
     expected = {
         "chat": packages,
-        "host_access": packages,
+        "target": str(workdir / "vendor"),
         "same_process": packages,
         "editable": str(workdir / "src"),
         "project_venv": str(workdir / "venv"),

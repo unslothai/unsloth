@@ -336,6 +336,9 @@ class _HostPackagesFinder:
         )
 
 
+_PIP_LOCATION_FLAGS = frozenset(("-t", "--target", "--prefix", "--root", "--home", "--user"))
+
+
 def _route_pip():
     try:
         prefix = os.environ.get("_UNSLOTH_PIP_PREFIX")
@@ -347,8 +350,17 @@ def _route_pip():
             return os.path.normcase(os.path.realpath(path))
 
         if key(sys.prefix) == key(owner):
-            os.environ["PIP_PREFIX"] = prefix
-            os.environ["PIP_IGNORE_INSTALLED"] = "1"
+            # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
+            placed = any(
+                a.split("=", 1)[0] in _PIP_LOCATION_FLAGS or (a.startswith("-t") and a != "-t")
+                for a in sys.argv[1:]
+            )
+            if not placed:
+                os.environ["PIP_PREFIX"] = prefix
+                os.environ["PIP_IGNORE_INSTALLED"] = "1"
+            elif os.environ.get("PIP_PREFIX") == prefix:
+                os.environ.pop("PIP_PREFIX", None)
+                os.environ.pop("PIP_IGNORE_INSTALLED", None)
         else:
             # Another venv neither installs into nor sees the chat folder: its pip would count those packages as installed.
             if os.environ.get("PIP_PREFIX") == prefix:
