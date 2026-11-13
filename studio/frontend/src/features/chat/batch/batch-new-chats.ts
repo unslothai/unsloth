@@ -10,6 +10,7 @@ export interface BatchThreadSnapshot {
   messages: readonly {
     role: string;
     status?: { type: string; reason?: string } | null;
+    metadata?: { custom?: { researchRun?: { status?: string } | null } | null } | null;
   }[];
 }
 
@@ -30,6 +31,10 @@ export function batchStepOutcome(
     if (status.reason === "error") return "failed";
     if (status.reason === "cancelled") return "stopped";
   }
+  // A Deep Research reply completes even when the research itself failed or was stopped.
+  const research = last.metadata?.custom?.researchRun?.status;
+  if (research === "failed") return "failed";
+  if (research === "cancelled") return "stopped";
   return "done";
 }
 

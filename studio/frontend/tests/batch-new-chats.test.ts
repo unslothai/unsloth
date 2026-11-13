@@ -71,6 +71,13 @@ test("a step settles only on a finished reply; errors fail it and a user stop st
     batchStepOutcome({ isRunning: false, messages: [user, reply("incomplete", "cancelled")] }),
     "stopped",
   );
+  const research = (status: string) => ({
+    ...reply("complete"),
+    metadata: { custom: { researchRun: { status } } },
+  });
+  assert.equal(batchStepOutcome({ isRunning: false, messages: [user, research("completed")] }), "done");
+  assert.equal(batchStepOutcome({ isRunning: false, messages: [user, research("failed")] }), "failed");
+  assert.equal(batchStepOutcome({ isRunning: false, messages: [user, research("cancelled")] }), "stopped");
 });
 
 test("files run in natural name order, so clip-2 comes before clip-10", () => {
