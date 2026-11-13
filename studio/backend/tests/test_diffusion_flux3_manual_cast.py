@@ -274,7 +274,9 @@ def test_every_flux3_load_site_passes_the_storage_dtype():
 def test_load_flux3_pipeline_routes_both_components_through_the_cast():
     src = inspect.getsource(f3.load_flux3_pipeline)
     assert src.count("_manual_cast_load(") == 2
-    assert "transformer_storage_dtype(storage_dtype, dtype, transformer_storage)" in src
+    assert "transformer_load_storage(" in src
+    helper = inspect.getsource(f3.transformer_load_storage)
+    assert "transformer_storage_dtype(storage_dtype, dtype, transformer_storage)" in helper
 
 
 def test_fuse_qkv_skips_a_manual_cast_denoiser():
