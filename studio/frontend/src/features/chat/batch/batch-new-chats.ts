@@ -3,9 +3,7 @@
 
 import { create } from "zustand";
 
-// One prompt over many files, each file in its own new chat, one chat at a time. The driver opens
-// a new chat, the composer that lands on it claims the step and sends it through its normal send
-// path, and the driver waits for that chat's reply before opening the next one.
+// One prompt per file, each in its own new chat, one chat at a time: the new chat's composer claims and sends the step.
 
 export interface BatchThreadSnapshot {
   isRunning: boolean;
@@ -64,14 +62,13 @@ export function batchThreadReader(threads: ThreadListLike, itemId: string) {
   };
 }
 
-/** Files in natural name order, so clip-2 runs before clip-10. */
+// Natural order: clip-2 before clip-10.
 export function orderBatchFiles(files: readonly File[]): File[] {
   return [...files].sort((a, b) =>
     a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }),
   );
 }
 
-/** The attachment target key Chat gives the composer of `/chat?new=<nonce>`. */
 export function batchTargetKey(nonce: string): string {
   return `single:${nonce}`;
 }
@@ -224,7 +221,6 @@ export function batchNewChatsRunning(): boolean {
   return useBatchNewChatsStore.getState().run !== null;
 }
 
-/** Starts the batch, or returns false when one is already running or there is nothing to send. */
 export function startBatchNewChats(
   prompt: string,
   files: readonly File[],
@@ -246,12 +242,10 @@ export function startBatchNewChats(
 export function stopBatchNewChats(): void {
   const run = useBatchNewChatsStore.getState().run;
   if (!run) return;
-  // A chat already claimed still sends; only one still opening is dropped.
   const sent = run.phase === "opening" ? run.index : run.index + 1;
   finish({ kind: "stopped", sent, total: run.files.length });
 }
 
-/** Called by the composer on `targetKey`; hands it this step once, or null. */
 export function claimBatchStep(targetKey: string): BatchClaim | null {
   const run = useBatchNewChatsStore.getState().run;
   if (!run || run.phase !== "opening" || batchTargetKey(run.nonce) !== targetKey) {
@@ -282,7 +276,6 @@ export function claimBatchStep(targetKey: string): BatchClaim | null {
   };
 }
 
-/** Ends any batch without a result toast, for a sign-out. */
 export function resetBatchNewChats(): void {
   clearTimer();
   deps = null;

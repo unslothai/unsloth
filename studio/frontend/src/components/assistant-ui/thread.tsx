@@ -5487,7 +5487,6 @@ const Composer: FC<{
     formRef.current = node;
     setComposerEl(node);
   }, []);
-  // Sends the step of a "Send each file in a new chat" batch meant for this new chat.
   useBatchNewChatsComposer(aui, nativeAttachmentTargetKey, formRef);
   // Published so the API monitor panel opens clear of Send.
   usePublishedFrame(composerEl);

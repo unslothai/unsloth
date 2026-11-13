@@ -77,7 +77,6 @@ if (typeof window !== "undefined") {
   });
 }
 
-/** Asks for the files, then sends the composer's text to each in its own new chat. */
 export function pickFilesForNewChats(aui: Aui, navigate: Navigate, accept: string): void {
   const composer = aui.composer().getState();
   const prompt = composer.text.trim();
@@ -122,7 +121,6 @@ function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-/** The composer side: claims the batch step meant for this new chat and sends it. */
 export function useBatchNewChatsComposer(
   aui: Aui,
   targetKey: string | null,
@@ -139,8 +137,7 @@ export function useBatchNewChatsComposer(
       if (poll !== null) clearInterval(poll);
       poll = null;
     };
-    // The route names the new chat before the runtime has switched to it; claim only once the
-    // chat on screen is that empty new chat, or the file lands in the previous one.
+    // The route switches before the runtime does: claim only once the empty new chat is on screen.
     const onFreshChat = () => {
       const item = aui.threadListItem().getState();
       return (
