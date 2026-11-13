@@ -86,3 +86,38 @@ test("a new chat on an NPU model keeps a saved choice to turn Search on", async 
   assert.equal(result.stored, true);
   assert.equal(result.code, false);
 });
+
+test("a new GPU chat after an NPU-first chat still starts with Search and Code on", async (t) => {
+  storage.clear();
+  storage.set("unsloth_chat_settings_imported_to_studio_db", "true");
+  settingsHttp.settings = { rememberParamsPerModel: false };
+  threadRows.reset();
+  const runtime = (await import(
+    `${runtimeUrl}?scenario=${encodeURIComponent(t.name)}`
+  )) as typeof chatRuntime;
+  const store = runtime.useChatRuntimeStore;
+  t.after(async () => {
+    await runtime.flushPendingChatSettings();
+    await runtime.awaitStartedThreadScopedSettingsWrites();
+  });
+  await store.getState().hydratePersistedSettings();
+  store.getState().setCheckpoint(NPU, null);
+  store.setState({ supportsTools: true, ...runtime.resolveToolsEnabledOnLoad(true, NPU) });
+  store.getState().setActiveThreadId("npu-chat");
+  store.getState().applyThreadScopedSettings("npu-chat", null);
+  await runtime.awaitThreadScopedSettingsWrite("npu-chat");
+  assert.equal(threadRows.rows.get("npu-chat")?.toolsEnabled, false);
+  store.getState().setCheckpoint(GPU, null);
+  applyActiveModelStatusToStore(
+    { active_model: GPU, model_identifier: GPU, supports_tools: true } as never,
+    { previousCheckpoint: NPU },
+  );
+  store.getState().setActiveThreadId(null);
+  store.getState().applyThreadScopedSettings(null, null);
+  store.getState().setActiveThreadId("gpu-chat");
+  store.getState().applyThreadScopedSettings("gpu-chat", null);
+  await runtime.awaitThreadScopedSettingsWrite("gpu-chat");
+  assert.equal(store.getState().toolsEnabled, true);
+  assert.equal(store.getState().codeToolsEnabled, true);
+  assert.equal(threadRows.rows.get("gpu-chat")?.toolsEnabled, true);
+});

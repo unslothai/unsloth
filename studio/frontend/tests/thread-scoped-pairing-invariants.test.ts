@@ -104,7 +104,7 @@ test("the defaults are captured when pairing begins, not reconstructed later", (
   // On the first pairing there is no earlier capture, so the default is sampled up front.
   const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
   assert.match(begin, /pairingWindowDefaults =/);
-  assert.match(begin, /readThreadScopedSettings\(/);
+  assert.match(begin, /(?:readThreadScopedSettings|readInstallationDefaults)\(/);
   const capture = slice(
     store,
     "if (threadScopedSettingsThreadId === null) {",
@@ -240,7 +240,7 @@ test("the defaults sample is never taken from the outgoing chat's values", () =>
   const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
   assert.match(
     begin,
-    /threadScopedSettingsThreadId === null\s*\?\s*readThreadScopedSettings\(/,
+    /threadScopedSettingsThreadId === null\s*\?\s*(?:readThreadScopedSettings|readInstallationDefaults)\(/,
   );
   assert.match(begin, /:\s*globalThreadScopedDefaults;/);
 });
