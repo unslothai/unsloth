@@ -80,9 +80,30 @@ test("the live denoise preview shows only the in-flight preview and offers no ac
       'busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;',
     ),
   );
-  const live = between(page, "{livePreviewSrc ? (", ") : selected && selectedSrc ? (");
-  assert.ok(live.includes("src={livePreviewSrc}"));
+  const live = between(page, "{stagePreviewSrc ? (", ") : selected && selectedSrc ? (");
+  assert.ok(live.includes("src={stagePreviewSrc}"));
   for (const forbidden of ["selectedSrc", "thumbById", "selectedThumb", "downloadImage", "openViewer", "GalleryItemMenu"]) {
     assert.ok(!live.includes(forbidden), forbidden);
   }
+});
+
+test("an image picked during a run takes the stage from the live preview until the run is followed again", () => {
+  assert.ok(page.includes("const stagePreviewSrc = pickedDuringRun ? undefined : livePreviewSrc;"));
+  // Strip and Library picks both count; the strip's live tile and a new direct Generate give the stage back.
+  const select = between(page, "select: (id) => {", "},");
+  assert.ok(select.includes("setSelectedId(id);") && select.includes("setPickedDuringRun(true);"));
+  assert.ok(page.includes("setSelectedId(routedItem);\n        setPickedDuringRun(true);"));
+  const liveTile = between(page, 'data-testid="images-live-tile"', "</button>");
+  assert.ok(liveTile.includes("onClick={() => setPickedDuringRun(false)}"));
+  assert.ok(page.includes("localRun.current = true;\n    setPickedDuringRun(false);"));
+  // Held while a queued job runs or waits, so the gap between jobs does not hand the stage back.
+  assert.ok(
+    page.includes(
+      'if (pickedDuringRun && busy !== "generating" && !queueRunningId && !queueWaiting) setPickedDuringRun(false);',
+    ),
+  );
+  // A finished direct run does not move a picked selection to its new image.
+  assert.ok(page.includes("if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);"));
+  // The strip highlights whichever image the stage shows, so no tile is marked while the live preview has it.
+  assert.ok(page.includes("selected={!stagePreviewSrc && image.id === selected?.id}"));
 });

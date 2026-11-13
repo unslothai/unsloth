@@ -2124,6 +2124,13 @@ export function ImagesPage({
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // The user picked an image while a run was in flight: the stage shows it instead of the live preview, and
+  // finished runs do not move the selection. Cleared by the strip's live tile, a new Generate, or going idle.
+  const [pickedDuringRun, setPickedDuringRun] = useState(false);
+  const pickedDuringRunRef = useRef(false);
+  useEffect(() => {
+    pickedDuringRunRef.current = pickedDuringRun;
+  }, [pickedDuringRun]);
   // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
   const [sessionSeed, setSessionSeed] = useState<number | null>(null);
   // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
@@ -2571,6 +2578,7 @@ export function ImagesPage({
   const selectedThumb = selected ? thumbById[selected.id] : undefined;
   const livePreviewSrc =
     busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;
+  const stagePreviewSrc = pickedDuringRun ? undefined : livePreviewSrc;
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
@@ -3687,6 +3695,8 @@ export function ImagesPage({
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
+  // Cleared only once nothing runs or waits: the gap between queued jobs must not hand the stage back.
+  if (pickedDuringRun && busy !== "generating" && !queueRunningId && !queueWaiting) setPickedDuringRun(false);
   useEffect(() => {
     if (busy !== null) return;
     followingJob.current = null;
@@ -4167,7 +4177,10 @@ export function ImagesPage({
   useLayoutEffect(() => {
     stripTileActions.set({
       tileProps: stripReorder.tileProps,
-      select: setSelectedId,
+      select: (id) => {
+        setSelectedId(id);
+        setPickedDuringRun(true);
+      },
       setMenuId: setTileMenuId,
       togglePin: (id, pinned) => void handleTogglePin(id, pinned),
       archive: (id) => void handleArchive(id),
@@ -4732,6 +4745,7 @@ export function ImagesPage({
       if (lookup !== routedLookup.current) return;
       if (found) {
         setSelectedId(routedItem);
+        setPickedDuringRun(true);
       } else {
         toast(translate("library.toast.imageNotFound"), {
           description: translate("library.toast.notFoundDescription"),
@@ -5538,6 +5552,7 @@ export function ImagesPage({
     }
     followingJob.current = null;
     localRun.current = true;
+    setPickedDuringRun(false);
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -5629,7 +5644,7 @@ export function ImagesPage({
         // Deduplicated: a resync may already have fetched the record.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
-        if (res.images[0]) setSelectedId(res.images[0].id);
+        if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);
         const runSeed = lastSeedOf(res.images);
         const runAt = Math.max(0, ...res.images.map((image) => image.created_at));
         // A late reply never replaces the seed of a queued run that finished after it.
@@ -7447,9 +7462,9 @@ export function ImagesPage({
             </MediaViewer>
           )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
-            {livePreviewSrc ? (
+            {stagePreviewSrc ? (
               <img
-                src={livePreviewSrc}
+                src={stagePreviewSrc}
                 alt="Live preview of the image being generated"
                 data-testid="images-live-preview"
                 style={{ maxWidth: width, maxHeight: height }}
@@ -7629,20 +7644,27 @@ export function ImagesPage({
               }}
             >
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-wash-30">
+                <button
+                  type="button"
+                  data-testid="images-live-tile"
+                  aria-label="Follow the running generation"
+                  title="Follow the running generation"
+                  onClick={() => setPickedDuringRun(false)}
+                  className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 outline-none ring-2 ring-wash-30 focus-visible:ring-ring"
+                >
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (
                     <Spinner className="size-5 text-muted-foreground" />
                   )}
-                </div>
+                </button>
               )}
               {images.map((image) => (
                 <GalleryStripTile
                   key={image.id}
                   image={image}
                   src={thumbById[image.id] ?? srcById[image.id]}
-                  selected={image.id === selected?.id}
+                  selected={!stagePreviewSrc && image.id === selected?.id}
                   menuOpen={tileMenuId === image.id}
                   active={active}
                   favorite={isFavorite(`image:${image.id}`)}
