@@ -77,8 +77,8 @@ KERNEL_CONFIGS: dict = {
 # attention.
 ROCM_KERNEL_CONFIGS: dict = {
     "gfx1151": {
-        128: {"bm": 64, "bn": 64, "warps": 4, "stages": 1, "pv": "int8"},
-        64: {"bm": 64, "bn": 64, "warps": 4, "stages": 1, "pv": "int8"},
+        128: {"bm": 64, "bn": 32, "warps": 4, "stages": 1, "pv": "half", "kscale": "key"},
+        64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "half", "kscale": "key"},
     },
 }
 QUANT_ROWS = 64  # rows per quantiser block
@@ -560,7 +560,7 @@ def int8_attention(
         from . import diffusion_int8_attention_triton as triton_kernel
 
         with torch.no_grad(), torch.cuda.device(q.device):
-            return triton_kernel.int8_attention(q, k, v, config, pv = config.get("pv", "int8"), scale = scale)
+            return triton_kernel.int8_attention(q, k, v, config, scale = scale)
     with torch.no_grad():
         return attend(quantise(q, k, v, config, scale))
 

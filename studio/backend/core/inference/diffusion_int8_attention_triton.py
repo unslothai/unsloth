@@ -31,8 +31,8 @@ STATS_STEP = 8
 HEAD_DIMS = (64, 128)
 # (BM, BN, warps, stages) per head dim; measured on gfx1151 (see the PR)
 DEFAULT_CONFIGS: dict = {
-    128: {"bm": 64, "bn": 64, "warps": 4, "stages": 1},
-    64: {"bm": 64, "bn": 64, "warps": 4, "stages": 1},
+    128: {"bm": 64, "bn": 64, "warps": 4, "stages": 1, "pv": "int8", "kscale": "key"},
+    64: {"bm": 64, "bn": 64, "warps": 4, "stages": 1, "pv": "int8", "kscale": "key"},
 }
 
 
@@ -96,10 +96,11 @@ if triton is not None:
     @triton.jit
     def quant_rows_kernel(
         x_ptr, c_ptr, q_ptr, s_ptr, n_rows, n_pad, n_heads, x_stride_b, x_stride_s, x_stride_h, mul,
-        R: tl.constexpr, D: tl.constexpr, CENTRE: tl.constexpr,
+        R: tl.constexpr, D: tl.constexpr, CENTRE: tl.constexpr, TILE: tl.constexpr,
     ):
-        # R rows of one (batch, head), optionally centred, rotated: int8 = rint(x * 127 / amax(row)),
-        # scale[row] = amax / 127 * mul; padded rows are zeros with scale 0
+        # R rows of one (batch, head), optionally centred, rotated: int8 = rint(x * 127 / amax), amax per row
+        # (scale [BH, n_pad]) or over the R rows (TILE, scale [BH, n_pad / R]); scale = amax / 127 * mul. Padded
+        # rows are zeros (with scale 0 per row)
         bh = tl.program_id(0)
         blk = tl.program_id(1)
         b = bh // n_heads
@@ -115,10 +116,16 @@ if triton is not None:
             c = tl.load(c_ptr + bh * D + cols)
             x = tl.where(live[:, None], x - c[None, :], 0.0)
         x = _rotate(x, R, D)
-        amax = tl.maximum(tl.max(tl.abs(x), axis = 1), 1e-20)
         base = bh.to(tl.int64) * n_pad
-        tl.store(s_ptr + base + rows, tl.where(live, amax * (mul / 127.0), 0.0))
-        tl.store(q_ptr + (base + rows[:, None]) * D + cols[None, :], _rint(x * (127.0 / amax)[:, None]).to(tl.int8))
+        if TILE:
+            amax = tl.maximum(tl.max(tl.max(tl.abs(x), axis = 1), axis = 0), 1e-20)
+            tl.store(s_ptr + bh.to(tl.int64) * (n_pad // R) + blk, amax * (mul / 127.0))
+            q = _rint(x * (127.0 / amax))
+        else:
+            amax = tl.maximum(tl.max(tl.abs(x), axis = 1), 1e-20)
+            tl.store(s_ptr + base + rows, tl.where(live, amax * (mul / 127.0), 0.0))
+            q = _rint(x * (127.0 / amax)[:, None])
+        tl.store(q_ptr + (base + rows[:, None]) * D + cols[None, :], q.to(tl.int8))
 
     @triton.jit
     def quant_v_kernel(
@@ -153,8 +160,10 @@ if triton is not None:
         sq, sk, n_qpad, n_kpad, n_heads, qk_mul,
         q_sb, q_ss, q_sh, k_sb, k_ss, k_sh, v_sb, v_ss, v_sh, o_sb, o_ss, o_sh,
         BM: tl.constexpr, BN: tl.constexpr, D: tl.constexpr,
-        QK_INT8: tl.constexpr, PV_INT8: tl.constexpr, EVEN_K: tl.constexpr,
+        QK_INT8: tl.constexpr, K_TILE: tl.constexpr, PV_MODE: tl.constexpr, EVEN_K: tl.constexpr,
     ):
+        # PV_MODE 0: 16-bit P.V, V read from the strided input; 1: 16-bit P.V, V from a heads-major padded copy;
+        # 2: INT8 P.V, P as 0..127 relative to each (row, key tile) maximum, V centred / gained, one scale per tile
         pid_m = tl.program_id(0)
         bh = tl.program_id(1)
         b = bh // n_heads
@@ -164,6 +173,7 @@ if triton is not None:
         cols = tl.arange(0, D)
         qbase = bh.to(tl.int64) * n_qpad
         kbase = bh.to(tl.int64) * n_kpad
+        n_ktiles = n_kpad // BN
         if QK_INT8:
             q = tl.load(q_ptr + (qbase + rows[:, None]) * D + cols[None, :])
             qs = tl.load(qs_ptr + qbase + rows)
@@ -180,8 +190,13 @@ if triton is not None:
             keys = t * BN + offs_n
             if QK_INT8:
                 k = tl.load(k_ptr + (kbase + keys[:, None]) * D + cols[None, :])
-                ks = tl.load(ks_ptr + kbase + keys)
-                s = tl.dot(q, tl.trans(k), out_dtype = tl.int32).to(tl.float32) * qs[:, None] * ks[None, :]
+                dots = tl.dot(q, tl.trans(k), out_dtype = tl.int32).to(tl.float32)
+                if K_TILE:
+                    kst = tl.load(ks_ptr + bh.to(tl.int64) * n_ktiles + t)
+                    s = dots * (qs * kst)[:, None]
+                else:
+                    ks = tl.load(ks_ptr + kbase + keys)
+                    s = dots * qs[:, None] * ks[None, :]
             else:
                 k = tl.load(
                     k_ptr + b * k_sb + h * k_sh + keys[:, None].to(tl.int64) * k_ss + cols[None, :],
@@ -193,27 +208,29 @@ if triton is not None:
             m_tile = tl.max(s, axis = 1)
             m_new = tl.maximum(m_i, m_tile)
             alpha = tl.math.exp2(m_i - m_new)
-            p = tl.math.exp2(s - m_new[:, None])
-            acc = acc * alpha[:, None]
-            if PV_INT8:
-                pm = tl.maximum(tl.math.exp2(m_tile - m_new), 1e-30)
-                pq = _rint(p * (127.0 / pm)[:, None])
+            if PV_MODE == 2:
+                # 127 * 2^(s - tile max): log2(127) folded into the exponent
+                p8 = _rint(tl.math.exp2(s - m_tile[:, None] + 6.988684686772166))
                 v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
-                vs = tl.load(vs_ptr + bh.to(tl.int64) * (n_kpad // BN) + t)
-                pv = tl.dot(pq.to(tl.int8), v, out_dtype = tl.int32).to(tl.float32)
-                w = pm * (1.0 / 127.0)
-                acc += pv * (w * vs)[:, None]
-                l_i = l_i * alpha + tl.sum(pq, axis = 1) * w
+                vs = tl.load(vs_ptr + bh.to(tl.int64) * n_ktiles + t)
+                pv = tl.dot(p8.to(tl.int8), v, out_dtype = tl.int32).to(tl.float32)
+                w = tl.math.exp2(m_tile - m_new) * (1.0 / 127.0)
+                acc = acc * alpha[:, None] + pv * (w * vs)[:, None]
+                l_i = l_i * alpha + tl.sum(p8, axis = 1) * w
             else:
-                v = tl.load(
-                    v_ptr + b * v_sb + h * v_sh + keys[:, None].to(tl.int64) * v_ss + cols[None, :],
-                    mask = (keys < sk)[:, None], other = 0.0,
-                )
-                acc += tl.dot(p.to(v.dtype), v)
+                p = tl.math.exp2(s - m_new[:, None])
+                if PV_MODE == 1:
+                    v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
+                else:
+                    v = tl.load(
+                        v_ptr + b * v_sb + h * v_sh + keys[:, None].to(tl.int64) * v_ss + cols[None, :],
+                        mask = (keys < sk)[:, None], other = 0.0,
+                    )
+                acc = tl.dot(p.to(v.dtype), v, acc * alpha[:, None])
                 l_i = l_i * alpha + tl.sum(p, axis = 1)
             m_i = m_new
         out = acc / l_i[:, None]
-        if PV_INT8:
+        if PV_MODE == 2:
             vg = tl.load(vg_ptr + bh * D + cols)
             vc = tl.load(vc_ptr + bh * D + cols)
             out = out * vg[None, :] + vc[None, :]
@@ -222,7 +239,6 @@ if triton is not None:
             out.to(o_ptr.dtype.element_ty),
             mask = (rows < sq)[:, None],
         )
-
 
 
 def kernels() -> Any:
@@ -237,11 +253,22 @@ def _pad(n: int, multiple: int) -> int:
     return (n + multiple - 1) // multiple * multiple
 
 
-def quantise(q: Any, k: Any, v: Any, config: dict, pv: str = "int8", scale: Optional[float] = None) -> dict:
-    """Quantised operands for ``attend`` from ``[B, S, H, D]`` q / k / v (last dim stride 1)."""
+PV_MODES = {"half_strided": 0, "half": 1, "int8": 2}
+
+
+def quantise(q: Any, k: Any, v: Any, config: dict, pv: Optional[str] = None, scale: Optional[float] = None) -> dict:
+    """Quantised operands for ``attend`` from ``[B, S, H, D]`` q / k / v (last dim stride 1).
+
+    ``config``: ``bm`` / ``bn`` (query rows / keys per tile), ``warps``, ``stages``, ``pv`` (``int8``, ``half``:
+    16-bit P.V on a heads-major copy of V, ``half_strided``: 16-bit P.V reading V in place) and ``kscale``
+    (``key``: one K scale per key, ``tile``: one per key tile)."""
     import torch
 
     kk = kernels()
+    pv = pv or config.get("pv", "int8")
+    if pv not in PV_MODES:
+        raise ValueError(f"pv {pv!r}")
+    k_tile = config.get("kscale", "key") == "tile"
     B, Sq, H, D = q.shape
     Sk = k.shape[1]
     bm, bn = int(config["bm"]), int(config["bn"])
@@ -258,15 +285,20 @@ def quantise(q: Any, k: Any, v: Any, config: dict, pv: str = "int8", scale: Opti
     qi = torch.empty((BH, n_qpad, D), dtype = torch.int8, device = dev)
     qs = torch.empty((BH, n_qpad), dtype = torch.float32, device = dev)
     kk.quant_rows[(BH, n_qpad // QUANT_ROWS)](q, q, qi, qs, Sq, n_qpad, H, *st(q), mul, R = QUANT_ROWS, D = D,
-                                               CENTRE = False)
+                                               CENTRE = False, TILE = False)
     kc = torch.empty((BH, D), dtype = torch.float32, device = dev)
     kk.stats[(BH,)](k, kc, kc, Sk, H, *st(k), STEP = STATS_STEP, R = 32, D = D, MODE = 0)
     ki = torch.empty((BH, n_kpad, D), dtype = torch.int8, device = dev)
-    ks = torch.empty((BH, n_kpad), dtype = torch.float32, device = dev)
-    kk.quant_rows[(BH, n_kpad // QUANT_ROWS)](k, kc, ki, ks, Sk, n_kpad, H, *st(k), 1.0, R = QUANT_ROWS, D = D,
-                                               CENTRE = True)
+    if k_tile:
+        ks = torch.empty((BH, n_kpad // bn), dtype = torch.float32, device = dev)
+        kk.quant_rows[(BH, n_kpad // bn)](k, kc, ki, ks, Sk, n_kpad, H, *st(k), 1.0, R = bn, D = D,
+                                           CENTRE = True, TILE = True)
+    else:
+        ks = torch.empty((BH, n_kpad), dtype = torch.float32, device = dev)
+        kk.quant_rows[(BH, n_kpad // QUANT_ROWS)](k, kc, ki, ks, Sk, n_kpad, H, *st(k), 1.0, R = QUANT_ROWS, D = D,
+                                                   CENTRE = True, TILE = False)
     out = {"qi": qi, "qs": qs, "ki": ki, "ks": ks, "n_qpad": n_qpad, "n_kpad": n_kpad, "v": v, "pv": pv,
-           "shape": (B, Sq, Sk, H, D), "config": config}
+           "k_tile": k_tile, "shape": (B, Sq, Sk, H, D), "config": config}
     if pv == "int8":
         vc = torch.empty((BH, D), dtype = torch.float32, device = dev)
         vg = torch.empty((BH, D), dtype = torch.float32, device = dev)
@@ -275,6 +307,12 @@ def quantise(q: Any, k: Any, v: Any, config: dict, pv: str = "int8", scale: Opti
         vs = torch.empty((BH, n_kpad // bn), dtype = torch.float32, device = dev)
         kk.quant_v[(BH, n_kpad // bn)](v, vc, vg, vi, vs, Sk, n_kpad, H, *st(v), T = bn, D = D)
         out.update(vi = vi, vs = vs, vc = vc, vg = vg)
+    elif pv == "half":
+        vh = torch.empty((B, H, n_kpad, D), dtype = v.dtype, device = dev)
+        vh[:, :, :Sk].copy_(v.permute(0, 2, 1, 3))
+        if n_kpad > Sk:
+            vh[:, :, Sk:].zero_()
+        out["vh"] = vh
     return out
 
 
@@ -287,20 +325,20 @@ def attend(p: dict) -> Any:
     bm, bn = int(cfg["bm"]), int(cfg["bn"])
     v = p["v"]
     out = torch.empty((B, Sq, H, D), dtype = v.dtype, device = v.device)
-    pv8 = p["pv"] == "int8"
-    vv = p["vi"] if pv8 else v
+    mode = PV_MODES[p["pv"]]
+    vv = {0: v, 1: p.get("vh"), 2: p.get("vi")}[mode]
     dummy = p["qs"]
     kk.attn[(p["n_qpad"] // bm, B * H)](
         p["qi"], p["qs"], p["ki"], p["ks"], vv, p.get("vs", dummy), p.get("vc", dummy), p.get("vg", dummy), out,
         Sq, Sk, p["n_qpad"], p["n_kpad"], H, 1.0,
         0, 0, 0, 0, 0, 0, v.stride(0), v.stride(1), v.stride(2), out.stride(0), out.stride(1), out.stride(2),
-        BM = bm, BN = bn, D = D, QK_INT8 = True, PV_INT8 = pv8, EVEN_K = Sk % bn == 0,
+        BM = bm, BN = bn, D = D, QK_INT8 = True, K_TILE = p["k_tile"], PV_MODE = mode, EVEN_K = Sk % bn == 0,
         num_warps = int(cfg["warps"]), num_stages = int(cfg["stages"]),
     )
     return out
 
 
-def int8_attention(q: Any, k: Any, v: Any, config: Optional[dict] = None, pv: str = "int8",
+def int8_attention(q: Any, k: Any, v: Any, config: Optional[dict] = None, pv: Optional[str] = None,
                    scale: Optional[float] = None) -> Any:
     """``softmax(q k^T * scale) v`` with int8 Q.K^T (and int8 P.V for ``pv="int8"``) on ``[B, S, H, D]``."""
     import torch
@@ -312,7 +350,7 @@ def int8_attention(q: Any, k: Any, v: Any, config: Optional[dict] = None, pv: st
 
 
 def half_attention(q: Any, k: Any, v: Any, config: Optional[dict] = None, scale: Optional[float] = None) -> Any:
-    """The same kernel without quantisation (16-bit Q.K^T and P.V): the Triton baseline on this card."""
+    """The same kernel without quantisation (16-bit Q.K^T and P.V, inputs read in place): the Triton baseline."""
     import torch
 
     kk = kernels()
@@ -329,7 +367,7 @@ def half_attention(q: Any, k: Any, v: Any, config: Optional[dict] = None, scale:
         Sq, Sk, 0, 0, H, mul,
         q.stride(0), q.stride(1), q.stride(2), k.stride(0), k.stride(1), k.stride(2),
         v2.stride(0), v2.stride(1), v2.stride(2), out.stride(0), out.stride(1), out.stride(2),
-        BM = bm, BN = bn, D = D, QK_INT8 = False, PV_INT8 = False, EVEN_K = Sk % bn == 0,
+        BM = bm, BN = bn, D = D, QK_INT8 = False, K_TILE = False, PV_MODE = 0, EVEN_K = Sk % bn == 0,
         num_warps = int(config["warps"]), num_stages = int(config["stages"]),
     )
     return out

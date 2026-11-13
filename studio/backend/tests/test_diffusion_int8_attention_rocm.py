@@ -112,7 +112,7 @@ def test_rocm_config_is_keyed_by_measured_gfx_arch(monkeypatch):
     assert (11, 5) not in I.KERNEL_CONFIGS
     for config in I.ROCM_KERNEL_CONFIGS.values():
         assert set(config) <= set(I.HEAD_DIMS)
-        assert all(c["pv"] in ("int8", "half") for c in config.values())
+        assert all(c["pv"] in ("int8", "half", "half_strided") and c.get("kscale", "key") in ("key", "tile") for c in config.values())
 
 
 def test_nvidia_keeps_its_capability_table(monkeypatch):
@@ -155,7 +155,7 @@ def test_rocm_call_runs_the_triton_kernel(monkeypatch):
     _fake_rocm(monkeypatch)
     calls = []
 
-    def fake(q, k, v, config = None, pv = "int8", scale = None):
+    def fake(q, k, v, config = None, pv = None, scale = None):
         calls.append((tuple(q.shape), dict(config), pv, scale))
         return v.clone()
 
@@ -166,7 +166,7 @@ def test_rocm_call_runs_the_triton_kernel(monkeypatch):
     out = I.int8_attention(q, q, q)
     assert out.shape == q.shape
     cfg = I.ROCM_KERNEL_CONFIGS["gfx1151"][128]
-    assert calls == [((1, 8, 2, 128), cfg, cfg["pv"], None)]
+    assert calls == [((1, 8, 2, 128), cfg, None, None)]  # P.V mode and key scale ride in the config
     # NVIDIA never reaches the Triton module
     from core.inference import rocm_bf16
 
@@ -210,10 +210,11 @@ _INTERPRET = textwrap.dedent(
             q, k, v = I.probe_inputs("cpu", torch.float16, tokens, 2, D, seed = tokens)
             q, k = q * gain, k * gain
             ref = F.scaled_dot_product_attention(*(t.double().permute(0, 2, 1, 3) for t in (q, k, v))).permute(0, 2, 1, 3)
-            for pv in ("int8", "half"):
-                for cfg in ({"bm": 64, "bn": 64, "warps": 4, "stages": 1}, {"bm": 32, "bn": 32, "warps": 2, "stages": 1}):
+            for pv in ("int8", "half", "half_strided"):
+                for cfg in ({"bm": 64, "bn": 64, "warps": 4, "stages": 1, "kscale": "key"},
+                            {"bm": 32, "bn": 32, "warps": 2, "stages": 1, "kscale": "tile"}):
                     got = T.int8_attention(q, k, v, cfg, pv = pv).double()
-                    key = f"{tokens}/{D}/{gain}/{pv}/{cfg['bm']}x{cfg['bn']}"
+                    key = f"{tokens}/{D}/{gain}/{pv}/{cfg['bm']}x{cfg['bn']}/{cfg['kscale']}"
                     out[key] = {"cos": float(F.cosine_similarity(got.flatten(), ref.flatten(), 0)),
                                 "rel_l1": float((got - ref).abs().mean() / ref.abs().mean()),
                                 "finite": bool(torch.isfinite(got).all())}
@@ -234,7 +235,7 @@ def test_triton_kernel_numerics_interpreted():
     line = [x for x in r.stdout.splitlines() if x.startswith("RESULT ")]
     assert line, (r.stdout[-2000:], r.stderr[-3000:])
     res = json.loads(line[0][7:])
-    assert len(res) == 16
+    assert len(res) == 24
     for key, m in res.items():
         gain = float(key.split("/")[2])
         assert m["finite"], key
