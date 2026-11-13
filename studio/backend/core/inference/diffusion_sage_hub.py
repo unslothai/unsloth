@@ -186,6 +186,116 @@ def _import_variant(path: Path) -> Any:
     return module
 
 
+# "0": call the hub ``sageattn`` as shipped on sm89 too (it synchronizes the device after every attention call)
+SM89_NO_SYNC_ENV = "UNSLOTH_SAGE_SM89_NO_SYNC"
+
+
+def _sm89_parts(module: Any) -> Optional[tuple]:
+    """``(per_thread_int8, per_channel_fp8, attn_op)`` of the build's sm89 route, or None when it has other names."""
+    core = getattr(module, "core", None)
+    parts = (
+        getattr(core, "per_thread_int8_triton", None),
+        getattr(core, "per_channel_fp8", None),
+        getattr(core, "sm89_qk_int8_sv_f8_accum_f16_fuse_v_scale_attn_inst_buf", None),
+    )
+    if not getattr(core, "SM89_ENABLED", False) or not all(callable(p) for p in parts):
+        return None
+    return parts
+
+
+def _on_sm89(t: Any) -> bool:
+    import torch
+    return bool(t.is_cuda) and tuple(torch.cuda.get_device_capability(t.device)) == (8, 9)
+
+
+def without_sm89_sync(module: Any, sageattn: Any) -> Any:
+    """``sageattn`` with its sm89 route run here without the ``torch.cuda.synchronize()`` the hub build issues after
+    every launch: same ops, arguments and order as its ``sageattn_qk_int8_pv_fp8_cuda`` (``fp32+fp16`` accumulation),
+    so the output is bit-identical, but the host no longer drains every stream (a streamed DiT's weight prefetch too)
+    once per attention call. Calls outside that route (other archs, causal, LSE, odd head dims, grouped heads) take
+    ``sageattn``."""
+    parts = _sm89_parts(module)
+    if parts is None:
+        return sageattn
+    per_thread_int8, per_channel_fp8, attn_op = parts
+    import contextlib
+    import os
+
+    import torch
+
+    def _sm89(
+        q: Any,
+        k: Any,
+        v: Any,
+        tensor_layout: str = "HND",
+        is_causal: bool = False,
+        sm_scale: Any = None,
+        return_lse: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        seq_dim = 1 if tensor_layout == "NHD" else 2
+        if (
+            kwargs
+            or is_causal
+            or return_lse
+            or tensor_layout not in ("NHD", "HND")
+            or (os.environ.get(SM89_NO_SYNC_ENV) or "1").strip().lower()
+            in ("0", "off", "false", "no")
+            or not _on_sm89(q)
+            or q.dtype not in (torch.float16, torch.bfloat16)
+            or not (q.dtype == k.dtype == v.dtype and q.device == k.device == v.device)
+            or q.size(-1) not in (64, 128)
+            or not (k.size(-1) == v.size(-1) == q.size(-1))
+            or not (q.stride(-1) == k.stride(-1) == v.stride(-1) == 1)
+            # grouped heads: the stock call broadcasts the K mean
+            or q.size(3 - seq_dim) != k.size(3 - seq_dim)
+        ):
+            return sageattn(
+                q,
+                k,
+                v,
+                tensor_layout = tensor_layout,
+                is_causal = is_causal,
+                sm_scale = sm_scale,
+                return_lse = return_lse,
+                **kwargs,
+            )
+        if sm_scale is None:
+            sm_scale = q.size(-1) ** -0.5
+        # The build's CUDA ops launch on the device's default stream whatever stream is current (its Triton
+        # quantisers follow the current one), so the whole call runs on the default stream, ordered against the
+        # caller's stream by events instead of a host sync.
+        side = None
+        if v.is_cuda:
+            current = torch.cuda.current_stream(v.device)
+            default = torch.cuda.default_stream(v.device)
+            if current != default:
+                side = (current, default)
+                default.wait_stream(current)
+                for t in (q, k, v):
+                    t.record_stream(default)
+        device = torch.cuda.device(v.device) if v.is_cuda else contextlib.nullcontext()
+        stream = torch.cuda.stream(side[1]) if side is not None else contextlib.nullcontext()
+        with device, stream:
+            km = k.mean(dim = seq_dim, keepdim = True)
+            q_int8, q_scale, k_int8, k_scale = per_thread_int8(
+                q, k, km, tensor_layout = tensor_layout, BLKQ = 128, WARPQ = 32, BLKK = 64, WARPK = 64
+            )
+            o = torch.empty(q.size(), dtype = q.dtype, device = q.device)
+            v_fp8, v_scale, _ = per_channel_fp8(
+                v, tensor_layout = tensor_layout, scale_max = 2.25, smooth_v = False
+            )
+            layout = 0 if tensor_layout == "NHD" else 1
+            attn_op(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, layout, 0, 3, sm_scale, 0)
+        if side is not None:
+            side[0].wait_stream(side[1])
+            o.record_stream(side[0])
+        return o
+
+    _sm89.__wrapped__ = sageattn  # type: ignore[attr-defined]
+    return _sm89
+
+
 def load_sageattn(
     versions: tuple[int, ...],
     capability: Optional[tuple[int, int]] = None,
@@ -244,12 +354,13 @@ def load_sageattn(
                 errors.append(f"{where} {variant}: {bad}")
                 continue
             try:
-                fn = getattr(_import_variant(path), "sageattn", None)
+                module = _import_variant(path)
+                fn = getattr(module, "sageattn", None)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{where} {variant}: {type(exc).__name__}: {str(exc)[:160]}")
                 continue
             if callable(fn):
-                return fn, ""
+                return without_sm89_sync(module, fn), ""
             errors.append(f"{where} {variant}: no sageattn in the build")
         return None, "; ".join(errors)
     except Exception as exc:  # noqa: BLE001 - never break a load
