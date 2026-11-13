@@ -23,7 +23,13 @@ import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
-import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
+import {
+  FOLDER_SYNC_HELP,
+  SOURCE_FOLDER_DESCRIPTION,
+  folderSyncLabel,
+  folderSyncProgress,
+  sourceFolderUnavailableMessage,
+} from "./source-folder-copy";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { FolderAddIcon, FolderSyncIcon } from "@/lib/folder-icons";
@@ -55,11 +61,24 @@ function jobSummary(job: FolderSyncJob): string {
       ? "Sync complete"
       : `${indexed} file${indexed === 1 ? "" : "s"} indexed`;
   }
+  const folderProgress = folderSyncProgress(job);
+  if (folderProgress) {
+    return folderSyncLabel(folderProgress.synced, folderProgress.discovered);
+  }
   const processed = job.processedFiles ?? 0;
   const discovered = job.discoveredFiles;
   return discovered == null
     ? job.stage || "Scanning folder"
     : `${processed} of ${discovered} files`;
+}
+
+/** The bar follows the same folder-wide count as the text when the server sends it. */
+function jobPercent(job: FolderSyncJob | undefined): number | null {
+  if (!job) return null;
+  const folderProgress = folderSyncProgress(job);
+  return folderProgress
+    ? percent(folderProgress.synced / folderProgress.discovered)
+    : percent(job.progress);
 }
 
 const SKIP_LABELS: Record<LinkedFolderSkipReason, (count: number) => string> = {
@@ -289,13 +308,14 @@ export function LinkedFoldersManager({
                           "truncate text-ui-11 text-muted-foreground",
                           failed && "text-destructive",
                         )}
+                        title={running && !failed ? FOLDER_SYNC_HELP : detail}
                       >
                         {detail}
                       </p>
                     ) : null}
                     {running ? (
                       <Progress
-                        value={percent(job?.progress) ?? 0}
+                        value={jobPercent(job) ?? 0}
                         aria-label={`Sync progress for ${folder.displayName}`}
                         className="mt-1.5 h-1"
                       />
@@ -403,7 +423,7 @@ export function LinkedFoldersManager({
             const job = manager.jobs[folder.id];
             const running =
               job?.status === "pending" || job?.status === "running";
-            const progress = percent(job?.progress);
+            const progress = jobPercent(job);
             return (
               <li
                 key={folder.id}
@@ -437,6 +457,7 @@ export function LinkedFoldersManager({
                       (folder.status === "error" || job?.status === "failed") &&
                         "text-destructive",
                     )}
+                    title={running ? FOLDER_SYNC_HELP : undefined}
                   >
                     {job
                       ? jobSummary(job)

@@ -9,6 +9,7 @@ import { Folder02Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
 import type { DocumentStatus } from "../types/rag";
+import { runningPercent } from "./source-folder-copy";
 
 export const STAGE_LABELS: Record<string, string> = {
   parsing: "Reading document",
@@ -29,6 +30,7 @@ export function DocumentStatusChip({
   onOpen,
   openTrigger,
   onRetry,
+  title,
   shared = false,
 }: {
   filename: string;
@@ -42,6 +44,8 @@ export function DocumentStatusChip({
   /** Hands that button to a viewer that owns its own open state (e.g. a dialog trigger). */
   openTrigger?: (trigger: ReactElement) => ReactNode;
   onRetry?: () => void;
+  /** Hover text in place of the default, unless the document failed. */
+  title?: string;
   /** Indexed for the whole project rather than this one chat: swap the file
    * glyph for a folder so the two scopes are told apart at a glance. */
   shared?: boolean;
@@ -64,6 +68,7 @@ export function DocumentStatusChip({
       size="sm"
       title={
         error ??
+        title ??
         (processing && stage && STAGE_LABELS[stage]
           ? `${filename} — ${STAGE_LABELS[stage]}`
           : shared
@@ -103,7 +108,7 @@ export function DocumentStatusChip({
       {processing ? (
         <span className="flex shrink-0 items-center gap-1 text-ui-10 text-muted-foreground">
           {progress != null
-            ? `${Math.round(progress <= 1 ? progress * 100 : progress)}%`
+            ? `${runningPercent(progress)}%`
             : null}
           <Spinner className="size-3.5" />
         </span>

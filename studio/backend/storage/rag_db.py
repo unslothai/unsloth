@@ -214,6 +214,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             deleted INTEGER NOT NULL DEFAULT 0,
             renamed INTEGER NOT NULL DEFAULT 0,
             failed INTEGER NOT NULL DEFAULT 0,
+            up_to_date INTEGER NOT NULL DEFAULT 0,
+            checked INTEGER NOT NULL DEFAULT 0,
             error TEXT,
             successor_kind TEXT,
             created_at TEXT NOT NULL,
@@ -315,6 +317,15 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
                 "UPDATE linked_folder_sync_jobs SET successor_kind='rebuild' "
                 "WHERE rebuild_requested=1"
             )
+    # files already indexed and unchanged when the pass began, and files the pass has gone through
+    if job_cols and "up_to_date" not in job_cols:
+        conn.execute(
+            "ALTER TABLE linked_folder_sync_jobs ADD COLUMN up_to_date INTEGER NOT NULL DEFAULT 0"
+        )
+    if job_cols and "checked" not in job_cols:
+        conn.execute(
+            "ALTER TABLE linked_folder_sync_jobs ADD COLUMN checked INTEGER NOT NULL DEFAULT 0"
+        )
     # vanished paths already granted their one grace pass before removal
     folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
     if folder_cols and "withheld_paths" not in folder_cols:
