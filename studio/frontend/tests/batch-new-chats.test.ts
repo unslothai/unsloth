@@ -80,6 +80,8 @@ test("a step settles only on a finished reply; errors fail it and a user stop st
   assert.equal(batchStepOutcome({ isRunning: false, messages: [user, research("cancelled")] }), "stopped");
   const stalled = { ...reply("complete"), metadata: { custom: { generationLocallyInterrupted: true } } };
   assert.equal(batchStepOutcome({ isRunning: false, messages: [user, stalled] }), "failed");
+  const empty = { ...reply("complete"), metadata: { custom: { incomplete: { reason: "empty" } } } };
+  assert.equal(batchStepOutcome({ isRunning: false, messages: [user, empty] }), "failed");
 });
 
 test("files run in natural name order, so clip-2 comes before clip-10", () => {
@@ -132,7 +134,7 @@ test("each file gets its own new chat, the next opening only after the reply fin
     assert.equal(first.total, 2);
 
     let state: BatchThreadSnapshot = { isRunning: true, messages: [user, reply("running")] };
-    first.sent({ read: () => state, unsent: () => false });
+    first.sent({ read: () => state });
     mock.timers.tick(BATCH_POLL_MS * 4);
     assert.deepEqual(h.opened, ["n0"], "still answering: no second chat yet");
 
@@ -146,7 +148,6 @@ test("each file gets its own new chat, the next opening only after the reply fin
     assert.equal(second.file.name, "b.mp4");
     second.sent({
       read: () => ({ isRunning: false, messages: [user, reply("complete")] }),
-      unsent: () => false,
     });
     mock.timers.tick(BATCH_POLL_MS);
     assert.deepEqual(h.finished, [{ kind: "done", total: 2 }]);
@@ -165,7 +166,6 @@ test("a reply that errors stops the batch at that file", () => {
     assert.ok(claim);
     claim.sent({
       read: () => ({ isRunning: false, messages: [user, reply("incomplete", "error")] }),
-      unsent: () => false,
     });
     mock.timers.tick(BATCH_POLL_MS);
     assert.equal(h.finished.length, 1);
@@ -185,8 +185,8 @@ test("a send Studio refused, or a chat nobody opened, ends the batch instead of 
     startBatchNewChats("p", [file("a.mp4")], refused.deps);
     const claim = claimBatchStep(batchTargetKey("n0"));
     assert.ok(claim);
-    // The prompt is still sitting in the composer and the chat is empty.
-    claim.sent({ read: () => ({ isRunning: false, messages: [] }), unsent: () => true });
+    // Nothing reached the chat, whether the prompt is still in the composer or not.
+    claim.sent({ read: () => ({ isRunning: false, messages: [] }) });
     mock.timers.tick(BATCH_SEND_TIMEOUT_MS - BATCH_POLL_MS);
     assert.equal(refused.finished.length, 0, "a parked send gets time to go out");
     mock.timers.tick(BATCH_POLL_MS * 2);
@@ -226,7 +226,6 @@ test("Stop ends the batch before the next chat, counting chats already sending",
     assert.ok(claim);
     claim.sent({
       read: () => ({ isRunning: true, messages: [user, reply("running")] }),
-      unsent: () => false,
     });
     stopBatchNewChats();
     assert.deepEqual(h.finished, [{ kind: "stopped", sent: 1, total: 3 }]);

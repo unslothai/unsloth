@@ -14,6 +14,7 @@ export interface BatchThreadSnapshot {
       custom?: {
         researchRun?: { status?: string } | null;
         generationLocallyInterrupted?: boolean;
+        incomplete?: { reason?: string } | null;
       } | null;
     } | null;
   }[];
@@ -38,7 +39,9 @@ export function batchStepOutcome(
   }
   // These replies complete even when the research failed or was stopped, or the stream stalled.
   const custom = last.metadata?.custom;
-  if (custom?.generationLocallyInterrupted === true) return "failed";
+  if (custom?.generationLocallyInterrupted === true || custom?.incomplete?.reason === "empty") {
+    return "failed";
+  }
   const research = custom?.researchRun?.status;
   if (research === "failed") return "failed";
   if (research === "cancelled") return "stopped";
@@ -115,8 +118,6 @@ export interface BatchDeps {
 export interface BatchStepWatch {
   /** The chat this step sent into, or null while it cannot be read. */
   read: () => BatchThreadSnapshot | null;
-  /** True while the prompt still sits unsent in that chat's composer. */
-  unsent: () => boolean;
 }
 
 export interface BatchClaim {
@@ -210,11 +211,9 @@ function watchStep(id: number, index: number, watch: BatchStepWatch): void {
     const outcome = batchStepOutcome(snapshot);
     if (outcome === "pending") {
       const nothingSent = !snapshot || snapshot.messages.length === 0;
-      if (
-        nothingSent &&
-        watch.unsent() &&
-        Date.now() - startedAt > BATCH_SEND_TIMEOUT_MS
-      ) {
+      // A refused send keeps the prompt in the composer, a failed attachment send clears it: either
+      // way nothing reaches this chat.
+      if (nothingSent && Date.now() - startedAt > BATCH_SEND_TIMEOUT_MS) {
         fail(id, "Studio didn't send this chat. Check its message box, then start the batch again.");
       }
       return;

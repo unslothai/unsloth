@@ -178,12 +178,13 @@ export function useBatchNewChatsComposer(
           // Let the composer render the file and text, so its send checks see them.
           await nextFrame();
           await nextFrame();
-          // A New chat opened meanwhile can reuse this blank draft and clear it.
+          // A New chat opened meanwhile can reuse this blank draft and clear it; a file the user
+          // added meanwhile would ride along with this one.
           const draft = aui.composer().getState();
           if (
             aui.threadListItem().getState().id !== draftId ||
             draft.text.trim() !== claim.prompt ||
-            draft.attachments.length === 0
+            draft.attachments.length !== 1
           ) {
             throw new Error("The chat changed before the message was sent.");
           }
@@ -202,14 +203,7 @@ export function useBatchNewChatsComposer(
             runtime.threads as unknown as ThreadListLike,
             draftId,
           );
-          claim.sent({
-            read,
-            unsent: () => {
-              // A draft left unsent counts as unsent, so the send timeout still ends the batch.
-              if (aui.threadListItem().getState().id !== draftId) return true;
-              return aui.composer().getState().text.trim() === claim.prompt;
-            },
-          });
+          claim.sent({ read });
         } catch (error) {
           claim.failed(error instanceof Error ? error.message : String(error));
         }
