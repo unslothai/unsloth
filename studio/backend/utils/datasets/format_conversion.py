@@ -80,7 +80,7 @@ def standardize_chat_format(
         if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer"):
             is_vlm = True
 
-    column_names = set(next(iter(dataset)).keys())
+    column_names = set((next(iter(dataset), None) or {}).keys())
 
     if chat_column:
         if chat_column not in column_names:

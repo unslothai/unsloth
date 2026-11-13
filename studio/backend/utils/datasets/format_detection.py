@@ -223,7 +223,10 @@ def detect_dataset_format(dataset):
 
 def detect_custom_format_heuristic(dataset):
     """Detection with priority scoring. For ambiguous keywords like 'task': detect the assistant first (unambiguous), then the user by high-priority keywords, then check the REMAINING columns for system keywords (including 'task'), and only fall back to 'task' as the user column when nothing matched system."""
-    sample = next(iter(dataset))
+    try:
+        sample = next(iter(dataset))
+    except StopIteration:
+        return None
     all_columns = list(sample.keys())
 
     mapping = {}
@@ -595,7 +598,20 @@ def detect_custom_format_heuristic(dataset):
 
 
 def detect_multimodal_dataset(dataset):
-    sample = next(iter(dataset))
+    try:
+        sample = next(iter(dataset))
+    except StopIteration:
+        return {
+            "is_image": False,
+            "is_video": False,
+            "multimodal_columns": [],
+            "modality_types": [],
+            "is_audio": False,
+            "audio_columns": [],
+            "detected_audio_column": None,
+            "detected_text_column": None,
+            "detected_speaker_column": None,
+        }
     column_names = list(sample.keys())
 
     image_keywords = [
