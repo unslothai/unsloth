@@ -780,6 +780,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "own_prefix",
         "abbrev_target",
         "clustered_target",
+        "config_target",
+        "flat_then_venv",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -813,6 +815,11 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "pth_zip": f"{_PIP} {wheel} && {show}",
         # optparse abbreviations and short-option clusters choose a destination too.
         "abbrev_target": f"{_PIP} --targ vendor {wheel} && PYTHONPATH=vendor {show}",
+        "config_target": f"printf '[install]\\ntarget = vendor\\n' > pip.ini && PIP_CONFIG_FILE=pip.ini "
+        f"{_PIP} {wheel} && PYTHONPATH=vendor {show}",
+        # A --target install into the chat folder itself must not satisfy a project venv's pip either.
+        "flat_then_venv": f"{_PIP} --target .unsloth-packages {wheel} && python -m venv venv && "
+        f"venv/bin/{_PIP} {wheel} && env -u PYTHONPATH venv/bin/{show}",
         "clustered_target": f"python -m pip install -qt vendor --no-index --no-deps {wheel} && "
         f"PYTHONPATH=vendor {show}",
         # A PIP_PREFIX the command sets itself is kept.
@@ -849,6 +856,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "isolated": packages,
         "pth_zip": packages,
         "abbrev_target": str(workdir / "vendor"),
+        "config_target": str(workdir / "vendor"),
+        "flat_then_venv": str(workdir / "venv"),
         "clustered_target": str(workdir / "vendor"),
         "own_prefix": str(workdir / "deps"),
         "pip_python": str(workdir / "venv"),
@@ -1368,6 +1377,30 @@ def test_retirement_keeps_what_a_distribution_in_the_other_site_dir_ships(tmp_pa
     subprocess.run([sys.executable, "-c", code], env = env, check = True)
     assert not (pure / "unsloth_pure-1.0.dist-info").exists()
     assert (prefix / "bin" / "tool").exists()
+
+
+def test_a_replaced_version_in_the_other_site_dir_is_pruned(tmp_path):
+    """purelib and platlib apart: version 1.0 in one and 2.0 in the other still leaves only 2.0."""
+    prefix = tmp_path / "prefix"
+    pure, plat = prefix / "lib" / "site-packages", prefix / "lib64" / "site-packages"
+    for site_dir, version, stamp in ((pure, "1.0", 1), (plat, "2.0", 2)):
+        info = site_dir / f"unsloth_split_scheme-{version}.dist-info"
+        info.mkdir(parents = True)
+        (site_dir / f"unsloth_split_scheme_{version[0]}.py").write_text("")
+        (info / "RECORD").write_text(
+            f"unsloth_split_scheme_{version[0]}.py,,\n{info.name}/RECORD,,\n"
+        )
+        os.utime(info / "RECORD", ns = (stamp * 10**9, stamp * 10**9))
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": os.pathsep.join([tools._SANDBOX_SITE_DIR, str(pure), str(plat)]),
+        "PIP_PREFIX": str(prefix),
+    }
+    code = "import sitecustomize as s; s._prune_stale_dist_info()"
+    subprocess.run([sys.executable, "-c", code], env = env, check = True)
+    assert not (pure / "unsloth_split_scheme-1.0.dist-info").exists()
+    assert not (pure / "unsloth_split_scheme_1.py").exists()
+    assert (plat / "unsloth_split_scheme-2.0.dist-info").exists()
 
 
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):

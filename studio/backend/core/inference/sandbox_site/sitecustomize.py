@@ -407,6 +407,67 @@ def _is_pip_launch():
     )
 
 
+def _within(path, root):
+    # root ends in a separator; the prefix folder itself (where --target installs land) counts too.
+    path = os.path.join(os.path.normcase(os.path.abspath(path)), "")
+    return path.startswith(root)
+
+
+def _stdlib_paths():
+    # The standard library alone: no session dir, .pth source, cwd or script dir can answer the shim's imports.
+    base = os.path.join(os.path.normcase(os.path.realpath(sys.base_prefix)), "")
+    return [
+        e
+        for e in sys.path
+        if e
+        and os.path.normcase(os.path.realpath(e)).startswith(base)
+        and "site-packages" not in os.path.normcase(e)
+        and "dist-packages" not in os.path.normcase(e)
+    ]
+
+
+def _config_chooses_location():
+    # pip's config files (PIP_CONFIG_FILE, the chat HOME's user files, the interpreter's site file) can set
+    # install.target / prefix / root / user too; PIP_PREFIX would then conflict with them.
+    home = os.path.expanduser("~")
+    files = [
+        os.environ.get("PIP_CONFIG_FILE", ""),
+        os.path.join(
+            os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "pip", "pip.conf"
+        ),
+        os.path.join(home, ".pip", "pip.conf"),
+        os.path.join(sys.prefix, "pip.conf"),
+    ]
+    files = [f for f in files if f and f != os.devnull and os.path.isfile(f)]
+    if not files:
+        return False
+    saved = sys.path[:]
+    sys.path[:] = _stdlib_paths()
+    try:
+        import configparser
+    finally:
+        sys.path[:] = saved
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read(files, encoding = "utf-8")
+    except (configparser.Error, UnicodeDecodeError):
+        return False
+    for section in ("global", "install"):
+        for key in ("target", "prefix", "root", "home"):
+            if parser.get(section, key, fallback = "").strip():
+                return True
+        if parser.get(section, "user", fallback = "").strip().lower() in (
+            "y",
+            "yes",
+            "t",
+            "true",
+            "on",
+            "1",
+        ):
+            return True
+    return False
+
+
 _chat_prefix = None
 
 
@@ -435,6 +496,7 @@ def _route_pip():
                 )
                 placed = placed or os.environ.get("PIP_USER", "").strip().lower() in truthy
                 placed = placed or os.environ.get("PIP_PREFIX", prefix) not in ("", prefix)
+                placed = placed or (is_pip and _config_chooses_location())
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
@@ -453,7 +515,7 @@ def _route_pip():
             root = os.path.join(key(prefix), "")
 
             def chat(entry):
-                return bool(entry) and key(entry).startswith(root)
+                return bool(entry) and os.path.join(key(entry), "").startswith(root)
 
             sys.path[:] = [e for e in sys.path if not chat(e)]
             if "PYTHONPATH" in os.environ:
@@ -467,25 +529,12 @@ def _route_pip():
 _route_pip()
 
 
-def _stdlib_paths():
-    # The standard library alone: no session dir, .pth source, cwd or script dir can answer the shim's imports.
-    base = os.path.join(os.path.normcase(os.path.realpath(sys.base_prefix)), "")
-    return [
-        e
-        for e in sys.path
-        if e
-        and os.path.normcase(os.path.realpath(e)).startswith(base)
-        and "site-packages" not in os.path.normcase(e)
-        and "dist-packages" not in os.path.normcase(e)
-    ]
-
-
 def _session_entries():
     prefix = _chat_prefix or os.environ.get("PIP_PREFIX")
     if not prefix:
         return []
     root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
-    return [e for e in sys.path if e and os.path.normcase(os.path.abspath(e)).startswith(root)]
+    return [e for e in sys.path if e and _within(e, root)]
 
 
 def _literal(path, names):
@@ -735,7 +784,7 @@ def _claimed(root, skip):
     # Every site dir of the prefix (purelib and platlib can differ): a companion's RECORD may sit in the other.
     claimed = set()
     for entry in sys.path:
-        if not entry or not os.path.normcase(os.path.abspath(entry)).startswith(root):
+        if not entry or not _within(entry, root):
             continue
         try:
             names = [n for n in os.listdir(entry) if n.endswith(".dist-info")]
@@ -770,47 +819,45 @@ def _prune_stale_dist_info():
         if not prefix:
             return
         root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
+        # Grouped across every site dir of the prefix: purelib and platlib can hold two versions apart.
+        projects = {}
         for entry in sys.path:
-            if not entry or not os.path.normcase(os.path.abspath(entry)).startswith(root):
+            if not entry or not _within(entry, root):
                 continue
             try:
                 names = os.listdir(entry)
             except OSError:
                 continue
-            projects = {}
             for name in names:
                 if name.endswith(".dist-info"):
+                    try:
+                        stamp = os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns
+                    except OSError:
+                        continue
                     project = (
                         name[:-10].rpartition("-")[0].lower().replace("-", "_").replace(".", "_")
                     )
-                    projects.setdefault(project, []).append(name)
-            for found in projects.values():
-                if len(found) < 2:
-                    continue
-                stamped = []
-                for name in found:
-                    try:
-                        stamped.append(
-                            (os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns, name)
-                        )
-                    except OSError:
-                        pass
-                saved = sys.path[:]
-                sys.path[:] = _stdlib_paths()
-                try:
-                    import shutil
-                finally:
-                    sys.path[:] = saved
-
-                stamped.sort()
-                # A copy: _recorded_files hands out its cached sets.
-                keep = set(_recorded_files(entry, stamped[-1][1], root)) if stamped else set()
-                # Files another surviving distribution now ships stay too.
-                keep |= _claimed(root, {(entry, name) for _, name in stamped[:-1]})
-                for _, name in stamped[:-1]:
-                    # Also the files only the replaced version had, as pip's uninstall would remove.
-                    _remove_files(_recorded_files(entry, name, root) - keep, entry)
-                    shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
+                    projects.setdefault(project, {})[(entry, name)] = stamp
+        stale_groups = [found for found in projects.values() if len(found) > 1]
+        if not stale_groups:
+            return
+        saved = sys.path[:]
+        sys.path[:] = _stdlib_paths()
+        try:
+            import shutil
+        finally:
+            sys.path[:] = saved
+        for found in stale_groups:
+            ordered = sorted(found, key = found.get)
+            newest, stale = ordered[-1], ordered[:-1]
+            # A copy: _recorded_files hands out its cached sets.
+            keep = set(_recorded_files(newest[0], newest[1], root))
+            # Files another surviving distribution now ships stay too.
+            keep |= _claimed(root, set(stale))
+            for entry, name in stale:
+                # Also the files only the replaced version had, as pip's uninstall would remove.
+                _remove_files(_recorded_files(entry, name, root) - keep, entry)
+                shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
     except Exception:  # noqa: BLE001 - a broken shim must never break user code
         pass
 
@@ -822,7 +869,7 @@ def _record_snapshot():
     try:
         root = os.path.join(os.path.normcase(os.path.abspath(os.environ["PIP_PREFIX"])), "")
         for entry in sys.path:
-            if not entry or not os.path.normcase(os.path.abspath(entry)).startswith(root):
+            if not entry or not _within(entry, root):
                 continue
             try:
                 names = [n for n in os.listdir(entry) if n.endswith(".dist-info")]
