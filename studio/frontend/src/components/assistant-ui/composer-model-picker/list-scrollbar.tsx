@@ -64,7 +64,6 @@ export function ListScrollbar({
     el.addEventListener("pointerleave", leave);
     const observer = new ResizeObserver(measure);
     observer.observe(el);
-    // Rows change with tab and search without resizing the capped list.
     const mutations = new MutationObserver(measure);
     mutations.observe(el, { childList: true, subtree: true });
     return () => {

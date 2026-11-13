@@ -790,7 +790,6 @@ const FAVORITE_DROP_CUE = {
   bottom: `${FAVORITE_DROP_CUE_BASE} before:bottom-0`,
 } as const;
 
-// One step past hover, as Zeron's chosen row: darker in light, lighter in dark.
 const CURRENT_ROW_BG =
   "bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] hover:bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] dark:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)] dark:hover:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)]";
 
@@ -954,7 +953,6 @@ function Hint({
   );
 }
 
-// A mark only: Eject is in the row menu and the header.
 function LoadedDot({ label = "Loaded" }: { label?: string }) {
   return (
     <Hint label={label}>
@@ -1005,7 +1003,6 @@ function SwitchRow({
   );
 }
 
-// 8px corners: 12px on a 26px row reads as a full pill.
 const MENU_ITEM =
   "min-h-0 gap-2 rounded-[calc(8px*var(--ui-space-scale,1))] py-[calc(5px*var(--ui-space-scale,1))] pr-8 pl-2.5 text-ui-12 [&_[data-slot=dropdown-menu-radio-item-indicator]]:right-2.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5";
 const MENU_LABEL =
@@ -1330,7 +1327,6 @@ function SearchField({
         event.preventDefault();
         if (draft !== committed.current) {
           commit(draft);
-          // After the list re-filters, so the key acts on the rows the user sees.
           window.setTimeout(() => onNavKey(key), 0);
           return;
         }
@@ -2003,7 +1999,6 @@ export function ComposerModelPicker({
     return true;
   };
 
-  // Re-read per opening and inventory change; a failed read keeps the last list.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new inventory is the trigger, not an input.
   const quantsEpoch = useMemo(
     () => ({ open }),
@@ -2289,7 +2284,6 @@ export function ComposerModelPicker({
           },
           abort.signal,
         );
-        // Noted even after a close: the listing stands.
         if (!mlx && list.length > 0) {
           fitCheck.current.noteListedFit(r.id, list);
         }
@@ -2302,7 +2296,6 @@ export function ComposerModelPicker({
     void Promise.all([next(), next(), next()]);
     return () => {
       abort.abort();
-      // Unfinished ones are checked again on the next look.
       for (const id of [...inFlight, ...queue.map((r) => r.id.toLowerCase())]) {
         checkedFits.current.delete(id);
       }
@@ -2370,7 +2363,6 @@ export function ComposerModelPicker({
       return sortConnectedRows(found, isFavorite);
     }
     const lastLoaded = (row: Row) => loadedAt(loadTimes, row.id);
-    // Stable: favorites lift to the top, each side keeping its order.
     const favoritesFirst = (list: Row[]) =>
       [...list].sort((a, b) => Number(isFavorite(b)) - Number(isFavorite(a)));
     // A maker's tab reads like On Device's default: favorites, then last loaded or downloaded.
@@ -2603,7 +2595,6 @@ export function ComposerModelPicker({
         };
   };
 
-  // A pick supersedes any still resolving its quant.
   const pickSeq = useRef(0);
   const supersede = () => {
     pickSeq.current += 1;
@@ -2677,7 +2668,6 @@ export function ComposerModelPicker({
       target,
     });
     const mlxRepo = row.kind === "hub" && !row.hub?.isGguf;
-    // An MLX repo with no variant listing loads as one checkpoint.
     const pickWhole = () => {
       if (pickSeq.current !== seq || !source) {
         return;
@@ -2822,7 +2812,6 @@ export function ComposerModelPicker({
     row.tab === DEVICE_TAB && !row.partial && viewed !== RECOMMENDED_TAB
       ? (devicePartials.get(row.key) ?? NO_QUANTS)
       : NO_QUANTS;
-  // A partial quant counts, so the row folds both.
   const variantCount = (row: Row) =>
     (deviceQuants.get(row.key)?.length ?? 0) + partialsOf(row).length;
 
@@ -3052,7 +3041,6 @@ export function ComposerModelPicker({
       ?.scrollIntoView({ block: "nearest" });
   }, [active, isExpanded]);
 
-  // Arrows walk rows and their open quants in list order.
   const navNeighbour = (from: Element | null | undefined, dir: 1 | -1) => {
     const items = Array.from(
       listRef.current?.querySelectorAll<HTMLElement>(
@@ -3713,7 +3701,6 @@ export function ComposerModelPicker({
               {row.loaded ? (
                 <LoadedDot />
               ) : isChosen && row.kind === "external" ? (
-                // A connected model in use reads as an on-device one loaded.
                 <LoadedDot label="In use" />
               ) : row.kind === "hub" && row.onDevice ? (
                 <Hint label="On device">
@@ -4103,7 +4090,6 @@ export function ComposerModelPicker({
             </button>
           </Hint>
         ) : (
-          // Keeps the star's room so sizes line up.
           <span
             aria-hidden={true}
             className="w-[calc(20px*var(--ui-space-scale,1))] shrink-0"
@@ -4379,7 +4365,6 @@ export function ComposerModelPicker({
           <span className="text-ui-12 text-muted-foreground">{copy.hint}</span>
         ) : null}
         {copy.actions ? (
-          // General actions first; the provider shortcuts share the row under them.
           <div className="mt-2 flex flex-col items-center gap-2">
             {[0, 1]
               .map((row) => copy.actions?.filter((a) => a.row === row) ?? [])
@@ -4748,10 +4733,8 @@ export function ComposerModelPicker({
         }
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
-          // One height on every tab, loaded or not, as Zeron's.
           (isExpanded || configTarget) &&
             "h-[calc(460px*var(--ui-space-scale,1))]",
-          // Run settings grow only with Advanced on.
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
           // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
