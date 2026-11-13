@@ -184,7 +184,9 @@ from .diffusion_flux3 import (
 from .diffusion_flux3 import REFERENCE_AREA as FLUX3_REFERENCE_AREA
 from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
+    MAPPED_DENOISER_PREFIX,
     decide_small_host,
+    dense_denoiser_enabled as small_host_dense_enabled,
     enable_int8_act_ as small_host_enable_int8_act,
     download_first_enabled as small_host_download_first,
     engaged_on as small_host_engaged_on,
@@ -193,6 +195,7 @@ from .diffusion_small_host import (
     resolve_snapshot_dir,
     snapshot_weights_complete,
     spill_capacity_mib,
+    mapped_denoiser as small_host_mapped_denoiser,
     stored_components,
     torch_dtype_map as small_host_torch_dtype_map,
 )
@@ -8812,6 +8815,13 @@ class DiffusionBackend:
                     if transformer_quant_auto
                     else normalize_transformer_quant(transformer_quant_requested)
                 )
+                # An explicit none / off: a host too small for the dense float16 copy keeps the denoiser memory-mapped
+                # at its stored dtype (small-host route) rather than storing it as int8 behind an 'off' status.
+                small_host_dense = (
+                    not transformer_quant_auto
+                    and transformer_quant_pinned is None
+                    and small_host_dense_enabled()
+                )
 
                 pipe = transformer = None
                 pipe_kwargs: dict[str, Any] = {}
@@ -10058,6 +10068,7 @@ class DiffusionBackend:
                                         target,
                                         dtype,
                                         lora_active = _has_active_lora(loras),
+                                        dense_denoiser = small_host_dense,
                                         fetch = _small_host_fetch(
                                             pipeline_cls,
                                             fetch_base,
@@ -10488,6 +10499,7 @@ class DiffusionBackend:
                                     target,
                                     dtype,
                                     lora_active = _has_active_lora(loras),
+                                    dense_denoiser = small_host_dense,
                                     fetch = _small_host_fetch(
                                         pipeline_cls,
                                         fetch_base,
@@ -11575,6 +11587,10 @@ class DiffusionBackend:
                             identity[2],
                         )
 
+                    # the small-host route stored the denoiser as int8 without a quant engaging: report int8, not off
+                    small_host_int8_unreported = (
+                        transformer_quant_engaged is None and _small_host_int8(pipe)
+                    )
                     # Per-control provenance; cpu_offload=False is the unset default, so only True is explicit.
                     resolved = build_resolved_record(
                         {
@@ -11595,10 +11611,13 @@ class DiffusionBackend:
                             "transformer_quant": (
                                 # Raw request so 'Auto: OFF' and a declined 'FP8' differ; captured before auto retries pin a rung.
                                 transformer_quant_requested,
-                                transformer_quant_engaged or "off",
+                                transformer_quant_engaged
+                                or ("int8" if small_host_int8_unreported else "off"),
                                 # A recorded decline wins: it names WHY, where the generic strings below only say the
                                 # GGUF ran
-                                (
+                                SMALL_HOST_INT8_REASON
+                                if small_host_int8_unreported
+                                else (
                                     transformer_quant_decline
                                     or (
                                         "not engaged (GGUF transformer loaded)"
@@ -11626,7 +11645,9 @@ class DiffusionBackend:
                                     failure = getattr(self, "_prequant_fallback_note", None),
                                 ),
                                 # Honored when the quant engaged, and when the ask was 'off' (a no-quant request GGUF satisfies).
-                                RESOLVED_APPLIED
+                                (RESOLVED_APPLIED if transformer_quant_auto else RESOLVED_FELL_BACK)
+                                if small_host_int8_unreported
+                                else RESOLVED_APPLIED
                                 if transformer_quant_engaged is not None
                                 or transformer_quant_pinned is None
                                 else transformer_quant_decline_status,
@@ -13299,6 +13320,7 @@ class DiffusionBackend:
         lora_active: bool,
         fetch: Optional[Callable[[], Any]] = None,
         variant: Optional[str] = None,
+        dense_denoiser: bool = False,
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
         ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
@@ -13340,6 +13362,7 @@ class DiffusionBackend:
             host_commit_mib = host_commit_mib(),
             pread_libraries = ("transformers",) if pread_available() else (),
             spill_free_mib = spill_capacity_mib(),
+            dense_denoiser = dense_denoiser,
         )
         if decision.engaged or decision.refuse:
             logger.info(
@@ -13350,6 +13373,13 @@ class DiffusionBackend:
             )
         elif decision.available_mib is not None:
             logger.info("diffusion.small_host: engaged=False (%s)", decision.reason)
+        if decision.engaged and getattr(decision, "dense_denoiser", False):
+            logger.info(
+                "diffusion.small_host: transformer_quant none: the denoiser keeps its stored weights memory-mapped "
+                "and casts each Linear per call (no int8); groups that fit neither the card nor the pinned host RAM "
+                "are read from the file on every step, so an image takes longer than on the int8 route "
+                "(transformer_quant auto or int8)"
+            )
         if decision.int8_spill:
             logger.info(
                 "diffusion.small_host: int8 denoiser spills to a memory-mapped scratch file (host estimate %d MiB "
@@ -13401,6 +13431,13 @@ class DiffusionBackend:
             elif name not in INT8_DENOISER_NAMES:
                 cast_resident_(module, "cpu", dtype)
                 info["components"][name] = "converted"
+            elif getattr(decision, "dense_denoiser", False):
+                # the float16 weights each call sees are the ones the dense load converts once, so output is unchanged
+                mib = prepare_streamed_encoder_(module, dtype)
+                info["components"][name] = (
+                    f"{MAPPED_DENOISER_PREFIX} {decision.storage_dtypes[name]}, layerwise cast to "
+                    f"{str(dtype).replace('torch.', '')} ({mib} MiB)"
+                )
             else:
                 # pageable: pinning rounds blocks to powers of two (11.3 GB of FLUX.1 int8 held 18 GB pinned)
                 act_int8 = int8_act_family(fam) and int8_act_device_ok(device)
@@ -16052,7 +16089,7 @@ class DiffusionBackend:
                     # The build this ran on, not just the repo id: a GGUF quant or torchao scheme each change the pixels.
                     "model_kind": state.kind,
                     "gguf_filename": state.gguf_filename,
-                    "transformer_quant": state.transformer_quant,
+                    "transformer_quant": _reported_transformer_quant(state),
                     # Read off the engaged state, never the request.
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
@@ -16457,7 +16494,7 @@ class DiffusionBackend:
             "speed_optims": speed_optims,
             "bg_compile": state.bg_compile.describe() if state.bg_compile is not None else None,
             "text_encoder_quant": state.text_encoder_quant,
-            "transformer_quant": state.transformer_quant,
+            "transformer_quant": _reported_transformer_quant(state),
             **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
@@ -16525,6 +16562,21 @@ def _small_host_int8(pipe: Any) -> bool:
     return any(str(v).startswith("int8") for v in (info.get("components") or {}).values())
 
 
+SMALL_HOST_INT8_REASON = (
+    "system RAM is too small for the dense float16 transformer, so the small-host route stores it as per-row int8 "
+    "weights"
+)
+
+
+def _reported_transformer_quant(state: Any) -> Optional[str]:
+    """The denoiser precision the renders run at: the engaged scheme, or int8 when the small-host route stored the
+    denoiser as int8 weights without a quant engaging (an auto load on a small host), never 'off' for those."""
+    quant = getattr(state, "transformer_quant", None)
+    if quant is None and _small_host_int8(getattr(state, "pipe", None)):
+        return "int8"
+    return quant
+
+
 def _lora_load_block_reason(pipe: Any) -> Optional[str]:
     """Why this load's transformer cannot carry adapters whatever the family and quant allow, or None."""
     if _small_host_int8(pipe):
@@ -16532,6 +16584,12 @@ def _lora_load_block_reason(pipe: Any) -> Optional[str]:
             "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "
             "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Use a host "
             "with more RAM, or name the LoRA in the API load request (Unsloth then keeps the dense transformer)."
+        )
+    if small_host_mapped_denoiser(pipe):
+        return (
+            "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth reads "
+            "the transformer's weights from the file and casts them per layer (small-host route), which cannot "
+            "carry adapters. Use a host with more RAM, or name the LoRA in the API load request."
         )
     if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
         return (
