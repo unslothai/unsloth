@@ -8,6 +8,7 @@ import { normalizePlusMenuOrder } from "../src/features/chat/stores/plus-menu-pr
 import {
   COMPUTER_USE_TOOL,
   alwaysAllowableApp,
+  computerCallFullySaid,
   computerCallWhy,
   computerUseAsk,
   describeComputerCall,
@@ -48,6 +49,19 @@ test("the model's note on a call is one short line, and never a step", () => {
   assert.equal(computerCallWhy(JSON.stringify({ action: "click", why: "y".repeat(200) })).length, 80);
   assert.equal(computerCallWhy(JSON.stringify({ action: "click", why: 7 })), "");
   assert.equal(computerCallWhy('{"action": "cli'), "");
+});
+
+test("a call the steps do not fully say is shown as sent too", () => {
+  const said = (args: unknown) => computerCallFullySaid(JSON.stringify(args));
+  assert.equal(said({ action: "click", x: 1, y: 2, why: "Open", then: [{ action: "type", text: "hi", submit: true }] }), true);
+  assert.equal(said({ actions: [{ type: "keypress", keys: ["CTRL", "L"] }] }), true);
+  // Another dialect's name for the text, a button, a repeat count, an unknown action.
+  assert.equal(said({ action: "type", content: "send this text", press_enter: true }), false);
+  assert.equal(said({ action: "click", x: 1, y: 2, button: "right" }), false);
+  assert.equal(said({ action: "key", keys: "tab", repeat: 9 }), false);
+  assert.equal(said({ action: "input_text", text: "x" }), false);
+  assert.equal(said({ action: "click", x: 1, y: 2, then: [{ action: "type", value: "x" }] }), false);
+  assert.equal(computerCallFullySaid('{"action": "cli'), false);
 });
 
 test("arguments that are still streaming in or are not an object describe nothing", () => {

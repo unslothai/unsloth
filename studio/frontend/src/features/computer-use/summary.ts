@@ -90,6 +90,33 @@ export function describeComputerCall(argsText: string | undefined): string[] {
   return [...first, ...rest].map(one);
 }
 
+// The fields the lines above put into words. A call that carries anything else (another
+// dialect's name for the text, a button, a repeat count) is not fully said by its summary.
+const SAID = new Set([
+  "action", "type", "x", "y", "to_x", "to_y", "coordinate", "coordinates", "text", "submit", "keys", "key",
+  "direction", "scroll_direction", "name", "why", "then", "actions", "steps", "seconds", "amount", "region",
+  "display",
+]);
+
+/** Whether the steps say everything the call would do. When not, the card also shows the call as
+ *  it was sent, so what is approved is never less than what runs. */
+export function computerCallFullySaid(argsText: string | undefined): boolean {
+  const raw = parseCall(argsText);
+  if (!raw) return false;
+  const chain = [raw.then, raw.actions, raw.steps].find(Array.isArray) as unknown[] | undefined;
+  const isWrapper = (item: Raw) => item === raw && !!chain && !(raw.action || raw.type);
+  const items = [raw, ...(chain ?? [])];
+  return items.every(
+    (item) =>
+      !!item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      Object.keys(item).every((key) => SAID.has(key)) &&
+      // An action the summary has no words for. A bare wrapper around a chain is not one.
+      (isWrapper(item as Raw) || !one(item as Raw).startsWith("Do: ")),
+  );
+}
+
 const FENCE = /<\/?untrusted_screen_text>/g;
 
 /** A computer result without the fence the backend puts around window titles; a result with a

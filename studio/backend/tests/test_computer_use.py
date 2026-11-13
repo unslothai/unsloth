@@ -216,6 +216,13 @@ def test_a_note_on_what_the_call_is_for_changes_nothing():
     assert actions_mod.parse_actions(noted) == plain
 
 
+def test_a_first_action_named_by_type_is_kept_ahead_of_its_chain():
+    parsed = actions_mod.parse_actions(
+        {"type": "click", "x": 10, "y": 20, "then": [{"action": "type", "text": "hello"}]}
+    )
+    assert [action["op"] for action in parsed] == ["click", "type"]
+
+
 def test_a_batch_without_a_first_action_and_its_limit():
     parsed = actions_mod.parse_actions({"actions": [{"type": "screenshot"}, {"type": "wait"}]})
     assert [action["op"] for action in parsed] == ["screenshot", "wait"]

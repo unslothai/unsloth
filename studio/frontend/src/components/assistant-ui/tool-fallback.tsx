@@ -46,6 +46,7 @@ import {
 } from "@assistant-ui/react";
 import {
   COMPUTER_USE_TOOL,
+  computerCallFullySaid,
   computerCallWhy,
   describeComputerCall,
   plainComputerResult,
@@ -575,7 +576,12 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs
-          argsText={computerSteps.length > 0 ? computerSteps.join("\n") : argsText}
+          argsText={
+            computerSteps.length > 0
+              ? // With the call as sent beneath them when the steps do not say all of it.
+                computerSteps.join("\n") + (computerCallFullySaid(argsText) ? "" : `\n\n${argsText}`)
+              : argsText
+          }
           className={cn(isCancelled && "opacity-60")}
         />
         {!isCancelled && <ToolFallbackResult result={picture ? picture.text : shown} />}

@@ -382,7 +382,10 @@ def parse_actions(arguments: Any) -> list[dict]:
         if isinstance(arguments.get(key), (list, tuple)):
             batch = list(arguments[key])
             break
-    has_first = any(arguments.get(key) not in (None, "") for key in ("action", "op"))
+    # "type" names an action in some dialects, as `_one` reads it.
+    has_first = any(arguments.get(key) not in (None, "") for key in ("action", "op")) or (
+        isinstance(arguments.get("type"), str) and bool(arguments["type"].strip())
+    )
     raws = ([arguments] if has_first or batch is None else []) + (batch or [])
     if not raws:
         raise ValueError(f"action is missing. Use one of: {', '.join(ACTIONS)}.")
