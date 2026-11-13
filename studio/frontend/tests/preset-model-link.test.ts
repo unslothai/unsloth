@@ -30,6 +30,9 @@ const {
 const { DEFAULT_INFERENCE_PARAMS } = await import(
   "../src/features/chat/types/runtime.ts"
 );
+const { REMEMBERED_MAX_TOKENS_MAX } = await import(
+  "../src/features/chat/lib/per-model-params.ts"
+);
 
 type Preset = (typeof BUILTIN_PRESETS)[number];
 
@@ -556,6 +559,77 @@ test("a linked preset's token budget stays within the loaded window", async () =
     assert.ok(useChatRuntimeStore.getState().params.maxTokens <= 8192);
   } finally {
     store.setModelPreset(GEMMA, null);
+    store.setCustomPresets(saved);
+  }
+});
+
+test("an edit just before switching away keeps the chat's own values", async () => {
+  const store = useChatRuntimeStore.getState();
+  await switchTo(LLAMA);
+  store.setActiveThreadId("chat-q");
+  store.applyThreadScopedSettings("chat-q", { temperature: 0.4, systemPrompt: "Mine." });
+  try {
+    await switchTo(QWEN);
+    const s = useChatRuntimeStore.getState();
+    s.setParams({ ...s.params, topK: 19 });
+    s.setParams({ ...useChatRuntimeStore.getState().params, checkpoint: "external::p::m" });
+    await Promise.resolve();
+    await settled();
+    await switchTo(LLAMA);
+    assert.equal(live().temperature, 0.4);
+    assert.equal(live().systemPrompt, "Mine.");
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+  }
+});
+
+test("saving the linked preset after an edit keeps the saved values over the model's memory", async () => {
+  const store = useChatRuntimeStore.getState();
+  const saved = store.customPresets;
+  useChatRuntimeStore.setState({
+    paramsByModel: { [QWEN]: { topP: 0.5, systemPrompt: "Old prompt." } },
+  });
+  try {
+    await switchTo(QWEN);
+    let s = useChatRuntimeStore.getState();
+    s.setParams({ ...s.params, temperature: 0.25 });
+    s.setActivePresetSource("modified");
+    s = useChatRuntimeStore.getState();
+    s.setCustomPresets(
+      saved.map((p) => (p.name === "Research" ? { name: "Research", params: { ...s.params } } : p)),
+    );
+    s.setActivePreset("Research");
+    s.setActivePresetSource("custom");
+    loadOrPoll(QWEN);
+    await Promise.resolve();
+    assert.equal(live().temperature, 0.25);
+    assert.equal(useChatRuntimeStore.getState().params.topP, 0.8);
+    assert.equal(live().systemPrompt, "Cite your sources.");
+  } finally {
+    store.setCustomPresets(saved);
+  }
+});
+
+test("leaving a link replays the destination's window, not the earlier budget", async () => {
+  const store = useChatRuntimeStore.getState();
+  const saved = store.customPresets;
+  const short = { name: "Short", params: { ...DEFAULT_INFERENCE_PARAMS, maxTokens: 512 } };
+  store.setCustomPresets([...saved, short]);
+  try {
+    await switchTo(LLAMA);
+    pickPreset(short);
+    await switchTo(QWEN);
+    useChatRuntimeStore.setState({
+      paramsByModel: {
+        ...useChatRuntimeStore.getState().paramsByModel,
+        [GEMMA]: { maxTokens: REMEMBERED_MAX_TOKENS_MAX },
+      },
+    });
+    await switchTo(GEMMA);
+    assert.equal(live().activePreset, "Short");
+    assert.equal(useChatRuntimeStore.getState().params.maxTokens, CONTEXT);
+  } finally {
     store.setCustomPresets(saved);
   }
 });

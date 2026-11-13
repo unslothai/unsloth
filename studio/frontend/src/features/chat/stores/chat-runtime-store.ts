@@ -5129,13 +5129,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveSettingsPatch({ customPresets });
       return { customPresets };
     }),
-  setActivePreset: (activePreset) =>
+  setActivePreset: (activePreset) => {
+    // Saving the preset a link put on makes it a real pick: commit its values the way a pick does.
+    const promote = linkShown !== null && activePreset === linkShown;
+    forgetLinkShown();
     set(() => {
-      forgetLinkShown();
       activePresetMutationVersion += 1;
       saveSettingsPatch({ activePreset });
       return { activePreset };
-    }),
+    });
+    if (promote) {
+      const state = get();
+      state.setParams(state.params, { fromPreset: true, minPChoiceEdited: true });
+    }
+  },
   setModelPreset: (modelId, presetName) =>
     set((state) => {
       if (!modelId || (state.modelPresets[modelId] ?? null) === presetName) {
@@ -6748,6 +6755,20 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
     linkShown = preset.name;
     return;
   }
+  // A chat write still waiting on its debounce would read the link's values once it is gone.
+  const outgoingPreset = shown
+    ? (state.customPresets.find((saved) => saved.name === linkShown) ?? null)
+    : null;
+  if (
+    outgoingPreset &&
+    threadSettingsWriteThreadId !== null &&
+    threadSettingsWriteThreadId === threadScopedSettingsThreadId &&
+    threadSettingsWriteSnapshot === null
+  ) {
+    const pending = readThreadScopedSettings(state);
+    withoutLinkOverlay(pending, outgoingPreset);
+    threadSettingsWriteSnapshot = pending;
+  }
   const before = pickBeforeLink;
   linkShown = null;
   pickBeforeLink = null;
@@ -6772,7 +6793,7 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
     exists
       ? { ...live.params, ...values }
       : applyPresetForProvider(live.params, fallback, providerTypeFor(modelId)),
-    { fromModelDefaults: true },
+    { fromModelDefaults: true, maxTokensCap: loadedContextFor(modelId) ?? undefined },
   );
   // The link marked this model preset-backed; only a custom pick keeps that.
   if (useChatRuntimeStore.getState().activePresetSource !== "custom") {
@@ -6817,11 +6838,15 @@ function withLinkOverlay(params: InferenceParams): InferenceParams {
 
 /** A chat snapshot takes the open chat's own value, not the link's, for every key the user left
  *  alone: the link is this tab's view of the model, never the chat's. */
-function withoutLinkOverlay(settings: ThreadScopedSettings): void {
+function withoutLinkOverlay(
+  settings: ThreadScopedSettings,
+  outgoing: Preset | null = null,
+): void {
   if (linkShown === null) return;
   const state = useChatRuntimeStore.getState();
   if (state.activePreset !== linkShown) return;
-  const preset = getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
+  const preset =
+    outgoing ?? getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
   if (preset?.name !== linkShown) return;
   const linked = getPresetOwnedParams(linkedParams(state.params, preset));
   const own = settings as Record<string, unknown>;
