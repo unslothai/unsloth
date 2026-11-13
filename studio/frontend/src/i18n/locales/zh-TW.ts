@@ -967,6 +967,7 @@ export const zhTW = {
       customizeSidebar: "自訂側邊欄",
       newBadge: "新",
       export: "匯出",
+      pinned: "已釘選",
       recents: "最近項目",
       noChatsYet: "還沒有聊天",
       noChats: "沒有聊天",
@@ -1050,6 +1051,10 @@ export const zhTW = {
       deleteProjectsFilesDescription:
         "每個專案的工作區資料夾都會從磁碟中移除。",
       countSelected: "已選取 {count} 個",
+      selectChats: "選擇聊天",
+      selectAllChats: "選擇所有聊天",
+      deselectAllChats: "取消選擇所有聊天",
+      clearSelection: "清除選擇",
       pinChats: "釘選聊天",
       unpinChats: "取消釘選聊天",
       archiveChats: "封存聊天",

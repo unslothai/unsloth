@@ -923,6 +923,7 @@ export const de = {
       customizeSidebar: "Seitenleiste anpassen",
       newBadge: "Neu",
       export: "Exportieren",
+      pinned: "Angeheftet",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
       noChats: "Keine Chats",
@@ -1005,6 +1006,10 @@ export const de = {
       deleteProjectsFilesDescription:
         "Der Arbeitsbereich-Ordner jedes Projekts wird von der Festplatte entfernt.",
       countSelected: "{count} ausgewählt",
+      selectChats: "Chats auswählen",
+      selectAllChats: "Alle Chats auswählen",
+      deselectAllChats: "Alle Chats abwählen",
+      clearSelection: "Auswahl aufheben",
       pinChats: "Chats anheften",
       unpinChats: "Chats lösen",
       archiveChats: "Chats archivieren",

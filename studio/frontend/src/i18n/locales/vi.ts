@@ -1022,6 +1022,7 @@ export const vi = {
       customizeSidebar: "Tùy chỉnh thanh bên",
       newBadge: "Mới",
       export: "Xuất",
+      pinned: "Đã ghim",
       recents: "Gần đây",
       noChatsYet: "Chưa có cuộc trò chuyện nào",
       noChats: "Không có cuộc trò chuyện",
@@ -1105,6 +1106,10 @@ export const vi = {
       deleteProjectsFilesDescription:
         "Thư mục không gian làm việc của từng dự án sẽ bị xóa khỏi ổ đĩa.",
       countSelected: "Đã chọn {count}",
+      selectChats: "Chọn cuộc trò chuyện",
+      selectAllChats: "Chọn tất cả cuộc trò chuyện",
+      deselectAllChats: "Bỏ chọn tất cả cuộc trò chuyện",
+      clearSelection: "Xóa lựa chọn",
       pinChats: "Ghim cuộc trò chuyện",
       unpinChats: "Bỏ ghim cuộc trò chuyện",
       archiveChats: "Lưu trữ cuộc trò chuyện",

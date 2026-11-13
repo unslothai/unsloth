@@ -925,6 +925,7 @@ export const en = {
       // Rendered uppercase in a pill.
       newBadge: "New",
       export: "Export",
+      pinned: "Pinned",
       recents: "Recents",
       noChatsYet: "No chats yet",
       noChats: "No chats",
@@ -1009,6 +1010,10 @@ export const en = {
       deleteProjectsFilesDescription:
         "Each project workspace folder is removed from disk.",
       countSelected: "{count} selected",
+      selectChats: "Select chats",
+      selectAllChats: "Select all chats",
+      deselectAllChats: "Deselect all chats",
+      clearSelection: "Clear selection",
       pinChats: "Pin chats",
       unpinChats: "Unpin chats",
       archiveChats: "Archive chats",

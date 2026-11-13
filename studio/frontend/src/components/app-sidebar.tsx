@@ -111,6 +111,7 @@ import {
   ArchiveIcon,
   Cancel01Icon,
   BadgeInfoIcon,
+  CheckmarkSquare02Icon,
   ChefHatIcon,
   CloudIcon,
   CursorInfo02Icon,
@@ -141,6 +142,7 @@ import {
   ZapIcon,
   PanelLeftIcon,
   LeftToRightListBulletIcon,
+  ListChecksIcon,
   LayerIcon,
   ApiIcon,
   Clock01Icon,
@@ -169,6 +171,7 @@ import {
 import {
   archiveChatItem,
   deleteChatItem,
+  deleteChatItems,
   renameChatItem,
   type SidebarItem,
 } from "@/features/chat/hooks/use-chat-sidebar-items";
@@ -2636,6 +2639,10 @@ export function AppSidebar() {
   const [selectedChatIds, setSelectedChatIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  // Visible selection mode: plain clicks toggle instead of opening a chat.
+  const [selectMode, setSelectMode] = useState(false);
+  // The section whose header started selection; other sections keep navigating as usual.
+  const [selectionSection, setSelectionSection] = useState<SidebarSection | null>(null);
   // One chat can sit in two lists.
   const selectionAnchorRef = useRef<{ scope: string; id: string } | null>(null);
   const selectedChatItems = useMemo(
@@ -2655,6 +2662,25 @@ export function AppSidebar() {
   );
   const projectSelectionCount = selectedProjectRecords.length;
 
+  // "Select all" follows the header that started the selection, never the whole sidebar.
+  const sectionChatItems = useMemo(() => {
+    if (selectionSection === "pinned") return pinnedSectionChatItems;
+    if (selectionSection === "recents") return visibleRecentItems;
+    if (selectionSection?.startsWith("section:")) {
+      return customSectionChatItems.get(selectionSection.slice("section:".length)) ?? [];
+    }
+    return renderedChatItems;
+  }, [
+    selectionSection,
+    pinnedSectionChatItems,
+    visibleRecentItems,
+    customSectionChatItems,
+    renderedChatItems,
+  ]);
+  const allSectionChatsSelected =
+    sectionChatItems.length > 0 &&
+    sectionChatItems.every((item) => selectedChatIds.has(item.id));
+
   // A stale anchor would shift-select from a row no longer shown as selected.
   const dropChatSelection = useCallback(() => {
     selectionAnchorRef.current = null;
@@ -2666,9 +2692,22 @@ export function AppSidebar() {
   }, []);
 
   const clearSelection = useCallback(() => {
+    setSelectMode(false);
+    setSelectionSection(null);
     dropChatSelection();
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
+
+  function toggleSelectMode(section: SidebarSection) {
+    if (selectMode && selectionSection === section) {
+      clearSelection();
+      return;
+    }
+    dropChatSelection();
+    dropProjectSelection();
+    setSelectionSection(section);
+    setSelectMode(true);
+  }
 
   // Emptying the published lists is not enough: Archive, Pin, Mark unread and Delete prefer the
   // selection over the open chat, and it shows only in the rows, so it is dropped when they leave.
@@ -2732,15 +2771,22 @@ export function AppSidebar() {
     collapsedSectionIds,
     expandedChatProjectIds,
   ]);
-  /** Select every chat row on screen, pinned block included. */
+  /** Select or deselect every chat row in the section that started the selection. */
   const selectRenderedChats = useCallback(() => {
     if (!chatRowsOnScreen) return;
-    const ids = renderedChatItems.map((item) => item.id);
+    const ids = sectionChatItems.map((item) => item.id);
     if (ids.length === 0) return;
     dropProjectSelection();
     selectionAnchorRef.current = null;
-    setSelectedChatIds(new Set(ids));
-  }, [chatRowsOnScreen, renderedChatItems, dropProjectSelection]);
+    setSelectedChatIds((prev) => {
+      if (ids.every((id) => prev.has(id))) {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      }
+      return new Set(ids);
+    });
+  }, [chatRowsOnScreen, sectionChatItems, dropProjectSelection]);
   useEffect(() => {
     if (!selectAllPending) return;
     setSelectAllPending(false);
@@ -2828,10 +2874,13 @@ export function AppSidebar() {
   function handleSelectionClick(
     event: React.MouseEvent,
     item: SidebarItem,
-    list: { scope: string; ids: string[] },
+    list: { scope: string; ids: string[]; section: SidebarSection },
   ): boolean {
+    // Rows in another section keep opening; a selection belongs to the header that started it.
+    if (selectMode && selectionSection && list.section !== selectionSection) return false;
     dropProjectSelection();
-    if (SELECT_WITH_META ? event.metaKey : event.ctrlKey) {
+    const additive = SELECT_WITH_META ? event.metaKey : event.ctrlKey;
+    if (selectMode || additive) {
       setSelectedChatIds((prev) => toggleSelected(prev, item.id));
       selectionAnchorRef.current = { scope: list.scope, id: item.id };
       return true;
@@ -2865,11 +2914,13 @@ export function AppSidebar() {
     event: React.MouseEvent,
     projectId: string,
     orderedIds: string[],
+    section: SidebarSection,
   ): boolean {
+    if (selectMode && selectionSection && section !== selectionSection) return false;
     const additive = SELECT_WITH_META ? event.metaKey : event.ctrlKey;
-    if (!additive && !event.shiftKey) return false;
+    if (!additive && !event.shiftKey && !selectMode) return false;
     dropChatSelection();
-    if (additive) {
+    if (additive || (selectMode && !event.shiftKey)) {
       setSelectedProjectIds((prev) => toggleSelected(prev, projectId));
       projectAnchorRef.current = projectId;
       return true;
@@ -3822,9 +3873,21 @@ export function AppSidebar() {
     }
     if (target.kind === "chats") {
       clearSelection();
-      for (const item of target.items) {
-        await deleteChatWithCleanup(item, {
-          deleteFiles: shouldDeleteChatFiles,
+      const items = target.items;
+      try {
+        // One request for the whole selection, matching the confirmation's "x chats" promise.
+        await deleteChatItems(
+          items,
+          activeThreadId,
+          (view) => {
+            navigate({ to: "/chat", search: { new: view.newThreadNonce } });
+          },
+          { deleteFiles: shouldDeleteChatFiles },
+        );
+        for (const item of items) unpinChat(item.id);
+      } catch (err) {
+        toast.error(translate("shell.toast.failedToDeleteChat"), {
+          description: err instanceof Error ? err.message : undefined,
         });
       }
       return;
@@ -4044,10 +4107,11 @@ export function AppSidebar() {
     toast.error("Could not copy the session id.");
   }
 
-  function openChatItem(item: SidebarItem) {
+  function openChatItem(item: SidebarItem, opts: { keepSelection?: boolean } = {}) {
     // Archive/pin/unread act on the selection when there is one, so leaving it
-    // behind would point them at rows the user just navigated away from.
-    clearSelection();
+    // behind would point them at rows the user just navigated away from. A row in
+    // another section opens with the current section's selection still intact.
+    if (!opts.keepSelection) clearSelection();
     clearChatNotifications(item);
     noteViewed(item.id);
     navigateFromRow({
@@ -4605,6 +4669,7 @@ export function AppSidebar() {
             ref={triggerRef}
             type="button"
             aria-label={options.ariaLabel}
+            title={options.ariaLabel}
             className="sidebar-header-action"
           >
             {/* Share the circle's viewport; the expanded viewBox preserves the original icon size. */}
@@ -4674,9 +4739,20 @@ export function AppSidebar() {
             )}
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
-              Pinned
-              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <span className="truncate">{t("shell.navigation.pinned")}</span>
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
+            <button
+              type="button"
+              aria-label={t("shell.selection.selectChats")}
+              title={t("shell.selection.selectChats")}
+              aria-pressed={selectMode && selectionSection === "pinned"}
+              data-active={selectMode && selectionSection === "pinned" ? "true" : undefined}
+              onClick={() => toggleSelectMode("pinned")}
+              className="sidebar-header-action is-selection-toggle"
+            >
+              <HugeiconsIcon icon={CheckmarkSquare02Icon} strokeWidth={1.75} className="size-icon" />
+            </button>
             {renderSidebarHeaderMenu({
               ariaLabel: t("shell.organize.sortPinnedChats"),
               kind: "pinned",
@@ -4928,8 +5004,8 @@ export function AppSidebar() {
             )}
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
-              {t("shell.navigation.projects")}
-              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <span className="truncate">{t("shell.navigation.projects")}</span>
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             <button
               type="button"
@@ -5384,6 +5460,110 @@ export function AppSidebar() {
     );
   }
 
+  function renderSelectionBar() {
+    if (!chatRowsOnScreen || (!selectMode && !selectionActive)) return null;
+    // Selections are never mixed: projects replace chats and vice versa, and an empty
+    // selection is a chat selection waiting for its first row.
+    const chatMode = projectSelectionCount === 0;
+    const total = selectionCount + projectSelectionCount;
+    const actionClass =
+      "flex h-7 flex-1 items-center justify-center rounded-lg text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground disabled:pointer-events-none disabled:opacity-40";
+    const pinLabel = chatMode
+      ? t(allSelectedPinned ? "shell.selection.unpinChats" : "shell.selection.pinChats")
+      : t(allSelectedProjectsPinned ? "shell.selection.unpinProjects" : "shell.selection.pinProjects");
+    const selectAllLabel = t(
+      allSectionChatsSelected ? "shell.selection.deselectAllChats" : "shell.selection.selectAllChats",
+    );
+    return (
+      <div className="absolute inset-x-2 bottom-[calc(58px*var(--ui-space-scale,1))] z-30 flex flex-col gap-1 rounded-[14px] border border-sidebar-edge bg-[var(--sidebar-surface)] p-1.5 shadow-lg group-data-[collapsible=icon]:hidden">
+        <div className="flex items-center justify-between gap-2 px-1">
+          <span className="truncate text-xs font-medium">
+            {t("shell.selection.countSelected", { count: total })}
+          </span>
+          <button
+            type="button"
+            aria-label={t("shell.selection.clearSelection")}
+            title={t("shell.selection.clearSelection")}
+            onClick={clearSelection}
+            className="flex size-5 shrink-0 items-center justify-center rounded-full text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+          >
+            <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-3.5" />
+          </button>
+        </div>
+        <div className="flex items-center gap-0.5">
+          {chatMode ? (
+            <button
+              type="button"
+              aria-label={selectAllLabel}
+              title={selectAllLabel}
+              onClick={selectAllChats}
+              disabled={selectAllPending}
+              className={actionClass}
+            >
+              <HugeiconsIcon icon={ListChecksIcon} strokeWidth={1.75} className="size-icon" />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-label={pinLabel}
+            title={pinLabel}
+            disabled={total === 0}
+            onClick={() =>
+              chatMode ? pinSelected(!allSelectedPinned) : pinSelectedProjects(!allSelectedProjectsPinned)
+            }
+            className={actionClass}
+          >
+            <HugeiconsIcon
+              icon={(chatMode ? allSelectedPinned : allSelectedProjectsPinned) ? PinOffIcon : PinIcon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+          </button>
+          {chatMode ? (
+            <button
+              type="button"
+              aria-label={t("shell.selection.archiveChats")}
+              title={t("shell.selection.archiveChats")}
+              onClick={() => void archiveSelected()}
+              disabled={total === 0}
+              className={actionClass}
+            >
+              <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-label={chatMode ? t("shell.selection.deleteChats") : t("shell.selection.deleteProjects")}
+            title={chatMode ? t("shell.selection.deleteChats") : t("shell.selection.deleteProjects")}
+            disabled={total === 0}
+            onClick={() => (chatMode ? deleteSelected() : deleteSelectedProjects())}
+            className={actionClass}
+          >
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSelectionCheck(selected: boolean) {
+    return (
+      <span
+        aria-hidden="true"
+        className={cn(
+          "flex size-[18px] shrink-0 items-center justify-center rounded-md border transition-colors",
+          selected
+            ? "border-transparent bg-sidebar-foreground/15"
+            : "border-sidebar-foreground/25",
+        )}
+      >
+        {selected ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
+        ) : null}
+      </span>
+    );
+  }
+
   function renderChatSidebarItem(
     item: SidebarItem,
     variant: "project" | "recent",
@@ -5391,6 +5571,7 @@ export function AppSidebar() {
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
+    const selectingHere = selectMode && list.section === selectionSection;
     // A compare row outside a project spans two sandboxes: no single folder to offer.
     const sandboxSessionId =
       item.type === "single" || item.projectId
@@ -5499,18 +5680,20 @@ export function AppSidebar() {
               className={buttonClass}
               onClick={(event) => {
                 if (list && handleSelectionClick(event, item, list)) return;
-                openChatItem(item);
+                openChatItem(item, { keepSelection: selectMode });
               }}
               // The chat opens on the first click and the rename dialog on the second.
               onDoubleClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                openRenameChat(item);
+                if (!selectingHere) openRenameChat(item);
               }}
             >
-              {isPinned && variant !== "project" && (
+              {selectingHere ? (
+                renderSelectionCheck(selectedChatIds.has(item.id))
+              ) : isPinned && variant !== "project" ? (
                 <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-icon! shrink-0" />
-              )}
+              ) : null}
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
@@ -5727,6 +5910,7 @@ export function AppSidebar() {
       sortedChatsByProjectId.get(project.id) ?? [];
     const projectChatIds =
       projectChatRowIds.get(project.id) ?? [];
+    const selectingHere = selectMode && order.section === selectionSection;
     // In one list the chats are already Recents rows, so the folder opens instead of toggling.
     const listsChats = organizeBy === "project";
     const expanded = listsChats && !collapsedProjectIds.has(project.id);
@@ -5794,20 +5978,25 @@ export function AppSidebar() {
                 event,
                 project.id,
                 order.selectionIds ?? order.orderedIds,
+                order.section,
               )
             )
               return;
-            clearSelection();
+            if (!selectMode) clearSelection();
             if (listsChats) toggleProjectCollapsed(project.id);
             else openProject(project.id);
           }}
             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 [@media(pointer:coarse)]:pr-16"
           >
-            <HugeiconsIcon
-              icon={expanded ? Folder02Icon : ProjectIcon}
-              strokeWidth={1.75}
-              className="size-icon! shrink-0"
-            />
+            {selectingHere ? (
+              renderSelectionCheck(selectedProjectIds.has(project.id))
+            ) : (
+              <HugeiconsIcon
+                icon={expanded ? Folder02Icon : ProjectIcon}
+                strokeWidth={1.75}
+                className="size-icon! shrink-0"
+              />
+            )}
             <span className="truncate text-ui-14p5 leading-ui-19 tracking-nav">{project.name}</span>
           </SidebarMenuButton>
           <button
@@ -6468,16 +6657,28 @@ export function AppSidebar() {
                 )}
               >
                 <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
-                  {t("shell.navigation.recents")}
-                  <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  <span className="truncate">{t("shell.navigation.recents")}</span>
+                  <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
                 <button
                   type="button"
                   aria-label={t("shell.navigation.newChat")}
+                  title={t("shell.navigation.newChat")}
                   onClick={() => openNewChat(null)}
                   className="sidebar-header-action"
                 >
                   <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t("shell.selection.selectChats")}
+                  title={t("shell.selection.selectChats")}
+                  aria-pressed={selectMode && selectionSection === "recents"}
+                  data-active={selectMode && selectionSection === "recents" ? "true" : undefined}
+                  onClick={() => toggleSelectMode("recents")}
+                  className="sidebar-header-action is-selection-toggle"
+                >
+                  <HugeiconsIcon icon={CheckmarkSquare02Icon} strokeWidth={1.75} className="size-icon" />
                 </button>
                 {renderSidebarHeaderMenu({
                   ariaLabel: t("shell.organize.organizeChats"),
@@ -6652,6 +6853,8 @@ export function AppSidebar() {
           </Collapsible>
         )}
       </SidebarContent>
+
+      {renderSelectionBar()}
 
       <SidebarFooter
         className={cn(

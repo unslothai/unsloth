@@ -919,6 +919,7 @@ export const ar = {
       customizeSidebar: "تخصيص الشريط الجانبي",
       newBadge: "جديد",
       export: "تصدير",
+      pinned: "المثبتة",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
       noChats: "لا توجد محادثات",
@@ -1001,6 +1002,10 @@ export const ar = {
       deleteProjectsFilesDescription:
         "يُحذف مجلد مساحة عمل كل مشروع من القرص.",
       countSelected: "{count} محددة",
+      selectChats: "تحديد المحادثات",
+      selectAllChats: "تحديد كل المحادثات",
+      deselectAllChats: "إلغاء تحديد كل المحادثات",
+      clearSelection: "مسح التحديد",
       pinChats: "تثبيت المحادثات",
       unpinChats: "إلغاء تثبيت المحادثات",
       archiveChats: "أرشفة المحادثات",
