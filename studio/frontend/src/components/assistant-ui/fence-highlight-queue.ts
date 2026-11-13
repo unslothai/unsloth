@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// Highlight swaps only a fence's own lines, so only a selection ending in one needs holding.
+export const selectionInFence = (
+  selection: Pick<Selection, "anchorNode" | "focusNode"> | null,
+): boolean => {
+  const inFence = (node: Node | null): boolean => {
+    const element = node !== null && node.nodeType === 1 ? node as Element : node?.parentElement ?? null;
+    return element?.closest('[data-streamdown="code-block"]') != null;
+  };
+  return selection !== null && (inFence(selection.anchorNode) || inFence(selection.focusNode));
+};
+
+type HighlightEntry = {
+  step: () => boolean;
+  finish: () => void;
+  /** Bounded work (a reach, or the lines on screen in a capped block) that may run mid-scroll. */
+  duringScroll: boolean;
+};
+
+export type FenceHighlightQueueOptions = {
+  schedule: (callback: () => void, duringScroll: boolean) => () => void;
+  blocked: (duringScroll: boolean) => boolean;
+  commit: (callback: () => void) => void;
+  budgetMs?: number;
+  now?: () => number;
+};
+
+export function createFenceHighlightQueue(options: FenceHighlightQueueOptions): {
+  add: (step: () => boolean, finish: () => void, duringScroll?: boolean) => () => void;
+  flush: () => void;
+  pending: () => number;
+} {
+  const entries = new Set<HighlightEntry>();
+  let scheduled: { cancel: (() => void) | null } | null = null;
+  let running = false;
+  let flushing = false;
+
+  const cancelScheduled = (): void => {
+    const previous = scheduled;
+    scheduled = null;
+    previous?.cancel?.();
+  };
+
+  const schedule = (): void => {
+    if (scheduled || running || flushing || entries.size === 0) return;
+    const ticket = { cancel: null as (() => void) | null };
+    scheduled = ticket;
+    try {
+      ticket.cancel = options.schedule(() => {
+        if (scheduled !== ticket) return;
+        scheduled = null;
+        run();
+      }, [...entries].some((entry) => entry.duringScroll));
+    } catch (error) {
+      if (scheduled === ticket) scheduled = null;
+      entries.clear();
+      throw error;
+    }
+  };
+
+  const budgetMs = options.budgetMs ?? 0;
+  const now = options.now ?? (() => performance.now());
+
+  const run = (): void => {
+    running = true;
+    let entry: HighlightEntry | undefined;
+    const started = budgetMs > 0 ? now() : 0;
+    const taken = new Set<HighlightEntry>();
+    const verdicts = new Map<boolean, boolean>();
+    const blocked = (duringScroll: boolean): boolean => {
+      let verdict = verdicts.get(duringScroll);
+      if (verdict === undefined) {
+        verdict = options.blocked(duringScroll);
+        verdicts.set(duringScroll, verdict);
+      }
+      return verdict;
+    };
+    try {
+      for (;;) {
+        entry = undefined;
+        for (const candidate of entries) {
+          if (!taken.has(candidate) && !blocked(candidate.duringScroll)) {
+            entry = candidate;
+            break;
+          }
+        }
+        if (!entry) return;
+        const current = entry;
+        taken.add(current);
+        let complete = false;
+        options.commit(() => {
+          if (entries.has(current)) complete = current.step();
+        });
+        if (entries.delete(current) && !complete) entries.add(current);
+        if (budgetMs <= 0 || flushing || now() - started >= budgetMs) return;
+      }
+    } catch (error) {
+      if (entry) entries.delete(entry);
+      else entries.clear();
+      throw error;
+    } finally {
+      running = false;
+      schedule();
+    }
+  };
+
+  const flush = (): void => {
+    if (flushing) return;
+    cancelScheduled();
+    flushing = true;
+    let failure: { error: unknown } | null = null;
+    try {
+      while (entries.size > 0) {
+        try {
+          options.commit(() => {
+            while (entries.size > 0) {
+              const entry = entries.values().next().value as HighlightEntry;
+              entries.delete(entry);
+              try {
+                entry.finish();
+              } catch (error) {
+                failure ??= { error };
+              }
+            }
+          });
+        } catch (error) {
+          entries.clear();
+          failure ??= { error };
+        }
+      }
+    } finally {
+      flushing = false;
+      schedule();
+    }
+    if (failure) throw failure.error;
+  };
+
+  return {
+    add: (step, finish, duringScroll = false) => {
+      const entry = { step, finish, duringScroll };
+      entries.add(entry);
+      schedule();
+      return () => {
+        entries.delete(entry);
+        if (entries.size === 0) cancelScheduled();
+      };
+    },
+    flush,
+    pending: () => entries.size,
+  };
+}

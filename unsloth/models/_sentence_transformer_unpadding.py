@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Training-only encoder unpadding for mean-pooled BERT / RoBERTa SentenceTransformers.
-
-Embeddings and pooling stay stock; only valid tokens enter the encoder, whose output is
-scattered back to the padded layout before pooling. Checkpoints are unchanged.
-"""
+"""Training-only: BERT/RoBERTa encoder runs on valid tokens, output re-padded before mean pooling;
+embeddings and pooling stay stock; checkpoints unchanged."""
 
 from types import MethodType
 
@@ -24,8 +21,11 @@ def _unpadding_backend():
     backend = ad.select_attention_backend(use_varlen = True)
     if backend == ad.FLASH_VARLEN:
         return backend
-    if backend == ad.XFORMERS and _XFormersBidirectionalMask is not None:
-        return backend
+    # Training may prefer torch's kernels over xformers; this route only runs on xformers or FA2.
+    if (
+        backend == ad.XFORMERS or (backend == ad.SDPA and ad.HAS_XFORMERS)
+    ) and _XFormersBidirectionalMask is not None:
+        return ad.XFORMERS
     return None
 
 
@@ -182,12 +182,9 @@ def disable_sentence_transformer_unpadding(model):
 
 
 def enable_sentence_transformer_unpadding(model, auto = False):
-    """Pack valid tokens through FlashAttention varlen / xFormers during training.
-
-    Returns False (model untouched) unless: Transformers 5, stock BertModel / RobertaModel
-    with absolute positions and SDPA, a mean-only pooling pipeline, and a bidirectional
-    varlen backend. ``auto`` skips batches under _MIN_AUTO_TOKENS padded slots.
-    """
+    """Packs valid tokens for FlashAttention varlen or xFormers in training; returns False (model
+    untouched) unless transformers 5, stock Bert or Roberta with absolute positions and SDPA,
+    mean-only pooling, bidirectional varlen backend"""
     import transformers
 
     if getattr(model, "_unsloth_unpadding_installed", False):
@@ -203,8 +200,7 @@ def enable_sentence_transformer_unpadding(model, auto = False):
 
     transformer = model[0]
     base = transformer.auto_model
-    # Exact types (seen through unsloth_zoo's bf16 autocast subclass): PEFT-wrapped,
-    # remote-code and compiled models keep the stock path.
+    # Exact type check: PEFT, remote-code and compiled models keep the stock path.
     base_type = getattr(type(base), "_unsloth_autocast_base", type(base))
     if base_type not in (BertModel, RobertaModel):
         return False

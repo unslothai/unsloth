@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { readSrc } from "./helpers/kit.ts";
 import {
   localPromptQueueModelBoundary,
@@ -424,7 +424,6 @@ test("a new steering queue waits for cancellation and rejects an unidentified ta
   assert.deepEqual(w.scopedCancels, [["chat"]]);
 });
 
-// Exercise the production queue factory with controlled settings hydration.
 function composerCallbackJs(name: string) {
   let factory: ts.Expression | undefined;
   function visit(node: ts.Node) {

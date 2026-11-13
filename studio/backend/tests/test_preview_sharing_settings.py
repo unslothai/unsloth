@@ -25,7 +25,6 @@ import routes.settings as settings
 
 @pytest.fixture
 def client(monkeypatch):
-    # Stub the persistence helpers so the endpoints don't touch the real DBs.
     calls: dict = {"enabled": True}
 
     def _set(value):
@@ -71,7 +70,6 @@ def test_put_preview_sharing_disables(client):
 
 
 def test_put_preview_sharing_rejects_non_bool(client):
-    # Pydantic rejects a non-bool body (422) before the handler runs.
     c, _ = client
     r = c.put("/preview-sharing", json = {"enabled": "maybe"})
     assert r.status_code == 422

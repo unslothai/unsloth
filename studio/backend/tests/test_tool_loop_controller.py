@@ -36,6 +36,7 @@ from core.inference.tool_loop_controller import (
     tool_call_limit_nudge,
     tool_event_provenance,
 )
+from core.inference import tool_facts
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
 from core.inference.tools import (
     ALL_TOOLS,
@@ -54,13 +55,11 @@ def test_append_deferred_nudges_merges_deduped_into_one_message():
     conversation = [{"role": "assistant", "tool_calls": [1]}, {"role": "tool", "content": "r"}]
     nudges = [
         {"role": "user", "content": "duplicate"},
-        {"role": "user", "content": "duplicate"},  # dropped: same content
+        {"role": "user", "content": "duplicate"},
         {"role": "user", "content": "disabled foo"},
     ]
     append_deferred_nudges(conversation, nudges)
-    # One user message, after the results, with distinct contents joined.
     assert conversation[2:] == [{"role": "user", "content": "duplicate\n\ndisabled foo"}]
-    # Empty is a no-op.
     before = list(conversation)
     append_deferred_nudges(conversation, [])
     assert conversation == before
@@ -130,7 +129,6 @@ def test_status_and_provenance_match_local_event_conventions():
         ("//google.com", "Reading: google.com"),
         ("example.com:8443/path", "Reading: example.com"),
         ("github.com/unslothai/unsloth", "Reading: github.com"),
-        # still generic for what the fetch layer refuses
         ("/login", "Reading page..."),
         ("javascript:alert(1)", "Reading page..."),
         # urlparse raises on these, outside the fetch's handler: degrade, not raise
@@ -185,7 +183,7 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     )
     assert "previous tool request" not in duplicate_nudge.lower()
     assert "already completed successfully" in duplicate_nudge
-    assert "different enabled tool" in duplicate_nudge
+    assert "call a different tool only if" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
     _shared_setup_1(controller)
 
@@ -323,9 +321,7 @@ def test_command_can_run_again_after_a_file_edit():
 
     controller.record_noop(controller.prepare_call(run))
     assert not controller.force_final_answer
-    # The edit does NOT come back. Nothing new has run since it did -- only `run`, which was
-    # already spent -- so re-applying the identical edit is a repeating block replaying
-    # itself, and a non-idempotent one (an appending python/terminal call) would land twice.
+    # Identical replays are duplicates: a non-idempotent edit would otherwise land twice.
     assert controller.prepare_call(edit).action == "duplicate"
     assert controller.prepare_call(search).action == "duplicate"
 
@@ -506,15 +502,7 @@ def test_two_plots_in_one_code_execution_turn_replay_no_base64():
 
 
 def test_a_flood_of_stacked_image_markers_stays_linear():
-    """A hosted result's length is the provider's to choose and this runs on the request
-    thread, so the cost has to follow it. Re-partitioning the shortened string once per
-    marker copies it again every time: quadruple the markers and the work grows about
-    sixteenfold instead of fourfold.
-
-    Measured as CPU time, and as the best of several runs. A shared runner can deschedule
-    the process mid-call, which adds wall clock but no CPU, and taking the minimum drops
-    the samples where it happened -- interference can only ever make a run look slower.
-    """
+    """Stacked image markers must cost linear time; repartitioning the string per marker is quadratic."""
 
     def cost(markers: int) -> float:
         flood = '\n__IMAGES__:["x"]' * markers
@@ -532,10 +520,7 @@ def test_a_flood_of_stacked_image_markers_stays_linear():
 
 
 def test_a_large_source_map_is_still_taken_off_the_result():
-    """No length bound here either. Every source record repeats its whole chunk and
-    `search_knowledge_base` honours the model's `top_k` without a ceiling, so a real map
-    can be megabytes; one refused for being big would be left for `_fit_result_to_room`
-    to cut into malformed JSON in front of the model."""
+    """A big source map must still be stripped, or _fit_result_to_room cuts it into malformed JSON."""
     import json as _json
 
     chunk = "retrieved text. " * 400
@@ -557,19 +542,14 @@ def test_a_large_source_map_is_still_taken_off_the_result():
 
 
 def test_a_large_plot_is_still_taken_off_the_result():
-    """The image payload has no length bound on purpose: a figure Gemini renders at high
-    DPI is a data URI of whatever size it chose, and leaving it in for being large is the
-    base64 leak this stripper exists to prevent."""
+    """No length bound on images on purpose: keeping a large data URI would leak base64 to the model."""
     big = 'output\n__IMAGES__:["data:image/png;base64,' + "A" * (12 << 20) + '"]'
     assert len(big) > 8 << 20
     assert strip_result_for_model(big, "code_execution") == "output"
 
 
 def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
-    """`_strip_files_sentinel` is already scoped this way. A document an MCP tool read,
-    or a page that was fetched, can end in a well-formed line of either kind, and it is
-    content: the card keeps it, so cutting it leaves the model with less than the user
-    is looking at."""
+    """Only envelope-emitting tools lose it; a document an MCP tool read or a fetched page is content."""
     manifest = 'icons/\n__IMAGES__:["icon.png"]'
     citation = 'notes\n__RAG_SOURCES__:[{"filename": "a.pdf"}]'
 
@@ -577,13 +557,11 @@ def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
         assert strip_result_for_model(manifest, reader) == manifest
         assert strip_result_for_model(citation, reader) == citation
 
-    # The tools that do emit them are unaffected.
     for emitter in ("python", "terminal", "code_execution"):
         assert strip_result_for_model(manifest, emitter) == "icons/"
     for emitter in ("search_knowledge_base", "search_conversation"):
         assert strip_result_for_model(citation, emitter) == "notes"
 
-    # An unnamed caller still gets everything stripped, as it did before.
     assert strip_result_for_model(manifest) == "icons/"
     assert strip_result_for_model(citation) == "notes"
 
@@ -612,8 +590,6 @@ def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
     assert json.loads(payload["arguments_text"]) == {"raw": truncated}
     assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]
 
-
-# --- schema-aware argument typing -------------------------------------------------------
 
 _MCP_SERVER = {"id": "notes", "display_name": "Notes"}
 _MCP_TOOL = {
@@ -669,7 +645,6 @@ def test_a_value_reads_as_the_type_its_schema_declares(key, text, expected):
 @pytest.mark.parametrize(
     "spec",
     [
-        # The walk stops on any keyword it does not follow, whichever one it is.
         {"type": "boolean", "$ref": "#/$defs/Flag"},
         # Collapsing a union discards the rest, so it is read only where it is all there is.
         {"anyOf": [{"type": "boolean"}], "properties": {"x": {"type": "boolean"}}},
@@ -725,7 +700,6 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
         "tags": ["a", "b"],
         "depth": None,
     }
-    # The turn replayed to the model carries the typed values too, not the strings.
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
         '{"query":"ship dates","limit":25,"fuzzy":false,"tags":["a","b"],"depth":null}'
     )
@@ -759,10 +733,7 @@ def test_replayed_arguments_keep_the_order_the_model_generated():
 
 
 def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
-    """Each call's own order, not one fixed order that happens to look unsorted.
-
-    No fixed order satisfies both, so on the sorted encoder both replay as the same string.
-    """
+    """Each XML call replays in its own parameter order; a sorted encoder would replay both the same."""
 
     def replay(*parameters):
         content = (
@@ -783,8 +754,7 @@ def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
 
 
 def test_a_declared_type_nested_in_a_container_is_read_too():
-    """`edit_file` declares replace_all inside `edits.items`, so the top level is not enough
-    and text that spells a boolean must survive as text."""
+    """Nested replace_all inside edits.items is read; boolean-spelled text stays text."""
     edits = (
         '[{"old_string":"a","new_string":"b","replace_all":"false"},'
         '{"old_string":"false","new_string":"null","replace_all":"true"}]'
@@ -797,7 +767,6 @@ def test_a_declared_type_nested_in_a_container_is_read_too():
     ]
     call = {"path": "app.py", "edits": edits}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
-    # An already-typed container is descended into too: its elements can still be text.
     call = {"path": "app.py", "edits": json.loads(edits)}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
 
@@ -1033,3 +1002,160 @@ def test_a_hard_cap_below_the_window_cap_leaves_truncated_terminal_output_alone(
         controller.prepare_call(_call("terminal", {"command": "yes t"})), already
     )
     assert completion.tool_message()["content"] == already
+
+
+def test_a_read_only_mcp_result_is_not_new_work_until_its_hint_is_dropped():
+    status, models, generate = (f"mcp__unsloth__{n}" for n in ("status", "models", "generate"))
+    for name in (status, models, generate):
+        tool_facts.note_mcp_tool(name, {"annotations": {"readOnlyHint": name != generate}})
+    controller = ToolLoopController(tools = [_tool(status), _tool(models), _tool(generate)])
+    controller.record_result(controller.prepare_call(_call(status, {})), '{"chat":{}}')
+    controller.record_result(controller.prepare_call(_call(models, {})), '{"models":[]}')
+    duplicate = controller.prepare_call(_call(status, {}))
+    assert duplicate.action == "duplicate" and "Answer from the results" in duplicate.noop_result
+    controller.record_result(controller.prepare_call(_call(generate, {"text": "x"})), "Error: x")
+    assert controller.prepare_call(_call(status, {})).action == "execute"
+    tool_facts.note_mcp_tool(models, {"name": "models"})
+    assert not tool_facts.reads_only(models)
+
+
+def test_only_a_result_the_user_must_unblock_marks_the_turn_as_awaiting_them():
+    name = "mcp__unsloth__generate_audio"
+    controller = ToolLoopController(tools = [_tool(name)])
+    for model, result, awaiting in (
+        ("m", "Error: [needs_user_load kind=audio page=Audio] The music model is off.", True),
+        ("n", "Error: [not_loaded kind=audio] Load one with load_model(kind='tts') first.", False),
+        ("o", "Error: [not_loaded kind=audio] Ask the user to load one on the Audio page.", True),
+        (
+            "p",
+            "Error: [multi_model_always kind=chat] (HTTP 409) Call unload_model(kind='llm').",
+            False,
+        ),
+        ("q", "Error: [multi_model_always kind=chat] (HTTP 409) Ask the user to unload it.", True),
+    ):
+        controller.begin_batch()
+        controller.record_result(controller.prepare_call(_call(name, {"model": model})), result)
+        assert controller.awaiting_user is awaiting, result
+
+
+def test_a_refusal_the_user_must_unblock_survives_a_later_success_in_the_same_batch():
+    load, status = "mcp__unsloth__generate_audio", "mcp__unsloth__status"
+    controller = ToolLoopController(tools = [_tool(load), _tool(status)])
+    refusal = "Error: [needs_user_load kind=audio page=Audio] The music model is off."
+    controller.record_result(controller.prepare_call(_call(load, {"model": "m"})), refusal)
+    controller.record_result(controller.prepare_call(_call(status, {})), '{"chat":{}}')
+    assert controller.awaiting_user
+    controller.begin_batch()
+    controller.record_result(controller.prepare_call(_call(load, {"model": "n"})), "ok")
+    assert not controller.awaiting_user
+
+
+def test_active_tools_are_private_copies_of_every_nested_schema_node():
+    """Each call hands out its own copy: a caller rewriting one cannot reach the ledger or a later call."""
+    from collections import OrderedDict
+
+    source = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "d",
+            "parameters": OrderedDict(
+                type = "object",
+                properties = {
+                    "mode": {"type": "string", "enum": ["a", "b"]},
+                    "limit": {"type": "integer", "minimum": 1.0, "default": True},
+                    "pairs": {"type": "array", "items": {"enum": (1, [2])}},
+                },
+            ),
+        },
+    }
+    controller = ToolLoopController(tools = [source])
+    first = controller.active_tools()
+    assert repr(first) == repr([source])
+    first[0]["function"]["parameters"]["properties"]["mode"]["enum"].append("c")
+    first[0]["function"]["parameters"]["properties"]["pairs"]["items"]["enum"][1].append(3)
+    first[0]["function"]["name"] = "renamed"
+    assert repr(controller.active_tools()) == repr([source])
+    assert source["function"]["parameters"]["properties"]["mode"]["enum"] == ["a", "b"]
+    assert source["function"]["parameters"]["properties"]["pairs"]["items"]["enum"] == (1, [2])
+
+
+def test_has_active_tools_matches_active_tools_without_copying():
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    assert controller.has_active_tools() is bool(controller.active_tools()) is True
+    assert ToolLoopController(tools = []).has_active_tools() is False
+    controller._completed_one_shot_tools.update({"web_search", "python"})
+    assert controller.has_active_tools() is bool(controller.active_tools()) is False
+    controller._completed_one_shot_tools.clear()
+    controller._force_final_answer = True
+    assert controller.has_active_tools() is bool(controller.active_tools()) is False
+
+
+def test_polling_unsloths_own_get_job_is_never_a_duplicate():
+    video, job, status = (
+        f"mcp__unsloth__{n}" for n in ("generate_video", "get_job", "studio_status")
+    )
+    for name in (video, job, status):
+        tool_facts.note_mcp_tool(
+            name,
+            {"name": name.split("__")[2], "annotations": {"readOnlyHint": name != video}},
+            studio = True,
+        )
+    controller = ToolLoopController(tools = [_tool(video), _tool(job), _tool(status)])
+    poll = {"kind": "video", "id": "j1"}
+    controller.record_result(
+        controller.prepare_call(_call(video, {"prompt": "a whale"})), '{"id":"j1"}'
+    )
+    for name, args in ((job, poll), (status, {}), (job, poll), (job, poll)):
+        decision = controller.prepare_call(_call(name, args))
+        assert decision.action == "execute", name
+        controller.record_result(decision, '{"state":"running"}')
+    assert not controller.force_final_answer
+    # Another server's get_job is still deduplicated.
+    tool_facts.note_mcp_tool("mcp__other__get_job", {"name": "get_job"})
+    other = ToolLoopController(tools = [_tool("mcp__other__get_job")])
+    other.record_result(other.prepare_call(_call("mcp__other__get_job", poll)), "{}")
+    assert other.prepare_call(_call("mcp__other__get_job", poll)).action == "duplicate"
+
+
+def test_a_second_identical_generation_lets_the_gallery_be_read_again():
+    image, media = "mcp__unsloth__generate_image", "mcp__unsloth__list_media"
+    tool_facts.note_mcp_tool(image, {"name": "generate_image"}, studio = True)
+    tool_facts.note_mcp_tool(
+        media, {"name": "list_media", "annotations": {"readOnlyHint": True}}, studio = True
+    )
+    controller = ToolLoopController(tools = [_tool(image), _tool(media)])
+    for name, args in (
+        (image, {"prompt": "a cat"}),
+        (media, {}),
+        (image, {"prompt": "a cat"}),
+        (media, {}),
+    ):
+        decision = controller.prepare_call(_call(name, args))
+        assert decision.action == "execute", name
+        controller.record_result(decision, '{"ok":true}')
+    # Nothing new since that read: a third identical list is still a duplicate.
+    assert controller.prepare_call(_call(media, {})).action == "duplicate"
+
+
+def test_unsloths_own_generators_run_again_on_identical_arguments():
+    # No seed: each call draws one, so "two images of a cat" is two calls with the same arguments.
+    names = [f"mcp__unsloth__{n}" for n in ("generate_image", "generate_audio", "generate_video")]
+    for name in names:
+        tool_facts.note_mcp_tool(name, {"name": name.split("__")[2]}, studio = True)
+    controller = ToolLoopController(tools = [_tool(name) for name in names])
+    for name in names:
+        for _ in range(2):
+            decision = controller.prepare_call(_call(name, {"prompt": "a cat"}))
+            assert decision.action == "execute", name
+            controller.record_result(decision, '{"ok":true}')
+    # The same tool name on another server is still deduplicated.
+    tool_facts.note_mcp_tool("mcp__other__generate_image", {"name": "generate_image"})
+    other = ToolLoopController(tools = [_tool("mcp__other__generate_image")])
+    other.record_result(
+        other.prepare_call(_call("mcp__other__generate_image", {"prompt": "a cat"})), "{}"
+    )
+    assert (
+        other.prepare_call(_call("mcp__other__generate_image", {"prompt": "a cat"})).action
+        == "duplicate"
+    )

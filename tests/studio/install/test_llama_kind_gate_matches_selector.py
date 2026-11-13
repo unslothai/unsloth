@@ -173,3 +173,32 @@ def test_no_arm64_row_expects_a_kind_only_published_for_x64():
             f"nvidia={nvidia} rocm={rocm} optout={opt_out}: the gate expects only x64 kinds "
             f"on an ARM64 venv: {sorted(expected)}"
         )
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    ("nvidia", "rocm", "opt_out"),
+    [(False, False, False), (True, False, False), (True, False, True), (False, True, False)],
+)
+def test_the_gate_keeps_an_opt_in_arm64_vulkan_install(nvidia, rocm, opt_out):
+    """UNSLOTH_LLAMA_CPP_BACKEND=vulkan on Windows ARM64 installs windows-arm64-vulkan; a gate
+    without it deletes that tree on every update. An x64 venv never expects it."""
+    name = f"llama-{TAG}-bin-win-vulkan-arm64.zip"
+    release = {
+        **RELEASE,
+        "assets": RELEASE["assets"]
+        + [
+            {
+                "name": name,
+                "browser_download_url": f"https://example.invalid/{name}",
+                "digest": f"sha256:{_fixture_digest(name)}",
+            }
+        ],
+    }
+    routed = ip._vulkan_only_host(_host(arm64 = True, nvidia = nvidia, rocm = rocm))
+    plan = ip.direct_upstream_release_plan(release, routed, "ggml-org/llama.cpp", "latest")
+    assert plan.attempts[0].install_kind == "windows-arm64-vulkan"
+    expected = _expected_kinds(arm64_venv = True, nvidia = nvidia, rocm = rocm, opt_out = opt_out)
+    assert "windows-arm64-vulkan" in expected
+    x64 = _expected_kinds(arm64_venv = False, nvidia = nvidia, rocm = rocm, opt_out = opt_out)
+    assert "windows-arm64-vulkan" not in x64

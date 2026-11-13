@@ -11,15 +11,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Triton kernels for compressed-tensors ``pack-quantized`` integer weights kept packed.
-
-Layout (compressed_tensors/compressors/pack_quantized/helpers.py): ``weight_packed`` is int32
-``[N, ceil(K / pf)]`` with ``pf = 32 // bits`` values per word, element ``j`` in bits
-``[j * bits, (j + 1) * bits)``, stored as ``q + 2 ** (bits - 1)``. ``weight_scale`` is ``[N, G]``;
-an asymmetric ``weight_zero_point`` is packed the same way along the OUTPUT dim ``[ceil(N / pf), G]``;
-act-order checkpoints carry ``weight_g_idx`` ``[K]`` (column -> group). The decode
-``(q - zp) * scale`` is exact in fp32, then rounded like compressed-tensors (scale dtype, then output).
-"""
+"""compressed-tensors pack-quantized weights: weight_packed int32 [N, ceil(K/pf)], pf = 32 // bits,
+element j at bits [j*bits, (j+1)*bits) as q + 2**(bits-1); weight_scale [N, G]; weight_zero_point
+packed along N as [ceil(N/pf), G]; act-order weight_g_idx [K]; decode exact in fp32."""
 
 import functools
 import inspect
@@ -94,11 +88,11 @@ def _unpack_tile3(
     stride_pn,
     stride_sn,
     stride_zn,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # values packed per int32 word
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    HAS_G: tl.constexpr,  # act-order g_idx present
 ):
     # fp32 decode of W[rn, words rkp] as [BLOCK_N, BLOCK_KP, PF] (column = word * PF + j).
     MASK: tl.constexpr = (1 << BITS) - 1
@@ -156,13 +150,13 @@ def _unpack_tile(
     stride_pn,
     stride_sn,
     stride_zn,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_KP: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # values packed per int32 word
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    HAS_G: tl.constexpr,  # act-order g_idx present
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_KP: tl.constexpr,  # packed words per program along K
 ):
     w = _unpack_tile3(
         P, S, Z, G, rn, rkp, N, K, KP, stride_pn, stride_sn, stride_zn,
@@ -185,13 +179,13 @@ def _dequant_kernel(
     stride_sn,
     stride_zn,
     stride_on,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_KP: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # values packed per int32 word
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    HAS_G: tl.constexpr,  # act-order g_idx present
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_KP: tl.constexpr,  # packed words per program along K
 ):
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
@@ -227,14 +221,14 @@ def _gemv_kernel(
     stride_sn,
     stride_zn,
     stride_ym,
-    BITS: tl.constexpr,
-    PF: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    HAS_G: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_KP: tl.constexpr,
-    SPLIT_K: tl.constexpr,
+    BITS: tl.constexpr,  # bits per weight (4 or 8)
+    PF: tl.constexpr,  # values packed per int32 word
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    HAS_G: tl.constexpr,  # act-order g_idx present
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_KP: tl.constexpr,  # packed words per program along K
+    SPLIT_K: tl.constexpr,  # split-K factor
 ):
     # Decode: one activation row per program axis 2 (M tiny), CUDA-core reduction.
     pid_n = tl.program_id(0)
@@ -265,14 +259,24 @@ def _launch_args(packed, qs):
     cached = qs._launch
     if cached is not None and cached[0] == packed.data_ptr():
         return cached[1]
+    args = _make_launch_args(packed, qs, store = True)
+    qs._launch = (packed.data_ptr(), args)
+    qs._launchers = None
+    return args
+
+
+def _make_launch_args(packed, qs, store):
     N, K = qs.shape
     bits = qs.bits
     pf = 32 // bits
     group = qs.group_size if qs.group_size > 0 else K
-    if qs.g_idx is None and group % pf != 0:
+    g_idx = qs.g_idx
+    if g_idx is None and group % pf != 0:
         # A word would straddle two groups: address the groups per column instead.
-        qs.g_idx = torch.arange(K, device = packed.device, dtype = torch.int32) // group
-    zp, g_idx, scale = qs.zero_point, qs.g_idx, qs.scale
+        g_idx = torch.arange(K, device = packed.device, dtype = torch.int32) // group
+        if store:
+            qs.g_idx = g_idx
+    zp, scale = qs.zero_point, qs.scale
     Z = zp if zp is not None else packed
     G = g_idx if g_idx is not None else packed
     args = (
@@ -281,8 +285,6 @@ def _launch_args(packed, qs):
         (packed.stride(0), scale.stride(0), Z.stride(0) if zp is not None else 0),
         dict(BITS = bits, PF = pf, GROUP = group, HAS_Z = zp is not None, HAS_G = g_idx is not None),
     )
-    qs._launch = (packed.data_ptr(), args)
-    qs._launchers = None
     return args
 
 
@@ -338,12 +340,21 @@ def int4_dequantize(
     dtype = dtype or qs.dtype or torch.bfloat16
     if qs.layout is not None:
         return _dequant_repacked(packed, qs, dtype, out)
-    (P, S, Z, G), (N, K, KP), (sp, ss, sz), meta = _launch_args(packed, qs)
+    compiling = torch.compiler.is_compiling()
+    # Traced: data_ptr caches and cached launchers would break the graph.
+    (P, S, Z, G), (N, K, KP), (sp, ss, sz), meta = (
+        _make_launch_args(packed, qs, store = False) if compiling else _launch_args(packed, qs)
+    )
     if out is None:
         out = torch.empty((N, K), dtype = dtype, device = packed.device)
     BLOCK_N, BLOCK_KP = 16, max(1, 512 // meta["PF"])
     grid = (triton.cdiv(N, BLOCK_N), triton.cdiv(KP, BLOCK_KP), 1)
     args = (P, S, Z, G, out, N, K, KP, sp, ss, sz, out.stride(0))
+    if compiling:
+        _dequant_kernel[grid](
+            *args, BLOCK_N = BLOCK_N, BLOCK_KP = BLOCK_KP, num_warps = 4, **meta, enable_fp_fusion = True
+        )
+        return out
     key = (packed.device.index, "dq", out.dtype, out.data_ptr() % 16 == 0, out.stride(0) % 16 == 0)
     launchers = qs._launchers
     if launchers is None:
@@ -554,13 +565,13 @@ def _dequant_repacked_kernel(
     stride_sn,
     stride_zn,
     stride_on,
-    MARLIN: tl.constexpr,
-    TN: tl.constexpr,
-    TK: tl.constexpr,
-    R: tl.constexpr,
-    GROUP: tl.constexpr,
-    HAS_Z: tl.constexpr,
-    RAW: tl.constexpr,
+    MARLIN: tl.constexpr,  # marlin tile layout (else tinygemm)
+    TN: tl.constexpr,  # tile rows (N)
+    TK: tl.constexpr,  # tile cols (K)
+    R: tl.constexpr,  # tiles along K per program
+    GROUP: tl.constexpr,  # quant group size along K
+    HAS_Z: tl.constexpr,  # zero points present
+    RAW: tl.constexpr,  # store raw int codes
 ):
     # One program: tile row tn, R tiles along K, written as [TN, R * TK] contiguous rows.
     pid = tl.program_id(0)

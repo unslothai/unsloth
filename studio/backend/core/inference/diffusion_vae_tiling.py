@@ -19,6 +19,9 @@ import types
 from typing import Any, Optional
 
 from .diffusion_device import float64_device
+from .diffusion_vae_oom import clear_partial_decode
+from .diffusion_vae_oom import free_first as oom_free_first
+from .rocm_bf16 import is_rocm_torch
 
 WIDE_TILES_ENV = "UNSLOTH_DIFFUSION_VAE_WIDE_TILES"
 
@@ -109,10 +112,14 @@ DECODE_MIB_PER_LATENT_BY_CLASS = {
     "AutoencoderKLFlux2": (0.17, 0.09),
 }
 DECODE_MIB_PER_LATENT_BY_RATIO = {8: (0.27, 0.18), 16: (1.7, 0.43), 32: (1.3, 1.3)}
+# Strip decode 16-bit peak = slope MiB per latent + four strip buffers; bounds measured tiles 48-256 (L4, A100, T4).
+DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS = {"AutoencoderKLFlux2": 0.048}
 DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
 FREE_FRACTION = 0.75
 MAX_TILE_ENV = "UNSLOTH_DIFFUSION_VAE_MAX_TILE"
+# "0" keeps CPU / MPS decodes at the floor tile (no memory reading), as before the host budget.
+HOST_BUDGET_ENV = "UNSLOTH_DIFFUSION_VAE_HOST_BUDGET"
 
 
 def decode_mib_per_latent(
@@ -129,6 +136,30 @@ def decode_mib_per_latent(
     return DECODE_MIB_PER_LATENT * (int(ratio) / DECODE_MIB_RATIO) ** 2
 
 
+# bf16 untiled encode peak MiB per latent of the encoded frame, (unfused, fused): B200, real weights, 512 to 1536 px
+# (linear in area: Qwen-Image-2.1 0.565 / 0.283, Qwen-Image 0.165 / 0.121), rounded up.
+ENCODE_MIB_PER_LATENT_BY_CLASS = {
+    "AutoencoderKLQwenImage": (0.17, 0.13),
+    "AutoencoderKLQwenImage21": (0.6, 0.3),
+}
+
+
+def encode_mib_per_latent(
+    ratio: int,
+    fused: bool = False,
+    cls: Optional[str] = None,
+) -> Optional[float]:
+    """bf16 untiled encode peak MiB per latent: measured, else the decode figure (an upper bound), else None."""
+    known = (
+        ENCODE_MIB_PER_LATENT_BY_CLASS.get(cls or "")
+        or DECODE_MIB_PER_LATENT_BY_CLASS.get(cls or "")
+        or DECODE_MIB_PER_LATENT_BY_RATIO.get(int(ratio))
+    )
+    if known is None:
+        return None
+    return known[1] if fused else known[0]
+
+
 def _geometry(vae: Any) -> tuple[int, int, int]:
     """(ratio, floor tile, floor overlap), cached on the VAE at install."""
     cached = getattr(vae, "__dict__", {}).get("_unsloth_wide_geometry")
@@ -140,16 +171,24 @@ def _geometry(vae: Any) -> tuple[int, int, int]:
 
 
 def _cached_axis_weights(
-    vae: Any, starts: list[int], tile: int, length: int, ratio: int, torch: Any, device: Any
+    vae: Any,
+    starts: list[int],
+    tile: int,
+    length: int,
+    ratio: int,
+    torch: Any,
+    device: Any,
+    margin: int = MARGIN_LATENTS,
+    ramp: int = RAMP_LATENTS,
 ):
-    """``axis_weights`` memoised per VAE (a repeat decode syncs no device)."""
+    """``axis_weights`` memoised per VAE (a repeat decode or encode syncs no device)."""
     cache = vae.__dict__.setdefault("_unsloth_wide_weights", {}) if hasattr(vae, "__dict__") else {}
-    key = (tuple(starts), int(tile), int(length), int(ratio), str(device))
+    key = (tuple(starts), int(tile), int(length), int(ratio), str(device), int(margin), int(ramp))
     hit = cache.get(key)
     if hit is None:
         if len(cache) >= 64:
             cache.clear()
-        hit = cache[key] = axis_weights(starts, tile, length, ratio, torch, device)
+        hit = cache[key] = axis_weights(starts, tile, length, ratio, torch, device, margin, ramp)
     return hit
 
 
@@ -253,11 +292,14 @@ def _free_mib(
     """(free MiB after the fp32 output accumulator, decoder bytes per param / 2); None off CUDA."""
     import torch
 
+    from .diffusion_memory import cuda_reusable_cache_bytes, user_budget_reserve_bytes
+
     if getattr(z, "device", None) is None or z.device.type != "cuda":
         return None
-    free, _ = torch.cuda.mem_get_info(z.device)
+    free, total = torch.cuda.mem_get_info(z.device)
     if cached:
-        free += torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
+        free += cuda_reusable_cache_bytes(z.device)
+    free -= user_budget_reserve_bytes(z.device, total)
     ratio = _geometry(vae)[0]
     frames = z.shape[2] if z.dim() == 5 else 1
     # fp32 accumulator
@@ -266,27 +308,120 @@ def _free_mib(
     return (free - out_bytes) / 2**20, elem / 2
 
 
+def host_budget_disabled() -> bool:
+    return (os.environ.get(HOST_BUDGET_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _host_free_mib(vae: Any, z: Any) -> Optional[tuple[float, float]]:
+    """``_free_mib`` for a CPU / MPS decode: the planner's safe budget of the live reading (MPS: available RAM and
+    Metal's working set less what Metal holds; CPU: available RAM; each less the planner reserve), after the fp32
+    output accumulator. None elsewhere, under the kill switch, or with no reading."""
+    kind = getattr(getattr(z, "device", None), "type", None)
+    if kind not in ("cpu", "mps") or host_budget_disabled():
+        return None
+    from .diffusion_memory import (
+        DeviceMemory,
+        _available_system_memory_mib,
+        _host_ram_capacity_mib,
+        _safe_device_budget_mib,
+        _windows_commit_headroom_mib,
+        snapshot_device_memory,
+    )
+
+    if kind == "cpu":
+        # An enforcing cgroup kills the process past its limit (no OOM to retry on), and Windows fails on commit.
+        free = _available_system_memory_mib()
+        commit = _windows_commit_headroom_mib()
+        if free is not None and commit is not None:
+            free = min(free, commit)
+        memory = DeviceMemory("cpu", "cpu", "system_memory", free, _host_ram_capacity_mib())
+    else:
+        memory = snapshot_device_memory(types.SimpleNamespace(device = kind, backend = kind))
+    budget = _safe_device_budget_mib(memory)
+    if budget is None:
+        return None
+    ratio = _geometry(vae)[0]
+    frames = z.shape[2] if z.dim() == 5 else 1
+    out_bytes = 4 * 4 * z.shape[0] * frames * z.shape[-2] * z.shape[-1] * ratio * ratio
+    elem = next(vae.decoder.parameters()).element_size()
+    return budget - out_bytes / 2**20, elem / 2
+
+
 def _fused(vae: Any) -> bool:
-    return bool(getattr(vae, "_unsloth_vae_fused_installed", 0)) and not getattr(
-        vae, "_unsloth_vae_fused_failed", False
+    return (
+        bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
+        and not getattr(vae, "_unsloth_vae_fused_failed", False)
+        and not getattr(vae, "_unsloth_vae_fused_structural", False)
     )
 
 
-def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
-    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now; None off CUDA."""
-    raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
-    if raw.isdigit() and int(raw) > 0:
-        return int(raw) ** 2
+def _strips(vae: Any) -> bool:
+    """The fused decode runs in row strips (diffusion_vae_strips)."""
+    if not _fused(vae) or type(vae).__name__ not in DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS:
+        return False
+    try:
+        from .diffusion_vae_strips import engaged
+        return engaged(vae)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def strips_decode_mib(vae: Any, z: Any, height: int, width: int) -> Optional[float]:
+    """16-bit peak MiB of the strip decode of a (height, width) latent tile, or None when that decode would not take
+    the strip path (not engaged, fp32, or a tile small enough that its largest pass fits in one strip)."""
+    try:
+        if not _strips(vae) or next(vae.decoder.parameters()).element_size() != 2:
+            return None
+        from .diffusion_vae_strips import largest_pass_elems, strip_elems
+
+        strip = strip_elems(z.device)
+        if largest_pass_elems(vae.decoder, height, width) < 2 * strip:
+            return None
+        slope = DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__]
+        return slope * int(height) * int(width) + 4 * strip * 2 / 2**20
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _strips_tile_area(vae: Any, z: Any, budget_mib: float) -> Optional[int]:
+    """Largest square-ish tile area the strip decode fits in ``budget_mib``, else None."""
+    try:
+        if not _strips(vae) or next(vae.decoder.parameters()).element_size() != 2:
+            return None
+        from .diffusion_vae_strips import strip_elems
+
+        const = 4 * strip_elems(z.device) * 2 / 2**20
+        area = int((budget_mib - const) / DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__])
+        side = int(area**0.5)
+        return area if area > 0 and strips_decode_mib(vae, z, side, side) is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def decode_platform_cap(vae: Any, z: Any) -> Optional[int]:
+    """The decode tile area (latents) a platform pins regardless of free memory, else None."""
     # CUDA-calibrated coefficients under-predict Qwen-Image-2.1 decode on ROCm (40x40, 64x32 and 96x56 OOM at
     # 17/19 GiB limits): start at the tested 32x32 floor rather than retrying an oversized tile on every image.
     import torch
 
     if (
-        z.device.type == "cuda"
-        and getattr(torch.version, "hip", None)
+        getattr(getattr(z, "device", None), "type", None) == "cuda"
+        and is_rocm_torch(torch)
         and type(vae).__name__ == "AutoencoderKLQwenImage21"
     ):
         return TILE_LATENTS**2
+    return None
+
+
+def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
+    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now (CPU / MPS: of the safe
+    host budget, ``UNSLOTH_DIFFUSION_VAE_HOST_BUDGET=0`` = None); None on other devices or with no reading."""
+    raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw) ** 2
+    cap = decode_platform_cap(vae, z)
+    if cap is not None:
+        return cap
     try:
         _, tile, _ = _geometry(vae)
         # Stock tile == floor: grow only into device-free memory; decoding out of the allocator cache stalled on
@@ -295,12 +430,17 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         large_stock = stock_tile >= tile > TILE_LATENTS
         free = _free_mib(vae, z, cached = not large_stock)
         if free is None:
+            # CPU / MPS: one pool, nothing cached to stall on, so the stock-tile rule above does not apply.
+            free = _host_free_mib(vae, z)
+        if free is None:
             return None
         mib, scale = free
         per_latent = (
             decode_mib_per_latent(_geometry(vae)[0], _fused(vae), type(vae).__name__) * scale
         )
-        return max(0, int(FREE_FRACTION * mib / per_latent))
+        area = max(0, int(FREE_FRACTION * mib / per_latent))
+        strips = _strips_tile_area(vae, z, FREE_FRACTION * mib)
+        return max(area, strips) if strips is not None else area
     except Exception:  # noqa: BLE001 - unknown budget: the 32-latent tiles the planner budgeted
         return None
 
@@ -401,8 +541,8 @@ def tiled_encode(vae: Any, x: Any) -> Any:
     if len(hs) == 1 and len(ws) == 1:
         return _encode_tile(vae, x)
     margin, ramp = ENCODE_MARGIN_LATENTS, ENCODE_RAMP_LATENTS
-    wy = axis_weights(hs, tile, height, 1, torch, x.device, margin, ramp)
-    wx = axis_weights(ws, tile, width, 1, torch, x.device, margin, ramp)
+    wy = _cached_axis_weights(vae, hs, tile, height, 1, torch, x.device, margin, ramp)
+    wx = _cached_axis_weights(vae, ws, tile, width, 1, torch, x.device, margin, ramp)
     out, dtype = None, None
     for i, y in enumerate(hs):
         for j, xs in enumerate(ws):
@@ -536,6 +676,10 @@ def _release_cache(z: Any) -> None:
         pass
 
 
+def _clear_partial(vae: Any, z: Any) -> None:
+    clear_partial_decode(vae, z)
+
+
 def _log_stock_fallback(vae: Any, reason: str) -> None:
     logger = vae.__dict__.get("_unsloth_wide_logger")
     seen = vae.__dict__.setdefault("_unsloth_wide_fallback_logged", set())
@@ -576,23 +720,27 @@ def install(vae: Any, logger: Any = None) -> bool:
     ) -> Any:
         if wide_tiles_disabled() or stock_layout_ok(geometry, z.shape[-2], z.shape[-1]):
             return _stock(z, return_dict)
-        # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles.
-        reason = floor_shortfall(self, z)
-        if reason is None:
-            for max_area in ("auto", 0):
-                try:
-                    return tiled_decode(self, z, return_dict = return_dict, max_area = max_area)
-                except Exception as exc:  # noqa: BLE001
-                    if not _is_oom(exc):
-                        raise
-                    reason = f"the wide tiles ran out of memory ({type(exc).__name__})"
-                    tried = (self.__dict__.get("_unsloth_last_decode_tile") or (0, 0))[:2]
-                # outside the except block, so the failed attempt's tensors are freed
-                _release_cache(z)
-                ratio, tile, _ = _geometry(self)
-                if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
-                    break
+        # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles. Before
+        # settling for them, the OOM retry frees the card (rest of the pipeline off it) and the wide tiles go again.
+        for _round in range(2):
+            reason = floor_shortfall(self, z)
+            if reason is None:
+                for max_area in ("auto", 0):
+                    try:
+                        return tiled_decode(self, z, return_dict = return_dict, max_area = max_area)
+                    except Exception as exc:  # noqa: BLE001
+                        if not _is_oom(exc):
+                            raise
+                        reason = f"the wide tiles ran out of memory ({type(exc).__name__})"
+                        tried = (self.__dict__.get("_unsloth_last_decode_tile") or (0, 0))[:2]
+                    _clear_partial(self, z)
+                    ratio, tile, _ = _geometry(self)
+                    if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
+                        break
+            if _round or not oom_free_first(self, z):
+                break
         _log_stock_fallback(self, reason)
+        _clear_partial(self, z)
         return _stock(z, return_dict)
 
     def _tiled_encode(self: Any, x: Any) -> Any:

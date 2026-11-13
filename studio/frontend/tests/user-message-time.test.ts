@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Rendered hover, focus, touch, layout and streaming coverage lives in
-// tests/studio/playwright_user_message_time.py. These checks pin the production
-// call sites to those tested components and cover invalid/estimated dates.
+// Rendered coverage lives in tests/studio/playwright_user_message_time.py.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";

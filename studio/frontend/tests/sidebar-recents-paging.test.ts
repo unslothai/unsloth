@@ -6,7 +6,7 @@ import test from "node:test";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as jsxRuntime from "react/jsx-runtime";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import type * as ProgressiveRowsModule from "../src/components/progressive-rows.tsx";
 import { readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";

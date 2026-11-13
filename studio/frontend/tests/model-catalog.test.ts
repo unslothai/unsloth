@@ -177,6 +177,16 @@ test("Qwen only has a wire toggle, so a ladder collapses to on/off", () => {
   assert.equal(getExternalReasoningCapabilities("kimi", "kimi-k2.6").supportsReasoning, true);
 });
 
+test("QwenCloud reads the Qwen catalog for its thinking toggle and vision", () => {
+  for (const model of ["qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash"]) {
+    const caps = getExternalReasoningCapabilities("qwencloud", model);
+    assert.equal(caps.reasoningStyle, "enable_thinking", model);
+    assert.equal(caps.supportsReasoning, true, model);
+    assert.equal(caps.supportsReasoningOff, true, model);
+    assert.equal(providerModelSupportsVision("qwencloud", model), true, model);
+  }
+});
+
 test("Kimi K3's documented always-on effort ladder outranks the catalog's toggle", () => {
   // models.dev lists a toggle, but the Kimi API has no thinking switch for kimi-k3.
   const caps = getExternalReasoningCapabilities("kimi", "kimi-k3");
@@ -283,10 +293,7 @@ test("a served models.dev catalog outranks the bundled snapshot and feeds the na
 });
 
 test("a served bucket overrides its own models without hiding the rest of the bundled one", async () => {
-  // The browser cache survives an app upgrade and the backend serves an expired disk copy
-  // while offline, so a bucket written by an older release can omit models the newer
-  // bundled snapshot knows. Replacing the namespace wholesale dropped their controls.
-  // DeepSeek, not Ollama: the Ollama branch has a by-name fallback that hides the defect.
+  // A stale browser cache can omit models; DeepSeek avoids Ollama's by-name fallback.
   const { setModelsDevCatalog } = await import("../src/features/chat/model-catalog.ts");
   const bundled = getExternalReasoningCapabilities("deepseek", "deepseek-v4-pro");
   assert.deepEqual([...bundled.reasoningEffortLevels], ["none", "high", "max"]);

@@ -26,18 +26,13 @@ export function formatRelativeTime(
   value: number,
   unit: Intl.RelativeTimeFormatUnit,
 ): string {
-  // format() throws RangeError on non-finite input, and an unparseable
-  // timestamp reaches here as NaN. Callers render during a React commit, so a
-  // throw would unmount the tree; degrade to empty text instead.
+  // format() throws on NaN, and a throw during commit would unmount the tree.
   if (!Number.isFinite(value)) {
     return "";
   }
   const short = getFormatter(locale, "short");
   const formatted = short.format(value, unit);
-  // Some CLDR short patterns drop the past/future marker. Arabic months in the "few" plural
-  // category (3-10) render "5 months ago" as "خلال 5 أشهر" ("in 5 months"), which is byte-identical
-  // to the future form. Where the two directions are indistinguishable the long style still carries
-  // the marker, so use it rather than report the wrong tense.
+  // Some CLDR short patterns drop the tense marker (Arabic "few" months); fall back to long style.
   if (value !== 0 && formatted === short.format(-value, unit)) {
     return getFormatter(locale, "long").format(value, unit);
   }

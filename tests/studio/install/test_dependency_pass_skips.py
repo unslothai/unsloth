@@ -12,6 +12,7 @@ import os
 import pathlib
 import platform
 import re
+import shutil
 import sys
 import tempfile
 import types
@@ -360,9 +361,8 @@ def test_pip_install_and_the_gate_share_one_filter() -> None:
 
 
 def test_a_git_requirement_is_matched_by_ref_not_version(monkeypatch, tmp_path) -> None:
-    """The same version is published from every branch, so a release/3.6.x pin is
-    satisfied on paper by a build from main. direct_url.json is the only place the ref
-    survives the install."""
+    """The same version is published from every branch, so a release/3.6.x pin is satisfied on paper
+    by a main build; direct_url.json is the only place the ref survives install."""
     req = tmp_path / "triton-kernels.txt"
     req.write_text(
         "# comment\n"
@@ -594,7 +594,7 @@ def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -
     )
     argv, kwargs = calls[-1]
     assert argv[:3] == ["/usr/bin/git", "ls-remote", "--"]
-    assert argv[3:] == ["https://example.invalid/t.git", "release/3.6.x"]
+    assert argv[3:] == ["https://example.invalid/t.git", "release/3.6.x", "release/3.6.x^{}"]
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
     _fake_run.answer = _Done(
@@ -618,6 +618,32 @@ def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -
     assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
     monkeypatch.setattr(stack.shutil, "which", lambda _name: None)
     assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason = "needs git")
+def test_the_remote_commit_probe_peels_a_real_annotated_tag(tmp_path) -> None:
+    """Real git omits the `^{}` row unless asked, so the tag object (not a commit) leaked through."""
+    import subprocess as _sp
+
+    env = dict(os.environ, GIT_AUTHOR_NAME = "t", GIT_AUTHOR_EMAIL = "t@t")
+    env.update(GIT_COMMITTER_NAME = "t", GIT_COMMITTER_EMAIL = "t@t")
+
+    def git(*args):
+        argv = ["git", "-C", str(tmp_path), *args]
+        return _sp.run(argv, check = True, capture_output = True, text = True, env = env).stdout.strip()
+
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "c")
+    git("tag", "-a", "v1", "-m", "annotated")
+    commit = git("rev-parse", "HEAD")
+    assert git("rev-parse", "v1") != commit
+    assert stack._git_remote_commit(tmp_path.as_uri(), "v1") == commit
+    branch = git("symbolic-ref", "--short", "HEAD")
+    assert stack._git_remote_commit(tmp_path.as_uri(), branch) == commit
+    # A same-named branch still wins over the tag, as pip and uv resolve it.
+    git("commit", "-q", "--allow-empty", "-m", "d")
+    git("branch", "v1")
+    assert stack._git_remote_commit(tmp_path.as_uri(), "v1") == git("rev-parse", "HEAD")
 
 
 @pytest.mark.parametrize("name", ["UV_CONSTRAINT", "PIP_CONSTRAINT", "PIP_NO_DEPS", "UV_NO_DEPS"])
@@ -660,9 +686,8 @@ def test_no_closure_record_is_kept_under_a_callers_uv_override(monkeypatch, gate
 
 
 def test_a_caller_supplied_uv_override_forces_a_full_pass(monkeypatch, manifest) -> None:
-    """uv applies UV_OVERRIDE to every step and its versions replace requirements
-    outright; the gate digests only the bundled macOS file, so a caller's own file is
-    an input the evidence cannot see."""
+    """uv applies UV_OVERRIDE to every step and its versions replace requirements outright; the gate
+    digests only the bundled macOS file, so a caller's own file is invisible."""
     payload, req_root = manifest
     monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: dict(payload))
     foreign = req_root / "my-overrides.txt"
@@ -823,8 +848,11 @@ def test_a_venv_that_already_has_pip_does_not_reinstall_it(monkeypatch) -> None:
     monkeypatch.setattr(
         stack.subprocess, "run", lambda cmd, **_k: types.SimpleNamespace(returncode = 0)
     )
-    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "26.2.2")
     assert stack._venv_pip_is_usable() is True
+    # Below the trust floor's pip on 3.10+, so the bootstrap runs.
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
+    assert stack._venv_pip_is_usable() is (sys.version_info < (3, 10))
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "22.0.4")
     assert stack._venv_pip_is_usable() is False
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: None)
@@ -841,7 +869,7 @@ def test_a_fresh_uv_venv_still_bootstraps(monkeypatch) -> None:
 
 def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
     """Metadata survives a pip whose __main__.py is gone; `python -m pip` does not."""
-    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "26.2.2")
     seen: list[list[str]] = []
 
     def broken(cmd, **_k):
@@ -860,14 +888,24 @@ def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
 
 
 def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
-    versions = {"mlx": "0.32.3", "mlx-metal": "0.32.3", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
+    versions = {"mlx": "0.32.4", "mlx-metal": "0.32.4", "mlx-lm": "0.32.2", "mlx-vlm": "0.5.0"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: False)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
     assert stack._mlx_stack_is_current() is True
+    for lm in ("0.31.3", "0.32.2"):  # either end of the range, as Python 3.10 and 3.11+ resolve
+        monkeypatch.setattr(
+            stack,
+            "_installed_distribution_version",
+            lambda n, v = {**versions, "mlx-lm": lm}: v.get(n),
+        )
+        assert stack._mlx_stack_is_current() is True, lm
     for name, wrong in (
         ("mlx", "0.32.0"),
         ("mlx-metal", None),
         ("mlx-lm", "0.31.2"),
+        ("mlx-lm", "0.32.3"),
+        ("mlx-lm", None),
         ("mlx-vlm", "0.8.0"),
         ("mlx-vlm", None),
     ):
@@ -880,7 +918,7 @@ def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
 def test_a_satisfied_mlx_pin_with_a_broken_closure_is_not_current(monkeypatch, tmp_path) -> None:
     """This step installs WITH dependencies, so it is what repairs an mlx-vlm whose own
     miniaudio or mlx-audio is gone. Versions alone would skip that repair."""
-    versions = {"mlx": "0.32.3", "mlx-metal": "0.32.3", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
+    versions = {"mlx": "0.32.4", "mlx-metal": "0.32.4", "mlx-lm": "0.32.2", "mlx-vlm": "0.5.0"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: True)
     assert stack._mlx_stack_is_current() is False
@@ -931,7 +969,9 @@ def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_pat
     monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", _closure)
     monkeypatch.setattr(stack, "_installed_index", lambda: {})
     assert stack._mlx_closure_unmet() is True
-    assert seen and all(spec in seen[0] for spec in [*stack._MLX_PINS, stack._MLX_VLM_SPEC])
+    assert seen and all(
+        spec in seen[0] for spec in [*stack._MLX_PINS, stack._MLX_LM_SPEC, stack._MLX_VLM_SPEC]
+    )
     assert not list(tmp_path.glob("unsloth-mlx-*.txt"))
     assert written and written[0].parent == tmp_path
     assert not written[0].exists()
@@ -946,7 +986,7 @@ def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_pat
 def test_the_mlx_pins_match_the_runtime_repair() -> None:
     """One stack, two callers. The self-heal at startup reinstalls whatever this
     installed, so a pin that drifts here is a repair loop there."""
-    names = {spec.partition("==")[0] for spec in stack._MLX_PINS} | {"mlx-vlm"}
+    names = {spec.partition("==")[0] for spec in stack._MLX_PINS} | {"mlx-lm", "mlx-vlm"}
     assert set(stack._MLX_NAMES) == names
     assert stack._MLX_VLM_SPEC.startswith("mlx-vlm")
 
@@ -963,9 +1003,8 @@ def test_the_mlx_pins_match_the_runtime_repair() -> None:
     ],
 )
 def test_a_resident_codec_inside_the_window_needs_no_install(spec, installed, expected) -> None:
-    """The local tag is ignored here on purpose: provenance is the caller's separate
-    question, and a +cu130 suffix puts the version outside a PyPI-shaped specifier it
-    in fact satisfies."""
+    """The local tag is ignored on purpose, since provenance is the caller's separate question, and
+    a +cu130 suffix would put a version outside a PyPI-shaped specifier it satisfies."""
     assert stack._codec_spec_is_satisfied(spec, installed) is expected
 
 
@@ -979,12 +1018,12 @@ def test_the_pip_fallback_never_names_one_project_twice() -> None:
             "--upgrade-package",
             "mlx-vlm",
             "mlx==0.32.3",
-            "mlx-vlm>=0.4.4,<=0.7.8",
+            "mlx-vlm>=0.4.4,<=0.7.12",
         )
     )
     assert "--upgrade" in cmd and "--upgrade-package" not in cmd
     assert cmd.count("mlx") == 0 and cmd.count("mlx-vlm") == 0
-    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.7.8" in cmd
+    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.7.12" in cmd
 
 
 def test_a_package_named_only_by_the_flag_is_still_passed() -> None:
@@ -1038,9 +1077,8 @@ _PIP_REFUSED = "Cannot uninstall ghost 1.0, RECORD file not found: no RECORD fil
 
 
 def test_purging_a_half_written_record_counts_as_an_install_action(counting, tmp_path) -> None:
-    """It rmtree's a dist-info pip was reading a moment ago. Nothing else on that path
-    touches the counter, so a constraint answer cached before it would survive it and
-    let a gated step skip on evidence about an environment that no longer exists."""
+    """Purging a dist-info pip was reading must count as an install action, or a constraint answer
+    cached before it would let a gated step skip on stale evidence."""
     _site_with_recordless_dist(counting, tmp_path)
     assert stack._purge_recordless_distributions(_PIP_REFUSED) == ["ghost-1.0.dist-info"]
     assert stack._INSTALL_ACTIONS == 1
@@ -1048,9 +1086,8 @@ def test_purging_a_half_written_record_counts_as_an_install_action(counting, tmp
 
 
 def test_a_purge_that_deletes_nothing_leaves_the_cache_alone(counting, tmp_path) -> None:
-    """The other direction, and the reason this is counted at the rmtree rather than at
-    the top of the function: `pip check` is gated on the same counter, so a spurious
-    increment buys a full metadata resolve of the venv on every no-op update."""
+    """The count sits at the rmtree, not the top of the function, because pip check is gated on the
+    same counter and a spurious increment forces a full metadata resolve on every no-op update."""
     site = _site_with_recordless_dist(counting, tmp_path)
     assert stack._purge_recordless_distributions("") == []
     assert stack._purge_recordless_distributions("some unrelated pip failure") == []
@@ -1381,13 +1418,16 @@ def test_the_fingerprint_names_everything_a_verdict_depends_on(monkeypatch) -> N
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "0.4.5")
     fingerprint = stack._mlx_health_fingerprint()
     # The installed zoo narrows the mlx-vlm range, so changing the zoo must invalidate the verdict.
-    assert fingerprint["pins"] == list(stack._MLX_PINS) + [stack._mlx_vlm_spec_for_installed_zoo()]
+    assert fingerprint["pins"] == list(stack._MLX_PINS) + [
+        stack._mlx_lm_spec_for_installed_zoo(),
+        stack._mlx_vlm_spec_for_installed_zoo(),
+    ]
     assert fingerprint["pins"][-1].startswith(stack._MLX_VLM_SPEC)
     assert fingerprint["python"] == stack._installer_python_tag()
     assert fingerprint["imports"] == {n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}
     assert {"transformers", "tokenizers", "numpy", "huggingface-hub"} <= set(fingerprint["imports"])
-    # mlx-vlm floats inside a range: the pin string alone does not identify what is installed.
-    assert fingerprint["mlx_vlm"] == "0.4.5"
+    # mlx-lm and mlx-vlm float inside ranges: the pin strings alone do not identify what is installed.
+    assert fingerprint["mlx_lm"] == fingerprint["mlx_vlm"] == "0.4.5"
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: None)
     assert stack._mlx_health_fingerprint()["mlx_vlm"] == ""
 
@@ -1433,9 +1473,8 @@ def test_the_verdict_is_recorded_after_the_manifest_is_written() -> None:
 
 
 def test_the_escape_hatch_reaches_the_pip_bootstrap_skip() -> None:
-    """UNSLOTH_STUDIO_FULL_DEPS is what a user is told to set when the install is
-    behaving oddly. A step it cannot turn off is a step they cannot work around, and the
-    pip bootstrap skip is not gated on the manifest, so nothing else would reach it."""
+    """UNSLOTH_STUDIO_FULL_DEPS is the escape hatch users set when the install misbehaves, and the
+    pip bootstrap skip is not gated on the manifest, so it must honour the flag."""
     source = STACK_PATH.read_text(encoding = "utf-8")
     assert "if not _full_deps_requested() and _venv_pip_is_usable():" in source
 
@@ -1583,9 +1622,8 @@ def test_an_unreadable_requirements_file_is_never_skipped(tmp_path) -> None:
 
 
 def test_a_carried_known_unmet_record_drops_what_is_met_again(monkeypatch, gated) -> None:
-    """A skipped step carries its record, narrowed to what the closure still lacks: an
-    entry satisfied since it was recorded was no conflict, and keeping it would let a
-    later loss of that package pass as intentional."""
+    """A skipped step carries its record narrowed to what the closure still lacks, since keeping an
+    entry satisfied since recording would let a later loss pass as intentional."""
     _payload, req_root = gated
     monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
     monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
@@ -1617,9 +1655,8 @@ def test_the_closure_walk_follows_extras_and_survives_cycles(tmp_path) -> None:
 
 
 def test_an_extra_named_before_pep_685_is_still_followed(tmp_path) -> None:
-    """A wheel built before extras were normalised in the marker still says
-    extra == "all_files", and matching only the canonical spelling would drop that
-    extra's whole subtree without a word."""
+    """A wheel built before PEP 685 still says extra == "all_files" in its marker, and matching only
+    the canonical spelling would silently drop that extra's subtree."""
     req = tmp_path / "studio.txt"
     req.write_text("alpha[all_files]\n", encoding = "utf-8")
     index = _closure_index(alpha = ("1.0", ['beta ; extra == "all_files"']))
@@ -1643,9 +1680,8 @@ def test_an_inapplicable_marker_is_not_a_missing_dependency(tmp_path) -> None:
     ],
 )
 def test_the_closure_audit_fails_closed(tmp_path, line, reason) -> None:
-    """Every answer that is not a proven-complete closure has to install. A flag line
-    can hide requirements from the walk entirely, and guessing the other way would let
-    a step skip on evidence nobody gathered."""
+    """Every answer that is not a proven-complete closure must install, since a flag line can hide
+    requirements from the walk and guessing would skip on ungathered evidence."""
     req = tmp_path / "studio.txt"
     req.write_text(f"{line}\n", encoding = "utf-8")
     assert stack.install_manifest.unsatisfied_closure_requirement(req, {}) == reason
@@ -1729,9 +1765,8 @@ def test_every_gated_step_states_whether_it_installs_with_deps() -> None:
 
 @pytest.mark.parametrize("value", ["1", "true", "YES", " on "])
 def test_the_escape_hatch_reaches_the_pin_shaped_steps(monkeypatch, value) -> None:
-    """torchao, MLX and torchcodec compare against the installed distribution rather
-    than a recorded digest, so a satisfied pin read as "nothing to do" even on the pass
-    that was asked to do everything."""
+    """torchao, MLX and torchcodec compare against the installed distribution rather than a recorded
+    digest, so a satisfied pin read as nothing to do even on a full pass."""
     monkeypatch.setattr(stack, "_PASS_EVIDENCE", {"pass_inputs": {}, "step_results": {}})
     assert stack._may_skip_on_evidence() is True
     monkeypatch.setenv(stack._FULL_DEPS_ENV, value)
@@ -1783,9 +1818,8 @@ def test_the_mlx_and_codec_skips_ask_for_the_evidence_too() -> None:
 
 
 def test_the_npp_repair_is_not_conditional_on_reinstalling_the_codec() -> None:
-    """NPP is a separate distribution with its own failure modes. While the repair was
-    gated on the codec step having run, a codec the skip accepted meant a missing NPP
-    was never looked at again, and torchcodec's CUDA build cannot import without it."""
+    """NPP is a separate distribution, so its repair must not depend on the codec step: a skipped
+    codec would hide a missing NPP that torchcodec's CUDA build needs."""
     source = STACK_PATH.read_text(encoding = "utf-8")
     assert "        elif _codec_index:\n" in source
     assert source.count('_STEP_RESULTS.get("torchcodec") == "ran"') == 1
@@ -1913,9 +1947,8 @@ def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -
 
 
 def test_the_parked_manifest_goes_right_after_the_live_one_is_removed(monkeypatch, tmp_path):
-    """remove_manifest parks the live copy for setup.ps1's ordering. On the path that
-    read the live manifest itself, the parked copy would otherwise outlive a pass killed
-    part-way and be read by the next run as evidence of a completed pass."""
+    """remove_manifest parks the live copy for setup.ps1's ordering; a parked copy that outlived a
+    killed pass would later be read as evidence of a completed pass."""
     manifest = stack.install_manifest
     live = tmp_path / manifest.MANIFEST_NAME
     parked = tmp_path / manifest.PREVIOUS_MANIFEST_NAME
@@ -1933,9 +1966,8 @@ def test_the_parked_manifest_goes_right_after_the_live_one_is_removed(monkeypatc
 
 
 def test_an_input_missing_from_the_record_or_unreadable_now_is_changed(monkeypatch, tmp_path):
-    """pass_input_digests leaves out a file it could not read and digest_file answers None
-    for one it cannot read now; compared with .get, the two Nones were equal and an
-    unreadable requirements file counted as unchanged."""
+    """Pass input digests must not be compared with .get: a file missing from the record and one
+    unreadable now both yield None and would wrongly read as unchanged."""
     monkeypatch.setattr(stack, "REQ_ROOT", tmp_path)
     monkeypatch.setattr(stack, "_PASS_EVIDENCE", {"pass_inputs": {"studio.txt": "abc"}})
     digests = {"studio.txt": "abc"}
@@ -2006,9 +2038,8 @@ def audited(monkeypatch, tmp_path):
 def test_a_requirements_file_the_update_replaced_still_lets_the_manifest_be_written(
     audited,
 ) -> None:
-    """The failure this guards is the worst shape available: every package installed, the
-    pass then dies with a traceback, and the venv is left with no manifest at all -- which
-    every reader takes for a half-built install."""
+    """A requirements file the update replaced must not stop the manifest being written: otherwise
+    every package installs, the pass dies, and the missing manifest looks half-built."""
     (audited / "studio.txt").unlink()
     assert isinstance(stack._closure_record(), dict)
 

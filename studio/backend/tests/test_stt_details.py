@@ -114,7 +114,7 @@ def test_word_grouping_splits_on_a_pause_a_long_run_and_a_sentence_end():
 def test_malformed_spans_are_dropped():
     payload = _moss()
     payload["segments"][1]["start_sample"] = "soon"
-    payload["segments"][2]["end_sample"] = 1  # ends before it starts
+    payload["segments"][2]["end_sample"] = 1
     payload["segments"] += ["not a segment", {"start_sample": 0, "end_sample": 10}]
     payload["speaker_turns"].append({"start_sample": True, "end_sample": 4, "speaker_id": "S09"})
     payload["words"] = [
@@ -154,7 +154,7 @@ def test_aligned_words_take_the_punctuation_of_the_text(words, text, expected):
     spelled = stt_details.punctuate_words(bare, text)
     assert [w["word"] for w in spelled] == expected
     assert [(w["start"], w["end"]) for w in spelled] == [(w["start"], w["end"]) for w in bare]
-    assert [w["word"] for w in bare] == words  # the input is never changed
+    assert [w["word"] for w in bare] == words
 
 
 @pytest.mark.parametrize(
@@ -185,8 +185,7 @@ def test_cjk_text_keeps_its_punctuation_through_alignment(split):
 
 
 def test_spans_come_back_in_time_order_whatever_order_the_runtime_used():
-    """A diarized answer grouped per speaker left segments out of order, and the player's binary
-    search and paragraph merge both assume time order."""
+    """Per-speaker grouping broke time order; the player's binary search and merge assume it."""
     payload = {
         "text": "a b c",
         "sample_rate": 16000,

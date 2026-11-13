@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Music studio requests to audiocpp_server, per family and mode, against a recording fake server.
-
-Strict specs (schema_version) refuse undeclared options, so their bodies carry only declared keys:
-MiDashengLM and ControlFoley take ``duration_sec``, never ``duration_seconds`` (finding 7).
-"""
+"""Strict specs refuse undeclared keys, so MiDashengLM and ControlFoley take duration_sec only."""
 
 from __future__ import annotations
 
@@ -311,7 +307,6 @@ def test_status_reports_the_music_studio_rules():
     assert stable["modes"][1]["duration"]["default"] == 8.0
     assert stable["modes"][2]["actions"] == ["inpaint", "restyle"]
     assert stable["modes"][2]["max_ranges"] == 8
-    # Medium keeps Studio's 240 s; Small cannot return more than its ~120 s window.
     assert stable["modes"][0]["duration"]["max"] == 240.0
     assert stable["modes"][2]["max_source_s"] == 240.0
     small = cm.music_rules(_model("stable_audio", "Stable-Audio-3-Small-Music-GGUF", strict = False))
@@ -450,11 +445,11 @@ def test_stable_audio_batches_variations_as_a_string(starts, tmp_path):
             "batch_size": "3",
             **STABLE_AUDIO_DEFAULTS,
         }
-        and "seed" not in request
+        and "seed" in request
     )
     assert rate == 44100 and wav[:4] == b"RIFF"
     manifest = json.loads((run / "outputs.json").read_text())
-    assert [m["id"] for m in manifest] == ["audio_0"]  # the fake answers one take
+    assert [m["id"] for m in manifest] == ["audio_0"]
     assert manifest[0]["file"] == "00.wav" and manifest[0]["sample_rate"] == 44100
 
 
@@ -500,13 +495,12 @@ def test_sequential_variations_call_once_per_take_with_consecutive_seeds(tmp_pat
         ("take_2", 42, "02.wav"),
     ]
     assert all((run / m["file"]).is_file() for m in manifest)
-    # The top valid seed wraps instead of passing MiDashengLM's 2**31 - 1 limit.
     top = _backend(_model("midashenglm_gen"))
     _run(top, mode = "sfx", text = "rain", variations = 2, seed = 2**31 - 1)
     assert [_request(top, i)["seed"] for i in range(2)] == [str(2**31 - 1), "0"]
 
 
-def test_a_fixed_seed_family_gets_a_recorded_random_seed(tmp_path):
+def test_a_blank_seed_gets_a_recorded_random_seed(tmp_path):
     b = _backend(_model("heartmula"))
     _run(b, text = "pop", lyrics = "la", seed = None, output_dir = str(tmp_path))
     seed = int(_request(b)["seed"])
@@ -514,7 +508,7 @@ def test_a_fixed_seed_family_gets_a_recorded_random_seed(tmp_path):
     assert json.loads((tmp_path / "outputs.json").read_text())[0]["seed"] == seed
     sa = _backend(_model("stable_audio", strict = False))
     _run(sa, text = "house", seed = None)
-    assert "seed" not in _request(sa)
+    assert int(_request(sa)["seed"]) == sa.last_generation_stats["seed"]
 
 
 def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():
@@ -528,7 +522,6 @@ def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():
     b = _backend(_model("yue2"))
     _run(b, text = "rock", lyrics = "x", duration_s = 60)
     assert b._server.calls[0][2]["timeout"] == t(60)
-    # The route's budget covers work the backend cannot see (extend, continue length).
     b = _backend(_model("yue2"))
     _run(b, text = "rock", lyrics = "x", duration_s = 60, timeout_s = 1234.0)
     assert b._server.calls[0][2]["timeout"] == 1234.0
@@ -604,7 +597,6 @@ def test_ace_step_extend_cover_and_continue(source):
         "repainting_end": 22.0,
         **ACE_BASE_DEFAULTS,
     }
-    # strength is how much to change, so a light cover keeps most source-conditioned steps.
     _run(b, mode = "edit", text = "jazz", source = source, edit = {"action": "cover", "strength": 0.25})
     assert _request(b, 1)["options"] == {
         "route": "cover",
@@ -714,3 +706,19 @@ def test_legacy_music_never_asks_past_the_page_maximum():
     medium = _backend(_model("stable_audio", "Stable-Audio-3-Medium-GGUF", strict = False))
     medium.generate_audio_response("ambient", instructions = "ambient", max_new_tokens = 4500)
     assert _request(medium)["duration_seconds"] == 180.0
+
+
+@pytest.mark.parametrize(
+    "seed, take, options, sent",
+    [
+        (40, 2, None, "42"),
+        (40, None, None, "40"),
+        (2**31 - 1, 1, None, "0"),
+        (None, None, {"seed": "12"}, "12"),
+    ],
+)
+def test_a_take_is_seeded_seed_plus_take_and_a_typed_seed_skips_options(seed, take, options, sent):
+    b = _backend(_model("controlfoley"))
+    _run(b, mode = "sfx", text = "door", seed = seed, take = take, options = options)
+    assert _request(b)["seed"] == sent and "seed" not in (_request(b).get("options") or {})
+    assert b.last_generation_stats == {"seed": int(sent), "ignored_options": []}

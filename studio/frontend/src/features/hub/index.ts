@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export {
+  clearDownloadTransportCapabilitiesCache,
   DOWNLOAD_KIND,
   DownloadProgressBar,
   downloadManager,
@@ -51,6 +52,7 @@ export {
   type DeviceInventoryRows,
   type DeviceInventorySource,
   type DeviceInventorySourceState,
+  type EngramTableDetail,
   type GgufVariantDetail,
   type GgufVariantsResponse,
   type HubInventory,
@@ -115,6 +117,19 @@ export {
 export { useInventoryVersion } from "./stores/inventory-events";
 export { looksLikeLocalPath, localPathCacheKey } from "./lib/local-path";
 export { scanFolderStatusCopy } from "./lib/scan-folder-status";
+export {
+  countModelsPerFolder,
+  folderDisplayName,
+} from "./lib/scan-folder-models";
+export {
+  addScanFolderToStore,
+  refreshScanFolders,
+  removeScanFolderFromStore,
+  setScanFolderRecursive,
+  useScanFolders,
+  type AddScanFolderResult,
+  type ScanFoldersState,
+} from "./inventory/scan-folders-store";
 export type { ScanFolderStatus } from "./lib/scan-folder-status";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {

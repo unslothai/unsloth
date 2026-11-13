@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 export interface PillTab {
   value: string;
@@ -11,8 +12,6 @@ export interface PillTab {
   disabled?: boolean;
 }
 
-/** Segmented pill toggle reusing the Hub's .hub-tab-toggle styling (extended in hub.css to also
- *  match .unsloth-model-selector-menu). Keeps tab roles for keyboard nav. */
 export function PillTabs({
   tabs,
   value,
@@ -30,19 +29,13 @@ export function PillTabs({
   ariaLabel: string;
   className?: string;
   compact?: boolean;
-  /** Guided-tour anchor, read as `[data-tour="..."]`. */
   dataTour?: string;
-  /** Block every tab, for a choice that cannot be applied right now. */
   disabled?: boolean;
-  /** Size each tab to its label instead of equal widths. The active tab carries
-   * the pill background directly (the toggle never animates). Tabs only shrink
+  /** Size each tab to its label instead of equal widths. Tabs only shrink
    * when their combined intrinsic width exceeds the available space. */
   fit?: boolean;
 }) {
-  const activeIndex = Math.max(
-    0,
-    tabs.findIndex((tab) => tab.value === value),
-  );
+  const pillId = useId();
   return (
     <div
       role="tablist"
@@ -51,30 +44,18 @@ export function PillTabs({
       className={cn(
         "hub-menu-trigger hub-tab-toggle relative inline-flex items-center rounded-full",
         compact ? "h-7" : "h-(--picker-control-h)",
-        // Do not stretch to fill a flex-column parent (the popover) in fit mode, and never compress so
-        // the last tab keeps its padding.
+        // Do not stretch in a flex-column parent, and never compress so the last tab keeps its padding.
         fit && "w-fit max-w-full shrink-0 self-start",
         className,
       )}
     >
-      {!fit && (
-        <span
-          aria-hidden="true"
-          style={{
-            width: `${100 / tabs.length}%`,
-            transform: `translateX(${activeIndex * 100}%)`,
-          }}
-          className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
-        />
-      )}
       {tabs.map((tab, index) => (
         <button
           key={tab.value}
           type="button"
           role="tab"
           aria-selected={value === tab.value}
-          // Roving tabindex: only the active tab is in the tab order; Arrow Left/Right move between tabs
-          // (WAI-ARIA tablist pattern). ArrowDown bubbles so the picker's "enter the list" handler runs.
+          // Roving tabindex (WAI-ARIA tablist); ArrowDown bubbles to the picker's enter-the-list handler.
           tabIndex={value === tab.value ? 0 : -1}
           disabled={disabled || tab.disabled}
           onKeyDown={(e) => {
@@ -82,7 +63,6 @@ export function PillTabs({
             e.preventDefault();
             const step = e.key === "ArrowRight" ? 1 : -1;
             let next = (index + step + tabs.length) % tabs.length;
-            // Skip disabled tabs; stay put when none is open.
             while (tabs[next].disabled && next !== index) {
               next = (next + step + tabs.length) % tabs.length;
             }
@@ -95,7 +75,7 @@ export function PillTabs({
           }}
           onClick={() => onValueChange(tab.value)}
           className={cn(
-            "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
+            "relative inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
             (disabled || tab.disabled) && "cursor-not-allowed opacity-50",
             fit ? "min-w-0 shrink" : "min-w-0 flex-1",
             compact
@@ -104,15 +84,15 @@ export function PillTabs({
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
-            // The active tab carries the pill; its hover lives on the pill
-            // rules in hub.css. The pin that used to sit here was written
-            // without a mode variant, so in dark it painted the page colour
-            // over the pill and pointing at the selected tab blacked it out.
-            fit && value === tab.value && "hub-tab-toggle-pill",
           )}
         >
+          {value === tab.value && <SegmentedPill group={`${pillId}-pill`} />}
           {tab.icon}
-          <span className="min-w-0 truncate">{tab.label}</span>
+          {/* Consumers target the label by this marker; a bare `> span`
+              would also match the pill. */}
+          <span data-pill-tab-label className="min-w-0 truncate">
+            {tab.label}
+          </span>
         </button>
       ))}
     </div>

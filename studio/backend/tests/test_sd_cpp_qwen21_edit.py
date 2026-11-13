@@ -87,7 +87,6 @@ def test_condition_images_flatten_alpha_over_white_and_pad_only_for_the_server()
     assert (w, h) == (1440, 736)
     ref = _decode(blobs[1])
     assert ref.mode == "RGB" and ref.getpixel((32, 16)) == (255, 255, 255)
-    # A reference with another aspect ratio is padded to the output's instead of being cropped.
     _w, _h, padded = bk._native_condition_images(
         FAM,
         _png(size = (64, 32)),
@@ -162,7 +161,6 @@ def test_edit_is_advertised_only_with_the_projector_and_an_edit_capable_build(tm
 
 
 def test_an_unreadable_build_advertises_no_edit_and_no_fidelity(tmp_path):
-    # The arch gate lets an unreadable binary through; these optional capabilities must not.
     binary = tmp_path / "sd-server"
     binary.write_bytes(
         FAM.sd_cpp_edit_marker.encode() + b" " + bk._REFERENCE_FIDELITY_MARKER.encode()
@@ -237,8 +235,7 @@ def test_native_refuses_what_it_cannot_honour(monkeypatch):
     with pytest.raises(ValueError, match = "Reference detail is not adjustable"):
         b.generate(prompt = "p", workflow = "edit", init_image = _png(), reference_resolution = 1024)
     with pytest.raises(ValueError, match = "not yet supported"):
-        b.generate(prompt = "p", init_image = _png())  # an omitted workflow keeps its refusal
-    # Same refusal as the diffusers engine: a localized edit belongs to the edit workflow only.
+        b.generate(prompt = "p", init_image = _png())
     with pytest.raises(ValueError, match = "localized_edit needs the edit workflow"):
         b.generate(
             prompt = "p",
@@ -248,7 +245,6 @@ def test_native_refuses_what_it_cannot_honour(monkeypatch):
             height = 256,
             localized_edit = LocalizedEdit("paint", _png()),
         )
-    # Without an edit-capable build and projector, the workflow is refused rather than sent.
     monkeypatch.setattr(SdCppDiffusionBackend, "_native_edit_ready", lambda self, st: False)
     with pytest.raises(ValueError, match = "Image editing is not available"):
         b.generate(prompt = "p", workflow = "edit", init_image = _png(), width = 512, height = 512)
@@ -271,9 +267,8 @@ def test_native_text_to_image_keeps_the_family_size_bounds(family, width, height
 
 
 def test_a_padded_mask_adds_no_region_and_stays_aligned_with_the_source():
-    """Padding the separate mask with white marked the added border as part of the region to
-    edit. It is padded black, by the same amount as the source, so the region stays where it was
-    drawn."""
+    """Mask padding must be black, by the same amount as the source, not white: white marks the
+    added border as part of the edit region."""
     mask = Image.new("L", (64, 32), 0)
     for x in range(8):
         for y in range(8):
@@ -292,17 +287,14 @@ def test_a_padded_mask_adds_no_region_and_stays_aligned_with_the_source():
     )
     source, padded = _decode(blobs[0]), _decode(blobs[1]).convert("L")
     assert source.size == padded.size == (64, 64)
-    # The border the padding added is not part of the region...
     assert padded.getpixel((32, 2)) == 0 and padded.getpixel((32, 60)) == 0
-    # ...the drawn region moved with the source, and the source border is white as before.
     assert padded.getpixel((2, 18)) == 255 and padded.getpixel((2, 26)) == 0
     assert source.getpixel((32, 2))[:3] == (255, 255, 255)
     assert source.getpixel((2, 18))[:3] == (9, 9, 9)
 
 
 def test_a_full_fidelity_build_gets_the_images_as_decoded(tmp_path):
-    """A build carrying the upstream reference fixes reads alpha and keeps each image's shape, so
-    neither workaround applies and status reports alpha."""
+    """A full-fidelity build reads alpha and keeps image shapes, so no workaround applies."""
     clear = _png(size = (32, 32), color = (0, 0, 255, 0))
     _w, _h, blobs = bk._native_condition_images(
         FAM, _png(size = (64, 32)), [clear], None, 1024, 512, full_fidelity = True, pad_to_output = True

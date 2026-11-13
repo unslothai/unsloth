@@ -2,12 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { type CSSProperties, type ReactNode, useId } from "react";
+import { type ReactNode, useId, useLayoutEffect, useRef } from "react";
 import {
   type SegmentedSize,
   segmentedSegmentLabel,
   segmentedTrackHeight,
 } from "./segmented-control-styles";
+import { watchSegmentedPill } from "./segmented-pill-slide";
 
 interface SegmentedControlOption<T extends string> {
   value: T;
@@ -15,31 +16,54 @@ interface SegmentedControlOption<T extends string> {
   disabled?: boolean;
 }
 
-export function SegmentedControlIndicator({
-  activeIndex,
-  optionCount,
+const HIDDEN = { display: "none" } as const;
+
+/** Pieces in the order segmented-pill-slide reads them: shadow, start cap, strip, end cap. */
+const SLIDE_PIECES = [
+  "left-0 origin-left rounded-full",
+  "left-0 rounded-l-full",
+  "origin-left",
+  "right-0 rounded-r-full",
+];
+
+/**
+ * Render the pill only inside the active (relative) segment with a control-unique group id; the
+ * track must isolate (.hub-tab-toggle does) and segments must not, or the pill covers labels
+ */
+export function SegmentedPill({
+  group,
   className,
-  width = `${100 / optionCount}%`,
 }: {
-  activeIndex: number;
-  optionCount: number;
+  group: string;
   className?: string;
-  width?: CSSProperties["width"];
 }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    if (!ref.current) return;
+    return watchSegmentedPill(group, ref.current);
+  }, [group]);
   return (
     <span
+      ref={ref}
       aria-hidden="true"
       className={cn(
-        "hub-tab-toggle-pill pointer-events-none absolute start-0 rounded-full transition-transform duration-200 ease-out [transform:translateX(calc(var(--segmented-control-index)*100%))] rtl:[transform:translateX(calc(var(--segmented-control-index)*-100%))]",
+        "hub-tab-toggle-pill pointer-events-none absolute inset-0 -z-10 rounded-full",
         className,
       )}
-      style={
-        {
-          "--segmented-control-index": activeIndex,
-          width,
-        } as CSSProperties
-      }
-    />
+    >
+      {/* Shown only while sliding between segments of different widths. */}
+      {SLIDE_PIECES.map((piece) => (
+        <span
+          key={piece}
+          className={cn(
+            "hub-tab-toggle-pill absolute inset-y-0",
+            piece,
+            className,
+          )}
+          style={HIDDEN}
+        />
+      ))}
+    </span>
   );
 }
 
@@ -63,11 +87,6 @@ export function SegmentedControl<T extends string>({
   className?: string;
 }) {
   const name = useId();
-  const activeIndex = Math.max(
-    0,
-    options.findIndex((option) => option.value === value),
-  );
-
   return (
     <div
       role="radiogroup"
@@ -78,21 +97,17 @@ export function SegmentedControl<T extends string>({
         className,
       )}
     >
-      <SegmentedControlIndicator
-        activeIndex={activeIndex}
-        optionCount={options.length}
-        className="inset-y-0"
-      />
       {options.map((option) => {
         const active = option.value === value;
         return (
           <label
             key={option.value}
             className={cn(
-              "relative z-10 flex h-full min-w-0 flex-1 cursor-pointer rounded-full",
+              "relative flex h-full min-w-0 flex-1 cursor-pointer rounded-full",
               option.disabled && "cursor-not-allowed opacity-50",
             )}
           >
+            {active && <SegmentedPill group={`${name}-pill`} />}
             <input
               type="radio"
               name={name}

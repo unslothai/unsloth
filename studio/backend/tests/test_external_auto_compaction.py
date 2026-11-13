@@ -9,6 +9,8 @@ import sys
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 import routes.inference as ri
@@ -130,6 +132,7 @@ def _proxy(
     provider_type: str,
     messages: list[dict],
     handler = _Handler,
+    reaches_provider = True,
     **fields,
 ):
     async def receive() -> dict:
@@ -167,6 +170,9 @@ def _proxy(
                         chunks.append(json.loads(body))
 
         _run(go)
+        if not reaches_provider:
+            assert not [b for b in server.bodies if "messages" in b]
+            return chunks, None
         assert server.bodies, "the route never reached the provider"
         return chunks, server.bodies[-1]
 
@@ -406,6 +412,7 @@ def test_external_fit_reserves_tool_schemas():
 class _ServedWindowHandler(_Handler):
     models: list[dict] = []
     props: dict | None = None
+    ps: list[dict] | None = None
     key: str | None = None
     gets: list[str] = []
 
@@ -417,6 +424,8 @@ class _ServedWindowHandler(_Handler):
             status, body = 200, {"object": "list", "data": self.models}
         elif self.path.startswith("/props") and self.props is not None:
             status, body = 200, self.props
+        elif self.path == "/api/ps" and self.ps is not None:
+            status, body = 200, {"models": self.ps}
         else:
             status, body = 404, {"error": "not found"}
         raw = json.dumps(body).encode()
@@ -429,6 +438,8 @@ class _ServedWindowHandler(_Handler):
 
 def _served(**attrs):
     ep_mod._served_windows.clear()
+    ep_mod._served_templates.clear()
+    ep_mod._ollama_last_windows.clear()
     return type("Served", (_ServedWindowHandler,), {"gets": [], **attrs})
 
 
@@ -498,6 +509,31 @@ def test_an_older_llama_server_is_read_from_props_for_the_model():
     assert old.gets == ["/v1/models", "/props?model=a-model"]
 
 
+def test_a_llama_server_template_default_is_sent_along_with_the_date(monkeypatch):
+    monkeypatch.setattr(
+        ri, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+    )
+    qwen = (
+        "{% if messages[0]['role'] == 'system' %}{% set sys = messages[0]['content'] %}"
+        "{% set rest = messages[1:] %}{% else %}"
+        "{% set sys = 'You are Qwen, created by Alibaba Cloud.' %}{% set rest = messages %}{% endif %}"
+        "<|im_start|>system\n{{ sys }}<|im_end|>\n"
+        "{% for m in rest %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    )
+    server = _served(
+        models = [{"id": "a-model", "owned_by": "llamacpp"}], props = {"chat_template": qwen}
+    )
+    _, sent = _proxy("llama_cpp", [{"role": "user", "content": "who are you?"}], handler = server)
+    assert sent["messages"] == [
+        {
+            "role": "system",
+            "content": "The current date is 2026-08-15.\n\nYou are Qwen, created by Alibaba Cloud.",
+        },
+        {"role": "user", "content": "who are you?"},
+    ]
+    assert server.gets == ["/props?model=a-model"]
+
+
 def test_a_window_the_request_states_is_kept_over_the_served_one():
     server = _llama_server()
     _, sent = _proxy(
@@ -537,6 +573,251 @@ def test_a_hosted_provider_is_not_probed_for_a_window():
         model = "qwen3-next",
         context_overflow = "truncate_oldest",
     )
+    assert len(sent["messages"]) == len(_long_chat())
+    assert server.gets == []
+
+
+def _ollama(context_length: int = 4_096):
+    loaded = {"name": "qwen3:1.7b", "model": "qwen3:1.7b", "context_length": context_length}
+    return _served(ps = [loaded])
+
+
+def test_an_ollama_connection_compacts_to_the_window_ollama_loaded():
+    chunks, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = _ollama(),
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert len(sent["messages"]) < len(_long_chat())
+    assert sent["messages"][-1]["content"] == "latest question"
+    assert _fits(sent, 4_096)
+    [truncation] = _truncations(chunks)
+    assert truncation["fits"] is True
+
+
+def test_a_message_larger_than_the_window_ollama_loaded_is_refused():
+    with pytest.raises(HTTPException) as refused:
+        _proxy(
+            "ollama",
+            [{"role": "user", "content": "word " * 8_000 + "What is the code?"}],
+            handler = _ollama(),
+            model = "qwen3:1.7b",
+            context_overflow = "truncate_oldest",
+            compaction_threshold = 30_720,
+            context_window = 40_960,
+        )
+    assert refused.value.status_code == 400
+    error = refused.value.detail["error"]
+    assert error["code"] == "context_length_exceeded"
+    assert error["message"].startswith("Message too long:")
+    assert "4096-token context window" in error["message"]
+
+
+def test_a_tool_enabled_chat_refuses_a_message_larger_than_the_window_ollama_loaded(monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    # the tool loop polls for disconnects and would stop before reaching the provider.
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    chunks, _ = _proxy(
+        "ollama",
+        [{"role": "user", "content": "word " * 8_000 + "What is the code?"}],
+        handler = _ollama(),
+        reaches_provider = False,
+        model = "qwen3:1.7b",
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    [error] = [c["error"] for c in chunks if "error" in c]
+    assert error["code"] == "context_length_exceeded"
+    assert error["message"].startswith("Message too long:")
+    assert "4096-token context window" in error["message"]
+
+
+def test_a_withdrawn_tool_catalogue_does_not_count_toward_the_ollama_refusal(monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    message = "word " * 3_000 + "What is the code?"
+    _, sent = _proxy(
+        "ollama",
+        [{"role": "user", "content": message}],
+        handler = _ollama(),
+        model = "qwen3:1.7b",
+        enable_tools = True,
+        enabled_tools = ["python", "edit_file"],
+        tool_choice = "none",
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert not sent.get("tools")
+    assert sent["messages"][-1]["content"] == message
+
+
+def test_a_message_within_the_window_ollama_loaded_is_still_sent():
+    message = "word " * 3_000 + "What is the code?"
+    _, sent = _proxy(
+        "ollama",
+        [{"role": "user", "content": message}],
+        handler = _ollama(),
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert sent["messages"][-1]["content"] == message
+
+
+def test_an_ollama_window_above_the_catalogued_one_does_not_raise_it():
+    _, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = _ollama(262_144),
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_144,
+        context_window = 8_192,
+    )
+    assert len(sent["messages"]) < len(_long_chat())
+    assert _fits(sent, 8_192)
+
+
+def test_an_ollama_model_not_loaded_yet_keeps_the_catalogued_window():
+    idle = _served(ps = [])
+    chunks, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = idle,
+        model = "qwen3:1.7b",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert len(sent["messages"]) == len(_long_chat())
+    assert _truncations(chunks) == []
+    assert idle.gets == ["/api/ps"]
+
+
+def test_an_ollama_model_is_read_again_once_it_has_loaded():
+    server = _served(ps = [])
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "ollama", base_url = upstream.base_url, api_key = None
+            )
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            server.ps = [{"name": "qwen3:1.7b", "context_length": 4_096}]
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [None, 4_096, 4_096]
+    assert server.gets == ["/api/ps", "/api/ps"]
+
+
+def test_an_idle_ollama_model_keeps_the_window_it_last_loaded(monkeypatch):
+    monkeypatch.setattr(ep_mod, "_SERVED_WINDOW_TTL_S", 0.0)
+    server = _ollama()
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "ollama", base_url = upstream.base_url, api_key = None
+            )
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            server.ps = []
+            # another connection's refresh purges expired entries from the TTL cache.
+            ep_mod._served_windows.clear()
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [4_096, 4_096]
+    assert server.gets == ["/api/ps", "/api/ps"]
+
+
+def test_a_failed_ollama_read_keeps_the_window_it_last_loaded(monkeypatch):
+    monkeypatch.setattr(ep_mod, "_SERVED_WINDOW_TTL_S", 0.0)
+    server = _ollama()
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "ollama", base_url = upstream.base_url, api_key = None
+            )
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+            server.ps = None
+            windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [4_096, 4_096]
+
+
+def test_a_custom_miss_on_the_same_server_does_not_hide_ollamas_window():
+    server = _ollama()
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            for provider_type in ("custom", "ollama"):
+                client = ep_mod.ExternalProviderClient(
+                    provider_type = provider_type, base_url = upstream.base_url, api_key = None
+                )
+                windows.append(await client.served_context_window("qwen3:1.7b"))
+
+        _run(go)
+    assert windows == [None, 4_096]
+
+
+@pytest.mark.parametrize(
+    ("base", "probe"),
+    [
+        ("http://h:11434/v1", "http://h:11434/api/ps"),
+        ("http://h:11434", "http://h:11434/api/ps"),
+        ("https://gw.example/ollama/v1?tenant=a", "https://gw.example/ollama/api/ps?tenant=a"),
+    ],
+)
+def test_the_ollama_probe_keeps_the_base_path_and_query(base, probe):
+    assert ep_mod._native_server_path(base, "/api/ps") == probe
+
+
+def test_a_bare_ollama_model_name_matches_its_latest_tag():
+    server = _served(
+        ps = [{"name": "qwen3:latest", "model": "qwen3:latest", "context_length": 4_096}]
+    )
+    _, sent = _proxy(
+        "ollama",
+        _long_chat(),
+        handler = server,
+        model = "qwen3",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert _fits(sent, 4_096)
+
+
+def test_auto_compact_off_never_asks_ollama_for_its_window():
+    server = _ollama()
+    _, sent = _proxy("ollama", _long_chat(), handler = server, model = "qwen3:1.7b")
     assert len(sent["messages"]) == len(_long_chat())
     assert server.gets == []
 
@@ -621,3 +902,92 @@ def test_a_stalled_server_costs_one_deadline_and_is_remembered(monkeypatch):
     _run(go)
     assert windows == [None, None]
     assert reads == ["a-model"]
+
+
+def test_a_checkpoint_turn_the_fit_creates_still_carries_the_date(monkeypatch):
+    monkeypatch.setattr(
+        ri, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+    )
+
+    def fit(
+        messages,
+        payload,
+        tools = None,
+        **_kwargs,
+    ):
+        return [{"role": "system", "content": "Earlier: a summary."}, *messages], None, None
+
+    monkeypatch.setattr(ri, "_fit_external_context", fit)
+    _, sent = _proxy(
+        "vllm",
+        [{"role": "user", "content": "hi"}],
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+    )
+    assert sent["messages"][0] == {
+        "role": "system",
+        "content": "The current date is 2026-08-15.\n\nEarlier: a summary.",
+    }
+
+
+def test_a_failed_template_read_logs_no_url_credentials(monkeypatch):
+    import httpx
+
+    lines = []
+    monkeypatch.setattr(
+        ep_mod, "logger", type("L", (), {"info": lambda self, *a: lines.append(a[0] % a[1:])})()
+    )
+    monkeypatch.setattr(
+        ep_mod,
+        "_client",
+        lambda: httpx.AsyncClient(
+            transport = httpx.MockTransport(lambda request: httpx.Response(404, request = request))
+        ),
+    )
+    ep_mod._served_templates.clear()
+    provider = ep_mod.ExternalProviderClient("llama_cpp", "http://user:secret@host/v1", "")
+    got = []
+
+    async def go():
+        got.append(await provider.served_chat_template("a-model"))
+
+    _run(go)
+    assert got == [None]
+    assert lines and not any("secret" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    "enable_thinking,reasoning_effort,preserve_thinking",
+    [
+        (None, None, None),
+        (True, None, None),
+        (False, None, True),
+        (None, "none", None),
+        (True, "max", False),
+        (None, "medium", None),
+    ],
+)
+def test_the_probed_template_controls_are_the_ones_sent(
+    enable_thinking, reasoning_effort, preserve_thinking
+):
+    with _Server() as server:
+        provider = ep_mod.ExternalProviderClient("llama_cpp", server.base_url, "")
+
+        async def go():
+            async for _ in provider.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "a-model",
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            ):
+                pass
+
+        _run(go)
+        body = server.bodies[-1]
+    sent = dict(body.get("chat_template_kwargs") or {})
+    if "reasoning_effort" in body:
+        sent["reasoning_effort"] = body["reasoning_effort"]
+    assert ep_mod.llama_cpp_template_controls(
+        enable_thinking, reasoning_effort, preserve_thinking
+    ) == tuple(sorted(sent.items()))

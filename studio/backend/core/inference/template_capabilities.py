@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Does this chat template ever put the tool catalog into the prompt?
-
-Answers Studio's one yes/no per model, deciding whether the tool controls are live.
-
-Do not go back to matching substrings: that reads spelling, not meaning, and called
-Granite 3.3 tool-less for writing `{%- if tools and not available_tools -%}`.
-
-Over-approximates on purpose. A spurious yes shows a control the backend re-checks;
-a spurious no silently disables a working feature, which is the bug this replaces.
-"""
+"""Does a chat template ever put tools in the prompt; errs toward yes, never by substring matching."""
 
 from functools import lru_cache
 
@@ -141,8 +132,7 @@ def _scan_maybe(
     bound = frozenset(),
     killed = frozenset(),
 ):
-    """Walk a body that may not run. Keep what it learns, drop what it unbinds; the
-    body's own `bound`/`killed` names escape in neither direction."""
+    """Body that may not run: keep what it learns, drop what it unbinds; its names never leak."""
     local = (set(aliases) | set(bound)) - set(killed)
     found = _scan(body, local, guarded)
     aliases |= local - (set(bound) - aliases)
@@ -150,9 +140,7 @@ def _scan_maybe(
 
 
 def _join(aliases, arms, exhaustive):
-    """Union the arms: a name holds the catalog if it does on any. Falling past every
-    arm is a path too, so the incoming set counts unless an `{% else %}` is present -
-    which is what keeps a rebinding on every arm a rebinding."""
+    """Arms union: a name holds the catalog if any arm does; incoming set counts unless {% else %}."""
     merged = set() if exhaustive else set(aliases)
     for arm in arms:
         merged |= arm
@@ -166,8 +154,7 @@ def _scan(body, aliases, guarded):
     for node in body:
         if isinstance(node, nodes.Output):
             for value in node.nodes:
-                # `{{ m.content if m.role == 'tool' else '' }}` holds its check in
-                # the expression, where an `{% if %}` usually would.
+                # `{{ m.content if m.role == 'tool' else '' }}` keeps the check inline instead of an `{% if %}`.
                 if _is_payload(value) and (
                     guarded or _reads_catalog(value, aliases) or _checks_tool_role(value)
                 ):
@@ -180,14 +167,10 @@ def _scan(body, aliases, guarded):
             # `{% set _ = catalog.append(tools) %}`: the same mutation without `do`.
             aliases |= _receiver_gaining_catalog(node.node, aliases, guarded)
             if _reads_catalog(node.node, aliases) or guarded or _checks_tool_role(node.node):
-                # Three ways a name comes to hold tool-conditional content: LFM2 fills
-                # `ns.system_prompt` inside the guard and renders it outside; a guard
-                # runs the statement only when tools exist, so even a constant counts;
-                # and a stored `m.role == 'tool'` renders what the inline test does.
+                # Guarded statements count even for constants (LFM2 fills ns.system_prompt in its guard); a stored m.role == tool check renders like the inline test.
                 aliases |= _bound_names(node.target)
             else:
-                # Plain names only: one field says nothing about the rest of the
-                # container. glm-4-9b-chat rebinds `tools` off a message.
+                # Plain names only: one field says nothing about the rest of its container; glm-4-9b-chat rebinds tools off a message.
                 aliases -= _rebound_names(node.target)
             continue
 
@@ -241,8 +224,7 @@ def _scan(body, aliases, guarded):
 
 def template_supports_tools(template) -> bool:
     """Inspect syntax only; rendering and parser support remain backend checks."""
-    # Outside the cache: lru_cache hashes first, so a dict-valued template would
-    # raise past every fail-closed branch below.
+    # Outside the cache: lru_cache hashes first, so a dict would raise past fail-closed branches.
     if not isinstance(template, str):
         return False
     # `str.__str__`, not `str(...)`: an override would raise out here, unhandled.

@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio's copy of ``unsloth/import_fixes.py::fix_torchao_safe_int_mm_repr_probe``, not an import
-of it: the diffusion process must not execute ``unsloth/__init__``. The two copies are mutually inert.
-
-torchao's int8 GEMM asks whether it is being traced by formatting its input's repr, which on a real
-CUDA tensor calls ``.item()``: a device sync per eager int8 linear, and an outright
-``cudaErrorStreamCaptureUnsupported`` inside ``torch.cuda.graph``. Installed from a meta path finder
-at import time, not at quantise time, because the int8 prequant path only ``torch.load``s torchao
-subclasses and never calls ``quantize_``.
-"""
+"""torchao int8 GEMM repr calls .item() (breaks CUDA graphs); Studio's own copy, not an import:
+diffusion must not execute unsloth/__init__; installed at import time via meta path finder"""
 
 from __future__ import annotations
 
@@ -33,6 +26,8 @@ _TORCHAO_INTMM_MODULES = (
 _TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named the old home
 _TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
 _TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
+# "0": copy a transposed int8 weight row-major before cuBLASLt, as torchao does (see _make_safe_int_mm)
+_TORCHAO_INT_MM_TRANSPOSED_ENV = "UNSLOTH_TORCHAO_INT_MM_TRANSPOSED"
 
 # The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
 _TORCHAO_SAFE_INT_MM_MARKERS = (
@@ -65,6 +60,11 @@ def _make_safe_int_mm(mod, original):
 
     out_dtype = mod.out_dtype
     dynamo_is_compiling = mod.dynamo_is_compiling
+    # ROCm (hipBLASLt) keeps torchao's row-major copy; the TN layout below is only checked on cuBLASLt.
+    keep_transposed = (
+        os.environ.get(_TORCHAO_INT_MM_TRANSPOSED_ENV, "1").strip() != "0"
+        and getattr(torch.version, "hip", None) is None
+    )
 
     @functools.wraps(original)
     def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
@@ -89,11 +89,11 @@ def _make_safe_int_mm(mod, original):
                 input.device.type
             )
 
-        if not mat2.is_contiguous():  # silently gives incorrect result without this
-            mat2 = mat2.contiguous()
-        if (not input.is_contiguous()) and (
-            input.shape[0] % 8 != 0
-        ):  # gives cryptic error without this
+        # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads
+        # past the end of ``input`` when M is not a 64-multiple (illegal address), and copies the weight every call.
+        if not mat2.is_contiguous() and not (keep_transposed and mat2.t().is_contiguous()):
+            mat2 = mat2.contiguous()  # silently gives incorrect result without this
+        if (not input.is_contiguous()) and (input.shape[0] % 8 != 0):
             input = input.contiguous()
         try:
             return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
@@ -208,13 +208,14 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
 
 
 def install_torchao_int_mm_patch():
-    """Install the capture-safe ``safe_int_mm`` if torchao is present; idempotent, so several modules may each
-    ask for it. ``UNSLOTH_TORCHAO_INT_MM_FIX=0`` keeps upstream's behaviour. True when patched or the finder was
-    installed, False when there is nothing to do, None when torchao is absent or the fix is off."""
-    # Every diffusion, video and diffusion-training entry point calls this, so it also carries the
-    # peft LoRA guard, which is independent of the int_mm switch.
+    """Also installs the peft LoRA guard and the Triton prefetch fix, independent of this switch."""
     try:
         install_peft_torchao_dispatch_guard()
+    except Exception:
+        pass
+    try:
+        from .diffusion_triton_prefetch import install_triton_prefetch_fix
+        install_triton_prefetch_fix()
     except Exception:
         pass
     if os.environ.get(_TORCHAO_INT_MM_ENV, "1").strip() == "0":
@@ -242,14 +243,8 @@ def install_torchao_int_mm_patch():
     return True
 
 
-# Studio's copy of ``unsloth/import_fixes.py::fix_peft_torchao_missing_tensor_subclass`` (#11168), for the
-# same reason as the int_mm copy above: the diffusion process never runs ``unsloth/__init__``, so the
-# original never reaches ``pipe.load_lora_weights``. peft <= 0.18 imports LinearActivationQuantizedTensor
-# inside ``dispatch_torchao`` for every LoRA target, torchao 0.18 deleted it, and Studio installs torchao
-# 0.18 on torch >= 2.12, so every diffusion LoRA load raised. Both copies mark their wrapper
-# ``__unsloth_patched__``, so whichever runs second leaves the first in place.
-# The spellings a torchao removal produces (class, its old module, the whole ``torchao.dtypes`` package on main).
-# Only these, so a BROKEN torchao still raises.
+# Copy of unsloth/import_fixes.py::fix_peft_torchao_missing_tensor_subclass: diffusion never
+# runs unsloth/__init__. Both mark ``__unsloth_patched__``; only torchao-removal errors match.
 _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
     r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor"
     r"|no module named '?torchao\.dtypes'?(?![.\w])",
@@ -281,15 +276,9 @@ def _peft_torchao_tensor_subclasses():
 
 
 def _guard_peft_torchao_dispatcher(original):
-    """Wrap one `dispatch_torchao` so a removed tensor subclass costs only that class.
-
-    The wrapper calls through, so a torchao shipping both classes behaves exactly as upstream.
-    Only on a failure naming one of the two does it redo upstream's work against the classes that
-    remain, so an AffineQuantizedTensor weight still gets a TorchaoLoraLinear.
-    """
+    """Calls upstream; only a failure naming a removed class redoes dispatch with the classes left."""
     warned = [False]
-    # The defining module's own globals, so the degraded path uses the very objects upstream would
-    # have, including an is_torchao_available already patched by the sibling fix.
+    # Defining module's globals, incl. an is_torchao_available patched by the sibling fix.
     namespace = getattr(original, "__globals__", None)
     if not isinstance(namespace, dict):
         namespace = {}
@@ -357,9 +346,7 @@ def _guard_peft_torchao_dispatcher(original):
                 raise
             classes, missing = _peft_torchao_tensor_subclasses()
             if not missing:
-                # The message named one of the two classes but both are there, so this came from
-                # somewhere else in the dispatcher and is a real failure. Redoing the dispatch
-                # would swallow it and re-run whatever construction already happened.
+                # Both classes exist, so this is a real failure; redoing the dispatch would hide it.
                 raise
         if not warned[0]:
             warned[0] = True
@@ -369,7 +356,7 @@ def _guard_peft_torchao_dispatcher(original):
                 f"{' and '.join(missing) or 'a tensor subclass'}, which peft's "
                 f"torchao LoRA dispatcher imports to run one isinstance check "
                 f"({message}), so that dispatcher raised for every LoRA layer. "
-                f"Studio now runs the same check against the subclasses this "
+                f"Unsloth now runs the same check against the subclasses this "
                 f"torchao does ship ({kept}), so weights of those types still get "
                 f"peft's torchao LoRA layer and everything else gets an ordinary "
                 f"one. Only weights of the removed subclass cannot be matched; "
@@ -383,6 +370,48 @@ def _guard_peft_torchao_dispatcher(original):
 
 _PEFT_LORA_DISPATCH_MODULE = "peft.tuners.lora.model"
 _PEFT_TORCHAO_GUARD_SENTINEL = "__unsloth_studio_peft_torchao_guard__"
+_PEFT_TORCHAO_LAYER_MODULE = "peft.tuners.lora.torchao"
+_PEFT_TORCHAO_MERGE_CALLBACK = "get_apply_tensor_subclass"
+# "0" keeps peft 0.19's required TorchaoLoraLinear(get_apply_tensor_subclass=...) keyword.
+_PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV = "UNSLOTH_STUDIO_PEFT_TORCHAO_OPTIONAL_CALLBACK"
+
+
+def _make_peft_torchao_merge_callback_optional():
+    """peft 0.19 requires TorchaoLoraLinear's requantisation callback, found only on a transformers hf_quantizer, so a
+    LoRA on torchao weights built any other way raised at injection; backport peft 0.20's None default."""
+    if (os.environ.get(_PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return False
+    module = sys.modules.get(_PEFT_TORCHAO_LAYER_MODULE)
+    layer = getattr(module, "TorchaoLoraLinear", None) if module is not None else None
+    original = getattr(layer, "__init__", None) if isinstance(layer, type) else None
+    if original is None or getattr(original, "__unsloth_patched__", False):
+        return False
+    try:
+        parameter = inspect.signature(original).parameters.get(_PEFT_TORCHAO_MERGE_CALLBACK)
+    except (TypeError, ValueError):
+        return False
+    if (
+        parameter is None
+        or parameter.kind is not parameter.KEYWORD_ONLY
+        or parameter.default is not parameter.empty
+    ):
+        return (
+            False  # peft <= 0.18 dispatches only its own torchao tensors; >= 0.20 has the default
+        )
+
+    @functools.wraps(original)
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault(_PEFT_TORCHAO_MERGE_CALLBACK, None)
+        original(self, *args, **kwargs)
+
+    __init__.__unsloth_patched__ = True
+    layer.__init__ = __init__
+    return True
 
 
 def _patch_peft_torchao_dispatchers():
@@ -437,6 +466,10 @@ class _PeftLoraDispatchLoader(importlib.abc.Loader):
             _patch_peft_torchao_dispatchers()
         except Exception:
             pass
+        try:
+            _make_peft_torchao_merge_callback_optional()
+        except Exception:
+            pass
 
     def __getattr__(self, attribute):
         return getattr(self._loader, attribute)
@@ -484,6 +517,10 @@ def install_peft_torchao_dispatch_guard():
     except Exception:
         return None
     if _PEFT_LORA_DISPATCH_MODULE in sys.modules:
+        try:
+            _make_peft_torchao_merge_callback_optional()
+        except Exception:
+            pass
         try:
             return _patch_peft_torchao_dispatchers()
         except Exception:

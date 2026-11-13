@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { isSafeNavigableSourceUrl } from "../src/features/chat/utils/document-citation-source.ts";
 
 // open-link.ts imports `@/lib/api-base`; load it as the web build (isTauri = false) with window.open recorded.
@@ -27,6 +27,20 @@ test("https: without slashes opens as a web link instead of navigating Studio's 
     ["https:evil.example/x", "https://evil.example/x"],
     ["https:\t//evil.example/x", "https://evil.example/x"],
     ["HTTP:evil.example", "http://evil.example/"],
+  ]) {
+    opened.length = 0;
+    assert.equal(openLink(href), true, href);
+    assert.deepEqual(opened, [expected], href);
+  }
+});
+
+test("protocol-relative links open as web links instead of navigating Studio's page", () => {
+  for (const [href, expected] of [
+    ["//evil.example/x", "https://evil.example/x"],
+    ["\\\\evil.example\\x", "https://evil.example/x"],
+    ["/\\evil.example/x", "https://evil.example/x"],
+    [" //evil.example/x", "https://evil.example/x"],
+    ["\u0001\t//evil.example/x ", "https://evil.example/x"],
   ]) {
     opened.length = 0;
     assert.equal(openLink(href), true, href);

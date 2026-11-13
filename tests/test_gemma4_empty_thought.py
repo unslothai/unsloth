@@ -25,7 +25,7 @@ def _load():
     wanted_assign = {
         "gemma4_template",
         "gemma4_thinking_template",
-        "_gemma4_model_turn",
+        "_gemma4_thinking_prompt_empty_thought",
         "gemma4_empty_thought_template",
         "GEMMA4_TEMPLATE_NAMES",
         "gemma4_empty_thought_ollama",
@@ -101,9 +101,16 @@ def test_ignores_missing_or_non_string_templates():
     assert not NS["_gemma4_wants_empty_thought"](None, _Holder(None), _Holder(123))
 
 
-def test_ignores_unsloth_thinking_template():
-    # Re-calling get_chat_template on an E2B tokenizer already carrying it must not switch.
+@pytest.mark.parametrize("older_release", [False, True])
+def test_ignores_unsloth_thinking_template(older_release):
+    # Re-calling get_chat_template on an E2B tokenizer carrying it, even from an older release, must not switch.
     tmpl = "{{ bos_token }}" + NS["gemma4_thinking_template"]
+    if older_release:
+        tmpl = tmpl.replace(
+            "{%- for message in loop_messages -%}",
+            "{#- older -#}{%- for message in loop_messages -%}",
+            1,
+        )
     assert not NS["_gemma4_wants_empty_thought"](_Holder(tmpl))
 
 
@@ -213,6 +220,42 @@ def test_only_model_turns_change():
     new = _render(NS["gemma4_empty_thought_template"], CONVO)
     old = _render(NS["gemma4_thinking_template"], CONVO)
     assert new.replace(EMPTY, "") == old
+
+
+def test_tool_round_gets_one_empty_channel_and_stays_a_prefix():
+    call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": {"x": 1}}}
+    msgs = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {"role": "assistant", "content": "Done."},
+    ]
+    out = _render(NS["gemma4_empty_thought_template"], msgs)
+    assert out == (
+        "<bos><|turn>user\nHi<turn|>\n"
+        f"<|turn>model\n{EMPTY}<|tool_call>call:f{{x:1}}<tool_call|>"
+        '<|tool_response>response:f{value:<|"|>ok<|"|>}<tool_response|>Done.<turn|>\n'
+    )
+    prompt = _render(NS["gemma4_empty_thought_template"], msgs[:3], add_generation_prompt = True)
+    assert out == prompt + "Done.<turn|>\n"
+
+
+def test_reasoning_after_a_tool_result_is_kept_and_stays_a_prefix():
+    call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": {"x": 1}}}
+    msgs = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {"role": "assistant", "content": "Done.", "reasoning_content": "r"},
+    ]
+    tmpl = NS["gemma4_empty_thought_template"]
+    out = _render(tmpl, msgs)
+    assert out.endswith("<tool_response|><|channel>thought\nr\n<channel|>Done.<turn|>\n")
+    assert out.count(EMPTY) == 1
+    full = _render(tmpl, msgs, enable_thinking = True)
+    prompt = _render(tmpl, msgs[:3], enable_thinking = True, add_generation_prompt = True)
+    assert prompt.endswith("<tool_response|><|channel>thought\n")
+    assert full.startswith(prompt)
 
 
 def test_roles_must_alternate_still_raises():

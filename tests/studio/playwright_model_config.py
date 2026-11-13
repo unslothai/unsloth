@@ -134,9 +134,8 @@ def _count(loc) -> int:
 
 
 def _as_int(value) -> int | None:
-    """Parse an input value to int, tolerating commas/whitespace. Comparisons
-    must be numeric, never substring: '40960' (a model's native default) would
-    spuriously "contain" '4096'."""
+    """Parses to int, tolerating commas and spaces; comparisons must be numeric, since '40960' would
+    spuriously contain '4096'."""
     if value is None:
         return None
     try:
@@ -259,8 +258,7 @@ with sync_playwright() as p:
         # A Load/Reload click is answered only by its /load; a flow stopping short goes quiet for 3 s.
         label = " ".join((btn.text_content() or "").split())
         expects_load = label in ("Load model", "Reload model")
-        # Snapshot after a Playwright call: request events only arrive during one, so a restore /load
-        # already sent would otherwise count as this click's.
+        # Snapshot before clicking, since requests are only seen during Playwright calls.
         started = _commits["started"]
         loads_before = len(_commits["loads"])
         clicked_at = time.monotonic()
@@ -362,8 +360,7 @@ with sync_playwright() as p:
         return [v for v in cfg.values() if isinstance(v, dict)]
 
     def entries_for_model(cfg: dict) -> list[dict]:
-        """Only entries keyed to this model and quant; all entries only if no key has the versioned
-        shape."""
+        """Entries keyed to this model and quant; all entries only if no key is versioned."""
         want = (_normalize_model_identity(GGUF_REPO), GGUF_VARIANT.strip().lower())
         recognised = [k for k in cfg if re.match(r"^v\d+:\[", str(k))]
         if not recognised:
@@ -518,8 +515,7 @@ with sync_playwright() as p:
     GEAR_ANY = 'button[aria-label^="Inference settings for" i]'
 
     def diagnose(name, selector):
-        """Capture a screenshot and JSON state on a miss, since a log line alone hides what was on
-        screen."""
+        """Screenshot and JSON state on a miss, since a log line hides what was on screen."""
         rows = []
         try:
             opts = page.locator("[data-model-picker-option]")
@@ -758,23 +754,16 @@ with sync_playwright() as p:
         else:
             default_ctx = ctx_in.input_value()
             info(f"default Context Length shown: {default_ctx!r}")
-            remember = popover.get_by_label("Remember for this model").first
-            if _count(remember):
-                try:
-                    remember.check()
-                except Exception:
-                    remember.click()
-            else:
-                fail("'Remember for this model' checkbox not found")
             ctx_in.click()
             ctx_in.fill(str(DISTINCT_CTX))
             expect(ctx_in).to_have_value(str(DISTINCT_CTX), timeout = 5_000)
+            # Enter commits the draft: an uncommitted value leaves Reload disabled on a loaded model.
+            ctx_in.press("Enter")
             shoot("05-ctx-set")
             btn = primary_button(popover)
             if btn is None:
                 fail("primary Load/Save button not found in run-settings")
             else:
-                # Keep the input focused: the click must commit the draft into the same load request.
                 click_and_wait_for_commit(btn, "context length Load")
                 shoot("06-after-load")
 
@@ -842,9 +831,9 @@ with sync_playwright() as p:
 
     # 3. Reset clears the override (never pins context) (HARD).
     step("reset clears the per-model override", LOAD_STEP_BUDGET_S)
-    reset_btn = popover.get_by_role("button", name = "Reset").first
+    reset_btn = popover.get_by_role("button", name = "Reset all", exact = True).first
     if _count(reset_btn) == 0:
-        fail("Reset button not found in run-settings")
+        fail("Reset all button not found in run-settings")
     else:
         try:
             reset_btn.click()
@@ -898,12 +887,6 @@ with sync_playwright() as p:
         # A skip is not a pass: this step is the only guard on the phantom-pin regression.
         soft_fail("re-type-shown did not run: Context Length input has no numeric default")
     else:
-        remember = popover.get_by_label("Remember for this model").first
-        if _count(remember):
-            try:
-                remember.check()
-            except Exception:
-                remember.click()
         ctx_in.click()
         ctx_in.fill(str(native_default))
         expect(ctx_in).to_have_value(str(native_default), timeout = 5_000)
@@ -966,12 +949,6 @@ with sync_playwright() as p:
                     toggled = True
                 except Exception:
                     pass
-            remember = popover.get_by_label("Remember for this model").first
-            if _count(remember):
-                try:
-                    remember.check()
-                except Exception:
-                    remember.click()
             btn = primary_button(popover)
             if btn is not None and btn.is_enabled():
                 click_and_wait_for_commit(btn, "advanced settings Load")
@@ -998,8 +975,7 @@ with sync_playwright() as p:
     _seed_marks = [0]
 
     def seed_legacy_for_next_document(seed: dict, *, wipe_migrated: bool) -> None:
-        """Seed via an init script on the next document; seeding the live page races its server
-        write-back."""
+        """Seed via init script on the next document; seeding live races the server write-back."""
         _seed_marks[0] += 1
         mark = f"__ui_modelcfg_seed_{_seed_marks[0]}"
         page.add_init_script(
@@ -1020,8 +996,7 @@ with sync_playwright() as p:
         )
 
     def clear_server_overrides_for_model() -> None:
-        """Also delete the server override rows: opening the panel writes them back over the
-        migrated value."""
+        """Also clear server overrides, else the panel writes them over the migrated value."""
         # Normalise model and quant separately: normalizeModelIdentity keeps a POSIX path's case.
         want_model = _normalize_model_identity(GGUF_REPO)
         want_quant = GGUF_VARIANT.strip().lower()
@@ -1036,8 +1011,7 @@ with sync_playwright() as p:
             )
 
         def rows_for_model() -> list[str] | None:
-            """Override rows for this model, or None when the read failed; a failed fetch is not an
-            empty list."""
+            """Override rows for this model; None on a failed read, never an empty list."""
             resp = evaluate_fetch(
                 page,
                 f"{BASE}/api/settings/openai-auto-switch/overrides",
@@ -1207,8 +1181,7 @@ with sync_playwright() as p:
         soft_fail(f"migration idempotency check errored: {e}")
 
     # ─────────────────────────────────────────────────────
-    # 6. Hub Run keeps its run settings on a page loaded at /hub (HARD).
-    #    Run mounts Chat there, and the new composer's autofocus used to dismiss them.
+    # Hub Run settings must survive on a /hub page; composer autofocus once dismissed them.
     # ─────────────────────────────────────────────────────
     step("Hub Run opens run settings on a page loaded at /hub")
     try:

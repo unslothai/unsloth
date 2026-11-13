@@ -1,11 +1,7 @@
-# Model defaults for unsloth/codegemma-7b-bnb-4bit
-# Based on CodeGemma_(7B)-Conversational.ipynb
 # Also applies to: unsloth/codegemma-7b, google/codegemma-7b
-# added inference parameters from Ollama
 
 training:
   max_seq_length: 4096
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 1

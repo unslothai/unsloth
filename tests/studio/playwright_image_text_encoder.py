@@ -11,6 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import expect, sync_playwright
 
+from _playwright_robust import follow_os_reduced_motion
+
 from playwright_image_model_footprint import BASE_URL, REPO_ID, _api_payload, _json, klein_row
 
 # A refusal (value "off", status "fell_back"): the only shape the echoing stub cannot produce.
@@ -56,6 +58,9 @@ def main():
                 base_repo = "black-forest-labs/FLUX.2-klein-4B",
                 family = "flux.2-klein",
                 model_kind = "gguf",
+                # Status echoes the loaded checkpoint; reapplyTarget (engine-choice.ts, 14232)
+                # reloads the last pick only while it matches status.
+                gguf_filename = loads[-1].get("gguf_filename"),
                 dtype = "bfloat16",
                 text_encoder_quant = value,
                 resolved = {
@@ -83,6 +88,7 @@ def main():
         context = browser.new_context(
             viewport = {"width": 1440, "height": 1000}, reduced_motion = "reduce"
         )
+        follow_os_reduced_motion(context)
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');"
             "localStorage.setItem('unsloth_download_transport', 'http');"
@@ -157,6 +163,9 @@ def main():
                     },
                 )
             elif path == "/api/inference/images/load":
+                # A GGUF pick always names its file, and the status stub echoes it as the backend's does.
+                if not payload.get("gguf_filename"):
+                    errors.append(f"a GGUF load without gguf_filename: {payload}")
                 loads.append(payload)
                 state["loaded"] = True
                 _json(route, status())

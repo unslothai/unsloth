@@ -2,11 +2,9 @@ name: 'Inactive Issue Pinger'
 
 on:
   schedule:
-    - cron: '30 5 * * *' # Runs at 5:30 UTC every day
+    - cron: '30 5 * * *'
 
-# Serialize, never cancel. This job comments on up to 500 issues per run, so a
-# cancelled run leaves a half-pinged backlog and no record of where it stopped.
-# Two runs overlapping would double-ping the same issues.
+# Serialize, never cancel: a cancelled run leaves a half-pinged backlog; overlap double-pings.
 concurrency:
   group: stale-${{ github.repository }}
   cancel-in-progress: false
@@ -20,25 +18,18 @@ jobs:
     steps:
       - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93  # v11.0.0
         with:
-          # The message to post on stale issues.
-          # This message will ping the issue author.
-          # Note: The stale bot action does not currently support a direct placeholder for the last commenter.
-          # As a workaround, this message encourages any participant to reply.
+          # Pings the author; the action has no placeholder for the last commenter.
           stale-issue-message: >
             Is this issue still important to you?
             Apologies in advance we might have missed this issue as well.
             For faster response times, please post on our Reddit server - https://www.reddit.com/r/unsloth or our Discord - https://discord.com/invite/unsloth 
 
-          # The number of days of inactivity before an issue is considered stale.
           days-before-issue-stale: 9999
 
-          # Set to -1 to never close stale issues.
           days-before-issue-close: -1
 
-          # A label to apply to stale issues.
           stale-issue-label: 'inactive'
 
-          # The number of operations to perform per run to avoid rate limiting.
           operations-per-run: 500
 
           enable-statistics: false

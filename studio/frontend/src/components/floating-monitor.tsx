@@ -1,13 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  FLOATING_PANEL_POSITION_KEYS,
+  type ResizeEdges,
+} from "@/hooks/floating-panel-position";
 import { useFloatingPanelLayout } from "@/hooks/use-floating-panel-layout";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 
-import { useMonitorOverlayStore } from "@/features/settings";
+import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
+import { monitorRefreshMs } from "./monitor-refresh";
+import { holdsModelsInVram, vramCards } from "./monitor-cards";
+import {
+  formatGiB,
+  MeterRow,
+  MemoryShareBar,
+  UsageBar,
+  usageIndicatorClass,
+  usageTextClass,
+} from "./monitor-memory";
+import { inferenceGpuDisjoint, poolSplit } from "./monitor-share";
+import type { LoadedModelEntry } from "@/features/loaded-models";
+import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { useChatSettingsWidth } from "@/hooks/use-chat-settings-width";
@@ -22,9 +39,15 @@ import {
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import { useRouterState } from "@tanstack/react-router";
-import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import {
   formatPower,
@@ -39,29 +62,12 @@ import {
   getFloatingMonitorLayout,
 } from "./floating-monitor-layout";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { Cancel01Icon, DragDropVerticalIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
-}
-
-function usageIndicatorClass(percent: number): string {
-  if (percent >= 90) {
-    return "bg-destructive";
-  }
-  if (percent >= 70) {
-    return "bg-amber-500";
-  }
-  return "bg-control-accent";
-}
-
-function usageTextClass(percent: number): string {
-  if (percent >= 90) {
-    return "text-destructive";
-  }
-  if (percent >= 70) {
-    return "text-amber-600 dark:text-amber-400";
-  }
-  return "text-primary";
 }
 
 const LEVEL_INDICATOR_CLASS = {
@@ -91,9 +97,9 @@ function DetailBar({
 }) {
   return (
     <div className="space-y-0.5">
-      <div className="flex justify-between gap-2 text-xs font-mono text-muted-foreground">
+      <div className="flex justify-between gap-2 text-xs text-muted-foreground">
         <span className="truncate">{label}</span>
-        <span className={cn("shrink-0 tabular-nums", textClassName)}>
+        <span className={cn("shrink-0 font-mono tabular-nums", textClassName)}>
           {value}
         </span>
       </div>
@@ -106,12 +112,28 @@ function DetailBar({
   );
 }
 
-function formatGiB(value: number): string {
-  // RAM/VRAM come from the backend in binary units (bytes / 1024**3), matching
-  // nvidia-smi and PyTorch, so label the readout GiB rather than GB.
-  const digits = value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} GiB`;
-}
+const MonitorLoadedModels = lazy(() => import("./monitor-loaded-models"));
+
+const BACKGROUND_DRAG_EXCLUDED =
+  'button, a, input, select, textarea, [role="button"], [data-testid="floating-monitor-resize"]';
+
+const RESIZE_HANDLES: { edge: string; edges: ResizeEdges; className: string }[] = [
+  { edge: "w", edges: { x: -1, y: 0 }, className: "inset-y-0 left-0 w-1.5 cursor-ew-resize" },
+  { edge: "e", edges: { x: 1, y: 0 }, className: "inset-y-0 right-0 w-1.5 cursor-ew-resize" },
+  { edge: "nw", edges: { x: -1, y: -1 }, className: "left-0 top-0 z-20 size-3 cursor-nwse-resize" },
+  { edge: "se", edges: { x: 1, y: 1 }, className: "bottom-0 right-0 z-20 size-5 cursor-nwse-resize" },
+  { edge: "ne", edges: { x: 1, y: -1 }, className: "right-0 top-0 z-20 size-3 cursor-nesw-resize" },
+  { edge: "sw", edges: { x: -1, y: 1 }, className: "bottom-0 left-0 z-20 size-5 cursor-nesw-resize" },
+];
+
+const MONITOR_RESIZE = {
+  minWidth: 232,
+  maxWidth: 520,
+  // w-64, in the root font size Studio's text scale sets.
+  defaultWidth: () =>
+    16 * Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+  storageKey: FLOATING_PANEL_POSITION_KEYS.liveMonitorWidth,
+};
 
 interface FloatingMonitorPanelProps {
   dockedBesideRunSettings: boolean;
@@ -120,7 +142,6 @@ interface FloatingMonitorPanelProps {
   onRenderedWidth: (width: number) => void;
   suppressed: boolean;
   systemInfo: ReturnType<typeof useSystemInfo>;
-  /** The live `--ui-space-scale`; the resize handle's clearance follows it. */
   uiSpaceScale: number;
 }
 function FloatingMonitorPanel({
@@ -135,6 +156,7 @@ function FloatingMonitorPanel({
   const t = useT();
   const [constraintsElement, setConstraintsElement] =
     useState<HTMLDivElement | null>(null);
+  const cornerCard = useCornerCardFrameStore((state) => state.frame);
   const {
     monitorRef,
     scrollRef,
@@ -143,14 +165,24 @@ function FloatingMonitorPanel({
     startDrag,
     updateDrag,
     finishDrag,
+    resetPosition,
+    nudge,
+    width,
+    startResize,
+    updateResize,
+    finishResize,
+    resetWidth,
   } = useFloatingPanelLayout(
     constraintsElement,
     dockedBesideRunSettings || suppressed,
     suppressed,
+    undefined,
+    FLOATING_PANEL_POSITION_KEYS.liveMonitor,
+    cornerCard,
+    MONITOR_RESIZE,
   );
 
-  // offsetWidth, not the bounding rect: the panel animates in from scale 0.94, and
-  // a rect read through that transform is short of the width it settles at.
+  // offsetWidth, not the bounding rect: a drag's transform skews the rect.
   useEffect(() => {
     const monitor = monitorRef.current;
     if (!monitor) {
@@ -166,8 +198,6 @@ function FloatingMonitorPanel({
   const zIndex = useFloatingPanelZIndex("resource-monitor");
   const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
 
-  // Opening the monitor puts it in front of the API monitor panel; touching
-  // either afterwards brings that one forward instead.
   useEffect(() => {
     raisePanel("resource-monitor");
   }, [raisePanel]);
@@ -176,6 +206,9 @@ function FloatingMonitorPanel({
   const ramAvailable = systemInfo.memory?.available_gb ?? 0;
   const ramUsed = Math.max(0, ramTotal - ramAvailable);
   const ramPercent = clampPercent(systemInfo.memory?.percent_used ?? 0);
+  // The placeholder's zeros are not a reading: loading or a failed first request shows "--".
+  const ramKnown = systemInfo.status === "ready";
+  const stale = systemInfo.stale === true;
 
   const displayedGpu = systemInfo.gpu?.available
     ? systemInfo.gpu
@@ -193,16 +226,14 @@ function FloatingMonitorPanel({
     : 0;
   const devices = memoryDisplay.usageDevices;
   const memoryTotals = gpuMemoryTotalsGb(devices);
-  const vramTotal = memoryTotals.total;
   const hasSharedPool = memoryTotals.shared > 0;
+  // No dedicated pool (Apple unified memory): the shared total alone is the capacity.
+  const unifiedPool = hasSharedPool && memoryTotals.dedicated === 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
   const resolvedVramUsed = resolveGpuVramUsedGb(memoryDisplay.usageGpu);
   const vramUsageKnown = resolvedVramUsed !== null;
   const vramUsed = resolvedVramUsed ?? 0;
-  const vramPercent = clampPercent(
-    vramUsageKnown && vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
-  );
   const unknownLabel = t("settings.resources.environment.unknown");
 
   const showDetails = useMonitorOverlayStore((state) => state.showDetails);
@@ -210,10 +241,9 @@ function FloatingMonitorPanel({
     (state) => state.detailMetrics,
   );
   const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
-  const cpuPercent =
-    showDetails && detailMetrics.has("cpuLoad") && systemInfo.status === "ready"
-      ? clampPercent(systemInfo.cpu?.usage_percent ?? 0)
-      : null;
+  const cpuPercent = ramKnown
+    ? clampPercent(systemInfo.cpu?.usage_percent ?? 0)
+    : null;
   const telemetryRows =
     showDetails && displayedGpu?.available
       ? gpuTelemetryRows(displayedGpu.devices, detailMetrics)
@@ -222,20 +252,63 @@ function FloatingMonitorPanel({
   const hasGpu =
     (displayedGpu?.available ?? false) &&
     (displayedGpu?.devices.length ?? 0) > 0;
+  // Apple unified memory: RAM and "VRAM" are one pool, so two bars contradict each other.
+  const unifiedRow =
+    hasGpu &&
+    devices.length > 0 &&
+    unifiedPool &&
+    memoryDisplay.sharedDevices.length === 0;
+  const discreteVram = hasGpu && devices.length > 0 && !unifiedRow;
+  const vram = vramCards(devices, memoryDisplay.usageGpu);
+  const cardsUsedKnown = vram.usedGb !== null;
+  const cardsUsed = vram.usedGb ?? 0;
+  const cardsPercent = clampPercent(
+    cardsUsedKnown && vram.totalGb > 0 ? (cardsUsed / vram.totalGb) * 100 : 0,
+  );
+  // An APU's carve-out shows as VRAM, but its models count in RAM, as in Settings.
+  const modelsInVram = discreteVram && holdsModelsInVram(vram.cards);
+  const cardLabel =
+    vram.cards.length === 1 ? (vram.cards[0]?.name ?? undefined) : undefined;
+
+  const showShare = useMonitorOverlayStore((state) => state.showUnslothShare);
+  const showBreakdown = useMonitorOverlayStore(
+    (state) => state.showModelBreakdown,
+  );
+  const wantsModels = showShare || showBreakdown;
+  const [loadedModels, setLoadedModels] = useState<LoadedModelEntry[]>([]);
+  const processMb =
+    systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
+  const split = poolSplit({
+    entries: loadedModels,
+    showShare,
+    showBreakdown,
+    modelsInVram,
+    inferenceGpuElsewhere: inferenceGpuDisjoint(
+      systemInfo.gpu?.backend,
+      separateInferenceGpu?.backend,
+    ),
+    processGb: ramKnown && processMb !== undefined ? processMb / 1024 : null,
+    ramUsedGb: ramUsed,
+    ramTotalGb: ramTotal,
+    vramUsedGb: vram.usedGb,
+    vramTotalGb: vram.totalGb,
+  });
+  const ramSegments = split.ram;
+  const vramSegments = split.vram;
+  const ramAmount = ramKnown
+    ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
+    : "-- / --";
 
   // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
-  // is anchored to that same corner and does not move for this monitor, so the two can overlap. The
-  // stack is passive status; this is a window being dragged, resized and closed, so it wins. Still
-  // below the startup screen and tooltips. See lib/z-layers. The API monitor panel shares this
-  // layer rather than sitting under it, and whichever of the two the user touched last is the one
-  // in front.
+  // is anchored to that same corner and does not move for this monitor; at its default corner the
+  // monitor rests above the Loaded models card instead (useCornerCardFrameStore), and anywhere it
+  // overlaps it wins, since this is a window being dragged, resized and closed. Still below the
+  // startup screen and tooltips. See lib/z-layers. The API monitor panel shares this layer rather
+  // than sitting under it, and whichever of the two the user touched last is the one in front.
   return (
     <div
       ref={setConstraintsElement}
-      // The panel stays mounted while suppressed: the settings sheet is a
-      // temporary overlay, and unmounting would throw away the position and the
-      // browser-owned resize dimensions the user set. `invisible` keeps the box
-      // (and the observers watching it) while taking it off the screen.
+      // Stays mounted while suppressed so the user's position and resize dimensions survive.
       aria-hidden={suppressed || undefined}
       className={cn(
         "pointer-events-none fixed inset-y-4 left-4",
@@ -253,16 +326,45 @@ function FloatingMonitorPanel({
         {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
         ref={monitorRef}
         onPointerDownCapture={() => raisePanel("resource-monitor")}
+        // The whole card is a grip; controls, resize edges and the grip itself keep their own pointer.
+        onPointerDown={(event) => {
+          if (
+            event.target instanceof Element &&
+            event.target.closest(BACKGROUND_DRAG_EXCLUDED)
+          ) {
+            return;
+          }
+          // A classic scrollbar sits inside the scroller's box but right of its client area.
+          const target = event.target as HTMLElement;
+          if (event.nativeEvent.offsetX > target.clientWidth && target.clientWidth > 0) {
+            return;
+          }
+          startDrag(event);
+        }}
+        onPointerMove={updateDrag}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+        onLostPointerCapture={finishDrag}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0",
-          layout ? "top-0 left-0 resize" : "right-0 bottom-0",
+          // transition-none: reduce motion's 0.01ms duration otherwise turns the drop's transform to
+          // left/top handoff into a transition, and the compositor paints a frame at the start spot.
+          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 transition-none max-w-full cursor-grab select-none active:cursor-grabbing flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
+          layout ? "top-0 left-0" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
         // Takes its own clicks over a macOS browser page (native-view.ts).
         data-native-clickable=""
+        // biome-ignore lint/a11y/useSemanticElements: a floating panel landmark on the shared layout hook's div.
+        role="region"
+        aria-label={t("settings.resources.liveMonitor.title")}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || event.defaultPrevented) return;
+          event.preventDefault();
+          onClose();
+        }}
         style={
           layout
             ? {
@@ -272,28 +374,66 @@ function FloatingMonitorPanel({
                 minHeight: Math.min(layout.minHeight, layout.maxHeight),
                 maxWidth: layout.maxWidth,
                 maxHeight: layout.maxHeight,
+                width: width ?? undefined,
               }
-            : undefined
+            : { width: width ?? undefined }
         }
       >
+        {wantsModels && !suppressed && (
+          <Suspense fallback={null}>
+            <MonitorLoadedModels onEntries={setLoadedModels} />
+          </Suspense>
+        )}
+        {RESIZE_HANDLES.map(({ edge, edges, className }) => (
+          <div
+            key={edge}
+            aria-hidden
+            data-testid="floating-monitor-resize"
+            data-edge={edge}
+            title={t("floatingPanels.monitor.resizeHint")}
+            onPointerDown={(event) => startResize(event, edges)}
+            onPointerMove={updateResize}
+            onPointerUp={finishResize}
+            onPointerCancel={finishResize}
+            onLostPointerCapture={finishResize}
+            onDoubleClick={resetWidth}
+            className={cn("absolute z-10 touch-none", className)}
+          />
+        ))}
         <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
-            <CpuIcon className="size-3.5 shrink-0 text-primary" />
+            <HugeiconsIcon icon={ChipIcon} strokeWidth={2} className="size-3.5 shrink-0 text-primary" />
             <span className="truncate">
               {t("settings.resources.liveMonitor.title")}
             </span>
+            {stale && (
+              <span
+                className="truncate font-normal text-muted-foreground"
+                aria-live="polite"
+                data-testid="floating-monitor-stale"
+              >
+                {t("floatingPanels.monitor.reconnecting")}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
             <div
               data-testid="floating-monitor-drag-handle"
+              // biome-ignore lint/a11y/useSemanticElements: a pointer-captured drag grip, not a pressable control.
+              role="button"
+              tabIndex={0}
+              aria-label={t("floatingPanels.monitor.dragHandleLabel")}
+              title={t("floatingPanels.monitor.dragHandleLabel")}
               onPointerDown={startDrag}
               onPointerMove={updateDrag}
               onPointerUp={finishDrag}
               onPointerCancel={finishDrag}
               onLostPointerCapture={finishDrag}
-              className="touch-none cursor-grab rounded-md px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground active:cursor-grabbing"
+              onDoubleClick={resetPosition}
+              onKeyDown={(event) => void nudge(event)}
+              className="touch-none cursor-grab rounded-full px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
             >
-              <GripVerticalIcon className="size-3.5" />
+              <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={1.75} className="size-3.5" />
             </div>
 
             <Button
@@ -304,7 +444,7 @@ function FloatingMonitorPanel({
               title={t("common.close")}
               aria-label={t("common.close")}
             >
-              <XIcon className="size-3" />
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
             </Button>
           </div>
         </div>
@@ -313,69 +453,112 @@ function FloatingMonitorPanel({
           <div
             ref={contentRef}
             data-testid="floating-monitor-content"
-            className="space-y-3"
+            className={cn("space-y-3 transition-opacity", stale && "opacity-50")}
           >
-            <div className="space-y-1">
-              <div className="flex justify-between text-ui-11 font-medium font-mono">
-                <span>{t("settings.resources.liveMonitor.ram")}</span>
-                <span
-                  className={cn("tabular-nums", usageTextClass(ramPercent))}
-                >
-                  {Math.round(ramPercent)}%
-                </span>
-              </div>
-              <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                {formatGiB(ramUsed)} / {formatGiB(ramTotal)}
-              </div>
-              <Progress
-                value={ramPercent}
-                className="mt-1 h-1.5 rounded-full bg-muted"
-                indicatorClassName={usageIndicatorClass(ramPercent)}
-              />
-            </div>
-
-            {hasGpu && devices.length > 0 && (
-              <div className="space-y-1">
-                <div className="flex justify-between text-ui-11 font-medium font-mono">
-                  <span className="truncate flex-1 pr-2">
-                    {t("settings.resources.liveMonitor.vram")}{" "}
-                    {devices.length > 1
-                      ? `(${devices.length} GPUs)`
-                      : `(${devices[0].name ?? "GPU"})`}
-                  </span>
-                  <span
-                    className={cn(
-                      "shrink-0 tabular-nums",
-                      vramUsageKnown
-                        ? usageTextClass(vramPercent)
-                        : "text-muted-foreground",
-                    )}
-                  >
-                    {vramUsageKnown ? `${Math.round(vramPercent)}%` : "--"}
-                  </span>
-                </div>
-                <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                  {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
-                  {hasSharedPool
-                    ? t("settings.resources.environment.vramWithShared", {
-                        vram: formatGiB(memoryTotals.dedicated),
-                        shared: formatGiB(memoryTotals.shared),
-                      })
-                    : formatGiB(vramTotal)}
-                </div>
-                <Progress
-                  value={vramUsageKnown ? vramPercent : 0}
-                  className="mt-1 h-1.5 rounded-full bg-muted"
-                  indicatorClassName={usageIndicatorClass(vramPercent)}
+            <MeterRow
+              testId="floating-monitor-cpu"
+              label={t("settings.resources.liveMonitor.cpu")}
+              readout={cpuPercent === null ? "--" : `${Math.round(cpuPercent)}%`}
+              readoutClassName={
+                cpuPercent === null ? undefined : usageTextClass(cpuPercent)
+              }
+            >
+              <UsageBar percent={cpuPercent} />
+            </MeterRow>
+            <MeterRow
+              testId={unifiedRow ? "floating-monitor-memory" : "floating-monitor-ram"}
+              label={
+                unifiedRow
+                  ? t("settings.resources.liveMonitor.memory")
+                  : t("settings.resources.liveMonitor.ram")
+              }
+              readout={ramAmount}
+              footer={
+                unifiedRow &&
+                !ramSegments && (
+                  <>
+                    <div className="flex justify-between gap-2">
+                      <span>{t("settings.resources.liveMonitor.gpuInUse")}</span>
+                      <span className="shrink-0 font-mono tabular-nums">
+                        {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel}
+                      </span>
+                    </div>
+                    {memoryDisplay.unifiedAvailableGb !== null && (
+                        <div className="flex justify-between gap-2">
+                          <span>
+                            {t("settings.resources.liveMonitor.availableForModels")}
+                          </span>
+                          <span className="shrink-0 font-mono tabular-nums">
+                            {formatGiB(memoryDisplay.unifiedAvailableGb)}
+                          </span>
+                        </div>
+                      )}
+                  </>
+                )
+              }
+            >
+              {ramSegments ? (
+                <MemoryShareBar
+                  segments={ramSegments}
+                  noModels={!modelsInVram && split.noModels}
                 />
-              </div>
+              ) : (
+                <UsageBar percent={ramKnown ? ramPercent : null} />
+              )}
+            </MeterRow>
+            {/* One card, an aggregate the cards cannot split, or the share on: one VRAM row over every card. */}
+            {discreteVram && (vram.showTotal || vramSegments) && (
+              <MeterRow
+                testId="floating-monitor-vram"
+                label={t("settings.resources.liveMonitor.vram")}
+                readout={`${cardsUsedKnown ? formatGiB(cardsUsed) : "--"} / ${formatGiB(vram.totalGb)}`}
+                footer={
+                  cardLabel && (
+                    <div className="truncate" title={cardLabel}>
+                      {cardLabel}
+                    </div>
+                  )
+                }
+              >
+                {vramSegments ? (
+                  <MemoryShareBar
+                    segments={vramSegments}
+                    noModels={split.noModels}
+                  />
+                ) : (
+                  <UsageBar percent={cardsUsedKnown ? cardsPercent : null} />
+                )}
+              </MeterRow>
             )}
+            {/* Several cards: each is a row of its own, the same size as the rest. */}
+            {discreteVram &&
+              vram.rows.map((row) => {
+                const percent =
+                  row.usedGb !== null && row.totalGb > 0
+                    ? clampPercent((row.usedGb / row.totalGb) * 100)
+                    : null;
+                return (
+                  <MeterRow
+                    key={row.key}
+                    testId="floating-monitor-gpu-card"
+                    label={row.label}
+                    readout={`${row.usedGb === null ? "--" : formatGiB(row.usedGb)} / ${formatGiB(row.totalGb)}`}
+                    footer={
+                      <div className="truncate" title={row.title}>
+                        {row.name}
+                      </div>
+                    }
+                  >
+                    <UsageBar percent={percent} />
+                  </MeterRow>
+                );
+              })}
             {hasGpu && memoryDisplay.sharedDevices.length > 0 && (
               <div className="space-y-1 text-xs">
                 <div className="font-medium">
                   {t("settings.resources.gpu.sharedWithSystemRam")}
                 </div>
-                <div className="font-mono text-muted-foreground">
+                <div className="font-mono tabular-nums text-muted-foreground">
                   {t("settings.resources.gpu.estimatedAvailable", {
                     value:
                       memoryDisplay.sharedAvailableGb === null
@@ -390,7 +573,7 @@ function FloatingMonitorPanel({
                 <span className="block font-medium text-muted-foreground">
                   {t("settings.resources.gpu.ggufInference")}
                 </span>
-                <span className="block font-mono text-foreground">
+                <span className="block text-foreground">
                   {separateInferenceGpu.backend?.toUpperCase() ?? "GPU"}
                   {separateInferenceGpu.available ? (
                     inferenceVramTotal ? (
@@ -418,27 +601,13 @@ function FloatingMonitorPanel({
                 </span>
               </div>
             )}
-            {cpuPercent !== null && (
-              <div
-                className="border-t border-border/60 pt-2"
-                data-testid="floating-monitor-cpu"
-              >
-                <DetailBar
-                  label={t("settings.resources.liveMonitor.cpuLoad")}
-                  value={`${Math.round(cpuPercent)}%`}
-                  percent={cpuPercent}
-                  indicatorClassName={usageIndicatorClass(cpuPercent)}
-                  textClassName={usageTextClass(cpuPercent)}
-                />
-              </div>
-            )}
             {telemetryRows.map((row) => (
               <div
                 key={row.key}
                 className="space-y-1.5 border-t border-border/60 pt-2"
                 data-testid="floating-monitor-gpu-details"
               >
-                <div className="truncate text-ui-11 font-medium font-mono">
+                <div className="truncate text-xs font-medium text-foreground">
                   {row.name}
                 </div>
                 {row.loadPct !== null && (
@@ -473,11 +642,11 @@ function FloatingMonitorPanel({
                       textClassName={usageTextClass(row.powerPct)}
                     />
                   ) : (
-                    <div className="flex justify-between gap-2 text-xs font-mono text-muted-foreground">
+                    <div className="flex justify-between gap-2 text-xs text-muted-foreground">
                       <span className="truncate">
                         {t("settings.resources.liveMonitor.power")}
                       </span>
-                      <span className="shrink-0 tabular-nums text-primary">
+                      <span className="shrink-0 font-mono tabular-nums text-primary">
                         {formatPower(row.powerDrawW, null)}
                       </span>
                     </div>
@@ -497,17 +666,12 @@ export function FloatingMonitor() {
   const settingsPanelOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isMobile = useIsMobile();
-  // The panel's own rendered width: it is user-resizable from 248 to 560 px, so the
-  // docked offset has to come from the same value the panel paints at.
   const { width: committedSettingsWidth } = useChatSettingsWidth();
   const { pinned } = useSidebarPin();
   const { width: committedSidebarWidth } = useSidebarWidth();
   const isChatRoute = pathname === "/chat";
 
-  // Dragging the panel's edge paints `--chat-settings-width` straight onto the
-  // <aside> and commits to the store only on pointer up, so the store trails the
-  // panel by a whole drag. The monitor has to clear what is on screen, so it
-  // follows the painted width and falls back to the committed one.
+  // Dragging paints `--chat-settings-width` and commits only on pointer up; follow the painted width.
   const [paintedSettingsWidth, setPaintedSettingsWidth] = useState(0);
   useEffect(() => {
     if (!(isOpen && isChatRoute && settingsPanelOpen)) {
@@ -530,12 +694,9 @@ export function FloatingMonitor() {
     return () => observer.disconnect();
   }, [isOpen, isChatRoute, settingsPanelOpen, isMobile]);
 
-  // Same lag as the settings panel: the sidebar paints per frame and commits
-  // on release, so a docked monitor could sit under a grown sidebar.
+  // The sidebar paints per frame and commits on release, so track painted width for docking.
   const [paintedSidebarWidth, setPaintedSidebarWidth] = useState(0);
-  // Unpinning still holds the collapsed icon rail as a column on the web shell;
-  // `collapseToZero` is desktop-app only, and that rail is the one unpinned
-  // state that takes the monitor's room.
+  // The web shell's collapsed icon rail still holds a column when unpinned.
   const [sidebarHoldsRail, setSidebarHoldsRail] = useState(false);
   useEffect(() => {
     const sidebar = isOpen ? document.querySelector('[data-slot="sidebar"]') : null;
@@ -558,9 +719,7 @@ export function FloatingMonitor() {
     return () => observer.disconnect();
   }, [isOpen, isMobile]);
 
-  // `useIsMobile` only notifies when the 768 px breakpoint is crossed, and the
-  // two width stores stop notifying at their maxima, so the capacity decision
-  // needs its own subscription or a plain resize never re-evaluates it.
+  // useIsMobile and the width stores do not notify on every resize, so subscribe directly.
   const viewportWidth = useSyncExternalStore(
     (onChange) => {
       window.addEventListener("resize", onChange);
@@ -574,13 +733,9 @@ export function FloatingMonitor() {
     paintedSettingsWidth > 0 ? paintedSettingsWidth : committedSettingsWidth;
   const pinnedSidebarWidth =
     paintedSidebarWidth > 0 ? paintedSidebarWidth : committedSidebarWidth;
-  // A pinned sidebar holds its column; an unpinned one overlays the content, but
-  // the web shell still paints its collapsed icon rail as a column, so reserve
-  // that measured rail while it really is one.
   const unpinnedSidebarWidth = sidebarHoldsRail ? paintedSidebarWidth : 0;
   const sidebarWidth = pinned ? pinnedSidebarWidth : unpinnedSidebarWidth;
-  // The panel is natively resizable, so what it renders is what docking has to
-  // reserve. Before the first measure the constant is the floor.
+  // The panel is resizable, so dock using its measured width; the constant is the floor.
   const [monitorWidth, setMonitorWidth] = useState(FLOATING_MONITOR_WIDTH);
   const { visible, suppressed, dockedBesideRunSettings } =
     getFloatingMonitorLayout({
@@ -594,13 +749,18 @@ export function FloatingMonitor() {
       monitorWidth,
       uiSpaceScale,
     });
-  const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });
+  const refreshMs = useMonitorOverlayStore((state) =>
+    monitorRefreshMs(state.refreshMs),
+  );
+  const systemInfo = useSystemInfo({
+    enabled: visible,
+    pollMs: refreshMs,
+    gpuFollowsPoll: true,
+  });
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
-  // Each visible panel owns native inline resize state. Advance the key on
-  // close so reopening during the exit animation still mounts fresh geometry.
-  // Docking and the mobile yield are not closes, so they do not advance it.
+  // Advance the key on close so reopening mid-exit mounts a fresh panel.
   useEffect(() => {
     if (wasOpenRef.current && !isOpen) {
       setPanelKey((current) => current + 1);
@@ -613,9 +773,7 @@ export function FloatingMonitor() {
       {(visible || suppressed) && (
         <FloatingMonitorPanel
           key={panelKey}
-          // The mobile sheet covers the panel rather than closing it, so the
-          // panel is kept mounted and invisible: the position and the size the
-          // user set survive the sheet being opened and closed.
+          // The mobile sheet covers, not closes, the panel, so position and size survive.
           suppressed={suppressed}
           dockedBesideRunSettings={dockedBesideRunSettings}
           settingsWidth={settingsWidth}

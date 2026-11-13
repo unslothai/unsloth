@@ -220,60 +220,16 @@ class TestExplicitIndexPinIsHonoured:
             )
 
 
-class TestWindowsArm64GetsNoVulkanAdvice:
-    """studio/setup.ps1 THROWS when the Vulkan variable is set on Windows ARM64 (no
-    bundle is published there), so telling an ARM64 user to set it and re-run aborts
-    the update instead of enabling GGUF acceleration."""
-
-    def test_the_throw_this_depends_on_is_still_there(self):
-        src = _normalised(_SETUP_PS1)
-        assert (
-            "no Windows ARM64 Vulkan bundle is published" in src
-        ), "the ARM64 guard this test is built on was renamed; re-read setup.ps1"
-
-    # setup.ps1 runs the Python stack before its own throw, so its setter is the last advice seen.
-    @pytest.mark.parametrize(
-        "path,guard",
-        [
-            (_INSTALL_PS1, "Get-HostMachineArch"),
-            (_SETUP_PS1, "Get-HostMachineArch"),
-            (_STACK_PY, "_is_windows_arm64"),
-        ],
-        ids = lambda p: getattr(p, "name", p),
-    )
-    def test_every_vulkan_offer_is_behind_an_arch_check(self, path, guard):
-        lines = _normalised(path).splitlines()
-        offers = [
-            i
-            for i, line in enumerate(lines)
-            if _SETTER[path.name] in line and not line.lstrip().startswith("#")
-        ]
-        assert offers, f"{path.name}: no Vulkan offer found"
-        for i in offers:
-            # Check the resolver itself: a hardcoded $unsupArm64 = $false mutant survived a name check.
-            back = "\n".join(lines[max(i - 20, 0) : i])
-            assert guard in back, (
-                f"{path.name}:{i + 1}: offers the Vulkan variable without checking for "
-                f"Windows ARM64, where setting it throws:\n{back}"
-            )
-
-
 class TestPythonStackWindowsArm64:
-    """The Windows WMI path prints the same Vulkan advice as install.ps1, and the same
-    ARM64 throw applies to it: setup.ps1 rejects the variable there."""
+    """The Windows WMI path prints the same Vulkan advice as install.ps1. ARM64 gets it
+    too: releases ship a Windows ARM64 Vulkan bundle, and setup.ps1 accepts the variable."""
 
-    def test_arm64_gets_a_source_build_note_instead_of_the_setter(self):
-        _arch, out = _wmi_detect(["AMD Radeon RX 580"], arm64 = True)
+    @pytest.mark.parametrize("arm64", [False, True], ids = ["x64", "arm64"])
+    def test_every_arch_gets_the_setter(self, arm64):
+        _arch, out = _wmi_detect(["AMD Radeon RX 580"], arm64 = arm64)
         assert "gfx803" in out, "the card is still named"
-        assert (
-            "UNSLOTH_LLAMA_CPP_BACKEND" not in out
-        ), f"ARM64 is still told to set the variable setup.ps1 throws on:\n{out}"
-        assert "ARM64" in out and "source" in out
-
-    def test_x64_still_gets_the_setter(self):
-        """Positive control: the guard must not silence the advice everywhere."""
-        _arch, out = _wmi_detect(["AMD Radeon RX 580"])
         assert "UNSLOTH_LLAMA_CPP_BACKEND" in out
+        assert "no Windows ARM64 Vulkan bundle is published" not in out
 
     @pytest.mark.parametrize(
         "registry,env,expected",
@@ -580,9 +536,8 @@ class TestAdviceIsNotEmittedForRdna1:
         ids = [f"{p.name}:{c[:34]}" for p, c, _g in _HIPSDK_ARMS],
     )
     def test_the_hip_sdk_arm_does_not_outrank_the_unsupported_arm(self, path, condition, guard):
-        """Stated as a ban on the UNGUARDED condition, not as a search for the guarded
-        one: asserting only that the guarded text exists stays green if someone adds a
-        second, unguarded copy of the arm, and both spellings would then be present."""
+        """Stated as a ban on the unguarded condition, since checking only that the guarded text
+        exists stays green when an unguarded copy of the arm is added."""
         src = _normalised(path)
         assert condition + guard in src, (
             f"{path.name}: the {condition!r} arm has lost its unsupported-arch guard, so an "
@@ -713,10 +668,8 @@ _KFD_NAVI31 = [
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX shell only")
 class TestSetupShKfdOnlyHost:
-    """The KFD sysfs fallback marks the host AMD without rocminfo or amd-smi, so it
-    leaves _setup_mkt empty -- and a host with no ROCm userspace is exactly the one
-    #8529 and #8458 describe. Handed "", the lookup used to fall through to the plain
-    "AMD ROCm" report on a machine that has no ROCm."""
+    """The KFD sysfs fallback leaves _setup_mkt empty without rocminfo or amd-smi; the lookup must
+    not fall through to a plain AMD ROCm report there (issues 8529 and 8458)."""
 
     def test_the_kfd_host_is_diagnosed_from_lspci(self, tmp_path):
         assert _run_setup_kfd_lookup("", _KFD_NAVI10, tmp_path) == "gfx1010"
@@ -752,9 +705,8 @@ class TestSetupShKfdOnlyHost:
         ), "studio/setup.sh: the gpu report no longer goes through the lspci-aware lookup"
 
     def test_the_lspci_name_never_reaches_the_routing_table(self):
-        """Routing must stay byte-identical. The supported inference table keys on
-        _setup_mkt, which feeds --rocm-gfx into the prebuilt and whisper commands, so
-        the lspci read must not be written back into it."""
+        """Routing must stay byte-identical: the supported inference table keys on _setup_mkt, which
+        feeds --rocm-gfx into the prebuilt and whisper commands, so no lspci read goes there."""
         src = _normalised(_SETUP_SH)
         assigns = re.findall(r"^\s*_setup_mkt=(.*)$", src, re.MULTILINE)
         assert assigns, "studio/setup.sh: no _setup_mkt assignment found"
@@ -882,9 +834,8 @@ def test_no_advice_arm_speaks_for_the_whole_host(source_path):
 
 @pytest.mark.parametrize("name,claims", sorted(_SCOPED_CLAIMS.items()))
 def test_the_scoped_wording_is_the_one_that_ships(name, claims):
-    """The other half: dropping the sentence entirely would also pass the ban above,
-    and would take the answer with it. Each arm still has to say ROCm cannot reach
-    the card it just named."""
+    """Each arm must still say ROCm cannot reach the card it just named; dropping the sentence
+    entirely would also pass the ban above and lose the answer."""
     source_path = next(p for p in _ALL_SOURCES if p.name == name)
     src = _normalised(source_path)
     emitted = [ln for ln in src.split("\n") if not ln.lstrip().startswith("#")]
@@ -1104,17 +1055,15 @@ class TestVulkanAdvice:
 
     @pytest.mark.parametrize("needle,what", _REQUIRED, ids = lambda v: v if " " not in v else None)
     def test_the_vulkan_advice_is_reached_by_the_rdna1_wmi_path(self, needle, what):
-        """Source-text assertions cannot tell a live branch from a dead one, and the
-        Python copy's message is not readable line by line. Drive the real Windows
-        path and read what it actually printed."""
+        """Source-text assertions cannot tell a live branch from a dead one, and the Python message
+        is not readable line by line; drive the Windows path and read its output."""
         arch, out = _wmi_detect(["AMD Radeon RX 580"])
         assert arch is None, "routing must be unchanged; this is a wording fix"
         assert needle in out, f"the printed advice is missing {what} ({needle!r})"
 
     def test_the_printed_advice_uses_powershell_syntax(self):
-        """This branch is Windows-only, so its setter has to be pasteable into
-        PowerShell. Read the live output, not the source: the message is built from
-        implicitly-joined fragments and no single source line carries it."""
+        """The Windows-only branch's setter must paste into PowerShell; read the live output, since
+        the message is built from implicitly joined fragments no source line carries."""
         _arch, out = _wmi_detect(["AMD Radeon RX 580"])
         assert _PWSH_SETTER in out, f"the printed advice is not pasteable into PowerShell:\n{out}"
         assert (

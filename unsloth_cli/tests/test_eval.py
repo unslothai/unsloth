@@ -107,6 +107,81 @@ def test_dataset_task_stays_clear_of_names_requested_alongside(tmp_path):
     assert names == ["gsm8k", "gsm8k_2", "gsm8k_3"]
 
 
+@pytest.mark.parametrize("suffix", [".yaml", ".yml"])
+@pytest.mark.parametrize("dataset_first", [True, False])
+def test_dataset_task_avoids_explicit_yaml_name(tmp_path, suffix, dataset_first):
+    data = tmp_path / "qa.jsonl"
+    data.write_text("{}\n")
+    task = tmp_path / f"custom{suffix}"
+    task.write_text("task: qa\ndataset_path: json\n")
+    entries = [data, task] if dataset_first else [task, data]
+    names, includes = evalmod.resolve_tasks(",".join(map(str, entries)), "q", "a", tmp_path / "tmp")
+    assert names == (["qa_2", "qa"] if dataset_first else ["qa", "qa_2"])
+    generated = (tmp_path / "tmp" / "generated").resolve()
+    custom = (tmp_path / "tmp" / "custom").resolve()
+    assert includes == list(map(str, [generated, custom] if dataset_first else [custom, generated]))
+    spec = yaml.safe_load((generated / "qa_2.yaml").read_text())
+    assert spec["task"] == "qa_2"
+    assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
+    assert yaml.safe_load((custom / "qa.yaml").read_text())["task"] == "qa"
+
+
+@pytest.mark.parametrize("dataset_first", [True, False])
+def test_dataset_task_avoids_explicit_group_name(tmp_path, dataset_first):
+    data = tmp_path / "suite.csv"
+    data.write_text("q,a\n")
+    group = tmp_path / "custom.yaml"
+    group.write_text("group: suite\ntask: [a, b]\n")
+    entries = [data, group] if dataset_first else [group, data]
+    names, includes = evalmod.resolve_tasks(",".join(map(str, entries)), "q", "a", tmp_path / "tmp")
+    assert names == (["suite_2", "suite"] if dataset_first else ["suite", "suite_2"])
+    generated = (tmp_path / "tmp" / "generated").resolve()
+    assert includes == list(
+        map(
+            str,
+            [generated, tmp_path.resolve()] if dataset_first else [tmp_path.resolve(), generated],
+        )
+    )
+    spec = yaml.safe_load((generated / "suite_2.yaml").read_text())
+    assert spec["task"] == "suite_2"
+    assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
+
+
+@pytest.mark.parametrize("dataset_first", [True, False])
+def test_dataset_tasks_avoid_explicit_yaml_numeric_suffixes(tmp_path, dataset_first):
+    data = [tmp_path / "qa.jsonl", tmp_path / "qa.csv"]
+    data[0].write_text("{}\n")
+    data[1].write_text("q,a\n")
+    tasks = [tmp_path / "custom.yaml", tmp_path / "other.yaml"]
+    tasks[0].write_text("task: qa\n")
+    tasks[1].write_text("task: qa_2\n")
+    entries = data + tasks if dataset_first else tasks + data
+    names, _ = evalmod.resolve_tasks(",".join(map(str, entries)), "q", "a", tmp_path / "tmp")
+    assert names == (
+        ["qa_3", "qa_4", "qa", "qa_2"] if dataset_first else ["qa", "qa_2", "qa_3", "qa_4"]
+    )
+    for name, path in zip(["qa_3", "qa_4"], data):
+        spec = yaml.safe_load((tmp_path / "tmp" / "generated" / f"{name}.yaml").read_text())
+        assert spec["task"] == name
+        assert spec["dataset_kwargs"] == {"data_files": str(path.resolve())}
+
+
+@pytest.mark.parametrize("duplicate", ["yaml", "same_yaml", "plain_first", "plain_last"])
+def test_explicit_yaml_names_still_reject_duplicates(tmp_path, duplicate):
+    task = tmp_path / "custom.yaml"
+    task.write_text("task: qa\n")
+    other = tmp_path / "other.yaml"
+    other.write_text("task: qa\n")
+    entries = {
+        "yaml": [str(task), str(other)],
+        "same_yaml": [str(task), str(task)],
+        "plain_first": ["qa", str(task)],
+        "plain_last": [str(task), "qa"],
+    }[duplicate]
+    with pytest.raises(ValueError, match = "Duplicate task 'qa' in --tasks"):
+        evalmod.resolve_tasks(",".join(entries), "q", "a", tmp_path / "tmp")
+
+
 def test_standalone_yaml_is_copied_alone(tmp_path):
     (tmp_path / "broken.yaml").write_text("task: [unclosed\n")
     task = tmp_path / "mine.yml"
@@ -336,6 +411,39 @@ def test_unsloth_backend_writes_results(env, tmp_path):
     assert env["kwargs"]["log_samples"] is False
     saved = json.loads((tmp_path / "out" / "results.json").read_text())
     assert saved["results"]["gsm8k"]["exact_match,strict"] == 0.42
+
+
+def test_eval_dataset_before_yaml_with_same_task_name(env, tmp_path):
+    data = tmp_path / "qa.jsonl"
+    data.write_text("{}\n")
+    task = tmp_path / "custom.yaml"
+    task.write_text("task: qa\ndataset_path: json\n")
+    result = _run("fake/model", "--tasks", f"{data},{task}", "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["tasks"] == ["qa_2", "qa"]
+    assert env["task_managers"] == 1
+
+
+def test_default_output_keeps_every_run(env, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(evalmod, "time", SimpleNamespace(time = lambda: 1761480000), raising = False)
+    for model in ("org/base", "org/tuned", "org/tuned"):
+        result = _run(model, "--tasks", "gsm8k")
+        assert result.exit_code == 0, result.output
+    saved = sorted(p.parent.name for p in (tmp_path / "eval_results").rglob("results.json"))
+    assert saved == ["org_base_1761480000", "org_tuned_1761480000", "org_tuned_1761480001"], saved
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason = "the Studio backend needs Python 3.10+")
+@pytest.mark.parametrize(
+    "model", ["org/tuned", "./my model/ckpt-100", "/abs/lora/", "C:\\x\\y", "~/", "", "x" * 300]
+)
+def test_run_dir_name_matches_studio(model, monkeypatch):
+    pytest.importorskip("structlog")
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "studio" / "backend"))
+    from utils.paths import default_run_dir_name
+
+    assert evalmod._run_dir_name(model) == default_run_dir_name(model)
 
 
 def _adapter(tmp_path, tokenizer = False):
@@ -577,7 +685,8 @@ def test_unsafe_code_flag_is_forwarded(env, tmp_path):
         ["--batch-size", "0"],
         ["--batch-size", "-1"],
         ["--batch-size", "big"],
-        ["--backend", "vllm"],
+        ["--backend", "tgi"],
+        ["--backend", "vllm", "--gpu-memory-utilization", "1.5"],
         ["--num-fewshot", "-1"],
         ["--limit", "0"],
         ["--limit", "2.5"],
@@ -609,6 +718,142 @@ def test_unsloth_backend_refuses_multi_process(env, monkeypatch):
     assert result.exit_code == 2 and "--backend hf" in result.output
 
 
+@pytest.fixture
+def vllm_env(env, monkeypatch):
+    sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: True, device_count = lambda: 1)
+    monkeypatch.setattr(evalmod.sys, "platform", "linux")
+    monkeypatch.setattr(evalmod, "version", lambda name: "0.4.13", raising = False)
+    return env
+
+
+def test_vllm_backend_builds_lm_eval_vllm(vllm_env, tmp_path):
+    result = _run(
+        "fake/model",
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "--max-seq-length",
+        "4096",
+        "--gpu-memory-utilization",
+        "0.5",
+        "-o",
+        str(tmp_path),
+    )
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model"] == "vllm"
+    assert vllm_env["model_args"] == {
+        "pretrained": "fake/model",
+        "max_model_len": 4096,
+        "gpu_memory_utilization": 0.5,
+    }
+    assert vllm_env["kwargs"]["batch_size"] == "auto"
+    assert "model_name" not in vllm_env and "hflm" not in vllm_env
+
+
+def test_vllm_backend_serves_adapter_as_lora(vllm_env, tmp_path):
+    adapter = tmp_path / "lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/Qwen3-8B-unsloth-bnb-4bit", "r": 64})
+    )
+    (adapter / "tokenizer.json").write_text("{}")
+    result = _run(
+        str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-b", "8", "-o", str(tmp_path / "o")
+    )
+    assert result.exit_code == 0, result.output
+    args = vllm_env["model_args"]
+    assert args["pretrained"] == "unsloth/Qwen3-8B"
+    assert args["lora_local_path"] == args["tokenizer"] == str(adapter.resolve())
+    assert args["max_lora_rank"] == 64
+    assert vllm_env["kwargs"]["batch_size"] == 8
+
+
+def test_vllm_backend_keeps_default_lora_rank_and_ignores_4bit(vllm_env, tmp_path):
+    adapter = _adapter(tmp_path)
+    result = _run(
+        str(adapter),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "--load-in-4bit",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model_args"]["pretrained"] == "org/base"
+    assert (
+        "max_lora_rank" not in vllm_env["model_args"] and "tokenizer" not in vllm_env["model_args"]
+    )
+    assert "16-bit" in result.output
+
+
+def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")
+    assert result.exit_code == 2 and "--backend hf" in result.output
+    assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize("installed, ok", [("0.4.11", False), ("0.4.12", True)])
+def test_vllm_backend_needs_lm_eval_0_4_12(vllm_env, monkeypatch, tmp_path, installed, ok):
+    monkeypatch.setattr(evalmod, "version", lambda name: installed)
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    if ok:
+        assert result.exit_code == 0, result.output
+    else:
+        assert result.exit_code == 2 and "model" not in vllm_env
+        assert installed in result.output and "pip install -U lm-eval" in result.output
+
+
+def test_vllm_engine_failure_prints_the_engine_log(vllm_env, monkeypatch, tmp_path):
+    def _fail_in_engine(**kwargs):
+        os.write(2, b"ValueError: No available memory for the cache blocks.\n")
+        raise RuntimeError("Engine core initialization failed. See root cause above.")
+
+    monkeypatch.setattr(sys.modules["lm_eval"], "simple_evaluate", _fail_in_engine)
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    assert result.exit_code != 0
+    assert "No available memory for the cache blocks" in result.output
+
+
+def test_vllm_gpu_probe_leaves_cuda_uninitialised(vllm_env, monkeypatch, tmp_path):
+    monkeypatch.delenv("PYTORCH_NVML_BASED_CUDA_CHECK", raising = False)
+    seen = []
+    sys.modules["torch"].cuda = SimpleNamespace(
+        is_available = lambda: seen.append(os.environ.get("PYTORCH_NVML_BASED_CUDA_CHECK")) or True,
+        device_count = lambda: 1,
+    )
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert seen == ["1"]
+
+
+@pytest.mark.parametrize(
+    "platform, cuda, vllm_installed, hint",
+    [
+        ("linux", True, False, "pip install vllm"),
+        ("linux", False, True, "--backend hf"),
+        ("darwin", True, True, "On a Mac use --backend hf"),
+    ],
+)
+def test_vllm_backend_refuses_where_it_cannot_run(
+    env, monkeypatch, platform, cuda, vllm_installed, hint
+):
+    sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: cuda, device_count = lambda: 1)
+    monkeypatch.setattr(evalmod.sys, "platform", platform)
+    monkeypatch.setattr(evalmod, "version", lambda name: "0.4.13", raising = False)
+    monkeypatch.setattr(
+        evalmod,
+        "find_spec",
+        lambda name: None if name == "vllm" and not vllm_installed else object(),
+    )
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")
+    assert result.exit_code == 2, result.output
+    assert hint in result.output and "model" not in env
+
+
 def test_silence_keeps_the_reconfigured_stdout_encoding(tmp_path):
     import subprocess
 
@@ -626,3 +871,22 @@ def test_silence_keeps_the_reconfigured_stdout_encoding(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr.decode(errors = "replace")
     assert "Evaluating gsm8k\u2026" in proc.stdout.decode("utf-8")
+
+
+@pytest.mark.parametrize("backend", ["unsloth", "hf"])
+def test_gpu_memory_utilization_says_it_only_applies_to_vllm(env, monkeypatch, tmp_path, backend):
+    """Only vllm forwards it, so a cap dropped on other backends would read as an OOM."""
+    result = _run(
+        "org/model",
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        backend,
+        "--gpu-memory-utilization",
+        "0.5",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    assert "--gpu-memory-utilization applies to --backend vllm" in result.output
+    assert "gpu_memory_utilization" not in (env["model_args"] or {})

@@ -209,6 +209,17 @@ def test_an_explicit_non_hub_folder_keeps_its_local_listing(cached_model, tmp_pa
     assert cached_model.calls == []
 
 
+def test_an_explicit_folder_marks_every_build_at_one_quant_ready(cached_model, tmp_path):
+    local = tmp_path / "local-model"
+    local.mkdir()
+    for name in (MAIN, f"other-{QUANT}.gguf"):
+        (local / name).write_bytes((cached_model.snapshot / MAIN).read_bytes())
+    response = asyncio.run(
+        GV.get_gguf_variants_response(REPO, local_path = str(local), offline = True, hf_token = False)
+    )
+    assert sorted(v.quant for v in response.variants if v.downloaded) == [QUANT, f"other-{QUANT}"]
+
+
 @pytest.mark.parametrize("prefix", ["/api/hub", "/api/models"])
 def test_online_remote_discovery_still_lists_published_quants(cached_model, monkeypatch, prefix):
     from hub.utils.gguf import GgufVariantInfo

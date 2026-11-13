@@ -12,15 +12,9 @@ import {
 const LINE_HEIGHT = 36;
 const CONTROLS_WIDTH = 84;
 
-/**
- * Stands in for the laid-out pill row: a flex line that re-flows whenever
- * `data-pill-compact` changes. `widths` is the row's natural width per stage,
- * and anything over `available` wraps the way the browser would.
- */
 function stubRow(widths: Record<string, number>, available: number) {
   let attribute: string | null = null;
   const width = () => widths[attribute ?? "none"];
-  // The row wraps first; short of that, the controls drop below it.
   const rowWraps = () => width() > available;
   const controlsWrap = () =>
     !rowWraps() && width() + CONTROLS_WIDTH > available;
@@ -46,8 +40,6 @@ function stubRow(widths: Record<string, number>, available: number) {
       height: rowWraps() ? LINE_HEIGHT * 2 : LINE_HEIGHT,
       bottom: rowWraps() ? LINE_HEIGHT * 2 : LINE_HEIGHT,
     }),
-    // A hidden input, so the check has to skip zero-width siblings to reach
-    // the controls behind it.
     nextElementSibling: {
       getBoundingClientRect: () => ({ width: 0, top: 0 }),
       nextElementSibling: controls,
@@ -68,7 +60,6 @@ function measure(
   return { result, attribute: row.attribute };
 }
 
-// "Run automatically" + "Deep research" + Search + Code, laid out three ways.
 const WIDTHS = { none: 470, first: 330, true: 190 };
 
 test("keeps every label when the row already fits", () => {
@@ -76,7 +67,6 @@ test("keeps every label when the row already fits", () => {
 });
 
 test("collapses the leading permission pill rather than wrap the controls", () => {
-  // 470 + 84 controls overflows 500; 330 + 84 does not.
   assert.equal(measure(WIDTHS, 500).result, "first");
 });
 
@@ -93,8 +83,6 @@ test("skips measuring when the count or mobile rule already forces compact", () 
 });
 
 test("leaves the row on the stage it returns, so the render agrees", () => {
-  // Measuring walks the wider stages first, so the last write has to be the
-  // winner and not whichever stage the loop tried last.
   assert.equal(measure(WIDTHS, 500).attribute, "first");
   assert.equal(measure(WIDTHS, 640).attribute, null);
 });

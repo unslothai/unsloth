@@ -30,15 +30,8 @@ def _finite(value):
 
 
 def cell_text(value):
-    """The text to train on for a single Alpaca-style dataset cell.
-
-    A blank cell is a missing value to every loader we use, so it arrives as
-    None, and a column holding numbers arrives typed, so a cell typed as 1
-    arrives as 1.0. Untreated, the first trains the word None and the second
-    raises on .strip(). NaN counts as blank too: Arrow normalises a blank
-    numeric cell to null, but a dataset built straight from pandas need not have
-    passed through Arrow. A dict or list cell trains as JSON, not its Python repr.
-    """
+    """Blank cells (None or NaN) become empty text, since None would train the word None; numeric
+    cells arrive as floats, which fail on .strip(); dict/list cells train as JSON."""
     if value is None:
         return ""
     if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():
@@ -71,10 +64,41 @@ def _message(turn):
     return None
 
 
+def wrapped_messages(value):
+    if isinstance(value, dict) and len(value) == 1:
+        (inner,) = value.values()
+        if inner is None or isinstance(inner, list):
+            return inner
+    return value
+
+
+def unwrap_message_column(
+    dataset,
+    column,
+    batch_size = 1000,
+):
+    features = getattr(dataset, "features", None)
+    feature = features.get(column) if features else None
+    if column is None or (features and not (isinstance(feature, dict) and len(feature) == 1)):
+        return dataset
+    if features:
+        from datasets import Features
+        (inner,) = feature.values()
+        features = Features({**features, column: inner})
+    return dataset.map(
+        lambda batch: {column: [wrapped_messages(value) for value in batch[column]]},
+        batched = True,
+        batch_size = batch_size,
+        features = features,
+    )
+
+
 def message_list_columns(dataset):
     features = getattr(dataset, "features", None) or {}
     columns = set()
     for column, feature in features.items():
+        if isinstance(feature, dict) and len(feature) == 1:
+            (feature,) = feature.values()
         item = getattr(feature, "feature", None)
         if item is None and isinstance(feature, list) and len(feature) == 1:
             item = feature[0]
@@ -90,7 +114,10 @@ def cell_turns(
     role,
     empty_is_messages = False,
 ):
-    messages = [_message(turn) for turn in value] if isinstance(value, list) else [None]
+    turns = wrapped_messages(value)
+    if turns is None and value is not None and empty_is_messages:
+        turns = []
+    messages = [_message(turn) for turn in turns] if isinstance(turns, list) else [None]
     if (messages or empty_is_messages) and all(message is not None for message in messages):
         return [
             message

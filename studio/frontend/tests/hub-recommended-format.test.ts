@@ -9,6 +9,7 @@ import {
   hasRecommendedCheckpointLikes,
   matchesFormat,
   matchesRecommended,
+  matchesRecommendedDiffusion,
 } from "../src/features/hub/lib/format-filters.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
@@ -90,11 +91,38 @@ test("Recommended browsing lists checkpoints only past 30 likes", async () => {
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*hasRecommendedCheckpointLikes\(row\.result\)/,
+    /\(!browsing \|\|[\s\S]{0,240}hasRecommendedCheckpointLikes\(result\)\)\) &&\s*matchesRecommended\(result, quantFormats\)/,
   );
   assert.match(
     page,
-    /matchesFormat\(row\.result\.isGguf, "gguf"\)\)[\s\S]{0,200}\.filter\(\(row\) => hasRecommendedCheckpointLikes\(row\.result\)\)/,
+    /matchesFormat\(row\.result\.isGguf, "gguf"\)\)[\s\S]{0,200}\.filter\(\s*\(row\) => isDiffusionRow\(row\) \|\| hasRecommendedCheckpointLikes\(row\.result\),?\s*\)/,
+  );
+});
+
+test("image and video models skip the likes rules and list full-precision checkpoints", async () => {
+  // FLUX.3 klein: a 23-like GGUF with no provider logo, and its BF16 diffusers repo.
+  const fluxBf16 = { id: "unsloth/flux-3-image-klein", isGguf: false };
+  assert.equal(matchesRecommendedDiffusion(fluxBf16, []), true);
+  assert.equal(matchesRecommended(fluxBf16, []), false);
+  assert.equal(
+    matchesRecommendedDiffusion(
+      { id: "unsloth/flux-3-image-klein-GGUF", isGguf: true },
+      [],
+    ),
+    true,
+  );
+  // Quantized checkpoints still need a GPU that runs them natively.
+  const fluxFp8 = { id: "unsloth/flux-3-image-klein-FP8", isGguf: false };
+  assert.equal(matchesRecommendedDiffusion(fluxFp8, []), false);
+  assert.equal(matchesRecommendedDiffusion(fluxFp8, ["fp8"]), true);
+  const page = await readSrcAsync("features/hub/hub-page.tsx");
+  assert.match(
+    page,
+    /isDiffusionRow\(row\) \? diffusionQuantFormats : checkpointQuantFormats/,
+  );
+  assert.match(
+    page,
+    /searchBrowsing,\s*isDiffusionResult\(result\),\s*quantFormats,/,
   );
 });
 
@@ -108,7 +136,16 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*resolveOwnerProviderLogo/,
+    /if \(format !== "recommended"\) \{\s*return matchesFormat\(detectResultFormat\(result\), format\);\s*\}\s*if \(diffusion\) return matchesRecommendedDiffusion\(result, quantFormats\);\s*return \(\s*\(!browsing \|\|\s*\(\(resolveOwnerProviderLogo/,
+  );
+  // The search's skip test follows the formats' contents: a system poll's new array must not restart it.
+  assert.match(
+    page,
+    /const quantFormatsKey = checkpointQuantFormats\.join\(","\);[\s\S]{0,600}\[effectiveDiscoverFormat, searchBrowsing, quantFormatsKey\]/,
+  );
+  assert.match(
+    page,
+    /matchesDiscoverFormat\(\s*row\.result,\s*effectiveDiscoverFormat,\s*!hasQuery,\s*isDiffusionRow\(row\),/,
   );
   assert.doesNotMatch(page, /preset\?\.format \?\? "gguf"/);
   const channels = await readSrcAsync("features/hub/lib/channels.ts");
@@ -156,7 +193,7 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
   // The curated-search fit gate waives size for them too.
   assert.match(
     picker,
-    /cachedIdFor\(id\) !== null \|\|\s*runsCheckpointQuant\(\{ id \}\) \|\|\s*searchRowFits\(\{ id \}\)/,
+    /cachedIdFor\(id\) !== null \|\|\s*runsCheckpointQuant\(\{ id \}\) \|\|[\s\S]{0,120}?searchRowFits\(\{\s*id\b/,
   );
   // Task pages (images, audio) keep their own formats.
   assert.match(

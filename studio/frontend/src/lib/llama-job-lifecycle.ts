@@ -19,7 +19,6 @@ export type OwnedLlamaSwitchOutcome =
   | "error"
   | "interrupted";
 
-/** Interpret a status only as the switch job that this surface accepted. */
 export function ownedLlamaSwitchOutcome(
   job: IdentifiedLlamaJob,
   acceptedStartedAt: string | null,
@@ -34,11 +33,7 @@ export function ownedLlamaSwitchOutcome(
   return job.state === "idle" ? "interrupted" : job.state;
 }
 
-/**
- * Whether an `already_running` /update response is the update this apply asked
- * for. A backend switch shares the same job: adopting it would resolve this
- * action as an applied update while the pending release is still uninstalled.
- */
+/** A backend switch shares the update job, so adopting it would mark a pending update applied. */
 export function llamaUpdateAdoptsRunningJob(
   reason: string | null | undefined,
   job: LlamaJob,
@@ -52,7 +47,6 @@ export interface LlamaUpdatePresentation {
   running: boolean;
 }
 
-/** Derive the update banner from every shared-job status transition. */
 export function llamaUpdatePresentation(
   updateAvailable: boolean,
   job: LlamaJob,

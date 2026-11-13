@@ -10,6 +10,7 @@ import io
 import pathlib
 import re
 import subprocess
+import sys
 import tokenize
 
 import pytest
@@ -36,7 +37,15 @@ def _active_req_root(tmp_path_factory):
     main = root / "diffusers-main.txt"
     text = main.read_text(encoding = "utf-8")
     main.write_text(text.replace("\n# diffusers @ git+", "\ndiffusers @ git+"), encoding = "utf-8")
-    _ACTIVE_REQ_ROOT[:] = [root]
+    # Release-mode tests run on a copy with the commit line commented out, whichever state ships.
+    inactive = tmp_path_factory.mktemp("inactive_main") / "requirements"
+    shutil.copytree(REQ_ROOT, inactive)
+    off = inactive / "diffusers-main.txt"
+    off.write_text(
+        off.read_text(encoding = "utf-8").replace("\ndiffusers @ git+", "\n# diffusers @ git+"),
+        encoding = "utf-8",
+    )
+    _ACTIVE_REQ_ROOT[:] = [root, inactive]
     yield root
 
 
@@ -78,15 +87,36 @@ def _code_only(source: str) -> str:
 def test_the_pin_file_exists_and_names_the_first_supported_release():
     assert PIN_FILE.is_file(), f"{PIN_FILE} is missing"
     lines = _requirements(PIN_FILE)
-    modern = [line for line in lines if 'python_version >= "3.10"' in line]
-    assert modern == ['diffusers==0.41.0 ; python_version >= "3.10"'], modern
-    legacy = [line for line in lines if 'python_version < "3.10"' in line]
-    assert legacy == ['diffusers==0.36.0 ; python_version < "3.10"'], legacy
-    assert "://" not in modern[0], "the released dependency must not require a source build"
-    assert 'python_version >= "3.10"' in modern[0], (
-        "diffusers dropped Python 3.9 in 0.38, so the release needs a >= 3.10 marker or "
-        "the resolver has no candidate at all on a 3.9 host"
-    )
+    assert lines == [
+        'diffusers==0.42.1 ; python_version >= "3.11"',
+        'diffusers==0.41.0 ; python_version == "3.10"',
+        'diffusers==0.36.0 ; python_version < "3.10"',
+    ], lines
+    assert not any("://" in line for line in lines), "a release must not require a source build"
+
+
+@pytest.mark.parametrize(
+    "python, release",
+    [
+        ("3.14", "0.42.1"),
+        ("3.13", "0.42.1"),
+        ("3.11", "0.42.1"),
+        # 0.42.0 declares requires-python >= 3.11 and 0.38 dropped 3.9, so each floor keeps a release.
+        ("3.10", "0.41.0"),
+        ("3.9", "0.36.0"),
+    ],
+)
+def test_every_supported_python_gets_exactly_one_installable_release(python, release):
+    from packaging.requirements import Requirement
+
+    environment = {"python_version": python, "python_full_version": f"{python}.0"}
+    picked = [
+        str(spec.version)
+        for spec in (Requirement(line) for line in _requirements(PIN_FILE))
+        if spec.marker is None or spec.marker.evaluate(environment)
+        for spec in spec.specifier
+    ]
+    assert picked == [release], picked
 
 
 def test_only_the_pin_file_names_diffusers():
@@ -133,25 +163,58 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
 
 
 def test_the_shipped_main_build_is_commented_out_but_keeps_its_commit():
-    """0.41.0 is on PyPI: nothing installs from git, and re-enabling is one uncomment away."""
+    """0.42.1 carries FLUX.3 Klein: nothing installs from git, and re-enabling is one uncomment away."""
     assert _requirements(MAIN_FILE) == []
     text = MAIN_FILE.read_text(encoding = "utf-8")
     assert re.search(r"^# diffusers @ git\+https://\S+@[0-9a-f]{40}$", text, re.M), text
-    assert re.search(r"^# archive-sha256: [0-9a-f]{64}$", text, re.M)
-    module = _probe_module("install_python_stack_probe_shipped", active = False)
+    assert len(re.findall(r"^# archive-sha256: [0-9a-f]{64}$", text, re.M)) == 1
+    module = _probe_module("install_python_stack_probe_shipped", shipped = True)
+    assert module._diffusers_main_active() is False
+    assert module._diffusers_main_supersedes_release() is False
+
+
+def test_the_retired_flux3_pin_keeps_its_commit_and_digest():
+    """d42ebf9c (main on 2026-10-16, after huggingface/diffusers#15046 and #15058) is an ancestor of v0.42.1, so the
+    release replaces it; the line and its archive digest stay for the next unreleased model to re-pin."""
+    text = MAIN_FILE.read_text(encoding = "utf-8")
+    assert re.search(
+        r"^# diffusers @ git\+https://github\.com/huggingface/diffusers\.git"
+        r"@d42ebf9c6e0b46103b74283f5324357a67acaa04$",
+        text,
+        re.M,
+    ), text
+    assert re.search(
+        r"^# archive-sha256: c46925a12c1b64340272dbd4c5d72a4298ecd4c96cad2c9d549b85a99ffb491f$",
+        text,
+        re.M,
+    )
+
+
+def test_the_release_mode_copy_is_commented_out_but_keeps_its_commit():
+    """Release mode (the state after a pin retires) is one comment away, and the probes read it as off."""
+    off = _ACTIVE_REQ_ROOT[1] / "diffusers-main.txt"
+    assert _requirements(off) == []
+    assert re.search(
+        r"^# diffusers @ git\+https://\S+@[0-9a-f]{40}$", off.read_text(encoding = "utf-8"), re.M
+    )
+    module = _probe_module("install_python_stack_probe_inactive", active = False)
     assert module._diffusers_main_active() is False
     assert module._diffusers_main_resident() is False
     assert module._diffusers_main_supersedes_release() is False
 
 
-def _probe_module(name: str, active: bool = True):
+def _probe_module(
+    name: str,
+    active: bool = True,
+    shipped: bool = False,
+):
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(name, STACK)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    if active:
-        module.REQ_ROOT = _ACTIVE_REQ_ROOT[0]
+    if not shipped:
+        module.REQ_ROOT = _ACTIVE_REQ_ROOT[0] if active else _ACTIVE_REQ_ROOT[1]
     return module
 
 
@@ -589,14 +652,17 @@ def test_a_damaged_main_build_is_repaired_rather_than_believed(monkeypatch):
     assert attempted and attempted[0].name == "diffusers-main.txt"
 
 
-def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
-    """diffusers-pin.txt still names 0.36.0 below 3.10, so 3.9 is a supported install, and main
-    declares requires-python >= 3.10. Unmarked, pip clones the repository and only then rejects
+@pytest.mark.parametrize("old_python", [(3, 9, 21), (3, 10, 14)])
+def test_python_below_311_does_not_clone_a_build_it_can_never_install(monkeypatch, old_python):
+    """diffusers-pin.txt covers 3.9 (0.36.0) and 3.10 (0.41.0), and main declares requires-python
+    >= 3.11 (huggingface/diffusers#15030). Unmarked, pip clones the repository and only then rejects
     it, and since the build can never become resident that clone repeats on every update."""
     module = _probe_module("install_python_stack_probe8")
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(
-        module, "pip_install_try", lambda *a, **k: pytest.fail("cloned main on python 3.9")
+        module,
+        "pip_install_try",
+        lambda *a, **k: pytest.fail(f"cloned main on python {old_python}"),
     )
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
     monkeypatch.setattr(module, "_note", lambda *a, **k: None)
@@ -604,17 +670,17 @@ def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
     class _V(tuple):
         pass
 
-    monkeypatch.setattr(module.sys, "version_info", _V((3, 9, 21)))
+    monkeypatch.setattr(module.sys, "version_info", _V(old_python))
     progressed: list = []
     monkeypatch.setattr(module, "_progress", lambda label, *a, **k: progressed.append(label))
     module._diffusers_main_step()
-    assert len(progressed) == 1 and "python 3.10" in progressed[0], progressed
+    assert len(progressed) == 1 and "python 3.11" in progressed[0], progressed
 
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
     assert not (module._diffusers_main_requested() and module._diffusers_main_resident())
 
     attempted: list = []
-    monkeypatch.setattr(module.sys, "version_info", _V((3, 10, 0)))
+    monkeypatch.setattr(module.sys, "version_info", _V((3, 11, 0)))
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: False)
     monkeypatch.setattr(
         module, "pip_install_try", lambda *a, req = None, **k: (attempted.append(req), True)[1]
@@ -881,7 +947,7 @@ def test_the_startup_prefetch_fills_the_cache_and_never_the_environment(monkeypa
 def _release_module(
     monkeypatch,
     name,
-    installed = "0.41.0",
+    installed = "0.42.1",
 ):
     module = _probe_module(name, active = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
@@ -896,7 +962,7 @@ def _release_module(
 
 
 def test_a_missing_release_still_forces_the_pass(monkeypatch):
-    module = _release_module(monkeypatch, "install_python_stack_release_damaged", "0.41.0")
+    module = _release_module(monkeypatch, "install_python_stack_release_damaged", "0.42.1")
     assert module._diffusers_main_needs_dependency_pass() is False
     # Same-version damage would not converge: 11b's version check skips it.
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda dist: False)
@@ -917,32 +983,64 @@ def test_the_shipped_main_step_skips_without_installing(monkeypatch):
     assert steps == {"diffusers-main.txt": "skipped"}
 
 
+_NEEDS_311 = pytest.mark.skipif(
+    sys.version_info < (3, 11), reason = "diffusers-pin.txt names 0.42.1 from Python 3.11"
+)
+
+
+@_NEEDS_311
 @pytest.mark.parametrize(
     "installed, forced",
     [
-        ("0.41.0", False),
-        ("0.41.0.dev0", True),
-        ("0.41.0rc1", True),
-        ("0.42.0", False),
+        ("0.42.1", False),
+        ("0.42.1.post1", False),
+        ("0.42.1rc1", True),
+        ("0.42.0", True),
+        ("0.41.0", True),
+        ("0.43.0", False),
         ("0.40.0", True),
     ],
 )
 def test_the_fast_path_is_forced_only_by_a_release_behind_the_pin(monkeypatch, installed, forced):
     module = _release_module(monkeypatch, "install_python_stack_release_fast", installed)
     monkeypatch.setattr(module, "_has_working_git", lambda: pytest.fail("probed git"))
-    assert module._diffusers_release_target() == "0.41.0"
+    assert module._diffusers_release_target() == "0.42.1"
     assert module._diffusers_main_needs_dependency_pass() is forced
 
 
+@_NEEDS_311
 def test_a_git_or_zip_build_of_the_release_keeps_the_fast_path(monkeypatch):
-    module = _release_module(monkeypatch, "install_python_stack_release_built", "0.41.0.dev0")
+    module = _release_module(monkeypatch, "install_python_stack_release_built", "0.43.0.dev0")
     for direct in ({"vcs_info": {"vcs": "git"}}, {"archive_info": {}}):
         monkeypatch.setattr(module, "_recorded_direct_url", lambda dist, d = direct: dict(d, url = "x"))
         assert module._diffusers_main_needs_dependency_pass() is False
 
 
+_RETIRED_MAIN = {
+    "url": "https://github.com/huggingface/diffusers.git",
+    "vcs_info": {
+        "vcs": "git",
+        "commit_id": "d42ebf9c6e0b46103b74283f5324357a67acaa04",
+        "requested_revision": "d42ebf9c6e0b46103b74283f5324357a67acaa04",
+    },
+}
+
+
+@_NEEDS_311
+@pytest.mark.parametrize("built", [_RETIRED_MAIN, {"url": "https://x/d.zip", "archive_info": {}}])
+def test_the_retired_main_build_is_replaced_by_the_release_on_update(monkeypatch, built):
+    """The d42ebf9c build (git, or the zip route) reports 0.41.0.dev0: behind 0.42.1, so an update runs the pass
+    and the release step installs the pin instead of standing down for a main build nothing asks for."""
+    module = _release_module(monkeypatch, "install_python_stack_release_retired", "0.41.0.dev0")
+    monkeypatch.setattr(module, "_recorded_direct_url", lambda dist: dict(built))
+    monkeypatch.setattr(module, "_has_working_git", lambda: pytest.fail("probed git"))
+    assert module._diffusers_release_behind() is True
+    assert module._diffusers_main_needs_dependency_pass() is True
+    assert module._diffusers_main_supersedes_release() is False
+
+
 def test_the_release_prefetch_fetches_the_pin_into_scratch_only_when_behind(monkeypatch):
-    module = _release_module(monkeypatch, "install_python_stack_release_prefetch", "0.41.0")
+    module = _release_module(monkeypatch, "install_python_stack_release_prefetch", "0.42.1")
     monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: pytest.fail("spawned"))
     monkeypatch.setattr(module, "_bootstrap_uv", lambda: pytest.fail("bootstrapped uv"))
     assert module._prefetch_diffusers_main() == 1
@@ -1009,7 +1107,7 @@ def _release_repair(
     ):
         installs.append(req)
         if install_ok:
-            state["version"] = "0.41.0"
+            state["version"] = module._diffusers_release_target()
         return install_ok
 
     monkeypatch.setattr(module, "pip_install_try", fake_install)
@@ -1025,7 +1123,7 @@ def test_the_startup_repair_installs_the_release_behind_the_pin(monkeypatch):
 
 
 def test_the_startup_repair_leaves_a_current_release_alone(monkeypatch):
-    for installed in ("0.41.0", "0.41.0.post1"):
+    for installed in ("0.42.1", "0.42.1.post1"):
         module, installs, _ = _release_repair(monkeypatch, "rel_repair_noop", installed)
         assert module._repair_diffusers_main() == 1 and installs == []
 

@@ -959,9 +959,8 @@ def _fail_activation_then_restore_rename(
 def test_activate_install_tree_reports_a_recovery_disk_full_as_out_of_space(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_copy_error
 ):
-    """The copy back is the first step here that needs free space -- everything before
-    it renames or deletes -- so a full disk shows up there and nowhere else. Dropping
-    it would start a source build needing far more room than the copy that failed."""
+    """The copy back is the first step that needs free space, so a full disk shows up only there;
+    dropping it would start a source build needing far more room than the failed copy."""
     install_dir, staging_dir = _fail_activation_then_restore_rename(
         tmp_path, monkeypatch, make_copy_error()
     )
@@ -2735,9 +2734,8 @@ def test_arch_fields_do_not_change_the_install_fingerprint(tmp_path: Path):
 
 
 def test_non_rocm_bundles_record_no_mapped_targets(tmp_path: Path):
-    """CPU/CUDA/Vulkan/macOS choices never populate the arch fields (#7624): only
-    published_rocm_choice_for_host sets them, so the marker records [] and the runtime
-    gate fails open on a non-ROCm bundle."""
+    """Only published_rocm_choice_for_host sets the arch fields (issue 7624), so CPU, CUDA, Vulkan
+    and macOS bundles record an empty list and the runtime gate fails open."""
     checksums = release_checksums()
     for kind, asset in (
         ("linux-cpu", "app-b9001-linux-x64-cpu.tar.gz"),
@@ -3417,16 +3415,8 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
 @pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
 @pytest.mark.parametrize("name", ["llama-server", "llama-quantize"])
 def test_a_damaged_root_entrypoint_stops_the_release_being_reused(tmp_path: Path, name: str):
-    """Codex 3973890098, P1. The keep decision graded only build/bin, so an online repair
-    took the shortcut, replaced nothing, and every later launch offered the same repair
-    again. Both read _damaged_entrypoint now.
-
-    Codex 4056336250, P2 narrowed what the LAUNCH side of it may reject: the resolver
-    returns the first usable candidate, so it walks past a root wrapper with no execute
-    bit and runs build/bin, and marking that tree stale repairs a runtime that works. The
-    keep decision is deliberately left strict, since replacing a rotten wrapper is exactly
-    what a reinstall is for, and that direction is safe: the launch verdict is never
-    stricter than the repair that answers it."""
+    """Keep decisions read _damaged_entrypoint so a rotten root wrapper forces repair; the launch
+    check must not mark stale a tree the resolver can still run via build/bin."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     write_linux_install_shape(install_dir)
@@ -3893,6 +3883,65 @@ def test_runtime_overlay_cannot_overwrite_main_archive_payload(tmp_path: Path) -
         assert (release_dir / name).exists(), f"missing {name}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX mode bits")
+@pytest.mark.parametrize("ships_bench", [True, False])
+def test_linux_overlay_keeps_llama_bench_executable_when_bundled(
+    tmp_path: Path, ships_bench: bool
+) -> None:
+    # Bundle members are not executable; llama-bench is launched directly.
+    import hashlib
+    import shutil as _shutil
+
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    work.mkdir()
+    install.mkdir()
+    bundle = tmp_path / "app-b11160-linux-x64-cuda13-newer.tar.gz"
+    names = ["llama-server", "llama-quantize", "libllama.so"] + (
+        ["llama-bench", "libllama-bench-impl.so"] if ships_bench else []
+    )
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in names:
+            payload = f"{name}\n".encode()
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            member.mode = 0o644
+            archive.addfile(member, io.BytesIO(payload))
+    choice = asset_choice(
+        name = bundle.name,
+        url = f"https://example.com/{bundle.name}",
+        tag = "b11160",
+        source_label = "published",
+        install_kind = "linux-cuda",
+        runtime_line = "cuda13",
+        expected_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    )
+    host = linux_host(driver_cuda_version = (13, 0), has_physical_nvidia = True, has_usable_nvidia = True)
+
+    def fake_download(
+        url,
+        target_path,
+        *,
+        expected_sha256 = None,
+        label = None,
+        **kw,
+    ):
+        _shutil.copy2(bundle, target_path)
+
+    orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
+    INSTALL_LLAMA_PREBUILT.download_file_verified = fake_download
+    try:
+        INSTALL_LLAMA_PREBUILT.install_from_archives(choice, host, install, work)
+    finally:
+        INSTALL_LLAMA_PREBUILT.download_file_verified = orig_download
+
+    bench = install / "build" / "bin" / "llama-bench"
+    if ships_bench:
+        assert bench.is_file() and os.access(bench, os.X_OK)
+    else:
+        assert not bench.exists()
+
+
 def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) -> None:
     install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
 
@@ -4177,6 +4226,124 @@ def _run_validate_prebuilt_choice(
         quantized_path = tmp_path / "stories260K-q4.gguf",
     )
     return calls
+
+
+def _run_vulkan_device_gate(
+    monkeypatch,
+    tmp_path,
+    *,
+    required,
+    listed,
+    install_kind = "linux-vulkan",
+):
+    """validate_prebuilt_choice on a stubbed install; `listed` is what the bundle's --list-devices finds."""
+    src = INSTALL_LLAMA_PREBUILT
+    server_path = tmp_path / "install" / "build" / "bin" / "llama-server"
+    listings = []
+
+    def fake_listing(*_a, **_k):
+        listings.append(True)
+        return listed
+
+    monkeypatch.setattr(
+        src, "preferred_source_archive", lambda *a, **k: ("repo", "ref", None, False)
+    )
+    monkeypatch.setattr(src, "hydrate_source_tree", lambda *a, **k: None)
+    monkeypatch.setattr(src, "install_from_archives", lambda *a, **k: (server_path, server_path))
+    monkeypatch.setattr(src, "runtime_payload_is_healthy", lambda *a, **k: True)
+    monkeypatch.setattr(src, "preflight_linux_installed_binaries", lambda *a, **k: None)
+    monkeypatch.setattr(src, "preflight_macos_installed_binaries", lambda *a, **k: None)
+    monkeypatch.setattr(src, "ensure_repo_shape", lambda *a, **k: None)
+    monkeypatch.setattr(src, "write_prebuilt_metadata", lambda *a, **k: None)
+    monkeypatch.setattr(src, "bundle_lists_vulkan_device", fake_listing)
+    monkeypatch.setattr(src, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+    bundle_name = f"app-b9998-{install_kind}.tar.gz"
+    source_archive = tmp_path / "source.tar.gz"
+    bundle_archive = tmp_path / "bundle.tar.gz"
+    source_archive.write_bytes(b"source")
+    bundle_archive.write_bytes(b"bundle")
+    choice = asset_choice(
+        name = bundle_name,
+        url = "file://bundle",
+        repo = "local",
+        tag = "b9998",
+        source_label = "local",
+        is_ready_bundle = True,
+        install_kind = install_kind,
+        expected_sha256 = "ab" * 32,
+    )
+    src.validate_prebuilt_choice(
+        choice,
+        linux_host(has_intel_gpu = True, vulkan_routed = True, vulkan_device_required = required),
+        tmp_path / "install",
+        tmp_path / "work",
+        tmp_path / "stories260K.gguf",
+        requested_tag = "b9998",
+        llama_tag = "b9998",
+        release_tag = "b9998",
+        approved_checksums = approved_checksums_for(
+            "b9998",
+            source_archive = source_archive,
+            bundle_archive = bundle_archive,
+            bundle_name = bundle_name,
+        ),
+        prebuilt_fallback_used = False,
+        quantized_path = tmp_path / "stories260K-q4.gguf",
+    )
+    return listings
+
+
+def test_probe_routed_vulkan_bundle_that_lists_no_gpu_falls_back(tmp_path, monkeypatch):
+    with pytest.raises(PrebuiltFallback, match = "lists no Vulkan GPU"):
+        _run_vulkan_device_gate(monkeypatch, tmp_path, required = True, listed = False)
+
+
+def test_probe_routed_vulkan_bundle_that_lists_a_gpu_is_kept(tmp_path, monkeypatch):
+    assert _run_vulkan_device_gate(monkeypatch, tmp_path, required = True, listed = True) == [True]
+
+
+@pytest.mark.parametrize(
+    "required, install_kind",
+    [(False, "linux-vulkan"), (True, "linux-arm64")],
+    ids = ["intel-or-forced-route", "cpu-bundle"],
+)
+def test_vulkan_device_gate_only_checks_probe_routed_vulkan_bundles(
+    tmp_path, monkeypatch, required, install_kind
+):
+    assert (
+        _run_vulkan_device_gate(
+            monkeypatch, tmp_path, required = required, listed = False, install_kind = install_kind
+        )
+        == []
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "fake server is a POSIX shell script")
+@pytest.mark.parametrize(
+    "output, code, expected",
+    [
+        ("Available devices:\n  Vulkan0: Adreno X1-85 (16000 MiB, 15000 MiB free)\n", 0, True),
+        ("Available devices:\n  (none)\n", 0, False),
+        ("Available devices:\n  RPC0: host:50052 (0 MiB, 0 MiB free)\n", 0, False),
+        ("Available devices:\n  Vulkan0: Adreno\n", 1, False),
+    ],
+    ids = ["vulkan-device", "none", "other-device", "nonzero-exit"],
+)
+def test_bundle_lists_vulkan_device_reads_list_devices(tmp_path, output, code, expected):
+    server = tmp_path / "llama-server"
+    server.write_text(f"#!/bin/sh\nprintf '{output}'\nexit {code}\n", encoding = "utf-8")
+    server.chmod(0o755)
+    assert (
+        INSTALL_LLAMA_PREBUILT.bundle_lists_vulkan_device(server, tmp_path, linux_host())
+        is expected
+    )
+
+
+def test_bundle_lists_vulkan_device_missing_binary_is_no_gpu(tmp_path):
+    missing = tmp_path / "llama-server"
+    assert (
+        INSTALL_LLAMA_PREBUILT.bundle_lists_vulkan_device(missing, tmp_path, linux_host()) is False
+    )
 
 
 def test_validate_prebuilt_choice_approved_validation_skipped_when_flag_off(tmp_path, monkeypatch):
@@ -5904,9 +6071,8 @@ def test_supported_sms_stays_out_of_the_install_fingerprint():
     [("linux-vulkan", "vulkan"), ("linux-cpu", "cpu"), ("linux-rocm", "rocm")],
 )
 def test_a_non_cuda_bundle_declares_no_supported_sms(tmp_path: Path, install_kind, runtime_line):
-    """The runtime gate has no is_vulkan_backend guard; it stays inert there
-    only because a non-CUDA bundle records an empty list, which reads as unknown
-    coverage. Pin that at the writing end."""
+    """The runtime gate has no is_vulkan_backend guard and stays inert only because a non-CUDA
+    bundle records an empty supported_sms list, which reads as unknown coverage."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     choice = _cuda_choice(install_kind = install_kind, runtime_line = runtime_line, supported_sms = None)
@@ -6323,9 +6489,8 @@ def test_a_custom_repo_is_answered_the_way_the_selector_orders_it(tmp_path, monk
 
 
 def test_a_release_payload_this_run_already_has_overrides_the_latest_pointer(tmp_path, monkeypatch):
-    """/releases/latest resolves by make_latest/created_at; the macOS path orders by
-    published_at. When a payload already in hand disagrees with the pointer, the
-    published_at answer wins -- for free, because it costs no request."""
+    """/releases/latest resolves by make_latest and created_at but macOS orders by published_at; a
+    payload in hand that disagrees with the pointer wins at no request cost."""
     install_dir = _current_install(tmp_path, monkeypatch)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda _repo: "release-1"
@@ -6384,9 +6549,8 @@ def test_a_pinned_release_tag_needs_no_lookup_at_all(tmp_path, monkeypatch):
 
 
 def test_an_upstream_pin_is_answered_by_the_recorded_upstream_tag(tmp_path, monkeypatch):
-    """The marker must record the pinned build, and the release installed must be the
-    fork's newest packaging of it (the fork can republish a build); /releases/latest
-    has nothing to say about a pin."""
+    """The marker records the pinned upstream build, and the release installed is the fork's newest
+    packaging of it since the fork can republish; /releases/latest says nothing of pins."""
     install_dir = _current_install(tmp_path, monkeypatch)
     marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
 
@@ -6459,9 +6623,8 @@ def test_a_gpu_removed_since_the_install_is_not_current(tmp_path, monkeypatch):
 
 
 def test_a_new_gpu_outside_the_recorded_coverage_is_not_current(tmp_path, monkeypatch):
-    """A bundle carries kernels for a fixed set of SMs (supported_sms). Swapping the
-    card for one outside that set leaves an install that starts and then cannot run a
-    model, which is worse than a reinstall."""
+    """A bundle carries kernels only for its supported_sms; a card outside that set leaves an
+    install that starts but cannot run a model, which is worse than a reinstall."""
     install_dir = _current_install(
         tmp_path, monkeypatch, install_host = linux_host(**_CUDA_HOST_FIELDS)
     )
@@ -6516,9 +6679,8 @@ def test_a_marker_naming_a_backend_this_platform_cannot_hold_is_not_current(tmp_
 
 
 def test_a_marker_whose_request_and_backend_disagree_is_not_current(tmp_path, monkeypatch):
-    """A concrete request must name the bundle's own backend, or say outright that it is
-    a request the install could not honour (the test below). A bare disagreement with no
-    such flag was not written by this installer."""
+    """A concrete backend request must name the bundle's own backend unless the marker flags it
+    unsatisfied; a bare disagreement was not written by this installer."""
     install_dir = _current_install(tmp_path, monkeypatch, backend_request = "vulkan")
     assert _check(install_dir, backend_request = "vulkan") is False
 
@@ -6538,9 +6700,8 @@ def test_an_unsatisfied_choice_read_off_the_marker_does_not_reinstall_every_upda
 
 
 def test_an_unsatisfied_choice_named_by_this_run_is_re_asserted(tmp_path, monkeypatch):
-    """--llama-backend vulkan (or Settings, which passes it) is someone asking again by
-    hand: take the full path, where the request is re-asserted and, if it still cannot be
-    served, fails loudly instead of silently keeping the bundle it did not ask for."""
+    """An explicit --llama-backend vulkan (or Settings) takes the full path, re-asserting the
+    request and failing loudly rather than silently keeping an unrequested bundle."""
     install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
     assert _check(install_dir, backend_request = "vulkan", backend_request_mandatory = True) is False
 
@@ -6566,9 +6727,8 @@ def test_an_old_marker_is_read_as_a_satisfied_choice(tmp_path, monkeypatch):
 
 
 def test_a_truncated_shared_library_is_not_current(tmp_path, monkeypatch):
-    """The payload scan only globs for existence, so a half-written libggml-*.so keeps
-    its name and passes it. Most of a CUDA bundle's bytes live in those libraries, and a
-    full disk or an interrupted extract leaves exactly this shape."""
+    """The payload scan only checks that files exist, so a half-written libggml shared library
+    passes; most CUDA bundle bytes live there and a full disk leaves exactly this shape."""
     install_dir = _current_install(tmp_path, monkeypatch)
     library = install_dir / "build" / "bin" / "libggml-cpu-x64.so.0"
     assert library.is_file()
@@ -6599,9 +6759,8 @@ def test_the_payload_records_cover_the_bundles_own_allowlist(tmp_path, monkeypat
 
 
 def test_the_reuse_path_backfills_what_the_no_network_check_needs(tmp_path, monkeypatch):
-    """An install made before this PR carries none of the new evidence, so it would take
-    the slow path on EVERY update. The reuse path is the only place that sees the bundle
-    again without reinstalling it, so it is where the record gets caught up -- once."""
+    """Installs from before the new evidence existed would take the slow path on every update, so
+    the reuse path, the only place that sees them, backfills the record once."""
     install_dir = _current_install(
         tmp_path,
         monkeypatch,
@@ -6624,9 +6783,8 @@ def test_the_reuse_path_backfills_what_the_no_network_check_needs(tmp_path, monk
 
 
 def test_an_empty_runtime_record_is_backfilled_like_an_absent_one(tmp_path, monkeypatch):
-    """runtime_file_records answers {} when a binary could not be read; a marker that
-    persisted it would fail the no-network check closed forever unless the reuse path
-    treats it as missing and records it again once the bytes can be read."""
+    """runtime_file_records answers {} for an unreadable binary; a persisted empty record would fail
+    the no-network check closed forever, so reuse must backfill it."""
     install_dir = _current_install(tmp_path, monkeypatch, runtime_files = {})
     assert _check(install_dir) is False
     sync_marker_selection(
@@ -6797,9 +6955,8 @@ def test_a_route_the_caller_already_made_is_not_recomputed(tmp_path, monkeypatch
 
 
 def test_the_profile_sees_an_nvidia_adapter_that_is_present_but_not_usable():
-    """The Intel and ROCm-less AMD routes go to Vulkan only when there is NO NVIDIA
-    adapter at all, so an adapter that appears or goes without ever becoming usable
-    changes the selection while has_usable_nvidia and every other field stay equal."""
+    """Intel and ROCm-less AMD routes go to Vulkan only when no NVIDIA adapter is present at all, so
+    the profile must track has_physical_nvidia apart from has_usable_nvidia."""
     host = linux_host(has_intel_gpu = True)
     assert host_profile(host)["has_physical_nvidia"] is False
     with_adapter = dataclasses.replace(host, has_physical_nvidia = True)
@@ -6880,9 +7037,8 @@ def test_latest_on_an_older_mac_expects_the_pinned_upstream_fallback(monkeypatch
 
 
 def test_a_pinned_upstream_build_expects_the_newest_fork_packaging_of_it(monkeypatch):
-    """The fork can republish a build (b9596-mix-aaa, then b9596-mix-bbb) and the selector
-    installs the newest packaging; the marker check asks the same question instead of
-    reading the recorded release as current forever."""
+    """The fork can republish a build (b9596-mix-aaa, then b9596-mix-bbb) and the selector installs
+    the newest packaging, so the marker check must ask the same question."""
     M = INSTALL_LLAMA_PREBUILT
     releases = [
         {"tag_name": "b9600-mix-ccc", "published_at": "2026-03-01T00:00:00Z", "id": 3},
@@ -7021,9 +7177,8 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
 
 
 def test_the_host_profile_carries_the_cuda_runtimes_on_disk(monkeypatch):
-    """The CUDA selectors order the bundles by the runtimes on disk as well as by torch's
-    preference; a runtime that appeared since the install changes the selection with the
-    GPU and driver unchanged, so it has to move the profile the marker check compares."""
+    """CUDA selectors order bundles by the runtimes on disk too; a runtime that appeared since
+    install changes selection with GPU and driver unchanged, so the profile must carry it."""
     M = INSTALL_LLAMA_PREBUILT
     host = linux_host(compute_caps = ["8.9"], has_physical_nvidia = True, has_usable_nvidia = True)
     monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda12"], {}))

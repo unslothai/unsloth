@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  DEFAULT_REAP_SETTINGS,
+  reapAllowedSparsities,
+  reapKeptExperts,
+  reapProbeFailed,
+  reapProbePending,
+  reapUnavailable,
+  reapRequest,
+  reapSummaryLabel,
+} from "../src/features/export/lib/reap.ts";
+
+const QWEN3_30B = { num_experts: 128, top_k: 8 };
+
+test("REAP is off by default and sends nothing", () => {
+  assert.equal(DEFAULT_REAP_SETTINGS.enabled, false);
+  assert.equal(reapRequest(DEFAULT_REAP_SETTINGS, QWEN3_30B), null);
+  assert.equal(reapSummaryLabel(DEFAULT_REAP_SETTINGS, QWEN3_30B), null);
+});
+
+test("an enabled setting sends sparsity, samples and a trimmed dataset", () => {
+  const on = { ...DEFAULT_REAP_SETTINGS, enabled: true, dataset: "  " };
+  assert.deepEqual(reapRequest(on, QWEN3_30B), {
+    sparsity: 0.25,
+    num_calibration_samples: 512,
+    dataset: null,
+  });
+  assert.equal(
+    reapRequest({ ...on, dataset: " org/data " }, QWEN3_30B)?.dataset,
+    "org/data",
+  );
+  assert.equal(
+    reapSummaryLabel({ ...on, sparsity: 0.5 }, QWEN3_30B),
+    "50% of experts removed (64 of 128 kept)",
+  );
+});
+
+test("kept experts match Core's int(E * sparsity) drop", () => {
+  assert.equal(reapKeptExperts({ num_experts: 60, top_k: 4 }, 0.25), 45);
+  assert.equal(reapKeptExperts({ num_experts: 7, top_k: 2 }, 0.5), 4);
+});
+
+test("a sparsity Core would refuse is not offered or sent", () => {
+  // 4 experts, top-3: 50% would keep 2 < 3; 25% keeps 3.
+  const small = { num_experts: 4, top_k: 3 };
+  assert.deepEqual(reapAllowedSparsities(small), [0.25]);
+  const chose50 = { ...DEFAULT_REAP_SETTINGS, enabled: true, sparsity: 0.5 };
+  assert.equal(reapRequest(chose50, small)?.sparsity, 0.25);
+  // 3 experts, top-2: 25% drops none, 50% keeps 2.
+  assert.deepEqual(reapAllowedSparsities({ num_experts: 3, top_k: 2 }), [0.5]);
+  // Nothing valid: the card is hidden and no request goes out.
+  const none = { num_experts: 2, top_k: 2 };
+  assert.deepEqual(reapAllowedSparsities(none), []);
+  assert.equal(reapRequest(chose50, none), null);
+});
+
+test("group-limited routers count like Core: per group, at least 2 left in each", () => {
+  // DeepSeek-V3: 256 experts, 8 groups, top-8 over 4 groups.
+  const dsv3 = { num_experts: 256, top_k: 8, n_group: 8, topk_group: 4 };
+  assert.deepEqual(reapAllowedSparsities(dsv3), [0.25, 0.5]);
+  assert.equal(reapKeptExperts(dsv3, 0.25), 192);
+  // 8 experts in 4 groups: 50% would leave 1 per group, which Core refuses.
+  const tiny = { num_experts: 8, top_k: 2, n_group: 4, topk_group: 2 };
+  assert.deepEqual(reapAllowedSparsities(tiny), []);
+  // 12 experts in 4 groups at 25%: int(3) dropped, round(0.75) = 1 per group, 4 in total.
+  const odd = { num_experts: 12, top_k: 2, n_group: 4, topk_group: 2 };
+  assert.equal(reapKeptExperts(odd, 0.25), 8);
+  // 20 experts in 4 groups at 50%: 10 dropped, round(2.5) = 2 per group (half to even), 8 in total.
+  const half = { num_experts: 20, top_k: 2, n_group: 4, topk_group: 2 };
+  assert.equal(reapKeptExperts(half, 0.5), 12);
+});
+
+test("the summary reports what Core removes, not the requested fraction", () => {
+  const odd = { num_experts: 12, top_k: 2, n_group: 4, topk_group: 2 };
+  const on = { ...DEFAULT_REAP_SETTINGS, enabled: true, sparsity: 0.25 };
+  assert.equal(reapSummaryLabel(on, odd), "33% of experts removed (8 of 12 kept)");
+  assert.equal(
+    reapSummaryLabel(on, { num_experts: 128, top_k: 8 }),
+    "25% of experts removed (96 of 128 kept)",
+  );
+});
+
+test("an export waits while REAP is on and the new source has not been probed", () => {
+  const on = { ...DEFAULT_REAP_SETTINGS, enabled: true };
+  assert.equal(reapProbePending(on, "org/moe|", null), true);
+  assert.equal(reapProbePending(on, "org/moe|", "org/old|"), true);
+  assert.equal(reapProbePending(on, "org/moe|", "org/moe|"), false);
+  // REAP off, or no source selected: nothing to wait for.
+  assert.equal(reapProbePending(DEFAULT_REAP_SETTINGS, "org/moe|", null), false);
+  assert.equal(reapProbePending(on, "", null), false);
+});
+
+test("a failed MoE probe keeps a REAP export blocked until a retry answers or REAP is off", () => {
+  const on = { ...DEFAULT_REAP_SETTINGS, enabled: true };
+  assert.equal(reapProbeFailed(on, "org/moe|", "org/moe|"), true);
+  // An answer (dense or MoE) for this source, or a failure for an older one, does not block.
+  assert.equal(reapProbeFailed(on, "org/moe|", null), false);
+  assert.equal(reapProbeFailed(on, "org/moe|", "org/old|"), false);
+  // Turned off: the full model exports.
+  assert.equal(reapProbeFailed(DEFAULT_REAP_SETTINGS, "org/moe|", "org/moe|"), false);
+});
+
+test("a source the probe confirms cannot be pruned keeps a REAP export blocked until REAP is off", () => {
+  const on = { ...DEFAULT_REAP_SETTINGS, enabled: true };
+  // Answered for this source, not failed, no usable REAP options: blocked.
+  assert.equal(reapUnavailable(on, "org/fp8-moe|", "org/fp8-moe|", false, false), true);
+  // Available, still being probed, failed (handled by its own notice), or REAP off: not this gate.
+  assert.equal(reapUnavailable(on, "org/moe|", "org/moe|", false, true), false);
+  assert.equal(reapUnavailable(on, "org/fp8-moe|", "org/old|", false, false), false);
+  assert.equal(reapUnavailable(on, "org/fp8-moe|", "org/fp8-moe|", true, false), false);
+  assert.equal(reapUnavailable(DEFAULT_REAP_SETTINGS, "org/fp8-moe|", "org/fp8-moe|", false, false), false);
+});

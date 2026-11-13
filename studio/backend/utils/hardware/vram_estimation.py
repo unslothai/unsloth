@@ -51,8 +51,7 @@ OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
     "sgd": 4,
 }
 
-# (full_ft_multiplier, lora_multiplier) - fraction of num_layers.
-# LoRA: frozen layers skip activation storage, but ~1 is in flight during backprop.
+# Multipliers are fractions of num_layers; LoRA frozen layers skip storage, ~1 in flight.
 GC_LAYER_MULTIPLIERS = {
     "none": (None, None),
     "true": (2.0, 1.0),
@@ -169,8 +168,7 @@ def _max_scalar(value):
 
 
 def _compute_dense_layer_indices(text_config, total_layers: int) -> tuple:
-    """Layer indices that use dense MLP instead of MoE. Position matters."""
-    # Exaone-MoE / Laguna / Hy_v3 / GLM-MoE-DSA / GLM4-MoE-Lite / Ernie4_5_VL_MoE prefer per-position `mlp_layer_types` over prefix `first_k_dense_replace`.
+    """True if an HF offline env var is truthy (on/true/yes/1); an open force_hf_offline window counts even when the env momentarily disagrees."""
     layer_types = getattr(text_config, "mlp_layer_types", None)
     if layer_types:
         return tuple(

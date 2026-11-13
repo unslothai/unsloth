@@ -24,6 +24,18 @@ FONTSIZE_STYLE_ALLOWLIST = {
     "lib/copy-to-clipboard.ts",
 }
 
+# Sizes a container query's em breakpoint, not text (--ui-space-scale derives
+# from --ui-font-scale); children reset to the 1rem they would inherit.
+CSS_FONTSIZE_LAYOUT_RULES = {
+    (".browser-panel-body", "font-size: calc(1rem * var(--ui-space-scale, 1));"),
+    (".browser-panel-body > *", "font-size: 1rem;"),
+}
+
+
+def _css_selector_before(text, pos):
+    head = re.sub(r"/\*.*?\*/", "", text[:pos].rsplit("{", 1)[0], flags = re.S)
+    return re.split(r"[{};]", head)[-1].strip()
+
 
 def _frontend_sources():
     for path in sorted(SRC.rglob("*")):
@@ -106,9 +118,8 @@ def test_radix_select_viewport_owns_the_scroll_state():
 
 
 def test_cn_knows_the_ui_typography_tokens():
-    """Stock tailwind-merge classifies text-ui-* as a text color and deletes
-    it whenever a real color class follows in the same cn() call, so the
-    element falls back to the unscaled inherited font size."""
+    """Stock tailwind-merge treats the text-ui- prefixed classes as text colors and drops them when
+    a real color follows in the same cn() call, falling back to the unscaled font size."""
     assert "extendTailwindMerge" in UTILS
     assert '"font-size": [{ text: [isUiToken] }]' in UTILS
     assert "leading: [{ leading: [isUiToken] }]" in UTILS
@@ -162,6 +173,9 @@ def test_css_font_sizes_reference_the_scale():
                 continue
             if "1px" in decl:
                 continue  # library layout tricks (KaTeX-style), not text
+            selector = _css_selector_before(text, m.start())
+            if (selector, decl.strip()) in CSS_FONTSIZE_LAYOUT_RULES:
+                continue
             offenders.append(f"{_rel(path)}: {decl.strip()[:80]}")
     assert offenders == [], (
         "CSS typography must multiply by var(--ui-font-scale, 1) or be "

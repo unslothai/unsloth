@@ -13,8 +13,6 @@ import {
 registerBundlerResolver();
 const { store, storage } = installLocalStorageFake();
 
-// The preference subscribes to cross-tab writes, so the fake window needs the
-// listener pair a browser has.
 const storageHandlers = new Set<(event: StorageEvent) => void>();
 Object.assign(globalThis.window, {
   addEventListener: (type: string, fn: (event: StorageEvent) => void) => {
@@ -43,7 +41,6 @@ const {
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
-/** Subscribed so the cross-tab handler is registered, as a mounted panel is. */
 function mounted(): { changes: () => number; unmount: () => void } {
   let seen = 0;
   const stop = subscribeAdvancedSettingsOpen(() => {
@@ -53,8 +50,7 @@ function mounted(): { changes: () => number; unmount: () => void } {
 }
 
 test("an untouched profile leaves the section to the model", () => {
-  // null, not false: a model carrying non-default advanced values may still
-  // open the section for itself.
+  // null, not false: a model with non-default advanced values may still open the section.
   assert.equal(readAdvancedSettingsOpen(), null);
 });
 
@@ -66,7 +62,6 @@ test("opening it is remembered", () => {
 
 test("closing it is remembered as closed, not as untouched", () => {
   saveAdvancedSettingsOpen(false);
-  // The difference that stops a non-default model reopening it.
   assert.equal(readAdvancedSettingsOpen(), false);
 });
 
@@ -77,8 +72,6 @@ test("a value it cannot parse counts as untouched", () => {
 });
 
 test("a refused write still moves the switch", () => {
-  // Storage disabled, sandboxed or full. The choice is not remembered next
-  // launch, but the controls have to stay reachable this session.
   const setItem = storage.setItem;
   storage.setItem = () => {
     throw new Error("QuotaExceededError");
@@ -94,8 +87,6 @@ test("a refused write still moves the switch", () => {
 });
 
 test("a newer choice elsewhere takes over from a refused write", () => {
-  // The quota frees up and another tab writes. Storage now holds a choice made
-  // after the one this tab could not persist, so it wins.
   const setItem = storage.setItem;
   storage.setItem = () => {
     throw new Error("QuotaExceededError");
@@ -107,12 +98,10 @@ test("a newer choice elsewhere takes over from a refused write", () => {
     storage.setItem = setItem;
   }
 
-  // No storage event and nothing mounted to hear one: the next read still has
-  // to notice, since events are not replayed.
+  // Storage events are not replayed, so the next read must notice on its own.
   store.set(ADVANCED_SETTINGS_OPEN_KEY, "false");
   assert.equal(readAdvancedSettingsOpen(), false);
 
-  // And it stays handed back to storage rather than flipping around.
   store.delete(ADVANCED_SETTINGS_OPEN_KEY);
   assert.equal(readAdvancedSettingsOpen(), null);
 });
@@ -125,7 +114,6 @@ test("a refused write holds while storage stays put", () => {
   };
   try {
     saveAdvancedSettingsOpen(true);
-    // Nobody else wrote, so the fallback is still the newest choice there is.
     assert.equal(readAdvancedSettingsOpen(), true);
     assert.equal(readAdvancedSettingsOpen(), true);
   } finally {
@@ -135,8 +123,6 @@ test("a refused write holds while storage stays put", () => {
 });
 
 test("every mounted panel hears a toggle made on another surface", () => {
-  // The sidebar copy stays mounted while collapsed, so a toggle in the picker
-  // has to reach it rather than leave it on its mount-time snapshot.
   const sidebar = mounted();
   const hub = mounted();
 
@@ -145,8 +131,6 @@ test("every mounted panel hears a toggle made on another surface", () => {
   assert.equal(hub.changes(), 1);
   assert.equal(readAdvancedSettingsOpen(), true);
 
-  // Closing on one surface closes it on the other, including a panel that
-  // opened itself for a non-default model: an explicit choice outranks that.
   saveAdvancedSettingsOpen(false);
   assert.equal(sidebar.changes(), 2);
   assert.equal(hub.changes(), 2);
@@ -171,12 +155,10 @@ test("a toggle in another tab repaints mounted panels", () => {
   assert.equal(panel.changes(), 1);
   assert.equal(readAdvancedSettingsOpen(), false);
 
-  // A cleared profile drops this key too, so it counts.
   store.delete(ADVANCED_SETTINGS_OPEN_KEY);
   fromAnotherTab(null);
   assert.equal(panel.changes(), 2);
 
-  // An unrelated key does not.
   fromAnotherTab("unsloth_model_configs");
   assert.equal(panel.changes(), 2);
 
@@ -184,8 +166,6 @@ test("a toggle in another tab repaints mounted panels", () => {
 });
 
 test("a toggle in another tab lands even with no panel mounted to hear it", () => {
-  // Nothing is subscribed, so no storage event is caught, and events are not
-  // replayed. The next panel to mount still has to see the new value.
   saveAdvancedSettingsOpen(true);
   store.set(ADVANCED_SETTINGS_OPEN_KEY, "false");
   assert.equal(readAdvancedSettingsOpen(), false);

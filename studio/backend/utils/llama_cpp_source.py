@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp converter sources (convert_lora_to_gguf.py, gguf-py) from the Unsloth fork's releases.
-
-Each unslothai/llama.cpp release carries ``llama.cpp-source-<tag>.tar.gz`` and the
-``llama-prebuilt-sha256.json`` that pins its digest, so no git and no ggml-org download is
-needed. The backend cannot import the studio/ installer scripts (see
-utils/prebuilt/runtime_libs.py), hence this small standalone copy.
-"""
+"""Fetches llama.cpp converter sources from unslothai release tarballs, verified by sha256 manifest."""
 
 from __future__ import annotations
 
@@ -78,12 +72,7 @@ def _matching_fork_tag(upstream_tag: str) -> Optional[str]:
 
 
 def resolve_fork_release(repo: Optional[str], tag: Optional[str]) -> tuple[str, dict]:
-    """(fork release tag, its llama-prebuilt-sha256.json) for a converter revision.
-
-    A fork tag is used as is; a bare tag the fork reports is tried as a release first. Anything
-    else (an old ggml-org marker, nothing) maps to the fork release built on that upstream tag,
-    else the latest.
-    """
+    """A fork tag is used as is; else the fork release built on that upstream tag, else the latest."""
     fork_tag: Optional[str] = None
     checksums = None
     if tag and ("-mix-" in tag or repo == FORK_REPO):

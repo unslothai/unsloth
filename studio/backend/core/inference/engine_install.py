@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in serving environments. No engine packages are imported into Studio.
-
-When Studio's own PyTorch and CUDA libraries are the ones an engine is locked to,
-its environment runs on Studio's interpreter and holds only the packages Studio
-lacks or pins differently; Studio's site-packages follow its own on sys.path.
-Otherwise it is a complete isolated environment.
-
-Installation is serialized across Studio processes. Environments are built at
-their final paths (venv scripts contain absolute paths); only the active marker
-is replaced. Runtime leases prevent removing an environment another Studio uses.
-"""
+"""Opt-in engine envs share Studio torch/CUDA when locked, else isolated; none imported into Studio;
+installs serialized; runtime leases block removing an env in use"""
 
 from __future__ import annotations
 
@@ -41,9 +32,10 @@ PROFILES = {
         "module": "vllm",
         "cuda": "cu130",
         "driver": 580,
-        # FlashInfer fetches the trtllm kernels it uses on demand rather than the whole cubin wheel.
-        # CUTLASS DSL loads its newest flavour the driver runs, and driver 580 runs CUDA 13.
+        # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
+        # vLLM samples with FlashInfer (nvcc JIT at first launch); Studio's SGLang flags never do.
+        "flashinfer_kernels": True,
         # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
         "releases": (
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
@@ -103,8 +95,7 @@ PROFILES = {
 PYTHON = (3, 13)
 _BASE_PTH = "zz_unsloth_studio_base.pth"
 _BASE_MODULE = "_unsloth_studio_base"
-# Studio installs its own FlashInfer for NVFP4 diffusion; a jit-cache of another version fails the
-# engine's flashinfer import ("flashinfer-jit-cache version ... does not match"), so the engine never sees them.
+# A jit-cache of another FlashInfer version fails the engine's flashinfer import.
 _STUDIO_BASE_SOURCE = """import pkgutil, site, sys
 
 _HIDDEN = ("flashinfer", "flashinfer_jit_cache", "flashinfer_cubin")
@@ -163,10 +154,19 @@ def gpu_platform() -> str:
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
 
-    # IS_ROCM reads False until background detection settles; never pick CUDA meanwhile.
-    if not hardware.DETECTION_COMPLETE.is_set():
-        hardware.ensure_hardware_detected()
-    if hardware.IS_ROCM:
+    # Status is read by idle Chat. The wheel's build family is enough to choose
+    # an engine profile; discovering it must not initialize the ML runtime.
+    if hardware.DETECTION_COMPLETE.is_set():
+        is_rocm = hardware.IS_ROCM
+    else:
+        from core._torchao_stub import _installed_torch_is_rocm, _module_is_rocm
+        torch = sys.modules.get("torch")
+        is_rocm = (
+            _module_is_rocm(torch)
+            if getattr(torch, "__version__", None) is not None
+            else _installed_torch_is_rocm()
+        )
+    if is_rocm:
         return "rocm"
     if platform.system() != "Linux" or os.path.exists("/proc/driver/nvidia/version"):
         return "cuda"
@@ -315,9 +315,7 @@ def _torch_runtime() -> set[str]:
     return names
 
 
-# nvcc's cudafe stubs need the crt headers of its own release, so mixing releases breaks
-# FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88, "macro __cudaLaunch passed 2 arguments").
-# Shared only when Studio holds every one at the locked version, else the engine brings all of them.
+# nvcc's cudafe stubs need crt headers of the same release, so share only when all match.
 _TOOLCHAIN = frozenset({"nvidia-cuda-nvcc", "nvidia-cuda-crt", "nvidia-nvvm", "nvidia-cuda-cccl"})
 
 
@@ -355,6 +353,8 @@ def download_bytes(engine: str) -> int | None:
     total = sum(
         size or 0 for name, size in sizes.items() if name not in provided and name not in omit
     )
+    if not wsl and (kernels := flashinfer_kernel_wheel(engine, wait = False)):
+        total += kernels.get("size") or 0
     summary = wsl_host.summary() if wsl else {}
     if wsl and not summary.get("distro"):
         total += wsl_host.ROOTFS["size"] + wsl_host.UV["size"]
@@ -369,8 +369,7 @@ def download_bytes(engine: str) -> int | None:
     return total
 
 
-# Not engine dependencies, so absent from the compat file: the configs Studio's adapters build
-# (Int8WeightOnlyConfig and friends) use TorchAO 0.17's API, and 0.18 removed their version 1.
+# Studio's adapter configs use TorchAO 0.17's API; 0.18 removed their version 1.
 _ADAPTER_REQUIRES = {"torchao": ["==0.17.0"]}
 
 
@@ -443,8 +442,7 @@ def install_plan(engine: str) -> dict:
     def fits(name: str) -> bool:
         if _same_build(studio.get(name), lock.get(name, (None,))[0], cuda):
             return True
-        # Torch is the exact build; a CUDA library torch takes as a range (nvjitlink) only has to
-        # satisfy every locked package's requirement, since the engine then loads Studio's copy.
+        # Torch is exact; range-pinned CUDA libs only need to satisfy every locked requirement.
         specs = compat.get(name)
         return bool(
             name != "torch"
@@ -492,8 +490,7 @@ def link_cuda_home(env: Path, shared: bool) -> None:
     home = env / "cuda"
     (home / "lib64").mkdir(parents = True, exist_ok = True)
     trees = _cuda_trees(env, shared)
-    # One include tree, the engine's entries first: a Studio header such as curand_kernel.h
-    # quote-includes crt/ from beside itself, which then resolves to the engine's crt.
+    # Engine entries first: Studio headers quote-include crt/ which must resolve to the engine's.
     include = home / "include"
     if include.is_symlink():
         include.unlink()
@@ -801,6 +798,17 @@ def _rocm_gpu_arches() -> dict[int, str]:
     return _rocm_arches
 
 
+def _known_rocm_gpu_arches(*, wait: bool) -> dict[int, str]:
+    """Status uses existing runtime information or sysfs; a load may initialize torch.
+
+    Do not cache an empty provisional answer: first use must still run the real
+    probe, including GPU masks and HSA_OVERRIDE_GFX_VERSION.
+    """
+    if wait or "torch" in sys.modules:
+        return _rocm_gpu_arches()
+    return _rocm_arches or {}
+
+
 def _unsupported_amd_gpu(found: list[str]) -> str:
     return (
         "Requires an AMD Instinct MI200, MI300 or MI350, Radeon RX 7700 to 7900, Radeon RX 9000, or Ryzen AI Max or AI 300 GPU"
@@ -820,7 +828,7 @@ def _rocm_reason(
     wanted = profile(engine)
     if wsl_host.active():
         # ROCm is checked inside WSL; a target torch or the driver already names (the selected GPU's) refuses first.
-        arches = _rocm_gpu_arches() if gpu_id is not None else {}
+        arches = _known_rocm_gpu_arches(wait = wait) if gpu_id is not None else {}
         if gpu_id in arches:
             known = [arches[gpu_id]]
         else:
@@ -843,7 +851,11 @@ def _rocm_reason(
         return "Requires ROCm {}.{} or a newer {}.x release installed in /opt/rocm".format(
             *wanted["rocm"], wanted["rocm"][0]
         ) + (" (found {}.{}).".format(*found) if found else ".")
-    from utils.hardware.amd import _a_bare_soname_resolves, amd_kfd_gpu_gfx_targets
+    from utils.hardware.amd import (
+        _a_bare_soname_resolves,
+        amd_kfd_gpu_gfx_targets,
+        hsa_override_gfx_target,
+    )
 
     missing = [soname for soname in ROCM_LIBRARIES if not (ROCM_HOME / "lib" / soname).exists()]
     if missing:
@@ -871,12 +883,22 @@ def _rocm_reason(
     # HIP opens /dev/kfd and an AMD render node; a container mapping only one initialises no GPU.
     if not os.access("/dev/kfd", os.R_OK | os.W_OK) or amd_closed_nodes_block_the_runtime():
         return amd_node_permission_hint() or (
-            "Studio cannot open /dev/kfd and an AMD render node (/dev/dri/renderD*). Add your user "
+            "Unsloth cannot open /dev/kfd and an AMD render node (/dev/dri/renderD*). Add your user "
             "to the render and video groups, then sign in again."
         )
 
     # Each GPU's target as the engine sees it (HSA_OVERRIDE_GFX_VERSION included), else the kernel's.
-    arches = _rocm_gpu_arches()
+    arches = _known_rocm_gpu_arches(wait = wait)
+    if not arches and _rocm_arches is None:
+        kernel = amd_kfd_gpu_gfx_targets()
+        if os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip():
+            # ROCr presents a readable global override for every GPU KFD lists; the kernel's target ignores it.
+            override = hsa_override_gfx_target()
+            if override is None or not kernel:
+                return "Checking for a supported AMD GPU."
+            arches = dict.fromkeys(range(len(kernel)), override)
+        elif kernel is None:
+            return "Checking for a supported AMD GPU."
     if gpu_id is None:
         selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
     elif gpu_id in arches:
@@ -938,7 +960,7 @@ def engine_lease(
             except BlockingIOError:
                 if time.monotonic() >= deadline:
                     raise RuntimeError(
-                        "This engine is running or being changed in another Studio instance."
+                        "This engine is running or being changed in another Unsloth instance."
                     ) from None
                 time.sleep(0.05)
         try:
@@ -1145,6 +1167,13 @@ def install_environment() -> dict[str, str]:
     }
     from utils.paths.storage_roots import cache_root
 
+    # Docker replaces the app tree (and /root) on update while engine venvs persist on the
+    # home volume, so their uv-managed interpreters must live beside them.
+    app = os.environ.get("UNSLOTH_STUDIO_APP")
+    python_home = env.get("UV_PYTHON_INSTALL_DIR")
+    if app and (not python_home or Path(python_home).resolve().is_relative_to(Path(app).resolve())):
+        env["UV_PYTHON_INSTALL_DIR"] = str(engine_root() / "python")
+
     recorded_cache = None
     try:
         raw = (cache_root() / "uv-cache-dir").read_bytes().decode("utf-8-sig")
@@ -1208,7 +1237,7 @@ def _run(
     if (engine_root() / f"{engine}.cancel").exists():
         cancel.set()
     if cancel.is_set() or is_process_shutting_down():
-        raise RuntimeError("Installation cancelled or Studio is shutting down.")
+        raise RuntimeError("Installation cancelled or Unsloth is shutting down.")
     proc = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
             argv,
@@ -1260,7 +1289,7 @@ def _run(
     try:
         # A shutdown sweep may have finished between spawn and adoption; recheck even on clean exit.
         if is_process_shutting_down() or cancel.is_set():
-            raise RuntimeError("Installation cancelled or Studio is shutting down.")
+            raise RuntimeError("Installation cancelled or Unsloth is shutting down.")
         reader.start()
         while proc.poll() is None:
             if (engine_root() / f"{engine}.cancel").exists():
@@ -1275,7 +1304,7 @@ def _run(
                 )
         reader.join(timeout = 2)
         if cancel.is_set() or is_process_shutting_down():
-            raise RuntimeError("Installation cancelled or Studio is shutting down.")
+            raise RuntimeError("Installation cancelled or Unsloth is shutting down.")
         if proc.returncode:
             raise RuntimeError("Engine installation failed. " + "\n".join(tail))
         return "\n".join(tail)
@@ -1305,6 +1334,100 @@ def _index_arguments(engine: str) -> list[str]:
         "https://pypi.org/simple",
         *(["--extra-index-url", extra] if extra else []),
     ]
+
+
+# flashinfer.ai/whl/cu130 jit-cache per locked FlashInfer; UNSLOTH_ENGINE_FLASHINFER_KERNELS=0 skips.
+_FLASHINFER_KERNELS = _REQUIREMENTS / "flashinfer-kernels.json"
+
+
+def _kernels_run_on(arches: list[str], capability: str) -> bool:
+    """SASS only, no PTX: `X.Ya` runs on exactly X.Y, `X.Y` and `X.Yf` on X.Y and later X minors."""
+    major, minor = (int(part) for part in capability.strip().split(".")[:2])
+    for arch in arches:
+        built = tuple(int(part) for part in arch.rstrip("af").split("."))
+        if (major, minor) == built or (
+            not arch.endswith("a") and major == built[0] and minor > built[1]
+        ):
+            return True
+    return False
+
+
+def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
+    """The jit-cache wheel if it has SASS for every GPU here (a missing arch fails, never JITs)."""
+    if os.environ.get("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return None
+    wanted = profile(engine)
+    if (
+        not wanted.get("flashinfer_kernels")
+        or sys.platform != "linux"
+        or wanted["platform"] != "cuda"
+        or not wanted["cuda"]
+    ):
+        return None
+    version = _pins(engine).get("flashinfer-python", (None,))[0]
+    try:
+        entry = json.loads(_FLASHINFER_KERNELS.read_text(encoding = "utf-8")).get(
+            f"{version}+{wanted['cuda']}", {}
+        )
+        wheel = entry.get(platform.machine())
+        if not wheel:
+            return None
+        rows = _driver_rows(None, wait = wait)
+        if (
+            rows is _PENDING
+            or not rows
+            or not all(_kernels_run_on(entry["arches"], row[1]) for row in rows)
+        ):
+            return None
+    except (OSError, ValueError, AttributeError, KeyError, IndexError, TypeError):
+        return None
+    return wheel
+
+
+def _install_flashinfer_kernels(
+    engine: str, uv: str, python: str, destination: Path, cancel: threading.Event
+) -> bool:
+    """Best effort: a failure removes the wheel and keeps JIT; one that cannot be removed fails."""
+    wheel = flashinfer_kernel_wheel(engine)
+    if wheel is None:
+        return False
+    requirement = destination / "flashinfer-kernels.txt"
+    requirement.write_text(
+        f"flashinfer-jit-cache @ {wheel['url']} --hash=sha256:{wheel['sha256']}\n", encoding = "utf-8"
+    )
+    _update(engine, message = "Downloading FlashInfer's prebuilt kernels")
+    try:
+        _run(
+            engine,
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                python,
+                "--link-mode",
+                package_link_mode(destination),
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "-r",
+                str(requirement),
+            ],
+            cancel,
+        )
+        _run(engine, [python, "-I", "-c", "import flashinfer_jit_cache, flashinfer"], cancel)
+        return True
+    except RuntimeError:
+        if cancel.is_set():
+            raise
+        _run(engine, [uv, "pip", "uninstall", "--python", python, "flashinfer-jit-cache"], cancel)
+        return False
 
 
 def _smoke_source(engine: str) -> str:
@@ -1348,7 +1471,7 @@ def _install(
                 return
             uv = shutil.which("uv")
             if uv is None:
-                raise RuntimeError("uv is unavailable. Repair the Studio installation and retry.")
+                raise RuntimeError("uv is unavailable. Repair the Unsloth installation and retry.")
             root = engine_root() / engine
             if root.is_symlink():
                 raise RuntimeError("Engine directory must not be a symbolic link.")
@@ -1359,7 +1482,7 @@ def _install(
             _update(
                 engine,
                 phase = "creating",
-                message = "Preparing an engine environment on Studio's PyTorch"
+                message = "Preparing an engine environment on Unsloth's PyTorch"
                 if plan["shared"]
                 else "Preparing an isolated Python environment",
             )
@@ -1399,6 +1522,7 @@ def _install(
                 (site / _BASE_PTH).write_text(f"import {_BASE_MODULE}\n", encoding = "utf-8")
             if profile(engine)["platform"] == "cuda":
                 link_cuda_home(destination, plan["shared"])
+            kernels = _install_flashinfer_kernels(engine, uv, python, destination, cancel)
             _update(engine, phase = "checking", message = "Checking the installed engine")
             _run(
                 engine,
@@ -1426,7 +1550,7 @@ def _install(
             prior = installed(engine)
             if profile_digest(engine) != digest:
                 raise RuntimeError(
-                    "Studio's engine profile changed during installation. Retry to use the updated profile."
+                    "Unsloth's engine profile changed during installation. Retry to use the updated profile."
                 )
             _atomic_json(
                 root / "active.json",
@@ -1438,6 +1562,7 @@ def _install(
                     "platform": profile(engine)["platform"],
                     "python": platform.python_version(),
                     "provided": plan["provided"],
+                    **({"flashinfer_kernels": True} if kernels else {}),
                     "studio_prefix": sys.prefix,
                     "previous_directory": prior["directory"] if prior else None,
                     "previous": {
@@ -1476,8 +1601,7 @@ def _install(
             lease.__exit__(None, None, None)
 
 
-# Runs in the engine's interpreter inside WSL: the non-shared half of link_cuda_home and
-# managed_engine._deep_gemm_unloadable, whose paths Windows cannot inspect.
+# Runs inside WSL: the parts of link_cuda_home Windows cannot inspect.
 _GUEST_FINALIZE = r"""
 import json, sys
 from pathlib import Path
@@ -1602,7 +1726,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
             raise RuntimeError("Installation cancelled.")
         if profile_digest(engine) != digest:
             raise RuntimeError(
-                "Studio's engine profile changed during installation. Retry to use the updated profile."
+                "Unsloth's engine profile changed during installation. Retry to use the updated profile."
             )
         prior = installed(engine)
         _atomic_json(
@@ -1659,7 +1783,7 @@ def _install_wsl_rocm(engine: str, guest_run, progress, cancel: threading.Event)
     key = wsl_host.ROCM_APT_KEY
     if wsl_host._sha256(key) != wsl_host.ROCM_APT_KEY_SHA256:
         raise RuntimeError(
-            "Studio's copy of AMD's ROCm repository key is damaged. Reinstall Studio."
+            "Unsloth's copy of AMD's ROCm repository key is damaged. Reinstall Unsloth."
         )
     packages = [
         wsl_host.download(spec, spec["url"].rsplit("/", 1)[1], progress, cancel)
@@ -1760,7 +1884,7 @@ def remove_wsl_environment() -> list[dict]:
     from . import wsl_host
 
     if not wsl_host.active():
-        raise RuntimeError("Studio only creates a WSL environment on Windows.")
+        raise RuntimeError("Unsloth only creates a WSL environment on Windows.")
     with ExitStack() as stack:
         for engine in PROFILES:
             stack.enter_context(engine_lease(engine, exclusive = True))
@@ -1807,7 +1931,7 @@ def rollback(engine: str) -> dict:
             )
         if stale(previous):
             raise RuntimeError(
-                "The previous engine installation was built on packages Studio no longer has. Repair the engine instead."
+                "The previous engine installation was built on packages Unsloth no longer has. Repair the engine instead."
             )
         if not built_for_this_gpu(engine, previous):
             raise RuntimeError(

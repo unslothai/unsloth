@@ -3,16 +3,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -euo pipefail
 
-# Qwen3.6 MLX — One-command setup + inference
-# Supply-chain hardening:
-#   - The uv installer is verified against a hardcoded SHA-256 before
-#     execution. Rotate the digest only after verifying the new payload.
-# Usage:
-#   bash install_qwen3_6_mlx.sh [--venv-dir DIR]
-# This script:
-#   1. Creates a Python virtual environment
-#   2. Installs uv, mlx-vlm, transformers, torch, torchvision
-
+# Uv installer pinned by SHA-256; rotate the digest only after verifying the new payload.
 # ── Output style (inspired by unsloth/install.sh) ─────────────
 RULE=""
 _rule_i=0
@@ -54,7 +45,6 @@ for arg in "$@"; do
     esac
 done
 
-# Default venv location
 if [ -z "$VENV_DIR" ]; then
     VENV_DIR="$HOME/.unsloth/unsloth_qwen3_6_mlx"
 fi
@@ -105,10 +95,7 @@ else
 fi
 
 # ── Install uv ───────────────────────────────────────────────
-# Pin the uv installer payload by SHA-256. Rotate by running:
-#   curl -sSLf https://astral.sh/uv/install.sh | shasum -a 256
-# and updating the constant below. We fetch into a temp file, verify
-# the digest, and only then execute. Mismatch aborts.
+# Fetch to a temp file, verify the digest, and only then execute.
 # ── Install uv ───────────────────────────────────────────────
 _UV_INSTALLER_SHA256="48cd5aca5d5671a3b3d5f61538cc8622e4434af63319115159990d8b0dd02416"
 
@@ -136,13 +123,10 @@ _VENV_PY="$VENV_DIR/bin/python"
 
 # ── Install dependencies ──────────────────────────────────────
 step "install" "installing current mlx-vlm..."
-# Reinstall even when the existing version satisfies the request. Older copies of
-# this installer modified mlx-vlm in place, so version metadata alone is not proof
-# that a reused environment still contains the resolver-selected distribution.
+# Reinstall even if satisfied: older copies of this installer modified mlx-vlm in place.
 uv pip install --python "$_VENV_PY" -q \
     --upgrade-package mlx-vlm --reinstall-package mlx-vlm mlx-vlm
-# The old installer also added a legacy module that current mlx-vlm wheels do
-# not own. Remove it only when it is absent from the selected distribution.
+# Remove the legacy module the old installer added, only if the distribution does not own it.
 "$_VENV_PY" - <<'PY'
 from importlib.metadata import distribution
 
@@ -177,8 +161,6 @@ else
     fail "Installation verification failed. Please ensure Python >=3.10 and try again."
 fi
 
-# Verify the active Qwen runtime rather than overwriting the package selected
-# by the resolver with an older copy of its internal modules.
 if "$_VENV_PY" - <<'PY'
 from mlx_vlm.generate import stream_generate
 from mlx_vlm.models.base import InputEmbeddingsFeatures

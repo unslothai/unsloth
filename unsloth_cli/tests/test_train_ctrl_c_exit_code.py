@@ -78,6 +78,9 @@ def _run(tmp_path, monkeypatch, trainer, sleep):
     )
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setattr(train_module, "_create_cli_trainer", lambda *args: trainer)
+    monkeypatch.setattr(
+        train_module, "_dataset_modalities", lambda *args: (False, False), raising = False
+    )
     monkeypatch.setattr(train_module, "time", SimpleNamespace(sleep = sleep, time = time.time))
     app = typer.Typer()
     app.command()(train_module.train)

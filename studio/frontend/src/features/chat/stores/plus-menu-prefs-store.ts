@@ -3,9 +3,9 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 
-// Adjustable items in the composer "+" menu. The core items and the "More" overflow itself are
-// always shown and are intentionally NOT represented here.
+// Core items and the "More" overflow are always shown and intentionally not listed here.
 export type PlusMenuItemId =
   | "deepResearch"
   | "chatWithFiles"
@@ -44,6 +44,17 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   exportChat: false,
 };
 
+export function plusMenuAtDefaults(
+  pins: Record<PlusMenuItemId, boolean>,
+  order: readonly PlusMenuItemId[],
+): boolean {
+  return (
+    order.length === PLUS_MENU_ORDER.length &&
+    order.every((id, index) => id === PLUS_MENU_ORDER[index]) &&
+    PLUS_MENU_ORDER.every((id) => pins[id] === DEFAULT_PINS[id])
+  );
+}
+
 export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";
 
 /** A saved order with unknown ids dropped and missing ones (added in a later release) placed
@@ -64,6 +75,19 @@ export function normalizePlusMenuOrder(saved: unknown): PlusMenuItemId[] {
     order.splice(before ? order.indexOf(before) + 1 : 0, 0, id);
   });
   return order;
+}
+
+/** `ids` with `fixed` put back at its index in `saved`: an item the list doesn't move (Deep research)
+ *  still orders the More submenu when switched off, so a move of another item must not shift it. */
+export function keepSavedSlot(
+  ids: readonly PlusMenuItemId[],
+  saved: readonly PlusMenuItemId[],
+  fixed: PlusMenuItemId,
+): PlusMenuItemId[] {
+  const rest = ids.filter((id) => id !== fixed);
+  const at = saved.indexOf(fixed);
+  const index = at < 0 ? 0 : Math.min(at, rest.length);
+  return [...rest.slice(0, index), fixed, ...rest.slice(index)];
 }
 
 export function splitPlusMenuItems(
@@ -144,3 +168,5 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
     },
   ),
 );
+
+syncAcrossWindows(usePlusMenuPrefsStore);

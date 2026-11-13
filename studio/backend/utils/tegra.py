@@ -5,6 +5,7 @@
 
 import functools
 import os
+import re
 
 _TEGRA_RELEASE = "/etc/nv_tegra_release"
 _DEVICE_TREE_COMPATIBLE = "/proc/device-tree/compatible"
@@ -21,3 +22,23 @@ def is_tegra() -> bool:
             return b"nvidia,tegra" in fh.read()
     except OSError:
         return False
+
+
+@functools.lru_cache(maxsize = 1)
+def tegra_before_cuda13() -> bool:
+    """A Jetson on the installers' CPU route (JetPack 5/6, before CUDA 13). JetPack 7 is L4T R38 and Thor is
+    tegra264; an unreadable release counts as before, as the installers' unknown-CUDA rule does. Never raises."""
+    if not is_tegra():
+        return False
+    try:
+        with open(_TEGRA_RELEASE, encoding = "utf-8", errors = "replace") as fh:
+            match = re.match(r"#\s*R(\d+)", fh.readline())
+        if match:
+            return int(match.group(1)) < 38
+    except OSError:
+        pass
+    try:
+        with open(_DEVICE_TREE_COMPATIBLE, "rb") as fh:
+            return b"nvidia,tegra264" not in fh.read()
+    except OSError:
+        return True

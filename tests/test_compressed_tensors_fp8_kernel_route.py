@@ -261,12 +261,13 @@ def test_decode_gemv_matches_the_dequantized_matmul(shape, rows):
     W, s = model.lin.weight, model.lin.weight_scale
     X = torch.randn(*rows, shape[1], device = dev, dtype = torch.bfloat16)
     with torch.no_grad():
-        if _fp8_gemv_miscompiles(W.device):
-            assert not can_use_fp8_rowwise_gemv(X, W, s)
+        if not can_use_fp8_rowwise_gemv(X, W, s):
+            # Only Blackwell + Triton < 3.4 refuses a decode shape, and only past BLOCK_N 1 or for small N, long K.
+            assert _fp8_gemv_miscompiles(W.device)
+            assert shape[0] > 4096 or (shape[0] < 256 and shape[1] > 4096)
             pytest.skip(
                 "Triton < 3.4 miscompiles this GEMV on Blackwell; decode takes the dequant path"
             )
-        assert can_use_fp8_rowwise_gemv(X, W, s)
         y = fp8_rowwise_gemv(X, W, s)
         y_again = fp8_rowwise_gemv(X, W, s)
     y_ref = X.float() @ ref.t()
@@ -285,7 +286,7 @@ def test_decode_gemv_refuses_what_it_cannot_compute():
     with torch.no_grad():
         assert not can_use_fp8_rowwise_gemv(X, W, torch.ones(16, 128, device = dev))
         assert not can_use_fp8_rowwise_gemv(
-            torch.randn(2, 16384, device = dev, dtype = torch.bfloat16), W, s
+            torch.randn(17, 16384, device = dev, dtype = torch.bfloat16), W, s
         )
         assert not can_use_fp8_rowwise_gemv(X.float(), W, s)
         assert not can_use_fp8_rowwise_gemv(X[:, :2048], W.t(), s)

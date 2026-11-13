@@ -28,18 +28,30 @@ def _jobs() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]
 
 
-def _selections(job_name: str) -> list[str]:
+def _entries(job_name: str) -> list[dict]:
     """Entries without a `selection` are skipped, since the floor spot-check leg names its files
     directly."""
     job = _jobs()[job_name]
     include = job.get("strategy", {}).get("matrix", {}).get("include", [])
-    return [" ".join(entry["selection"].split()) for entry in include if "selection" in entry]
+    return [entry for entry in include if "selection" in entry]
+
+
+def _selections(job_name: str) -> list[str]:
+    return [" ".join(entry["selection"].split()) for entry in _entries(job_name)]
+
+
+_WORKERS = re.compile(r"\$\{\{ matrix\.workers \|\| (\d+) \}\}")
+
+
+def _expand(line: str, entry: dict) -> str:
+    """One shard's command: its selection, and its `workers` or the expression's default."""
+    line = line.replace("${{ matrix.selection }}", " ".join(entry["selection"].split()))
+    return _WORKERS.sub(lambda match: str(entry.get("workers", match.group(1))), line)
 
 
 def _commands_in(job_name: str) -> list[str]:
     """Expands `${{ matrix.selection }}` from this job's own matrix, not the other parallel job's."""
     job = _jobs()[job_name]
-    selections = _selections(job_name)
     commands = []
     for step in job.get("steps", []):
         joined = re.sub(r"\\\s*\n\s*", " ", str(step.get("run", "")))
@@ -48,9 +60,7 @@ def _commands_in(job_name: str) -> list[str]:
             if "python -m pytest" not in line or line.startswith("#"):
                 continue
             if "${{ matrix.selection }}" in line:
-                commands.extend(
-                    line.replace("${{ matrix.selection }}", selection) for selection in selections
-                )
+                commands.extend(_expand(line, entry) for entry in _entries(job_name))
             else:
                 commands.append(line)
     return commands
@@ -81,11 +91,17 @@ def _collects(command: str, path: str) -> bool:
     def under(prefix, candidate):
         return candidate == prefix or candidate.startswith(prefix + "/")
 
+    def rooted(root, candidate):
+        # A glob root (tests/test_fsdp2_*.py) is expanded by bash before pytest sees it.
+        if any(char in root for char in "*?["):
+            return fnmatch.fnmatch(candidate, root)
+        return under(root, candidate)
+
     if any(under(ignore, path) for ignore in ignores):
         return False
     if any(_ignore_glob_hits(pattern, path) for pattern in globs):
         return False
-    return any(under(root, path) for root in roots)
+    return any(rooted(root, path) for root in roots)
 
 
 def _ignore_glob_hits(pattern: str, path: str) -> bool:
@@ -114,6 +130,10 @@ BACKEND_ISOLATED = [
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
     ("tests/test_pr5624_regressions.py", "R1 parser's 1s bound exceeded under CPU contention"),
+    (
+        "tests/test_web_tools_overlap.py",
+        "compares an overlapped batch's duration against a serial one",
+    ),
     # Found by staging; the scan cannot find it (see below).
     (
         "tests/test_tunnel_safe_long_post.py",
@@ -167,6 +187,10 @@ BENIGN_TIMING = {
     ),
     # A poll deadline with a 30s budget.
     ("test_gpu_query_cache.py", "wait_for_call"),
+    # 10 to 20 s poll deadlines for a child to reach its transfer barrier: descheduling only delays the poll.
+    ("test_hf_download_fallback_and_kill.py", "_wait_for_transfer"),
+    ("test_hf_download_reclaim_race.py", "test_gguf_reclaim_preserves_publication_and_active_peer"),
+    ("test_hf_download_ref_concurrency.py", "test_peer_completion_survives_an_older_process"),
 }
 
 
@@ -318,20 +342,20 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 6, (
-        f"expected six parallel pytest runs, three shards of the backend matrix and three "
+    assert len(parallel) == 14, (
+        f"expected fourteen parallel pytest runs, four shards of the backend matrix and ten "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
     )
     root = [command for command in parallel if _over_the_repo_tests(command)]
-    assert len(root) == 3, (
-        f"expected the three repo-root shards, got {root}. The isolation checks above apply "
+    assert len(root) == 10, (
+        f"expected the ten repo-root shards, got {root}. The isolation checks above apply "
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]
-    assert len(backend) == 3, (
-        f"expected the three backend shards, got {backend}. Same reason: the backend "
+    assert len(backend) == 4, (
+        f"expected the four backend shards, got {backend}. Same reason: the backend "
         f"isolation checks apply to those."
     )
     # The two jobs' sets must be disjoint or each job's isolation rules apply to the other.
@@ -346,7 +370,7 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     assert all("${{" not in command for command in root + backend)
     assert any("--ignore=" in command for command in root)
     assert {command for command in root} == set(root), "a shard selection appears twice"
-    assert len(set(backend)) == 3, "a backend shard selection appears twice"
+    assert len(set(backend)) == 4, "a backend shard selection appears twice"
     # Non-vacuous for the backend side too.
     assert any(_collects(command, "tests/test_account_contract.py") for command in backend)
     # Non-vacuous for the repo root too.

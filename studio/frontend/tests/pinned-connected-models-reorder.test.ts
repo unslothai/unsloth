@@ -100,8 +100,7 @@ test("storage events outside a drag apply immediately", () => {
 });
 
 test("a pin that could not be written survives the next toggle", () => {
-  // Quota exhausted with the key present: reads still return the OLDER list, so basing the next
-  // edit on the record dropped the pin that never persisted.
+  // Quota exhausted: reads return the older list, so do not base edits on the record.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -115,28 +114,25 @@ test("a pin that could not be written survives the next toggle", () => {
   } finally {
     storage.set = realSet;
   }
-  // A write succeeding again hands the record back its authority.
   pins.getState().togglePinnedConnected(D);
   assert.deepEqual(storedOrder(), [D, C, B, A]);
 });
 
 test("a drag after a failed write keeps both sides' pins", () => {
-  // The record stays FRESH for other windows, so it is merged: ignoring it let the drop overwrite
-  // another window's additions once storage recovered.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
     throw new Error("QuotaExceededError");
   };
   try {
-    pins.getState().togglePinnedConnected(B); // session-only, never persisted
+    pins.getState().togglePinnedConnected(B);
     assert.deepEqual(pins.getState().pinned, [B, A]);
   } finally {
     storage.set = realSet;
   }
   pins.getState().beginPinnedConnectedDrag();
-  pins.getState().movePinnedConnected(B, A); // reorder locally
-  externalWrite([D, A]); // another window pins D mid-drag
+  pins.getState().movePinnedConnected(B, A);
+  externalWrite([D, A]);
   pins.getState().endPinnedConnectedDrag(true);
   const after = pins.getState().pinned;
   assert.ok(after.includes(B), `this session's unpersisted pin was lost: ${JSON.stringify(after)}`);
@@ -144,19 +140,18 @@ test("a drag after a failed write keeps both sides' pins", () => {
 });
 
 test("a peer removal survives a failed write", () => {
-  // Treating everything the record lacks as local re-added what a peer had just unpinned.
   reset([A, C]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
     throw new Error("QuotaExceededError");
   };
   try {
-    pins.getState().togglePinnedConnected(B); // ours, never persisted
+    pins.getState().togglePinnedConnected(B);
   } finally {
     storage.set = realSet;
   }
-  externalWrite([A]); // a peer unpins C
-  pins.getState().togglePinnedConnected(D); // this one lands
+  externalWrite([A]);
+  pins.getState().togglePinnedConnected(D);
   const after = pins.getState().pinned;
   assert.ok(!after.includes(C), `the peer's removal was undone: ${JSON.stringify(after)}`);
   assert.ok(after.includes(B), `this session's unpersisted pin was lost: ${JSON.stringify(after)}`);
@@ -172,7 +167,7 @@ test("undoing a failed pin does not resurrect it", () => {
   try {
     pins.getState().togglePinnedConnected(B);
     assert.deepEqual(pins.getState().pinned, [B, A]);
-    pins.getState().togglePinnedConnected(B); // undo, still failing
+    pins.getState().togglePinnedConnected(B);
     assert.deepEqual(pins.getState().pinned, [A]);
   } finally {
     storage.set = realSet;
@@ -183,7 +178,6 @@ test("undoing a failed pin does not resurrect it", () => {
 });
 
 test("a failed pin stays on screen when a peer writes", () => {
-  // The rendered list decides which way the row toggles, so it must agree with the merge.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -212,8 +206,8 @@ test("a peer persisting our failed pin hands it back to the record", () => {
   } finally {
     storage.set = realSet;
   }
-  externalWrite([B, A]); // a peer pins the same model, so the record carries it now
-  externalWrite([A]); // and later unpins it
+  externalWrite([B, A]);
+  externalWrite([A]);
   assert.ok(
     !pins.getState().pinned.includes(B),
     `a peer's removal was undone by a stale unpersisted entry: ${JSON.stringify(pins.getState().pinned)}`,
@@ -221,8 +215,6 @@ test("a peer persisting our failed pin hands it back to the record", () => {
 });
 
 test("a record read outside the storage handler retires a pin too", () => {
-  // An unchanged drag sees the peer's write before its event, so retiring only in the handler
-  // left the id classified as ours.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -233,10 +225,10 @@ test("a record read outside the storage handler retires a pin too", () => {
   } finally {
     storage.set = realSet;
   }
-  externalWrite([B, A], false); // a peer persists the same model, event still pending
+  externalWrite([B, A], false); // event still pending
   pins.getState().beginPinnedConnectedDrag();
-  pins.getState().endPinnedConnectedDrag(false); // unchanged drag: reads the record synchronously
-  externalWrite([A]); // the peer then unpins it
+  pins.getState().endPinnedConnectedDrag(false);
+  externalWrite([A]);
   assert.ok(
     !pins.getState().pinned.includes(B),
     `a synchronously observed pin stayed classified as ours: ${JSON.stringify(pins.getState().pinned)}`,
@@ -244,9 +236,7 @@ test("a record read outside the storage handler retires a pin too", () => {
 });
 
 test("a queued payload does not retire a pin the record never carried", () => {
-  // The mirror of the test above and INDISTINGUISHABLE from it: the same two payloads over the
-  // same final record. Retiring on the payload is right there and drops the user's own pin here,
-  // so only the record retires and this pin survives session-only.
+  // Indistinguishable from the test above; only the record retires, so this pin survives.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -279,7 +269,7 @@ test("a newer peer pin sits above an older unpersisted one", () => {
   } finally {
     storage.set = realSet;
   }
-  externalWrite([C, A]); // a peer pins C after B was attempted
+  externalWrite([C, A]);
   assert.deepEqual(pins.getState().pinned, [C, B, A]);
 });
 
@@ -296,14 +286,12 @@ test("a later successful toggle persists the rendered order", () => {
   }
   externalWrite([C, A]);
   assert.deepEqual(pins.getState().pinned, [C, B, A]);
-  pins.getState().togglePinnedConnected(D); // this one lands
+  pins.getState().togglePinnedConnected(D);
   assert.deepEqual(pins.getState().pinned, [D, C, B, A]);
   assert.deepEqual(storedOrder(), [D, C, B, A]);
 });
 
 test("a peer reorder wins once nothing of ours is unwritten", () => {
-  // `storageWritable` is about OUR writes, not the record: with nothing of ours left to carry,
-  // holding the rendered order let the next toggle that landed overwrite a peer's reorder.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -314,16 +302,14 @@ test("a peer reorder wins once nothing of ours is unwritten", () => {
   } finally {
     storage.set = realSet;
   }
-  externalWrite([B, A]); // a peer persists the same pin, so nothing of ours is unwritten now
-  externalWrite([A, B], false); // and reorders, event not yet delivered
-  pins.getState().togglePinnedConnected(D); // this one lands
+  externalWrite([B, A]);
+  externalWrite([A, B], false);
+  pins.getState().togglePinnedConnected(D);
   assert.deepEqual(storedOrder(), [D, A, B]);
   assert.deepEqual(pins.getState().pinned, [D, A, B]);
 });
 
 test("interleaved local and peer pins keep one newest-first order", () => {
-  // Two blocks is an order neither window produced: it lifts every pin we could not write above
-  // every peer pin on screen, and the next write that lands freezes that.
   reset([A]);
   const realSet = storage.set.bind(storage);
   const failing = () => {
@@ -358,12 +344,10 @@ test("a peer clearing the record unpins everything it held", () => {
   externalRemove();
   assert.deepEqual(pins.getState().pinned, []);
   pins.getState().togglePinnedConnected(D);
-  // The pins the peer cleared must not come back with the next write that lands.
   assert.deepEqual(storedOrder(), [D]);
 });
 
 test("a peer clearing the record keeps a pin that was never written", () => {
-  // Only this window ever held it, so a reset of the record says nothing about it.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -379,8 +363,6 @@ test("a peer clearing the record keeps a pin that was never written", () => {
 });
 
 test("an unchanged drag keeps a peer pin above an older failed one", () => {
-  // Ending on the list the event carried re-added the unpersisted pin at the front, above a
-  // newer peer pin.
   reset([A]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
@@ -392,21 +374,19 @@ test("an unchanged drag keeps a peer pin above an older failed one", () => {
     storage.set = realSet;
   }
   pins.getState().beginPinnedConnectedDrag();
-  externalWrite([C, A]); // a peer pins C mid-drag
+  externalWrite([C, A]);
   pins.getState().endPinnedConnectedDrag(false);
   assert.deepEqual(pins.getState().pinned, [C, B, A]);
 });
 
 test("a peer reordering the same pins reorders this window too", () => {
-  // Nothing added or removed, so a merge carrying only our unwritten pins left the old order.
   reset([A, B]);
   externalWrite([B, A]);
   assert.deepEqual(pins.getState().pinned, [B, A]);
 });
 
 test("a record this window cannot read changes nothing on screen", () => {
-  // Revoked access reads like a deleted key and means the opposite: as a reset it unpinned
-  // everything, on a window whose writes still land.
+  // Revoked access reads like a deleted key but means the opposite.
   reset([A]);
   const realGet = storage.get.bind(storage);
   storage.get = () => {
@@ -436,7 +416,6 @@ test("an event arriving while the record is unreadable leaves the list alone", (
 });
 
 test("an unpin stays an unpin when a peer cleared the record first", () => {
-  // The row draws itself pinned, so the click means unpin; the emptied base wrote it back in.
   reset([A, B]);
   storage.delete(KEY); // a peer clears, its event not yet delivered
   pins.getState().togglePinnedConnected(A);
@@ -448,7 +427,6 @@ test("an unpin stays an unpin when a peer cleared the record first", () => {
 });
 
 test("an unpin stays an unpin when a peer unpinned it first", () => {
-  // The quiet version of the same thing: one model gone from the record rather than all of them.
   reset([A, B]);
   storage.set(KEY, JSON.stringify([B])); // a peer unpins A, its event not yet delivered
   pins.getState().togglePinnedConnected(A);
@@ -457,8 +435,6 @@ test("an unpin stays an unpin when a peer unpinned it first", () => {
 });
 
 test("a record we cannot read does not make older pins ours", () => {
-  // Blind both ways, the only id known unpublished is the one just added: claiming the screen
-  // made stored pins ours, so a peer unpinning one was undone by the next write that landed.
   reset([A, B]);
   const realSet = storage.set.bind(storage);
   const realGet = storage.get.bind(storage);
@@ -475,18 +451,16 @@ test("a record we cannot read does not make older pins ours", () => {
     storage.set = realSet;
     storage.get = realGet;
   }
-  externalWrite([A]); // a peer unpinned B while this window was blind
-  pins.getState().togglePinnedConnected(D); // this one lands
+  externalWrite([A]);
+  pins.getState().togglePinnedConnected(D);
   assert.deepEqual(storedOrder(), [D, C, A]);
 });
 
 test("a peer removing a pin as the write fails does not make it ours", () => {
-  // The peer's write lands between the read this edit was built on and the setItem that failed,
-  // so reading ownership off the difference claimed B and undid the removal.
   reset([A, B]);
   const realSet = storage.set.bind(storage);
   storage.set = () => {
-    realSet(KEY, JSON.stringify([A])); // the peer unpins B, and then our write throws
+    realSet(KEY, JSON.stringify([A]));
     throw new Error("QuotaExceededError");
   };
   try {
@@ -496,6 +470,6 @@ test("a peer removing a pin as the write fails does not make it ours", () => {
   }
   assert.equal(fireWindowEvent("storage", { key: KEY }), 1);
   assert.deepEqual(pins.getState().pinned, [C, A]);
-  pins.getState().togglePinnedConnected(D); // this one lands
+  pins.getState().togglePinnedConnected(D);
   assert.deepEqual(storedOrder(), [D, C, A]);
 });

@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 const TAB_VIEW = fileURLToPath(new URL("../src/features/browser/tab-view.tsx", import.meta.url));
 

@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hosted tools that survive a turn the Unsloth loop runs.
-
-Images and Fetch have their own pills, no local implementation, and no
-relationship to Search / Code / RAG. So a request can legitimately mix them with
-an Unsloth tool, and the loop has to forward those names to the provider instead
-of withholding the whole hosted surface: the alternative is a lit toggle for a
-tool the model is never offered.
-
-Search and code execution are the opposite case. Unsloth runs those itself once
-the loop is up, so forwarding them too would run both sides of one tool and bill
-the provider for its half.
-"""
+"""Images and Fetch go to the provider; Search and code run locally, never on both sides."""
 
 from __future__ import annotations
 
@@ -42,6 +31,12 @@ class _FakeExternalClient:
 
         return gen()
 
+    async def served_chat_template(self, model):
+        return None
+
+    async def served_model_reads_images(self, model):
+        return None
+
     async def close(self):
         return None
 
@@ -55,7 +50,7 @@ def _request():
         return False
 
     return SimpleNamespace(
-        # These cases drive the tool loop, whose confirm gate asks over these frames.
+        # the confirm gate asks over these frames
         headers = {"X-Unsloth-Events": "1"},
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
@@ -143,19 +138,15 @@ def _clean_policy():
     reset_tool_policy()
 
 
-# ── the helper ───────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "selection, expected",
     [
         (["python", "terminal", "image_generation"], ["image_generation"]),
         (["search_knowledge_base", "image_generation"], ["image_generation"]),
-        # web_search is Unsloth's own once the loop runs, so it never rides along.
+        # web_search is Unsloth's own once the loop runs, so it never rides along
         (["web_search", "python", "image_generation"], ["image_generation"]),
         (["python", "terminal"], []),
         (["web_search"], []),
-        # Order and duplicates come from the client; the forwarded list is stable.
         (
             ["image_generation", "python", "image_generation"],
             ["image_generation"],
@@ -175,8 +166,7 @@ def test_a_provider_without_that_tool_is_not_offered_it():
 
 @pytest.mark.parametrize("provider_type", ["llama_cpp", "vllm", "ollama", "custom"])
 def test_a_self_hosted_server_is_sent_no_hosted_names_at_all(provider_type):
-    """These declare no hosted tools, and an unknown name is a 400 from some of
-    them, so the filter has to be empty rather than pass-through."""
+    """These servers declare no hosted tools, and some 400 on unknown names, so send none."""
     assert hosted_only_tools(provider_type, ["python", "image_generation"]) == []
 
 
@@ -184,9 +174,6 @@ def test_an_absent_or_malformed_selection_is_not_a_crash():
     assert hosted_only_tools("openai", None) == []
     assert hosted_only_tools(None, ["image_generation"]) == []
     assert hosted_only_tools("openai", [None, 3, "image_generation"]) == ["image_generation"]
-
-
-# ── the route ────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("provider_type", ["openai", "gemini"])
@@ -201,23 +188,19 @@ def test_images_plus_a_studio_tool_still_reaches_the_provider(monkeypatch, provi
 
 
 def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
-    """A project with automatic RAG selects the loop without the user touching a
-    tool pill, which is the quietest way to lose Images."""
+    """Automatic RAG selects the loop silently, which can quietly drop the user's image tool."""
     transport = _loop_transport(
         monkeypatch,
         "openai",
         ["search_knowledge_base", "image_generation"],
-        # The route drops the RAG tool without a scope, and no scope means no
-        # loop at all, so the automatic-RAG turn has to carry one to be the case
-        # this is about.
+        # no scope means no loop at all, so the auto-RAG turn must carry one
         rag_scope = {"kb_id": "kb-1"},
     )
     assert transport._request_kwargs["enabled_tools"] == ["image_generation"]
 
 
 def test_the_loop_keeps_its_own_search(monkeypatch):
-    """Unsloth's web_search is running locally this turn, so the provider must not
-    be asked to run its own as well."""
+    """Unsloth's web_search runs locally this turn, so the provider must not run its own too."""
     transport = _loop_transport(monkeypatch, "openai", ["web_search", "python"])
     assert transport._request_kwargs["enabled_tools"] is None
 

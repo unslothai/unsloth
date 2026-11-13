@@ -1,15 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused fp16 Triton kernels for diffusers' ``WanTransformerBlock`` (T4 and other fp16-only GPUs).
-
-Stock keeps norm / AdaLN modulation / gated residuals / rotary in float32 tensors (a float32 ``[B, L, 6, D]`` table per
-block for TI2V-5B). The kernels do the same per-element math, rounding in float32 exactly where the stock op chain does
-and to fp16 once, so the output is bit-identical (self-checked once per device before use). LayerNorm stats come from
-``native_layer_norm`` on the fp16 rows, bit-identical to ``layer_norm(x.float())`` (4-wide vectorised loads either way).
-Scope: fingerprinted block, fp16 CUDA (non-ROCm), no grad, not compiling. Kill switches
-``UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0`` (all), ``UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0`` (rotary only).
-"""
+"""Fused fp16 Triton kernels for diffusers' WanTransformerBlock on fp16-only GPUs (T4); bit-
+identical to stock float32 rounding, self-checked per device; fp16 CUDA non-ROCm, no grad, not
+compiling; UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0 (all), UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0 (rotary
+only)."""
 
 from __future__ import annotations
 
@@ -17,16 +12,17 @@ import functools
 import os
 import threading
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 WAN_FUSED_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN"
 # rotary only (the block fusion stays): UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0
 WAN_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE"
+WAN_FUSED_ANY_LENGTH_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ANY_LENGTH"
 _MODULE = "diffusers.models.transformers.transformer_wan"
 _CLASS = "WanTransformerBlock"
 # ``_digest(WanTransformerBlock.forward)``: identical in diffusers 0.36.0, 0.37.0, 0.40.0 and main (80c7ed26).
 _FINGERPRINTS = frozenset({"69aa0565fb00eeae"})
-# ``_digest(WanAttnProcessor.__call__)``: identical in diffusers 0.37.0, 0.40.0 and main (80c7ed26); 0.36.0 differs
-# and keeps the stock attention (the block fusion still applies).
+# _digest(WanAttnProcessor.__call__): diffusers 0.37.0+; 0.36.0 keeps stock attention.
 _ATTN_FINGERPRINTS = frozenset({"6c5a5095338dfe67"})
 
 _LOCK = threading.Lock()
@@ -53,7 +49,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
         return False
     if dtype is not torch.float16 or not str(device).startswith("cuda"):
         return False
-    if getattr(getattr(torch, "version", None), "hip", None):
+    if is_rocm_torch(torch):
         return False
     return _kernels() is not None
 
@@ -67,15 +63,23 @@ def _kernels() -> Optional[dict]:
     except Exception:  # noqa: BLE001
         return None
 
+    # L only splits the row id into (sample, token): no alignment depends on it.
+    any_length = (os.environ.get(WAN_FUSED_ANY_LENGTH_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+    unspec = ["L"] if any_length else []
+
     @triton.jit
     def _mul_rn(a, b):
-        # A product rounded on its own. ``enable_fp_fusion=False`` alone is not enough: ptxas still contracts
-        # ``mul.rn.f32x2`` + ``add.rn.f32x2`` into FFMA2 on sm_100, so the multiply is opaque inline PTX.
+        # enable_fp_fusion=False is not enough (ptxas forms FFMA2 on sm_100), hence inline PTX.
         return tl.inline_asm_elementwise(
             "mul.rn.f32 $0, $1, $2;", "=r,r,r", [a, b], dtype = tl.float32, is_pure = True, pack = 1
         )
 
-    @triton.jit
+    @triton.jit(do_not_specialize = unspec)
     def _modnorm(
         X,
         MEAN,
@@ -89,13 +93,11 @@ def _kernels() -> Optional[dict]:
         stl,
         stk,
         sbk,
-        K_SHIFT: tl.constexpr,
-        K_SCALE: tl.constexpr,
-        BLOCK: tl.constexpr,
+        K_SHIFT: tl.constexpr,  # modulation index of shift
+        K_SCALE: tl.constexpr,  # modulation index of scale
+        BLOCK: tl.constexpr,  # block size along hidden
     ):
-        # out = fp16((rstd * (x - mean)) * (1 + (tbl[scale] + temb[scale])) + (tbl[shift] + temb[shift]))
-        # int64: the per-token temb offset l * 6 * D passes 2**31 from 116,510 tokens at D=3072 (a 529-frame 1280x704
-        # TI2V-5B clip), and an int32 product wraps to a read outside temb.
+        # int64: l * 6 * D passes 2**31 on long clips; int32 wraps to an out-of-bounds temb read.
         row = tl.program_id(0).to(tl.int64)
         col = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
         mask = col < D
@@ -116,9 +118,21 @@ def _kernels() -> Optional[dict]:
         y = y + shift
         tl.store(OUT + row * D + col, y.to(OUT.dtype.element_ty), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = unspec)
     def _gate_residual(
-        X, A, T, TBL, OUT, D, L, stb, stl, stk, sbk, K_GATE: tl.constexpr, BLOCK: tl.constexpr
+        X,
+        A,
+        T,
+        TBL,
+        OUT,
+        D,
+        L,
+        stb,
+        stl,
+        stk,
+        sbk,
+        K_GATE: tl.constexpr,
+        BLOCK: tl.constexpr,  # K_GATE modulation index of gate, BLOCK block size along hidden
     ):
         # out = fp16(x.float() + a.float() * (tbl[gate] + temb[gate]))
         row = tl.program_id(0).to(tl.int64)  # int64 temb offset, as in _modnorm
@@ -138,9 +152,10 @@ def _kernels() -> Optional[dict]:
         tl.store(OUT + row * D + col, y.to(OUT.dtype.element_ty), mask = mask)
 
     @triton.jit
-    def _affine_norm(X, MEAN, RSTD, W, BIAS, OUT, D, BLOCK: tl.constexpr):
-        # out = fp16(fma(w, rstd * (x - mean), b)): PyTorch's vectorised kernel writes ``gamma * (...) + beta``, which
-        # nvcc contracts to one fma; checked bit for bit by the self-check.
+    def _affine_norm(
+        X, MEAN, RSTD, W, BIAS, OUT, D, BLOCK: tl.constexpr
+    ):  # block size along hidden
+        # Matches PyTorch's gamma * (...) + beta, which nvcc contracts to one fma.
         row = tl.program_id(0)
         col = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
         mask = col < D
@@ -152,14 +167,20 @@ def _kernels() -> Optional[dict]:
         y = tl.fma(w, _mul_rn(rstd, x - mean), bb)
         tl.store(OUT + row * D + col, y.to(OUT.dtype.element_ty), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = unspec)
     def _rope(
-        X, COS, SIN, OUT, L, scl, ssl, PAIRS: tl.constexpr, HALF: tl.constexpr, BLOCK: tl.constexpr
+        X,
+        COS,
+        SIN,
+        OUT,
+        L,
+        scl,
+        ssl,
+        PAIRS: tl.constexpr,
+        HALF: tl.constexpr,
+        BLOCK: tl.constexpr,  # PAIRS rotary pairs per row, HALF hd // 2, BLOCK block size along hidden
     ):
-        # WanAttnProcessor's rotary on one (batch, position) row of a contiguous [B, L, H, D] fp16 q / k:
-        #   out[0::2] = x1 * cos[0::2] - x2 * sin[1::2];  out[1::2] = x1 * sin[1::2] + x2 * cos[0::2]
-        # each product a float32 multiply of the fp16 input by the float32 table, rounded on its own; then one fp16
-        # rounding where the stock assignment into the fp16 ``out`` casts.
+        # Each product a separately rounded fp32 multiply, then one fp16 rounding, matching stock.
         row = tl.program_id(0)
         l = row % L
         idx = tl.arange(0, BLOCK)
@@ -382,9 +403,7 @@ def _rope_ok(x: Any, freqs: Any) -> bool:
 
 
 def _self_attention(attn: Any, hidden_states: Any, rotary_emb: Any) -> Any:
-    """``WanAttnProcessor.__call__`` for self-attention (no mask, no image branch), step for step, with the rotary as
-    one kernel per q / k. None when the processor or the inputs are not the ones this reproduces; the caller then runs
-    the stock module."""
+    """Fused self-attention matching WanAttnProcessor; None when unsupported, so the stock module runs."""
     import torch
 
     if (os.environ.get(WAN_FUSED_ROPE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
@@ -520,8 +539,7 @@ def _make_forward(stock: Callable) -> Callable:
     def forward(self, hidden_states, encoder_hidden_states, temb, rotary_emb):
         import torch
 
-        # Under a regional compile, trace the stock block and leave the counters alone: dynamo guards on the module
-        # globals it reads, so a counter bumped inside the traced frame recompiles the block on every call.
+        # Under compile, trace stock and skip counters: dynamo guards globals, so bumps recompile.
         if torch.compiler.is_compiling():
             return stock(self, hidden_states, encoder_hidden_states, temb, rotary_emb)
         if _kernels() is None or not _eligible(self, hidden_states, encoder_hidden_states, temb):

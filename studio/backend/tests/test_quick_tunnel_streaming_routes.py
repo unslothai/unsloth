@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep first-party event streams usable through Cloudflare Quick Tunnels.
-
-Measured on three fresh quick tunnels, one generator on both verbs so only the method
-differs: GET delivers its first byte when the stream closes (~12s), POST in under 300ms,
-and no response header recovers GET. Checks registration rather than source text, since a
-route that stopped resolving or lost a dependency would still spell "post" in the file.
-"""
+"""Event streams use POST: through Quick Tunnels GET delivers no first byte until the stream closes."""
 
 import importlib
 
@@ -56,8 +50,7 @@ def test_both_verbs_carry_the_same_dependencies(
 
 
 def test_only_post_reaches_the_schema() -> None:
-    """One api_route for both verbs would give them one operationId; two registrations
-    with GET hidden keeps the ids unique and the public contract single."""
+    """One api_route would give GET and POST one operationId; hiding GET keeps ids unique."""
     import main
 
     schema = main.app.openapi()

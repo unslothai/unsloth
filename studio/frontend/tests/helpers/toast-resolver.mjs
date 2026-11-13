@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// bundler-resolver.mjs's two rules, plus "@/lib/toast" -> a local stub, so a module
-// that only raises toasts can be tested without sonner or react.
+// bundler-resolver.mjs rules plus "@/lib/toast" -> a stub, so tests avoid sonner and react.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

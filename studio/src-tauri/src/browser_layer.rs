@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 //! macOS: browser pages sit under the app's webview, which is transparent over them, so panel
-//! overlays draw on top of the live page. The app's webview returns nil from `hitTest:` and
-//! `_hitTest:dragTypes:` over the page unless panel UI covers that point (`browser_view_input`).
+//! overlays draw on top of the live page. The app's webview returns nil from `hitTest:`,
+//! `_hitTest:dragTypes:` and `hitTestForContext:` over the page unless panel UI covers that point
+//! (`browser_view_input`).
 
 use crate::browser_webview::ViewBounds;
 use block2::RcBlock;
@@ -25,12 +26,17 @@ type DragHitTest = unsafe extern "C-unwind" fn(
     *mut NSPoint,
     *mut AnyObject,
 ) -> *mut AnyObject;
+/// macOS 27+: clicks, scrolls and cursor updates hit-test through `hitTestForContext:`, which
+/// WKWebView answers itself without calling `hitTest:`.
+type ContextHitTest =
+    unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> *mut AnyObject;
 
 /// The app's webview, set once on the main thread; it lives as long as the app.
 static MAIN: AtomicPtr<AnyObject> = AtomicPtr::new(null_mut());
 static INSTALLING: AtomicBool = AtomicBool::new(false);
 static HIT_TEST: OnceLock<HitTest> = OnceLock::new();
 static DRAG_HIT_TEST: OnceLock<DragHitTest> = OnceLock::new();
+static CONTEXT_HIT_TEST: OnceLock<ContextHitTest> = OnceLock::new();
 /// Which webview takes mouse moves (`APP` or `PAGE`, 0 before the first). WebKit's tracking
 /// areas hand every move in the window to both views whatever is on top, so both would set the
 /// cursor and hover in turn, a flicker over links, text and annotate.
@@ -170,6 +176,8 @@ unsafe fn install_on(view: *mut AnyObject) {
         log::warn!("browser pages stay over the panel: the webview class can't be routed");
         return;
     };
+    // Absent before macOS 27.
+    let context_hit_test = class.instance_method(sel!(hitTestForContext:));
     // Safety: same signatures; the originals are stored before the swap can call them.
     unsafe {
         let _ = HIT_TEST.set(std::mem::transmute::<Imp, HitTest>(
@@ -191,6 +199,17 @@ unsafe fn install_on(view: *mut AnyObject) {
             std::mem::transmute::<DragHitTest, Imp>(routed_drag_hit_test),
             objc2::ffi::method_getTypeEncoding(drag_hit_test),
         );
+        if let Some(context_hit_test) = context_hit_test {
+            let _ = CONTEXT_HIT_TEST.set(std::mem::transmute::<Imp, ContextHitTest>(
+                context_hit_test.implementation(),
+            ));
+            objc2::ffi::class_replaceMethod(
+                class,
+                sel!(hitTestForContext:),
+                std::mem::transmute::<ContextHitTest, Imp>(routed_context_hit_test),
+                objc2::ffi::method_getTypeEncoding(context_hit_test),
+            );
+        }
         // Private KVC key, as used by wry's `transparent` option.
         let main = &*(view as *const NSView);
         main.setValue_forKey(
@@ -293,6 +312,30 @@ unsafe extern "C-unwind" fn routed_hit_test(
     let original = HIT_TEST.get().expect("installed before routing");
     // Safety: AppKit's arguments, forwarded to the original implementation.
     unsafe { original(this, cmd, point) }
+}
+
+unsafe extern "C-unwind" fn routed_context_hit_test(
+    this: *mut AnyObject,
+    cmd: Sel,
+    context: *mut AnyObject,
+) -> *mut AnyObject {
+    if let Some(main) = main_view().filter(|main| std::ptr::eq(*main as *const NSView, this.cast()))
+    {
+        // Safety: AppKit's NSHitTestContext, on the main thread. Its point is in window
+        // coordinates, passed down unchanged (unlike `hitTest:`'s superview coordinates).
+        if let Some(context) = unsafe { context.as_ref() } {
+            let has_point: bool = unsafe { msg_send![context, respondsToSelector: sel!(point)] };
+            if has_point {
+                let at: NSPoint = unsafe { msg_send![context, point] };
+                if over_page(main, main.convertPoint_fromView(at, None)) {
+                    return null_mut();
+                }
+            }
+        }
+    }
+    let original = CONTEXT_HIT_TEST.get().expect("installed before routing");
+    // Safety: AppKit's arguments, forwarded to the original implementation.
+    unsafe { original(this, cmd, context) }
 }
 
 /// Files dragged over the page drop on it, as before it sat under the app's webview.

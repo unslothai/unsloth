@@ -397,9 +397,8 @@ def test_no_moment_the_turn_can_start_lets_the_action_spend_the_next_slot(
 
 @pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
 def test_a_reply_that_drains_early_still_gets_its_throwaway_turn(monkeypatch, scene):
-    """THE CONTROL. The reserve must not turn the wait into a refusal: a marginally slow drain is
-    what it was written for, and the fast film opens this slot only 400 ms after the worst-case
-    drain on the ladder. A reply that finishes 500 ms in must still be stopped and measured."""
+    """The reserve must not refuse a marginally slow drain: this slot opens 400 ms after the
+    worst-case drain, so a reply that finishes 500 ms in must still be stopped and measured."""
 
     stop, _nxt, _slack = _stop_slot(scene)
     result, page = _run(monkeypatch, budget_ms = stop.budget_ms, drain_after_ms = 500)
@@ -413,9 +412,8 @@ def test_a_reply_that_drains_early_still_gets_its_throwaway_turn(monkeypatch, sc
 
 @pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
 def test_nothing_running_at_the_slot_still_gets_its_throwaway_turn(monkeypatch, scene):
-    """THE SECOND CONTROL, and the path every unmodified run takes: with the pinned tail the reply
-    is long finished when this slot opens, the drain wait is never entered, and the turn has the
-    whole budget. It must still be sent, stopped and cleaned up on every film."""
+    """Second control: unmodified runs skip the drain wait, since the pinned tail has finished; the
+    turn still gets sent, stopped and cleaned up on every film."""
 
     stop, _nxt, _slack = _stop_slot(scene)
     clock = _Clock()

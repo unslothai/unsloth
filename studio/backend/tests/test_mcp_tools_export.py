@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fastmcp.exceptions import ToolError
 
-from studio_mcp import export_jobs
+from studio_mcp import export_jobs, job_store
 
 from .mcp_harness import (
     OUT,
@@ -63,9 +63,7 @@ def test_a_running_job_is_not_settled_from_the_export_status(monkeypatch):
 
 
 def test_a_failed_job_reports_its_error_scrubbed(monkeypatch):
-    export_jobs.finish(
-        register_export_job(), "failed", error = "Disk full writing /srv/exports/x.gguf"
-    )
+    job_store.finish(register_export_job(), "failed", error = "Disk full writing /srv/exports/x.gguf")
     result, _studio = _get(monkeypatch, {"kind": "export", "id": "job-a"})
     assert result["structuredContent"]["status"] == "failed"
     assert result["structuredContent"]["error"].startswith("Disk full writing")
@@ -97,12 +95,12 @@ def test_the_registry_runs_settles_fails_and_cancels_tasks():
         done = export_jobs.start("owner", "gguf", quick)
         assert done.task is not None and done.status == "running"
         failed = export_jobs.start("owner", "gguf", fails)
-        await export_jobs.settle(done, 1.0)
+        await job_store.settle(done, 1.0)
         stuck = export_jobs.start("owner", "lora", hangs)
-        await export_jobs.settle(stuck, 0.01)
+        await job_store.settle(stuck, 0.01)
         # settle never cancels: a job still busy after the wait is left running.
         assert stuck.status == "running"
-        export_jobs.mark_cancelled(stuck)
+        job_store.mark_cancelled(stuck)
         await asyncio.gather(failed.task, stuck.task, return_exceptions = True)
         return done, failed, stuck
 
@@ -114,11 +112,29 @@ def test_the_registry_runs_settles_fails_and_cancels_tasks():
 
 
 def test_without_an_id_only_this_accounts_jobs_are_listed(monkeypatch):
-    register_export_job(job_id = "mine", status = "completed")
+    register_export_job(job_id = "mine", status = "completed", phase = "done", output = "my-gguf")
     register_export_job(account_id = "alice-id", job_id = "theirs")
+    register_export_job(job_id = "newer", status = "failed", phase = "exporting", error = "Disk full")
     result, _studio = _get(monkeypatch, {"kind": "export"})
     assert result["structuredContent"]["jobs"] == [
-        {"id": "mine", "status": "completed", "progress_percent": None}
+        {
+            "id": "newer",
+            "status": "failed",
+            "progress_percent": None,
+            "format": "gguf",
+            "phase": "exporting",
+            "output": None,
+            "error": "Disk full",
+        },
+        {
+            "id": "mine",
+            "status": "completed",
+            "progress_percent": None,
+            "format": "gguf",
+            "phase": "done",
+            "output": "my-gguf",
+            "error": None,
+        },
     ]
 
 

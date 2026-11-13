@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The running (Allow/Deny) web-fetch card must show the full url, not just the host.
 // JSX cannot run here, so claims go through the TypeScript AST.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import { readSrc } from "./helpers/kit.ts";
 import { openingTag } from "./helpers/tsx-ast.ts";
@@ -82,7 +81,6 @@ function classNameOf(opening: ts.JsxOpeningLikeElement): string {
     .join(" ");
 }
 
-/** The nearest enclosing conditional, so a sibling's guard cannot satisfy the check. */
 function guardCondition(node: ts.Node): ts.Expression | undefined {
   for (let parent = node.parent; parent; parent = parent.parent) {
     if (ts.isConditionalExpression(parent)) {

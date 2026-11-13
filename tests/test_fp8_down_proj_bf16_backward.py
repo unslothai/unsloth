@@ -84,8 +84,10 @@ def _backward(downW, downW_quant):
             2.0,
             backward_function,
         ),
-        saved_tensors = (gateA, gateB, upA, upB, downA, downB, X, e, gg),
+        saved_tensors = (gateA, gateB, upA, upB, downA, downB, X, e, gg, None, None, None),
         inplace = False,
+        dropout_p = (0.0, 0.0, 0.0),
+        biases = (False, False, False),
         _fwd_used_autocast = False,
         _dtype = torch.float32,
     )
@@ -106,5 +108,6 @@ def test_bf16_down_proj_backward_unchanged(fp8_calls):
     downW = torch.randn(HIDDEN, INTER, generator = torch.Generator().manual_seed(5))
     DW, dY, downA, downB = _backward(downW, None)
     assert fp8_calls == []
-    old = kernel_utils.matmul_lora(dY, downW.t(), None, downB.t(), downA.t(), 2.0)
+    # The module holds FP8 gate / up weights, so it keeps the base-then-LoRA order.
+    old = kernel_utils.matmul_lora(dY, downW.t(), None, downB.t(), downA.t(), 2.0, fused = False)
     assert torch.equal(DW, old)

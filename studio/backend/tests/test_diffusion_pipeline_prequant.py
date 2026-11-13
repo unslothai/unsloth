@@ -13,6 +13,12 @@ import types
 
 import pytest
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
+
 from core.inference import diffusion as dmod
 from core.inference import diffusion_prequant as pqmod
 from core.inference import diffusion_transformer_quant as tqmod
@@ -20,8 +26,9 @@ from core.inference.diffusion import DiffusionBackend
 from core.inference.diffusion_auto_policy import DenseQuantEstimate
 from core.inference.diffusion_denoiser_prequant import PIPELINE_SEED_DECLINED
 from core.inference.diffusion_device import DiffusionDeviceTarget
-from core.inference.diffusion_families import detect_family_for_pick
+from core.inference.diffusion_families import ANIMA_BF16_WHEN_RESIDENT, detect_family_for_pick
 from core.inference.diffusion_memory import DeviceMemory
+from models.inference import DiffusionDownloadPlanResponse
 
 MIB = 1024 * 1024
 
@@ -62,7 +69,7 @@ def _unmeasured_torchao(monkeypatch):
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
-    # Studio's diffusers pin, so tests that opt into a measured torchao do not depend on the runner.
+    # pin Studio's diffusers version so measured-torchao tests ignore the runner
     monkeypatch.setattr(diffusion_memory, "_installed_diffusers_version", lambda: (0, 40))
 
 
@@ -200,6 +207,7 @@ def _plan_backend(
     return backend
 
 
+@needs_torchao
 def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
     backend = _plan_backend(monkeypatch, planned = "fp8")
     plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
@@ -211,7 +219,7 @@ def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
     assert "transformer/config.json" in entries[Z_IMAGE_REPO]["files"]
     assert plan["required_bytes"] == ALL_BYTES - DENOISER_BYTES + PREQUANT_BYTES
     assert entries[Z_IMAGE_REPO]["checkpoint"] is True
-    assert entries[PREQUANT_REPO]["checkpoint"] is False
+    assert entries[PREQUANT_REPO]["checkpoint"] is True
 
 
 def test_an_unplanned_pipeline_pick_plans_exactly_as_before(monkeypatch, hub):
@@ -234,6 +242,7 @@ def test_a_declined_plan_keeps_the_released_shards(monkeypatch, hub):
     assert all(shard in entries[Z_IMAGE_REPO]["files"] for shard in DENOISER_SHARDS)
 
 
+@needs_torchao
 def test_the_artifact_carries_the_denoiser_share_of_the_unified_memory_verdict(monkeypatch, hub):
     """The unified-memory refusal prices the denoiser from the artifact, not the dropped shards."""
     backend = _plan_backend(monkeypatch, planned = "fp8")
@@ -247,6 +256,22 @@ def test_the_artifact_carries_the_denoiser_share_of_the_unified_memory_verdict(m
     backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
     assert seen["prequant_bytes"] == PREQUANT_BYTES
     assert not [name for name, _s in seen["declared_files"] if name.startswith("transformer/")]
+
+
+def test_the_hosted_vae_carries_its_share_of_the_unified_memory_verdict(monkeypatch, hub):
+    """A hosted VAE that replaces the dropped vae/ shards is priced in the memory verdict."""
+    backend = _plan_backend(monkeypatch, planned = None)
+    hosted = {"vae": ("unsloth/hosted-vae", [("vae.safetensors", 675)])}
+    monkeypatch.setattr(DiffusionBackend, "_hosted_vae_plan_files", lambda *_a, **_k: hosted)
+    seen: dict = {}
+
+    def _shortfall(_self, *_a, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(DiffusionBackend, "declared_footprint_shortfall", _shortfall)
+    backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
+    assert seen["prequant_bytes"] == 675
 
 
 def test_a_gguf_pick_still_never_downloads_a_second_denoiser(monkeypatch):
@@ -414,8 +439,7 @@ def test_a_whole_module_offload_request_never_seeds_a_torchao_free_rung(monkeypa
 
 
 def test_auto_under_a_whole_module_offload_seeds_the_winner_it_quantises(monkeypatch):
-    """AUTO under low_vram quantises its winner with torchao (the native path is for a pinned scheme only), so the
-    winner's artifact is seeded."""
+    """Auto under low_vram uses torchao, not native, so the winner's artifact is seeded."""
     backend = _forced_offload_backend(monkeypatch, scheme = "int8", native = "int8")
     assert _settle(backend, memory_mode = "low_vram") == "int8"
 
@@ -443,9 +467,7 @@ def test_an_artifact_sized_plan_that_still_offloads_declines(monkeypatch):
 
 
 def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple):
-    """A backend whose memory verdict depends on the rung: an int8-sized plan (31 GB) offloads, an
-    fp8-sized one (19 GB) stays resident. ``artifacts`` names the schemes with a hosted file,
-    ``candidates`` the auto ladder."""
+    """Memory verdict depends on the rung: int8 (31 GB) offloads, fp8 (19 GB) stays resident."""
     from core.inference import diffusion_transformer_quant as tq
 
     backend = _settle_backend(monkeypatch, scheme = candidates[0])
@@ -575,6 +597,27 @@ def test_a_forced_fp8_accumulate_the_artifact_cannot_bake_keeps_the_released_wei
     assert _settle(backend, transformer_quant = "fp8") == "fp8"
 
 
+def test_a_forced_fp8_accumulate_also_rules_out_a_local_prequant_cache_entry(monkeypatch, tmp_path):
+    """A cache entry bakes in auto accumulate, so a forced different value must not seed it."""
+    from core.inference import diffusion_prequant_cache as cache
+
+    root = tmp_path / "prequant_cache"
+    monkeypatch.setenv(cache.ENV_DIR, str(root))
+    entry = str(root / ("e" * 32) / cache.FILE_NAME)
+    operator_file = str(tmp_path / "mine" / "fp8.safetensors")
+    backend = _settle_backend(monkeypatch)
+    for location, forced_off in ((entry, None), (operator_file, "fp8")):
+        monkeypatch.setattr(
+            dmod,
+            "denoiser_prequant_source",
+            lambda fam, scheme, _loc = location, **_k: pqmod.PrequantSource(
+                kind = "path", location = _loc, filename = None
+            ),
+        )
+        assert _settle(backend, transformer_quant = "fp8", fast_accum = False) == forced_off
+        assert _settle(backend, transformer_quant = "fp8", fast_accum = True) == "fp8"
+
+
 def test_a_forced_accumulate_never_blocks_a_scheme_that_bakes_none(monkeypatch):
     """Only fp8 records ``fast_accum``, so the int8 artifact is seeded whatever the caller forces."""
     backend = _settle_backend(monkeypatch, scheme = "int8")
@@ -699,8 +742,7 @@ def test_a_local_checkpoint_is_still_seeded_on_an_online_load(monkeypatch, hub):
 
 
 def test_a_local_path_the_loader_would_refuse_keeps_the_released_shards(monkeypatch, hub):
-    """The seed rides on the artifact being there: a path that does not resolve keeps the bf16
-    shards rather than pinning a seed the load cannot take."""
+    """A seed needs its artifact; an unresolvable path keeps bf16 shards rather than a seed."""
     backend, seen, _fetched = _run_load_backend(monkeypatch, planned = "fp8", verified = False)
     monkeypatch.setattr(dmod, "denoiser_prequant_cached", lambda *_a, **_k: False)
     backend._run_load(
@@ -818,7 +860,7 @@ def _load_backend(
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
     )
-    monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe: None)
+    monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe, **_kw: None)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "stored_denoiser_precision", lambda *_a, **_k: None)
     monkeypatch.setattr(dmod, "denoiser_modules", lambda pipe: [("transformer", object())])
@@ -898,7 +940,6 @@ def test_the_resolved_record_names_the_hosted_file(fake_runtime, monkeypatch):
     assert resolved["value"] == "fp8"
     assert resolved["artifact"] == f"prequant:{PREQUANT_REPO}/{PREQUANT_FILE}"
     assert PREQUANT_FILE in resolved["reason"]
-    # `source` must stay "auto"/"explicit": the frontend branches on it.
     assert resolved["source"] == "auto"
 
 
@@ -915,9 +956,7 @@ def test_a_seed_that_does_not_land_replans_and_tops_up_the_shards(fake_runtime, 
 
 
 def test_a_top_up_that_spans_cache_roots_assembles_from_the_hub_id(fake_runtime, monkeypatch):
-    """A cache-folder change can leave the manifest in the old root and the restored shards in the
-    live one. No snapshot then holds both, so assembly must fall back to the hub id: from_pretrained
-    would treat the staged directory as terminal with no transformer in it."""
+    """Split cache roots: no snapshot holds both, so assemble from the hub id, not the staged directory."""
     backend, _spy = _load_backend(monkeypatch, seeded = False)
     monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda *_a, **_k: None)
     _load(backend, _base_local_dir = "/old/root/snapshots/abc")
@@ -940,8 +979,7 @@ def test_a_top_up_never_promotes_a_snapshot_the_staging_did_not_hand_back(
 
 
 def test_a_single_root_top_up_keeps_assembling_from_the_staged_snapshot(fake_runtime, monkeypatch):
-    """The ordinary case: the shards land in the staged snapshot, which keeps from_pretrained off
-    the hub."""
+    """Shards land in the staged snapshot, which keeps from_pretrained off the hub."""
     backend, _spy = _load_backend(monkeypatch, seeded = False)
     monkeypatch.setattr(
         DiffusionBackend, "_prefetch_files", lambda *_a, **_k: "/live/root/snapshots/abc"
@@ -964,8 +1002,7 @@ def test_an_artifact_sized_plan_that_offloads_at_load_time_drops_the_seed(
 
 def test_the_artifact_label_names_the_file_that_really_loaded():
     """A repo serving only its fallback filename is labelled with the fallback, not the primary."""
-    # _resolve_checkpoint_path falls back when the primary name is absent, so labelling from
-    # source.filename would publish provenance for a file nobody fetched.
+    # _resolve_checkpoint_path may fall back, so source.filename may not be the fetched file
     import types
 
     from core.inference.diffusion_denoiser_prequant import prequant_artifact_label
@@ -986,8 +1023,7 @@ def test_the_artifact_label_names_the_file_that_really_loaded():
 
 def test_a_dropped_seed_replans_once_the_dense_shards_are_back(fake_runtime, monkeypatch):
     """The plan the dense load runs on is taken AFTER the skipped transformer shards are restored."""
-    # A pipeline plan prices CACHED bytes, so one taken while transformer/ was skipped saw companions
-    # only: left in place it reads 'none' and the load keeps the bf16 denoiser resident.
+    # a plan made while transformer/ was skipped prices companions only and keeps bf16 resident
     backend, spy = _load_backend(monkeypatch, offload = "sequential")
     _load(backend)
 
@@ -1130,7 +1166,6 @@ def test_a_resident_rung_still_beats_a_streamed_one(monkeypatch):
         ),
     )
     assert _settle(backend) == "fp8"
-    # no resident rung: the first streamed one is seeded
     backend = _settle_backend_walking(monkeypatch, artifacts = ("int8",), candidates = ("int8", "fp8"))
     monkeypatch.setattr(
         DiffusionBackend,
@@ -1227,7 +1262,6 @@ def test_an_uncompilable_family_still_plans_an_operators_checkpoint(monkeypatch,
     path = _operator_checkpoint(monkeypatch, tmp_path)
     monkeypatch.setattr(pqmod, "local_prequant_scheme", lambda _path: "fp8")
     assert _settle(backend, transformer_prequant_path = path) is not None
-    # An unloadable path is no ask: the released weights still win.
     assert _settle(backend, transformer_prequant_path = str(tmp_path / "missing.pt")) is None
 
 
@@ -1269,6 +1303,7 @@ def test_an_uncompilable_family_loads_an_operators_checkpoint_under_auto(
 def test_a_compilable_family_loads_without_the_bf16_replan(fake_runtime, monkeypatch):
     backend, spy = _load_backend(monkeypatch)
     monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: None)
     replans = []
     monkeypatch.setattr(
         DiffusionBackend,
@@ -1384,7 +1419,14 @@ def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
         ("HiDream-ai/HiDream-I1-Full", True),
         ("black-forest-labs/FLUX.1-dev", False),
         ("Tongyi-MAI/Z-Image-Turbo", False),
+        ("black-forest-labs/FLUX.2-klein-4B", False),
+        ("black-forest-labs/FLUX.2-klein-base-4B", False),
+        ("black-forest-labs/flux-3-image-klein", False),
+        ("black-forest-labs/flux-3-image-klein-base", False),
+        ("black-forest-labs/FLUX.2-dev", False),
         ("Qwen/Qwen-Image", False),
+        ("OpenMOSS-Team/MOSS-Image-SFT", False),
+        ("OpenMOSS-Team/MOSS-Image-Base", False),
     ],
 )
 def test_the_bf16_rule_names_only_the_measured_families(repo, kept):
@@ -1537,7 +1579,7 @@ def test_a_partial_sharded_transformer_is_not_a_cached_release(tmp_path):
 
 
 def test_a_complete_bin_set_does_not_cover_a_partial_safetensors_index(tmp_path):
-    # Diffusers loads the safetensors index when present and never a .bin index by default.
+    # diffusers loads the safetensors index, never a .bin index by default
     folder = tmp_path / "transformer"
     bins = [f"diffusion_pytorch_model-0000{i}-of-00002.bin" for i in (1, 2)]
     folder.mkdir()
@@ -1828,7 +1870,7 @@ def test_the_kept_bf16_weights_are_placed_by_the_plan_that_proved_the_fit(
 def test_the_streamed_seed_credits_host_ram_the_outgoing_pipeline_frees(
     monkeypatch, outgoing_host_mib, expected
 ):
-    # The plan runs before the previous pipeline unloads, so its host weights must not veto the pin.
+    # the plan runs before the old pipeline unloads; its host weights must not veto the pin
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
@@ -1848,3 +1890,193 @@ def test_the_streamed_seed_credits_host_ram_the_outgoing_pipeline_frees(
         ),
     )
     assert (_settle(backend) == "fp8") is expected
+
+
+def _small_dit_kept_bf16(monkeypatch, reason):
+    _measured_bf16_family(monkeypatch)
+    monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: reason)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *_a, **_k: True)
+    monkeypatch.setattr(dmod, "fp16_compile_explicit_only", lambda _t: False)
+
+
+@pytest.mark.parametrize(
+    "reason, speed, expect_speed, expect_deferred",
+    [
+        (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, None, "default", False),
+        (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, "off", "off", False),
+        ("measured: no faster", None, "off", True),
+        # Anima's reason keeps the deferred compile (background, from render 3).
+        (ANIMA_BF16_WHEN_RESIDENT, None, "off", True),
+    ],
+)
+def test_a_small_dit_kept_bf16_compiles_from_render_1(
+    fake_runtime, monkeypatch, reason, speed, expect_speed, expect_deferred
+):
+    backend, spy = _load_backend(monkeypatch)
+    _small_dit_kept_bf16(monkeypatch, reason)
+    status = _load(
+        backend, speed_mode = speed, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ()
+    )
+
+    assert spy.quantised == [] and spy.seeds == []
+    assert status["resolved"]["transformer_quant"]["value"] == "off"
+    assert backend._state.speed_mode == expect_speed
+    assert backend._state.speed_deferred is expect_deferred
+
+
+@pytest.mark.parametrize(
+    "repo, kept",
+    [
+        ("black-forest-labs/FLUX.2-klein-4B", True),
+        ("black-forest-labs/FLUX.2-klein-base-4B", True),
+        ("unsloth/FLUX.2-klein-4B", True),
+        ("black-forest-labs/FLUX.2-klein-9B", False),
+        ("black-forest-labs/FLUX.2-klein-base-9B", False),
+        ("unsloth/FLUX.2-klein-9B", False),
+        ("unsloth/FLUX.2-klein-base-9B", False),
+    ],
+)
+def test_the_small_dit_rule_skips_the_9b_klein_variants(monkeypatch, repo, kept):
+    # No family carries the rule since the INT8 measurement; arm it on klein to keep the 9B carve-out covered.
+    monkeypatch.setattr(
+        dmod,
+        "auto_bf16_when_resident_reason",
+        lambda name: dmod.SMALL_DIT_BF16_WHEN_RESIDENT if name == "flux.2-klein" else None,
+    )
+    fam = detect_family_for_pick(repo, None, None)
+    assert fam is not None and fam.name == "flux.2-klein"
+    assert (dmod._auto_keeps_bf16_reason(fam, "pipeline", repo) is not None) is kept
+    fits = types.SimpleNamespace(
+        offload_policy = "none",
+        estimates = {"safe_device_budget_mib": 60_000, "resident_required_mib": 30_000},
+    )
+    assert (dmod._auto_quant_eager_reason(fam, fits, None, "pipeline", repo) is not None) is kept
+
+
+def test_a_large_variant_of_a_small_dit_family_quantises_under_auto(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _small_dit_kept_bf16(monkeypatch, dmod.SMALL_DIT_BF16_WHEN_RESIDENT)
+    seen = []
+
+    def excludes(base):
+        seen.append(base)
+        return base == Z_IMAGE_REPO
+
+    monkeypatch.setattr(dmod, "small_dit_rule_excludes", excludes)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+    assert Z_IMAGE_REPO in seen  # the load hands the decider its resolved base
+    assert spy.quantised == ["auto"]
+
+
+@needs_torchao
+@pytest.mark.parametrize("shared_repo", [False, True])
+def test_denoiser_is_a_checkpoint_and_encoder_only_is_an_asset(monkeypatch, hub, shared_repo):
+    backend = _plan_backend(monkeypatch, planned = "fp8")
+    encoder_repo = PREQUANT_REPO if shared_repo else "test/shared-encoder"
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_te_prequant_plan_files",
+        lambda *_a, **_k: {
+            "text_encoder": (encoder_repo, [("text_encoder/model.safetensors", 1234)])
+        },
+    )
+    plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
+    entries = {entry["repo_id"]: entry for entry in plan["entries"]}
+    assert entries[PREQUANT_REPO]["checkpoint"] is True
+    assert entries[PREQUANT_REPO]["hosted_denoiser"] is True
+    assert entries[Z_IMAGE_REPO]["hosted_denoiser"] is False
+    # The route returns this model, which would drop an undeclared field.
+    served = DiffusionDownloadPlanResponse(**plan).entries
+    assert {e.repo_id for e in served if e.hosted_denoiser} == {PREQUANT_REPO}
+    assert entries[encoder_repo]["checkpoint"] is shared_repo
+    assert entries[encoder_repo]["hosted_denoiser"] is shared_repo
+    assert "text_encoder/model.safetensors" in entries[encoder_repo]["files"]
+    assert entries[PREQUANT_REPO]["bytes"] == PREQUANT_BYTES + (1234 if shared_repo else 0)
+
+
+def _turing_host(monkeypatch, reason):
+    """A fp16-only Turing card: no torchao dense quant, the native int8 build only for an int8 request."""
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: False)
+    monkeypatch.setattr(tqmod, "dense_transformer_supported", lambda _t: False)
+    monkeypatch.setattr(
+        dmod,
+        "fp16_card_native_scheme",
+        lambda _t, requested, family = None: "int8" if requested == "int8" else None,
+    )
+    monkeypatch.setattr(dmod, "turing_auto_int8_reason", lambda _t, _family: reason)
+
+
+@pytest.mark.parametrize("request_", [None, "auto"])
+def test_auto_on_turing_runs_the_int8_build_for_a_measured_family(
+    fake_runtime, monkeypatch, request_
+):
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    status = _load(
+        backend,
+        transformer_quant = request_,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == ["int8"]
+    assert status["resolved"]["transformer_quant"]["source"] == "auto"
+
+
+def test_auto_on_turing_keeps_fp16_without_a_measurement(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, None)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert status["transformer_quant"] in (None, "off")
+
+
+@pytest.mark.parametrize("memory_mode", ["balanced", "low_vram"])
+def test_auto_on_turing_keeps_fp16_under_an_offloading_memory_mode(
+    fake_runtime, monkeypatch, memory_mode
+):
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    _load(
+        backend,
+        memory_mode = memory_mode,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == []
+
+
+@pytest.mark.parametrize("request_", [None, "auto"])
+def test_auto_on_turing_falls_back_to_fp16_when_the_int8_build_declines(
+    fake_runtime, monkeypatch, request_
+):
+    """AUTO picked int8 for the user, so an int8 build that declines loads fp16 as before, never fails closed."""
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda *_a, **_k: None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda _m: False)
+    status = _load(
+        backend,
+        transformer_quant = request_,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert status["transformer_quant"] in (None, "off")
+    assert status["resolved"]["transformer_quant"]["source"] == "auto"
+
+
+def test_an_explicit_int8_on_turing_still_fails_closed_when_it_declines(fake_runtime, monkeypatch):
+    backend, _spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda *_a, **_k: None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda _m: False)
+    with pytest.raises(RuntimeError, match = "transformer_quant='int8'"):
+        _load(
+            backend,
+            transformer_quant = "int8",
+            _pipeline_prequant_planned = None,
+            _pipeline_prequant_skipped = (),
+        )

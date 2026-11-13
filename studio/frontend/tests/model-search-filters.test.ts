@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import {
   filterModelListing,
   hasModelSearchFilters,
@@ -318,6 +318,7 @@ function channelIterator(listings: Record<string, unknown[]>) {
     "makeSortFetch",
     "UNSLOTH_CHANNEL_PREFETCH",
     "UNSLOTH_FILTER_REJECT_LIMIT",
+    "hubListingSort",
     `${
       ts.transpileModule(source.slice(start, end), {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -330,6 +331,7 @@ function channelIterator(listings: Record<string, unknown[]>) {
     () => undefined,
     60,
     limit,
+    (sortBy: string) => sortBy,
   );
   return { fn, limit };
 }

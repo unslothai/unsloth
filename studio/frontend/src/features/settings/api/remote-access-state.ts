@@ -114,10 +114,8 @@ export function remoteAccessStopDisconnectsOrigin(
   );
 }
 
-// A Stop sent from the tunnel's own origin is answered with a terminal off, then that origin dies.
-// Polls landing during teardown still report "stopping", a state this origin can never see resolve,
-// so they must not overwrite the terminal off. One that can still stop the connector proves
-// teardown was abandoned, so the origin is staying up and polls lead again.
+// After a self-stop, polls reporting "stopping" must not overwrite the terminal off; one that can
+// still stop the connector means teardown was abandoned, so polls lead again.
 export function remoteAccessSelfStopPoll(
   next: RemoteAccessStatus,
   expectingDisconnect: boolean,
@@ -126,6 +124,30 @@ export function remoteAccessSelfStopPoll(
     return { expectingDisconnect: false, apply: true };
   }
   return { expectingDisconnect: true, apply: next.state !== "stopping" };
+}
+
+export function remoteAccessErrorMessage(
+  error: string | null | undefined,
+): string | null {
+  switch (error) {
+    case null:
+    case undefined:
+      return null;
+    case "cloudflared is unavailable":
+      return "Couldn't download cloudflared. Check your internet connection, or install cloudflared yourself (for example brew install cloudflared) and try again.";
+    case "cloudflared did not produce a URL":
+      return "Cloudflare didn't issue a URL. Check your connection and try again in a minute.";
+    case "cloudflared did not register a connection":
+      return "Cloudflare couldn't connect. A firewall or VPN may be blocking it.";
+    case "Cloudflare URL was not reachable":
+      return "The URL was created but didn't respond. Try again.";
+    case "cloudflared exited":
+      return "The Cloudflare tunnel stopped unexpectedly. Start it again.";
+    case "cloudflared could not be stopped":
+      return "The previous Cloudflare tunnel could not be stopped. Stop it before starting a new one.";
+    default:
+      return error;
+  }
 }
 
 export function remoteAccessBlockMessage(
@@ -140,7 +162,7 @@ export function remoteAccessBlockMessage(
         ? "Set a remote password before exposing this server."
         : "Change the administrator password before exposing this server. In the desktop app, run unsloth studio reset-password.";
     case "explicitly_disabled":
-      return "This launch used --no-cloudflare. Restart without it to enable remote access.";
+      return "This launch turned the Cloudflare tunnel off (--no-cloudflare, which unsloth start also sets). Relaunch with unsloth studio to use remote access.";
     case "launch_managed":
       return "This tunnel is managed by the launch command.";
     case "colab_managed":

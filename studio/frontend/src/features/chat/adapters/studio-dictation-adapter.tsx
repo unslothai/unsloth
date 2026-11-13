@@ -9,7 +9,10 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { maxAudioFilesFor } from "@/lib/audio-utils";
+import { micClipRoom, micSendsAudioToModel } from "../utils/mic-target";
 import {
   currentDictationEntryMode,
   insecureDictationGuidance,
@@ -20,6 +23,12 @@ import {
   sttEngineStatusFor,
   sttQuantDownloaded,
 } from "./studio-model-dictation-adapter";
+import { PcmRecorder } from "./pcm-recorder";
+import {
+  discardClipOnRelease,
+  discardClipWhenModelChanges,
+  listenForAudioClip,
+} from "./studio-audio-clip-adapter";
 import {
   type StudioDictationSession,
   StudioWebSpeechDictationAdapter,
@@ -35,9 +44,34 @@ export function cancelActiveStudioDictation(): void {
   session?.cancel();
 }
 
-/** Routes dictation to the engine chosen in Voice settings, resolved at listen() time so
- *  switching engines applies without reloading the chat runtime. */
-/** local and custom transcription record through the media recorder. */
+type AudioClipTarget = {
+  add: (file: File) => Promise<unknown> | unknown;
+  attached: () => readonly { name: string; type: string; size: number }[];
+};
+type RegisteredClipTarget = AudioClipTarget & { onRelease: Set<() => void> };
+// Compare registers none, so it keeps transcribing.
+let audioClipTarget: RegisteredClipTarget | null = null;
+
+export function setMicAudioClipTarget(target: AudioClipTarget): () => void {
+  const entry: RegisteredClipTarget = { ...target, onRelease: new Set() };
+  audioClipTarget = entry;
+  return () => {
+    if (audioClipTarget === entry) audioClipTarget = null;
+    for (const listener of [...entry.onRelease]) listener();
+  };
+}
+
+export function micRecordsForModel(chatId?: string | null): boolean {
+  if (chatId === null || !audioClipTarget) return false;
+  const { micTarget } = useVoiceSettingsStore.getState();
+  const { params, models, modelLoading } = useChatRuntimeStore.getState();
+  const activeModel = modelLoading
+    ? undefined
+    : models.find((model) => model.id === params.checkpoint);
+  return micSendsAudioToModel(micTarget, activeModel?.hasAudioInput === true);
+}
+
+/** Local and custom transcription record through the media recorder. */
 function usesRecordedAudio(dictationEngine: DictationEngine): boolean {
   return dictationEngine !== "browser";
 }
@@ -56,8 +90,7 @@ function customSttConfigured(): boolean {
 }
 
 export class StudioDictationAdapter implements DictationAdapter {
-  // Chat linked in Recent dictations. undefined follows the active single chat; null records no
-  // chat (composers outside it, e.g. Compare).
+  // undefined follows the active chat; null links no chat (e.g. Compare).
   private readonly chatId: string | null | undefined;
 
   constructor(options: { chatId?: string | null } = {}) {
@@ -78,11 +111,9 @@ export class StudioDictationAdapter implements DictationAdapter {
 
   listen(): StudioDictationSession {
     const session = this.createSession();
-    // A second entry point (chat, Compare, settings test) replaces the active session; cancel the
-    // old one so it cannot keep the mic open or save a transcript with no discard button.
+    // Cancel the old session so it cannot hold the mic or save an undiscardable transcript.
     cancelActiveStudioDictation();
     activeSession = session;
-    // Forget the session once it ends so a later cancel is a no-op.
     const clear = () => {
       if (activeSession === session) {
         activeSession = null;
@@ -94,6 +125,26 @@ export class StudioDictationAdapter implements DictationAdapter {
   }
 
   private createSession(): StudioDictationSession {
+    const clipTarget = audioClipTarget;
+    if (clipTarget && micRecordsForModel(this.chatId)) {
+      if (!PcmRecorder.isSupported()) {
+        throw new Error("Voice recording is not supported in this browser.");
+      }
+      const { params, models, modelLoading, pendingAudioBase64 } =
+        useChatRuntimeStore.getState();
+      const activeModel = modelLoading
+        ? undefined
+        : models.find((model) => model.id === params.checkpoint);
+      const room = micClipRoom(
+        clipTarget.attached(),
+        maxAudioFilesFor(activeModel),
+        !!pendingAudioBase64,
+      );
+      const session = listenForAudioClip(clipTarget.add, room);
+      discardClipWhenModelChanges(session, useChatRuntimeStore);
+      discardClipOnRelease(session, clipTarget.onRelease);
+      return session;
+    }
     const { dictationEngine } = useVoiceSettingsStore.getState();
     if (usesRecordedAudio(dictationEngine)) {
       if (dictationEngine === "custom" && !customSttConfigured()) {
@@ -121,7 +172,6 @@ export class StudioDictationAdapter implements DictationAdapter {
   }
 }
 
-/** Whether dictation can run now for the chosen engine. */
 export function isStudioDictationAvailable(
   dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
     .dictationEngine,
@@ -129,7 +179,6 @@ export function isStudioDictationAvailable(
   return StudioDictationAdapter.isSupported(dictationEngine);
 }
 
-/** Explain why dictation can't start and point the user to the local model. */
 export function notifyStudioDictationUnavailable(
   dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
     .dictationEngine,

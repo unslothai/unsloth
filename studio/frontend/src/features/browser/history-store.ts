@@ -3,8 +3,9 @@
 
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
-import { useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import { hostOf } from "./address";
 import { forgetNativeDownloads } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
@@ -56,10 +57,11 @@ function retentionCutoff(): number {
 }
 
 /** localStorage with batched writes, since history is one big JSON value; a full storage is ignored. */
-function deferredLocalStorage(): StateStorage {
+function deferredLocalStorage(): StateStorage & { flush: () => void } {
   const pending = new Map<string, string>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   const flush = () => {
+    if (timer !== null) clearTimeout(timer);
     timer = null;
     for (const [name, value] of pending) {
       try {
@@ -70,8 +72,14 @@ function deferredLocalStorage(): StateStorage {
     }
     pending.clear();
   };
-  if (typeof window !== "undefined") window.addEventListener("pagehide", flush);
+  if (typeof window !== "undefined") {
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("storage", (event) => {
+      if (event.key !== null) pending.delete(event.key);
+    });
+  }
   return {
+    flush,
     getItem: (name) => pending.get(name) ?? localStorage.getItem(name),
     setItem: (name, value) => {
       pending.set(name, value);
@@ -84,13 +92,15 @@ function deferredLocalStorage(): StateStorage {
   };
 }
 
+// Removals are written at once: another window's older deferred write landing after them would undo them.
+const historyStorage = deferredLocalStorage();
+
 let nextId = 0;
 const newId = () => `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
 
 interface BrowserHistoryState {
   history: HistoryItem[];
   downloads: DownloadItem[];
-  /** Host to the icon its pages declared, newest last. */
   icons: Record<string, string>;
   recordVisit: (url: string, title: string, temporary?: boolean) => void;
   recordIcon: (host: string, icon: string, temporary?: boolean) => void;
@@ -107,23 +117,24 @@ interface BrowserHistoryState {
 
 export const useBrowserHistoryStore = create<BrowserHistoryState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       history: [],
       downloads: [],
       icons: {},
-      recordIcon: (host, icon, temporary = false) =>
+      // No-op calls skip set(): persist rewrites storage on every set().
+      recordIcon: (host, icon, temporary = false) => {
+        const { icons } = get();
+        if (!host || icon.length > MAX_URL_CHARS || icons[host] === icon) return;
+        // Icons name the hosts visited, so they follow the history setting.
+        if (!savesHistory(temporary)) return;
+        const { [host]: _replaced, ...rest } = icons;
+        const hosts = Object.keys(rest);
+        for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
+        set({ icons: { ...rest, [host]: icon } });
+      },
+      recordVisit: (url, fullTitle, temporary = false) => {
+        if (url.length > MAX_URL_CHARS || !savesHistory(temporary)) return;
         set((state) => {
-          if (!host || icon.length > MAX_URL_CHARS || state.icons[host] === icon) return state;
-          // Icons name the hosts visited, so they follow the history setting.
-          if (!savesHistory(temporary)) return state;
-          const { [host]: _replaced, ...rest } = state.icons;
-          const hosts = Object.keys(rest);
-          for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
-          return { icons: { ...rest, [host]: icon } };
-        }),
-      recordVisit: (url, fullTitle, temporary = false) =>
-        set((state) => {
-          if (url.length > MAX_URL_CHARS || !savesHistory(temporary)) return state;
           const title = fullTitle.slice(0, MAX_TITLE_CHARS);
           const cutoff = retentionCutoff();
           const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
@@ -136,7 +147,8 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           // Pruned against the new visit too: its icon was recorded just before it.
           const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
           return { history, icons };
-        }),
+        });
+      },
       recordDownload: (item, temporary) => {
         // Callers that took the state when the download began pass it; the rest go by the chat shown now.
         if (!useBrowserPrefsStore.getState().saveDownloadHistory || (temporary ?? useChatRuntimeStore.getState().incognito)) {
@@ -159,39 +171,54 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           forgetNativeDownloads(dropped);
           return { downloads: downloads.slice(0, MAX_DOWNLOADS) };
         });
+        historyStorage.flush();
         return id;
       },
-      removeVisit: (id) => set((state) => ({ history: state.history.filter((item) => item.id !== id) })),
-      removeVisits: (ids) => set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) })),
-      removeDownload: (id) =>
+      removeVisit: (id) => {
+        set((state) => ({ history: state.history.filter((item) => item.id !== id) }));
+        historyStorage.flush();
+      },
+      removeVisits: (ids) => {
+        set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) }));
+        historyStorage.flush();
+      },
+      removeDownload: (id) => {
         set((state) => {
           const nativeId = state.downloads.find((item) => item.id === id)?.nativeId;
           if (nativeId) forgetNativeDownloads([nativeId]);
           return { downloads: state.downloads.filter((item) => item.id !== id) };
-        }),
-      clearHistory: () => set({ history: [], icons: {} }),
-      clearDownloads: () =>
+        });
+        historyStorage.flush();
+      },
+      clearHistory: () => {
+        set({ history: [], icons: {} });
+        historyStorage.flush();
+      },
+      clearDownloads: () => {
         set((state) => {
           // The app's registry is shared by every account; forget only this one's.
           forgetNativeDownloads(state.downloads.flatMap((item) => (item.nativeId ? [item.nativeId] : [])));
           return { downloads: [] };
-        }),
-      pruneHistory: () =>
-        set((state) => {
-          const cutoff = retentionCutoff();
-          if (!cutoff || state.history.every((visit) => visit.visitedAt >= cutoff)) return state;
-          const history = state.history.filter((visit) => visit.visitedAt >= cutoff);
-          return { history, icons: iconsFor(history, state.icons) };
-        }),
+        });
+        historyStorage.flush();
+      },
+      pruneHistory: () => {
+        const state = get();
+        const cutoff = retentionCutoff();
+        if (!cutoff || state.history.every((visit) => visit.visitedAt >= cutoff)) return;
+        const history = state.history.filter((visit) => visit.visitedAt >= cutoff);
+        set({ history, icons: iconsFor(history, state.icons) });
+      },
     }),
     {
       // Per account: a write still deferred at a switch lands under the account that made it.
       name: accountDatabaseName("unsloth_browser_history"),
       version: 1,
-      storage: createJSONStorage(deferredLocalStorage),
+      storage: createJSONStorage(() => historyStorage),
     },
   ),
 );
+syncAcrossWindows(useBrowserHistoryStore);
 
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 

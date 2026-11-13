@@ -113,8 +113,7 @@ def test_an_explicit_uv_cache_dir_still_wins(monkeypatch, tmp_path, caches):
 
 
 def test_verbose_keeps_its_own_flag_alongside_the_cache(monkeypatch, tmp_path, caches):
-    """The verbose branch builds env first; the cache seeding must extend it, not
-    replace it."""
+    """The verbose branch builds env first; cache seeding must extend that env, not replace it."""
     studio = _studio()
     studio_cache, _default = caches
     _fill(studio_cache)
@@ -167,9 +166,8 @@ def test_the_windows_branch_gets_the_same_cache(monkeypatch, tmp_path, caches):
 
 
 def test_a_unicode_digit_version_is_not_a_bucket(monkeypatch, tmp_path, caches):
-    """str.isdigit() is true for Arabic-Indic and superscript digits; the sh `*[!0-9]*` case
-    and the PowerShell \\A[0-9]+\\z both reject them, and uv writes ASCII. Python was the
-    only one of the three that would have counted such a directory as warmth."""
+    """str.isdigit() accepts Arabic-Indic and superscript digits, but the sh and PowerShell bucket
+    checks reject them since uv writes ASCII; Python alone would count them as warm."""
     studio = _studio()
     assert studio._uv_is_bucket_name("archive-v0")
     assert not studio._uv_is_bucket_name("archive-v\u0661")
@@ -461,9 +459,8 @@ def test_an_emptied_recorded_cache_does_not_outrank_a_warm_one(monkeypatch, tmp_
 def test_a_reinstall_into_a_custom_cache_is_not_shadowed_by_the_old_marker(
     monkeypatch, tmp_path, caches
 ):
-    """A reinstall with a nonblank UV_CACHE_DIR fills that cache, so it is recorded too:
-    a stale marker would aim later updates at a cache this install never filled, and both
-    hold packages, so nothing downstream could notice."""
+    """A reinstall with a nonblank UV_CACHE_DIR must record that cache, since a stale marker would
+    aim later updates at a cache it never filled, and nothing downstream would notice."""
     studio_cache, _default = caches
     custom = tmp_path / "caller cache"
     _fill(studio_cache)
@@ -638,9 +635,8 @@ def test_the_backfill_replaces_a_symlink_rather_than_its_target(monkeypatch, tmp
 
 @pytest.mark.skipif(os.name != "posix", reason = "POSIX filesystem byte semantics")
 def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, tmp_path):
-    """An undecodable POSIX path arrives as surrogates, and encoding those raises
-    UnicodeEncodeError, not an OSError, so it escaped the best-effort handler and failed
-    an update whose setup had succeeded, with its marker already gone."""
+    """Undecodable POSIX paths hold surrogates that raise UnicodeEncodeError, not OSError, escaping
+    the best-effort handler and failing an update whose setup had succeeded."""
     studio = _studio()
     weird = (tmp_path / os.fsdecode(b"caf\xe9-cache")).resolve()
     _fill(weird)
@@ -689,9 +685,8 @@ def test_the_probe_asks_from_the_directory_setup_will_ask_from(monkeypatch, tmp_
 
 
 def test_the_windows_handoff_probes_from_the_directory_it_hands_the_child(monkeypatch, tmp_path):
-    """setup.ps1 never changes directory: it hands install_python_stack.py the cwd it
-    inherited (setup.ps1:5191), so probing the script's directory would answer for a
-    configuration the child never sees, and that answer is forced on it."""
+    """setup.ps1 never changes directory and hands install_python_stack.py its inherited cwd
+    (setup.ps1:5191), so the probe must run from that cwd, not the script directory."""
     studio = _studio()
     repo_root = tmp_path / "repo"
     (repo_root / "studio").mkdir(parents = True)
@@ -919,9 +914,8 @@ def test_files_outside_a_bucket_are_not_warm(tmp_path):
 def test_a_recorded_cache_that_is_no_longer_writable_loses_to_the_studio_cache(
     monkeypatch, tmp_path, caches
 ):
-    """setup treats the value this hands it as the caller's choice and never probes it
-    again, and uv aborts on a cache it cannot write, so a share remounted read-only since
-    the install has to lose here."""
+    """setup treats the recorded cache handed to it as the caller's choice and never probes it
+    again, and uv aborts on an unwritable cache, so a share remounted read-only must lose."""
     if getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("root can write anywhere")
     studio = _studio()
@@ -946,13 +940,9 @@ def test_a_recorded_cache_that_is_no_longer_writable_loses_to_the_studio_cache(
     os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
 )
 def test_an_unwritable_studio_cache_is_not_forced_on_setup(monkeypatch, tmp_path, caches):
-    """The last fallback was the one branch here that never probed.
-
-    setup.sh treats any UV_CACHE_DIR it inherits as the caller's choice and skips its own
-    write probe, so handing it a Studio cache uv cannot write aborts every uv command in
-    the update. Leaving the variable alone lets setup.sh probe and fall back to uv's
-    default, which is what it does when it runs standalone.
-    """
+    """setup.sh treats an inherited UV_CACHE_DIR as the caller's choice and skips its write probe,
+    so an unwritable Studio cache would abort every uv command; leaving it unset lets setup probe
+    and fall back to uv's default."""
     if getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("root can write anywhere")
     studio = _studio()
@@ -991,9 +981,8 @@ def test_a_store_with_a_two_digit_version_is_probed(tmp_path):
 
 
 def test_a_mistyped_studio_home_is_not_materialised_by_the_probe(monkeypatch, tmp_path):
-    """setup.sh fails fast on a STUDIO_HOME override that does not exist, so a typo cannot
-    leave an empty workspace behind. Creating the cache under it first satisfies that guard
-    and the update runs on against a tree with no venv."""
+    """setup.sh fails fast on a missing STUDIO_HOME override, so the probe must not create the cache
+    under it; that would pass the guard and run against a tree with no venv."""
     studio = _studio()
     missing = tmp_path / "typo studio home"
     monkeypatch.setattr(studio, "STUDIO_HOME", missing)
@@ -1033,9 +1022,8 @@ def test_a_dangling_symlink_where_a_store_belongs_is_rejected(tmp_path):
     os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
 )
 def test_a_case_folded_store_name_is_probed(monkeypatch, tmp_path):
-    """On APFS or NTFS `Python-V0` is the same path uv opens as `python-v0`. This box is ext4,
-    so the fold is stubbed: what is under test is that the probe acts on the answer, not that
-    it can measure a folding filesystem it does not have."""
+    """On APFS or NTFS Python-V0 is the same path uv opens as python-v0; ext4 cannot show that, so
+    the fold is stubbed and the test checks the probe acts on the answer."""
     if getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("root can write anywhere")
     studio = _studio()

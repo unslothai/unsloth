@@ -184,7 +184,8 @@ test("the main composer has one Dictate entry and does not gate it on draft text
   );
   const controlsStart = threadSource.indexOf("const ComposerRightControls:");
   const controls = threadSource.slice(controlsStart);
-  assert.equal((controls.match(/tooltip="Dictate"/g) ?? []).length, 1);
+  assert.equal((controls.match(/tooltip=\{micLabel\}/g) ?? []).length, 1);
+  assert.match(controls, /\? t\("settings\.voice\.dictation\.micRecordForModel"\)\s*: "Dictate";/);
   assert.doesNotMatch(controls, /Upload01Icon|DialogTrigger/);
 });
 
@@ -487,7 +488,6 @@ test("Compare queue setup preserves an upload until a queued send is accepted", 
   );
   assert.doesNotMatch(advanceQueue, /audioUpload\.cancel\(\)/);
 
-  // The dialog's Run button and bookmarked lists share runPromptList.
   assert.match(sharedComposerSource, /onRunList=\{runPromptList\}/);
   const runListStart = sharedComposerSource.indexOf("const runPromptList = useCallback(");
   assert.ok(runListStart >= 0);

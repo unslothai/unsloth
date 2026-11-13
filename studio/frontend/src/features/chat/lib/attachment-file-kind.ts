@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Name and MIME type only: the bytes can be megabytes and this runs on every tile and row.
+// Name and MIME only: this runs on every tile and row.
 
 import {
+  CodeXmlIcon,
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
-  Image02Icon,
+  ImageIcon,
   Pdf01Icon,
   Presentation01Icon,
-  SourceCodeIcon,
   Zip02Icon,
 } from "@hugeicons/core-free-icons";
 // Relative so the node tests can load this file.
@@ -54,7 +54,6 @@ register(
 register("text", "txt md markdown mdx rst log patch diff tex srt vtt");
 register("archive", "zip tar gz tgz bz2 xz zst 7z rar");
 
-// Word, Google Docs and OpenDocument text, for files that arrive without an extension.
 const WORD_TYPES = new Set([
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -97,9 +96,8 @@ export function attachmentFileKind(
   return "file";
 }
 
-// Same icon shapes as the Library (features/library/file-kind.ts).
 export const ATTACHMENT_KIND_ICONS = {
-  image: Image02Icon,
+  image: ImageIcon,
   pdf: Pdf01Icon,
   audio: AiSpeechIcon,
   video: FlimSlateIcon,
@@ -107,8 +105,8 @@ export const ATTACHMENT_KIND_ICONS = {
   document: FileEmpty02Icon,
   spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
-  web: SourceCodeIcon,
-  code: SourceCodeIcon,
+  web: CodeXmlIcon,
+  code: CodeXmlIcon,
   text: FileEmpty02Icon,
   archive: Zip02Icon,
   file: FileEmpty02Icon,
@@ -119,7 +117,6 @@ export const ATTACHMENT_KIND_ICON_CLASS: Record<AttachmentFileKind, string> = {
   pdf: "text-red-500",
   audio: "text-violet-500",
   video: "text-pink-400 scale-90",
-  // Google Docs' blue, close to Word's lighter blue. Only docs are blue.
   word: "text-[#4285F4]",
   document: "text-foreground",
   spreadsheet: "text-emerald-500",

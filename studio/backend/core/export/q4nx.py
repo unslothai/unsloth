@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FastFlowLM Q4NX output for the AMD Ryzen AI NPU (XDNA 2).
-
-Kept free of torch/unsloth imports: the backend process converts an existing GGUF directly,
-without loading a model into the export worker.
-"""
+"""FastFlowLM Q4NX for AMD Ryzen AI NPUs; no torch/unsloth imports, converts GGUF directly."""
 
 from __future__ import annotations
 
@@ -29,8 +25,7 @@ logger = get_logger(__name__)
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
 # Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
-# Read for token ids only. No config.json is written: FLM's own carries the flm_version its
-# catalog checks, and one without it makes FLM delete the folder's weights and re-pull stock.
+# No config.json is written: without FLM's flm_version, FLM deletes the weights and re-pulls.
 CONFIG_FILES = ("config.json", "generation_config.json")
 CONVERTER_MODULES = ("torch", "gguf", "einops", "safetensors", "numpy", "mpmath")
 
@@ -71,8 +66,7 @@ def _gguf_architecture(gguf_path: str) -> str:
     return field.contents() if field is not None else ""
 
 
-# convert.py's __main__ overwrites sys.argv at the older pin, and importing it first is circular
-# (q4nx.models.phi4 imports convert), so drive the package's own entry point.
+# convert.py's __main__ overwrites sys.argv and importing it first is circular.
 _RUN_CONVERTER = (
     "import sys; from q4nx import create_converter; "
     "create_converter(sys.argv[1], '').convert(q4nx_path = sys.argv[2], weights_type = 'language')"
@@ -81,8 +75,7 @@ _RUN_CONVERTER = (
 
 @contextlib.contextmanager
 def staged_output(out_dir: Path):
-    """Yield a fresh folder to build into; its files replace ``out_dir``'s only on success,
-    so a failed re-conversion keeps the previous export."""
+    """Build in a fresh folder; out_dir is replaced only on success, so the old export stays."""
 
     # Only the save directory is account-checked; a planted symlink here would redirect writes.
     def refuse_symlink():
@@ -97,8 +90,9 @@ def staged_output(out_dir: Path):
         out_dir.mkdir(exist_ok = True)
         # Again at publish: the conversion is long enough for the folder to be swapped.
         refuse_symlink()
-        # The last model's companions must not survive beside the new weights.
-        for name in ("model.q4nx", "config.json", *TOKENIZER_FILES):
+        # The last model's companions must not survive beside the new weights (REAP's report
+        # included: a pruned conversion stages a fresh one).
+        for name in ("model.q4nx", "config.json", "reap_report.json", *TOKENIZER_FILES):
             (out_dir / name).unlink(missing_ok = True)
         for path in staging.iterdir():
             os.replace(path, out_dir / path.name)
@@ -190,9 +184,7 @@ def _vocab_id(tokenizer_json: dict, token) -> Optional[int]:
 
 
 def write_flm_tokenizer_config(out_dir: Path, *configs: Optional[dict]) -> None:
-    """Add the ids FastFlowLM exits without (an ``eos_token_id`` array, ``bos_token_id`` with a
-    ``bos_token``); its uploads list the configs' stop ids too (Llama 3.2: 128001, 128008, 128009).
-    """
+    """Adds eos_token_id array and bos_token_id for FastFlowLM; Llama 3.2 stops 128001, 128008, 128009."""
     path = out_dir / "tokenizer_config.json"
     tokenizer_config = json.loads(path.read_text(encoding = "utf-8"))
     tokenizer_path = out_dir / "tokenizer.json"
@@ -234,11 +226,7 @@ def convert_existing_gguf(
     save_directory: Path,
     token = None,
 ) -> Path:
-    """Convert a GGUF already on disk; tokenizer files come from ``base_model``.
-
-    ``base_model`` is the original (non-GGUF) Hub repo or a local model folder. Returns the
-    folder to copy over a FastFlowLM catalog model of the same family and size.
-    """
+    """Converts a GGUF on disk; config and tokenizer files come from base_model, the original non-GGUF Hub repo or local folder"""
     out_dir = Path(save_directory) / f"{gguf_path.stem}-q4nx"
     found = {
         name: _fetch_base_file(base_model, name, token)

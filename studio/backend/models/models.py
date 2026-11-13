@@ -171,6 +171,15 @@ class ModelListResponse(BaseModel):
     default_models: List[str] = Field(default_factory = list, description = "List of default model IDs")
 
 
+class EngramTableDetail(BaseModel):
+    """Mirrors hub.schemas.inventory.EngramTableDetail."""
+
+    precision: str = Field(..., description = "Precision label from the file name, e.g. 'Q8_0'")
+    filename: str = Field(..., description = "Repo path of the table file")
+    size_bytes: int = Field(0, description = "File size in bytes")
+    downloaded: bool = Field(False, description = "Whether the table is in the local HF cache")
+
+
 class GgufVariantDetail(BaseModel):
     """A single GGUF quantization variant in a HuggingFace repo."""
 
@@ -179,22 +188,28 @@ class GgufVariantDetail(BaseModel):
     cache_path: Optional[str] = Field(
         None, description = "Owning cache repository for this complete variant"
     )
-    # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label below. FastAPI
-    # serializes through THIS model, so an undeclared redacted reference is dropped.
+    # FastAPI serializes through THIS model; undeclared fields are dropped.
     cache_ref: Optional[str] = Field(
         None, description = "Opaque stand-in for cache_path, stable for the server's life"
     )
     context_length: Optional[int] = Field(
         None, description = "Native context limit from this variant's cached source"
     )
-    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that
-    # exists only on the hub twin is dropped by pydantic without a word and a qualified row falls back
-    # to rendering its whole relative path.
+    # Mirrors hub GgufVariantDetail; fields only on the hub twin get dropped.
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    estimated_resident_gb: Optional[float] = Field(
+        None,
+        description = "audio.cpp only: GiB of GPU memory the load check requires for this variant",
+    )
+    lookup_table_bytes: int = Field(
+        0,
+        description = "Bytes of lazily read lookup tables (per-layer embeddings / Engram) "
+        "llama.cpp streams from disk by default. Part of size_bytes; 0 when none or unknown.",
+    )
     # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label above.
     pending_drafter_filename: Optional[str] = Field(
         None, description = "Missing separate drafter when the main GGUF is already cached"
@@ -218,6 +233,14 @@ class GgufVariantDetail(BaseModel):
         False,
         description = "Row exists only to offer deleting an empty leftover <quant>/ folder; "
         "the listing has no such weights, so it never proves a load would find any.",
+    )
+    # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label above.
+    engram_precision: Optional[str] = Field(
+        None, description = "Precision of the Engram table this quant ships with, if swappable"
+    )
+    engram_ready: List[str] = Field(
+        default_factory = list,
+        description = "Engram table precisions this quant loads with without downloading",
     )
 
 
@@ -264,10 +287,17 @@ class GgufVariantsResponse(BaseModel):
             "quants; None for GGUF"
         ),
     )
+    engram_tables: List[EngramTableDetail] = Field(
+        default_factory = list,
+        description = "Standalone Engram tables a load can use in place of a quant's own",
+    )
+    engram_supported: Optional[bool] = Field(
+        None, description = "Whether this server's llama.cpp loads a standalone Engram table"
+    )
 
 
 LocalModelSource = Literal[
-    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"
 ]
 
 

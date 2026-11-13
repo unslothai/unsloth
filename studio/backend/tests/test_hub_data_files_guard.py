@@ -137,3 +137,82 @@ def test_without_the_guard_datasets_reads_the_host_file(tmp_path):
     # datasets 4.3.0 already refuses the chained form; the guard keeps refusing it if that changes.
     open_routes = [route for route in HUB_ROUTES if route != "CHAINED"]
     assert {route: seen[route] for route in open_routes} == dict.fromkeys(open_routes, "read")
+
+
+# A card whose data_files is an http(s) URL makes the server dial it, following redirects. The owner may
+# load such cards as before; a managed account may not, or it could read loopback, LAN or metadata services.
+URL_PROBE = """
+import http.server
+import os
+import sys
+import threading
+from utils.security import hub_data_files
+hub_data_files.install()
+from datasets import load_dataset
+from utils.account_context import AccountContext, run_as
+
+hits = []
+
+class Internal(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        hits.append(self.path)
+        if self.path.startswith("/public.csv"):
+            self.send_response(302)
+            self.send_header("Location", "/internal-secret")
+            self.end_headers()
+            return
+        body = b"secret\\nINTERNAL_ONLY\\n"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_HEAD = do_GET
+
+    def log_message(self, *args):
+        pass
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Internal)
+threading.Thread(target = server.serve_forever, daemon = True).start()
+snapshot = sys.argv[1]
+with open(os.path.join(snapshot, "README.md"), "w") as f:
+    f.write(
+        "---\\nconfigs:\\n- config_name: default\\n  data_files:\\n  - split: train\\n"
+        f"    path: http://127.0.0.1:{server.server_port}/public.csv\\n---\\n"
+    )
+
+def rows():
+    return list(load_dataset(snapshot, split = "train", streaming = True).take(2))
+
+for label, account in (("OWNER", None), ("MANAGED", AccountContext("acct-bob", "bob"))):
+    hits.clear()
+    try:
+        got = rows() if account is None else run_as(account, rows)
+        print(label, "read" if "INTERNAL_ONLY" in str(got) else "other", len(hits))
+    except FileNotFoundError:
+        print(label, "refused", len(hits))
+"""
+
+
+def test_a_managed_account_cannot_make_a_hub_card_dial_a_url(tmp_path):
+    snapshot = tmp_path / "hub" / "datasets--org--card" / "snapshots" / "abc123"
+    snapshot.mkdir(parents = True)
+    out = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(URL_PROBE), str(snapshot)],
+        cwd = BACKEND,
+        capture_output = True,
+        text = True,
+        timeout = 300,
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(BACKEND),
+            "HF_HUB_CACHE": str(tmp_path / "hub"),
+            "NO_PROXY": "127.0.0.1",
+            "no_proxy": "127.0.0.1",
+        },
+    )
+    assert out.returncode == 0, out.stderr
+    seen = dict(line.split(" ", 1) for line in out.stdout.splitlines() if " " in line)
+
+    assert seen["OWNER"].split()[0] == "read"
+    assert seen["MANAGED"] == "refused 0"

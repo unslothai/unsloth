@@ -8,7 +8,7 @@ export interface PlannedDownloadEntry {
   checkpoint?: boolean;
 }
 
-/** Missing file entries, including unsized entries: zero is not proof of a cache hit. */
+/** Includes unsized entries: zero is not proof of a cache hit. */
 export function additionalAssetDownloads<T extends PlannedDownloadEntry>(
   entries: readonly T[],
 ): T[] {
@@ -48,7 +48,6 @@ export function assetLabel(
   return fallback;
 }
 
-/** Preserve dependency order while presenting and transferring checkpoints first. */
 export function checkpointFirst<T extends { checkpoint?: boolean }>(
   entries: readonly T[],
 ): T[] {
@@ -56,4 +55,27 @@ export function checkpointFirst<T extends { checkpoint?: boolean }>(
     ...entries.filter((e) => e.checkpoint !== false),
     ...entries.filter((e) => e.checkpoint === false),
   ];
+}
+
+export interface ImageCheckpointFile {
+  filename: string;
+  bytes: number | null;
+}
+
+/** Reopening the card should show the active transfer, including a scoped job adopted after reload. */
+export function imageCheckpointSelection(
+  repoId: string,
+  files: readonly ImageCheckpointFile[] | undefined,
+  picked: string | undefined,
+  queued: string | undefined,
+  transferring: readonly string[] | undefined,
+) {
+  const active = files?.find((file) => transferring?.includes(file.filename)) ??
+    files?.find((file) => file.filename === queued);
+  const repoFilename = repoId.split("/").pop()?.toLowerCase() + ".safetensors";
+  const selected = active ??
+    files?.find((file) => file.filename === picked) ??
+    files?.find((file) => file.filename.toLowerCase() === repoFilename) ??
+    files?.[0];
+  return { active, selected };
 }

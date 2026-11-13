@@ -76,12 +76,13 @@ def test_prefetch_reads_every_uncached_byte_in_order(tmp_path, monkeypatch):
 
     monkeypatch.setattr(fl, "_uncached_bytes", lambda path: __import__("os").path.getsize(path))
     monkeypatch.setattr(fl, "_available_host_mib", lambda: 1 << 20)
+    monkeypatch.setattr(fl, "_residency_map", lambda path: None, raising = False)  # nothing cached
     monkeypatch.setattr("builtins.open", _Spy)
     handle = fl.start_prefetch(
         files + [files[0], str(tmp_path / "missing")], min_bytes = 0, threads = 4
     )
     _join_prefetch(handle)
-    assert handle.files == files  # duplicates and missing paths dropped, order kept
+    assert handle.files == files
     for path in files:
         size = __import__("os").path.getsize(path)
         covered = sorted((at, at + got) for p, at, got in read if p == path)
@@ -94,9 +95,9 @@ def test_prefetch_declines_cached_small_or_ram_tight_loads(tmp_path, monkeypatch
     path.write_bytes(b"y" * (2 << 20))
     monkeypatch.setattr(fl, "_available_host_mib", lambda: 1 << 20)
     monkeypatch.setattr(fl, "_uncached_bytes", lambda p: 0)
-    assert fl.start_prefetch([str(path)], min_bytes = 0) is None  # all cached
+    assert fl.start_prefetch([str(path)], min_bytes = 0) is None
     monkeypatch.setattr(fl, "_uncached_bytes", lambda p: 2 << 20)
-    assert fl.start_prefetch([str(path)]) is None  # under the default floor
+    assert fl.start_prefetch([str(path)]) is None
     monkeypatch.setattr(fl, "_available_host_mib", lambda: 3)  # 2 MiB needed > half of 3 MiB
     assert fl.start_prefetch([str(path)], min_bytes = 0) is None
     monkeypatch.setattr(fl, "_available_host_mib", lambda: None)
@@ -224,11 +225,13 @@ def test_only_hosted_precast_encoders_leave_the_prefetch(monkeypatch):
     fam = detect_family("black-forest-labs/FLUX.1-schnell")
     target = types.SimpleNamespace(device = "cuda", backend = "cuda", dtype = torch.bfloat16)
     base = "black-forest-labs/FLUX.1-schnell"
-    # A runtime cast loads the dense shards first, so they stay in the prefetch.
-    for mode in (None, "off", "int8"):
+    # A dense load keeps the dense shards in the prefetch.
+    for mode in (None, "off"):
         assert fl.te_precast_components(fam, base, mode, target) == frozenset()
-    replaced = fl.te_precast_components(fam, base, "fp8", target)
-    assert replaced and replaced <= {"text_encoder_2"}
+    # Both hosted schemes (fp8, and the int8 ConvRot T5) replace only the T5; CLIP-L stays dense.
+    for mode in ("fp8", "int8"):
+        replaced = fl.te_precast_components(fam, base, mode, target)
+        assert replaced and replaced <= {"text_encoder_2"}
     assert fl.te_precast_components(object(), base, "fp8", target) == frozenset()
 
 
@@ -289,7 +292,7 @@ def test_fast_upload_matches_a_plain_to_byte_for_byte(monkeypatch):
     with fl.fast_upload([got, None, "tokenizer"], "cuda") as staged:
         out = got.to("cuda")
     assert out is got and staged > 0
-    assert got.c.weight is got.a.weight  # the tie survives
+    assert got.c.weight is got.a.weight
     ref_state, got_state = ref.state_dict(keep_vars = True), got.state_dict(keep_vars = True)
     assert ref_state.keys() == got_state.keys()
     for name, want in ref_state.items():
@@ -407,3 +410,95 @@ def test_rotational_lookup_never_raises(tmp_path):
     path.write_bytes(b"z")
     assert fl._on_rotational_disk(str(path)) in (True, False)
     assert fl._on_rotational_disk(str(tmp_path / "missing")) is False
+
+
+SKIP_CACHED_ENV = "UNSLOTH_DIFFUSION_PREFETCH_SKIP_CACHED"
+
+
+def _spy_reads(monkeypatch):
+    read: list = []
+    real_open = open
+
+    class _Counted:
+        def __init__(self, path, *args, **kwargs):
+            self._path = str(path)
+            self._handle = real_open(path, *args, **kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._handle.close()
+
+        def readinto(self, view):
+            got = self._handle.readinto(view)
+            read.append((self._path, got))
+            return got
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    monkeypatch.setattr(fl, "open", _Counted, raising = False)
+    return read
+
+
+def test_a_mostly_cached_file_reads_only_its_uncached_chunks(tmp_path, monkeypatch):
+    monkeypatch.delenv(SKIP_CACHED_ENV, raising = False)
+    path = tmp_path / "dit.safetensors"
+    size = 8 << 20
+    path.write_bytes(b"q" * size)
+    monkeypatch.setattr(fl, "_uncached_bytes", lambda p: 1 << 20)
+    monkeypatch.setattr(fl, "_available_host_mib", lambda: 1 << 20)
+    # the first 7 MiB sit in the page cache, the last MiB does not
+    monkeypatch.setattr(
+        fl,
+        "_chunk_resident",
+        lambda mapped, start, length: start + length <= 7 << 20,
+        raising = False,
+    )
+    read = _spy_reads(monkeypatch)
+    _join_prefetch(fl.start_prefetch([str(path)], min_bytes = 0, threads = 8))
+    assert sum(got for name, got in read if name == str(path)) == 1 << 20
+
+
+def test_the_skip_cached_switch_reads_whole_slices(tmp_path, monkeypatch):
+    monkeypatch.setenv(SKIP_CACHED_ENV, "0")
+    path = tmp_path / "dit.safetensors"
+    path.write_bytes(b"q" * (8 << 20))
+    monkeypatch.setattr(fl, "_uncached_bytes", lambda p: 1 << 20)
+    monkeypatch.setattr(fl, "_available_host_mib", lambda: 1 << 20)
+    monkeypatch.setattr(fl, "_chunk_resident", lambda mapped, start, length: True, raising = False)
+    read = _spy_reads(monkeypatch)
+    _join_prefetch(fl.start_prefetch([str(path)], min_bytes = 0, threads = 8))
+    assert sum(got for name, got in read if name == str(path)) == 8 << 20
+
+
+@pytest.mark.skipif(
+    not __import__("sys").platform.startswith("linux"), reason = "mincore is Linux only"
+)
+def test_the_residency_check_sees_a_file_just_written(tmp_path, monkeypatch):
+    monkeypatch.delenv(SKIP_CACHED_ENV, raising = False)
+    path = tmp_path / "w.bin"
+    path.write_bytes(b"r" * (3 << 20))
+    path.read_bytes()
+    assert fl.PREFETCH_SKIP_CACHED_ENV == SKIP_CACHED_ENV
+    mapped = fl._residency_map(str(path))
+    assert mapped is not None
+    try:
+        assert fl._chunk_resident(mapped, 1 << 20, 1 << 20)
+    finally:
+        mapped.close()
+
+
+def test_the_read_buffers_count_against_the_ram_check(tmp_path, monkeypatch):
+    path = tmp_path / "big.safetensors"
+    path.write_bytes(b"s" * (16 << 20))
+    monkeypatch.setattr(fl, "_uncached_bytes", lambda p: 16 << 20)
+    monkeypatch.setattr(fl, "_residency_map", lambda path: None, raising = False)
+    # half of 40 MiB = 20 MiB: the 16 MiB warmed + two 2 MiB buffers fit, eight do not
+    monkeypatch.setattr(fl, "_available_host_mib", lambda: 40)
+    handle = fl.start_prefetch([str(path)], min_bytes = 0, threads = 8)
+    assert handle is not None and len(handle.threads) == 2
+    _join_prefetch(handle)
+    monkeypatch.setattr(fl, "_available_host_mib", lambda: 34)  # 17 MiB: not even one buffer
+    assert fl.start_prefetch([str(path)], min_bytes = 0, threads = 8) is None

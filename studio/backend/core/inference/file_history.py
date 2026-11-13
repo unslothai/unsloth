@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-chat history of the files tool calls change, so /rewind can put them back.
-
-Blobs are content addressed under the account's ``file_history/objects`` and indexed in a SQLite
-file next to them (WAL, one short transaction per tool call, always on the tool's worker thread,
-never the event loop). The index keeps the last stored image of every file in a folder, so the
-image a python or terminal call overwrites is already stored when the call starts: the stat walk
-those tools already take is diffed against it, and only files whose (mtime, size) moved are read.
-
-Execution state is not tracked: processes, installed packages and anything outside the chat's
-folder stay as they are after a rewind.
-"""
+"""Per-chat file history for /rewind; index work always on the tool's worker thread, never the event
+loop; processes and packages not restored"""
 
 from __future__ import annotations
 
@@ -138,6 +129,30 @@ def tracked(rel: str, exclude: "Iterable[str]") -> bool:
 def _key(snap_value) -> tuple:
     # (mtime_ns, size, digest) as `_snapshot_workdir_files` records it; the digest is None off FAT-like volumes.
     return (snap_value[0], snap_value[1], snap_value[2] if len(snap_value) > 2 else None)
+
+
+def _probe(workdir: str, rels: "Iterable[str]") -> dict:
+    """Regular files among *rels*, keyed as a walk keys them; one behind a linked folder counts as gone."""
+    root = os.path.realpath(workdir)
+    found = {}
+    listings: dict = {}
+    for rel in rels:
+        path = os.path.join(root, *rel.split("/"))
+        parent = os.path.dirname(path)
+        try:
+            if os.path.realpath(parent) != parent:
+                continue
+            # A case-insensitive volume finds "Readme.md" after a rename to "README.md".
+            if parent not in listings:
+                listings[parent] = set(os.listdir(parent))
+            if os.path.basename(path) not in listings[parent]:
+                continue
+            info = os.lstat(path)
+        except OSError:
+            continue
+        if stat_mod.S_ISREG(info.st_mode):
+            found[rel] = (info.st_mtime_ns, info.st_size, None)
+    return found
 
 
 class FileHistory:
@@ -270,6 +285,9 @@ class FileHistory:
         ``paths`` limits the sync to those names (edit_file knows its one file); ``complete`` says
         whether a name missing from ``snap`` is really gone (a capped walk cannot say so)."""
         state = self._load_state(workdir)
+        if paths is None and complete:
+            # edit_file records files no walk lists, such as .github/workflows/ci.yml.
+            snap = {**_probe(workdir, [rel for rel in state if rel not in snap]), **snap}
         first = (
             not state
             and self._db.execute("SELECT 1 FROM workdirs WHERE workdir=?", (workdir,)).fetchone()
@@ -288,10 +306,12 @@ class FileHistory:
                 continue
             new = self._capture(workdir, rel, key, budget)
             if old is not None and old.kind == new.kind == "blob" and old.blob == new.blob:
-                old.mtime_ns, old.digest, old.mode = new.mtime_ns, new.digest, new.mode
+                # Same content, so a known digest still holds; a probe that hashed nothing must not drop it.
+                old.mtime_ns, old.mode = new.mtime_ns, new.mode
+                old.digest = old.digest if new.digest is None else new.digest
                 self._db.execute(
                     "UPDATE workdir_state SET mtime_ns=?, digest=?, mode=? WHERE workdir=? AND rel_path=?",
-                    (new.mtime_ns, new.digest, new.mode, workdir, rel),
+                    (old.mtime_ns, old.digest, old.mode, workdir, rel),
                 )
                 continue
             changes[rel] = (old, new)
@@ -324,9 +344,22 @@ class FileHistory:
             return {}  # the baseline is where history starts, not a change
         return changes
 
-    def _walk_sync(self, workdir: str, walk) -> dict:
+    def _walk_sync(
+        self,
+        workdir: str,
+        walk,
+        extra = (),
+    ) -> dict:
         snap, complete = walk(workdir)
-        return self._sync(workdir, snap, None, complete)
+        changes = self._sync(workdir, snap, None, complete)
+        missed = {rel for rel in extra if rel not in snap}
+        if not complete:
+            # A capped walk never reached these: read them directly, or a rewind trusts a stale state
+            # and overwrites the user's later edit.
+            missed.update(rel for rel in self._load_state(workdir) if rel not in snap)
+        if missed:
+            changes.update(self._sync(workdir, _probe(workdir, missed), missed))
+        return changes
 
     def _record(
         self,
@@ -506,23 +539,23 @@ class FileHistory:
         return report
 
     def _rewind_folder(self, chat_id, workdir, rows, walk, report, dry_run, force, undo_turn):
+        target: dict = {}
+        # Written while another chat's call ran in this folder: either chat's, so never ours to undo.
+        shared = set()
+        for wd, rel, kind, blob, mode, ambiguous in rows:
+            if wd == workdir:
+                target.setdefault(rel, (kind, blob, mode))
+                if ambiguous:
+                    shared.add(rel)
         with self._lock:
             # Edits made since the last call (by the user, or another chat) are stored first, so the
             # rewind can tell them apart from this chat's own and they stay restorable too.
             self._transaction(
                 workdir,
                 lambda: self._record(
-                    None, workdir, None, "external", self._walk_sync(workdir, walk)
+                    None, workdir, None, "external", self._walk_sync(workdir, walk, target)
                 ),
             )
-            target: dict = {}
-            # Written while another chat's call ran in this folder: either chat's, so never ours to undo.
-            shared = set()
-            for wd, rel, kind, blob, mode, ambiguous in rows:
-                if wd == workdir:
-                    target.setdefault(rel, (kind, blob, mode))
-                    if ambiguous:
-                        shared.add(rel)
             last_after = {
                 row[0]: (row[1], row[2])
                 for row in self._db.execute(
@@ -568,7 +601,7 @@ class FileHistory:
             self._transaction(
                 workdir,
                 lambda: self._record(
-                    chat_id, workdir, undo_turn, "rewind", self._walk_sync(workdir, walk)
+                    chat_id, workdir, undo_turn, "rewind", self._walk_sync(workdir, walk, target)
                 ),
             )
 
@@ -695,40 +728,100 @@ def _require_plain_dir(
         raise OSError(f"{name} is no longer a plain folder")
 
 
-def _safe_write(workdir: str, rel: str, data: bytes, mode: Optional[int]) -> None:
-    path = _resolve_inside(workdir, rel, create_dirs = True)
-    tmp = os.path.join(os.path.dirname(path), f".unsloth-rewind-{uuid.uuid4().hex}.tmp")
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_BINARY", 0)
-    )
-    fd = os.open(tmp, flags, 0o600)
+# POSIX walks the parents as open folders, so a parent swapped for a link between steps fails
+# instead of carrying the write outside. Windows has no dir_fd and keeps the lstat walk. os.rename
+# stands in for os.replace, which takes the same dir_fd arguments but is not listed.
+DIR_FD_WALK = (
+    {os.open, os.mkdir, os.stat, os.chmod, os.rename, os.unlink} <= os.supports_dir_fd
+    and hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+)
+
+
+def open_dir_below(root: str, parts: "Iterable[str]", create_dirs: bool) -> int:
+    """Descriptor of ``root/parts...``, never following a link at any step; the caller closes it."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(root, flags)
     try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        if mode is not None:
-            os.chmod(tmp, mode)
-        if os.path.isfile(path):
-            from core.library import replace_file
-            replace_file(tmp, path)  # carries the Library's name and folder over to the new inode
-        else:
-            os.replace(tmp, path)  # replaces a link at the name, never writes through it
+        for part in parts:
+            if create_dirs:
+                try:
+                    os.mkdir(part, dir_fd = fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, flags, dir_fd = fd)
+            os.close(fd)
+            fd = child
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        os.close(fd)
         raise
+    return fd
+
+
+def _open_parent(workdir: str, rel: str, create_dirs: bool) -> "tuple[Optional[int], str, str]":
+    """(folder fd or None, name to use with it, full path) for *rel*."""
+    if not DIR_FD_WALK:
+        path = _resolve_inside(workdir, rel, create_dirs)
+        return None, path, path
+    parts = rel.split("/")
+    if os.path.isabs(rel) or any(part in ("", ".", "..") for part in parts):
+        raise OSError("not a path inside the chat's folder")
+    return (
+        open_dir_below(workdir, parts[:-1], create_dirs),
+        parts[-1],
+        os.path.join(workdir, *parts),
+    )
+
+
+def _safe_write(workdir: str, rel: str, data: bytes, mode: Optional[int]) -> None:
+    dir_fd, leaf, path = _open_parent(workdir, rel, create_dirs = True)
+    try:
+        tmp = os.path.join(os.path.dirname(leaf), f".unsloth-rewind-{uuid.uuid4().hex}.tmp")
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        fd = os.open(tmp, flags, 0o600, dir_fd = dir_fd)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            if mode is not None:
+                os.chmod(tmp, mode, dir_fd = dir_fd)
+            try:
+                is_file = stat_mod.S_ISREG(os.stat(leaf, dir_fd = dir_fd).st_mode)
+            except OSError:
+                is_file = False
+            if is_file:
+                from core.library import replace_file
+
+                # carries the Library's name and folder over to the new inode
+                replace_file(tmp, path, dir_fd = dir_fd)
+            else:
+                # replaces a link at the name, never writes through it
+                os.replace(tmp, leaf, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd = dir_fd)
+            except OSError:
+                pass
+            raise
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 def _safe_unlink(workdir: str, rel: str) -> None:
-    path = _resolve_inside(workdir, rel, create_dirs = False)
-    if not stat_mod.S_ISREG(os.lstat(path).st_mode):
-        raise OSError("no longer a regular file")
-    os.unlink(path)
+    dir_fd, leaf, _ = _open_parent(workdir, rel, create_dirs = False)
+    try:
+        if not stat_mod.S_ISREG(os.stat(leaf, dir_fd = dir_fd, follow_symlinks = False).st_mode):
+            raise OSError("no longer a regular file")
+        os.unlink(leaf, dir_fd = dir_fd)
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 _stores: dict = {}
