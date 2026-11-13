@@ -1,0 +1,210 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The small-host route pins the leading streamed denoiser groups that fit the host RAM free once the load returns,
+instead of re-reading every streamed group from its memory-mapped storage on each denoise step."""
+
+import inspect
+import types
+
+import pytest
+
+torch = pytest.importorskip("torch")
+
+import core.inference.diffusion_memory as dm
+
+
+@pytest.fixture
+def budget(monkeypatch):
+    for name in (
+        dm.GROUP_OFFLOAD_PIN_ENV,
+        dm.PARTIAL_ENCODER_PIN_ENV,
+        dm.LATE_DENOISER_PIN_ENV,
+    ):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(dm, "host_pinning_allowed", lambda *a, **k: True)
+    monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
+    state = {"mib": 0, "trims": 0}
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: state["mib"])
+
+    def trim(logger = None):
+        state["trims"] += 1
+        return True
+
+    monkeypatch.setattr(dm, "trim_host_heap_after_load", trim)
+    return state
+
+
+def test_the_switches(budget, monkeypatch):
+    module = torch.nn.Linear(2, 2)
+    assert dm._late_denoiser_pin_enabled(module, True)
+    # no copy stream: diffusers copies synchronously from the host copy, nothing to pin for
+    assert not dm._late_denoiser_pin_enabled(module, False)
+    monkeypatch.setenv(dm.LATE_DENOISER_PIN_ENV, "0")
+    assert not dm._late_denoiser_pin_enabled(module, True)
+    monkeypatch.delenv(dm.LATE_DENOISER_PIN_ENV)
+    monkeypatch.setenv(dm.PARTIAL_ENCODER_PIN_ENV, "0")
+    assert not dm._late_denoiser_pin_enabled(module, True)
+    monkeypatch.delenv(dm.PARTIAL_ENCODER_PIN_ENV)
+    # torchao weights need their up-front pin
+    monkeypatch.setattr(dm, "_torchao_weight_classes", lambda m: {"Int8Tensor"})
+    assert not dm._late_denoiser_pin_enabled(module, True)
+
+
+def _fake_groups(sizes, resident = ()):
+    groups = []
+    for i, n in enumerate(sizes):
+        weight = torch.nn.Parameter(torch.zeros(n, dtype = torch.uint8), requires_grad = False)
+        g = types.SimpleNamespace(cpu_param_dict = {weight: weight.data})
+        if i in resident:
+            g._unsloth_resident = True
+        groups.append(g)
+    return groups
+
+
+@pytest.fixture
+def fake_pin(monkeypatch):
+    monkeypatch.setattr(torch.Tensor, "is_pinned", lambda self: getattr(self, "_fake_pin", False))
+
+    def pin_memory(self):
+        out = self.clone()
+        out._fake_pin = True
+        return out
+
+    monkeypatch.setattr(torch.Tensor, "pin_memory", pin_memory)
+    monkeypatch.setattr(dm, "_PARTIAL_PIN_MIN_MIB", 1)
+
+
+def _pinned(groups):
+    return [getattr(next(iter(g.cpu_param_dict.values())), "_fake_pin", False) for g in groups]
+
+
+def test_resident_groups_spend_none_of_the_cap(budget, fake_pin):
+    module, pipe = torch.nn.Module(), types.SimpleNamespace()
+    # two resident groups first (the plan keeps the leading blocks on the card), then four streamed
+    groups = _fake_groups([1 << 20] * 6, resident = (0, 1))
+    before = [next(iter(g.cpu_param_dict.values())) for g in groups[:2]]
+    pinner = dm._GroupPinner(
+        module, groups, torch.device("cpu"), byte_cap = dm._late_image_encoder_pin_cap(pipe, module)
+    )
+    pinner.skip_resident = True
+    setattr(pipe, dm._PENDING_PINS_ATTR, [pinner])
+    budget["mib"] = 3
+    pinner._run()
+    assert _pinned(groups) == [False, False, True, True, True, False]
+    # the resident groups' host copies are untouched (an eviction streams them again from there)
+    assert [next(iter(g.cpu_param_dict.values())) for g in groups[:2]] == before
+    assert all(pinner._done[id(g)].is_set() for g in groups)
+    assert budget["trims"] == 1
+
+
+def test_without_skip_resident_the_prefix_starts_at_the_first_group(budget, fake_pin):
+    module = torch.nn.Module()
+    groups = _fake_groups([1 << 20] * 6, resident = (0, 1))
+    pinner = dm._GroupPinner(module, groups, torch.device("cpu"), byte_cap = 3 << 20)
+    pinner._run()
+    assert _pinned(groups) == [True, True, True, False, False, False]
+
+
+@pytest.mark.parametrize("mib", [None, 0])
+def test_no_room_at_pin_start_pins_nothing(budget, fake_pin, mib):
+    module, pipe = torch.nn.Module(), types.SimpleNamespace()
+    groups = _fake_groups([1 << 20] * 3)
+    pinner = dm._GroupPinner(
+        module, groups, torch.device("cpu"), byte_cap = dm._late_image_encoder_pin_cap(pipe, module)
+    )
+    pinner.skip_resident = True
+    budget["mib"] = mib
+    pinner._run()
+    assert _pinned(groups) == [False, False, False]
+    assert all(pinner._done[id(g)].is_set() for g in groups)
+
+
+class _NoMove(torch.nn.Linear):
+    def to(self, *args, **kwargs):  # the CPU test host has no card to place the companion on
+        return self
+
+
+def _route(
+    monkeypatch,
+    *,
+    small_host: bool,
+    torchao: bool = False,
+):
+    pytest.importorskip("diffusers")
+    import diffusers.hooks as hooks
+
+    applied, deferred, waits = [], [], []
+
+    def fake_apply(module, **kw):
+        applied.append(kw)
+
+    fake_apply.__signature__ = inspect.signature(hooks.apply_group_offloading)
+    monkeypatch.setattr(hooks, "apply_group_offloading", fake_apply)
+    monkeypatch.setattr(
+        dm, "_apply_group_offloading_packed", lambda apply, module, kw, logger: applied.append(kw)
+    )
+    monkeypatch.setattr(dm, "_encoder_background_pin_wanted", lambda *a, **k: False)
+    monkeypatch.setattr(dm, "_streamed_pin_plan", lambda *a, **k: (False, False))
+    monkeypatch.setattr(dm, "install_group_pin_wait", lambda: waits.append(1) or True)
+    monkeypatch.setattr(dm, "_pin_vision_embedding_device", lambda module: None)
+    monkeypatch.setattr(dm, "_pin_top_level_group", lambda *a, **k: True)
+    monkeypatch.setattr(dm, "install_group_prefetch", lambda *a, **k: 0)
+    monkeypatch.setattr(dm, "_keep_groups_resident", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        dm, "_torchao_weight_classes", lambda m: {"Int8Tensor"} if torchao else set()
+    )
+
+    def defer(pipe, module, device, logger, **kw):
+        deferred.append((module, kw))
+        return True
+
+    monkeypatch.setattr(dm, "_defer_pinning", defer)
+    pipe = types.SimpleNamespace()
+    pipe.transformer = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    pipe.text_encoder = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    pipe.vae = _NoMove(4, 4)
+    pipe.components = {
+        "transformer": pipe.transformer,
+        "text_encoder": pipe.text_encoder,
+        "vae": pipe.vae,
+    }
+    if small_host:
+        pipe._unsloth_small_host = {"components": {}}
+        monkeypatch.setattr(
+            "core.inference.diffusion_small_host.install_encoder_prefetch", lambda *a, **k: 0
+        )
+    assert dm._apply_group_offload(
+        pipe, "cuda", None, stream_text_encoders = True, resident_transformer_mib = 100
+    )
+    return pipe, applied, deferred, waits
+
+
+def test_routing_the_small_host_route_defers_the_denoiser_with_the_late_cap(budget, monkeypatch):
+    pipe, applied, deferred, waits = _route(monkeypatch, small_host = True)
+    assert [m for m, _kw in deferred] == [pipe.transformer]
+    kw = deferred[0][1]
+    assert kw["fast"] and kw["skip_resident"] and callable(kw["byte_cap"])
+    budget["mib"] = 2500
+    assert kw["byte_cap"]() == 2500 << 20
+    assert waits
+    # the apply itself is unchanged: pageable host copies, as before
+    assert all(a.get("low_cpu_mem_usage") for a in applied)
+
+
+@pytest.mark.parametrize(
+    "env, value",
+    [("UNSLOTH_DIFFUSION_LATE_DENOISER_PIN", "0"), ("UNSLOTH_DIFFUSION_PARTIAL_ENCODER_PIN", "0")],
+)
+def test_routing_the_kill_switches_keep_the_old_route(budget, monkeypatch, env, value):
+    monkeypatch.setenv(env, value)
+    _pipe, applied, deferred, waits = _route(monkeypatch, small_host = True)
+    assert deferred == [] and not waits
+    assert all(a.get("low_cpu_mem_usage") for a in applied)
+
+
+def test_routing_other_hosts_and_torchao_denoisers_are_unchanged(budget, monkeypatch):
+    _pipe, _applied, deferred, _waits = _route(monkeypatch, small_host = False)
+    assert deferred == []
+    _pipe, _applied, deferred, _waits = _route(monkeypatch, small_host = True, torchao = True)
+    assert deferred == []

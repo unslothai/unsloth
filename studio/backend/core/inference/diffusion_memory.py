@@ -7689,6 +7689,23 @@ def _late_image_encoder_pin_cap(
     return cap
 
 
+# "0": an image load whose streamed denoiser misses the pin budget at plan time (the small-host route, or a
+# streaming plan on a small host) streams every non-resident group from its pageable or memory-mapped host copy on
+# each step. On a 12 GB host that set is larger than the page cache left, so every step re-read it from disk
+# (Qwen-Image-2.1 int8 on a T4: 5.4 GB per step, 23 s per step).
+LATE_DENOISER_PIN_ENV = "UNSLOTH_DIFFUSION_LATE_DENOISER_PIN"
+
+
+def _late_denoiser_pin_enabled(module: Any, use_stream: bool) -> bool:
+    """Pin the leading streamed denoiser groups that fit the host RAM free once the load returns."""
+    return (
+        bool(use_stream)
+        and not _env_off(LATE_DENOISER_PIN_ENV)
+        and not _env_off(PARTIAL_ENCODER_PIN_ENV)
+        and not _torchao_weight_classes(module)
+    )
+
+
 def _streamed_pin_leftover_mib(
     transformer_mib: int,
     pin_transformer: bool,
@@ -8000,6 +8017,8 @@ class _GroupPinner:
         self.late = False
         # image-load text encoders: groups resident when the pin starts drop their host copy instead of pinning it
         self.lazy_resident = False
+        # groups resident when the pin starts keep their host copy unpinned and spend none of the cap
+        self.skip_resident = False
         self._thread = threading.Thread(target = self._entry, name = "unsloth-offload-pin", daemon = True)
         self._started = False
         for group in groups:
@@ -8138,6 +8157,13 @@ class _GroupPinner:
             if self.lazy_resident and _resident_host_drop_enabled():
                 # Resident groups are read from the card; pinning their host copy only cost RAM and load time.
                 kept, _freed = drop_resident_host_copies(self.groups, self.logger, self.label)
+                kept_ids = {id(g) for g in kept}
+                for group in self.groups:
+                    if id(group) not in kept_ids:
+                        self._done[id(group)].set()
+                self.groups = kept
+            if self.skip_resident:
+                kept = [g for g in self.groups if not getattr(g, "_unsloth_resident", False)]
                 kept_ids = {id(g) for g in kept}
                 for group in self.groups:
                     if id(group) not in kept_ids:
@@ -8353,6 +8379,7 @@ def _defer_pinning(
     fast: Optional[bool] = None,
     byte_cap: Optional[int] = None,
     lazy_resident: bool = False,
+    skip_resident: bool = False,
 ) -> bool:
     groups = _offload_groups(module)
     if not groups:
@@ -8362,6 +8389,7 @@ def _defer_pinning(
     fast = bool(fast) and _fast_pin_supported(device)
     pinner = _GroupPinner(module, groups, device, logger, fast = fast, byte_cap = byte_cap)
     pinner.lazy_resident = bool(lazy_resident)
+    pinner.skip_resident = bool(skip_resident)
     pending = getattr(pipe, _PENDING_PINS_ATTR, None)
     if pending is None:
         pending = []
@@ -8863,6 +8891,7 @@ def _apply_group_offload(
             if stream_text_encoders and pin_streamed[1]
             else encoder_cap_mib
         ]
+        defer_dit_pin = False
         for module in streamed.values():
             # torchao weights need their up-front pin (lazy pinning refuses them), so they never defer.
             if (
@@ -8884,6 +8913,21 @@ def _apply_group_offload(
                     _torchao_group_offload_kwargs(module, gkwargs, pinned_mib),
                     logger,
                 )
+                if (
+                    small_host
+                    and gkwargs.get("low_cpu_mem_usage", False)
+                    and _late_denoiser_pin_enabled(module, use_stream)
+                    and _defer_pinning(
+                        pipe,
+                        module,
+                        onload,
+                        logger,
+                        fast = True,
+                        byte_cap = _late_image_encoder_pin_cap(pipe, module, onload),
+                        skip_resident = True,
+                    )
+                ):
+                    defer_dit_pin = True
             installed += 1
             if use_stream and not _pin_top_level_group(module, logger, pinned_mib, device = onload):
                 _skip_top_level_copy_back(module, logger)
@@ -8893,6 +8937,13 @@ def _apply_group_offload(
             room = int(resident_transformer_mib)
             for module in streamed.values():
                 room -= _keep_groups_resident(module, room, onload, logger)
+        if defer_dit_pin:
+            install_group_pin_wait()
+            if logger is not None:
+                logger.info(
+                    "diffusion.memory: small-host route pins the leading streamed denoiser groups that fit the host "
+                    "RAM free once the load returns"
+                )
         # Encoders after the DiTs, one by one, failures absorbed: a refusing encoder stays resident
         # since hooks already exist. Leaf level: encoders are not uniform block stacks.
         ekwargs = {k: v for k, v in gkwargs.items() if k != "num_blocks_per_group"}
