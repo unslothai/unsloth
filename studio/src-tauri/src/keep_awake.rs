@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-//! The "Keep computer awake" desktop setting. While it is on, the app holds the OS's block on
-//! idle system sleep for as long as it runs; the display may still turn off. The OS drops the
-//! block when the process exits, so a crash cannot leave the computer unable to sleep.
+//! "Keep computer awake": holds the OS's idle-sleep block while the app runs. The OS drops it
+//! when the process exits.
 
 use log::{info, warn};
 use std::fs;
@@ -81,7 +80,6 @@ fn apply(enabled: bool) -> Result<bool, String> {
     let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
     let was_held = held.is_some();
     if enabled != was_held {
-        // Assigning None drops the old block, which releases it.
         *held = if enabled {
             Some(platform::SleepBlock::acquire()?)
         } else {
@@ -91,8 +89,7 @@ fn apply(enabled: bool) -> Result<bool, String> {
     Ok(was_held)
 }
 
-/// Re-takes the block at launch when the setting is on. Off the setup thread: on Linux this is
-/// a D-Bus round trip.
+/// Off the setup thread: on Linux this is a D-Bus round trip.
 pub fn initialize(app: &tauri::AppHandle) {
     if !SUPPORTED {
         return;
@@ -113,8 +110,7 @@ pub fn initialize(app: &tauri::AppHandle) {
     });
 }
 
-/// Whether the block is held right now, so a setting that failed to apply reads as off.
-/// Async so the main thread never waits on the lock while a launch-time acquire is in flight.
+/// Reports the block actually held, so a setting that failed to apply reads as off.
 #[tauri::command]
 pub async fn get_keep_awake() -> Option<bool> {
     SUPPORTED.then(is_held)
@@ -154,7 +150,6 @@ mod platform {
     /// `POWER_REQUEST_CONTEXT_VERSION`, which lives behind another windows-sys feature.
     const CONTEXT_VERSION: u32 = 0;
 
-    /// A power request, listed with its reason by `powercfg /requests`.
     pub struct SleepBlock(HANDLE);
 
     // SAFETY: a power request is a kernel object handle, usable and closable from any thread.
@@ -170,7 +165,6 @@ mod platform {
                     SimpleReasonString: reason.as_mut_ptr(),
                 },
             };
-            // SAFETY: `context` and the reason string it points to outlive the call.
             let handle = unsafe { PowerCreateRequest(&context) };
             if handle == INVALID_HANDLE_VALUE {
                 return Err(format!(
@@ -178,10 +172,8 @@ mod platform {
                     std::io::Error::last_os_error()
                 ));
             }
-            // SAFETY: `handle` is the power request created above.
             if unsafe { PowerSetRequest(handle, PowerRequestSystemRequired) } == 0 {
                 let error = std::io::Error::last_os_error();
-                // SAFETY: closing the request this function owns.
                 unsafe { CloseHandle(handle) };
                 return Err(format!("PowerSetRequest failed: {error}"));
             }
@@ -191,7 +183,6 @@ mod platform {
 
     impl Drop for SleepBlock {
         fn drop(&mut self) {
-            // SAFETY: the handle is a live power request owned by this value.
             unsafe {
                 PowerClearRequest(self.0, PowerRequestSystemRequired);
                 CloseHandle(self.0);
@@ -220,7 +211,6 @@ mod platform {
     /// `kIOPMAssertionLevelOn`.
     const LEVEL_ON: u32 = 255;
 
-    /// An IOKit power assertion, listed with its reason by `pmset -g assertions`.
     pub struct SleepBlock(u32);
 
     impl SleepBlock {
@@ -229,7 +219,6 @@ mod platform {
             let kind = NSString::from_str("PreventUserIdleSystemSleep");
             let name = NSString::from_str(super::REASON);
             let mut id = 0u32;
-            // SAFETY: both strings are live for the call and `id` is a valid out pointer.
             let status = unsafe {
                 IOPMAssertionCreateWithName(
                     Retained::as_ptr(&kind).cast(),
@@ -247,7 +236,6 @@ mod platform {
 
     impl Drop for SleepBlock {
         fn drop(&mut self) {
-            // SAFETY: the id is an assertion this value created and has not released.
             unsafe { IOPMAssertionRelease(self.0) };
         }
     }
@@ -261,9 +249,8 @@ mod platform {
     const CALL_TIMEOUT_MS: i32 = 5_000;
     const APP_NAME: &str = "Unsloth";
 
-    /// A desktop's session-bus inhibit service. Each drops a cookie when its holder leaves the
-    /// bus. The xdg portal's Inhibit is not used: on Plasma 6 its inhibitions outlive both
-    /// `Request.Close` and the caller's exit.
+    /// Not the xdg portal's Inhibit: on Plasma 6 its inhibitions outlive `Request.Close` and
+    /// the caller's exit.
     pub struct SessionService {
         bus_name: &'static str,
         path: &'static str,
@@ -273,7 +260,6 @@ mod platform {
     }
 
     const SESSION_SERVICES: [SessionService; 2] = [
-        // KDE Plasma (PowerDevil), Xfce, LXQt.
         SessionService {
             bus_name: "org.freedesktop.PowerManagement",
             path: "/org/freedesktop/PowerManagement/Inhibit",
@@ -281,7 +267,7 @@ mod platform {
             uninhibit: "UnInhibit",
             inhibit_args: || (APP_NAME, super::REASON).to_variant(),
         },
-        // GNOME and Cinnamon. Flag 4 blocks suspend only; the screen can still blank and lock.
+        // Flag 4: suspend only, so the screen can still lock.
         SessionService {
             bus_name: "org.gnome.SessionManager",
             path: "/org/gnome/SessionManager",
@@ -292,15 +278,15 @@ mod platform {
     ];
 
     pub enum SleepBlock {
-        /// Owns its connection: the service drops the cookie once the connection closes, and a
-        /// shared session bus connection closes when its last reference goes.
+        /// The service drops the cookie when this connection closes.
         Session {
             bus: gio::DBusConnection,
             service: &'static SessionService,
             cookie: u32,
         },
-        /// A logind idle inhibitor, for sessions with neither service. Held until the fd closes.
-        Logind { _inhibitor: OwnedFd },
+        Logind {
+            _inhibitor: OwnedFd,
+        },
     }
 
     impl SleepBlock {
@@ -408,9 +394,8 @@ mod platform {
             .get::<glib::variant::Handle>()
             .ok_or_else(|| "logind returned no inhibitor handle".to_string())?
             .0;
-        // `get` duplicates the fd, so the copy is ours to own and the list closes its own.
+        // `get` returns a dup the caller owns.
         let fd = fds.get(index).map_err(|error| error.to_string())?;
-        // SAFETY: `fd` is a fresh duplicate nothing else owns.
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 }

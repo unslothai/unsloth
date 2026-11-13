@@ -505,7 +505,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
     "settings.resources.modelMemory.mediaIdleUnloadKeywords",
   "settings.general.modelAutoSwitch.keepKv":
     "settings.general.modelAutoSwitch.keepKvKeywords",
-  // "sleep" and "caffeinate" are what people search for; the label says "awake".
+  // match "sleep" and "caffeinate", which the label omits.
   "settings.general.power.keepAwake": "settings.general.power.keepAwakeKeywords",
   "settings.chat.memory.title": "settings.chat.memory.keywords",
   "settings.chat.memory.enable": "settings.chat.memory.keywords",
