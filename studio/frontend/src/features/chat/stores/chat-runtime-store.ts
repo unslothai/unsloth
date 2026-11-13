@@ -5130,8 +5130,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { customPresets };
     }),
   setActivePreset: (activePreset) => {
-    // Saving the preset a link put on makes it a real pick: commit its values the way a pick does.
-    const promote = linkShown !== null && activePreset === linkShown;
+    // Saving what a link put on, under its name or a new one, makes it a real pick: commit its
+    // values the way a pick does.
+    const promote = linkShown !== null && get().activePreset === linkShown;
     forgetLinkShown();
     set(() => {
       activePresetMutationVersion += 1;
@@ -6691,10 +6692,13 @@ let lastLinkCheckpoint = "";
 /** The unlinked model a status merge put its recommendation on since the link showed. */
 let recommendationMergedFor: string | null = null;
 
-/** The linked preset over `base`, its token budget held to the window the model loaded with. */
+/** The linked preset over `base`, its token budget held to the model's ceiling: the loaded
+ *  window, or an external model's output cap. */
 function linkedParams(base: InferenceParams, preset: Preset): InferenceParams {
   const applied = applyPresetForProvider(base, preset, null);
-  const cap = loadedContextFor(base.checkpoint);
+  const cap = isExternalModelId(base.checkpoint)
+    ? externalOutputCap(base.checkpoint)
+    : loadedContextFor(base.checkpoint);
   return cap !== null && applied.maxTokens > cap ? { ...applied, maxTokens: cap } : applied;
 }
 let linkSyncSuspended = 0;
@@ -6713,6 +6717,20 @@ export function suspendLinkedPresetSync(): () => void {
     lastLinkCheckpoint = modelId;
     queueMicrotask(() => syncLinkedPreset(modelId, false));
   };
+}
+
+function externalOutputCap(modelId: string): number | null {
+  const external = parseExternalModelId(modelId);
+  if (!external) return null;
+  const provider = useExternalProvidersStore
+    .getState()
+    .providers.find((candidate) => candidate.id === external.providerId);
+  if (!provider) return null;
+  return getExternalMaxOutputTokens(
+    provider.providerType,
+    external.modelId,
+    provider.maxOutputTokens,
+  );
 }
 
 function providerTypeFor(modelId: string): string | null {

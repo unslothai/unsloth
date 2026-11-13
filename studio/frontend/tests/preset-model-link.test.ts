@@ -30,6 +30,9 @@ const {
 const { DEFAULT_INFERENCE_PARAMS } = await import(
   "../src/features/chat/types/runtime.ts"
 );
+const { useExternalProvidersStore } = await import(
+  "../src/features/chat/stores/external-providers-store.ts"
+);
 const { REMEMBERED_MAX_TOKENS_MAX } = await import(
   "../src/features/chat/lib/per-model-params.ts"
 );
@@ -655,6 +658,53 @@ test("a chat edit just before switching onto a link is saved as typed", async ()
     store.setActiveThreadId(null);
     store.applyThreadScopedSettings(null, null);
     store.setCustomPresets(saved);
+  }
+});
+
+test("saving the linked view under a new name keeps it over the model's memory", async () => {
+  const store = useChatRuntimeStore.getState();
+  const saved = store.customPresets;
+  useChatRuntimeStore.setState({ paramsByModel: { [QWEN]: { temperature: 0.66 } } });
+  try {
+    await switchTo(QWEN);
+    const s = useChatRuntimeStore.getState();
+    s.setCustomPresets([...saved, { name: "Copy", params: { ...s.params } }]);
+    s.setActivePreset("Copy");
+    s.setActivePresetSource("custom");
+    loadOrPoll(QWEN);
+    await Promise.resolve();
+    assert.equal(live().activePreset, "Copy");
+    assert.equal(live().temperature, 0.2);
+  } finally {
+    store.setCustomPresets(saved);
+  }
+});
+
+test("a linked external model's budget stays within its output cap", async () => {
+  const EXT = "external::capped::gpt-x";
+  const store = useChatRuntimeStore.getState();
+  const saved = store.customPresets;
+  useExternalProvidersStore.setState({
+    providers: [{
+      id: "capped", providerType: "openai_compatible", name: "Capped",
+      baseUrl: "http://localhost:1", models: ["gpt-x"], maxOutputTokens: 4096,
+      createdAt: 0, updatedAt: 0,
+    }],
+  });
+  const huge = { name: "Huge", params: { ...DEFAULT_INFERENCE_PARAMS, maxTokens: 100000 } };
+  store.setCustomPresets([...saved, huge]);
+  store.setModelPreset(EXT, "Huge");
+  try {
+    const s = useChatRuntimeStore.getState();
+    s.setParams({ ...s.params, checkpoint: EXT });
+    await Promise.resolve();
+    assert.equal(live().activePreset, "Huge");
+    assert.ok(useChatRuntimeStore.getState().params.maxTokens <= 4096);
+  } finally {
+    store.setModelPreset(EXT, null);
+    store.setCustomPresets(saved);
+    useExternalProvidersStore.setState({ providers: [] });
+    await settled();
   }
 });
 
