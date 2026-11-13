@@ -41,7 +41,7 @@ test("every supported connection resolves to an existing public asset", () => {
   for (const type of [
     "openai", "openai_codex", "deepseek", "mistral", "huggingface", "kimi",
     "qwen", "qwencloud", "gemini", "anthropic", "openrouter", "vllm", "ollama", "llama_cpp",
-    "liquid", "typesafe", "zai", "minimax", "opencode", "opencode_go",
+    "liquid", "typesafe", "zai", "minimax", "opencode", "opencode_go", "nace",
   ]) {
     const path = providerLogoPath(type);
     assert.ok(path?.startsWith("/"), type);
