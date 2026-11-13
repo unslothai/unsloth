@@ -363,7 +363,8 @@ class _Run:
             self._sleep(action["seconds"])
         elif op == "open_app":
             self._failsafe()
-            self._use_app(action["name"])
+            # A part of a name can open another app, so the one that would start is checked.
+            self._use_app(backend.resolve_app(action["name"]) or action["name"])
             action["name"] = backend.open_app(action["name"])
             self._sleep(_OPEN_APP_WAIT_S)
             # The system may know it by another name than the one asked for.
@@ -424,9 +425,10 @@ class _Run:
                         f"{chord_text(chord)} locks the screen or ends the session, so it is "
                         "never sent."
                     )
-            self._use(self._front(action))
             for _ in range(action["repeat"]):
                 for mods, key in action["chords"]:
+                    # Each one anew: a chord such as alt+tab moves the keys to another app.
+                    self._use(self._front(action))
                     backend.key(mods, key)
                 if self._stopped():
                     break

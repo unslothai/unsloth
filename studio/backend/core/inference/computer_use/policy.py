@@ -314,6 +314,14 @@ def _app_at(action: dict, session: Any, backend: Backend) -> str:
     return window.app if window is not None else ""
 
 
+def _resolved_app(name: str, backend: Backend) -> str:
+    """The app a name would open, so the card and the gate speak of what would really start."""
+    try:
+        return backend.resolve_app(name) or name
+    except Exception:  # noqa: BLE001 - the run itself reports a name that opens nothing
+        return name
+
+
 def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
     """The apps a call's clicks and keys would land in, in order: where each click points, and
     for keys the app in front after the clicks before them."""
@@ -322,7 +330,7 @@ def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontW
     for action in actions:
         op = action["op"]
         if op == "open_app":
-            current = action["name"]
+            current = _resolved_app(action["name"], backend)
             used.append(current)
         elif op in ("click", "drag"):
             # A click brings its window forward, so the keys after it go there.

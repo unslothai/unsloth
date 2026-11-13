@@ -58,6 +58,40 @@ def _session_problem() -> Optional[str]:
     return None
 
 
+_IS_VIEWABLE = 2
+_INPUT_OUTPUT = 1
+
+
+class _WindowAttributes(ctypes.Structure):
+    """Xlib's XWindowAttributes."""
+
+    _fields_ = [
+        ("x", ctypes.c_int),
+        ("y", ctypes.c_int),
+        ("width", ctypes.c_int),
+        ("height", ctypes.c_int),
+        ("border_width", ctypes.c_int),
+        ("depth", ctypes.c_int),
+        ("visual", ctypes.c_void_p),
+        ("root", ctypes.c_ulong),
+        ("window_class", ctypes.c_int),
+        ("bit_gravity", ctypes.c_int),
+        ("win_gravity", ctypes.c_int),
+        ("backing_store", ctypes.c_int),
+        ("backing_planes", ctypes.c_ulong),
+        ("backing_pixel", ctypes.c_ulong),
+        ("save_under", ctypes.c_int),
+        ("colormap", ctypes.c_ulong),
+        ("map_installed", ctypes.c_int),
+        ("map_state", ctypes.c_int),
+        ("all_event_masks", ctypes.c_long),
+        ("your_event_mask", ctypes.c_long),
+        ("do_not_propagate_mask", ctypes.c_long),
+        ("override_redirect", ctypes.c_int),
+        ("screen", ctypes.c_void_p),
+    ]
+
+
 class LinuxBackend(Backend):
     name = "linux"
     shortcut_modifier = "ctrl"
@@ -124,6 +158,11 @@ class LinuxBackend(Backend):
             x11, "XTranslateCoordinates", cint, ref, ulong, ulong, cint, cint, pointer(cint),
             pointer(cint), pointer(ulong),
         )  # fmt: skip
+        sig(
+            x11, "XQueryTree", cint, ref, ulong, pointer(ulong), pointer(ulong),
+            pointer(pointer(ulong)), pointer(uint),
+        )  # fmt: skip
+        sig(x11, "XGetWindowAttributes", cint, ref, ulong, pointer(_WindowAttributes))
         sig(xtst, "XTestFakeMotionEvent", cint, ref, cint, cint, cint, ulong)
         sig(xtst, "XTestFakeButtonEvent", cint, ref, uint, cint, ulong)
         sig(xtst, "XTestFakeKeyEvent", cint, ref, uint, cint, ulong)
@@ -403,26 +442,90 @@ class LinuxBackend(Backend):
             window = self._long_property(root, b"_NET_ACTIVE_WINDOW")
             if not window:
                 return FrontWindow()
-            _form, title = self._property(window, b"_NET_WM_NAME")
-            if not title:
-                _form, title = self._property(window, b"WM_NAME")
-            _form, klass = self._property(window, b"WM_CLASS")
-            names = [part.decode("utf-8", "replace") for part in klass.split(b"\x00") if part]
-            pid = self._long_property(window, b"_NET_WM_PID")
-            bounds = None
-            geometry_root = ctypes.c_ulong(0)
-            x, y = ctypes.c_int(0), ctypes.c_int(0)
-            width, height, border, depth = (ctypes.c_uint(0) for _ in range(4))
-            if self._x11.XGetGeometry(
-                self._display, window, ctypes.byref(geometry_root), ctypes.byref(x), ctypes.byref(y),
-                ctypes.byref(width), ctypes.byref(height), ctypes.byref(border), ctypes.byref(depth),
-            ):  # fmt: skip
-                root_x, root_y, child = ctypes.c_int(0), ctypes.c_int(0), ctypes.c_ulong(0)
-                self._x11.XTranslateCoordinates(
-                    self._display, window, root, 0, 0, ctypes.byref(root_x), ctypes.byref(root_y),
-                    ctypes.byref(child),
-                )  # fmt: skip
-                bounds = (root_x.value, root_y.value, width.value, height.value)
+            return self._describe(window)
+
+    def _children(self, window: int) -> list[int]:
+        """A window's children, lowest first."""
+        root, parent = ctypes.c_ulong(0), ctypes.c_ulong(0)
+        children = ctypes.POINTER(ctypes.c_ulong)()
+        count = ctypes.c_uint(0)
+        if not self._x11.XQueryTree(
+            self._display, window, ctypes.byref(root), ctypes.byref(parent),
+            ctypes.byref(children), ctypes.byref(count),
+        ):  # fmt: skip
+            return []
+        try:
+            return [children[index] for index in range(count.value)]
+        finally:
+            if children:
+                self._x11.XFree(children)
+
+    def _client(
+        self,
+        window: int,
+        depth: int = 0,
+    ) -> int:
+        """The application's own window inside a window manager's frame: the first one down
+        the tree that names its class. 0 when none does."""
+        _form, klass = self._property(window, b"WM_CLASS")
+        if klass:
+            return window
+        if depth < 4:
+            for child in reversed(self._children(window)):
+                found = self._client(child, depth + 1)
+                if found:
+                    return found
+        return 0
+
+    def window_at(self, x: float, y: float) -> Optional[FrontWindow]:
+        """The topmost window under this point, in front or behind. A menu or tooltip names no
+        application, and is charged to the one in front, which raised it."""
+        if self._problem:
+            return None
+        with self._lock:
+            root = self._x11.XDefaultRootWindow(self._display)
+            for window in reversed(self._children(root)):
+                attributes = _WindowAttributes()
+                if not self._x11.XGetWindowAttributes(
+                    self._display, window, ctypes.byref(attributes)
+                ):
+                    continue
+                if attributes.map_state != _IS_VIEWABLE or attributes.window_class != _INPUT_OUTPUT:
+                    continue
+                inside_x = attributes.x <= x < attributes.x + attributes.width
+                inside_y = attributes.y <= y < attributes.y + attributes.height
+                if not (inside_x and inside_y):
+                    continue
+                client = self._client(window)
+                if client:
+                    return self._describe(client)
+                front = self._long_property(root, b"_NET_ACTIVE_WINDOW")
+                return self._describe(front) if front else None
+        return None
+
+    def _describe(self, window: int) -> FrontWindow:
+        """Call with the lock held."""
+        root = self._x11.XDefaultRootWindow(self._display)
+        _form, title = self._property(window, b"_NET_WM_NAME")
+        if not title:
+            _form, title = self._property(window, b"WM_NAME")
+        _form, klass = self._property(window, b"WM_CLASS")
+        names = [part.decode("utf-8", "replace") for part in klass.split(b"\x00") if part]
+        pid = self._long_property(window, b"_NET_WM_PID")
+        bounds = None
+        geometry_root = ctypes.c_ulong(0)
+        x, y = ctypes.c_int(0), ctypes.c_int(0)
+        width, height, border, depth = (ctypes.c_uint(0) for _ in range(4))
+        if self._x11.XGetGeometry(
+            self._display, window, ctypes.byref(geometry_root), ctypes.byref(x), ctypes.byref(y),
+            ctypes.byref(width), ctypes.byref(height), ctypes.byref(border), ctypes.byref(depth),
+        ):  # fmt: skip
+            root_x, root_y, child = ctypes.c_int(0), ctypes.c_int(0), ctypes.c_ulong(0)
+            self._x11.XTranslateCoordinates(
+                self._display, window, root, 0, 0, ctypes.byref(root_x), ctypes.byref(root_y),
+                ctypes.byref(child),
+            )  # fmt: skip
+            bounds = (root_x.value, root_y.value, width.value, height.value)
         return FrontWindow(
             app = names[-1] if names else "",
             app_id = (names[0] if names else "").lower(),
@@ -477,6 +580,10 @@ class LinuxBackend(Backend):
                 if best is None or rank < best[0]:
                     best = (rank, path, shown, command)
         return best[1:] if best else None
+
+    def resolve_app(self, name: str) -> str:
+        found = None if "/" in name else self._desktop_entry(name)
+        return found[1] if found else name
 
     def open_app(self, name: str) -> str:
         self._ready()

@@ -97,6 +97,62 @@ def test_x11_typing_borrows_a_key_and_gives_it_back(xvfb):
         backend._x11.XFree(symbols)
 
 
+def test_x11_finds_the_window_under_a_point_in_front_or_behind(xvfb):
+    import ctypes
+    import ctypes.util
+
+    from core.inference.computer_use.backends.linux import LinuxBackend
+
+    x11 = ctypes.CDLL(ctypes.util.find_library("X11"))
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XCreateSimpleWindow.restype = ctypes.c_ulong
+    x11.XCreateSimpleWindow.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint,
+        ctypes.c_uint, ctypes.c_ulong, ctypes.c_ulong,
+    ]  # fmt: skip
+    x11.XInternAtom.restype = ctypes.c_ulong
+    x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x11.XChangeProperty.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_int, ctypes.c_int,
+        ctypes.c_char_p, ctypes.c_int,
+    ]  # fmt: skip
+    x11.XMapWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    display = x11.XOpenDisplay(None)
+    assert display
+    try:
+        root = x11.XDefaultRootWindow(display)
+        string = x11.XInternAtom(display, b"STRING", 0)
+        wm_class = x11.XInternAtom(display, b"WM_CLASS", 0)
+
+        def window(x, y, width, height, klass):
+            made = x11.XCreateSimpleWindow(display, root, x, y, width, height, 0, 0, 0)
+            if klass:
+                x11.XChangeProperty(display, made, wm_class, string, 8, 0, klass, len(klass))
+            x11.XMapWindow(display, made)
+            return made
+
+        window(0, 0, 400, 300, b"mail\x00Mail\x00")
+        # Mapped later, so it lies on top where the two overlap.
+        window(200, 0, 400, 300, b"notes\x00Notes\x00")
+        x11.XSync(display, 0)
+        backend = LinuxBackend()
+        assert backend.unavailable_reason() is None
+        behind = backend.window_at(50, 50)
+        assert behind is not None and (behind.app, behind.app_id) == ("Mail", "mail")
+        assert behind.bounds == (0, 0, 400, 300)
+        assert backend.window_at(300, 50).app == "Notes"
+        assert backend.window_at(500, 50).app == "Notes"
+        # The bare desktop belongs to no window.
+        assert backend.window_at(700, 500) is None
+    finally:
+        x11.XCloseDisplay(display)
+
+
 def test_a_wayland_session_is_reported_not_attempted(monkeypatch):
     if not sys.platform.startswith("linux"):
         pytest.skip("Linux only")

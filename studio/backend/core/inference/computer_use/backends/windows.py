@@ -58,7 +58,7 @@ _OPEN_APP_SCRIPT = (
     "$a = $apps | Where-Object { $_.Name -like $p } | Sort-Object { $_.Name.Length } | "
     "Select-Object -First 1 }; "
     "if (-not $a) { exit 3 }; "
-    "Start-Process ('shell:AppsFolder\\' + $a.AppID); "
+    "if (-not $env:UNSLOTH_COMPUTER_USE_RESOLVE) { Start-Process ('shell:AppsFolder\\' + $a.AppID) }; "
     "Write-Output $a.Name"
 )
 
@@ -368,7 +368,17 @@ class WindowsBackend(Backend):
         root = self._user32.GetAncestor(hwnd, _GA_ROOT) if hwnd else None
         return self._window(root) if root else None
 
-    def open_app(self, name: str) -> str:
+    def resolve_app(self, name: str) -> str:
+        try:
+            return self.open_app(name, launch = False)
+        except BackendError:
+            return name
+
+    def open_app(
+        self,
+        name: str,
+        launch: bool = True,
+    ) -> str:
         if any(char in name for char in '\\/:"<>|') or name.startswith(("-", ".")):
             raise BackendError(
                 "give the application's name as the Start menu shows it, not a path."
@@ -377,6 +387,9 @@ class WindowsBackend(Backend):
         shell = os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
         # The name travels in the environment, never in the script text.
         env = {**os.environ, "UNSLOTH_COMPUTER_USE_APP": name}
+        env.pop("UNSLOTH_COMPUTER_USE_RESOLVE", None)
+        if not launch:
+            env["UNSLOTH_COMPUTER_USE_RESOLVE"] = "1"
         try:
             done = subprocess.run(
                 [shell, "-NoProfile", "-NonInteractive", "-Command", _OPEN_APP_SCRIPT],

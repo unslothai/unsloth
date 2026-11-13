@@ -745,6 +745,55 @@ def test_a_blocked_app_is_never_used(desktop):
     assert run(click).startswith("Done:")
 
 
+def test_a_part_of_a_name_cannot_open_a_blocked_app(desktop, monkeypatch):
+    look()
+    policy.block_app("Firefox")
+    # The launcher would take "fire" for Firefox.
+    monkeypatch.setattr(
+        desktop, "resolve_app", lambda name: "Firefox" if name == "fire" else name, raising = False
+    )
+    for kwargs in ({}, {"approved": True}, {"full_access": True}):
+        refused = run({"action": "open_app", "name": "fire"}, **kwargs)
+        assert refused.startswith("Error:") and "Firefox is blocked" in refused
+    assert not [event for event in desktop.events if event[0] == "open_app"]
+    # The card and the gate speak of the app that would really start.
+    policy.unblock_app("Firefox")
+    assert policy.call_asks({"action": "open_app", "name": "fire"}, SESSION)["apps"] == ["Firefox"]
+    monkeypatch.setattr(desktop, "resolve_app", lambda name: "Terminal", raising = False)
+    asks = policy.call_asks({"action": "open_app", "name": "term"}, SESSION)
+    assert asks["risks"] == ["Terminal is a terminal"]
+    assert "Terminal has not been allowed" in run({"action": "open_app", "name": "term"})
+
+
+def test_each_chord_goes_to_the_app_then_in_front(desktop):
+    look()
+    policy.block_app("Mail")
+    original = desktop.key
+    sent = []
+
+    def key(mods, name):
+        original(mods, name)
+        sent.append(name)
+        # The first chord switches apps, as alt+tab would.
+        desktop.front = FrontWindow(app = "Mail", title = "Inbox", bounds = (0, 0, 1280, 800))
+
+    desktop.key = key
+    refused = run({"action": "key", "keys": "tab enter"}, approved = True)
+    assert refused.startswith("Error:") and "Mail is blocked" in refused
+    assert sent == ["tab"]
+    # Unsloth's own window and a security prompt are refused the same way, approved or not.
+    sent.clear()
+    desktop.front = FrontWindow(app = "Notes", title = "Untitled", bounds = (0, 0, 1280, 800))
+
+    def to_unsloth(mods, name):
+        sent.append(name)
+        desktop.front = FrontWindow(app = "Unsloth", title = "Unsloth", bounds = (0, 0, 1280, 800))
+
+    desktop.key = to_unsloth
+    refused = run({"action": "key", "keys": "tab", "repeat": 3}, approved = True)
+    assert "Unsloth's own window" in refused and sent == ["tab"]
+
+
 def test_blocking_wins_over_always_allowed(desktop):
     policy.allow_app("Mail")
     assert policy.block_app("Mail") == {

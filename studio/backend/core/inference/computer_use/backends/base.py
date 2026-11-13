@@ -99,6 +99,11 @@ class Backend:
         front = self.front_window()
         return front if front.bounds is not None and front.contains(x, y) else None
 
+    def resolve_app(self, name: str) -> str:
+        """The application `open_app` would open for this name, without opening it, so the
+        policy is applied to what would really start. The name itself where it can't be told."""
+        return name
+
     def open_app(self, name: str) -> str:
         """Open or focus an application by name; returns the name it opened."""
         raise BackendError("opening an application by name isn't supported on this system.")
