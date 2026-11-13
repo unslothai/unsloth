@@ -553,3 +553,19 @@ test("with sharing on, a query chat's follow-up survives first persistence", asy
   await h.update({ threadId: "saved" });
   assert.equal(h.props.text, "follow-up");
 });
+
+test("with sharing on, sending a query chat leaves the unrelated shared draft alone", async (t) => {
+  const h = await harness({ nonce: "query-1", share: true }, (drafts) => {
+    drafts.writeComposerDraft("chat-draft:latest", "unsent shared work");
+    drafts.writePasteDraft("chat-draft-pastes:latest", ["shared paste"]);
+    drafts.writeComposerDraft(drafts.composerDraftKey("query-1"), "what is lora");
+  });
+  t.after(h.close);
+  await h.send();
+  await h.update({ remoteId: "saved" });
+  await h.update({ threadId: "saved" });
+  h.flush();
+  assert.equal(h.props.text, "unsent shared work");
+  assert.equal(h.drafts.readComposerDraft("chat-draft:latest"), "unsent shared work");
+  assert.deepEqual(h.drafts.latestPasteDraft(), ["shared paste"]);
+});

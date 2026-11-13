@@ -4209,14 +4209,17 @@ const Composer: FC<{
         justSentRef.current = { ...justSentRef.current, draftKey };
       }
       const text = latestDraft(previousKey);
-      // A query chat with sharing on lands in the shared slot, which this tab reads from memory.
-      if (shareDraft) publishDraft(text, draftSource);
-      writeComposerDraft(draftKey, text);
-      stageComposerDraft(draftKey, text);
-      writePasteDraft(pasteDraftKey, latestPasteDraft(previousPasteKey));
+      const pastes = latestPasteDraft(previousPasteKey);
+      // With sharing on, only a query chat's follow-up moves into the shared slot (read from memory here).
+      if (!shareDraft || text || pastes.length > 0) {
+        if (shareDraft) publishDraft(text, draftSource);
+        writeComposerDraft(draftKey, text);
+        stageComposerDraft(draftKey, text);
+        writePasteDraft(pasteDraftKey, pastes);
+        pasteKeyShownRef.current = draftKey;
+      }
       writeComposerDraft(previousKey, "");
       writePasteDraft(previousPasteKey, []);
-      pasteKeyShownRef.current = draftKey;
     }
     if (draftScope === INCOGNITO_DRAFT_SCOPE) {
       composer.setText(temporaryQueryDraft(draftKey));
