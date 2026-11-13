@@ -46,6 +46,7 @@ from hub.dependencies import get_hf_token
 from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
 from utils.account_context import AccountContext, arun_as, current_account, run_as
+from utils.temporary_file_response import TemporaryFileResponse
 from loggers import get_logger
 from loggers.media_progress import (
     byte_fraction,
@@ -1271,23 +1272,12 @@ async def export_gallery_video(
         raise HTTPException(status_code = 501, detail = str(exc)) from exc
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
-    from fastapi.responses import FileResponse
-    from starlette.background import BackgroundTask
-
-    def _cleanup() -> None:
-        try:
-            path.unlink(missing_ok = True)
-        except OSError as e:  # noqa: BLE001 -- a leaked temp file must not fail the download
-            logger.debug(f"Could not remove the export temp file {path}: {e}")
-
-    # FileResponse streams from disk, so a large VP9 export is never fully resident. The temp file is deleted once sent.
-    return FileResponse(
+    return TemporaryFileResponse(
         path,
         media_type = "video/webm" if fmt == "webm" else "image/gif",
         filename = f"{video_id}.{fmt}",
         # Transcodes are deterministic per id+format; let the browser cache them.
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
-        background = BackgroundTask(_cleanup),
     )
 
 
