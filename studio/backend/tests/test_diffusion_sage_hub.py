@@ -243,3 +243,28 @@ def test_no_download_while_kernels_is_not_importable(monkeypatch, hub_slot):
     fn, why = att._load_sage_hub_kernel()
     assert fn is None and "kernels package is not importable" in why
     assert att._SAGE_HUB_FAILED == []
+
+
+def _fake_torch(version, cuda, hip):
+    return types.SimpleNamespace(
+        __version__ = version,
+        version = types.SimpleNamespace(cuda = cuda, hip = hip),
+        _C = types.SimpleNamespace(_GLIBCXX_USE_CXX11_ABI = True),
+    )
+
+
+@pytest.mark.parametrize(
+    "version, cuda, hip",
+    [
+        ("2.11.0+rocm7.1", "12.8", None),  # AMD SDK / Radeon wheel: ROCm tag only, hip unset
+        ("2.11.0", "12.8", "7.1.0"),  # stock ROCm wheel
+    ],
+)
+def test_rocm_torch_never_gets_a_cuda_build(monkeypatch, version, cuda, hip):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(version, cuda, hip))
+    assert hub._torch_build() is None
+
+
+def test_cuda_torch_still_gets_its_build(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("2.11.0+cu128", "12.8", None))
+    assert hub._torch_build() == {"torch": (2, 11), "cuda": (12, 8), "cxx11": True}
