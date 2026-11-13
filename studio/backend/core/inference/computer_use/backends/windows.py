@@ -110,6 +110,7 @@ class WindowsBackend(Backend):
     def __init__(self) -> None:
         self._user32 = ctypes.WinDLL("user32", use_last_error = True)
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        self._descriptions: dict[str, str] = {}
         user32 = self._user32
         user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(_Input), ctypes.c_int]
         user32.SendInput.restype = wintypes.UINT
@@ -335,7 +336,7 @@ class WindowsBackend(Backend):
             has_rect = bool(user32.GetWindowRect(hwnd, ctypes.byref(rect)))
         pid = wintypes.DWORD(0)
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        exe = ""
+        exe = shown = ""
         handle = self._kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
         if handle:
             try:
@@ -343,10 +344,13 @@ class WindowsBackend(Backend):
                 size = wintypes.DWORD(len(path))
                 if self._kernel32.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size)):
                     exe = os.path.basename(path.value)
+                    shown = self._description(path.value)
             finally:
                 self._kernel32.CloseHandle(handle)
         return FrontWindow(
-            app = exe.rsplit(".", 1)[0] if exe else "",
+            # The name the Start menu and open_app know it by ("Microsoft Edge"), so one name
+            # covers opening an app and acting in it; the file name stays as its id.
+            app = shown or (exe.rsplit(".", 1)[0] if exe else ""),
             app_id = exe.lower(),
             title = title.value,
             pid = pid.value,
@@ -356,6 +360,51 @@ class WindowsBackend(Backend):
                 else None
             ),
         )
+
+    def _description(self, path: str) -> str:
+        """The program's own name for itself, from its version resource, or "" without one."""
+        if path in self._descriptions:
+            return self._descriptions[path]
+        found = ""
+        try:
+            version = ctypes.WinDLL("version", use_last_error = True)
+            version.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p]
+            version.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+            version.GetFileVersionInfoW.argtypes = [
+                wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+            ]  # fmt: skip
+            version.VerQueryValueW.argtypes = [
+                ctypes.c_void_p, wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+                ctypes.POINTER(wintypes.UINT),
+            ]  # fmt: skip
+            size = version.GetFileVersionInfoSizeW(path, None)
+            data = ctypes.create_string_buffer(size) if size else None
+            if data is not None and version.GetFileVersionInfoW(path, 0, size, data):
+                value, length = ctypes.c_void_p(None), wintypes.UINT(0)
+                if (
+                    version.VerQueryValueW(
+                        data,
+                        "\\VarFileInfo\\Translation",
+                        ctypes.byref(value),
+                        ctypes.byref(length),
+                    )
+                    and value.value
+                    and length.value >= 4
+                ):
+                    language, codepage = (ctypes.c_ushort * 2).from_address(value.value)
+                    key = f"\\StringFileInfo\\{language:04x}{codepage:04x}\\FileDescription"
+                    if (
+                        version.VerQueryValueW(data, key, ctypes.byref(value), ctypes.byref(length))
+                        and value.value
+                        and length.value
+                    ):
+                        text = ctypes.wstring_at(value.value, length.value)
+                        found = " ".join(text.split("\x00")[0].split())[:80]
+        except Exception:  # noqa: BLE001 - the file name stands in
+            found = ""
+        if len(self._descriptions) < 512:
+            self._descriptions[path] = found
+        return found
 
     def front_window(self) -> FrontWindow:
         hwnd = self._user32.GetForegroundWindow()

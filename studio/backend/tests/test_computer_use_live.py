@@ -262,6 +262,15 @@ def test_windows_pointer_keys_and_capture(windows):
         windows.move(*start)
 
 
+def test_windows_names_an_app_as_the_start_menu_does(windows):
+    system = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32")
+    assert windows._description(os.path.join(system, "notepad.exe")) == "Notepad"
+    assert windows._description(os.path.join(system, "no-such-program.exe")) == ""
+    # Whatever is in front has a name and keeps its file name as its id.
+    front = windows.front_window()
+    assert isinstance(front.app, str) and front.app_id == front.app_id.lower()
+
+
 def test_windows_open_app_takes_names_not_paths(windows):
     for name in ("C:\\Windows\\notepad.exe", "..\\x", "-n", "a|b"):
         with pytest.raises(BackendError, match = "name"):

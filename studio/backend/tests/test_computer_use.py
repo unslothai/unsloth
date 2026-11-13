@@ -555,6 +555,16 @@ def test_unsloth_showing_from_behind_cannot_be_clicked_either(desktop):
     assert run({"action": "click", **at(*BUTTON)}).startswith("Done:")
 
 
+def test_the_desktop_app_is_recognised_under_its_shown_name_and_its_file_name():
+    for app, app_id in (
+        ("Unsloth", "unsloth.exe"),
+        ("Unsloth Desktop", "unsloth.exe"),
+        ("x", "Unsloth.exe"),
+    ):
+        assert policy.is_own_window(FrontWindow(app = app, app_id = app_id, title = "Chat"))
+    assert not policy.is_own_window(FrontWindow(app = "Unslothful", app_id = "other.exe", title = "x"))
+
+
 def test_the_desktop_app_is_recognised_by_its_identifier():
     assert policy.is_own_window(FrontWindow(app = "Unsloth", app_id = "ai.unsloth.studio"))
 

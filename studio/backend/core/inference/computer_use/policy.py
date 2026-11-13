@@ -279,7 +279,10 @@ def is_own_window(window: FrontWindow) -> bool:
     whose title can't be read counts too, since it can't be told apart (macOS hides titles
     without the Screen Recording grant)."""
     names = (window.app.casefold(), window.app_id.casefold())
-    if names[1] in _OWN_APP_IDS or names[0] == "unsloth":
+    stems = [name.removesuffix(".exe") for name in names]
+    if names[1] in _OWN_APP_IDS or any(
+        stem == "unsloth" or stem.startswith("unsloth ") for stem in stems
+    ):
         return True
     if not window.title:
         stems = {name.removesuffix(".exe") for name in names}
