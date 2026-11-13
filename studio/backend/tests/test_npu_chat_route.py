@@ -1759,7 +1759,7 @@ def test_a_later_pass_that_overflows_counts_the_full_branch(
         return False
 
     monkeypatch.setattr(Request, "is_disconnected", connected)
-    flm(tools = True)
+    recorded = flm(tools = True)
     status, body = _call(
         stream = True,
         messages = chat,
@@ -1773,5 +1773,8 @@ def test_a_later_pass_that_overflows_counts_the_full_branch(
     assert status == 200
     first, *later = _truncations(body)
     assert later
-    # The second tool result evicts the first; counted against the client's branch, past /compact's cut.
-    assert later[-1]["dropped_messages"] > first["dropped_messages"]
+    # Counted against the client's branch with the tool result, not against the shortened list.
+    assert later[-1]["prompt_tokens_before"] > first["prompt_tokens_before"]
+    assert later[-1]["dropped_messages"] >= first["dropped_messages"]
+    # The refit is what the next pass extends, so the fresh tool result is never evicted.
+    assert "tool" in [m["role"] for m in recorded[-1]["body"]["messages"]]
