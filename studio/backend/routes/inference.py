@@ -22425,6 +22425,8 @@ async def generate_stream(
         gen = None
         completed = False
         stats_holder: dict = {}
+        # The backend yields the cumulative reply, so the last chunk is the whole text so far.
+        streamed = ""
         monitor_id = None
         failure = None
         # Watch for disconnect: the generator only awaits to_thread(next), so it would not notice.
@@ -22483,6 +22485,7 @@ async def generate_stream(
                     yield f"data: {json.dumps({'error': failure})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
+                streamed = chunk
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             if completed:
                 yield "data: [DONE]\n\n"
@@ -22515,7 +22518,23 @@ async def generate_stream(
             finally:
                 try:
                     stats = stats_holder.get("stats") or {}
-                    _monitor_usage(monitor_id, stats.get("usage"), timings = stats.get("timings"))
+                    usage = stats.get("usage")
+                    if not usage and streamed:
+                        # Stopped before gen_done: settle a text-length estimate, or nothing is charged.
+                        prompt = -(
+                            -len(
+                                (request.system_prompt or "")
+                                + _monitor_prompt_from_messages(request.messages)
+                            )
+                            // 4
+                        )
+                        completion = -(-len(streamed) // 4)
+                        usage = {
+                            "prompt_tokens": prompt,
+                            "completion_tokens": completion,
+                            "total_tokens": prompt + completion,
+                        }
+                    _monitor_usage(monitor_id, usage, timings = stats.get("timings"))
                     if failure is not None:
                         api_monitor.fail(monitor_id, failure)
                     elif completed:
@@ -31466,7 +31485,8 @@ async def openai_chat_completions(
         thread = (
             uuid.uuid4().hex
             if internal
-            else payload.thread_id or payload.cancel_id or uuid.uuid4().hex
+            # Never cancel_id: a caller could reuse it to make unrelated requests one incremental thread.
+            else payload.thread_id or uuid.uuid4().hex
         )
         temporary = TemporaryUsage(
             _hashlib.sha256(thread.encode("utf-8")).hexdigest(),

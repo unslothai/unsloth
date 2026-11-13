@@ -108,3 +108,20 @@ def test_an_interrupted_temporary_reply_settles_an_estimate():
         20,
         120,
     )
+
+
+def test_a_long_interrupted_temporary_reply_is_estimated_in_full():
+    from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
+
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    with temporary_usage_scope(TemporaryUsage("thread", "external", "message")):
+        entry = monitor.start(
+            endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "", subject = "o"
+        )
+    for _ in range(4):
+        monitor.append_reply(entry, "r" * 12_000)
+    monitor.finish(entry, "cancelled")
+    [receipt] = receipts
+    assert receipt.completion_tokens == 12_000

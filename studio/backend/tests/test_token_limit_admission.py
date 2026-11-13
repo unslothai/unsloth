@@ -275,3 +275,56 @@ def test_temporary_chat_counts_without_persisting_its_content(
         )
     finally:
         conn.close()
+
+
+def test_a_stopped_legacy_stream_settles_an_estimate(admission, monkeypatch):
+    from types import SimpleNamespace
+    from core.inference import token_limit
+    from core.inference.api_monitor import ApiMonitor
+    from storage.api_usage_db import record_api_usage
+
+    client, _, _ = admission
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(record_api_usage)
+    monkeypatch.setattr(inference, "api_monitor", monitor)
+    monkeypatch.setattr(inference, "_request_used_api_key", lambda request: False)
+
+    def generate(**kwargs):
+        # Cumulative text, and no gen_done stats: the run was cut short.
+        yield "a" * 40
+        yield "a" * 80
+
+    backend = SimpleNamespace(
+        active_model_name = "unsloth/model",
+        generate_chat_response = generate,
+        reset_generation_state = lambda *args: None,
+    )
+    monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
+    token_limit.update_settings({"enabled": True, "limit": 1000}, password = None, new_password = None)
+    before = token_limit.status()["pools"][0]["used"]
+    response = client.post(
+        "/api/inference/generate/stream", json = {"messages": [{"role": "user", "content": "hi"}]}
+    )
+    assert response.status_code == 200
+    # "user: hi" is 2 estimated prompt tokens; the 80-character reply is 20.
+    assert token_limit.status()["pools"][0]["used"] - before == 22
+
+
+def test_stateless_requests_never_share_an_accounting_thread(admission, monkeypatch):
+    from core.inference import api_monitor as monitor_module
+
+    client, body, _ = admission
+    threads = []
+
+    async def produce(payload, request, current_subject, *, cancel_on_disconnect):
+        threads.append(monitor_module._temporary_usage.get().thread)
+        return JSONResponse({"choices": []})
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
+    for _ in range(2):
+        response = client.post(
+            "/v1/chat/completions",
+            json = {**body, "temporary_chat": True, "cancel_id": "reused"},
+        )
+        assert response.status_code == 200, response.text
+    assert len(set(threads)) == 2

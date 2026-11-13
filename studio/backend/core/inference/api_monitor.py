@@ -214,6 +214,8 @@ class ApiMonitorEntry:
     started_monotonic: float = 0.0
     finished_monotonic: Optional[float] = None
     reply: str = ""
+    # reply is a display buffer capped at _MAX_REPLY_CHARS; usage estimates need the full length.
+    reply_chars: int = 0
     finished_at: Optional[float] = None
     context_length: Optional[int] = None
     prompt_tokens: Optional[int] = None
@@ -588,6 +590,7 @@ class ApiMonitor:
                 if entry.reply and not entry.reply.endswith("\n"):
                     text = "\n" + text
                 entry.openai_stream_last_segment_was_tool = False
+            entry.reply_chars += len(text)
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
                 entry.running_phase = "token_generation"
@@ -776,6 +779,7 @@ class ApiMonitor:
             if entry is None:
                 return
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
+            entry.reply_chars = len(text)
             _advance_updated_at(entry)
 
     def set_perf(
@@ -974,10 +978,10 @@ class ApiMonitor:
             entry.completion_tokens or 0,
             entry.total_tokens or 0,
         )
-        if entry.temporary_usage and not (prompt_tokens or completion_tokens) and entry.reply:
+        if entry.temporary_usage and not (prompt_tokens or completion_tokens) and entry.reply_chars:
             # A temporary reply stopped before its usage chunk has no other record to charge.
             prompt_tokens = -(-len(entry.prompt) // 4)
-            completion_tokens = -(-len(entry.reply) // 4)
+            completion_tokens = -(-entry.reply_chars // 4)
             total_tokens = prompt_tokens + completion_tokens
         return (
             callback_owner,
