@@ -209,7 +209,10 @@ export function planUndo(
   for (const font of before.customization.importedFonts) {
     if (!set.has(fontKey(font.name)) && !is.has(fontKey(font.name))) fonts.push(font);
   }
-  customization.importedFonts = selectedFirst(customization as AppearanceCustomization, fonts);
+  // Choices made after Apply first, so the count and size caps drop restored fonts before them.
+  const ordered = selectedFirst(customization as AppearanceCustomization, fonts);
+  const later = (font: ImportedFont) => selected.has(fontKey(font.name));
+  customization.importedFonts = [...ordered.filter(later), ...ordered.filter((font) => !later(font))];
   const glass = { ...now.glass } as Record<string, unknown>;
   for (const key of Object.keys(now.glass) as (keyof AppearanceSnapshot["glass"])[]) {
     glass[key] = revert(before.glass[key], applied.glass[key], now.glass[key]);

@@ -13,6 +13,7 @@ import {
   useMaterialStore,
 } from "@/features/chat-background";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
+import { fontFamilyKey } from "../lib/appearance-customization.ts";
 import { useAppearanceCustomStore } from "../stores/appearance-custom-store.ts";
 import { getPalette, setPalette } from "../stores/theme-store.ts";
 import { type AppearanceSnapshot, FONT_FIELDS } from "./application/plan-apply.ts";
@@ -91,7 +92,8 @@ export async function withLoadableFonts(theme: AppearanceTheme): Promise<[Appear
   const dropped = theme.fonts.filter((_, i) => !loads[i]).map((font) => font.name);
   if (dropped.length === 0) return [theme, []];
   const look = { ...theme.look };
-  for (const field of FONT_FIELDS) if (dropped.includes(look[field] ?? "")) look[field] = null;
+  const bad = new Set(dropped.map(fontFamilyKey));
+  for (const field of FONT_FIELDS) if (bad.has(fontFamilyKey(look[field]))) look[field] = null;
   return [{ ...theme, look, fonts: theme.fonts.filter((_, i) => loads[i]) }, dropped];
 }
 

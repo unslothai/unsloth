@@ -357,3 +357,16 @@ test("undo keeps a font chosen after Apply over an old selection it cannot fit",
   assert.equal(undone.codeFont, "T");
   assert.ok(undone.importedFonts.some((f) => f.name === "T"));
 });
+
+test("undo keeps a font chosen after Apply when restored fonts would overflow the size cap", () => {
+  const big = (name: string, n: number) => ({ name, dataUrl: `data:font/woff2;base64,${"A".repeat(n)}` });
+  const before = { ...BASE, customization: sanitizeCustomization({
+    importedFonts: [big("A", 2_000_000), big("B", 2_000_000)], uiFont: "A", headingFont: "B" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "A", headingFont: "B" },
+    assets: { fonts: [big("A", 600_000), big("B", 600_000), big("T", 1_900_000)] } })));
+  const applied = apply(before, theme);
+  const now = { ...before, palette: applied.palette, glass: applied.glass, customization: { ...applied.customization, codeFont: "T" } };
+  const undone = planUndo(before, applied, now).customization;
+  assert.equal(undone.codeFont, "T");
+  assert.ok(undone.importedFonts.some((f) => f.name === "T"));
+});

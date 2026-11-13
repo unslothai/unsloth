@@ -48,6 +48,7 @@ function createHost() {
     },
     "@/lib/base64-bytes": { decodeBase64Bytes },
     "./application/plan-apply.ts": { FONT_FIELDS: ["uiFont", "headingFont", "chatFont", "codeFont"] },
+    "../lib/appearance-customization.ts": { fontFamilyKey: (name: string | null | undefined) => name?.toLowerCase() ?? "" },
     "@/features/chat-background": {
       sanitizeAdjustments,
       nativeMaterialAvailable: () => native.available,
@@ -211,7 +212,7 @@ test("embedded fonts the browser cannot load are dropped with their selections",
   try {
     const font = (name: string) => ({ name, dataUrl: "data:font/woff2;base64,QUJD" });
     const theme = { meta: { name: "t" }, palette: "standard", glass: GLASS, layout: null, background: null,
-      look: { ...DEFAULT_CUSTOMIZATION, uiFont: "Bad", codeFont: "Good" }, fonts: [font("Bad"), font("Good")] };
+      look: { ...DEFAULT_CUSTOMIZATION, uiFont: "bad", codeFont: "Good" }, fonts: [font("Bad"), font("Good")] };
     const [kept, dropped] = await snapshot.withLoadableFonts(theme as never);
     assert.deepEqual(dropped, ["Bad"]);
     assert.deepEqual(kept.fonts?.map((f) => f.name), ["Good"]);
