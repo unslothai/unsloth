@@ -6,7 +6,7 @@ import { after, before, test } from "node:test";
 import { createServer, type ViteDevServer } from "vite";
 
 let vite: ViteDevServer;
-let liveModelSeeds: (providerType: string, seeds: string[], live: string[]) => string[];
+let liveModelSeeds: (seeds: string[], live: string[]) => string[];
 
 before(async () => {
   vite = await createServer({ appType: "custom", server: { middlewareMode: true } });
@@ -20,20 +20,13 @@ after(async () => {
 
 test("a provider's own list drops suggestions it did not return", () => {
   assert.deepEqual(
-    liveModelSeeds("openai", ["gpt-9", "gpt-8", "gpt-7"], ["gpt-7", "gpt-9", "ft-private"]),
+    liveModelSeeds(["gpt-9", "gpt-8", "gpt-7"], ["gpt-7", "gpt-9", "ft-private"]),
     ["gpt-9", "gpt-7"],
   );
 });
 
 test("suggestions stand in until a provider has listed its models", () => {
-  assert.deepEqual(liveModelSeeds("openai", ["gpt-9", "gpt-8"], []), ["gpt-9", "gpt-8"]);
-});
-
-test("OpenRouter aliases stay next to its live list", () => {
-  assert.deepEqual(
-    liveModelSeeds("openrouter", ["openrouter/auto", "~openai/gpt-sol-latest"], ["openai/gpt-9"]),
-    ["openrouter/auto", "~openai/gpt-sol-latest"],
-  );
+  assert.deepEqual(liveModelSeeds(["gpt-9", "gpt-8"], []), ["gpt-9", "gpt-8"]);
 });
 
 test("one stale catalog is fetched once, however many callers ask", async () => {

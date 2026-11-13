@@ -148,12 +148,8 @@ function hasPublicModelCatalog(providerType: string | null | undefined): boolean
 }
 
 /** Once a provider has listed its models, the registry's suggestions only order that list. */
-export function liveModelSeeds(
-  providerType: string,
-  seeds: string[],
-  live: string[],
-): string[] {
-  if (hasPublicModelCatalog(providerType) || live.length === 0) return seeds;
+export function liveModelSeeds(seeds: string[], live: string[]): string[] {
+  if (live.length === 0) return seeds;
   return seeds.filter((id) => live.includes(id));
 }
 
@@ -269,21 +265,20 @@ export function codexCapabilitiesWithPlanModels(
 
 
 export function resolveCodexPickerModels(
-  curated: string[],
   savedModels: string[],
   listed: CodexSubscriptionModels | null,
 ): { catalog: string[]; selected: string[] } {
-  // Only the plan's own catalog can retire a slug; the curated fallback seed must not drop one.
+  // Only the plan's own catalog can retire a slug; without it the saved models stand.
   const planListed = listed?.source === "subscription" && listed.models.length > 0;
   if (!planListed) {
-    const catalog = [...new Set([...curated, ...savedModels])];
-    const offered = new Set(catalog);
-    return { catalog, selected: savedModels.filter((model) => offered.has(model)) };
+    const catalog = [...new Set(savedModels)];
+    return { catalog, selected: catalog };
   }
   const offeredIds = listed.models.map((model) => model.id);
   // "Hide" retires from the picker, not from use; only slugs the plan no longer returns retire.
   const known = new Set((listed.known ?? listed.models).map((model) => model.id));
-  const selected = savedModels.filter((model) => known.has(model));
+  const selected =
+    savedModels.length > 0 ? savedModels.filter((model) => known.has(model)) : offeredIds;
   const catalog = [...new Set([...offeredIds, ...selected])];
   return { catalog, selected };
 }
@@ -579,11 +574,7 @@ export function ChatProvidersSettings({
       return;
     }
     seedModels(entry);
-    setSelectedModelIds(
-      isDecisionConnection({ providerType })
-        ? entry.default_models.slice(0, 1)
-        : [],
-    );
+    setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
@@ -703,9 +694,6 @@ export function ChatProvidersSettings({
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry) seedModels(entry);
-    if (entry && isDecisionConnection({ providerType: entry.provider_type })) {
-      setSelectedModelIds(entry.default_models.slice(0, 1));
-    }
     autoOpenedAddFormRef.current = true;
     setPage("form");
   }
@@ -862,7 +850,6 @@ export function ChatProvidersSettings({
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : liveModelSeeds(
-            providerType,
             registryByType.get(providerType)?.default_models ?? [],
             models.map((model) => model.id.trim()),
           );
@@ -923,19 +910,10 @@ export function ChatProvidersSettings({
 
     setMutatingProvider(true);
     try {
-      const models = pruneProviderModelIds(
-        providerType,
-        selectedModelIds.length > 0 ? selectedModelIds : entry.default_models,
-      );
-      const available = pruneProviderModelIds(providerType, [
-        ...new Set([...availableModels, ...entry.default_models]),
-      ]);
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName: entry.display_name,
         baseUrl: null,
-        models,
-        availableModels: available,
       });
       const provider: ExternalProviderConfig = {
         id: created.id,
@@ -943,8 +921,8 @@ export function ChatProvidersSettings({
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         ...connectionApiFields(created.api_type),
-        models,
-        availableModels: available,
+        models: [],
+        availableModels: [],
         hasApiKey: created.has_api_key,
         authKind: created.auth_kind,
         authStatus: created.auth_status,
@@ -962,8 +940,6 @@ export function ChatProvidersSettings({
       providersRef.current = nextProviders;
       onProvidersChange(nextProviders);
       void refreshProviderModelCatalogs([provider]);
-      setSelectedModelIds(models);
-      setAvailableModels(available);
       setEditingProviderId(created.id);
       return created.id;
     } finally {
@@ -1312,13 +1288,12 @@ export function ChatProvidersSettings({
     refresh = false,
   ): Promise<boolean> {
     const request = ++codexCatalogRequestRef.current;
-    const curated = registryByType.get("openai_codex")?.default_models ?? [];
     let listed: CodexSubscriptionModels | null = null;
     if (authStatus === "connected") {
       try {
         listed = await fetchCodexSubscriptionModels(providerId, { refresh });
       } catch {
-        // Keep the curated seed: the form must still open when upstream is unreachable.
+        // The form must still open when upstream is unreachable.
       }
     }
     if (request !== codexCatalogRequestRef.current) {
@@ -1339,9 +1314,8 @@ export function ChatProvidersSettings({
         })
         .catch(() => undefined);
     }
-    const picker = resolveCodexPickerModels(curated, savedModels, listed);
+    const picker = resolveCodexPickerModels(savedModels, listed);
     if (refresh && listed?.source !== "subscription") {
-      // A curated fallback is not the account's catalog, so it retires nothing.
       setAvailableModels((previous) => [...new Set([...picker.catalog, ...previous])]);
       setManualModelIds("");
       return true;
@@ -1354,6 +1328,16 @@ export function ChatProvidersSettings({
       setSelectedModelIds(picker.selected);
     }
     setManualModelIds("");
+    if (!refresh && savedModels.length === 0 && picker.selected.length > 0) {
+      const models = pruneProviderModelIds("openai_codex", picker.selected);
+      const availableModels = pruneProviderModelIds("openai_codex", picker.catalog);
+      await updateProviderConfig(providerId, { models, availableModels });
+      const saved = providersRef.current.map((provider) =>
+        provider.id === providerId ? { ...provider, models, availableModels } : provider,
+      );
+      providersRef.current = saved;
+      onProvidersChange(saved);
+    }
     return true;
   }
 
@@ -1421,7 +1405,10 @@ export function ChatProvidersSettings({
       setManualModelIds(provider.models.join("\n"));
       return;
     }
-    if (supportsRemoteModelCatalog(provider.providerType)) {
+    if (
+      supportsRemoteModelCatalog(provider.providerType) ||
+      isDecisionConnection({ providerType: provider.providerType })
+    ) {
       const cachedCatalog = provider.availableModels ?? [];
       const catalogModels = pruneProviderModelIds(provider.providerType, [
         ...new Set(
@@ -1460,7 +1447,6 @@ export function ChatProvidersSettings({
     } else {
       const cachedCatalog = provider.availableModels ?? [];
       const shortlist = liveModelSeeds(
-        provider.providerType,
         entry?.default_models ?? [],
         cachedCatalog,
       );
@@ -2119,7 +2105,7 @@ export function ChatProvidersSettings({
                 // the loading flag and re-enable Save mid-sync.
                 const request = ++codexCatalogRequestRef.current;
                 const changedProviderId = editingProviderId;
-                // Save is gated on this, or pre-authorization seed slugs get saved and fail.
+                // Save is gated on this, so nothing is saved before the plan's list is read.
                 setModelsLoading(true);
                 let owned = true;
                 try {
@@ -2226,7 +2212,7 @@ export function ChatProvidersSettings({
                       />
                     </div>
                   </div>
-                ) : isCuratedModelList ? (
+                ) : isCuratedModelList && (availableModels.length > 0 || modelIdsEditable) ? (
                   <div className="space-y-3 px-4 py-4">
                     <p className="text-xs leading-relaxed text-muted-foreground">
                       Select from suggestions below or enter exact model IDs.
