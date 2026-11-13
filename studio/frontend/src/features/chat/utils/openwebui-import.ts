@@ -291,12 +291,34 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
     const builtin = typeof item.type === "string" ? /^(\w+)_call$/.exec(item.type) : null;
     if (builtin) {
       const callId = str(item.call_id) ?? str(item.id) ?? crypto.randomUUID();
+      const commands = isDict(item.action) ? item.action.commands : undefined;
+      const name = str(item.name) ?? builtin[1];
+      const namespace = str(item.namespace) ?? str(item.server_label);
       const part: Dict = {
         type: "tool-call",
         toolCallId: callId,
-        toolName: BUILTIN_TOOL_NAMES[builtin[1]] ?? builtin[1],
-        args: isDict(item.action) ? item.action : {},
+        toolName:
+          BUILTIN_TOOL_NAMES[builtin[1]] ??
+          (namespace ? `${namespace}__${name}` : name),
+        args:
+          typeof item.code === "string"
+            ? { command: item.code }
+            : item.type === "shell_call" && Array.isArray(commands)
+              ? { kind: "bash", command: commands.join("\n") }
+              : Array.isArray(item.queries)
+                ? { queries: item.queries }
+                : item.input !== undefined
+                  ? { input: item.input }
+                  : isDict(item.arguments)
+                    ? item.arguments
+                    : typeof item.arguments === "string"
+                      ? toolArgs(parseJsonLoose(item.arguments))
+                      : isDict(item.action)
+                        ? item.action
+                        : {},
       };
+      const done = item.output ?? item.error ?? str(item.status);
+      if (done != null) part.result = done;
       toolCallIndex.set(callId, part);
       parts.push(part);
       continue;
@@ -305,17 +327,18 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
     if (typeof item.type === "string" && item.type.endsWith("_call_output")) {
       const callId = str(item.call_id);
       const outputParts = Array.isArray(item.output) ? item.output : [];
-      let resultText = typeof item.output === "string" ? item.output : "";
+      const texts: string[] = [];
       const images: string[] = [];
       for (const part of outputParts) {
         if (!isDict(part)) continue;
         if (TEXT_PART_TYPES.has(part.type as string) && typeof part.text === "string") {
-          resultText += part.text;
+          texts.push(part.text);
         } else if (part.type === "input_image") {
           const url = str(part.image_url);
           if (url) images.push(url);
         }
       }
+      const resultText = typeof item.output === "string" ? item.output : texts.join("\n");
       const target = callId ? toolCallIndex.get(callId) : undefined;
       if (target) {
         // Leave result unset, not "": an empty string renders an empty Result heading.

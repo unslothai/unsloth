@@ -221,6 +221,7 @@ test("modern assistant turns rebuild their tool call from the output items, resu
             call_id: "call_9",
             output: [
               { type: "input_text", text: "sunny, 21C" },
+              { type: "input_text", text: "windy" },
               { type: "input_image", image_url: "data:image/png;base64,AAAA" },
             ],
           },
@@ -237,7 +238,7 @@ test("modern assistant turns rebuild their tool call from the output items, resu
   assert.equal(reasoning.type, "reasoning");
   assert.equal(toolCall.type, "tool-call");
   assert.deepEqual(toolCall.args, { query: "lisbon" });
-  assert.equal(toolCall.result, "sunny, 21C");
+  assert.equal(toolCall.result, "sunny, 21C\nwindy");
   assert.deepEqual(image, { type: "image", image: "data:image/png;base64,AAAA" });
   assert.deepEqual(body, { type: "text", text: "Lisbon is sunny." });
   // `content` mirrors the final output message, so it must not be appended twice.
@@ -664,8 +665,51 @@ test("built-in Responses tools import as tool parts rather than disappearing", (
     ["web_search", "code_execution"],
   );
   assert.deepEqual(calls[0].args, { type: "search", query: "lisbon weather" });
-  assert.deepEqual(calls[1].args, { type: "exec", commands: ["ls -la"] });
+  assert.deepEqual(calls[1].args, { kind: "bash", command: "ls -la" });
   assert.equal(calls[1].result, "total 0");
+});
+
+test("non-function call items keep their name, arguments and result", () => {
+  const record = recordOf(
+    [
+      {
+        id: "a",
+        parentId: null,
+        role: "assistant",
+        timestamp: 1,
+        content: "done",
+        output: [
+          {
+            type: "mcp_call",
+            id: "mcp_1",
+            name: "read_file",
+            server_label: "filesystem",
+            arguments: '{"path":"/tmp/notes.txt"}',
+            output: "file contents",
+            status: "completed",
+          },
+          {
+            type: "code_interpreter_call",
+            id: "ci_1",
+            code: "print(2 + 2)",
+            container_id: "cnt_1",
+            status: "completed",
+          },
+          { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+        ],
+      },
+    ],
+    "a",
+  );
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.equal(calls[0].toolName, "filesystem__read_file");
+  assert.deepEqual(calls[0].args, { path: "/tmp/notes.txt" });
+  assert.equal(calls[0].result, "file contents");
+  assert.equal(calls[1].toolName, "code_interpreter");
+  assert.deepEqual(calls[1].args, { command: "print(2 + 2)" });
 });
 
 test("a multimodal turn keeps its text and image when detection routes it here", () => {
@@ -894,7 +938,7 @@ test("a tool result keeps its text under any of the three part names, and portab
   const conversation = openWebUIRecordToConversation(record, "fallback");
   assert.ok(conversation);
   const [call] = parts(conversation, 0).filter((part) => part.type === "tool-call");
-  assert.equal(call.result, "first second third");
+  assert.equal(call.result, "first\n second\n third");
   assert.deepEqual(
     parts(conversation, 0).filter((part) => part.type === "image"),
     [{ type: "image", image: "https://example.com/chart.png" }],
