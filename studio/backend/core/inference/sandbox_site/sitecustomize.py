@@ -343,7 +343,6 @@ _PIP_LOCATION_FLAGS = (
     ("--prefix", 6),
     ("--root", 6),
     ("--home", 6),
-    ("--user", 6),
     ("--python", 8),
 )
 
@@ -360,6 +359,18 @@ def _chooses_location(arg):
             if flag not in "qvUI":
                 return False
     return False
+
+
+def _cli_user():
+    # --user / --no-user share one option, the last one given wins; None when neither is on the command line.
+    chosen = None
+    for arg in sys.argv[1:]:
+        name = arg.split("=", 1)[0]
+        if len(name) >= 6 and "--user".startswith(name):
+            chosen = True
+        elif name == "--no-user":
+            chosen = False
+    return chosen
 
 
 def _is_pip_script(path):
@@ -426,7 +437,7 @@ def _stdlib_paths():
     ]
 
 
-def _config_chooses_location(isolated = False):
+def _config_chooses_location(isolated = False, user = True):
     # pip's config files can set install.target / prefix / root / user too; PIP_PREFIX would then conflict.
     # Same files as pip's Configuration.iter_config_files: --isolated or an existing PIP_CONFIG_FILE drops the user ones.
     env_file = os.environ.get("PIP_CONFIG_FILE")
@@ -477,7 +488,7 @@ def _config_chooses_location(isolated = False):
 
     if any(value(k).strip() for k in ("target", "prefix", "root", "home")):
         return True
-    return value("user").strip().lower() in ("y", "yes", "t", "true", "on", "1")
+    return user and value("user").strip().lower() in ("y", "yes", "t", "true", "on", "1")
 
 
 _chat_prefix = None
@@ -499,7 +510,8 @@ def _route_pip():
             # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
             is_pip = _is_pip_launch()
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
-            placed = any(_chooses_location(a) for a in sys.argv[1:])
+            cli_user = _cli_user()
+            placed = cli_user is True or any(_chooses_location(a) for a in sys.argv[1:])
             isolated = "--isolated" in sys.argv
             if not isolated:
                 # --isolated makes pip ignore these, so then they choose nothing.
@@ -507,9 +519,10 @@ def _route_pip():
                 placed = placed or any(
                     os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT", "PIP_HOME")
                 )
-                placed = placed or os.environ.get("PIP_USER", "").strip().lower() in truthy
+                user = os.environ.get("PIP_USER", "").strip().lower() in truthy
+                placed = placed or (cli_user is None and user)
                 placed = placed or os.environ.get("PIP_PREFIX", prefix) not in ("", prefix)
-            placed = placed or (is_pip and _config_chooses_location(isolated))
+            placed = placed or (is_pip and _config_chooses_location(isolated, cli_user is None))
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
@@ -736,6 +749,11 @@ class _SessionPackagesFinder:
         for i, e in enumerate(sys.path):
             rank.setdefault(os.path.abspath(os.path.join(e, *parts)), i)
         ordered = sorted(path, key = lambda p: rank.get(os.path.abspath(p), len(rank)))
+        if ordered != list(path):
+            try:
+                path[:] = ordered  # the stored __path__ too: importlib.resources reads it
+            except Exception:  # noqa: BLE001
+                pass
         return self._path_finder.find_spec(name, ordered, target)
 
 

@@ -786,6 +786,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "config_file_drops_user",
         "isolated_global_config",
         "config_user_overridden",
+        "no_user",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -825,6 +826,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # An existing PIP_CONFIG_FILE makes pip skip the user file.
         "config_file_drops_user": "mkdir -p .config/pip && printf '[install]\\ntarget = vendor\\n' > "
         f".config/pip/pip.conf && touch empty.ini && PIP_CONFIG_FILE=empty.ini {_PIP} {wheel} && {show}",
+        # --no-user on the command line cancels PIP_USER.
+        "no_user": f"PIP_USER=1 {_PIP} --no-user {wheel} && {show}",
         # [install] overrides [global], as pip resolves it: user ends up off.
         "config_user_overridden": "printf '[global]\\nuser = true\\n[install]\\nuser = false\\n' > pip.ini && "
         f"PIP_CONFIG_FILE=pip.ini {_PIP} {wheel} && {show}",
@@ -878,6 +881,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "config_file_drops_user": packages,
         "isolated_global_config": str(workdir / "vendor"),
         "config_user_overridden": packages,
+        "no_user": packages,
         "flat_then_venv": str(workdir / "venv"),
         "clustered_target": str(workdir / "vendor"),
         "own_prefix": str(workdir / "deps"),
@@ -973,9 +977,12 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
         command = f'{_PIP} {wheel} && python -c "{show}"'
     elif case == "namespace_upgrade":
         # Studio's namespace is imported first, then a newer child lands in the chat folder.
-        studio_files = {f"{name}/child.py": "", f"{name}/other.py": ""}
-        wheel = _wheel(workdir, f"{name}_child", studio_files, "2.0")
-        post = f"import {name}.child as c, {name}.other as o; print(c.__file__); print(o.__file__)"
+        studio_files = {f"{name}/child.py": "", f"{name}/other.py": "", f"{name}/data.txt": "v1"}
+        wheel = _wheel(workdir, f"{name}_child", {**studio_files, f"{name}/data.txt": "v2"}, "2.0")
+        post = (
+            f"import importlib.resources, {name}.child as c, {name}.other as o; print(c.__file__); "
+            f"print(o.__file__); print(importlib.resources.files({name!r}).joinpath('data.txt').read_text())"
+        )
         command = in_process.format(pre = f"import {name}; ", post = post) + f" {wheel}"
         expected = packages
     elif case == "upgrade":
@@ -1020,7 +1027,7 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
         )
     assert f"{expected}{os.sep}" in out, out
     if case == "namespace_upgrade":
-        assert out.count(f"{expected}{os.sep}") == 2, out
+        assert out.count(f"{expected}{os.sep}") == 2 and "v2" in out, out
     if case in ("namespace", "pkgutil_namespace"):
         assert "['a', 'b']" in out, out
 
