@@ -1166,6 +1166,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         for name in ("transformer", "text_encoder", "vae"):
             module = getattr(self, name, None)
             if module is not None:
+                if name == "vae":
+                    # the VAE canvas's tile graphs keep their private pools while anything references the VAE
+                    from .diffusion_vae_canvas import release_graphs
+                    release_graphs(module)
                 if name in owned:
                     free_module_storage(module)
                 setattr(self, name, None)
@@ -1480,6 +1484,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             return [final[0]]
         images = self._decode(final, height, width, output_type)
         stats["decode_s"] = time.perf_counter() - t2
+        vae_stats = getattr(self.vae, "__dict__", {}).get("_unsloth_canvas_stats")
+        if vae_stats:
+            stats["vae"] = dict(vae_stats)
         stats["total_s"] = time.perf_counter() - t0
         stats["streamers"] = self._streamer_stats()
         self._unsloth_h3_last_stats = stats
@@ -2986,6 +2993,7 @@ def load_minimax_h3_image_pipeline(
     from .diffusion_minimax_h3_image_speed import install_h3_image_speed
 
     speed_levers = install_h3_image_speed(pipe, plan, device, logger)
+    speed_levers = tuple(speed_levers) + install_h3_image_vae_canvas(vae, device, logger)
     int8_attention = install_checkpoint_attention(pipe, device, scheme = scheme, logger = logger)
     if int8_attention:
         speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)
@@ -3009,6 +3017,22 @@ def load_minimax_h3_image_pipeline(
         pass
     logger.info("diffusion.minimax_h3_image: loaded %s", report.as_dict())
     return pipe
+
+
+def install_h3_image_vae_canvas(
+    vae: Any,
+    device: Any,
+    log: Any = None,
+) -> tuple:
+    """Composited-canvas tiled decode (seam-correct corners) plus, under the speed levers on CUDA, tile batching,
+    the tile-graph race and the probed fp16 decoder (``diffusion_vae_canvas``). Never raises."""
+    try:
+        from .diffusion_minimax_h3_image_speed import speed_enabled
+        from .diffusion_vae_canvas import install
+        return install(vae, device, speed = speed_enabled(), half = True, logger = log or logger)
+    except Exception as exc:  # noqa: BLE001 - the stock tiled decode stays
+        (log or logger).warning("diffusion.minimax_h3_image: VAE canvas skipped: %s", exc)
+        return ()
 
 
 def _module_gb(module: Any) -> float:
