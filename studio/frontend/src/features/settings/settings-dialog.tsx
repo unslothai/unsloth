@@ -375,6 +375,10 @@ export function SettingsDialog() {
     setOpenedResult({ tab, entry });
     setPendingScroll(entry ? { tab, entry } : null);
   };
+  const clearSearch = () => {
+    setQuery("");
+    setOpenedResult(null);
+  };
 
   // Panels render deferred and load lazily, so observe until the target row exists.
   useEffect(() => {
@@ -537,8 +541,7 @@ export function SettingsDialog() {
                   onKeyDown={(e) => {
                     if (e.key === "Escape" && query) {
                       e.stopPropagation();
-                      setQuery("");
-                      setOpenedResult(null);
+                      clearSearch();
                     }
                   }}
                   data-type-to-activate="settings-search"
@@ -549,10 +552,7 @@ export function SettingsDialog() {
                 {query && (
                   <button
                     type="button"
-                    onClick={() => {
-                      setQuery("");
-                      setOpenedResult(null);
-                    }}
+                    onClick={clearSearch}
                     aria-label={t("settings.dialog.closeAriaLabel")}
                     className="absolute top-1/2 right-2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
                   >
