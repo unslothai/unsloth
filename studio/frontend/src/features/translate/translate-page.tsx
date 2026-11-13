@@ -13,6 +13,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  parseExternalModelId,
   tryAdoptServerActiveModel,
   useChatArtifactsStore,
   useChatRuntimeStore,
@@ -90,7 +91,8 @@ function useLanguageLabel(): (code: string) => string {
 }
 
 function modelName(model: string): string {
-  return model.split(/[\\/]/).filter(Boolean).pop() ?? model;
+  const id = parseExternalModelId(model)?.modelId ?? model;
+  return id.split(/[\\/]/).filter(Boolean).pop() ?? id;
 }
 
 export function TranslatePage() {
