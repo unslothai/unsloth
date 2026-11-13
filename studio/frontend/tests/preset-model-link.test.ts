@@ -10,7 +10,7 @@ import test from "node:test";
 
 import { installLocalStorageFake } from "./helpers/kit.ts";
 
-const { store: localStorageFake, fireWindowEvent } = installLocalStorageFake();
+const { store: localStorageFake } = installLocalStorageFake();
 localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
 register("./store-settings-resolver.mjs", import.meta.url);
 
@@ -200,11 +200,7 @@ test("a custom pick from before the link comes back, a pick made on the linked m
   pickPreset(CREATIVE);
   await switchTo(QWEN);
   assert.equal(live().activePreset, "Research");
-  const kept = JSON.parse(localStorageFake.get("unsloth_chat_pick_before_link") ?? "null");
-  assert.equal(kept?.name, "Creative", "kept for a reload on the linked model");
-  assert.equal(kept?.params.systemPrompt, "Be imaginative.");
   await switchTo(GEMMA);
-  assert.equal(localStorageFake.get("unsloth_chat_pick_before_link"), "null");
   assert.deepEqual(live(), {
     activePreset: "Creative",
     activePresetSource: "custom",
@@ -323,15 +319,30 @@ test("a pick deleted while on the linked model does not come back", async () => 
   }
 });
 
-test("signing out drops the stored pre-link pick", async () => {
+test("a link stays in this tab: the stored pick and installation defaults never take it", async () => {
   await switchTo(LLAMA);
   pickPreset(CREATIVE);
   await switchTo(QWEN);
-  assert.notEqual(localStorageFake.get("unsloth_chat_pick_before_link"), "null");
-  assert.equal(fireWindowEvent("unsloth:auth-session-cleared", {}) > 0, true);
-  assert.equal(localStorageFake.get("unsloth_chat_pick_before_link"), "null");
-  await switchTo(GEMMA);
-  assert.equal(live().activePreset, "Default", "nothing of the signed-out account comes back");
+  const store = useChatRuntimeStore.getState();
+  store.setActiveThreadId("chat-x");
+  store.applyThreadScopedSettings("chat-x", { temperature: 0.4 });
+  try {
+    await settled();
+    assert.equal(live().activePreset, "Research");
+    const saved = stored() as { activePreset?: string; inferenceParams?: { systemPrompt?: string } };
+    assert.equal(saved.activePreset, "Creative", "a reload here finds the user's own pick");
+    assert.notEqual(saved.inferenceParams?.systemPrompt, "Cite your sources.");
+    await switchTo(GEMMA);
+    await settled();
+    assert.equal(live().activePreset, "Creative");
+    assert.notEqual(
+      (stored() as { inferenceParams?: { systemPrompt?: string } }).inferenceParams?.systemPrompt,
+      "Cite your sources.",
+    );
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+  }
 });
 
 test("an unlinked model under Default still follows its recommendation", async () => {
