@@ -9661,6 +9661,8 @@ class DiffusionBackend:
 
                     if (
                         transformer_quant_pinned is not None
+                        # AUTO's Turing int8 is AUTO's own pick: a decline loads fp16 as before, never refuses.
+                        and turing_auto_int8 is None
                         and not precision_fallback_allowed()
                         # Refuse known failures before downloading a pipeline.
                         and (
@@ -10858,6 +10860,7 @@ class DiffusionBackend:
                         if (
                             transformer_quant_engaged is None
                             and transformer_quant_pinned is not None
+                            and turing_auto_int8 is None
                             and not precision_fallback_allowed()
                         ):
                             # Rebound, not deleted: the enclosing finally reads `pipe`.

@@ -2047,3 +2047,37 @@ def test_auto_on_turing_keeps_fp16_under_an_offloading_memory_mode(
     )
 
     assert spy.quantised == []
+
+
+@pytest.mark.parametrize("request_", [None, "auto"])
+def test_auto_on_turing_falls_back_to_fp16_when_the_int8_build_declines(
+    fake_runtime, monkeypatch, request_
+):
+    """AUTO picked int8 for the user, so an int8 build that declines loads fp16 as before, never fails closed."""
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda *_a, **_k: None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda _m: False)
+    status = _load(
+        backend,
+        transformer_quant = request_,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert status["transformer_quant"] in (None, "off")
+    assert status["resolved"]["transformer_quant"]["source"] == "auto"
+
+
+def test_an_explicit_int8_on_turing_still_fails_closed_when_it_declines(fake_runtime, monkeypatch):
+    backend, _spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda *_a, **_k: None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda _m: False)
+    with pytest.raises(RuntimeError, match = "transformer_quant='int8'"):
+        _load(
+            backend,
+            transformer_quant = "int8",
+            _pipeline_prequant_planned = None,
+            _pipeline_prequant_skipped = (),
+        )
