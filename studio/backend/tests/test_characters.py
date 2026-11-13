@@ -894,3 +894,14 @@ def test_a_large_compressed_card_keeps_its_picture():
     parsed = cards.parse_card_file(_with_text(_png(), "chara", big, b"zTXt"), "big.png")
     assert len(parsed.fields["character_book"]["entries"]) == 300
     assert parsed.avatar is not None and not parsed.warnings
+
+
+def test_a_spec_card_with_an_empty_name_takes_the_file_name():
+    nameless = {**V2, "data": {**V2["data"], "name": ""}}
+    parsed = cards.parse_card_file(
+        _with_text(_png(), "chara", nameless), "C:\\cards\\Captain Mira.png"
+    )
+    assert parsed.fields["name"] == "Captain Mira"
+    # Without a spec there is nothing to say it is a card, so it is still refused.
+    with pytest.raises(cards.CardError, match = "no name"):
+        cards.parse_card_file(json.dumps({"description": "nameless"}).encode(), "notes.json")

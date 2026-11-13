@@ -440,7 +440,7 @@ _CARD_TEXT_KEYS = (
 )
 
 
-def normalize_card(card: dict) -> dict[str, Any]:
+def normalize_card(card: dict, fallback_name: str = "") -> dict[str, Any]:
     if not isinstance(card, dict):
         raise CardError("Not a character card.")
     data, _spec = card_data(card)
@@ -455,7 +455,10 @@ def normalize_card(card: dict) -> dict[str, Any]:
             raise CardError(
                 "This is a website's API response, not a character card. Download the card's PNG instead."
             )
-        raise CardError("The card has no name.")
+        # Some sites export a V2/V3 card with an empty name and show their own title instead.
+        if data is card or not fallback_name.strip():
+            raise CardError("The card has no name.")
+        name = fallback_name.strip()
     # Without a spec, any JSON with a name (an app's preset, for one) would import as an empty character.
     if (
         data is card
@@ -625,7 +628,8 @@ def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
             raise CardError("The JSON is not a character card.")
         source_format = "json"
         warnings = []
-    fields = normalize_card(card)
+    # The file's name, for a card that left its own empty.
+    fields = normalize_card(card, re.split(r"[\\/]", filename)[-1].rsplit(".", 1)[0])
     _data, spec = card_data(card)
     return ParsedCard(
         fields = fields,
