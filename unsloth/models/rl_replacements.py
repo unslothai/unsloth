@@ -5654,7 +5654,7 @@ def grpo_trainer_compute_loss(function_name, function):
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
 
-        if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo"]:
+        if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"]:
             is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
             is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)
             is_region_clipped = is_low_clipped | is_high_clipped

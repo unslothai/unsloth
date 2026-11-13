@@ -53,6 +53,7 @@ export {
   type DeviceInventoryRows,
   type DeviceInventorySource,
   type DeviceInventorySourceState,
+  type EngramTableDetail,
   type GgufVariantDetail,
   type GgufVariantsResponse,
   type HubInventory,

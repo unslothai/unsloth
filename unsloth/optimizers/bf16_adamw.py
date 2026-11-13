@@ -25,11 +25,11 @@ if triton is not None:
         N,
         SEED,
         TILE,
-        B1: tl.constexpr,
-        B2: tl.constexpr,
-        EPS: tl.constexpr,
-        WD: tl.constexpr,
-        BLOCK: tl.constexpr,
+        B1: tl.constexpr,  # beta1
+        B2: tl.constexpr,  # beta2
+        EPS: tl.constexpr,  # Adam eps
+        WD: tl.constexpr,  # weight decay
+        BLOCK: tl.constexpr,  # elements per program
     ):
         i = TILE.to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         valid = i < N
@@ -68,11 +68,11 @@ if triton is not None:
         SEED,
         LR,
         sizes,
-        B1: tl.constexpr,
-        B2: tl.constexpr,
-        EPS: tl.constexpr,
-        WD: tl.constexpr,
-        BLOCK: tl.constexpr,
+        B1: tl.constexpr,  # beta1
+        B2: tl.constexpr,  # beta2
+        EPS: tl.constexpr,  # Adam eps
+        WD: tl.constexpr,  # weight decay
+        BLOCK: tl.constexpr,  # elements per program
     ):
         pid = tl.program_id(0).to(tl.int64)
         start = tl.full((), 0, tl.int64)
@@ -108,11 +108,11 @@ if triton is not None:
         LR,
         N,
         SEED,
-        B1: tl.constexpr,
-        B2: tl.constexpr,
-        EPS: tl.constexpr,
-        WD: tl.constexpr,
-        BLOCK: tl.constexpr,
+        B1: tl.constexpr,  # beta1
+        B2: tl.constexpr,  # beta2
+        EPS: tl.constexpr,  # Adam eps
+        WD: tl.constexpr,  # weight decay
+        BLOCK: tl.constexpr,  # elements per program
     ):
         _adamw_tile(P, G, M, V, STEP, LR, N, SEED, tl.program_id(0), B1, B2, EPS, WD, BLOCK)
 

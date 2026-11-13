@@ -8601,6 +8601,125 @@ def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):
     assert "text_encoder/model.fp16.safetensors" not in files
 
 
+_H3_IMAGE_SIBLINGS = [
+    _FakeSibling("model_index.json", 900),
+    _FakeSibling("pdd_config.json", 200),
+    _FakeSibling("pdd_fused_heads.safetensors", 12 * 10**6),
+    _FakeSibling("transformer/config.json", 900),
+    _FakeSibling("transformer/model-00001-of-00002.safetensors", 33 * GB),
+    _FakeSibling("transformer/model-00002-of-00002.safetensors", 33 * GB),
+    _FakeSibling("transformer_diffusers/config.json", 900),
+    _FakeSibling(
+        "transformer_diffusers/diffusion_pytorch_model-00001-of-00002.safetensors", 33 * GB
+    ),
+    _FakeSibling("text_encoder/config.json", 900),
+    _FakeSibling("text_encoder/model-00001-of-00002.safetensors", 33 * GB),
+    _FakeSibling("vae/config.json", 900),
+    _FakeSibling("vae/diffusion_pytorch_model.safetensors", 2 * GB),
+    _FakeSibling("vae_diffusers/diffusion_pytorch_model.safetensors", 2 * GB),
+    _FakeSibling("tokenizer/tokenizer.json", 11 * 10**6),
+    _FakeSibling("processor/preprocessor_config.json", 900),
+]
+_H3_TE_INT8 = "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+
+
+_H3_ENCODER_REPOS = {
+    "unsloth/MiniMax-H3-FP8": [
+        _FakeSibling(_H3_TE_INT8, 27 * GB),
+        _FakeSibling("other.gguf", GB),
+    ],
+    "MiniMaxAI/MiniMax-H3": [
+        _FakeSibling("text_encoder/config.json", 900),
+        _FakeSibling("text_encoder/model-00001-of-00002.safetensors", 33 * GB),
+        _FakeSibling("transformer/model.safetensors", 70 * GB),
+    ],
+}
+
+
+def _h3_image_download_plan(monkeypatch, tmp_path, encoder_repos, te_request):
+    index = tmp_path / "model_index.json"
+    index.write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxH3ImagePipeline",
+                "processor": ["transformers", "Qwen3VLProcessor"],
+                "scheduler": None,
+                "text_encoder": [
+                    "transformers",
+                    "Qwen3VLForConditionalGeneration",
+                    {
+                        "pretrained_model_name_or_path": "MiniMaxAI/MiniMax-H3",
+                        "subfolder": "text_encoder",
+                    },
+                ],
+                "tokenizer": ["transformers", "Qwen2TokenizerFast"],
+                "transformer": ["diffusers", "MiniMaxH3DiTModel"],
+                "vae": ["diffusers", "AutoencoderKLMiniMaxH3"],
+            }
+        )
+    )
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *a, **k: str(index))
+    _fake_hf_api(monkeypatch, {"MiniMaxAI/MiniMax-H3-Image": _H3_IMAGE_SIBLINGS, **encoder_repos})
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_h3_image_planned_dit_scheme",
+        lambda self, *a, **k: None,
+        raising = False,
+    )
+    return DiffusionBackend().download_plan(
+        "MiniMaxAI/MiniMax-H3-Image", model_kind = "pipeline", text_encoder_quant = te_request
+    )
+
+
+@pytest.mark.parametrize("te_request", [None, "none"])
+def test_download_plan_for_minimax_h3_image_stages_the_encoder_its_loader_opens(
+    monkeypatch, tmp_path, te_request
+):
+    """The plan never stages the bundled 66.7 GB text_encoder/ or the *_diffusers/ copy."""
+    plan = _h3_image_download_plan(monkeypatch, tmp_path, _H3_ENCODER_REPOS, te_request)
+    assert plan["plan_failed"] is False
+    by_repo = {e["repo_id"]: e["files"] for e in plan["entries"]}
+    image = by_repo["MiniMaxAI/MiniMax-H3-Image"]
+    assert not [f for f in image if f.startswith("text_encoder/") and f.endswith(".safetensors")]
+    assert not [f for f in image if "_diffusers/" in f]
+    assert "transformer/model-00001-of-00002.safetensors" in image
+    if te_request is None:
+        assert by_repo["unsloth/MiniMax-H3-FP8"] == [_H3_TE_INT8]
+        # int8 encoder is built from the H3 repo's config.
+        assert by_repo["MiniMaxAI/MiniMax-H3"] == ["text_encoder/config.json"]
+    else:
+        assert "unsloth/MiniMax-H3-FP8" not in by_repo
+        assert by_repo["MiniMaxAI/MiniMax-H3"] == [
+            "text_encoder/config.json",
+            "text_encoder/model-00001-of-00002.safetensors",
+        ]
+
+
+@pytest.mark.parametrize(
+    "te_request, encoder_repos",
+    [
+        (
+            None,
+            {
+                "unsloth/MiniMax-H3-FP8": [_FakeSibling("other.gguf", GB)],
+                "MiniMaxAI/MiniMax-H3": [_FakeSibling("text_encoder/config.json", 900)],
+            },
+        ),
+        (None, {"unsloth/MiniMax-H3-FP8": _H3_ENCODER_REPOS["unsloth/MiniMax-H3-FP8"]}),
+        ("none", {}),
+    ],
+)
+def test_download_plan_for_minimax_h3_image_flags_an_encoder_it_could_not_list(
+    monkeypatch, tmp_path, te_request, encoder_repos
+):
+    """An unfound encoder must set plan_failed, not read as "nothing missing"."""
+    plan = _h3_image_download_plan(monkeypatch, tmp_path, encoder_repos, te_request)
+    assert plan["plan_failed"] is True
+    staged = [f for e in plan["entries"] for f in e["files"]]
+    assert not [f for f in staged if f.startswith("text_encoder/") and f.endswith(".safetensors")]
+    assert _H3_TE_INT8 not in staged or "text_encoder/config.json" not in staged
+
+
 def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):
     # Gated pipelines stage from the mirror, so only the planner can flag the selected model.
     gated = "black-forest-labs/FLUX.1-dev"
@@ -11504,6 +11623,57 @@ def test_cancel_generate_lands_at_the_next_step_boundary(fake_runtime, tmp_path,
     with pytest.raises(RuntimeError):
         backend.generate(prompt = "x", steps = 20)
     assert seen == [0, 1, 2]
+
+
+def test_cancel_generate_stops_a_denoise_the_device_has_not_caught_up_with(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = _loaded_backend(tmp_path)
+
+    class _UnfinishedStep:
+        def query(self):
+            return False
+
+    monkeypatch.setattr("core.inference.video._record_device_event", lambda: _UnfinishedStep())
+
+    issued: list[int] = []
+
+    def _call(
+        self,
+        *,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self._interrupt = False
+        for index in range(20):
+            if getattr(self, "_interrupt", False):
+                break
+            issued.append(index)
+            callback_on_step_end(self, index, index, {})
+        return types.SimpleNamespace(images = [_FakeImage()])
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+
+    outcome: dict = {}
+
+    def _run():
+        try:
+            outcome["result"] = backend.generate(prompt = "x", steps = 20)
+        except BaseException as exc:  # noqa: BLE001 -- the test asserts on the exact type/text
+            outcome["error"] = exc
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    worker.join(0.5)
+
+    backend.cancel_generate()
+    worker.join(10)
+    assert not worker.is_alive()
+    assert len(issued) < 20, "every step was issued while the device was still on the first"
+    assert str(outcome.get("error")) == DIFFUSION_CANCELLED_MSG
 
 
 def test_cancel_generate_during_the_post_denoise_save_still_cancels(

@@ -121,6 +121,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { readAfterUnload } from "@/lib/read-after-unload";
 import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -229,6 +230,7 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -1437,6 +1439,7 @@ function VideoGenerator({
   const loadSeq = useRef(0);
   // begin_load refuses a second live load, so a new pick must wait for this to settle.
   const pendingStart = useRef<Promise<unknown> | null>(null);
+  const pendingUnload = useRef<Promise<boolean> | null>(null);
 
   // The compensating unload failed, so the load is STILL running; handleUnload reports that.
   const loadTrackingRestored = useRef(false);
@@ -2514,6 +2517,8 @@ function VideoGenerator({
 
   // null when the read failed or was superseded.
   const refreshStatus = useCallback(async (): Promise<VideoStatus | null> => {
+    // A read during teardown can still see the resident and supersede the unload response.
+    if (pendingUnload.current) await pendingUnload.current;
     const ticket = ++statusTicket.current;
     try {
       const next = await getVideoStatus();
@@ -2741,7 +2746,7 @@ function VideoGenerator({
         if (p.phase === "completed" || p.phase === "failed") {
           stopGenPoll();
           if (!isMounted.current) return;
-          setBusy(null);
+          setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
           if (p.phase === "completed" && p.video) {
             // Sorted, not prepended: a new clip is unpinned and goes after the pinned group.
@@ -2785,7 +2790,7 @@ function VideoGenerator({
       await refreshStatus();
       // Loads run on a backend daemon thread that survives navigation, so resume tracking.
       try {
-        const p = await getVideoLoadProgress();
+        const p = await readAfterUnload(pendingUnload, () => getVideoLoadProgress());
         if (p.phase === "downloading" || p.phase === "finalizing") {
           setBusy("loading");
           dismissLoadToast();
@@ -2799,7 +2804,7 @@ function VideoGenerator({
       setLoadProbed(true);
       // Generation also runs on a daemon thread, so a reload re-enters the poll loop.
       try {
-        const g = await getVideoGenerateProgress();
+        const g = await readAfterUnload(pendingUnload, getVideoGenerateProgress);
         if (g.active) {
           setBusy("generating");
           setGenStep(g.phase === "queued" ? null : g);
@@ -3595,34 +3600,43 @@ function VideoGenerator({
   );
 
   // True only when the backend accepted the unload.
-  const handleUnload = useCallback(async (): Promise<boolean> => {
+  const handleUnload = useCallback((): Promise<boolean> => {
+    if (pendingUnload.current) return pendingUnload.current;
     dropResidentState();
     loadTrackingRestored.current = false;
     setBusy("unloading");
-    try {
-      setStatusIfNewest(++statusTicket.current, await unloadVideoModel());
-      setQuant(null);
-      // Wait for any in-flight load start to finish, or the older handler skips its compensating unload
-      // and leaves a large load running with no cancel.
-      const pending = pendingStart.current;
-      if (pending) {
-        try {
-          await pending;
-        } catch {
-          // Its own handler reports the failure; this only waits for the window to close.
+    const unload = async (): Promise<boolean> => {
+      try {
+        setStatusIfNewest(++statusTicket.current, await unloadVideoModel());
+        setQuant(null);
+        // Wait for any in-flight load start to finish, or the older handler skips its compensating unload
+        // and leaves a large load running with no cancel.
+        const pending = pendingStart.current;
+        if (pending) {
+          try {
+            await pending;
+          } catch {
+            // Its own handler reports the failure; this only waits for the window to close.
+          }
         }
+        // Restored tracking means the compensating unload failed and the load still runs.
+        return !loadTrackingRestored.current;
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to unload model");
+        void refreshStatus();
+        return false;
       }
-      // Restored tracking means the compensating unload failed and the load still runs.
-      return !loadTrackingRestored.current;
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to unload model");
-      void refreshStatus();
-      return false;
-    } finally {
+    };
+    pendingUnload.current = unload().finally(() => {
+      pendingUnload.current = null;
       // A restore during the wait set "loading" deliberately; keep its Cancel controls.
       setBusy((prev) => (prev === "unloading" ? null : prev));
-    }
-  }, [refreshStatus, dropResidentState]);
+    });
+    return pendingUnload.current;
+  }, [refreshStatus, dropResidentState, setStatusIfNewest]);
+
+  const ejecting = useRef(false);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
 
   // Cancelling a load IS the unload; only cache remains, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
@@ -4090,7 +4104,8 @@ function VideoGenerator({
               activeGgufVariant={quant}
               onValueChange={handleModelSelect}
               resolveDownloadFootprint={resolveDownloadFootprint}
-              onEject={status?.loaded ? handleUnload : undefined}
+              loaded={busy === "unloading" ? false : undefined}
+              onEject={status?.loaded && busy !== "unloading" ? handleEject : undefined}
               variant="ghost"
               className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
               task={VIDEO_GEN_TASKS}
