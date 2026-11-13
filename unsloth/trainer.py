@@ -957,6 +957,12 @@ class UnslothTrainingArguments(TrainingArguments):
             raise ValueError(
                 f"Unsloth: loraplus_lr_ratio must be a positive number, got {loraplus_lr_ratio!r}."
             )
+        # create_optimizer builds the Q-GaLore optimizer first and never reads loraplus_lr_ratio.
+        if q_galore_config is not None and loraplus_lr_ratio is not None:
+            raise ValueError(
+                "Unsloth: loraplus_lr_ratio cannot be combined with q_galore_config, "
+                "the Q-GaLore optimizer would ignore it. Drop one of them."
+            )
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
@@ -1393,6 +1399,12 @@ class UnslothTrainer(SFTTrainer):
 
         q_galore_config = getattr(self.args, "q_galore_config", None)
         if q_galore_config is not None and self.optimizer is None:
+            # Also checked here: args are mutable, so __init__ alone can be bypassed.
+            if getattr(self.args, "loraplus_lr_ratio", None) is not None:
+                raise ValueError(
+                    "Unsloth: loraplus_lr_ratio cannot be combined with q_galore_config, "
+                    "the Q-GaLore optimizer would ignore it. Drop one of them."
+                )
             embedding_lr = getattr(self.args, "embedding_learning_rate", None)
             return self._create_q_galore_optimizer(
                 q_galore_config,
