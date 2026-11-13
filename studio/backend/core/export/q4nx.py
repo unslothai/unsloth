@@ -21,9 +21,8 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# GGUF types the Q4NX export accepts; any other quant is dequantized and rounded again.
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
-# What each pinned converter packs without re-quantizing: only the q4k pin reads Q4_K.
+# What each pinned converter packs as is; anything else is dequantized and rounded again.
 DIRECT_QUANTS = {"q4nx": ("q4_0", "q4_1"), "q4k": SOURCE_QUANTS}
 # Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
@@ -42,7 +41,7 @@ def _installer():
 
 
 def source_gguf(ggufs: List[str], quant_methods: List[str]) -> Optional[str]:
-    """The exported GGUF to convert: the first selected quant this architecture's converter packs directly, else the first accepted one."""
+    """The first selected source quant the architecture's converter packs as is, else the first one."""
     candidates = [
         (quant, path)
         for quant in quant_methods
@@ -67,7 +66,7 @@ def require_converter_deps() -> None:
         )
 
 
-# Header scans that skip the vocab arrays: gguf.GGUFReader parses them all (~7 s on a 9B).
+# Header scans: gguf.GGUFReader parses every vocab array (~7 s on a 9B).
 def _gguf_architecture(gguf_path: str) -> str:
     from utils.models.gguf_metadata import read_gguf_architecture
     return read_gguf_architecture(str(gguf_path)) or ""
