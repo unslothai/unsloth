@@ -8643,7 +8643,6 @@ def _python_is_high_risk(code: str) -> bool:
                     runner_class_names[alias.asname or alias.name] = node.module
 
     def _runner_instance_module(value):
-        # cProfile.Profile() / pdb.Pdb(): their run* methods take code strings too.
         if not isinstance(value, ast.Call):
             return None
         ctor = value.func
@@ -8682,7 +8681,6 @@ def _python_is_high_risk(code: str) -> bool:
         modules = _runner_modules_of(func)
         return min(modules - {"timeit"}, default = None) or min(modules, default = None)
 
-    # bench = timeit.timeit / t = timeit: aliases keep the runner's identity.
     simple_assigns = [
         (node.targets[0].id, node.value)
         for node in _tree_nodes(tree)
@@ -8690,7 +8688,6 @@ def _python_is_high_risk(code: str) -> bool:
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
     ]
-    # Worklist: an assignment is rechecked only when the name it reads gains a runner.
     readers: "dict[str, list[int]]" = {}
     for index, (_target, value) in enumerate(simple_assigns):
         read = value.value if isinstance(value, ast.Attribute) else value
@@ -18709,8 +18706,7 @@ def _check_signal_escape_patterns(code: str):
                         s for s in map(_extract_string_from_node, all_call_args) if s is not None
                     )
                 else:
-                    # Operands are argv items, not commands: `-name '*.py'` is search data.
-                    # exec*/spawn* run their path argument; argv[0] is only a label.
+                    # Operands are argv data, not commands; exec*/spawn* run the path, argv[0] is a label.
                     argv = []
                     tail = positional[argv_start:]
                     if argv_start and len(positional) >= argv_start:
