@@ -1924,3 +1924,20 @@ def test_compact_on_a_chat_with_nothing_to_evict_spares_the_tool_results(
     assert status == 200
     roles = [m["role"] for m in recorded[-1]["body"]["messages"]]
     assert "tool" in roles
+
+
+def test_a_replaced_trailing_turn_keeps_the_checkpoint():
+    import routes.inference as ri
+
+    old = {"role": "user", "content": "do it"}
+    seen = [{"role": "system", "content": "s"}, {"role": "user", "content": "old"}, old]
+    fitted = [{"role": "system", "content": "s"}, {"role": "user", "content": "<recalled>\ndo it"}]
+    state = {"input": seen, "fitted": fitted}
+    merged = seen[:-1] + [{"role": "user", "content": "do it\n\nUse a tool now."}]
+    assert ri._extend_checkpoint_fit(state, merged) == [
+        fitted[0],
+        {"role": "user", "content": "<recalled>\ndo it\n\nUse a tool now."},
+    ]
+    call = {"role": "assistant", "content": "x"}
+    assert ri._extend_checkpoint_fit(state, seen + [call]) == fitted + [call]
+    assert ri._extend_checkpoint_fit(state, [{"role": "user", "content": "other"}]) is None

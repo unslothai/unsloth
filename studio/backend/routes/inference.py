@@ -28984,6 +28984,42 @@ _EXTERNAL_COMPACTION_HEADROOM = 0.25
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
+def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
+    """The cached checkpoint fit plus the loop's new turns, or None when ``messages`` diverged.
+
+    The loop may also replace the trailing user turn (a re-prompt merged into it); that edit is
+    carried onto the fitted copy, whose text may lead with an inline recall block."""
+    seen, fitted = state.get("input"), state.get("fitted")
+    if seen is None:
+        return None
+    n = len(seen)
+    if messages[:n] == seen:
+        return fitted + messages[n:]
+    if not (
+        n
+        and len(messages) >= n
+        and messages[: n - 1] == seen[:-1]
+        and seen[-1].get("role") == messages[n - 1].get("role") == "user"
+        and fitted
+        and fitted[-1].get("role") == "user"
+    ):
+        return None
+    old, new, kept = (
+        seen[-1].get("content"),
+        messages[n - 1].get("content"),
+        fitted[-1].get("content"),
+    )
+    if (
+        all(isinstance(x, str) for x in (old, new, kept))
+        and kept.endswith(old)
+        and new.startswith(old)
+    ):
+        last = {**fitted[-1], "content": kept + new[len(old) :]}
+    else:
+        last = messages[n - 1]
+    return fitted[:-1] + [last] + messages[n:]
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -29927,8 +29963,8 @@ async def _proxy_to_external_provider(
         async def _external_context_fitter(messages, tools = _external_fit_tools):
             nonlocal _external_truncation, _first_payload
             # After a checkpoint fit, later passes extend its result, as the GGUF loop does.
-            seen = _checkpoint_pass.get("input")
-            later = seen is not None and messages[: len(seen)] == seen
+            candidate = _extend_checkpoint_fit(_checkpoint_pass, messages)
+            later = candidate is not None
 
             def fit(conversation, fit_payload, first_pass):
                 return _fit_external_context(
@@ -29946,7 +29982,7 @@ async def _proxy_to_external_provider(
             refit = not later
             if later:
                 fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                    fit, _checkpoint_pass["fitted"] + messages[len(seen) :], payload, False
+                    fit, candidate, payload, False
                 )
                 refit = bool(
                     truncation
@@ -29964,7 +30000,9 @@ async def _proxy_to_external_provider(
                 )
                 _first_payload = payload.model_copy(update = {"compact_context": None})
             # A refit moves the boundary, so the next pass extends this result, not the stale one.
-            if refit and truncation and truncation.get("checkpoint") is True:
+            if (later and not refit) or (
+                refit and truncation and truncation.get("checkpoint") is True
+            ):
                 _checkpoint_pass.update(input = list(messages), fitted = fitted)
             _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
