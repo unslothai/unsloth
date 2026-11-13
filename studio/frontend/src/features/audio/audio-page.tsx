@@ -2034,7 +2034,6 @@ export function AudioPage({
         </div>
       </div>
       {/* Below 50rem the panes stack and the page scrolls as one column, as on Images and Video. */}
-      {/* Settings continue the sidebar surface; the preview is an inset panel beside them. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden pb-3 @[50rem]:-mt-[calc(64px*var(--ui-space-scale,1))] @[50rem]:flex-row @[50rem]:gap-0 @[50rem]:overflow-hidden @[50rem]:pb-0">
         <div
           data-tour="audio-settings"

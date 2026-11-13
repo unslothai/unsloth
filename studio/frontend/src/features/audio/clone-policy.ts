@@ -37,7 +37,6 @@ export const QWEN3_LANGUAGE_NAMES = [
   "Italian",
 ] as const;
 
-/** Short chip labels; a pick fills in the full sentence. */
 export const CLONE_TEXT_EXAMPLES = [
   { label: "Phone greeting", text: "Thanks for calling. How can I help you today?" },
   {

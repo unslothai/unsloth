@@ -578,7 +578,6 @@ export function SeparateOutput({
                   key={group.groupId}
                   className="group relative flex items-center gap-1 rounded-md ps-3 pe-1 transition-colors hover:bg-wash-3"
                 >
-                  {/* Same 40px column and title edge as the card's top row. */}
                   <span
                     aria-hidden="true"
                     className="grid w-[calc(40px*var(--ui-space-scale,1))] shrink-0 place-items-center text-muted-foreground"

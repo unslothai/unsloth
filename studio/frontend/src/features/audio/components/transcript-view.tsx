@@ -191,7 +191,6 @@ export function TranscriptView({
   names: Readonly<Record<string, string>>;
   onRename: (id: string, name: string) => void;
   durationS: number | null;
-  /** Laid out as a results-card top row: play (or icon), title over meta, actions; the rest on the title edge. */
   title: ReactNode;
   meta: ReactNode;
   actions: ReactNode;

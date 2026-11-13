@@ -10,7 +10,6 @@ export interface PillTab {
   label: string;
   icon?: ReactNode;
   disabled?: boolean;
-  /** Hover tooltip for this tab. */
   title?: string;
 }
 

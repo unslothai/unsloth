@@ -12,18 +12,14 @@ export const CLIP_ICON_COLUMN = "size-[calc(40px*var(--ui-space-scale,1))]";
 /** The expanded top row (player, transcript, stems): tinted, on the same 40px column and title edge as the rows. */
 export const CLIPS_TOP_ROW = "grid w-full gap-2 rounded-xl bg-wash-6 px-3 py-3";
 
-/** Content under a top row's header starts at the title edge: 40px column + 12px gap. */
 export const CLIPS_TITLE_INSET = "ps-[calc(52px*var(--ui-space-scale,1))]";
 
-/** The scrolling list of earlier results, set off from the top row by a hairline. */
 export const CLIPS_LIST =
   "hover-scrollbar mt-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto border-t border-wash-6 pt-2";
 
-/** A quiet header link, ending on the same right edge as the top row's actions. */
 export const CLIPS_HEADER_LINK =
   "me-3 shrink-0 rounded-full text-ui-12 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-/** A round 40px icon tile on the shared column. */
 export function ClipsIconTile({
   icon,
   className,
@@ -48,7 +44,6 @@ export function ClipsIconTile({
   );
 }
 
-/** The results section on every Audio workflow: top-anchored, a header, then a top row and the list. */
 export function ClipsCard({
   label,
   title,
@@ -88,7 +83,6 @@ export function ClipsCard({
   );
 }
 
-/** The card's body before the first result: a hint and any suggestions, on the title edge. */
 export function ClipsCardEmpty({
   text,
   actions,
@@ -97,7 +91,6 @@ export function ClipsCardEmpty({
   actions?: ReactNode;
 }) {
   return (
-    // The header's 12px inset, so the hint starts under the title.
     <div className="grid gap-3 px-3 pb-3">
       <p className="text-ui-13 leading-normal text-muted-foreground">{text}</p>
       {actions ? <div className="[&>div]:justify-start">{actions}</div> : null}

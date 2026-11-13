@@ -157,7 +157,6 @@ function CloneInputs({
           className="min-h-28"
         />
         {clone.text.trim() ? null : (
-          // Same "Try" row as Music's description examples.
           <fieldset
             className="m-0 flex min-w-0 flex-wrap items-center gap-1 border-0 p-0"
             aria-label="Example sentences"
@@ -260,7 +259,6 @@ export function CloneFooter({
   );
 }
 
-/** Saves the reference clip as a reusable voice; sits on the Reference field it saves. */
 function SaveReferenceVoice({
   clone,
   disabled,
@@ -271,7 +269,6 @@ function SaveReferenceVoice({
   const [saving, setSaving] = useState(false);
   const save = useAudioVoicesStore((state) => state.save);
   const { reference } = clone;
-  // A saved voice is already saved; with no clip there is nothing to save.
   if (reference === null || reference.kind === "voice") return null;
   const canSave =
     !clone.referenceExpired &&

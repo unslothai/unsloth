@@ -386,7 +386,6 @@ export function MusicStudioInputs({
           </p>
         </div>
       ) : rule.id === "song" && rule.instrumental === "always" ? (
-        // An instrumental-only model has no lyrics field; say so once.
         <p className="text-ui-12 leading-normal text-muted-foreground">
           {musicModeHint(rule)}
         </p>

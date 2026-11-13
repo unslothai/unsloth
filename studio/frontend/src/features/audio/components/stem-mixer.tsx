@@ -121,7 +121,6 @@ export function StemMixer({
       tabIndex={0}
       aria-label="Stem mixer"
       onKeyDown={handleKeyDown}
-      // A results-card top row: play on the shared 40px column, lanes on the title edge.
       className={cn(
         CLIPS_TOP_ROW,
         "@container gap-3 outline-none focus-visible:ring-2 focus-visible:ring-ring",

@@ -515,7 +515,6 @@ export function TtsFooter({
   );
 }
 
-/** A history row's second line: model · time, with any extra detail in its tooltip. */
 function HistoryRowMeta({
   model,
   time,
@@ -729,7 +728,6 @@ export function TtsOutput({
       <output aria-live="polite" aria-atomic="true" className="sr-only">
         {announcement}
       </output>
-      {/* One results card: the player is the selected clip's expanded top row, the rest list below. */}
       <ClipsCard
         label={clips.length > 0 ? "Clips" : tab.heading}
         title={clips.length > 0 ? "Clips" : (emptyTitle ?? tab.heading)}
@@ -854,7 +852,6 @@ export function TtsOutput({
                   {historyReorder.cue?.id === clip.id && (
                     <StripDropLine axis="y" edge={historyReorder.cue.edge} />
                   )}
-                  {/* Plays the row in place; the clip in the preview stays where it is. */}
                   <button
                     type="button"
                     title={rowPreview.playingId === clip.id ? "Pause" : "Play here"}
@@ -890,7 +887,6 @@ export function TtsOutput({
                     aria-current={clip.id === selectedId ? "true" : undefined}
                     className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 ps-2 text-left"
                   >
-                    {/* Two lines: the title gets the full width; model, time and any reference sit below it. */}
                     <span className="grid min-w-0 flex-1 gap-0.5">
                       <span
                         title={clip.prompt}

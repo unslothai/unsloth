@@ -176,7 +176,6 @@ export function AudioSourceInput({
   recordHint?: string;
   /** Seconds that work best, e.g. a clone reference's 5 to 15 s; adds a length hint. */
   idealSeconds?: readonly [number, number];
-  /** A field-level action beside the label, such as saving the clip as a voice. */
   headerAction?: ReactNode;
 }) {
   const active = useContext(AudioActiveContext);
@@ -276,7 +275,6 @@ export function AudioSourceInput({
           </span>
           {hint ? <InfoHint>{hint}</InfoHint> : null}
         </span>
-        {/* Text-only actions: tight icon-to-label, clear space between actions. */}
         <span className="flex items-center gap-4">
           {headerAction}
           {showSelected ? (
@@ -327,10 +325,8 @@ export function AudioSourceInput({
         </div>
       ) : showSelected && status.phase !== "error" ? (
         <div className="grid gap-2">
-          {/* The picked clip sits in the same filled box as the text fields, so it reads as this field's value. */}
           <div className="grid gap-2.5 rounded-xl border border-border bg-background px-3.5 py-3 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
           <div className="flex min-w-0 items-center gap-2 text-ui-12">
-            {/* A 32px slot like the play button below, so the name starts where the waveform does. */}
             <span className="grid w-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center">
               <HugeiconsIcon
                 icon={AiSpeechIcon}

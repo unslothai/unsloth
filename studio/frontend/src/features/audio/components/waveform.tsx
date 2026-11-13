@@ -74,7 +74,6 @@ export function Waveform({
   controlRef?: Ref<WaveformControl>;
   onPositionChange?: (seconds: number, playing: boolean) => void;
   onError?: () => void;
-  /** `lg` is a taller track with a larger play button. */
   size?: "default" | "lg";
   /** The host draws its own play button through `controlRef` (the clip card's header). */
   hidePlay?: boolean;
@@ -253,7 +252,6 @@ export function WaveformBars({
   style,
   barWidth = 2,
 }: {
-  /** 3px on the larger players. */
   barWidth?: number;
   peaks: readonly number[] | null;
   fraction: number;
@@ -267,7 +265,6 @@ export function WaveformBars({
   style?: CSSProperties;
 }) {
   const bars = peaks && peaks.length > 0 ? peaks : null;
-  // Where the pointer is, as a 0..1 fraction: bars up to it light softly to preview the seek.
   const [hover, setHover] = useState<number | null>(null);
   return (
     <div
@@ -349,7 +346,6 @@ export function WaveformBarGlyphs({
   peaks: readonly number[] | null;
   /** `at` is the bar's centre as a 0..1 fraction of the track. */
   isPlayed: (at: number) => boolean;
-  /** Bars a click would play up to; drawn between played and unplayed. */
   isHovered?: (at: number) => boolean;
   barWidth?: number;
 }) {
@@ -376,7 +372,6 @@ export function WaveformBarGlyphs({
     >
       {Array.from({ length: count }, (_, index) => {
         const peak = levels ? (levels[index] ?? 0) : 0;
-        // Quiet passages keep a visible stub; loud ones reach the top.
         const height = 12 + peak ** 0.9 * 88;
         const at = (index + 0.5) / count;
         return (

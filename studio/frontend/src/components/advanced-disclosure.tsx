@@ -21,7 +21,6 @@ export function AdvancedDisclosure({
   children,
   flush = false,
 }: {
-  /** Icon and chevron line up with the divider's ends; the hover pill extends past them. */
   flush?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;

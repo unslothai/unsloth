@@ -51,7 +51,6 @@ export function useRowPreview(
         setPlayingId(null);
         return;
       }
-      // Two clips never play over each other.
       for (const element of document.querySelectorAll("audio")) element.pause();
       audio.pause();
       setPlayingId(id);
