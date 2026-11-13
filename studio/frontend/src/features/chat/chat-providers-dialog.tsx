@@ -94,6 +94,7 @@ import {
   OPENCODE_PLANS,
   isDecisionConnection,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  newConnectionRequestType,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   getProviderModelCapabilities,
   learnCatalogModelCapabilities,
@@ -665,13 +666,17 @@ export function ChatProvidersSettings({
     modelFieldsAtOpenRef.current = null;
   }
 
-  function openAddProvider() {
+  function openAddProvider(presetType?: string) {
     resetForm();
-    const entry = providerType ? registryByType.get(providerType) : null;
+    const type = presetType ?? providerType;
+    if (presetType) {
+      setProviderType(presetType);
+      setCustomProviderName(customProviderDisplayName(presetType));
+    }
+    const entry = type ? registryByType.get(type) : null;
     if (
       entry &&
-      (entry.model_list_mode === "curated" ||
-        hasPublicModelCatalog(providerType))
+      (entry.model_list_mode === "curated" || hasPublicModelCatalog(type))
     ) {
       setAvailableModels([...entry.default_models]);
     }
@@ -1453,6 +1458,14 @@ export function ChatProvidersSettings({
     }
     if (!providersReady) return;
     if (openedProviderRef.current === openProviderId) return;
+    const newType = newConnectionRequestType(openProviderId);
+    if (newType !== null) {
+      if (newType && registry.length === 0) return;
+      openedProviderRef.current = openProviderId;
+      openAddProvider(registryByType.has(newType) ? newType : undefined);
+      onOpenProviderConsumed?.();
+      return;
+    }
     const provider = providers.find(
       (candidate) => candidate.id === openProviderId,
     );
@@ -1462,7 +1475,7 @@ export function ChatProvidersSettings({
     onOpenProviderConsumed?.();
     // editProvider is redeclared each render; the latch above is what fires this once per id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openProviderId, providers, providersReady, onOpenProviderConsumed]);
+  }, [openProviderId, providers, providersReady, onOpenProviderConsumed, registry]);
 
   async function deleteProvider(providerId: string) {
     setMutatingProvider(true);
@@ -2459,7 +2472,7 @@ export function ChatProvidersSettings({
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground/90">
               {providers.length} connections · {totalModels} models
             </span>
-            <Button variant="dark" size="sm" onClick={openAddProvider}>
+            <Button variant="dark" size="sm" onClick={() => openAddProvider()}>
               <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add connection
             </Button>

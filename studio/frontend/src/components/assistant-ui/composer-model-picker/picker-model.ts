@@ -7,6 +7,11 @@ export const FAVORITES_TAB = "favorites";
 export const RECOMMENDED_TAB = "recommended";
 export const DEVICE_TAB = "device";
 export const CONNECTED_TAB = "connected";
+/** One-click setups offered on an empty Connected tab, beside Add connection. */
+export const DEFAULT_PROVIDERS = [
+  { type: "openai", label: "Connect ChatGPT", connect: "openai_codex" },
+  { type: "anthropic", label: "Connect Anthropic", connect: "anthropic" },
+] as const;
 export const OFF_LEVEL = "off";
 
 export type RowKind =

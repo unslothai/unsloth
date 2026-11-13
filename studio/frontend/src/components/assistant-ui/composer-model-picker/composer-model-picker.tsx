@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -32,9 +33,11 @@ import {
   deleteFineTunedModel,
   revealFineTunedModel,
 } from "@/features/chat";
+import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 import {
   isExternalModelId,
+  newConnectionRequest,
   parseExternalModelId,
 } from "@/features/chat/external-providers";
 import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
@@ -148,6 +151,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  BotIcon,
   CloudIcon,
   DashboardCircleIcon,
   Download01Icon,
@@ -189,6 +193,7 @@ import {
   CONNECTED_MODALITY_LABEL,
   CONNECTED_SORT_LABEL,
   CONNECTED_TAB,
+  DEFAULT_PROVIDERS,
   type ConnectedModality,
   type ConnectedSort,
   DEVICE_SORT_DESC,
@@ -571,6 +576,17 @@ function opticalStyle(id: string | undefined): CSSProperties | undefined {
   return k ? { scale: String(k) } : undefined;
 }
 
+function providerLogo(providerType: string): ReactNode {
+  return (
+    <span className="flex shrink-0" style={opticalStyle(providerType)}>
+      <ApiProviderLogo
+        providerType={providerType}
+        className="size-[calc(15px*var(--ui-space-scale,1))]"
+      />
+    </span>
+  );
+}
+
 function MakerMark({
   provider,
   className,
@@ -756,10 +772,6 @@ const FAVORITE_STAR =
   "text-[rgb(0_0_0_/_0.42)] hover:text-[rgb(0_0_0_/_0.62)] dark:text-[rgb(255_255_255_/_0.5)] dark:hover:text-[rgb(255_255_255_/_0.72)]";
 // Lifts the ⋮ ink 0.3px so the hover circle centres on it.
 const ACTION_DOTS = `${ACTION} w-[calc(15px*var(--ui-space-scale,1))] [&>svg]:-translate-y-[0.3px]`;
-// Red-tinted hover for the Eject pills: the theme's muted and accent fills match under glass.
-const EJECT_PILL_HOVER =
-  "hover:bg-[color-mix(in_srgb,#dc4848_14%,transparent)] focus-visible:bg-[color-mix(in_srgb,#dc4848_14%,transparent)] dark:hover:bg-[color-mix(in_srgb,#ed7878_18%,transparent)] dark:focus-visible:bg-[color-mix(in_srgb,#ed7878_18%,transparent)]";
-
 const FAVORITE_DROP_CUE_BASE =
   "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
 const FAVORITE_DROP_CUE = {
@@ -2033,6 +2045,8 @@ export function ComposerModelPicker({
     [pinned, pinnedConnected],
   );
 
+  const connectionsOn = source?.connections !== false;
+  const isOwner = useIsAccountOwner();
   const makerTabs = useMemo<SourceTab[]>(() => {
     const out: SourceTab[] = [];
     const seen = new Set<string>();
@@ -2083,7 +2097,7 @@ export function ComposerModelPicker({
         label: "On Device",
         icon: glyph(Download01Icon, "scale-[1.15]"),
       },
-      ...((externalModels?.length ?? 0) > 0
+      ...(connectionsOn || (externalModels?.length ?? 0) > 0
         ? [
             {
               value: CONNECTED_TAB,
@@ -2103,18 +2117,11 @@ export function ComposerModelPicker({
       out.push({
         value: `${EXT_PREFIX}${m.providerId}`,
         label: m.providerName,
-        icon: (
-          <span className="flex shrink-0" style={opticalStyle(m.providerType)}>
-            <ApiProviderLogo
-              providerType={m.providerType}
-              className="size-[calc(15px*var(--ui-space-scale,1))]"
-            />
-          </span>
-        ),
+        icon: providerLogo(m.providerType),
       });
     }
     return out;
-  }, [externalModels, makerTabs]);
+  }, [externalModels, makerTabs, connectionsOn]);
 
   const chosen = findChosenRow(rows, checkpoint);
   const chosenId = chosen?.id;
@@ -2970,7 +2977,67 @@ export function ComposerModelPicker({
     showEffort ||
     showFastSwitch;
 
-  const emptyCopy = (): { title: string; hint?: string } => {
+  const connectFrom = (providerType?: string) => {
+    setOpen(false);
+    useSettingsDialogStore
+      .getState()
+      .openConnectionSettings(newConnectionRequest(providerType));
+  };
+  const emptyCopy = (): {
+    title: string;
+    hint?: string;
+    actions?: {
+      label: string;
+      icon?: ReactNode;
+      primary?: boolean;
+      row: 0 | 1;
+      run: () => void;
+    }[];
+  } => {
+    if (
+      viewed === CONNECTED_TAB &&
+      !query &&
+      (externalModels?.length ?? 0) === 0
+    ) {
+      return {
+        title: "No connected models",
+        hint: "Connect a provider to use its models here.",
+        actions: [
+          {
+            label: "Add connection",
+            primary: true,
+            row: 0,
+            run: () => connectFrom(),
+          },
+          // Agents settings are the owner's, so a managed account is not offered them.
+          ...(isOwner
+            ? [
+                {
+                  label: "Connect coding agent",
+                  icon: (
+                    <HugeiconsIcon
+                      icon={BotIcon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  ),
+                  row: 0 as const,
+                  run: () => {
+                    setOpen(false);
+                    useSettingsDialogStore.getState().openDialog("agents");
+                  },
+                },
+              ]
+            : []),
+          ...DEFAULT_PROVIDERS.map((provider) => ({
+            label: provider.label,
+            icon: providerLogo(provider.type),
+            row: 1 as const,
+            run: () => connectFrom(provider.connect),
+          })),
+        ],
+      };
+    }
     if (query) {
       return { title: "No models found", hint: `Nothing matches “${query}”.` };
     }
@@ -2989,7 +3056,25 @@ export function ComposerModelPicker({
     if (viewed === DEVICE_TAB) {
       return {
         title: "No models on this device",
-        hint: "Download one from Discover models.",
+        hint: "Download models from Model hub",
+        actions: [
+          {
+            label: "Discover models",
+            icon: (
+              <HugeiconsIcon
+                icon={DashboardCircleIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            ),
+            primary: true,
+            row: 0,
+            run: () => {
+              setOpen(false);
+              void navigate({ to: "/hub", search: { tab: "discover" } });
+            },
+          },
+        ],
       };
     }
     return { title: "No models" };
@@ -4004,13 +4089,14 @@ export function ComposerModelPicker({
             {offer.error ?? "Couldn't list quantizations"}
           </span>
           {offer.failed && target ? (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="xs"
               onClick={() => void toggleOffer(row, target, supersede(), true)}
-              className="shrink-0 rounded-full px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-sidebar-accent"
+              className="shrink-0"
             >
               Retry
-            </button>
+            </Button>
           ) : null}
         </div>
       );
@@ -4098,7 +4184,11 @@ export function ComposerModelPicker({
   const listLoading =
     viewed === RECOMMENDED_TAB
       ? online && (hubSearch.isLoading || query.trim() !== hubQuery)
-      : !(viewed.startsWith(EXT_PREFIX) || inventory.cachedReady);
+      : !(
+          viewed.startsWith(EXT_PREFIX) ||
+          viewed === CONNECTED_TAB ||
+          inventory.cachedReady
+        );
   const renderEmpty = () => {
     if (listLoading) {
       return (
@@ -4123,6 +4213,33 @@ export function ComposerModelPicker({
         </span>
         {copy.hint ? (
           <span className="text-ui-12 text-muted-foreground">{copy.hint}</span>
+        ) : null}
+        {copy.actions ? (
+          // General actions first; the provider shortcuts share the row under them.
+          <div className="mt-2 flex flex-col items-center gap-2">
+            {[0, 1]
+              .map((row) => copy.actions?.filter((a) => a.row === row) ?? [])
+              .map((group) =>
+                group.length > 0 ? (
+                  <div
+                    key={group[0].label}
+                    className="flex flex-wrap justify-center gap-2"
+                  >
+                    {group.map((action) => (
+                      <Button
+                        key={action.label}
+                        variant={action.primary ? "dark" : "outline"}
+                        size="sm"
+                        onClick={action.run}
+                      >
+                        {action.icon}
+                        {action.label}
+                      </Button>
+                    ))}
+                  </div>
+                ) : null,
+              )}
+          </div>
         ) : null}
       </div>
     );
@@ -4565,8 +4682,9 @@ export function ComposerModelPicker({
               (chosenLoaded || loadedModels.length > 0) &&
               !pending &&
               !modelLoading ? (
-                <button
-                  type="button"
+                <Button
+                  variant="destructive"
+                  size="xs"
                   aria-label={
                     ejectsAll
                       ? "Eject all models"
@@ -4589,10 +4707,7 @@ export function ComposerModelPicker({
                       source?.eject(checkpoint ?? undefined);
                     }
                   }}
-                  className={cn(
-                    "ml-auto flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors",
-                    EJECT_PILL_HOVER,
-                  )}
+                  className="ml-auto h-[calc(26px*var(--ui-space-scale,1))]"
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -4600,7 +4715,7 @@ export function ComposerModelPicker({
                     className="size-[calc(14px*var(--ui-space-scale,1))]"
                   />
                   {ejectsAll ? "Eject all" : "Eject"}
-                </button>
+                </Button>
               ) : null}
               {chosenName ? (
                 <Hint label="Collapse">
@@ -4955,18 +5070,16 @@ export function ComposerModelPicker({
               ) : null}
             </button>
             {!pending && chosenLoaded && !modelLoading ? (
-              <button
-                type="button"
+              <Button
+                variant="destructive"
+                size="xs"
                 aria-label={`Eject ${chosenName}`}
                 onClick={() =>
                   chosen
                     ? eject(chosen)
                     : source?.eject(checkpoint ?? undefined)
                 }
-                className={cn(
-                  "flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] px-2.5 text-ui-12 font-medium composer-eject-tone transition-colors dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))]",
-                  EJECT_PILL_HOVER,
-                )}
+                className="h-[calc(26px*var(--ui-space-scale,1))]"
               >
                 <HugeiconsIcon
                   icon={RemoveCircleIcon}
@@ -4974,7 +5087,7 @@ export function ComposerModelPicker({
                   className="size-[calc(14px*var(--ui-space-scale,1))]"
                 />
                 Eject
-              </button>
+              </Button>
             ) : null}
             <button
               type="button"

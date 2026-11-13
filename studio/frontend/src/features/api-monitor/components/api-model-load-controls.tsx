@@ -383,6 +383,7 @@ export function ApiModelLoadControls({
       activeModelConfig: runtimeIsResident ? runtimeConfig : null,
       loadedContextLength: runtimeIsResident ? loadedContextLength : null,
       loaded: isLoaded,
+      connections: false,
       selection: {
         id: effectiveModel,
         ggufVariant: isLoaded ? activeGgufVariant : null,

@@ -1018,3 +1018,74 @@ test("a standalone resident GGUF opens Run settings under its bare path", () => 
     /isStandaloneGgufPath\(row\.id\)\s*\? \{ \.\.\.residentMeta\(row\), ggufVariant: undefined, isGguf: true \}\s*: residentMeta\(row\);/,
   );
 });
+
+test("an empty Connected tab offers Add connection, ChatGPT and Anthropic", async () => {
+  const { newConnectionRequest, newConnectionRequestType } = await import(
+    "../src/features/chat/external-providers.ts"
+  );
+  assert.equal(
+    newConnectionRequestType(newConnectionRequest("openai_codex")),
+    "openai_codex",
+  );
+  assert.equal(newConnectionRequestType(newConnectionRequest()), "");
+  assert.equal(newConnectionRequestType("provider-123"), null);
+  const { DEFAULT_PROVIDERS } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  assert.deepEqual(
+    DEFAULT_PROVIDERS.map((p) => [p.label, p.connect]),
+    [
+      ["Connect ChatGPT", "openai_codex"],
+      ["Connect Anthropic", "anthropic"],
+    ],
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // Connected is always a tab; no provider tab shows until it is connected.
+  assert.match(
+    picker,
+    /\.\.\.\(connectionsOn \|\| \(externalModels\?\.length \?\? 0\) > 0/,
+  );
+  assert.doesNotMatch(picker, /SETUP_PREFIX/);
+  assert.match(
+    picker,
+    /label: "Add connection",\s*primary: true,\s*row: 0,\s*run: \(\) => connectFrom\(\)/,
+  );
+  // Beside it, for owners: the Agents settings that connect coding agents to a local model.
+  assert.match(
+    picker,
+    /\.\.\.\(isOwner\s*\? \[\s*\{\s*label: "Connect coding agent",/,
+  );
+  assert.match(picker, /openDialog\("agents"\)/);
+  assert.match(
+    picker,
+    /icon: providerLogo\(provider\.type\),\s*row: 1 as const,\s*run: \(\) => connectFrom\(provider\.connect\)/,
+  );
+  assert.match(picker, /variant=\{action\.primary \? "dark" : "outline"\}/);
+  // Picker actions use the shared Button.
+  assert.equal(
+    picker.match(/<Button\s+variant="destructive"\s+size="xs"/g)?.length,
+    2,
+  );
+  assert.match(picker, /<Button\s+variant="ghost"\s+size="xs"/);
+  assert.doesNotMatch(picker, /EJECT_PILL_HOVER/);
+  const api = readSrc(
+    "features/api-monitor/components/api-model-load-controls.tsx",
+  );
+  assert.match(api, /connections: false,/);
+});
+
+test("an empty On Device tab links to the Model hub's Discover models", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /title: "No models on this device",\s*hint: "Download models from Model hub",\s*actions: \[\s*\{\s*label: "Discover models",\s*icon: \(\s*<HugeiconsIcon\s*icon=\{DashboardCircleIcon\}/,
+  );
+  assert.match(
+    picker,
+    /navigate\(\{ to: "\/hub", search: \{ tab: "discover" \} \}\)/,
+  );
+});
