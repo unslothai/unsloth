@@ -10,9 +10,10 @@ import pytest
 torch = pytest.importorskip("torch")
 
 import unsloth.import_fixes as fixes
+from real_accelerator import has_real_cuda
 
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cuda" if has_real_cuda() else "cpu")
 DTYPE = torch.float16 if DEVICE.type == "cuda" else torch.float32
 
 # Custom ops with PyTorch's fake kernel for the flash backward (empty_like(query): the query's
@@ -66,7 +67,7 @@ def test_an_import_under_inference_mode_still_probes():
         assert _mismatches({"flash": _blind}) == ["flash"]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a GPU for the real SDPA kernels")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU for the real SDPA kernels")
 def test_the_real_sdpa_backwards_here_match_their_fake_kernels():
     """The real flash / efficient aten ops. A healthy CUDA or ROCm build reports nothing, so nothing
     is turned off; a backend this build lacks (flash on Windows CUDA wheels) is skipped."""
@@ -74,7 +75,7 @@ def test_the_real_sdpa_backwards_here_match_their_fake_kernels():
     assert fixes._sdpa_backward_layout_mismatches(DEVICE, dtype) == []
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "Inductor's GPU path needs a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "Inductor's GPU path needs a GPU")
 def test_inductor_rejects_exactly_what_the_probe_reports():
     """The probe's criterion is the one that stops training: a compiled graph asserts the fake
     strides on the real output and raises the issue's "incorrect fake (aka meta) kernel" error."""
