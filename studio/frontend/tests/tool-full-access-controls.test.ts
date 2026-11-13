@@ -63,6 +63,8 @@ function harness({ owner = true, disclosure = false, grantedThread = "", scopedF
         ToolApprovalGoneError: class Gone extends Error {},
       },
       "@/features/chat/stores/chat-runtime-store": { useChatRuntimeStore: store },
+      "@/features/computer-use/summary": { COMPUTER_USE_TOOL: "computer" },
+      "@/i18n": { useT: () => (key: string) => key },
       "@/features/settings": {
         COMPOSER_INPUT_SELECTOR: "textarea", isSurfaceBackgrounded: () => false, useShortcut: () => {},
       },
@@ -72,10 +74,10 @@ function harness({ owner = true, disclosure = false, grantedThread = "", scopedF
       },
     },
   );
-  const render = () => {
+  const render = (toolName = "terminal") => {
     index = 0;
     effects = [];
-    const tree = module.ToolConfirmationControls({ toolCallId: "call", toolName: "terminal", result: undefined, status: { type: "running" } });
+    const tree = module.ToolConfirmationControls({ toolCallId: "call", toolName, result: undefined, status: { type: "running" } });
     return descendants(tree);
   };
   const get = (nodes: Node[], type: string, label?: string) => {
@@ -182,4 +184,20 @@ test("a newer explicit permission choice wins over a delayed Full Access acknowl
     assert.deepEqual(h.grants, []);
     assert.equal(h.state.permissionMode, mode);
   }
+});
+
+test("a computer call offers Allow and Deny but never Always allow", async () => {
+  const h = harness();
+  // A session that always allowed the tool by name still asks: the server decides when it stops.
+  h.state.alwaysAllowToolsBySession.set("project-shared:chat-a", new Set(["computer"]));
+  const nodes = h.render("computer");
+  h.runEffects();
+  await settle();
+  assert.deepEqual(h.requests, []);
+  assert.ok(h.get(nodes, "Button", "Allow"));
+  assert.ok(h.get(nodes, "Button", "Deny"));
+  assert.equal(nodes.some((node) => node.type === "Button" && node.props.children === "Always allow"), false);
+  assert.ok(nodes.some((node) => node.type === "p" && node.props.children === "computerUse.approval.note"));
+  // Other tools keep it.
+  assert.ok(h.get(harness().render(), "Button", "Always allow"));
 });

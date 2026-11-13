@@ -6163,6 +6163,34 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         return False
 
 
+_computer_use_withheld: "str | None" = None
+
+
+def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
+    from core.inference.computer_use import computer_tool, policy
+    from state import computer_use as computer_state
+
+    if not (can_show_and_see and policy.offered()):
+        # The chat asked for it by name, so the log says why the model will not have it; once per
+        # reason, since token counts ask as often as the user types.
+        global _computer_use_withheld
+        reason = (
+            policy.unavailable_reason()
+            or ("it is switched off in Settings" if not policy.settings()["enabled"] else None)
+            or "the model can't see images or the request is not a UI stream"
+        )
+        if reason != _computer_use_withheld:
+            _computer_use_withheld = reason
+            logger.info("computer use not offered: %s", reason)
+        return None
+    # The model's family decides how it names a point; the run reads it back from the chat.
+    mode = policy.coordinate_mode(getattr(payload, "model", None))
+    computer_state.set_coordinates(
+        computer_state.session_key(getattr(payload, "session_id", None)), mode
+    )
+    return computer_tool(mode)
+
+
 async def _select_request_tools(
     payload: ChatCompletionRequest,
     *,
@@ -6198,6 +6226,18 @@ async def _select_request_tools(
             if tool["function"]["name"] in payload.enabled_tools
             and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
         ]
+    if tools_on and payload.enabled_tools is not None:
+        from core.inference.computer_use import COMPUTER_TOOL_NAME
+        if COMPUTER_TOOL_NAME in payload.enabled_tools:
+            # Asked for by name, and only where the approval card can be shown: a model with no
+            # eyes, an API key or a server other machines reach never gets it.
+            computer = await asyncio.to_thread(
+                _computer_use_tool, payload, ui_events and supports_vision
+            )
+            if computer is not None:
+                # First: a small model with code tools beside it otherwise scripts the mouse in
+                # Python, where there is no screen.
+                tools.insert(0, computer)
     if tools_on and payload.enabled_tools is not None:
         # Opt-in by name too, and only while an image or video model this account may use is loaded.
         from core.inference.media_chat_tools import offered_media_chat_tools, remember_server_loop

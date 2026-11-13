@@ -14,6 +14,8 @@ import {
   ToolApprovalGoneError,
 } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { COMPUTER_USE_TOOL } from "@/features/computer-use/summary";
+import { useT } from "@/i18n";
 import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceBackgrounded,
@@ -60,11 +62,17 @@ export function ToolConfirmationControls({
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
   // Sharing the user's image is asked every time: no Always allow, no keyboard chord.
   const disclosure = confirmation?.imageDisclosure;
+  // The server already stops asking once a chat is allowed, except about risky steps, so a
+  // computer call that asks has no Always allow to skip it with.
+  const computer = toolName === COMPUTER_USE_TOOL;
+  const computerRisks = confirmation?.computerUse?.risks ?? [];
   const autoAllowed = useChatRuntimeStore(
     (s) =>
       !disclosure &&
+      !computer &&
       (s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false),
   );
+  const t = useT();
 
   const [fullAccessOpen, setFullAccessOpen] = useState(false);
   const [decided, setDecided] = useState(false);
@@ -183,6 +191,13 @@ export function ToolConfirmationControls({
           {disclosure.destination}? The server may keep it.
         </p>
       ) : null}
+      {computer && !disclosure ? (
+        <p className="w-full text-xs text-muted-foreground" data-slot="computer-use-ask">
+          {computerRisks.length > 0
+            ? t("computerUse.approval.because", { reasons: computerRisks.join("; ") })
+            : t("computerUse.approval.note")}
+        </p>
+      ) : null}
       <Button
         size="xs"
         disabled={pending !== null || failure === "gone"}
@@ -190,7 +205,7 @@ export function ToolConfirmationControls({
       >
         {disclosure ? "Share image once" : "Allow"}
       </Button>
-      {disclosure ? null : (
+      {disclosure || computer ? null : (
         <Button
           size="xs"
           variant="outline"

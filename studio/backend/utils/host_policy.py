@@ -14,6 +14,8 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # Whether a loopback launch in THIS process auto-enabled the gate. run_server normally runs once per process, but if it is reused with a different host (embedders, tests) we only ever take back a value we set ourselves.
 _auto_enabled = False
+# Whether the last launch bound loopback off Colab: this machine's user is the only caller.
+_local_bind = False
 _remote_connector_active = False
 _lan_connector_active = False
 
@@ -255,7 +257,8 @@ def cors_origin_regex_for_mode(*, api_only: bool, secure: bool) -> str | None:
 
 def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> None:
     """Default stdio MCP servers on when bound to loopback. A loopback bind is the user's own machine, the same trust boundary the Tauri desktop app relies on (see main.py, which uses this same helper). Colab is excluded: even its loopback is a hosted VM reachable through Colab's proxy, so it stays off unless opted in. An explicit operator value wins: a pre-set `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=0` force-disables and `=1` opts in, including on a network bind. We only ever set or clear a default we applied ourselves, so reusing run_server with a public host after a loopback one does not leave the gate on."""
-    global _auto_enabled
+    global _auto_enabled, _local_bind
+    _local_bind = not (is_colab or is_external_host(host))
     current = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
     # If our prior auto-default was changed out from under us, relinquish ownership: an explicit =0 is then a sticky force-disable, while a cleared var falls back to the host default.
     if _auto_enabled and current != "1":
@@ -270,6 +273,13 @@ def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> No
     else:
         os.environ["UNSLOTH_STUDIO_ALLOW_STDIO_MCP"] = "1"
         _auto_enabled = True
+
+
+def serves_this_machine_only() -> bool:
+    """True while only this machine's own user can reach the server: a loopback bind off Colab,
+    with no tunnel or LAN listener carrying requests in. Unlike the stdio MCP gate, no
+    environment variable widens it."""
+    return _local_bind and not remote_connector_active()
 
 
 def loopback_default_active() -> bool:
@@ -306,7 +316,8 @@ def remote_connector_active() -> bool:
 
 def _reset_loopback_default_state() -> None:
     """Test hook: forget runtime trust state applied earlier in this process."""
-    global _auto_enabled, _remote_connector_active, _lan_connector_active
+    global _auto_enabled, _local_bind, _remote_connector_active, _lan_connector_active
     _auto_enabled = False
+    _local_bind = False
     _remote_connector_active = False
     _lan_connector_active = False

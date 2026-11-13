@@ -15,6 +15,7 @@ from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
 from core.inference.browser_agent import BROWSER_TOOL_NAMES
+from core.inference.computer_use import COMPUTER_TOOL_NAME
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
@@ -222,7 +223,7 @@ class ToolCallDecision:
         fragment = self.unparsed_fragment
         # Use `raw` for unparsed arguments so the card shows the model's own text, not an internal sentinel.
         arguments = {"raw": fragment} if fragment is not None else self.arguments
-        return {
+        payload = {
             "tool_name": self.tool_name,
             "tool_call_id": self.card_id,
             "arguments": arguments,
@@ -230,6 +231,12 @@ class ToolCallDecision:
             "arguments_text": canonical_arguments_text(arguments),
             "provenance": self.provenance,
         }
+        if self.tool_name == COMPUTER_TOOL_NAME and fragment is None:
+            from core.inference.computer_use import policy as computer_policy
+
+            # Why this call asks, for the approval card.
+            payload["computer_use"] = {"risks": computer_policy.call_risks(self.arguments)}
+        return payload
 
     def tool_start_event(self) -> dict[str, Any]:
         return {"type": "tool_start", **self.tool_start_payload()}
@@ -827,6 +834,9 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         return f"Editing: {name}" if name else "Editing file..."
     if tool_name in BROWSER_TOOL_NAMES:
         return _browser_status(tool_name, arguments)
+    if tool_name == COMPUTER_TOOL_NAME:
+        from core.inference.computer_use import status_text
+        return status_text(arguments)
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Calling: {mcp[0]} · {mcp[1]}"
@@ -900,6 +910,8 @@ def awaiting_approval_status(tool_name: str) -> str:
         return "Waiting for approval: command"
     if tool_name == "edit_file":
         return "Waiting for approval: file edit"
+    if tool_name == COMPUTER_TOOL_NAME:
+        return "Waiting for approval: computer use"
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Waiting for approval: {mcp[0]} · {mcp[1]}"

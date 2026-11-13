@@ -47,6 +47,7 @@ export type SettingsScrollTarget =
   | "remote-lan-keyless"
   | "resources-caches"
   | "resources-model-memory"
+  | "sandbox-computer-use"
   | "sandbox-os"
   | "sandbox-permissions";
 
@@ -199,6 +200,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "remote-lan-keyless": "remote-lan",
   "resources-caches": "resources",
   "resources-model-memory": "resources",
+  "sandbox-computer-use": "sandbox",
   "sandbox-os": "sandbox",
   "sandbox-permissions": "sandbox",
 };
