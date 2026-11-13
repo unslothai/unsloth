@@ -967,18 +967,23 @@ def grouped_linear_class():
                     route = self._race(x)
                     self._route = route
                 if route != "dense":
-                    if not torch.compiler.is_compiling():
-                        _CALLS[route] = _CALLS.get(route, 0) + 1
+                    eager = not torch.compiler.is_compiling()
+                    if eager:
                         self._placed(x)
-                    if (
-                        route == "fused"
-                        and x.dtype == torch.bfloat16
-                        and self._fused_ok
-                        and self._rotq
-                        and not torch.compiler.is_compiling()  # raced in eager only; a trace keeps the int8 route
+                    bf16 = x.dtype == torch.bfloat16
+                    if route == "fused" and not (
+                        bf16 and self._fused_ok and self._rotq and eager and self._fused_covers(x)
                     ):
+                        # raced in eager only (a trace keeps the int8 route); the verdict is per rows bucket, the
+                        # tiles per row count
+                        route = "int8"
+                    if route == "int8r" and not (bf16 and self._rotq):
+                        route = "int8"
+                    if eager:
+                        _CALLS[route] = _CALLS.get(route, 0) + 1
+                    if route == "fused":
                         return self._fused(x)
-                    if route == "int8r" and x.dtype == torch.bfloat16 and self._rotq:
+                    if route == "int8r":
                         return self._int8r(x)
                     return self._int8(x)
             if not torch.compiler.is_compiling():

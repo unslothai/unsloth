@@ -619,6 +619,7 @@ def test_forward_dispatches_the_raced_route(monkeypatch):
         monkeypatch.setattr(layer, name, lambda x, name = name: calls.append(name) or x[..., :64])
     monkeypatch.setattr(layer, "_int8_ok", lambda x: True)
     monkeypatch.setattr(layer, "_placed", lambda x: None)
+    monkeypatch.setattr(layer, "_fused_covers", lambda x: True)
     x = torch.randn(32, 512, dtype = torch.bfloat16)
     layer._tuned, layer._rotq, layer._fused_ok = True, True, True
     for route, want in (
@@ -631,6 +632,16 @@ def test_forward_dispatches_the_raced_route(monkeypatch):
         monkeypatch.setattr(layer, "_race", lambda x, route = route: route)
         layer(x)
         assert calls == [want], route
+    # a fused verdict whose bucket holds a row count no tile covers runs the int8 route, and is counted as such
+    monkeypatch.setattr(layer, "_fused_covers", lambda x: False)
+    before = gi.grouped_call_counts()
+    calls.clear()
+    monkeypatch.setattr(layer, "_race", lambda x: "fused")
+    layer(x)
+    assert calls == ["_int8"]
+    after = gi.grouped_call_counts()
+    assert after["int8"] - before["int8"] == 1 and after["fused"] == before["fused"]
+    monkeypatch.setattr(layer, "_fused_covers", lambda x: True)
     # a route whose card decision went away (kill switch / failed probe) falls back to the int8 route
     layer._fused_ok = False
     calls.clear()
