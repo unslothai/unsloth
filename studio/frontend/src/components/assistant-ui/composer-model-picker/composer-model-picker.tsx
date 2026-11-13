@@ -2055,6 +2055,8 @@ export function ComposerModelPicker({
     const isGguf = Boolean(meta.isGguf || meta.ggufFilename);
     const gguf = inventory.cachedGguf.find((c) => c.repo_id === id);
     const cached = inventory.cachedModels.find((c) => c.repo_id === id);
+    // Only trained rows carry it in meta; a cached repo's comes from the inventory.
+    const audioType = meta.audioType ?? gguf?.audio_type ?? cached?.audio_type;
     if (
       page === "audio" &&
       !audioPickIsRoutable({
@@ -2062,7 +2064,7 @@ export function ComposerModelPicker({
         task: pickedTask,
         isGguf,
         isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
-        audioType: meta.audioType ?? gguf?.audio_type ?? cached?.audio_type,
+        audioType,
         isLocalCheckpoint:
           meta.source === "lora" ||
           meta.source === "exported" ||
@@ -2092,7 +2094,7 @@ export function ComposerModelPicker({
       to: `/${page}`,
       search:
         page === "audio"
-          ? audioPickSearch(id, { ...meta, task: pickedTask })
+          ? audioPickSearch(id, { ...meta, task: pickedTask, audioType })
           : diffusionRouteSearch(id, meta),
     });
     return true;

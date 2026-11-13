@@ -1006,7 +1006,7 @@ test("an audio pick opens the Audio page instead of loading into Chat", () => {
   );
   assert.match(
     picker,
-    /audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask \}\)/,
+    /audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask, audioType \}\)/,
   );
   // Compare and the API page load what they pick, so they list none.
   assert.match(picker, /const listsAudio = !pane;/);
@@ -1287,5 +1287,19 @@ test("connected-model dialogs close when Chat goes off-route", () => {
   assert.match(
     picker,
     /\{connectedSettings && pageActive\s*\? renderConnectedSettings\(/,
+  );
+});
+
+test("an audio pick hands the Audio page the inventory's audio type", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const audioType = meta\.audioType \?\? gguf\?\.audio_type \?\? cached\?\.audio_type;/,
+  );
+  assert.match(
+    picker,
+    /audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask, audioType \}\)/,
   );
 });
