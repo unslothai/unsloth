@@ -17,7 +17,10 @@ from .keys import Chord, chord_text
 
 ENABLED_SETTING_KEY = "computer_use_enabled"
 COORDINATES_SETTING_KEY = "computer_use_coordinates"
+ALLOWED_APPS_SETTING_KEY = "computer_use_allowed_apps"
 COORDINATE_SETTINGS = ("auto", "pixels", "grid")
+MAX_ALLOWED_APPS = 100
+_MAX_APP_NAME_CHARS = 80
 
 # Families trained to answer on a 0-1000 grid whatever the picture's size (Qwen3-VL cookbook,
 # UI-TARS 1.0 action parser, Gemini computer use docs); the others answer in pixels.
@@ -83,14 +86,57 @@ def settings() -> dict:
     """Off and automatic unless the owner chose otherwise; an unreadable store reads as off."""
     try:
         from storage.studio_db import get_app_settings
-        stored = get_app_settings([ENABLED_SETTING_KEY, COORDINATES_SETTING_KEY])
+        stored = get_app_settings(
+            [ENABLED_SETTING_KEY, COORDINATES_SETTING_KEY, ALLOWED_APPS_SETTING_KEY]
+        )
     except Exception:  # noqa: BLE001
         stored = {}
     coordinates = stored.get(COORDINATES_SETTING_KEY)
     return {
         "enabled": stored.get(ENABLED_SETTING_KEY) is True,
         "coordinates": coordinates if coordinates in COORDINATE_SETTINGS else "auto",
+        "allowed_apps": _app_names(stored.get(ALLOWED_APPS_SETTING_KEY)),
     }
+
+
+def _app_names(value: Any) -> list[str]:
+    """App names as stored, without blanks or repeats that differ only in case."""
+    names: dict[str, str] = {}
+    for item in value if isinstance(value, list) else []:
+        name = " ".join(item.split()) if isinstance(item, str) else ""
+        if name and len(name) <= _MAX_APP_NAME_CHARS:
+            names.setdefault(name.casefold(), name)
+    return list(names.values())[:MAX_ALLOWED_APPS]
+
+
+def _save_allowed_apps(names: list[str]) -> dict:
+    from storage.studio_db import upsert_app_settings
+    upsert_app_settings({ALLOWED_APPS_SETTING_KEY: _app_names(names)}, read_back = False)
+    return settings()
+
+
+def allow_app(name: Any) -> dict:
+    """Add an app the model may act in without asking, in every chat. The apps that ask every
+    time (terminals, password managers, system tools) and Unsloth itself can't be added."""
+    cleaned = _app_names([name])
+    if not cleaned:
+        raise ValueError("Give the application's name.")
+    window = FrontWindow(app = cleaned[0])
+    kind = _sensitive_kind(window)
+    if kind:
+        raise ValueError(f"{cleaned[0]} is {kind}, so it asks every time.")
+    if is_own_window(FrontWindow(app = cleaned[0], title = "-")):
+        raise ValueError("Unsloth's own window is never controlled.")
+    current = settings()["allowed_apps"]
+    if len(current) >= MAX_ALLOWED_APPS:
+        raise ValueError("The list is full. Remove an app first.")
+    return _save_allowed_apps([*current, cleaned[0]])
+
+
+def remove_allowed_app(name: Any) -> dict:
+    folded = name.casefold() if isinstance(name, str) else ""
+    current = settings()["allowed_apps"]
+    return _save_allowed_apps([app for app in current if app.casefold() != folded])
 
 
 def update_settings(*, enabled: Optional[bool] = None, coordinates: Optional[str] = None) -> dict:
@@ -183,6 +229,66 @@ def is_own_window(window: FrontWindow) -> bool:
     return bool(_OWN_TITLE_RE.search(window.title))
 
 
+def app_allowed(name: str, session: Any) -> bool:
+    """Whether the model may act in this app without asking: allowed in this chat, or always."""
+    folded = name.casefold()
+    return folded in session.apps or any(
+        folded == app.casefold() for app in settings()["allowed_apps"]
+    )
+
+
+def asks_every_time(name: str) -> bool:
+    return _sensitive_app_name(name) is not None
+
+
+def _app_at(action: dict, session: Any, backend: Backend) -> str:
+    """The app whose window a click at the action's point would land in, or "" if unknown."""
+    from . import screen
+
+    frame = session.frame
+    if frame is None:
+        return ""
+    try:
+        x, y = screen.image_point(frame, session.coordinates, action["x"], action["y"])
+        window = backend.window_at(*frame.to_desktop(x, y))
+    except Exception:  # noqa: BLE001 - the run itself reports a bad point
+        return ""
+    return window.app if window is not None else ""
+
+
+def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
+    """The apps a call's clicks and keys would land in, in order: where each click points, and
+    for keys the app in front after the clicks before them."""
+    current = front.app
+    used: list[str] = []
+    for action in actions:
+        op = action["op"]
+        if op == "open_app":
+            current = action["name"]
+            used.append(current)
+        elif op in ("click", "drag"):
+            # A click brings its window forward, so the keys after it go there.
+            current = _app_at(action, session, backend) or current
+            used.append(current)
+        elif op == "scroll":
+            used.append((_app_at(action, session, backend) if "x" in action else "") or current)
+        elif op in ("type", "key"):
+            used.append(current)
+    return list(dict.fromkeys(name for name in used if name))
+
+
+def new_apps(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
+    """Apps this call would act in that the user has not allowed, here or always. The ones that
+    ask every time are `risks`' to report, and Unsloth's own window is refused outright."""
+    return [
+        name
+        for name in apps_used(actions, session, backend, front)
+        if not asks_every_time(name)
+        and not is_own_window(FrontWindow(app = name, title = "-"))
+        and not app_allowed(name, session)
+    ]
+
+
 def is_security_prompt(front: FrontWindow) -> bool:
     names = (front.app.casefold(), front.app_id.casefold())
     return any(word in name for word in _PROTECTED for name in names if name)
@@ -192,10 +298,19 @@ def blocked_chord(chord: Chord) -> bool:
     return chord_text(chord) in _BLOCKED.get(_platform(), set())
 
 
-def risks(actions: list[dict], front: FrontWindow) -> list[str]:
+def risks(
+    actions: list[dict],
+    front: FrontWindow,
+    used: tuple = (),
+) -> list[str]:
     """Why these actions want the user's say-so first, in words for the approval card. Looking
-    (screenshot, zoom, wait) never does."""
+    (screenshot, zoom, wait) never does. `used`: the apps the call would act in, where known,
+    so a click into a terminal behind the front window counts too."""
     found: list[str] = []
+    for name in used:
+        kind = _sensitive_app_name(name)
+        if kind:
+            found.append(f"{name} is {kind}")
     inputs = [action for action in actions if action["op"] in INPUT_OPS and action["op"] != "move"]
     kind = _sensitive_kind(front)
     if inputs and kind:
@@ -213,24 +328,33 @@ def risks(actions: list[dict], front: FrontWindow) -> list[str]:
     return list(dict.fromkeys(found))
 
 
-def call_risks(arguments: Any) -> list[str]:
-    """Why a call asks first, for its approval card. Never raises."""
+def call_asks(arguments: Any, session_id: Optional[str]) -> dict:
+    """Why a call asks first, for its approval card: what is risky about it, and the apps it
+    would be the first to use in this chat. Never raises."""
+    from state import computer_use as state
+
     from .actions import parse_actions
 
     try:
         actions = parse_actions(arguments)
     except ValueError:
-        return []
+        return {"risks": [], "apps": []}
     try:
-        front = get_backend().front_window()
+        backend = get_backend()
+        front = backend.front_window()
+        session = state.session(state.session_key(session_id))
+        return {
+            "risks": risks(actions, front, tuple(apps_used(actions, session, backend, front))),
+            "apps": new_apps(actions, session, backend, front),
+        }
     except Exception:  # noqa: BLE001 - display only
-        front = FrontWindow()
-    return risks(actions, front)
+        return {"risks": [], "apps": []}
 
 
 def needs_confirmation(arguments: Any, session_id: Optional[str]) -> bool:
-    """Under "auto" and "off": ask for a chat's first action, then only for risky ones. A call
-    that will not parse is refused when it runs, so it need not ask."""
+    """Under "auto" and "off": ask for a chat's first action, for an app the chat has not used,
+    and for anything risky. A call that will not parse is refused when it runs, so it need not
+    ask."""
     from state import computer_use as state
 
     from .actions import parse_actions
@@ -239,10 +363,14 @@ def needs_confirmation(arguments: Any, session_id: Optional[str]) -> bool:
         actions = parse_actions(arguments)
     except ValueError:
         return False
-    if not state.is_granted(state.session_key(session_id)):
+    key = state.session_key(session_id)
+    if not state.is_granted(key):
         return True
     try:
-        front = get_backend().front_window()
+        backend = get_backend()
+        front = backend.front_window()
     except Exception:  # noqa: BLE001 - unknown front app: ask
         return True
-    return bool(risks(actions, front))
+    session = state.session(key)
+    used = tuple(apps_used(actions, session, backend, front))
+    return bool(risks(actions, front, used) or new_apps(actions, session, backend, front))

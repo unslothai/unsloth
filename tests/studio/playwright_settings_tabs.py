@@ -37,6 +37,7 @@ TABS = [
     "agents",
     "keyboard-shortcuts",
     "browser",
+    "computer-use",
     "debugging",
     "sandbox",
     "about",

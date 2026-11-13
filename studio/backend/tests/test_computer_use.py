@@ -31,8 +31,14 @@ def desktop(monkeypatch):
     state.reset()
     host_policy._reset_loopback_default_state()
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
-    chosen = {"enabled": True, "coordinates": "auto"}
+    chosen = {"enabled": True, "coordinates": "auto", "allowed_apps": []}
     monkeypatch.setattr(policy, "settings", lambda: dict(chosen))
+
+    def save_apps(names):
+        chosen["allowed_apps"] = policy._app_names(names)
+        return dict(chosen)
+
+    monkeypatch.setattr(policy, "_save_allowed_apps", save_apps)
     monkeypatch.setattr(screen, "_SETTLE_FIRST_S", 0.0)
     monkeypatch.setattr(screen, "_SETTLE_STEP_S", 0.0)
     monkeypatch.setattr(computer_use.tool, "_OPEN_APP_WAIT_S", 0.0)
@@ -50,8 +56,11 @@ def run(arguments, **kwargs):
 
 
 def look(**kwargs):
-    """The chat's first call, which the user allowed."""
-    return run({"action": "screenshot"}, approved = True, **kwargs)
+    """The chat's first call, which the user allowed, with Notes (the app in front) allowed for
+    the chat as an approved click there would leave it."""
+    result = run({"action": "screenshot"}, approved = True, **kwargs)
+    state.session(state.session_key(kwargs.get("session_id", SESSION))).apps.add("notes")
+    return result
 
 
 def at(x, y):
@@ -418,11 +427,11 @@ def test_keys_scroll_and_open_app_reach_the_desktop(desktop):
     look()
     run({"action": "scroll", **at(*BUTTON), "direction": "down", "amount": 2})
     run({"action": "key", "keys": "ctrl+a", "repeat": 2})
-    run({"action": "open_app", "name": "Calculator"})
+    run({"action": "open_app", "name": "Calculator"}, approved = True)
     assert ("scroll", 0, 2) in desktop.events
     assert desktop.events.count(("key", ("ctrl",), "a")) == 2
     assert ("open_app", "Calculator") in desktop.events
-    assert run({"action": "open_app", "name": "missing"}).startswith("Error:")
+    assert run({"action": "open_app", "name": "missing"}, approved = True).startswith("Error:")
 
 
 # ── what is asked about, and what is never done ──
@@ -586,6 +595,104 @@ def test_a_window_title_cannot_speak_outside_its_fence(desktop):
     assert text.rstrip().endswith("</untrusted_screen_text>")
 
 
+# ── apps: allowed for a chat, or always ──
+
+
+def first_look():
+    """The chat's go-ahead alone: no app has been allowed yet."""
+    return run({"action": "screenshot"}, approved = True)
+
+
+def test_an_app_the_chat_has_not_used_asks_first(desktop):
+    first_look()
+    refused = run({"action": "click", **at(*BUTTON)})
+    assert refused.startswith("Error:") and "Notes has not been allowed in this chat" in refused
+    assert desktop.presses == 0
+    assert _asks("auto", {"action": "click", **at(*BUTTON)})
+    assert _asks("off", {"action": "type", "text": "hi"})
+    # Looking never asks about an app.
+    assert not _asks("auto", {"action": "screenshot"})
+    # The user answers the card: the click runs, and Notes is open to the rest of this chat.
+    assert run({"action": "click", **at(*BUTTON)}, approved = True).startswith("Done:")
+    assert not _asks("auto", {"action": "click", **at(*FIELD)})
+    assert run(
+        {"action": "click", **at(*FIELD), "then": [{"action": "type", "text": "hi"}]}
+    ).startswith("Done:")
+    assert desktop.text == "hi"
+    # Another chat starts over.
+    run({"action": "screenshot"}, session_id = "chat-2", approved = True)
+    assert "has not been allowed" in run({"action": "type", "text": "x"}, session_id = "chat-2")
+
+
+def test_an_always_allowed_app_never_asks(desktop):
+    first_look()
+    assert policy.allow_app("  notes ")["allowed_apps"] == ["notes"]
+    assert policy.allow_app("Notes")["allowed_apps"] == ["notes"]
+    assert not _asks("auto", {"action": "click", **at(*BUTTON)})
+    assert run({"action": "click", **at(*BUTTON)}).startswith("Done:")
+    # In every chat, until it is taken off the list.
+    run({"action": "screenshot"}, session_id = "chat-2", approved = True)
+    assert run({"action": "type", "text": "x"}, session_id = "chat-2").startswith("Done:")
+    assert policy.remove_allowed_app("NOTES")["allowed_apps"] == []
+    assert "has not been allowed" in run({"action": "type", "text": "x"}, session_id = "chat-2")
+
+
+@pytest.mark.parametrize(
+    "name", ["Terminal", "iTerm2", "1Password", "System Settings", "Unsloth", "", 7]
+)
+def test_apps_that_ask_every_time_cannot_be_always_allowed(desktop, name):
+    with pytest.raises(ValueError):
+        policy.allow_app(name)
+    assert desktop.chosen["allowed_apps"] == []
+
+
+def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
+    look()
+    # Notes is in front and allowed; Mail shows beside it.
+    desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
+    click_mail = {"action": "click", **at(1150, 400), "then": [{"action": "type", "text": "x"}]}
+    assert policy.call_asks(click_mail, SESSION)["apps"] == ["Mail"]
+    assert _asks("auto", click_mail)
+    refused = run(click_mail)
+    assert "Mail has not been allowed" in refused
+    assert not [event for event in desktop.events if event[0] in ("click", "type")]
+    # A terminal behind the front window is a risk, not a new app to always allow.
+    desktop.behind = [FrontWindow(app = "Terminal", title = "zsh", bounds = (1050, 0, 230, 800))]
+    asks = policy.call_asks({"action": "click", **at(1150, 400)}, SESSION)
+    assert asks == {"risks": ["Terminal is a terminal"], "apps": []}
+    assert "Terminal has not been allowed" in run({"action": "click", **at(1150, 400)})
+
+
+def test_opening_an_app_asks_and_then_covers_what_follows(desktop):
+    look()
+    open_and_type = {
+        "action": "open_app",
+        "name": "calculator",
+        "then": [{"action": "type", "text": "2+2"}],
+    }
+    assert policy.call_asks(open_and_type, SESSION)["apps"] == ["calculator"]
+    assert "calculator has not been allowed" in run(open_and_type)
+    assert ("open_app", "calculator") not in desktop.events
+    assert run(open_and_type, approved = True).startswith("Done:")
+    assert not _asks("auto", {"action": "type", "text": "="})
+    assert run({"action": "type", "text": "="}).startswith("Done:")
+
+
+def test_the_allowed_apps_routes(client):
+    client.put("/api/computer-use/settings", json = {"enabled": True})
+    added = client.post("/api/computer-use/allowed-apps", json = {"name": "Safari"})
+    assert added.status_code == 200 and added.json()["allowed_apps"] == ["Safari"]
+    assert (
+        client.post("/api/computer-use/allowed-apps", json = {"name": "Terminal"}).status_code == 400
+    )
+    assert client.post("/api/computer-use/allowed-apps", json = {"name": ""}).status_code == 422
+    assert client.get("/api/computer-use/status").json()["allowed_apps"] == ["Safari"]
+    removed = client.delete("/api/computer-use/allowed-apps", params = {"name": "safari"})
+    assert removed.status_code == 200 and removed.json()["allowed_apps"] == []
+    host_policy.set_remote_connector_active(True)
+    assert client.post("/api/computer-use/allowed-apps", json = {"name": "Safari"}).status_code == 403
+
+
 # ── who may use it at all ──
 
 
@@ -693,12 +800,18 @@ def test_the_card_gets_what_the_call_does_and_why_it_asks(desktop, monkeypatch):
 
     monkeypatch.setattr(policy, "_platform", lambda: "darwin")
     chain = {"action": "click", "x": 5, "y": 6, "then": [{"action": "key", "keys": "cmd+q"}]}
-    assert policy.call_risks(chain) == ["cmd+q can close or delete things"]
-    assert policy.call_risks({"action": "nope"}) == []
+    look()
+    asks = {"risks": ["cmd+q can close or delete things"], "apps": []}
+    assert policy.call_asks(chain, SESSION) == asks
+    assert policy.call_asks({"action": "nope"}, SESSION) == {"risks": [], "apps": []}
+    # A chat that has not used Notes yet is asked about Notes.
+    assert policy.call_asks(chain, "chat-2")["apps"] == ["Notes"]
     from core.inference.tool_loop_controller import ToolCallDecision
 
-    start = ToolCallDecision("execute", "computer", chain, tool_call_id = "call_1").tool_start_event()
-    assert start["computer_use"] == {"risks": ["cmd+q can close or delete things"]}
+    start = ToolCallDecision(
+        "execute", "computer", chain, tool_call_id = "call_1", session_id = SESSION
+    ).tool_start_event()
+    assert start["computer_use"] == asks
     assert (
         "computer_use"
         not in ToolCallDecision("execute", "python", {"code": "1"}).tool_start_event()
@@ -804,6 +917,7 @@ def test_the_status_route_reports_the_switch_and_the_machine(client):
         "coordinates": "auto",
         "platform": "virtual",
         "permissions": {"screen": None, "input": None},
+        "allowed_apps": [],
     }
     on = client.put("/api/computer-use/settings", json = {"enabled": True, "coordinates": "grid"})
     assert on.status_code == 200 and on.json()["enabled"] is True

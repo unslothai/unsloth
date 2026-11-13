@@ -19,6 +19,8 @@ export type ComputerUseStatus = {
   platform: string;
   /** null where the operating system has no such grant. */
   permissions: Record<ComputerUsePermission, boolean | null>;
+  /** Apps a model may act in without asking, in every chat. */
+  allowedApps: string[];
 };
 
 function fromApi(body: unknown): ComputerUseStatus {
@@ -35,6 +37,9 @@ function fromApi(body: unknown): ComputerUseStatus {
     coordinates: raw.coordinates === "pixels" || raw.coordinates === "grid" ? raw.coordinates : "auto",
     platform: typeof raw.platform === "string" ? raw.platform : "none",
     permissions: { screen: grant(grants.screen), input: grant(grants.input) },
+    allowedApps: Array.isArray(raw.allowed_apps)
+      ? raw.allowed_apps.filter((app): app is string => typeof app === "string")
+      : [],
   };
 }
 
@@ -66,6 +71,21 @@ export async function updateComputerUseSettings(patch: {
 export async function requestComputerUsePermission(kind: ComputerUsePermission): Promise<ComputerUseStatus> {
   const res = await authFetch(`${ROUTE}/permissions/${kind}`, { method: "POST" });
   return checked(res, "Could not open the system permission prompt.");
+}
+
+/** Always allow: the model acts in this app without asking, in every chat. */
+export async function allowComputerUseApp(name: string): Promise<ComputerUseStatus> {
+  const res = await authFetch(`${ROUTE}/allowed-apps`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return checked(res, "Could not add the app.");
+}
+
+export async function removeComputerUseApp(name: string): Promise<ComputerUseStatus> {
+  const res = await authFetch(`${ROUTE}/allowed-apps?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+  return checked(res, "Could not remove the app.");
 }
 
 /** Every chat asks again before it next touches the computer. */

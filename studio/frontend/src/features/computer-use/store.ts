@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { syncAcrossWindows } from "@/lib/sync-across-windows";
-import { type ComputerUseStatus, loadComputerUseStatus, revokeComputerUse } from "./api";
+import { type ComputerUseStatus, allowComputerUseApp, loadComputerUseStatus, revokeComputerUse } from "./api";
 
 type ComputerUseState = {
   /** The composer's Computer use switch: offer the model the computer tool. */
@@ -54,6 +54,11 @@ export function refreshComputerUseStatus(): Promise<ComputerUseStatus | null> {
       inFlight = null;
     });
   return inFlight;
+}
+
+/** The approval card's Always allow: adds the app to the list in Settings > Computer use. */
+export async function alwaysAllowComputerUseApp(name: string): Promise<void> {
+  useComputerUseStore.getState().setStatus(await allowComputerUseApp(name));
 }
 
 /** The server would hand a chat the tool: it can control this computer and the owner switched it on. */

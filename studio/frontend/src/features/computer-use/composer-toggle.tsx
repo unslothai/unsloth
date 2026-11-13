@@ -48,7 +48,7 @@ export function ComputerUseMenuItem() {
       className={on ? "text-primary font-medium" : undefined}
       onSelect={() => {
         if (!ready) {
-          useSettingsDialogStore.getState().openDialog("sandbox", { scrollTarget: "sandbox-computer-use" });
+          useSettingsDialogStore.getState().openDialog("computer-use");
           return;
         }
         useComputerUseStore.getState().setEnabled(!enabled);

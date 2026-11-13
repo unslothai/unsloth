@@ -89,12 +89,22 @@ export function plainComputerResult(result: unknown): unknown {
   return result;
 }
 
-/** Why a computer call asks, from the backend's `computer_use` field on tool_start. */
-export type ComputerUseAsk = { risks: string[] };
+/** Why a computer call asks, from the backend's `computer_use` field on tool_start: what is
+ *  risky about it, and the apps it would be the first to use in this chat. */
+export type ComputerUseAsk = { risks: string[]; apps: string[] };
+
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 8) : [];
 
 export function computerUseAsk(value: unknown): ComputerUseAsk | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const risks = (value as { risks?: unknown }).risks;
-  if (!Array.isArray(risks)) return undefined;
-  return { risks: risks.filter((risk): risk is string => typeof risk === "string").slice(0, 8) };
+  const { risks, apps } = value as { risks?: unknown; apps?: unknown };
+  if (!Array.isArray(risks) && !Array.isArray(apps)) return undefined;
+  return { risks: strings(risks), apps: strings(apps) };
+}
+
+/** The one app "Always allow" would add, or null: a risky call, or one that opens several apps
+ *  at once, is answered for this time only. */
+export function alwaysAllowableApp(ask: ComputerUseAsk | undefined): string | null {
+  return ask && ask.risks.length === 0 && ask.apps.length === 1 ? ask.apps[0] : null;
 }

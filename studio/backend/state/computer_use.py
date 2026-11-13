@@ -10,7 +10,7 @@ import contextlib
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
 # A go-ahead lapses once the chat has left the computer alone this long.
@@ -28,6 +28,8 @@ Key = tuple[str, str]
 @dataclass
 class Session:
     granted: bool = False
+    # Casefolded names of the apps the user let this chat act in.
+    apps: set = field(default_factory = set)
     used: float = 0.0
     coordinates: str = "pixels"
     frame: Any = None
@@ -67,6 +69,7 @@ def is_granted(key: Key) -> bool:
             return False
         if time.monotonic() - found.used > GRANT_IDLE_S:
             found.granted = False
+            found.apps.clear()
             return False
         return True
 
@@ -88,6 +91,7 @@ def revoke(key: Key) -> None:
         found = _sessions.get(key)
         if found is not None:
             found.granted = False
+            found.apps.clear()
             found.frame = None
 
 
@@ -98,6 +102,7 @@ def revoke_account(account_id: str) -> int:
         for (account, _session), found in _sessions.items():
             if account == (account_id or "") and found.granted:
                 found.granted = False
+                found.apps.clear()
                 found.frame = None
                 count += 1
         return count

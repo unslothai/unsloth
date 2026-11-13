@@ -250,16 +250,7 @@ class _Run:
         return front
 
     def _image_point(self, frame: screen.Frame, x: float, y: float) -> tuple[float, float]:
-        if self.session.coordinates == "grid":
-            if x > screen.GRID or y > screen.GRID:
-                raise ValueError("x and y run from 0 to 1000 across the screenshot.")
-            x, y = x / screen.GRID * frame.width, y / screen.GRID * frame.height
-        elif x > frame.width or y > frame.height:
-            raise ValueError(
-                f"({x:g}, {y:g}) is outside the screenshot, which is "
-                f"{frame.width}x{frame.height} pixels."
-            )
-        return min(x, frame.width - 1), min(y, frame.height - 1)
+        return screen.image_point(frame, self.session.coordinates, x, y)
 
     def _frame(self) -> screen.Frame:
         frame = self.session.frame
@@ -271,11 +262,29 @@ class _Run:
             )
         return frame
 
+    def _under(self, x: float, y: float, front: FrontWindow) -> FrontWindow:
+        """The window a click at this desktop point lands in. The menu bar and the bare desktop
+        belong to no window, and there the app in front answers."""
+        return self.backend.window_at(x, y) or front
+
     def _on_own_window(self, x: float, y: float, front: FrontWindow) -> bool:
         """Whether a click here would land on Unsloth, in front or showing from behind: one click
         on a waiting Allow button there would be the model approving itself."""
         under = self.backend.window_at(x, y) or (front if front.contains(x, y) else None)
         return under is not None and policy.is_own_window(under)
+
+    def _use_app(self, name: str) -> None:
+        """Input is about to go to this app. A call the user answered opens the app to the rest
+        of the chat; any other call may only use apps already allowed."""
+        if not name:
+            return
+        if self.allowed:
+            self.session.apps.add(name.casefold())
+        elif policy.asks_every_time(name) or not policy.app_allowed(name, self.session):
+            raise _Halt(
+                f"{name} has not been allowed in this chat, and this call was not asked about. "
+                "Send this action again on its own so the user can be asked."
+            )
 
     def _target(
         self,
@@ -335,15 +344,16 @@ class _Run:
             self._sleep(action["seconds"])
         elif op == "open_app":
             self._failsafe()
-            if not self.allowed and policy.risks([action], FrontWindow()):
-                raise _Halt(
-                    f"opening {action['name']} needs the user's approval first, and it was not "
-                    "asked for. Send this action again on its own so the user can be asked."
-                )
+            self._use_app(action["name"])
             action["name"] = backend.open_app(action["name"])
             self._sleep(_OPEN_APP_WAIT_S)
+            if self.allowed:
+                # The system may know it by another name than the one asked for.
+                self._use_app(backend.front_window().app)
         elif op == "click":
-            x, y = self._target(action["x"], action["y"], self._front(action))
+            front = self._front(action)
+            x, y = self._target(action["x"], action["y"], front)
+            self._use_app(self._under(x, y, front).app)
             backend.click(x, y, action["button"], action["count"], action["mods"])
             self._moved(x, y)
         elif op == "move":
@@ -356,6 +366,7 @@ class _Run:
             front = self._front(action)
             start = self._target(action["x"], action["y"], front)
             end = self._target(action["to_x"], action["to_y"], front)
+            self._use_app(self._under(*start, front).app)
             points = [
                 (
                     start[0] + (end[0] - start[0]) * step / _DRAG_STEPS,
@@ -369,6 +380,7 @@ class _Run:
             front = self._front(action)
             if "x" in action:
                 x, y = self._target(action["x"], action["y"], front)
+                self._use_app(self._under(x, y, front).app)
                 backend.move(x, y)
                 self._moved(x, y)
             elif self._on_own_window(*backend.cursor(), front):
@@ -376,9 +388,11 @@ class _Run:
                     "the pointer is over Unsloth's own window. Give x and y of the window to "
                     "scroll."
                 )
+            else:
+                self._use_app(self._under(*backend.cursor(), front).app)
             backend.scroll(action["dx"], action["dy"])
         elif op == "type":
-            self._front(action)
+            self._use_app(self._front(action).app)
             if action["text"]:
                 backend.type_text(action["text"])
             if action["submit"]:
@@ -390,7 +404,7 @@ class _Run:
                         f"{chord_text(chord)} locks the screen or ends the session, so it is "
                         "never sent."
                     )
-            self._front(action)
+            self._use_app(self._front(action).app)
             for _ in range(action["repeat"]):
                 for mods, key in action["chords"]:
                     backend.key(mods, key)

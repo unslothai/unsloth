@@ -440,6 +440,10 @@ class MacBackend(Backend):
         for layer, window in self._windows():
             # Ordinary windows only: the menu bar and the Dock sit above them and are no app's page.
             if layer == 0 and window.bounds is not None and window.contains(x, y):
+                app, bundle, pid = self._front_app()
+                if pid and window.pid == pid:
+                    # One name per app: the window list's can differ from LaunchServices'.
+                    return FrontWindow(app or window.app, bundle, window.title, pid, window.bounds)
                 return window
         return None
 

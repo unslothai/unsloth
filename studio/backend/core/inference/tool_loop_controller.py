@@ -190,6 +190,7 @@ class ToolCallDecision:
     provenance: dict[str, Any] = field(default_factory = dict)
     status_text: str = ""
     noop_result: str = ""
+    session_id: str = ""
 
     @property
     def should_execute(self) -> bool:
@@ -235,7 +236,7 @@ class ToolCallDecision:
             from core.inference.computer_use import policy as computer_policy
 
             # Why this call asks, for the approval card.
-            payload["computer_use"] = {"risks": computer_policy.call_risks(self.arguments)}
+            payload["computer_use"] = computer_policy.call_asks(self.arguments, self.session_id)
         return payload
 
     def tool_start_event(self) -> dict[str, Any]:
@@ -1390,6 +1391,7 @@ class ToolLoopController:
             provenance = provenance,
             status_text = status_for_tool(tool_name, arguments),
             noop_result = noop,
+            session_id = self._session_id or "",
         )
 
     def reprepare_call(

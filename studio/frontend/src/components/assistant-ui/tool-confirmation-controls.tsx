@@ -14,7 +14,8 @@ import {
   ToolApprovalGoneError,
 } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { COMPUTER_USE_TOOL } from "@/features/computer-use/summary";
+import { alwaysAllowComputerUseApp } from "@/features/computer-use/store";
+import { COMPUTER_USE_TOOL, alwaysAllowableApp } from "@/features/computer-use/summary";
 import { useT } from "@/i18n";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -62,10 +63,11 @@ export function ToolConfirmationControls({
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
   // Sharing the user's image is asked every time: no Always allow, no keyboard chord.
   const disclosure = confirmation?.imageDisclosure;
-  // The server already stops asking once a chat is allowed, except about risky steps, so a
-  // computer call that asks has no Always allow to skip it with.
+  // The server decides when a computer call asks, so the tool as a whole has no Always allow.
+  // An app the chat has not used yet can be always allowed instead (Settings > Computer use).
   const computer = toolName === COMPUTER_USE_TOOL;
-  const computerRisks = confirmation?.computerUse?.risks ?? [];
+  const computerAsk = computer ? confirmation?.computerUse : undefined;
+  const alwaysApp = permissionMode === "ask" ? null : alwaysAllowableApp(computerAsk);
   const autoAllowed = useChatRuntimeStore(
     (s) =>
       !disclosure &&
@@ -88,7 +90,7 @@ export function ToolConfirmationControls({
   const showControls = awaiting && !decided;
 
   const resolve = useCallback(
-    async (decision: "allow" | "deny", alsoAlways = false, fullAccess = false) => {
+    async (decision: "allow" | "deny", alsoAlways = false, fullAccess = false, alwaysApp = "") => {
       if (!toolCallId || !confirmation) return;
       const epoch = getAuthSessionEpoch();
       const choiceVersion = useChatRuntimeStore.getState().chatPermissionChoiceVersion;
@@ -115,6 +117,8 @@ export function ToolConfirmationControls({
           }
           // Record the session grant only after the backend accepted, or a failed press auto-approves.
           if (alsoAlways && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
+          // The call is allowed for this chat either way; a failed save only means it asks again.
+          if (alwaysApp) void alwaysAllowComputerUseApp(alwaysApp).catch(() => undefined);
           // Hide only once the backend confirms, or the generation stays blocked with no retry.
           setDecided(true);
           clearToolConfirmation(toolCallId);
@@ -178,6 +182,11 @@ export function ToolConfirmationControls({
     textFieldException: COMPOSER_INPUT_SELECTOR,
   });
 
+  const computerReasons = [
+    ...(computerAsk?.risks ?? []),
+    ...(computerAsk?.apps ?? []).map((app) => t("computerUse.approval.newApp", { app })),
+  ];
+
   if (!showControls) return null;
   // Auto-approved tools resolve silently unless the post fails.
   if ((autoAllowed || chatFullAccess) && !failed) return null;
@@ -193,8 +202,8 @@ export function ToolConfirmationControls({
       ) : null}
       {computer && !disclosure ? (
         <p className="w-full text-xs text-muted-foreground" data-slot="computer-use-ask">
-          {computerRisks.length > 0
-            ? t("computerUse.approval.because", { reasons: computerRisks.join("; ") })
+          {computerReasons.length > 0
+            ? t("computerUse.approval.because", { reasons: computerReasons.join("; ") })
             : t("computerUse.approval.note")}
         </p>
       ) : null}
@@ -205,6 +214,16 @@ export function ToolConfirmationControls({
       >
         {disclosure ? "Share image once" : "Allow"}
       </Button>
+      {alwaysApp && !disclosure ? (
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={pending !== null || failure === "gone"}
+          onClick={() => void resolve("allow", false, false, alwaysApp)}
+        >
+          {t("computerUse.approval.alwaysAllowApp", { app: alwaysApp })}
+        </Button>
+      ) : null}
       {disclosure || computer ? null : (
         <Button
           size="xs"

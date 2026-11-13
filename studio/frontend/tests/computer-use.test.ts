@@ -7,6 +7,7 @@ import { turnRequiresLegacyStream } from "../src/features/chat/api/durable-gate.
 import { normalizePlusMenuOrder } from "../src/features/chat/stores/plus-menu-prefs-store.ts";
 import {
   COMPUTER_USE_TOOL,
+  alwaysAllowableApp,
   computerUseAsk,
   describeComputerCall,
   plainComputerResult,
@@ -56,12 +57,22 @@ test("the fence around window titles is for the model, not the card", () => {
   assert.equal(plainComputerResult(undefined), undefined);
 });
 
-test("only string reasons reach the approval card", () => {
-  assert.deepEqual(computerUseAsk({ actions: ["Click"], risks: ["Terminal is a terminal", 5, null] }), {
+test("only string reasons and app names reach the approval card", () => {
+  assert.deepEqual(computerUseAsk({ risks: ["Terminal is a terminal", 5, null], apps: ["Safari", {}] }), {
     risks: ["Terminal is a terminal"],
+    apps: ["Safari"],
   });
+  assert.deepEqual(computerUseAsk({ risks: [] }), { risks: [], apps: [] });
   assert.equal(computerUseAsk(undefined), undefined);
   assert.equal(computerUseAsk({ risks: "all of them" }), undefined);
+});
+
+test("Always allow is offered for exactly one new app and nothing risky", () => {
+  assert.equal(alwaysAllowableApp({ risks: [], apps: ["Safari"] }), "Safari");
+  assert.equal(alwaysAllowableApp({ risks: ["cmd+q can close or delete things"], apps: ["Safari"] }), null);
+  assert.equal(alwaysAllowableApp({ risks: [], apps: ["Safari", "Mail"] }), null);
+  assert.equal(alwaysAllowableApp({ risks: [], apps: [] }), null);
+  assert.equal(alwaysAllowableApp(undefined), null);
 });
 
 test("the server runs the computer tool, so its turn can outlive the tab", () => {

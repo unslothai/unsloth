@@ -8,7 +8,7 @@ import asyncio
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from auth.authentication import get_current_subject
 from auth.policy import OwnerOnly
@@ -32,6 +32,14 @@ class ComputerUseStatus(BaseModel):
     coordinates: Literal["auto", "pixels", "grid"]
     platform: str
     permissions: ComputerUsePermissions
+    # Apps a model may act in without asking, in every chat.
+    allowed_apps: list[str] = []
+
+
+class ComputerUseAppRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str = Field(min_length = 1, max_length = 80)
 
 
 class ComputerUseSettingsRequest(BaseModel):
@@ -61,6 +69,7 @@ def _status() -> ComputerUseStatus:
         coordinates = current["coordinates"],
         platform = backend.name,
         permissions = ComputerUsePermissions(**permissions),
+        allowed_apps = current["allowed_apps"],
     )
 
 
@@ -110,6 +119,35 @@ async def request_computer_use_permission(
     if problem:
         raise HTTPException(status_code = 403, detail = problem)
     await asyncio.to_thread(get_backend().request_permission, kind)
+    return await asyncio.to_thread(_status)
+
+
+@router.post("/allowed-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+async def allow_computer_use_app(
+    payload: ComputerUseAppRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Always allow: the model acts in this app without asking, in every chat."""
+    from core.inference.computer_use import policy
+
+    problem = policy.host_problem()
+    if problem:
+        raise HTTPException(status_code = 403, detail = problem)
+    try:
+        policy.allow_app(payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    logger.info(
+        "settings.computer_use_app_allowed subject=%s app=%s", current_subject, payload.name
+    )
+    return await asyncio.to_thread(_status)
+
+
+@router.delete("/allowed-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+async def remove_computer_use_app(name: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference.computer_use import policy
+
+    policy.remove_allowed_app(name)
+    logger.info("settings.computer_use_app_removed subject=%s app=%s", current_subject, name)
     return await asyncio.to_thread(_status)
 
 

@@ -70,6 +70,20 @@ class Frame:
         )
 
 
+def image_point(frame: Frame, mode: str, x: float, y: float) -> tuple[float, float]:
+    """A point as the model named it, in the frame's pixels; ValueError says how it is off."""
+    if mode == "grid":
+        if x > GRID or y > GRID:
+            raise ValueError("x and y run from 0 to 1000 across the screenshot.")
+        x, y = x / GRID * frame.width, y / GRID * frame.height
+    elif x > frame.width or y > frame.height:
+        raise ValueError(
+            f"({x:g}, {y:g}) is outside the screenshot, which is "
+            f"{frame.width}x{frame.height} pixels."
+        )
+    return min(x, frame.width - 1), min(y, frame.height - 1)
+
+
 @dataclass
 class Shot:
     frame: Frame

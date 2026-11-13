@@ -7,7 +7,6 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
-import { ComputerUseSettings } from "@/features/computer-use/settings-section";
 import {
   FullAccessConfirmDialog,
   SandboxSetupDialog,
@@ -385,7 +384,6 @@ export function SandboxTab() {
       </header>
       <PermissionsSection />
       <SandboxLevelSection />
-      <ComputerUseSettings />
       {/* Not mounted for managed accounts, so none of the owner-only sandbox routes are called. */}
       {isOwner ? (
         <OsSandboxSections />
