@@ -754,9 +754,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         label = "Wan2.2 TI2V 5B",
         profile = FamilyProfile(
             scheme_deny = _NVFP4_GATE_FAILED,
-            # Image AUTO rule applied to video (diffusion_families): bf16 stays only if INT8 is both over the LPIPS bar
-            # and under ~10% faster. Colab RTX PRO 6000, 1280x704x121, 20 steps, both resident and compiled: hosted
-            # INT8 58.2 vs bf16 68.4 s/clip (1.18x, peak 29.7 vs 34.1 GB) at LPIPS 0.19 (bar 0.05), so INT8.
+            # Image AUTO rule: INT8 1.18x faster than bf16 (RTX PRO 6000, both resident, compiled), so INT8.
             auto_prequant_when_resident = frozenset({"int8"}),
             untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
             preview_factors = "wan22_5b",
@@ -818,8 +816,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
                 gated = True,
                 backend = "flashinfer",
             ),
-            # Same rule as TI2V-5B: Colab RTX PRO 6000, 81 frames, 20 steps, both resident and compiled: hosted INT8
-            # 644 vs bf16 723 s/clip (1.12x, peak 52.4 vs 80.5 GB), so INT8 even where bf16 stays resident.
+            # Same rule: INT8 1.12x faster than bf16 (peak 52.4 vs 80.5 GB), so INT8 even when bf16 is resident.
             auto_prequant_when_resident = frozenset({"int8"}),
             untiled_vae = _WAN21_VAE_UNTILED,
         ),

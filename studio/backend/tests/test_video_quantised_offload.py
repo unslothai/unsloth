@@ -49,8 +49,7 @@ EXPECTED = {
         24: ("model", _W8),
         32: ("model", _W8),
         48: ("dit", _AO),
-        # Hosted INT8 where bf16 would stay resident too (auto_prequant_when_resident: 1.12x faster); the 29 GB pair
-        # also leaves room for the text encoder, so nothing streams.
+        # Hosted INT8 even where bf16 stays resident; the 29 GB pair leaves room for the text encoder.
         80: ("none", _AO),
     },
     "hv15-480p": {

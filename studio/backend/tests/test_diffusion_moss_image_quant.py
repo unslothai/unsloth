@@ -144,8 +144,7 @@ def test_auto_never_picks_fp8_but_an_explicit_fp8_is_allowed(family):
 
 
 def test_auto_takes_int8_on_a_card_that_holds_bf16():
-    """INT8-ConvRot was measured 1.42x faster than bf16 at LPIPS 0.056, so the image AUTO rule takes it even where bf16
-    fits (no bf16-while-resident reason); explicit precisions are untouched (the rule reads only AUTO)."""
+    """AUTO takes INT8-ConvRot even where bf16 fits; explicit precisions are untouched."""
     from types import SimpleNamespace
 
     from core.inference.diffusion import _auto_keeps_bf16_reason, _auto_quant_eager_reason

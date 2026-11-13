@@ -2020,7 +2020,6 @@ def test_auto_on_turing_runs_the_int8_build_for_a_measured_family(
         _pipeline_prequant_skipped = (),
     )
 
-    # The quantiser is asked for int8 exactly as for an explicit request (the fake answers its own scheme).
     assert spy.quantised == ["int8"]
     assert status["resolved"]["transformer_quant"]["source"] == "auto"
 

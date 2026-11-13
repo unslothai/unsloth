@@ -415,7 +415,6 @@ def test_turing_auto_int8_honours_the_kill_switch_rocm_and_deny(nvidia, monkeypa
 
 
 def test_turing_auto_int8_does_not_widen_the_explicit_scheme(nvidia, monkeypatch):
-    # The reason is read only by the AUTO path in the loader; fp16_card_int8_scheme still takes only explicit int8.
     _cap(monkeypatch, (7, 5))
     for family in _TURING_AUTO_FAMILIES:
         assert tq.fp16_card_int8_scheme(_target(torch.float16), "auto", family) is None

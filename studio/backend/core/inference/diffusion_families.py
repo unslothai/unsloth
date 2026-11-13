@@ -370,12 +370,8 @@ _QWENIMAGE_TE_INT8_SKIP = (6, 6)
 _GATED_AUTO_PREFER = AutoPrefer(
     floor = (10, 0), schemes = ("int8", "fp8", "nvfp4", "mxfp8"), gated = True
 )
-# Image AUTO precision rule (one policy for every family): AUTO takes INT8, else FP8, else bf16, unless INT8 is BOTH
-# clearly less accurate (paired LPIPS-alex vs a bf16 render of the same prompt and seed above 0.10, against a bf16 A/A
-# floor that is 0.000 on every family measured: same-process repeats are bit-identical) AND gives little speed (under
-# ~10% faster per image end to end at the family default on that card). Only a family where both hold carries
-# ``auto_bf16_when_resident``, with its numbers; when bf16 would offload, INT8 is still picked.
-# These two hold both (measured with both sides compiled: INT8 at most ~5% faster, gate LPIPS 0.146 / 0.291).
+# Image AUTO rule: INT8, else FP8, else bf16, unless INT8 is BOTH over LPIPS 0.10 vs bf16 AND under ~10% faster;
+# only then ``auto_bf16_when_resident`` (INT8 still when bf16 would offload). These two: <=5% faster, LPIPS 0.146 / 0.291.
 _LUMINA2_BF16_WHEN_RESIDENT = (
     "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
@@ -386,18 +382,13 @@ _HIDREAM_BF16_WHEN_RESIDENT = (
 ANIMA_BF16_WHEN_RESIDENT = (
     "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled"
 )
-# Small-DiT rule: bf16 while it fits, INT8 when bf16 would offload (such loads compile from render 1). No family carries
-# it since the INT8 measurement (Colab RTX PRO 6000, 1024^2, family defaults, 8 prompts, compiled, INT8 vs bf16 AUTO):
-# FLUX.2-klein-4B 0.486 -> 0.350 s/img (LPIPS 0.046), Z-Image-Turbo 1.474 -> 1.052 (0.083), FLUX.3-klein 2.229 -> 1.468
-# (0.015), FLUX.3-klein-base 13.52 -> 8.69 (0.023), MOSS-Image-SFT 8.02 -> 5.66 (0.056): 1.39-1.56x faster and
-# under the 0.10 bar, so the image rule above takes INT8 on every card that holds bf16. Kept for a family that fails both.
+# Small-DiT rule (bf16 while it fits): unused, every small DiT measured 1.39-1.56x faster under INT8 at LPIPS <= 0.083
+# (RTX PRO 6000, 1024^2, compiled). Kept for a family that fails both bars.
 SMALL_DIT_BF16_WHEN_RESIDENT = (
     "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
     "0.103 on Z-Image-Turbo)"
 )
-# Turing (T4) AUTO int8 (``FamilyProfile.turing_auto_int8``): the same image rule against the fp16 AUTO build, plus "never
-# push a model off the card that used to stay resident unless it is faster". Colab T4, 1024^2, family defaults, 8
-# prompts, fp16 AUTO A/A bit-identical (LPIPS 0.000).
+# Turing AUTO int8: the image rule vs fp16 AUTO, plus never offload a formerly resident model unless faster (Colab T4).
 _FLUX2_KLEIN_TURING_AUTO_INT8 = (
     "T4: 9.71 -> 8.42 s/image against fp16 (1.15x), same placement and 13.4 GB peak, LPIPS 0.049"
 )

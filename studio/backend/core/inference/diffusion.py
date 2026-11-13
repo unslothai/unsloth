@@ -8813,8 +8813,7 @@ class DiffusionBackend:
                     if transformer_quant_auto
                     else normalize_transformer_quant(transformer_quant_requested)
                 )
-                # Turing AUTO int8 (FamilyProfile.turing_auto_int8): measured families run the explicit int8 build, so
-                # AUTO and an int8 request are one load. Offloading memory modes were not measured and keep fp16.
+                # Turing AUTO int8: same build as an int8 request; offloading modes were not measured, keep fp16.
                 turing_auto_int8 = (
                     turing_auto_int8_reason(target, getattr(fam, "name", None))
                     if transformer_quant == TQ_AUTO
