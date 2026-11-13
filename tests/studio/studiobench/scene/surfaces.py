@@ -349,7 +349,7 @@ _SURFACES: list[Surface] = [
         reach = (
             ("click", '[data-tour="chat-model-selector"] .composer-model-chip-name'),
             ("wait", 600),
-            ("click", '[data-composer-model-picker] [role="tab"]:has-text("On Device")'),
+            ("click", '[data-composer-model-picker] [role="tab"][aria-label="On Device"]'),
             ("wait", 500),
         ),
         settle = {"visible": "[data-composer-model-picker]"},

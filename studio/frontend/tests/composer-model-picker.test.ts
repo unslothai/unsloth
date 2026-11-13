@@ -1071,7 +1071,7 @@ test("Enter on a row's own button is not a pick", () => {
   );
 });
 
-test("native-audio adapters stay out of the picker unless merged", async () => {
+test("trained native-audio adapters stay out of the picker unless merged; on-disk ones list", async () => {
   const { nativeAudioCheckpointIsLoadable } = await import(
     "../src/features/model-picker/components/model-selector/audio-picker-policy.ts"
   );
@@ -1088,7 +1088,7 @@ test("native-audio adapters stay out of the picker unless merged", async () => {
   );
   assert.match(
     picker,
-    /\(lora\.audioType && !listsAudio\) \|\|\s*!nativeAudioCheckpointIsLoadable\(lora\.audioType, lora\.exportType\)/,
+    /\(lora\.audioType && !listsAudio\) \|\|\s*\(lora\.source !== "local" &&\s*!nativeAudioCheckpointIsLoadable\(lora\.audioType, lora\.exportType\)\)/,
   );
 });
 
@@ -1181,5 +1181,80 @@ test("an empty On Device tab links to the Model hub's Discover models", () => {
   assert.match(
     picker,
     /navigate\(\{ to: "\/hub", search: \{ tab: "discover" \} \}\)/,
+  );
+});
+
+test("on-device quant reads stay bounded and stop once the effect is torn down", async () => {
+  const { readBounded } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  let inFlight = 0;
+  let peak = 0;
+  const seen: number[] = [];
+  await readBounded(
+    Array.from({ length: 40 }, (_, i) => i),
+    6,
+    async (i) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight -= 1;
+      return i;
+    },
+    (i) => seen.push(i),
+    () => true,
+  );
+  assert.equal(peak, 6);
+  assert.equal(seen.length, 40);
+
+  let live = true;
+  let started = 0;
+  await readBounded(
+    Array.from({ length: 40 }, (_, i) => i),
+    6,
+    async (i) => {
+      started += 1;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      live = false;
+      return i;
+    },
+    () => undefined,
+    () => live,
+  );
+  assert.equal(started, 6);
+});
+
+test("Eject on the chosen model takes the host's guarded unload; other rows name their model", async () => {
+  const { ejectTargetId } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  assert.equal(
+    ejectTargetId(
+      { id: "unsloth/a-GGUF", loadedId: "/cache/a.gguf" },
+      "unsloth/a-GGUF",
+    ),
+    undefined,
+  );
+  assert.equal(
+    ejectTargetId(
+      { id: "unsloth/b-GGUF", loadedId: "/cache/b.gguf" },
+      "unsloth/a-GGUF",
+    ),
+    "/cache/b.gguf",
+  );
+  assert.equal(ejectTargetId({ id: "unsloth/b" }, undefined), "unsloth/b");
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.doesNotMatch(picker, /source\?\.eject\(checkpoint/);
+});
+
+test("local audio checkpoints route to the Audio page by path and HF name", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /for \(const m of inventory\.localModels\) \{\s*put\(\[m\.id, m\.model_id\], m\.task, m\.model_id\);/,
   );
 });

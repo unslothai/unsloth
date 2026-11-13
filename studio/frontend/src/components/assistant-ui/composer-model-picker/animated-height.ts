@@ -21,12 +21,10 @@ export function useAnimatedListHeight(el: HTMLElement | null): void {
       shown = el.getBoundingClientRect().height;
     };
     const glide = () => {
-      // Mid-glide, continue from the height on screen.
       const from = el.style.height ? el.getBoundingClientRect().height : shown;
       el.style.transition = "none";
       el.style.height = "";
       const to = el.getBoundingClientRect().height;
-      // Or Studio's own Reduce motion.
       const still =
         reduce?.matches ||
         document.documentElement.classList.contains("force-reduced-motion");
@@ -40,7 +38,6 @@ export function useAnimatedListHeight(el: HTMLElement | null): void {
       el.style.height = `${to}px`;
       shown = to;
     };
-    // A window resize moves the resting height without a mutation.
     const resize = new ResizeObserver(() => {
       if (!el.style.height) {
         shown = el.getBoundingClientRect().height;

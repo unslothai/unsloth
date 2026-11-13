@@ -207,6 +207,7 @@ import {
   chooseQuant,
   dedupeRows,
   discoverUsesFallback,
+  ejectTargetId,
   downloadedQuants,
   filterRows,
   findChosenRow,
@@ -219,6 +220,7 @@ import {
   pickerDropOffset,
   pickerSide,
   pinCoversId,
+  readBounded,
   repoSection,
   sectionsHaveRows,
   sortConnectedRows,
@@ -253,6 +255,8 @@ function cachedMeta(row: Row): ModelSelectorChangeMeta {
 }
 
 const EXT_PREFIX = "ext:";
+const QUANT_READ_WORKERS = 6;
+const QUANT_FLUSH_MS = 100;
 const MAKER_PREFIX = "maker:";
 const MAKER_TAB_MIN_MODELS = 3;
 const EXPANDED_KEY = "unsloth_composer_picker_expanded";
@@ -871,7 +875,6 @@ const TAB_DROP_CUE = {
 } as const;
 type TabDrop = { value: string; edge: keyof typeof TAB_DROP_CUE };
 
-// One step past hover, as Zeron's chosen row: darker in light, lighter in dark.
 const CURRENT_ROW_BG =
   "bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] hover:bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] dark:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)] dark:hover:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)]";
 
@@ -1035,7 +1038,6 @@ function Hint({
   );
 }
 
-// A mark only: Eject is in the row menu and the header.
 function LoadedDot({ label = "Loaded" }: { label?: string }) {
   return (
     <Hint label={label}>
@@ -1086,7 +1088,6 @@ function SwitchRow({
   );
 }
 
-// 8px corners: 12px on a 26px row reads as a full pill.
 const MENU_ITEM =
   "min-h-0 gap-2 rounded-[calc(8px*var(--ui-space-scale,1))] py-[calc(5px*var(--ui-space-scale,1))] pr-8 pl-2.5 text-ui-12 [&_[data-slot=dropdown-menu-radio-item-indicator]]:right-2.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5";
 const MENU_LABEL =
@@ -1411,7 +1412,6 @@ function SearchField({
         event.preventDefault();
         if (draft !== committed.current) {
           commit(draft);
-          // After the list re-filters, so the key acts on the rows the user sees.
           window.setTimeout(() => onNavKey(key), 0);
           return;
         }
@@ -1773,20 +1773,37 @@ export function ComposerModelPicker({
   // The inventory often reports an audio GGUF as text-generation; the audio catalog's task wins.
   const mediaTaskById = useMemo(() => {
     const byId = new Map<string, string>();
-    for (const repo of [...inventory.cachedGguf, ...inventory.cachedModels]) {
-      const artifact = artifactForRepoId(repo.repo_id, AUDIO_CATALOG);
+    const put = (
+      ids: readonly (string | null | undefined)[],
+      inventoryTask: string | null | undefined,
+      artifactId: string | null | undefined,
+    ) => {
+      const artifact = artifactId
+        ? artifactForRepoId(artifactId, AUDIO_CATALOG)
+        : null;
       const task = curatedAudioInventoryTask({
-        inventoryTask: repo.task,
+        inventoryTask,
         isExactCatalogArtifact: Boolean(artifact),
         catalogScope: artifact?.group.scope,
         catalogTask: artifact?.group.task,
       });
       if (task) {
-        byId.set(repo.repo_id.toLowerCase(), task);
+        for (const id of ids) {
+          if (id) {
+            byId.set(id.toLowerCase(), task);
+          }
+        }
       }
+    };
+    for (const repo of [...inventory.cachedGguf, ...inventory.cachedModels]) {
+      put([repo.repo_id], repo.task, repo.repo_id);
+    }
+    // A local row's id is its path; model_id is its HF-style name.
+    for (const m of inventory.localModels) {
+      put([m.id, m.model_id], m.task, m.model_id);
     }
     return byId;
-  }, [inventory.cachedGguf, inventory.cachedModels]);
+  }, [inventory.cachedGguf, inventory.cachedModels, inventory.localModels]);
   // Compare and the API page load what they pick, so they list no audio models.
   const listsAudio = !pane;
 
@@ -1858,10 +1875,11 @@ export function ComposerModelPicker({
       });
     }
     for (const lora of loraModels ?? []) {
-      // Native-audio checkpoints load only as merged exports.
+      // Trained native-audio checkpoints load only as merged exports; on-disk full ones always load.
       if (
         (lora.audioType && !listsAudio) ||
-        !nativeAudioCheckpointIsLoadable(lora.audioType, lora.exportType)
+        (lora.source !== "local" &&
+          !nativeAudioCheckpointIsLoadable(lora.audioType, lora.exportType))
       ) {
         continue;
       }
@@ -2066,46 +2084,56 @@ export function ComposerModelPicker({
     return true;
   };
 
-  // Re-read per opening and inventory change; a failed read keeps the last list.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new inventory is the trigger, not an input.
   const quantsEpoch = useMemo(
     () => ({ open }),
     [open, inventory.cachedGguf, loraModels],
   );
   const quantsReadAt = useRef(new Map<string, object>());
+  const quantsEpochRef = useRef(quantsEpoch);
+  quantsEpochRef.current = quantsEpoch;
   useEffect(() => {
     if (!open) {
       return;
     }
-    const wanted = rows.filter(
+    const queue = rows.filter(
       (row) =>
         (row.kind === "gguf" || row.kind === "localGguf") &&
         !row.partial &&
         quantsReadAt.current.get(row.key) !== quantsEpoch,
     );
-    if (wanted.length === 0) {
+    if (queue.length === 0) {
       return;
     }
     let live = true;
-    void Promise.all(
-      wanted.map(async (row) => {
-        const target = quantTarget(row);
-        if (!target) {
-          return [row.key, [] as GgufVariantDetail[], NO_QUANTS] as const;
-        }
-        try {
-          const { quants: list, partials } = await rowQuants(target);
-          return [row.key, list, partials] as const;
-        } catch {
-          return [row.key, null, null] as const;
-        }
-      }),
-    ).then((found) => {
-      if (!live) {
+    const epoch = quantsEpoch;
+    const pending: (readonly [
+      string,
+      GgufVariantDetail[] | null,
+      GgufVariantDetail[] | null,
+    ])[] = [];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const read = async (row: Row) => {
+      const target = quantTarget(row);
+      if (!target) {
+        return [row.key, [] as GgufVariantDetail[], NO_QUANTS] as const;
+      }
+      try {
+        const { quants: list, partials } = await rowQuants(target);
+        return [row.key, list, partials] as const;
+      } catch {
+        return [row.key, null, null] as const;
+      }
+    };
+    // Reads that finish after a rows change still land: only a new inventory makes them stale.
+    const flush = () => {
+      timer = null;
+      const found = pending.splice(0);
+      if (found.length === 0 || quantsEpochRef.current !== epoch) {
         return;
       }
       for (const [key] of found) {
-        quantsReadAt.current.set(key, quantsEpoch);
+        quantsReadAt.current.set(key, epoch);
       }
       setDeviceQuants((prev) => {
         const next = new Map(prev);
@@ -2129,6 +2157,22 @@ export function ComposerModelPicker({
         }
         return next;
       });
+    };
+    // Bounded, as the header picker's reader is: hundreds of repos at once queue up the backend.
+    void readBounded(
+      queue,
+      QUANT_READ_WORKERS,
+      read,
+      (found) => {
+        pending.push(found);
+        timer ??= setTimeout(flush, QUANT_FLUSH_MS);
+      },
+      () => live,
+    ).then(() => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      flush();
     });
     return () => {
       live = false;
@@ -2382,7 +2426,6 @@ export function ComposerModelPicker({
           },
           abort.signal,
         );
-        // Noted even after a close: the listing stands.
         if (!mlx && list.length > 0) {
           fitCheck.current.noteListedFit(r.id, list);
         }
@@ -2395,7 +2438,6 @@ export function ComposerModelPicker({
     void Promise.all([next(), next(), next()]);
     return () => {
       abort.abort();
-      // Unfinished ones are checked again on the next look.
       for (const id of [...inFlight, ...queue.map((r) => r.id.toLowerCase())]) {
         checkedFits.current.delete(id);
       }
@@ -2463,7 +2505,6 @@ export function ComposerModelPicker({
       return sortConnectedRows(found, isFavorite);
     }
     const lastLoaded = (row: Row) => loadedAt(loadTimes, row.id);
-    // Stable: favorites lift to the top, each side keeping its order.
     const favoritesFirst = (list: Row[]) =>
       [...list].sort((a, b) => Number(isFavorite(b)) - Number(isFavorite(a)));
     // A maker's tab reads like On Device's default: favorites, then last loaded or downloaded.
@@ -2671,7 +2712,7 @@ export function ComposerModelPicker({
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
-    source?.eject(row.loadedId ?? row.id);
+    source?.eject(ejectTargetId(row, chosen?.id));
   };
 
   const handOff = (row: Row) => {
@@ -2696,7 +2737,6 @@ export function ComposerModelPicker({
         };
   };
 
-  // A pick supersedes any still resolving its quant.
   const pickSeq = useRef(0);
   const supersede = () => {
     pickSeq.current += 1;
@@ -2770,7 +2810,6 @@ export function ComposerModelPicker({
       target,
     });
     const mlxRepo = row.kind === "hub" && !row.hub?.isGguf;
-    // An MLX repo with no variant listing loads as one checkpoint.
     const pickWhole = () => {
       if (pickSeq.current !== seq || !source) {
         return;
@@ -2915,7 +2954,6 @@ export function ComposerModelPicker({
     row.tab === DEVICE_TAB && !row.partial && viewed !== RECOMMENDED_TAB
       ? (devicePartials.get(row.key) ?? NO_QUANTS)
       : NO_QUANTS;
-  // A partial quant counts, so the row folds both.
   const variantCount = (row: Row) =>
     (deviceQuants.get(row.key)?.length ?? 0) + partialsOf(row).length;
 
@@ -3145,7 +3183,6 @@ export function ComposerModelPicker({
       ?.scrollIntoView({ block: "nearest" });
   }, [active, isExpanded]);
 
-  // Arrows walk rows and their open quants in list order.
   const navNeighbour = (from: Element | null | undefined, dir: 1 | -1) => {
     const items = Array.from(
       listRef.current?.querySelectorAll<HTMLElement>(
@@ -3806,7 +3843,6 @@ export function ComposerModelPicker({
               {row.loaded ? (
                 <LoadedDot />
               ) : isChosen && row.kind === "external" ? (
-                // A connected model in use reads as an on-device one loaded.
                 <LoadedDot label="In use" />
               ) : row.kind === "hub" && row.onDevice ? (
                 <Hint label="On device">
@@ -4196,7 +4232,6 @@ export function ComposerModelPicker({
             </button>
           </Hint>
         ) : (
-          // Keeps the star's room so sizes line up.
           <span
             aria-hidden={true}
             className="w-[calc(20px*var(--ui-space-scale,1))] shrink-0"
@@ -4472,7 +4507,6 @@ export function ComposerModelPicker({
           <span className="text-ui-12 text-muted-foreground">{copy.hint}</span>
         ) : null}
         {copy.actions ? (
-          // General actions first; the provider shortcuts share the row under them.
           <div className="mt-2 flex flex-col items-center gap-2">
             {[0, 1]
               .map((row) => copy.actions?.filter((a) => a.row === row) ?? [])
@@ -4715,7 +4749,7 @@ export function ComposerModelPicker({
                         if (chosen) {
                           eject(chosen);
                         } else if (checkpoint) {
-                          source?.eject(checkpoint);
+                          source?.eject();
                         }
                       }}
                       className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
@@ -4783,7 +4817,7 @@ export function ComposerModelPicker({
                     if (chosen) {
                       eject(chosen);
                     } else if (checkpoint) {
-                      source?.eject(checkpoint);
+                      source?.eject();
                     }
                   }}
                   className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
@@ -4841,10 +4875,8 @@ export function ComposerModelPicker({
         }
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
-          // One height on every tab, loaded or not, as Zeron's.
           (isExpanded || configTarget) &&
             "h-[calc(460px*var(--ui-space-scale,1))]",
-          // Run settings grow only with Advanced on.
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
           // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
@@ -4973,7 +5005,7 @@ export function ComposerModelPicker({
                     } else if (chosen) {
                       eject(chosen);
                     } else {
-                      source?.eject(checkpoint ?? undefined);
+                      source?.eject();
                     }
                   }}
                   className="ml-auto h-[calc(26px*var(--ui-space-scale,1))]"
@@ -5296,11 +5328,7 @@ export function ComposerModelPicker({
                 variant="destructive"
                 size="xs"
                 aria-label={`Eject ${chosenName}`}
-                onClick={() =>
-                  chosen
-                    ? eject(chosen)
-                    : source?.eject(checkpoint ?? undefined)
-                }
+                onClick={() => (chosen ? eject(chosen) : source?.eject())}
                 className="h-[calc(26px*var(--ui-space-scale,1))]"
               >
                 <HugeiconsIcon

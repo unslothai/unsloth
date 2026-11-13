@@ -450,3 +450,33 @@ export function discoverUsesFallback(
 ): boolean {
   return hubQuery === "" || hubResultCount === 0;
 }
+
+/** Reads `items` with at most `workers` in flight; stops taking new ones once `live()` is false. */
+export async function readBounded<T, R>(
+  items: T[],
+  workers: number,
+  read: (item: T) => Promise<R>,
+  onResult: (result: R) => void,
+  live: () => boolean,
+): Promise<void> {
+  const worker = async () => {
+    for (
+      let item = items.shift();
+      item !== undefined && live();
+      item = items.shift()
+    ) {
+      onResult(await read(item));
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(workers, items.length) }, worker),
+  );
+}
+
+/** The chosen model goes to the host's guarded unload (no id), as the header picker's Eject did. */
+export function ejectTargetId(
+  row: { id: string; loadedId?: string },
+  chosenId: string | undefined,
+): string | undefined {
+  return row.id === chosenId ? undefined : (row.loadedId ?? row.id);
+}
