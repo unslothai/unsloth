@@ -53,7 +53,6 @@ export type SharedConfigKey = Exclude<
   | "mlxFastVerify"
   | "mlxPleOffload"
   | "mlxExpertOffload"
-  // NPU models have no shared-config controls.
   | "npuPowerMode"
   | "npuPrefillChunkLen"
   | "npuImgPreResize"

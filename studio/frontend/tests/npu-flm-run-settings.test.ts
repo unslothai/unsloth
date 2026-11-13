@@ -142,10 +142,8 @@ test("lowering the context clamps a saved prefill chunk, so the reload matches t
   const saved = { ...DEFAULT_PER_MODEL_CONFIG, maxSeqLength: 16384, npuPrefillChunkLen: 8192 };
   const lowered = { ...saved, ...contextPinPatch(4096, false, saved.npuPrefillChunkLen) };
   assert.equal(lowered.npuPrefillChunkLen, 4096);
-  // The backend loads min(chunk, ctx) and the status echoes that back.
   const loaded = { ...lowered, npuPrefillChunkLen: Math.min(8192, 4096) };
   assert.equal(perModelConfigsEqual(lowered, loaded), true);
-  // A chunk inside the new context, or none, is left alone.
   assert.equal("npuPrefillChunkLen" in contextPinPatch(4096, false, 1024), false);
   assert.equal("npuPrefillChunkLen" in contextPinPatch(4096, false, null), false);
   assert.equal(contextPinPatch(4096, true, 8192).npuPrefillChunkLen, 4096);
@@ -154,7 +152,6 @@ test("lowering the context clamps a saved prefill chunk, so the reload matches t
     (page.match(/contextPinPatch\([^)]*config\.npuPrefillChunkLen\)/g) ?? []).length,
     2,
   );
-  // Same label as the Power Mode and Image Pre-resize dropdowns beside it.
   assert.match(page, /const NPU_DEFAULT_LABEL = "Default";/);
   assert.match(page, /value=\{config\.npuPrefillChunkLen \?\? ""\}\s*placeholder=\{NPU_DEFAULT_LABEL\}/);
   assert.equal(

@@ -187,7 +187,6 @@ def test_the_load_holds_the_prefill_chunk_to_the_context_it_resolves(backend):
     npu, server = backend
     npu.load(_VISION.id, 4096, flm_args = "--prefill-chunk-len 100000")
     assert server.bodies[-1]["flm_args"] == "--prefill-chunk-len 4096"
-    # Status reports what Lemonade runs with.
     assert npu._loaded.flm_args == "--prefill-chunk-len 4096"
 
 
@@ -317,7 +316,6 @@ def test_a_changed_flm_setting_is_a_different_load(monkeypatch, resident, fields
     npu = _route_npu(_TEXT, resident_flm_args = resident)
     response = _load(monkeypatch, npu, **fields)
     assert response.status == expected
-    # The load response reports the settings the resident load runs with, as status does.
     assert {
         field: getattr(response, field)
         for field in ("npu_power_mode", "npu_prefill_chunk_len", "npu_img_pre_resize")
@@ -404,7 +402,6 @@ def test_a_save_that_omits_the_npu_settings_keeps_them(monkeypatch):
     _mock_override_store(monkeypatch)
     npu = "lemonade:qwen3.5-9b-FLM"
     _put(npu, npu_power_mode = "turbo", npu_prefill_chunk_len = 2048, npu_img_pre_resize = 0)
-    # An older client sends no NPU keys at all.
     _put(npu, max_seq_length = 8192)
     assert settings.get_model_override(npu) == {
         "max_seq_length": 8192,
@@ -412,7 +409,6 @@ def test_a_save_that_omits_the_npu_settings_keeps_them(monkeypatch):
         "npu_prefill_chunk_len": 2048,
         "npu_img_pre_resize": 0,
     }
-    # Clearing one setting by name keeps the others.
     _put(npu, npu_power_mode = None)
     assert settings.get_model_override(npu) == {
         "npu_prefill_chunk_len": 2048,

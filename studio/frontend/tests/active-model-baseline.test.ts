@@ -124,7 +124,6 @@ test("a freshly loaded NPU model under Auto is at the defaults, not an unsaved c
     false,
   );
   assert.equal(config.speculativeType, null);
-  // The run settings page's atDefault test: no context pin, and equal to the defaults as stored.
   assert.equal(config.customContextLength ?? config.maxSeqLength ?? null, null);
   assert.ok(configsEqual("auto")({ ...config, customContextLength: null }, BASE));
   const gguf = useActiveConfigFor({ speculativeType: null });
