@@ -790,7 +790,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "target": f"{_PIP} --target vendor {wheel} && PYTHONPATH=vendor {show}",
         "env_target": f"PIP_TARGET=vendor {_PIP} {wheel} && PYTHONPATH=vendor {show}",
         "pip_user_off": f"PIP_USER=0 {_PIP} {wheel} && {show}",
-        "isolated": f"python -m pip --isolated install -q --no-index --no-deps {wheel} && {show}",
+        # --isolated ignores PIP_TARGET, so it chooses nothing here.
+        "isolated": f"PIP_TARGET=vendor python -m pip --isolated install -q --no-index --no-deps {wheel} && {show}",
         "pip_python": f"python -m venv venv && python -m pip --isolated --python venv/bin/python install -q "
         f"--no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
         "editable": f"{_PIP} {wheel} && {show}",
@@ -996,10 +997,13 @@ def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
         [sys.executable, "-mprobe_mod"], env = env, cwd = tmp_path, capture_output = True, text = True
     )
     assert glued.stdout.strip() == "None", glued.stderr
-    script = tmp_path / "pipeline.py"
-    script.write_text(probe[1])
-    assert run(sys.executable, str(script)).strip() == "None"
-    assert run(str(venv_python), *probe).strip() == "None"
+    # An interpreter option with its own operand comes first: still the module that counts.
+    probe_x = [sys.executable, "-X", "utf8", "-mprobe_mod"]
+    pip_x = [sys.executable, "-X", "utf8", "-m", "pip", "config", "debug"]
+    result = subprocess.run(probe_x, env = env, cwd = tmp_path, capture_output = True, text = True)
+    assert result.stdout.strip() == "None", result.stdout + result.stderr
+    result = subprocess.run(pip_x, env = env, cwd = tmp_path, capture_output = True, text = True)
+    assert f"PIP_PREFIX={packages!r}" in result.stdout, result.stdout + result.stderr
 
 
 def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):

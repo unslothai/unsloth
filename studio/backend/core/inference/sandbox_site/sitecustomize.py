@@ -374,31 +374,35 @@ def _route_pip():
             _chat_prefix = prefix
             # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
             argv = list(getattr(sys, "orig_argv", None) or ())
-            module = ""
+            module, skip = "", False
             for i, arg in enumerate(argv[1:], 1):
+                if skip:
+                    skip = False
+                    continue
                 if arg == "-m" and i + 1 < len(argv):
                     module = argv[i + 1]
                 elif arg.startswith("-m") and arg[2:3] not in ("", "-"):
                     module = arg[2:]
-                if module or not arg.startswith("-"):
+                # The interpreter options that take a separate operand.
+                skip = arg in ("-W", "-X", "--check-hash-based-pycs")
+                if module or not arg.startswith("-") or arg.startswith("-c"):
                     break
             # Python < 3.10 has no orig_argv: any -m launch counts.
             is_pip = module in ("pip", "pip.__main__") or (
-                not module and (sys.argv[0] == "-m" or _is_pip_script(sys.argv[0]))
+                not module and ((not argv and sys.argv[0] == "-m") or _is_pip_script(sys.argv[0]))
             )
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             placed = any(
                 a.split("=", 1)[0] in _PIP_LOCATION_FLAGS or (a.startswith("-t") and a != "-t")
                 for a in sys.argv[1:]
-            ) or any(os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT", "PIP_HOME"))
-            placed = placed or os.environ.get("PIP_USER", "").strip().lower() in (
-                "y",
-                "yes",
-                "t",
-                "true",
-                "on",
-                "1",
             )
+            if "--isolated" not in sys.argv:
+                # --isolated makes pip ignore these, so then they choose nothing.
+                truthy = ("y", "yes", "t", "true", "on", "1")
+                placed = placed or any(
+                    os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT", "PIP_HOME")
+                )
+                placed = placed or os.environ.get("PIP_USER", "").strip().lower() in truthy
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
