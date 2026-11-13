@@ -12499,6 +12499,14 @@ def _is_fake_tensor(x):
         return False
 
 
+def _is_rocm_torch(torch) -> bool:
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__.
+    return bool(
+        getattr(getattr(torch, "version", None), "hip", None)
+        or "rocm" in str(getattr(torch, "__version__", "") or "").lower()
+    )
+
+
 def _make_safe_int_mm(mod, original):
     """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
     import torch
@@ -12506,10 +12514,9 @@ def _make_safe_int_mm(mod, original):
     out_dtype = mod.out_dtype
     dynamo_is_compiling = mod.dynamo_is_compiling
     # ROCm (hipBLASLt) keeps torchao's row-major copy; the TN layout below is only checked on cuBLASLt.
-    keep_transposed = (
-        os.environ.get(_TORCHAO_INT_MM_TRANSPOSED_ENV, "1").strip() != "0"
-        and getattr(torch.version, "hip", None) is None
-    )
+    keep_transposed = os.environ.get(
+        _TORCHAO_INT_MM_TRANSPOSED_ENV, "1"
+    ).strip() != "0" and not _is_rocm_torch(torch)
 
     @functools.wraps(original)
     def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:

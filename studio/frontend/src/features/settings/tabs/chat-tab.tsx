@@ -4,6 +4,7 @@
 import { LazyImportBoundary } from "@/components/lazy-import-boundary";
 import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
+import { ArrowRightIcon } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -511,6 +512,7 @@ export function ChatTab() {
           >
             <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
             {t("settings.chat.library.action")}
+            <ArrowRightIcon data-icon="inline-end" strokeWidth={1.75} />
           </Button>
         </SettingsRow>
       </SettingsSection>
