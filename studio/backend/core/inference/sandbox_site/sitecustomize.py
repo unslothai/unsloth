@@ -437,7 +437,7 @@ def _stdlib_paths():
     ]
 
 
-def _config_chooses_location(isolated = False, user = True):
+def _config_chooses_location(isolated = False, use_user = True):
     # pip's config files can set install.target / prefix / root / user too; PIP_PREFIX would then conflict.
     # Same files as pip's Configuration.iter_config_files: --isolated or an existing PIP_CONFIG_FILE drops the user ones.
     env_file = os.environ.get("PIP_CONFIG_FILE")
@@ -447,7 +447,10 @@ def _config_chooses_location(isolated = False, user = True):
     home = os.path.expanduser("~")
     if sys.platform == "win32":
         system = [os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "pip")]
-        user = [os.path.join(home, "pip"), os.path.join(os.environ.get("APPDATA", home), "pip")]
+        user_dirs = [
+            os.path.join(home, "pip"),
+            os.path.join(os.environ.get("APPDATA", home), "pip"),
+        ]
     else:
         if sys.platform == "darwin":
             system = ["/Library/Application Support/pip"]
@@ -459,10 +462,10 @@ def _config_chooses_location(isolated = False, user = True):
             config = os.path.join(
                 os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "pip"
             )
-        user = [os.path.join(home, ".pip"), config]
+        user_dirs = [os.path.join(home, ".pip"), config]
     files = [os.path.join(d, name) for d in system]
     if not isolated and not (env_file and os.path.exists(env_file)):
-        files += [os.path.join(d, name) for d in user]
+        files += [os.path.join(d, name) for d in user_dirs]
     files += [os.path.join(sys.prefix, name), env_file or ""]
     files = [f for f in files if f and f != os.devnull and os.path.isfile(f)]
     if not files:
@@ -479,16 +482,21 @@ def _config_chooses_location(isolated = False, user = True):
     except (configparser.Error, UnicodeDecodeError):
         return False
 
-    # pip's precedence per option: [global], then [install], then a PIP_* variable (ignored under --isolated).
+    # pip's precedence per option: [global], then [install], then a PIP_* variable (ignored under --isolated);
+    # empty values are skipped, as pip's _get_ordered_configuration_items does.
     def value(key):
-        env = None if isolated else os.environ.get("PIP_" + key.upper())
-        if env is not None and env != os.environ.get("_UNSLOTH_PIP_PREFIX"):
+        env = "" if isolated else os.environ.get("PIP_" + key.upper(), "")
+        if env.strip() and env != os.environ.get("_UNSLOTH_PIP_PREFIX"):
             return env
-        return parser.get("install", key, fallback = parser.get("global", key, fallback = ""))
+        for section in ("install", "global"):
+            found = parser.get(section, key, fallback = "")
+            if found.strip():
+                return found
+        return ""
 
     if any(value(k).strip() for k in ("target", "prefix", "root", "home")):
         return True
-    return user and value("user").strip().lower() in ("y", "yes", "t", "true", "on", "1")
+    return use_user and value("user").strip().lower() in ("y", "yes", "t", "true", "on", "1")
 
 
 _chat_prefix = None
@@ -815,6 +823,16 @@ def _recorded_files(
     return files
 
 
+def _finished(entry, dist_info):
+    # pip and uv record INSTALLER in the RECORD they write last; a wheel's own RECORD (copied in
+    # mid-install) never lists it, so an install that died halfway does not count as a replacement.
+    try:
+        with open(os.path.join(entry, dist_info, "RECORD"), encoding = "utf-8") as f:
+            return any(line.startswith(f"{dist_info}/INSTALLER,") for line in f)
+    except OSError:
+        return False
+
+
 def _site_dirs(root):
     # The prefix's site dirs on sys.path, once per real folder (lib64 -> lib) and only those really inside it.
     real = os.path.join(os.path.normcase(os.path.realpath(root)), "")
@@ -895,7 +913,13 @@ def _prune_stale_dist_info():
             sys.path[:] = saved
         for found in stale_groups:
             ordered = sorted(found, key = found.get)
-            newest, stale = ordered[-1], ordered[:-1]
+            done = [d for d in ordered if _finished(*d)]
+            if not done:
+                continue
+            newest = done[-1]
+            stale = ordered[: ordered.index(newest)]
+            if not stale:
+                continue
             # A copy: _recorded_files hands out its cached sets.
             keep = set(_recorded_files(newest[0], newest[1], root))
             # Files another surviving distribution now ships stay too.
@@ -935,6 +959,8 @@ def _retire_rewritten(snapshot):
     for (entry, name), (stamp, files, root) in snapshot.items():
         try:
             if os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns == stamp:
+                continue
+            if not _finished(entry, name):
                 continue
         except OSError:
             continue

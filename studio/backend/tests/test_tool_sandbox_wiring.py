@@ -787,6 +787,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "isolated_global_config",
         "config_user_overridden",
         "no_user",
+        "config_user_no_user",
+        "empty_env_target",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -826,6 +828,11 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # An existing PIP_CONFIG_FILE makes pip skip the user file.
         "config_file_drops_user": "mkdir -p .config/pip && printf '[install]\\ntarget = vendor\\n' > "
         f".config/pip/pip.conf && touch empty.ini && PIP_CONFIG_FILE=empty.ini {_PIP} {wheel} && {show}",
+        "config_user_no_user": "printf '[install]\\nuser = true\\n' > pip.ini && "
+        f"PIP_CONFIG_FILE=pip.ini {_PIP} --no-user {wheel} && {show}",
+        # An empty PIP_TARGET is skipped, as pip does: the config's target still applies.
+        "empty_env_target": "printf '[install]\\ntarget = vendor\\n' > pip.ini && PIP_CONFIG_FILE=pip.ini "
+        f"PIP_TARGET= {_PIP} {wheel} && PYTHONPATH=vendor {show}",
         # --no-user on the command line cancels PIP_USER.
         "no_user": f"PIP_USER=1 {_PIP} --no-user {wheel} && {show}",
         # [install] overrides [global], as pip resolves it: user ends up off.
@@ -882,6 +889,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "isolated_global_config": str(workdir / "vendor"),
         "config_user_overridden": packages,
         "no_user": packages,
+        "config_user_no_user": packages,
+        "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
         "clustered_target": str(workdir / "vendor"),
         "own_prefix": str(workdir / "deps"),
@@ -1226,7 +1235,9 @@ def test_retiring_a_chat_version_never_follows_a_symlink_out_of_the_prefix(monke
     time.sleep(0.05)
     new = site_dir / f"{name}-2.0.dist-info"
     new.mkdir()
-    (new / "RECORD").write_text(f"{name}-2.0.dist-info/RECORD,,\n")
+    (new / "RECORD").write_text(
+        f"{name}-2.0.dist-info/INSTALLER,,\n{name}-2.0.dist-info/RECORD,,\n"
+    )
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
     out = tools._bash_exec(
         "python -m pip --version", None, 60, _SESSION, tool_execution_mode = "software"
@@ -1411,7 +1422,7 @@ def test_retirement_keeps_what_a_distribution_in_the_other_site_dir_ships(tmp_pa
         info = pure / f"unsloth_pure-{version}.dist-info"
         info.mkdir(parents = True)
         rows = "../../bin/tool,,\n" if version == "1.0" else ""
-        (info / "RECORD").write_text(rows + f"{info.name}/RECORD,,\n")
+        (info / "RECORD").write_text(rows + f"{info.name}/INSTALLER,,\n{info.name}/RECORD,,\n")
         os.utime(info / "RECORD", ns = (stamp * 10**9, stamp * 10**9))
     companion = plat / "unsloth_plat-1.0.dist-info"
     companion.mkdir(parents = True)
@@ -1437,11 +1448,20 @@ def _prune(prefix, *site_dirs):
     subprocess.run([sys.executable, "-c", code], env = env, check = True)
 
 
-def _dist(site_dir, project, version, stamp):
+def _dist(
+    site_dir,
+    project,
+    version,
+    stamp,
+    finished = True,
+    module = None,
+):
     info = site_dir / f"{project}-{version}.dist-info"
     info.mkdir(parents = True)
-    (site_dir / f"{project}.py").write_text("")
-    (info / "RECORD").write_text(f"{project}.py,,\n{info.name}/RECORD,,\n")
+    module = module or f"{project}.py"
+    (site_dir / module).write_text("")
+    installer = f"{info.name}/INSTALLER,,\n" if finished else ""
+    (info / "RECORD").write_text(f"{module},,\n{installer}{info.name}/RECORD,,\n")
     os.utime(info / "RECORD", ns = (stamp * 10**9, stamp * 10**9))
     return info
 
@@ -1469,6 +1489,15 @@ def test_a_site_dir_linked_outside_the_prefix_is_left_alone(tmp_path):
     assert old.exists() and (outside / "unsloth_linked.py").exists()
 
 
+def test_an_unfinished_install_retires_nothing(tmp_path):
+    """A RECORD without pip's INSTALLER row is a wheel's own copy from an install that died halfway."""
+    site_dir = tmp_path / "prefix" / "lib" / "site-packages"
+    old = _dist(site_dir, "unsloth_halfway", "1.0", 1, module = "old.py")
+    _dist(site_dir, "unsloth_halfway", "2.0", 2, finished = False, module = "new.py")
+    _prune(tmp_path / "prefix", site_dir)
+    assert old.exists() and (site_dir / "old.py").exists()
+
+
 def test_a_replaced_version_in_the_other_site_dir_is_pruned(tmp_path):
     """purelib and platlib apart: version 1.0 in one and 2.0 in the other still leaves only 2.0."""
     prefix = tmp_path / "prefix"
@@ -1478,7 +1507,7 @@ def test_a_replaced_version_in_the_other_site_dir_is_pruned(tmp_path):
         info.mkdir(parents = True)
         (site_dir / f"unsloth_split_scheme_{version[0]}.py").write_text("")
         (info / "RECORD").write_text(
-            f"unsloth_split_scheme_{version[0]}.py,,\n{info.name}/RECORD,,\n"
+            f"unsloth_split_scheme_{version[0]}.py,,\n{info.name}/INSTALLER,,\n{info.name}/RECORD,,\n"
         )
         os.utime(info / "RECORD", ns = (stamp * 10**9, stamp * 10**9))
     env = {
