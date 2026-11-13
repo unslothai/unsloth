@@ -6658,11 +6658,33 @@ export function syncKeepModelsLoaded(mode: unknown): void {
 
 /** The pick in force before a link took over: leaving the linked model for one with no link puts
  *  it back, or the link's sampling and system prompt leak into every other model (#14900). */
-let pickBeforeLink: {
+type PickBeforeLink = {
   name: string;
   source: ChatPresetSource;
   params: ReturnType<typeof getPresetOwnedParams>;
-} | null = null;
+};
+// Kept in storage: the link's own values are what the settings DB holds after a reload.
+const PICK_BEFORE_LINK_KEY = "unsloth_chat_pick_before_link";
+let pickBeforeLink: PickBeforeLink | null = readPickBeforeLink();
+
+function readPickBeforeLink(): PickBeforeLink | null {
+  try {
+    const value = JSON.parse(readStorageValue(PICK_BEFORE_LINK_KEY) ?? "null");
+    return typeof value?.name === "string" &&
+      typeof value.source === "string" &&
+      value.params != null &&
+      typeof value.params === "object"
+      ? (value as PickBeforeLink)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function setPickBeforeLink(next: PickBeforeLink | null): void {
+  pickBeforeLink = next;
+  writeStorageValue(PICK_BEFORE_LINK_KEY, JSON.stringify(next));
+}
 let lastLinkCheckpoint = "";
 let linkSyncSuspended = 0;
 
@@ -6707,11 +6729,11 @@ function syncLinkedPreset(modelId: string, outgoing: string, keepRestored: boole
   if (preset) {
     if (keepRestored && state.activePreset === preset.name) return;
     if (!linkActive) {
-      pickBeforeLink = {
+      setPickBeforeLink({
         name: state.activePreset,
         source: state.activePresetSource,
         params: getPresetOwnedParams(state.params),
-      };
+      });
     }
     state.setParams(applyPresetForProvider(state.params, preset, null), {
       minPChoiceEdited: true,
@@ -6722,22 +6744,28 @@ function syncLinkedPreset(modelId: string, outgoing: string, keepRestored: boole
     return;
   }
   if (!linkActive) {
-    pickBeforeLink = null;
+    if (pickBeforeLink) setPickBeforeLink(null);
     return;
   }
   // As if the link had never applied: the earlier values, then this model's memory over them.
   const before = pickBeforeLink;
-  pickBeforeLink = null;
+  setPickBeforeLink(null);
   const fallback = BUILTIN_PRESETS[0];
   state.setActivePreset(before?.name ?? fallback.name);
   state.setActivePresetSource(before?.source ?? getPresetSource(fallback.name));
   const live = useChatRuntimeStore.getState();
-  live.setParams(
-    before
-      ? { ...live.params, ...before.params }
-      : applyPresetForProvider(live.params, fallback, providerTypeFor(modelId)),
-    { fromModelDefaults: true },
-  );
+  const restored = before
+    ? { ...live.params, ...before.params }
+    : applyPresetForProvider(live.params, fallback, providerTypeFor(modelId));
+  live.setParams(restored, { fromModelDefaults: true });
+  // The link's values went onto the open chat as edits, so the chat takes its own back the same way.
+  if (threadScopedSettingsThreadId !== null) {
+    const after = useChatRuntimeStore.getState();
+    const chatKeys = Object.fromEntries(
+      THREAD_SCOPED_PARAM_KEYS.map((key) => [key, restored[key]]),
+    );
+    after.setParams({ ...after.params, ...chatKeys });
+  }
 }
 
 // Deferred a microtask: a switch moves the checkpoint inside the load path's own setParams, and the

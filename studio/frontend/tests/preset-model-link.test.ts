@@ -200,7 +200,11 @@ test("a custom pick from before the link comes back, a pick made on the linked m
   pickPreset(CREATIVE);
   await switchTo(QWEN);
   assert.equal(live().activePreset, "Research");
+  const kept = JSON.parse(localStorageFake.get("unsloth_chat_pick_before_link") ?? "null");
+  assert.equal(kept?.name, "Creative", "kept for a reload on the linked model");
+  assert.equal(kept?.params.systemPrompt, "Be imaginative.");
   await switchTo(GEMMA);
+  assert.equal(localStorageFake.get("unsloth_chat_pick_before_link"), "null");
   assert.deepEqual(live(), {
     activePreset: "Creative",
     activePresetSource: "custom",
@@ -261,6 +265,25 @@ test("a switch the background load ended on still syncs on resume", async () => 
   resume();
   await Promise.resolve();
   assert.equal(live().activePreset, "Default");
+});
+
+test("leaving a linked model gives an open chat back its own sampling", async () => {
+  const store = useChatRuntimeStore.getState();
+  await switchTo(LLAMA);
+  store.setActiveThreadId("chat-1");
+  store.applyThreadScopedSettings("chat-1", { temperature: 0.77, systemPrompt: "Be brief." });
+  assert.equal(live().temperature, 0.77);
+  try {
+    await switchTo(QWEN);
+    assert.equal(live().temperature, 0.2);
+    await switchTo(LLAMA);
+    assert.equal(live().activePreset, "Default");
+    assert.equal(live().temperature, 0.77);
+    assert.equal(live().systemPrompt, "Be brief.");
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+  }
 });
 
 test("an unlinked model under Default still follows its recommendation", async () => {
