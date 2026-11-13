@@ -419,3 +419,13 @@ def test_a_reason_lemond_only_wraps_in_a_prefix_is_not_repeated(tmp_path, log):
     )
     message = "Failed to load model 'qwen3-0.6b-FLM': FLM pull failed with exit code: 1"
     assert nb._explain(server, window, message) == message
+
+
+def test_a_model_name_digit_does_not_hide_the_reason(tmp_path, log):
+    server = _server(tmp_path)
+    window = server.open_window()
+    _prints(
+        server, _line("Error", "Router", "Backend load failed: FLM pull failed with exit code: 1")
+    )
+    explained = nb._explain(server, window, "Failed to load qwen3:1.7b model!")
+    assert "FLM pull failed with exit code: 1" in explained
