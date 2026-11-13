@@ -28960,6 +28960,7 @@ def _fit_external_context(
     branch: Optional[list[dict]] = None,
     tool_loop: bool = False,
     can_reset: bool = False,
+    first_pass: bool = True,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
@@ -29018,10 +29019,11 @@ def _fit_external_context(
     thread_id = payload.thread_id
     # The caller vouches the model can receive search_conversation on a later turn, as GGUF does.
     can_reset = can_reset and _can_reset_epoch(thread_id, True)
-    force_reset = can_reset and getattr(payload, "compact_context", None) is True
-    sticky = sticky_is_checkpoint = None
+    # A later tool-loop pass refits the first pass's result, so the boundary and /compact apply once.
+    force_reset = first_pass and can_reset and getattr(payload, "compact_context", None) is True
+    sticky, sticky_is_checkpoint = (None, None) if first_pass else (0, True)
     sticky_manual = False
-    if can_reset:
+    if can_reset and first_pass:
         # Read before the fits check: a /compact epoch replays while the chat still fits.
         sticky, sticky_is_checkpoint, sticky_manual = _sticky_compaction_details(
             thread_id,
@@ -29036,7 +29038,7 @@ def _fit_external_context(
         and not sticky_manual
     ):
         return messages, None, max_tokens
-    if not can_reset:
+    if not can_reset and first_pass:
         # Recall below is inline and rolling (every evicting fit), so a checkpoint reset may not start.
         sticky, sticky_is_checkpoint = _sticky_compaction_state(
             thread_id,
@@ -29045,14 +29047,15 @@ def _fit_external_context(
             can_reset = False,
             compaction_headroom_ratio = ratio,
         )
+    # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
+    recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
         keeps_boundary = _keeps_compaction_boundary(thread_id),
-        # A replay recalls nothing inline, so the note must not deny a catalogued search_conversation.
-        recall_offered = can_reset and "search_conversation" in _catalog_names(tools),
+        recall_offered = recall_offered,
         reserve_tokens = _conversation_recall_reserve(thread_id),
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
@@ -29078,8 +29081,7 @@ def _fit_external_context(
             query_messages = branch,
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
-            # A replayed epoch was recalled when it started; search_conversation covers it since.
-            force_recall = not can_reset or bool(truncation.get("checkpoint_started", True)),
+            force_recall = not recall_offered or bool(truncation.get("checkpoint_started", True)),
             recall_done = not truncation.get("fits", True),
             recall_budget_tokens = retrieval_budget(
                 context_length,
@@ -29887,19 +29889,26 @@ async def _proxy_to_external_provider(
     _compaction_fallback = None
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
         _request_branch = chat_messages
+        _checkpoint_pass: dict = {}
 
         async def _external_context_fitter(messages):
             nonlocal _external_truncation
+            # After a checkpoint fit, later passes extend its result, as the GGUF loop does.
+            seen = _checkpoint_pass.get("input")
+            later = seen is not None and messages[: len(seen)] == seen
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                 _fit_external_context,
-                messages,
+                _checkpoint_pass["fitted"] + messages[len(seen) :] if later else messages,
                 payload,
                 tools = _external_fit_tools,
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
                 # The NPU has no compaction of its own, so /compact resets here as on GGUF.
                 can_reset = managed is not None and not _tool_calls_are_disabled(payload),
+                first_pass = not later,
             )
+            if not later and truncation and truncation.get("checkpoint") is True:
+                _checkpoint_pass.update(input = list(messages), fitted = fitted)
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
                 _external_truncation = truncation
@@ -30313,6 +30322,7 @@ class _NpuStreamRelay:
         self.error: Optional[dict] = None
         self.completion_id: Optional[str] = None
         self.created: Optional[int] = None
+        self.context_truncated: Optional[dict] = None
 
     def _held_back(self, text: str) -> int:
         """Length of the longest tail of ``text`` that begins some stop sequence."""
@@ -30378,6 +30388,8 @@ class _NpuStreamRelay:
                 else {"message": str(chunk["error"])}
             )
             return [line]
+        if isinstance(chunk.get("context_truncated"), dict):
+            self.context_truncated = chunk["context_truncated"]
         self.completion_id = self.completion_id or chunk.get("id")
         self.created = self.created or chunk.get("created")
         if "model" in chunk:
@@ -30456,6 +30468,8 @@ class _NpuStreamRelay:
         }
         if self.usage is not None:
             body["usage"] = self.usage
+        if self.context_truncated is not None:
+            body["context_truncated"] = self.context_truncated
         return body
 
 

@@ -76,6 +76,16 @@ _FULL_USAGE = {
 
 
 def _script(prompt: str) -> str:
+    if "PYCALL" in prompt and '"role": "tool"' not in prompt:
+        call = {
+            "index": 0,
+            "id": "call_py",
+            "type": "function",
+            "function": {"name": "python", "arguments": '{"code":"print(6*7)"}'},
+        }
+        return (
+            _chunk({"tool_calls": [call]}) + _chunk({}, "tool_calls", _USAGE) + "data: [DONE]\n\n"
+        )
     if "FULL" in prompt:
         return (
             _chunk({"reasoning_content": " Wait, no!"})
@@ -1523,6 +1533,22 @@ def _truncations(lines):
     return [chunk["context_truncated"] for chunk in _data(lines) if "context_truncated" in chunk]
 
 
+def _seed_thread(studio_db, thread, messages):
+    studio_db.upsert_chat_thread(
+        {"id": thread, "title": "t", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    for index, message in enumerate(m for m in messages if m["role"] != "system"):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{thread}-{index}",
+                "threadId": thread,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+
+
 @pytest.mark.parametrize("stream", [True, False])
 def test_an_npu_chat_over_the_window_is_compacted_before_fastflowlm(flm, stream):
     recorded = flm()
@@ -1563,19 +1589,7 @@ def test_compact_now_resets_an_npu_chat_that_fits(
 
     thread = "npu-compact-thread"
     short = _long_chat(turns = 4)
-    studio_db.upsert_chat_thread(
-        {"id": thread, "title": "t", "modelType": "base", "modelId": "m", "createdAt": 1}
-    )
-    for index, message in enumerate(m for m in short if m["role"] != "system"):
-        studio_db.upsert_chat_message(
-            {
-                "id": f"{thread}-{index}",
-                "threadId": thread,
-                "role": message["role"],
-                "content": [{"type": "text", "text": message["content"]}],
-                "createdAt": index + 2,
-            }
-        )
+    _seed_thread(studio_db, thread, short)
 
     async def connected(self) -> bool:
         return False
@@ -1609,19 +1623,7 @@ def test_compact_now_resets_an_npu_chat_with_tools_switched_off(
 
     thread = "npu-compact-no-tools"
     short = _long_chat(turns = 4)
-    studio_db.upsert_chat_thread(
-        {"id": thread, "title": "t", "modelType": "base", "modelId": "m", "createdAt": 1}
-    )
-    for index, message in enumerate(m for m in short if m["role"] != "system"):
-        studio_db.upsert_chat_message(
-            {
-                "id": f"{thread}-{index}",
-                "threadId": thread,
-                "role": message["role"],
-                "content": [{"type": "text", "text": message["content"]}],
-                "createdAt": index + 2,
-            }
-        )
+    _seed_thread(studio_db, thread, short)
     recorded = flm(tools = True)
     status, body = _call(
         stream = True,
@@ -1663,3 +1665,74 @@ def test_the_checkpoint_fit_is_told_search_conversation_is_offered(monkeypatch, 
         _long_chat(), payload, tools = catalog, tool_loop = True, can_reset = can_reset
     )
     assert seen["recall_offered"] is can_reset
+
+
+def test_compact_now_resets_once_across_a_tool_call(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-tool-call"
+    chat = _long_chat(turns = 4)
+    chat[-1] = {"role": "user", "content": "latest question PYCALL"}
+    _seed_thread(studio_db, thread, chat)
+
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded = flm(tools = True)
+    status, body = _call(
+        stream = True,
+        messages = chat,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    first, second = (r["body"]["messages"] for r in recorded[:2])
+    assert second[: len(first)] == first
+    assert [m["role"] for m in second[len(first) :]] == ["assistant", "tool"]
+    [truncation] = _truncations(body)
+    assert truncation["manual"] is True
+
+
+def test_a_collected_npu_reply_keeps_its_compaction(flm):
+    flm()
+    status, body = _call(stream = False, messages = _long_chat(), context_overflow = "truncate_oldest")
+    assert status == 200
+    assert body["context_truncated"]["fits"] is True
+    assert body["context_truncated"]["dropped_messages"] > 0
+
+
+@pytest.mark.parametrize("offered, recalled", [(True, False), (False, True)])
+def test_a_replay_recalls_inline_only_without_search_conversation(monkeypatch, offered, recalled):
+    import core.inference.llama_cpp as lc
+    import routes.inference as ri
+
+    seen = {}
+    replay = {"fits": True, "dropped_messages": 4, "checkpoint": True, "checkpoint_started": False}
+
+    def recall(fitted, messages, **kwargs):
+        seen.update(kwargs)
+        return {"conversation": fitted, "counts": {}}
+
+    monkeypatch.setattr(lc, "_can_reset_epoch", lambda *a, **k: True)
+    monkeypatch.setattr(lc, "_fit_with_instruction_pins", lambda m, **k: (m, dict(replay)))
+    monkeypatch.setattr(lc, "_archive_and_recall", recall)
+    payload = ChatCompletionRequest(
+        messages = _long_chat(),
+        thread_id = "t",
+        context_overflow = "truncate_oldest",
+        context_window = 8192,
+        compaction_threshold = 6144,
+    )
+    name = "search_conversation" if offered else "python"
+    catalog = [{"type": "function", "function": {"name": name, "parameters": {}}}]
+    ri._fit_external_context(_long_chat(), payload, tools = catalog, tool_loop = True, can_reset = True)
+    assert seen["force_recall"] is recalled
