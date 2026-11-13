@@ -49,16 +49,18 @@ for (const mode of ["single", "multi"]) {
   });
 }
 
-test("a query chat's text goes through a stale-token sign-in", async (t) => {
+test("a query chat open on a stale token reopens after sign-in", async (t) => {
   const previousWindow = globalThis.window;
   const previousFetch = globalThis.fetch;
   const location = { pathname: "/chat", search: "?new=query-1", href: "" };
-  const drafts = await import("../src/features/chat/utils/composer-draft.ts");
-  const slot = drafts.composerDraftKey("query-1");
-  assert.ok(drafts.isQueryDraftId("query-1"));
+  const session = new Map<string, string>([["chat-draft:query-1", "edited"]]);
   globalThis.window = {
     location,
-    sessionStorage: { getItem: (key: string) => (key === slot ? 'what is "lora"?' : null) },
+    sessionStorage: {
+      getItem: (key: string) => session.get(key) ?? null,
+      setItem: (key: string, value: string) => void session.set(key, value),
+      removeItem: (key: string) => void session.delete(key),
+    },
   } as unknown as Window & typeof globalThis;
   globalThis.fetch = async (path) =>
     String(path).endsWith("/status")
@@ -84,5 +86,9 @@ test("a query chat's text goes through a stale-token sign-in", async (t) => {
   );
   await api.authFetch("/api/chat/sidebar/rows");
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(location.href, `/login?q=${encodeURIComponent('what is "lora"?')}`);
+  assert.equal(location.href, "/login");
+  // The route reads the marker back under query-draft.ts's names.
+  const { takeQueryDraftToResume } = await import("../src/features/chat/query-draft.ts");
+  assert.equal(takeQueryDraftToResume(), "query-1");
+  assert.equal(takeQueryDraftToResume(), null);
 });

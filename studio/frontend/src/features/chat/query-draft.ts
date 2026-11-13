@@ -6,6 +6,7 @@ import { createNavigationNonce } from "../../lib/navigation-nonce.ts";
 import {
   QUERY_DRAFT_ID_PREFIX,
   composerDraftKey,
+  composerPasteDraftKey,
   writeComposerDraft,
 } from "./utils/composer-draft.ts";
 
@@ -21,6 +22,29 @@ export function seedQueryDraft(text: string, temporary: boolean): string {
   if (temporary) temporaryQueries.set(composerDraftKey(nonce), text);
   else writeComposerDraft(composerDraftKey(nonce), text);
   return nonce;
+}
+
+const RESUME_KEY = "chat-query-resume";
+
+// A query chat interrupted by sign-in reopens after it; an account switch clears session storage.
+export function rememberQueryDraftToResume(nonce: string): void {
+  try {
+    window.sessionStorage.setItem(RESUME_KEY, nonce);
+  } catch {
+    // Only the reopen is lost.
+  }
+}
+
+export function takeQueryDraftToResume(): string | null {
+  try {
+    const nonce = window.sessionStorage.getItem(RESUME_KEY);
+    window.sessionStorage.removeItem(RESUME_KEY);
+    if (!nonce) return null;
+    const saved = [composerDraftKey(nonce), composerPasteDraftKey(nonce)];
+    return saved.some((key) => window.sessionStorage.getItem(key) !== null) ? nonce : null;
+  } catch {
+    return null;
+  }
 }
 
 export function temporaryQueryDraft(draftKey: string): string {

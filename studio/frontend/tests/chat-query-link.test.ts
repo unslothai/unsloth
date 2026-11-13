@@ -29,7 +29,13 @@ const session = memoryStorage();
 
 const { queryParam } = await import("../src/features/chat/chat-search.ts");
 const drafts = await import("../src/features/chat/utils/composer-draft.ts");
-const { seedQueryDraft, temporaryQueryDraft, clearTemporaryQueryDraft } = await import(
+const {
+  seedQueryDraft,
+  temporaryQueryDraft,
+  clearTemporaryQueryDraft,
+  rememberQueryDraftToResume,
+  takeQueryDraftToResume,
+} = await import(
   "../src/features/chat/query-draft.ts"
 );
 
@@ -78,10 +84,24 @@ test("a LAN address, which has no crypto.randomUUID, still opens the link", () =
 
 test("the chat route seeds the draft and drops q without sending", () => {
   const route = readText("../src/app/routes/chat.tsx");
-  assert.match(route, /if \(!search\.q \|\| preload \|\| abortController\.signal\.aborted\) return;/);
+  assert.match(route, /if \(preload \|\| abortController\.signal\.aborted\) return;/);
   assert.match(route, /seedQueryDraft\(search\.q, store\.incognito\)/);
   assert.match(route, /search: \{ new: nonce \}, replace: true/);
   assert.doesNotMatch(route, /\.send\(|append\(|runPrompt/);
   const index = readText("../src/app/routes/index.tsx");
   assert.match(index, /to === "\/chat" \? \{ to, search: \{ q \} \} : \{ to \}/);
+});
+
+test("sign-in reopens only a query chat that still has a saved draft, once", () => {
+  const nonce = seedQueryDraft("resume me", false);
+  rememberQueryDraftToResume(nonce);
+  assert.equal(takeQueryDraftToResume(), nonce);
+  assert.equal(takeQueryDraftToResume(), null);
+  const pasteOnly = "query-paste-only";
+  drafts.writePasteDraft(drafts.composerPasteDraftKey(pasteOnly), ["pasted"]);
+  rememberQueryDraftToResume(pasteOnly);
+  assert.equal(takeQueryDraftToResume(), pasteOnly);
+  // An account switch clears session storage, slot and marker alike.
+  rememberQueryDraftToResume("query-gone");
+  assert.equal(takeQueryDraftToResume(), null);
 });

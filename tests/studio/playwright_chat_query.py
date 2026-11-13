@@ -186,10 +186,11 @@ def run(browser):
     )
     page.reload(wait_until = "domcontentloaded")
     expect(page.get_by_label("Password", exact = True)).to_be_visible(timeout = 20000)
-    assert "q=reopened%20edit" in page.url, page.url
+    assert "/login" in page.url and "q=" not in page.url, page.url
     page.get_by_label("Password", exact = True).fill("test-password")
     page.get_by_role("button", name = "Login", exact = True).click()
     expect(composer(page)).to_have_value("reopened edit", timeout = 20000)
+    assert "new=query-" in page.url, page.url
     assert_unsent(posts)
     context.close()
     print("PASS a reopened query chat keeps its text through sign-in", flush = True)
