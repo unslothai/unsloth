@@ -168,6 +168,11 @@ __device__ __forceinline__ void mma_u8s8(i32* d, const u32* a, u32 b0, u32 b1) {
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "r"(d[0]), "r"(d[1]), "r"(d[2]), "r"(d[3]));
 }
 
+// A probability before rounding, never above 255. The exponent is rounded in the frame of MAGIC_F * scale, so for
+// large scores (sharp attention: late DiT blocks) the largest key of a tile can come out above 255.5; unclamped it
+// would round to 256, which pack4 stores as 0 with a carry into the next key.
+__device__ __forceinline__ float prob(float x) { return fminf(ex2(x), 255.0f); }
+
 // Four floats MAGIC_F + p (p an integer in [0, 255]) -> the four p packed low byte first.
 __device__ __forceinline__ u32 pack4(float a, float b, float c, float d) {
   return (__float_as_uint(a) + (__float_as_uint(b) << 8) + (__float_as_uint(c) << 16) + (__float_as_uint(d) << 24)) -
@@ -352,21 +357,21 @@ extern "C" __global__ void unsloth_i8attn(
       }
       const float b0 = ex2(d0), b1 = ex2(d1);
       const float o0 = g0 + (LOG2_255 - mt0), o1 = g1 + (LOG2_255 - mt1);
-      // probabilities 255 * 2^(score - tile max), rounded by the MAGIC_F addition
+      // probabilities min(255, 255 * 2^(score - tile max)), rounded by the MAGIC_F addition
       u32 sum0 = 0u, sum1 = 0u;
 #pragma unroll
       for (int kb = 0; kb < KB32; ++kb) {
 #pragma unroll
         for (int h = 0; h < 2; ++h) {
           const int na = 4 * kb + 2 * h, nb = na + 1;
-          const u32 p0 = pack4(ex2(fmaf(__int_as_float(c[na][0]), f0, o0)) + MAGIC_F,
-                               ex2(fmaf(__int_as_float(c[na][1]), f0, o0)) + MAGIC_F,
-                               ex2(fmaf(__int_as_float(c[nb][0]), f0, o0)) + MAGIC_F,
-                               ex2(fmaf(__int_as_float(c[nb][1]), f0, o0)) + MAGIC_F);
-          const u32 p1 = pack4(ex2(fmaf(__int_as_float(c[na][2]), f1, o1)) + MAGIC_F,
-                               ex2(fmaf(__int_as_float(c[na][3]), f1, o1)) + MAGIC_F,
-                               ex2(fmaf(__int_as_float(c[nb][2]), f1, o1)) + MAGIC_F,
-                               ex2(fmaf(__int_as_float(c[nb][3]), f1, o1)) + MAGIC_F);
+          const u32 p0 = pack4(prob(fmaf(__int_as_float(c[na][0]), f0, o0)) + MAGIC_F,
+                                prob(fmaf(__int_as_float(c[na][1]), f0, o0)) + MAGIC_F,
+                                prob(fmaf(__int_as_float(c[nb][0]), f0, o0)) + MAGIC_F,
+                                prob(fmaf(__int_as_float(c[nb][1]), f0, o0)) + MAGIC_F);
+          const u32 p1 = pack4(prob(fmaf(__int_as_float(c[na][2]), f1, o1)) + MAGIC_F,
+                                prob(fmaf(__int_as_float(c[na][3]), f1, o1)) + MAGIC_F,
+                                prob(fmaf(__int_as_float(c[nb][2]), f1, o1)) + MAGIC_F,
+                                prob(fmaf(__int_as_float(c[nb][3]), f1, o1)) + MAGIC_F);
           pa[qt][kb][2 * h] = p0;
           pa[qt][kb][2 * h + 1] = p1;
           sum0 = bytesum(p0, sum0);

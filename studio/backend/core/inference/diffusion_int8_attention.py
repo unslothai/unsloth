@@ -46,6 +46,9 @@ RACE_TOKENS = (4096, 1024)
 # the accuracy every card must reach against fp32 attention on the probe before the kernel may run at all
 MIN_COSINE = 0.999
 MAX_REL_L1 = 0.05
+# the same probe with q and k scaled up, as the sharp attention of late DiT blocks is: every output finite and close
+SHARP_GAIN = 5.0
+MIN_SHARP_COSINE = 0.99
 LOG2E = 1.4426950408889634
 
 # Per CUDA capability and head dim: keys per tile (bn), warps per block (wpc), 16-row query tiles per warp (nq),
@@ -638,7 +641,7 @@ def _median_ms(fns: dict, rounds: int = 5) -> dict:
 def _check(
     device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Optional[Callable], timed: bool
 ) -> dict:
-    """``ok``: the kernel runs here and matches fp32 attention on the probe. ``ms``: int8 and incumbent milliseconds
+    """``ok``: the kernel runs here and matches fp32 attention on the probe, also with q and k scaled up. ``ms``: int8 and incumbent milliseconds
     per call at each RACE_TOKENS size (when ``timed``). ``min_tokens``: the sequence length from which the kernel
     is more than 2% faster than the incumbent, or None when it is not at the larger size."""
     import torch
@@ -648,13 +651,20 @@ def _check(
         with torch.no_grad():
             q, k, v = probe_inputs(device, dtype, 1000, min(int(heads), 4), head_dim)
             acc = accuracy(int8_attention(q, k, v), reference_attention(q, k, v))
+            q, k = q * SHARP_GAIN, k * SHARP_GAIN
+            sharp = int8_attention(q, k, v)
+            finite = bool(torch.isfinite(sharp).all())
+            sharp_cos = accuracy(sharp, reference_attention(q, k, v))["cos"] if finite else 0.0
     except torch.OutOfMemoryError:
         raise
     except Exception as exc:  # noqa: BLE001 -- no kernel on this card
         out["error"] = repr(exc)[:300]
         return out
     out.update(acc)
-    out["ok"] = bool(acc["cos"] >= MIN_COSINE and acc["rel_l1"] <= MAX_REL_L1)
+    out["sharp_cos"] = sharp_cos
+    out["ok"] = bool(
+        acc["cos"] >= MIN_COSINE and acc["rel_l1"] <= MAX_REL_L1 and sharp_cos >= MIN_SHARP_COSINE
+    )
     if out["ok"]:
         dev = torch.device(device)
         _VERIFIED.add(
@@ -917,7 +927,9 @@ def status(transformer: Any = None) -> dict:
         "calls": dict(STATS),
         "verdicts": {
             f"cuda:{k[0]} {k[1]} heads={k[2]} head_dim={k[3]} vs {k[4]}": {
-                x: v.get(x) for x in ("ok", "cos", "rel_l1", "ms", "min_tokens", "error") if x in v
+                x: v.get(x)
+                for x in ("ok", "cos", "rel_l1", "sharp_cos", "ms", "min_tokens", "error")
+                if x in v
             }
             for k, v in _VERDICTS.items()
         },

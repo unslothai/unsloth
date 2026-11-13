@@ -2830,29 +2830,48 @@ def race_checkpoint_attention(
         pos[text:, 2] = (idx % side).double()
         pos[:text, 0] = torch.arange(text).double()
         rotary = rope(pos.to(device))
-        ms = []
-        for backend, int8 in variants:
-            proc._attention_backend = backend
+
+        def select(variant: tuple) -> None:
+            proc._attention_backend = variant[0]
             if kernel:
-                proc._unsloth_int8, proc._unsloth_int8_min_tokens = int8, 0
-            for _ in range(2):
-                attn(x, rotary, None)
-            times = []
+                proc._unsloth_int8, proc._unsloth_int8_min_tokens = variant[1], 0
+
+        def once() -> float:
+            a = torch.cuda.Event(enable_timing = True)
+            b = torch.cuda.Event(enable_timing = True)
+            a.record()
+            attn(x, rotary, None)
+            b.record()
+            b.synchronize()
+            return a.elapsed_time(b)
+
+        times: list = [[] for _ in variants]
+        if kernel:
+            # interleaved rounds: a card that changes speed while it is being timed (an A100 does, about a second
+            # into a load) then slows or speeds every variant alike instead of the one timed last
+            for variant in variants:
+                select(variant)
+                for _ in range(2):
+                    attn(x, rotary, None)
             for _ in range(5):
-                a = torch.cuda.Event(enable_timing = True)
-                b = torch.cuda.Event(enable_timing = True)
-                a.record()
-                attn(x, rotary, None)
-                b.record()
-                b.synchronize()
-                times.append(a.elapsed_time(b))
-            ms.append(sorted(times)[len(times) // 2])
-        return ms
+                for i, variant in enumerate(variants):
+                    select(variant)
+                    times[i].append(once())
+        else:
+            for i, variant in enumerate(variants):
+                select(variant)
+                for _ in range(2):
+                    attn(x, rotary, None)
+                times[i] = [once() for _ in range(5)]
+        return [sorted(t)[len(t) // 2] for t in times]
 
     variants = ((native, False), (engaged, False)) + (((native, True),) if kernel else ())
     try:
         with torch.no_grad(), torch.cuda.device(device):
-            rows = {image: timed(image, variants) for image in (_KERNEL_RACE_IMAGES if kernel else _RACE_ROWS[:1])}
+            rows = {
+                image: timed(image, variants)
+                for image in (_KERNEL_RACE_IMAGES if kernel else _RACE_ROWS[:1])
+            }
     except torch.OutOfMemoryError:
         raise
     except Exception:  # noqa: BLE001 - untimed: the caller keeps the INT8 route it already engaged
@@ -2968,7 +2987,9 @@ def _sage_incumbent(attn: Any) -> tuple:
     from .video_minimax_h3_attn import h3_processor_base
 
     backend = attn.processor._attention_backend
-    dispatch = getattr(sys.modules.get(h3_processor_base(attn).__module__), "dispatch_attention_fn", None)
+    dispatch = getattr(
+        sys.modules.get(h3_processor_base(attn).__module__), "dispatch_attention_fn", None
+    )
     if not callable(dispatch):
         raise RuntimeError("no attention dispatcher to time SageAttention with")
 

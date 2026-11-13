@@ -308,6 +308,50 @@ def _fake_cuda(
     return seen
 
 
+def test_the_card_check_also_probes_sharp_attention(monkeypatch):
+    """The on-card check runs the probe a second time with q and k scaled up (the scores of late DiT blocks) and
+    refuses a kernel whose output there is not finite or not close to fp32 attention."""
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    sharp_q = 1.6 * I.SHARP_GAIN / 2
+
+    def kernel(broken):
+        def run(
+            q,
+            k,
+            v,
+            scale = None,
+            config = None,
+        ):
+            out = I.reference_attention(q, k, v).to(v.dtype)
+            if q.float().std() > sharp_q:
+                if broken == "nan":
+                    out[0, 3, 0, 0] = float("nan")
+                elif broken == "far":
+                    out = out.flip(1)
+            return out
+
+        return run
+
+    for broken, ok in ((None, True), ("nan", False), ("far", False)):
+        monkeypatch.setattr(I, "int8_attention", kernel(broken))
+        monkeypatch.setattr(I, "_VERIFIED", set())
+        found = I._check("cpu", torch.float32, 4, 64, None, timed = False)
+        assert found["ok"] is ok and found["cos"] >= I.MIN_COSINE
+        assert (found["sharp_cos"] >= I.MIN_SHARP_COSINE) is ok
+        assert bool(I._VERIFIED) is ok
+
+
+def test_no_probability_is_packed_unclamped():
+    """Every probability goes through the clamp to 255 before it is rounded and packed into a byte."""
+    source = K.KERNEL_SOURCE
+    assert "fminf(ex2(x), 255.0f)" in source
+    assert (
+        source.count("prob(fmaf(") == 8
+        and "pack4(ex2(" not in source
+        and " ex2(fmaf(" not in source
+    )
+
+
 def test_install_off_cuda_and_kill_switch(monkeypatch):
     dit = _fake_dit()
     assert I.install_int8_attention(dit, device = "cpu", dtype = torch.bfloat16) == 0
@@ -553,11 +597,17 @@ def test_checkpoint_race_times_the_kernel_on_a_block(monkeypatch, _active_backen
     race: dict = {}
     monkeypatch.setattr(I, "install_int8_attention", fake_install)
     monkeypatch.setattr(
-        H, "race_checkpoint_attention", lambda *a, kernel = False: race.get("found") if kernel else 1 / 0
+        H,
+        "race_checkpoint_attention",
+        lambda *a, kernel = False: race.get("found") if kernel else 1 / 0,
     )
     log = logging.getLogger(__name__)
 
-    def run(sage = False, forced = False, mods = blocks):
+    def run(
+        sage = False,
+        forced = False,
+        mods = blocks,
+    ):
         installs.clear()
         for m in blocks:
             m.processor._unsloth_int8 = False
@@ -568,7 +618,10 @@ def test_checkpoint_race_times_the_kernel_on_a_block(monkeypatch, _active_backen
         return [(m.processor._unsloth_int8, m.processor._unsloth_int8_min_tokens) for m in blocks]
 
     # [native, engaged, kernel] ms per image row count. Faster than native on both canvases: every length
-    race["found"] = {"native": "_native_math", "kernel": {4096: [10.0, 10.0, 9.0], 1024: [3.0, 3.0, 2.5]}}
+    race["found"] = {
+        "native": "_native_math",
+        "kernel": {4096: [10.0, 10.0, 9.0], 1024: [3.0, 3.0, 2.5]},
+    }
     assert run() == 2 and routed() == [(True, 0)] * 2
     assert len(installs) == 1 and installs[0]["force"] and installs[0]["modules"] == blocks
     record = getattr(model, H.ATTENTION_RACE_ATTR)
@@ -756,6 +809,25 @@ def test_op_runs_the_kernel_only_where_it_was_verified(monkeypatch):
 
 
 @needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+@pytest.mark.parametrize("gain", [8.0, 16.0])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_large_scores_stay_finite_and_accurate(head_dim, gain, dtype):
+    """q and k as large as a late DiT block's: the score scale times 2^23 is past 2^16, where a tile's largest
+    probability used to round to 256 and wrap to 0 (rows of garbage and non-finite values)."""
+    g = torch.Generator().manual_seed(int(gain) + head_dim)
+    shape = (1, 1100, 8, head_dim)
+    q = (torch.randn(shape, generator = g) * gain).to("cuda", dtype)
+    k = (torch.randn(shape, generator = g) * gain).to("cuda", dtype)
+    v = torch.randn(shape, generator = g).to("cuda", dtype)
+    p = I.quantise(q, k, v, _cuda_config(head_dim))
+    assert float((12582912.0 * p["qs"][:, :1100] * p["ks"].amax((1, 2))[:, None]).max()) > 2**16
+    out = I.int8_attention(q, k, v)
+    assert bool(torch.isfinite(out).all())
+    assert I.accuracy(out, I.reference_attention(q, k, v))["cos"] >= 0.98
+
+
+@needs_kernel
 def test_timed_verdict_reports_both_sides():
     found = I.verdict("cuda", torch.bfloat16, 8, 128)
     assert found["ok"] and set(found["ms"]) == set(I.RACE_TOKENS)
@@ -837,7 +909,12 @@ def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     blocks = [m for m in mods if any(m is b.attn for b in model.transformer_blocks)]
     saved = {m: m.processor._attention_backend for m in mods}
     assert len(blocks) == 2
-    assert I.install_int8_attention(model, device = "cuda", dtype = torch.bfloat16, modules = blocks, force = True) == 2
+    assert (
+        I.install_int8_attention(
+            model, device = "cuda", dtype = torch.bfloat16, modules = blocks, force = True
+        )
+        == 2
+    )
     I.remove_int8_attention(model)
     before = I.STATS["int8"]
     found = H.race_checkpoint_attention(model, saved, torch.bfloat16, kernel = True)
