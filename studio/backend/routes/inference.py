@@ -888,6 +888,20 @@ def _context_budget_http_error(exc) -> "HTTPException":
     )
 
 
+def _refuse_what_ollama_would_cut(provider_type, truncation, window) -> None:
+    """Ollama drops the middle of an oversized prompt (instructions included) instead of refusing it."""
+    if (
+        provider_type != "ollama"
+        or not window
+        or not truncation
+        or truncation.get("fits", True)
+        or int(truncation.get("irreducible_tokens") or 0) < window
+    ):
+        return
+    context_refusal.record_fit({**truncation, "context_length": window})
+    raise context_refusal.ContextBudgetExceeded(truncation["irreducible_tokens"], window)
+
+
 def _openai_stream_error_sse(error: dict) -> str:
     # Flag failed so the middleware does not claim a preview-owned model on a failed stream.
     from core.inference.llama_keepwarm import mark_current_response_failed
@@ -29850,16 +29864,18 @@ async def _proxy_to_external_provider(
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
         _request_branch = chat_messages
 
-        async def _external_context_fitter(messages):
+        # The loop passes this turn's catalogue: a withdrawn one (tool_choice "none", spent budget) costs nothing.
+        async def _external_context_fitter(messages, tools = _external_fit_tools):
             nonlocal _external_truncation
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                 _fit_external_context,
                 messages,
                 payload,
-                tools = _external_fit_tools,
+                tools = tools,
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
                 _external_truncation = truncation
@@ -29889,6 +29905,12 @@ async def _proxy_to_external_provider(
             payload,
             tools = _external_fit_tools,
         )
+        try:
+            _refuse_what_ollama_would_cut(
+                provider_type, _external_truncation, payload.context_window
+            )
+        except context_refusal.ContextBudgetExceeded as exc:
+            raise _context_budget_http_error(exc)
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
 
     cancel_event = threading.Event()
@@ -30127,17 +30149,16 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            error = (
+                _openai_stream_error_chunk(exc)
+                if isinstance(exc, context_refusal.ContextBudgetExceeded)
+                else {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+            )
             if _non_stream_custom_responses:
-                yield json.dumps(
-                    {"error": {"message": _friendly_error(exc), "type": "server_error"}}
-                )
+                yield json.dumps(error)
                 return
             # A bare EOF reads as success to the chat client; surface the failure.
-            yield (
-                "data: "
-                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
-                + "\n\n"
-            )
+            yield "data: " + json.dumps(error) + "\n\n"
             yield "data: [DONE]\n\n"
         finally:
             cancel_event.set()
