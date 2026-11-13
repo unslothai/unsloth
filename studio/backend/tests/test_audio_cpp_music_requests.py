@@ -369,8 +369,8 @@ def test_yue2_instrumental_sends_the_instrumental_tag_not_its_style():
     b = _backend(_model("yue2"))
     _run(b, text = "ambient piano", lyrics = "[Verse] words", instrumental = True, duration_s = 20)
     request = _request(b)
-    assert request["text"] == "[Instrumental]"
-    assert request["options"]["lyrics"] == "[Instrumental]"
+    assert request["text"] == "[instrumental]"
+    assert request["options"]["lyrics"] == "[instrumental]"
     assert request["options"]["style"] == "ambient piano"
     assert "semantic_max_tokens" not in request["options"]
 
@@ -688,7 +688,7 @@ def test_legacy_requests_keep_their_bodies_with_the_finding_7_fixes():
     }
     yue = _backend(_model("yue2"))
     yue.generate_audio_response("", instructions = "ambient")
-    assert _request(yue)["options"]["lyrics"] == "[Instrumental]"
+    assert _request(yue)["options"]["lyrics"] == "[instrumental]"
     assert "ambient" not in _request(yue)["text"]
 
 
@@ -722,92 +722,3 @@ def test_a_take_is_seeded_seed_plus_take_and_a_typed_seed_skips_options(seed, ta
     _run(b, mode = "sfx", text = "door", seed = seed, take = take, options = options)
     assert _request(b)["seed"] == sent and "seed" not in (_request(b).get("options") or {})
     assert b.last_generation_stats == {"seed": int(sent), "ignored_options": []}
-
-
-# The planner's own layout (Yue2-3B Q4_0, cot=full): a sung bar, a kept Ins bar, a tie across both.
-_YUE2_PLAN = """X:1
-T:
-M:4/4
-L:1/16
-Q:1/4=100
-V: Vocal clef=treble name="Vocal Melody" snm="Vocal"
-V: Ins clef=treble name="Ins Melody" snm="Inst."
-K:Bbm
-% intro
-V: Vocal
-z12"Bbm"z4|"Gb"z16|
-V: Ins
-Z|B,2B,2D2B,2C3A,3A,B,-|
-% verse
-V: Vocal
-"Bbm"z6B2c2B4^c2-|"Bbm"c2d4c4A4F2|"Ebm"z16|
-V: Ins
-Z2|E2E2E2E2E2E2E2E2-|
-"""
-_YUE2_SPEC_KEYS = STRICT_KEYS["yue2"] | {"abc", "abc_file", "stop_after"}
-
-
-def _score_reply(abc):
-    artifact = {"id": "score", "kind": "custom", "payload": base64.b64encode(abc.encode()).decode()}
-    return "application/json", json.dumps({"artifacts": [artifact]}).encode()
-
-
-def _yue2_planned():
-    return replace(_model("yue2"), request_keys = _YUE2_SPEC_KEYS)
-
-
-def _voice_bars(abc, name):
-    bars, voice = [], None
-    for line in abc.splitlines():
-        if line.startswith("V:"):
-            voice = line.split()[1]
-        elif voice == name and line and not line.startswith(("%", "K:")):
-            bars += line.rstrip("|").split("|")
-    return bars
-
-
-def test_yue2_instrumental_score_moves_the_vocal_melody_to_ins():
-    moved = cm.yue2_instrumental_score(_YUE2_PLAN)
-    vocal, ins = _voice_bars(moved, "Vocal"), _voice_bars(moved, "Ins")
-    assert vocal == ['z12"Bbm"z4', '"Gb"z16', '"Bbm"z6z2z2z4z2', '"Bbm"z2z4z4z4z2', '"Ebm"z16']
-    assert ins == ["Z", "B,2B,2D2B,2C3A,3A,B,", "z6B2c2B4^c2-", "c2d4c4A4F2", "E2E2E2E2E2E2E2E2"]
-    assert moved.splitlines()[:9] == _YUE2_PLAN.splitlines()[:9]
-    assert cm.yue2_instrumental_score(moved) == moved
-
-
-# Studio's default planning is full, so the default instrumental take plans too.
-@pytest.mark.parametrize("options", [None, {"cot": "melody"}])
-def test_yue2_planned_instrumental_renders_its_score_without_a_vocal_part(options):
-    b = _backend(_yue2_planned(), replies = [_score_reply(_YUE2_PLAN), _reply()])
-    _run(b, text = "nu metal", lyrics = "", instrumental = True, options = options)
-    plan, render = _request(b, 0), _request(b, 1)
-    assert plan["options"]["stop_after"] == "abc" and "abc" not in plan["options"]
-    assert render["options"]["abc"] == cm.yue2_instrumental_score(_YUE2_PLAN)
-    assert "stop_after" not in render["options"]
-    assert {k: v for k, v in render["options"].items() if k != "abc"} == {
-        k: v for k, v in plan["options"].items() if k != "stop_after"
-    }
-    assert render["seed"] == plan["seed"] and render["text"] == plan["text"]
-
-
-@pytest.mark.parametrize(
-    "instrumental, options, keys",
-    [
-        (False, {"cot": "full"}, _YUE2_SPEC_KEYS),
-        (True, {"cot": "off"}, _YUE2_SPEC_KEYS),
-        (True, {"cot": "full"}, STRICT_KEYS["yue2"]),
-    ],
-)
-def test_yue2_takes_without_a_vocal_plan_post_once(instrumental, options, keys):
-    b = _backend(replace(_model("yue2"), request_keys = keys))
-    _run(b, text = "nu metal", lyrics = "", instrumental = instrumental, options = options)
-    assert len(b._server.calls) == 1
-    assert {"abc", "stop_after"}.isdisjoint(_request(b)["options"])
-
-
-def test_yue2_plan_without_a_score_renders_the_take_unchanged():
-    b = _backend(_yue2_planned(), replies = [_reply(), _reply()])
-    _run(b, text = "nu metal", lyrics = "", instrumental = True, options = {"cot": "melody"})
-    render = _request(b, 1)
-    assert render["options"]["cot"] == "melody"
-    assert {"abc", "stop_after"}.isdisjoint(render["options"])

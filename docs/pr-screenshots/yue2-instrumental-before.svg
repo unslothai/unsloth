@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300">
+  <rect width="900" height="300" fill="#fff7ed"/>
+  <text x="40" y="58" font-family="sans-serif" font-size="28" fill="#9a3412">Before · YuE2 instrumental request</text>
+  <rect x="40" y="96" width="820" height="120" rx="12" fill="#ffedd5" stroke="#fb923c"/>
+  <text x="72" y="150" font-family="monospace" font-size="32" fill="#7c2d12">lyrics: [Instrumental]</text>
+  <text x="72" y="190" font-family="sans-serif" font-size="22" fill="#9a3412">Title-case tag can be treated as lyrics by audio.cpp.</text>
+</svg>
