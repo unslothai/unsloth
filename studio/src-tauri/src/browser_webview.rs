@@ -1629,6 +1629,8 @@ async fn create_view<R: Runtime>(
         let _ = apply_mute(&webview, true);
     }
     #[cfg(windows)]
+    keep_blocks_unsaved(&webview);
+    #[cfg(windows)]
     if let Some(origin) = origin {
         if let Err(error) = protect_local_frames(&webview, origin).await {
             let _ = close_view(&webview);
@@ -1658,6 +1660,64 @@ async fn create_view<R: Runtime>(
         );
     start_url_poll(&app);
     Ok(webview)
+}
+
+/// WebView2 saves a state set on a permission request and stops asking, so a Block answered through
+/// wry's handler would outlast the rule: changing it back to Ask would leave the site blocked. A
+/// blocked request is marked not to be saved; the answers to WebView2's own prompt still are.
+#[cfg(windows)]
+fn keep_blocks_unsaved<R: Runtime>(page: &Webview<R>) {
+    use webview2_com::{
+        Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2PermissionRequestedEventArgs3, COREWEBVIEW2_PERMISSION_KIND,
+            COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+        },
+        PermissionRequestedEventHandler,
+    };
+    use windows_core::Interface;
+    let app = page.app_handle().clone();
+    let label = page.label().to_string();
+    let hooked = page.with_webview(move |platform| {
+        let result = (|| -> windows_core::Result<()> {
+            let view = unsafe { platform.controller().CoreWebView2()? };
+            let mut token = 0;
+            unsafe {
+                view.add_PermissionRequested(
+                    &PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+                        let Some(args) = args else { return Ok(()) };
+                        let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                        args.PermissionKind(&mut kind)?;
+                        let kind = if kind == COREWEBVIEW2_PERMISSION_KIND_CAMERA {
+                            PermissionKind::Camera
+                        } else if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                            PermissionKind::Microphone
+                        } else {
+                            return Ok(());
+                        };
+                        let blocked = app.get_webview(&label).is_some_and(|page| {
+                            matches!(page_permission_for(&page, kind), PermissionResponse::Deny)
+                        });
+                        if blocked {
+                            // An older runtime without the property keeps saving, as before.
+                            if let Ok(request) =
+                                args.cast::<ICoreWebView2PermissionRequestedEventArgs3>()
+                            {
+                                let _ = request.SetSavesInProfile(false);
+                            }
+                        }
+                        Ok(())
+                    })),
+                    &mut token,
+                )
+            }
+        })();
+        if let Err(error) = result {
+            log::warn!("Could not keep blocked capture requests unsaved: {error}");
+        }
+    });
+    if let Err(error) = hooked {
+        log::warn!("Could not keep blocked capture requests unsaved: {error}");
+    }
 }
 
 // Wry's Windows navigation callback covers only the top document, so frames are filtered here.
@@ -2988,6 +3048,18 @@ mod tests {
         assert!(
             serde_json::from_str::<CaptureRules>(r#"{"camera":"allow","microphone":"ask"}"#)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_blocked_capture_request_is_not_saved_by_webview2() {
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(code.contains("    #[cfg(windows)]\n    keep_blocks_unsaved(&webview);\n"));
+        let start = code.find("fn keep_blocks_unsaved").unwrap();
+        let body = &code[start..start + code[start..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("PermissionResponse::Deny") && body.contains(".SetSavesInProfile(false)")
         );
     }
 
