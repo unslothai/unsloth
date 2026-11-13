@@ -22,7 +22,7 @@ export function useNpuDisplayNames(
     if (!wantsListing || status?.ready !== true) return;
     listed = true;
     void refreshNpuModels().then((ok) => {
-      // A failed listing may retry on a later render, spaced out so a down server is not hammered.
+      // Retry a failed listing on a later render, at most every 30 s.
       if (!ok) setTimeout(() => (listed = false), 30_000);
     });
   }, [wantsListing, status?.ready]);
@@ -38,7 +38,6 @@ export function useNpuDisplayName(
   return useNpuDisplayNames(isNpuModelId(idOrPath))(idOrPath);
 }
 
-/** Non-hook form for toasts and callbacks. */
 export function npuDisplayNameNow(
   idOrPath: string | null | undefined,
 ): string | null {

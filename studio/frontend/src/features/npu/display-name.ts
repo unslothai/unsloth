@@ -7,12 +7,11 @@ type NpuNamed = {
   hf_repo?: string | null;
 };
 
-/** The Hugging Face repo id (owner/name), or the Lemonade id when the server sent no repo. */
 export function npuRepoLabel(model: NpuNamed): string {
   return model.hf_repo?.trim() || model.id;
 }
 
-/** The repo name without its owner, as GGUF rows show theirs; the Lemonade id when there is no repo. */
+/** The repo name without its owner, as GGUF rows show theirs. */
 export function npuDisplayName(model: NpuNamed): string {
   const repo = model.hf_repo?.trim();
   return (repo && repo.slice(repo.lastIndexOf("/") + 1)) || model.id;
