@@ -1146,8 +1146,23 @@ def _reattach_saved_mtp_head(
                 cache_dir = cache_dir,
                 local_files_only = local_files_only,
             )
-        except Exception:
-            return  # no head uploaded beside this adapter
+        except Exception as error:
+            try:
+                from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+                missing = isinstance(error, EntryNotFoundError) and not isinstance(
+                    error, LocalEntryNotFoundError
+                )
+            except ImportError:
+                missing = False
+            if not missing:
+                print(
+                    f"Unsloth: Could not check for a trained MTP head in '{adapter_dir}' "
+                    f"({type(error).__name__}). If one exists, adapter saves may omit it and "
+                    "later merges may keep the stock head. "
+                    "Retry with Hub access or a cached sidecar."
+                )
+            return
         adapter_dir = os.path.dirname(path)
     try:
         from .speculative import attach_saved_mtp_head
