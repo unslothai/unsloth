@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Family evidence from a Hub safetensors header (SDXL only); advisory, the load check stays final;
+"""Family evidence from a Hub single-file header (SDXL only); advisory, the load check stays final;
 remote pipeline picks need no evidence (trusted repos); detect_family_for_pick is network-free;
 prefetch_for_pick only for user requests."""
 
@@ -12,7 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-_SINGLE_FILE_SUFFIXES = (".safetensors", ".sft")
+_SINGLE_FILE_SUFFIXES = (".safetensors", ".sft", ".gguf")
+_GGUF_TABLE_BYTES = 1024 * 1024
 
 # (repo id lowercased, filename) -> (monotonic time read, family name or None for a header that names no family).
 # Only bridges a request's prefetch to the validation and load that follow it; a refresh REPLACES an entry (never
@@ -107,6 +108,22 @@ def read_hub_checkpoint_family(
     return _dit_family(classify_tensors(shapes, meta.metadata))
 
 
+def read_hub_gguf_family(repo_id: str, filename: str, hf_token: Any) -> Optional[str]:
+    from .diffusion_compat import _read_gguf_header
+    from .diffusion_content import classify_tensors
+    from .diffusion_families import _gguf_header_tensors
+
+    from hub.utils.hf_tokens import normalize_token
+
+    tensors = _gguf_header_tensors(
+        _read_gguf_header(repo_id, filename, normalize_token(hf_token), max_bytes = _GGUF_TABLE_BYTES)
+    )
+    if tensors is None:
+        raise ValueError("no complete GGUF tensor table in the header read")
+    shapes = {str(t.name): [int(d) for d in reversed(t.shape)] for t in tensors}
+    return _dit_family(classify_tensors(shapes))
+
+
 def prefetch_for_pick(
     repo_id: Optional[str],
     filename: Optional[str],
@@ -135,7 +152,10 @@ def prefetch_for_pick(
             and _family_from_hub_evidence(repo_id, filename) is None
         ):
             return
-        family = read_hub_checkpoint_family(repo_id, filename, hf_token)
+        if filename.lower().endswith(".gguf"):
+            family = read_hub_gguf_family(repo_id, filename, hf_token)
+        else:
+            family = read_hub_checkpoint_family(repo_id, filename, hf_token)
     except Exception:  # noqa: BLE001 - evidence is best effort; validation and the load still decide
         return
     _remember(repo_id, filename, family)
