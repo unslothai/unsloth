@@ -619,7 +619,10 @@ def test_auto_keeps_the_fit_choice_on_rocm_and_pre_turing(h3i, monkeypatch, rocm
     _fake_card(monkeypatch, cap)
     assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 192.0)[0] is None
     te = h3i.te_gb_for("int8")
-    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 192.0, host_gb = 512.0, te_gb = te)[0] is None
+    assert (
+        h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 192.0, host_gb = 512.0, te_gb = te)[0]
+        is None
+    )
     assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 32.0)[0] == "int8"
     assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 16.0)[0] == "int8"
     assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = 192.0)[0] == "int8"
