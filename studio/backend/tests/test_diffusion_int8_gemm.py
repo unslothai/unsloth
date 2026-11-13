@@ -1614,7 +1614,9 @@ def test_the_sm8x_prefetch_fix_is_part_of_the_kernel_cache_key(monkeypatch):
         calls = []
         monkeypatch.setattr(g8, "_PREFETCH_FIX_ON", None)
         monkeypatch.setattr(
-            tp, "fix_triton_sm8x_8bit_prefetch", lambda installed = installed: calls.append(1) or installed
+            tp,
+            "fix_triton_sm8x_8bit_prefetch",
+            lambda installed = installed: calls.append(1) or installed,
         )
         # asked once, not on every launch (Triton 3.7 or the kill switch would pay it per Linear)
         assert [g8._prefetch_fix_key() for _ in range(3)] == [installed] * 3
