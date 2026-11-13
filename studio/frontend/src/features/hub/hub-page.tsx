@@ -127,8 +127,7 @@ import {
 } from "./lib/model-run-selection";
 import { inventoryRowFormat } from "./catalog/inventory-sort";
 import { matchesInventoryCapabilities } from "./lib/model-type-filter";
-import { ownerOf, repoOf } from "./lib/format";
-import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { matchesRecommendedBrowse } from "./lib/recommended-browse";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
 import {
   type RefreshSupersession,
@@ -152,7 +151,6 @@ import {
   isUnslothFinetunable,
   matchesHubCapability,
   matchesFormat,
-  matchesRecommended,
   matchesRecommendedDiffusion,
 } from "./lib/view-models";
 import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
@@ -178,9 +176,6 @@ const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 
-// Under Recommended, iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
-const MIN_ICONLESS_MODEL_LIKES = 30;
-
 // Image and video models skip Recommended's likes rules: new diffusion uploads rarely clear them.
 function isDiffusionResult(result: HfModelResult): boolean {
   return detectCapabilities(result.tags, result.pipelineTag, result.id).some(
@@ -205,14 +200,7 @@ function matchesDiscoverFormat(
     return matchesFormat(detectResultFormat(result), format);
   }
   if (diffusion) return matchesRecommendedDiffusion(result, quantFormats);
-  return (
-    (!browsing ||
-      ((resolveOwnerProviderLogo(ownerOf(result.id), repoOf(result.id)) !==
-        null ||
-        (result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
-        hasRecommendedCheckpointLikes(result))) &&
-    matchesRecommended(result, quantFormats)
-  );
+  return matchesRecommendedBrowse(result, quantFormats, browsing);
 }
 
 function withoutGgufTag(

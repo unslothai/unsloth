@@ -4,6 +4,7 @@
 """Browser use: argument and address checks, the round trip to the chat tab, and the model's view."""
 
 import asyncio
+import sys
 import threading
 import types
 
@@ -64,6 +65,30 @@ def test_navigate_adds_https_and_keeps_the_address():
 def test_navigate_refuses_local_and_non_web_addresses(url):
     with pytest.raises(ValueError):
         _request("browser_navigate", {"url": url})
+
+
+def test_navigate_refuses_the_port_this_studio_listens_on(monkeypatch):
+    state = types.SimpleNamespace(server_port = 8000, loopback_http_port = None)
+    monkeypatch.setitem(
+        sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state))
+    )
+    with pytest.raises(ValueError, match = "Unsloth's own address"):
+        _request("browser_navigate", {"url": "http://localhost:8000/api/auth/me"})
+    out = browser_agent.format_result(
+        "browser_click", {"ok": True, "url": "http://127.0.0.1:8000/", "text": "secret"}, None
+    )
+    assert out.startswith("Error:") and "secret" not in out
+    assert (
+        _request("browser_navigate", {"url": "http://localhost:7860/"})["url"]
+        == "http://localhost:7860/"
+    )
+    state.server_port = None
+    assert (
+        _request("browser_navigate", {"url": "http://localhost:8000/"})["url"]
+        == "http://localhost:8000/"
+    )
+    with pytest.raises(ValueError):
+        _request("browser_navigate", {"url": "http://localhost:8888/"})
 
 
 @pytest.mark.parametrize(

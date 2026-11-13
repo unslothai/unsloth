@@ -3429,7 +3429,6 @@ export function AppSidebar() {
     audio: {
       icon: AiSpeechIcon,
       label: t("shell.navigation.audio"),
-      badge: t("shell.navigation.newBadge"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
       onClick: () => {
         navigateFromRow({ to: "/audio" });
@@ -3489,7 +3488,6 @@ export function AppSidebar() {
     tasks: {
       icon: scheduledNotice ? CLOCK_NOTICE_ICON : Clock01Icon,
       label: t("shell.navigation.tasks"),
-      badge: t("shell.navigation.newBadge"),
       active: pathname === "/tasks",
       dot: scheduledNotice,
       onClick: () => {
@@ -6754,10 +6752,13 @@ export function AppSidebar() {
                     return (
                       <DropdownMenuItem
                         key={item.id}
-                        onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
+                        onSelect={() => {
+                          navigateFromRow({ to: "/api-monitor" });
+                          closeMobileIfOpen();
+                        }}
                       >
                         <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
-                        <span>{t("settings.tabs.apiKeys")}</span>
+                        <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );
                   }

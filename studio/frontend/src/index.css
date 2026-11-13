@@ -2977,6 +2977,14 @@ html[data-chat-font] .aui-root {
 		border-radius: var(--radius-lg) !important;
 	}
 
+	/* Composer picker menus; here so they outrank .unsloth-plus-menu's 20px. */
+	.unsloth-plus-menu.composer-row-menu[data-slot] {
+		border-radius: calc(16px * var(--ui-space-scale, 1)) !important;
+	}
+	[data-slot="dropdown-menu-content"].composer-filter-menu {
+		border-radius: calc(12px * var(--ui-space-scale, 1)) !important;
+	}
+
 	/* The account menu's 10px gutter. */
 	[data-slot="dropdown-menu-content"].app-user-menu.menu-soft-surface-up {
 		border-radius: calc(var(--radius-md) + 10px) !important;
@@ -3417,13 +3425,9 @@ html[data-chat-font] .aui-root {
 		transition: none;
 	}
 
-	.aui-thread-welcome-center {
-		transition: padding-top 280ms cubic-bezier(0.22, 1, 0.36, 1);
-	}
-
+	/* An expanded composer takes the height, so the spacers (which read this) collapse under the greeting. */
 	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
-		padding-top: calc(1rem * var(--ui-space-scale, 1));
-		transition: none;
+		--welcome-spacer-grow: 0;
 	}
 
 
@@ -3682,6 +3686,102 @@ html[data-chat-font] .aui-root {
 		cursor: pointer;
 	}
 
+	.composer-model-chip {
+		@apply gap-1.5 text-foreground;
+		max-width: calc(22rem * var(--ui-space-scale, 1));
+	}
+
+	.composer-model-chip-name {
+		min-width: 0;
+	}
+
+	.unsloth-thinking-pill.composer-model-chip-empty {
+		@apply pl-3;
+	}
+
+	.composer-model-chip-detail {
+		@apply text-muted-foreground;
+	}
+
+	/* One tab's pitch (32px tab, 4px gap), reaching nothing at the clipped edge. */
+	.composer-tab-strip[data-fade-left] {
+		mask-image: linear-gradient(to right, transparent, #000 calc(36px * var(--ui-space-scale, 1)));
+	}
+	.composer-tab-strip[data-fade-right] {
+		mask-image: linear-gradient(to left, transparent, #000 calc(36px * var(--ui-space-scale, 1)));
+	}
+	.composer-tab-strip[data-fade-left][data-fade-right] {
+		mask-image: linear-gradient(
+			to right,
+			transparent,
+			#000 calc(36px * var(--ui-space-scale, 1)),
+			#000 calc(100% - 36px * var(--ui-space-scale, 1)),
+			transparent
+		);
+	}
+
+	/* Eject in the row menus' softer red (menu-flat-destructive), not the full destructive red. */
+	.composer-eject-tone {
+		color: #dc4848;
+	}
+	.dark .composer-eject-tone {
+		color: #ed7878;
+	}
+
+	.composer-tab-line {
+		background: var(--control-accent);
+	}
+	.composer-list-thumb {
+		background: oklch(0.5 0 0 / 0.54);
+	}
+	.dark .composer-list-thumb {
+		background: oklch(0.67 0 0 / 0.5);
+	}
+	.composer-effort-track {
+		background-color: color-mix(in oklab, var(--foreground) 9%, transparent);
+	}
+
+	.composer-effort-slider:focus-visible .composer-effort-track {
+		box-shadow: 0 0 0 2px var(--ring-soft);
+	}
+
+	.composer-effort-fill {
+		background-color: var(--control-accent);
+	}
+
+	.composer-effort-dot-on {
+		background-color: color-mix(in oklab, var(--control-accent-foreground) 55%, transparent);
+	}
+
+	.composer-effort-dot-off {
+		background-color: color-mix(in oklab, var(--foreground) 32%, transparent);
+	}
+
+	.composer-effort-thumb {
+		background-color: #fff;
+		box-shadow:
+			0 1px 3px rgb(0 0 0 / 0.25),
+			0 0 0 0.5px rgb(0 0 0 / 0.08);
+	}
+
+	.composer-effort-label {
+		animation: composer-effort-roll 160ms var(--ease-out-cubic, ease-out);
+	}
+
+	@keyframes composer-effort-roll {
+		from {
+			opacity: 0;
+			transform: translateY(40%);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.composer-effort-label {
+			animation: none;
+		}
+	}
+
+
 	@container (max-width: 36rem) {
 		.unsloth-thinking-pill {
 			@apply size-8 justify-center gap-0 px-0;
@@ -3695,6 +3795,13 @@ html[data-chat-font] .aui-root {
 
 		.unsloth-thinking-pill[data-pill-label] {
 			position: relative;
+		}
+
+		.unsloth-thinking-pill.composer-model-chip-empty {
+			@apply w-auto gap-1 px-3;
+		}
+		.composer-model-chip-empty .unsloth-thinking-label {
+			display: inline;
 		}
 
 		.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after {
@@ -3721,6 +3828,18 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
+
+	.unsloth-plus-menu.composer-model-picker[data-slot] {
+		padding-top: calc(6px * var(--ui-space-scale, 1));
+		padding-bottom: calc(6px * var(--ui-space-scale, 1));
+	}
+	.unsloth-plus-menu.composer-model-picker[data-slot][data-list-last] {
+		padding-bottom: 0;
+	}
+	/* Run settings bring their own padding, which their sticky footer bleeds back through. */
+	.unsloth-plus-menu.composer-model-picker[data-slot][data-run-settings] {
+		padding: 0;
+	}
 
 	.dark .unsloth-plus-menu[data-slot] {
 		background-color: var(--card);
@@ -5041,6 +5160,159 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
+/* Unlayered, so the global scrollbar rule above cannot win. Each draws its own overlay thumb instead. */
+.composer-model-list,
+.composer-run-settings,
+.composer-tab-strip {
+	scrollbar-width: none;
+}
+.composer-model-list::-webkit-scrollbar,
+.composer-run-settings::-webkit-scrollbar,
+.composer-tab-strip::-webkit-scrollbar {
+	display: none;
+}
+/* The scrollbar at the menu's very edge: the side padding moves inside the scrolling viewport. */
+.composer-row-menu[data-slot] {
+	padding-inline: 0 !important;
+	padding-block: calc(2px * var(--ui-space-scale, 1)) !important;
+}
+.composer-row-menu > [data-slot="dropdown-menu-viewport"] {
+	padding-inline: var(--spacing);
+}
+/* Edge-to-edge scroll: the viewport takes the card's 8px back as padding, so the bar sits at the edge. */
+.composer-plus-menu[data-slot] > [data-slot="dropdown-menu-viewport"] {
+	margin-block: calc(-0.5rem * var(--ui-space-scale, 1));
+	margin-inline: calc(-8px * var(--ui-space-scale, 1));
+	padding-block: calc(0.5rem * var(--ui-space-scale, 1));
+	padding-inline: calc(8px * var(--ui-space-scale, 1));
+	mask-image: linear-gradient(
+		to bottom,
+		transparent,
+		#000 calc(12px * var(--ui-space-scale, 1)),
+		#000 calc(100% - 12px * var(--ui-space-scale, 1)),
+		transparent
+	);
+}
+/* Chromium ignores ::-webkit-scrollbar while the standard properties are set. */
+@supports selector(::-webkit-scrollbar) {
+	.composer-plus-menu[data-slot] > [data-slot="dropdown-menu-viewport"] {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+.composer-plus-menu[data-slot] > [data-slot="dropdown-menu-viewport"]::-webkit-scrollbar {
+	width: calc(4px * var(--ui-space-scale, 1));
+}
+.composer-plus-menu[data-slot] > [data-slot="dropdown-menu-viewport"]::-webkit-scrollbar-thumb {
+	background: transparent;
+}
+.composer-plus-menu[data-slot]:hover > [data-slot="dropdown-menu-viewport"]::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.54);
+}
+.dark .composer-plus-menu[data-slot]:hover > [data-slot="dropdown-menu-viewport"]::-webkit-scrollbar-thumb {
+	background: oklch(0.67 0 0 / 0.5);
+}
+.composer-run-settings .space-y-5 > :not(:last-child) {
+	margin-block-end: calc(12px * var(--ui-space-scale, 1));
+}
+.composer-run-settings .space-y-5 > .border-b.pb-5 {
+	padding-bottom: calc(12px * var(--ui-space-scale, 1));
+}
+/* The pinned footer's sticky offsets follow this padding. */
+.composer-run-settings {
+	--run-settings-pad-y: calc(16px * var(--ui-space-scale, 1));
+	padding-block: var(--run-settings-pad-y);
+}
+/* Short settings leave the footer at the panel's foot, not under the last row. */
+.composer-run-settings {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+}
+.composer-run-settings > * {
+	flex: 1 0 auto;
+}
+.composer-run-settings :has(+ [data-pinned-footer]) {
+	margin-bottom: calc(20px * var(--ui-space-scale, 1));
+}
+.composer-run-settings [data-pinned-footer] {
+	margin-top: auto;
+	bottom: calc(-1 * var(--run-settings-pad-y));
+	margin-bottom: calc(-1 * var(--run-settings-pad-y));
+	padding-bottom: var(--run-settings-pad-y);
+}
+.composer-run-settings [data-pinned-footer] > :first-child {
+	padding-top: calc(12px * var(--ui-space-scale, 1));
+	row-gap: calc(10px * var(--ui-space-scale, 1));
+}
+.composer-run-settings [data-pinned-footer] :is(
+		button[aria-label="Run settings for this model"],
+		button[aria-label="Rename this setting"],
+		[data-run-settings-name],
+		[data-slot="button"]
+	) {
+	height: calc(32px * var(--ui-space-scale, 1));
+	padding-block: 0;
+}
+.composer-run-settings [data-pinned-footer] button[aria-label="Rename this setting"] {
+	width: calc(32px * var(--ui-space-scale, 1));
+}
+.composer-run-settings [data-pinned-footer]::before {
+	content: "";
+	pointer-events: none;
+	position: absolute;
+	inset-inline: 0;
+	bottom: 100%;
+	height: calc(20px * var(--ui-space-scale, 1));
+	background: linear-gradient(to bottom, transparent, var(--popover));
+}
+.dark .composer-run-settings [data-pinned-footer]::before {
+	background: linear-gradient(to bottom, transparent, var(--sidebar));
+}
+.composer-run-settings [data-config-header] {
+	padding-bottom: calc(12px * var(--ui-space-scale, 1));
+}
+.composer-run-settings [data-config-title] {
+	margin-top: calc(4px * var(--ui-space-scale, 1));
+	font-size: calc(0.84375rem * var(--ui-font-scale, 1));
+}
+.composer-run-settings [data-config-eyebrow] {
+	font-size: calc(0.59375rem * var(--ui-font-scale, 1));
+}
+/* Content height, not a flat 32px, so every section starts as close under its divider. */
+.composer-run-settings .config-row,
+.composer-run-settings [data-placement-title] {
+	min-height: 0;
+}
+.composer-run-settings [data-memory-estimate] > button {
+	min-height: calc(24px * var(--ui-space-scale, 1));
+}
+/* The system font sits low in a fixed-height input; buttons centre their caps, so only fields lift. */
+.composer-run-settings input:not([type="checkbox"], [type="radio"], [type="range"]) {
+	padding-top: 0;
+	padding-bottom: calc(1.5px * var(--ui-space-scale, 1));
+}
+.composer-run-settings [data-memory-advisory] {
+	margin-top: calc(6px * var(--ui-space-scale, 1));
+	font-size: var(--text-ui-11);
+	line-height: 1.375;
+}
+.composer-model-list[data-fade-top] {
+	mask-image: linear-gradient(to bottom, transparent, #000 14px);
+}
+.composer-model-list[data-fade-bottom] {
+	mask-image: linear-gradient(to top, transparent, #000 14px);
+}
+.composer-model-list[data-fade-top][data-fade-bottom] {
+	mask-image: linear-gradient(
+		to bottom,
+		transparent,
+		#000 14px,
+		#000 calc(100% - 14px),
+		transparent
+	);
+}
+
 /* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
 @supports selector(::-webkit-scrollbar) {
 	.aui-thread-root [data-streamdown="code-block-body"] {
@@ -5802,6 +6074,14 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	& svg:is(.size-\[21px\], [class~='size-[calc(21px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg:is(.size-\[22px\], [class~='size-[calc(22px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	/* Must follow size-[NN]. */
+	& svg.composer-row-icon {
+		width: calc(var(--ui-icon-size) * 0.85);
+		height: calc(var(--ui-icon-size) * 0.85);
+	}
+	& svg.composer-row-dots {
+		width: calc(var(--ui-icon-size) * 0.95);
+		height: calc(var(--ui-icon-size) * 0.95);
+	}
 	& svg.unsloth-dictate-icon {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);

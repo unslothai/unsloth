@@ -29,6 +29,7 @@ on:
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
       - 'tests/studio/playwright_settings_tabs.py'
+      - 'tests/studio/_en_catalog.py'
       - 'tests/studio/playwright_data_settings.py'
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
@@ -43,6 +44,7 @@ on:
       - 'tests/studio/playwright_long_chat_renders.py'
       - 'tests/studio/playwright_thread_window.py'
       - 'tests/studio/playwright_long_thread_gate.py'
+      - 'tests/studio/long_thread_ab.py'
       - 'tests/studio/_css_culprit.py'
       - 'tests/studio/test_css_culprit.py'
       - 'tests/studio/_area_matrix.py'
@@ -95,6 +97,7 @@ on:
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
       - 'tests/studio/playwright_settings_tabs.py'
+      - 'tests/studio/_en_catalog.py'
       - 'tests/studio/playwright_data_settings.py'
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
@@ -109,6 +112,7 @@ on:
       - 'tests/studio/playwright_long_chat_renders.py'
       - 'tests/studio/playwright_thread_window.py'
       - 'tests/studio/playwright_long_thread_gate.py'
+      - 'tests/studio/long_thread_ab.py'
       - 'tests/studio/_css_culprit.py'
       - 'tests/studio/test_css_culprit.py'
       - 'tests/studio/_area_matrix.py'
@@ -841,6 +845,75 @@ jobs:
         env:
           LONG_THREAD_FIREFOX: '1'
         run: python3 tests/studio/_firefox_leg.py
+
+  # Own job: the build job runs close to its timeout. Exit 3 (base cannot build) only warns.
+  long-chat-ab:
+    name: Long-chat cost against the base build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Upgrade npm to 11.x (allowScripts enforcement)
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm install -g npm@^11 --no-fund --no-audit
+          V=$(npm -v)
+          case "$V" in
+            11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+            *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+          esac
+
+      # Must run BEFORE npm ci, where a compromised tarball's install scripts run.
+      - name: Lockfile supply-chain audit (pre-install scan)
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
+      - name: Install dependencies
+        run: npm ci --strict-allow-scripts --no-fund --no-audit
+
+      - name: Chromium
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        timeout-minutes: 10
+        env:
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          python3 -m pip install 'playwright>=1.45,<2'
+          python3 -m playwright install chromium
+          if ! python3 -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); p.stop()"; then
+            bash .github/scripts/retry-with-apt-lock.sh python3 -m playwright install-deps chromium
+          fi
+
+      - name: Long-chat cost against the base build
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        timeout-minutes: 20
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          ab() {
+            rc=0
+            python3 tests/studio/long_thread_ab.py --base-ref "$BASE_SHA" --head-ref HEAD --reps 5 "$@" || rc=$?
+            if [ "$rc" = 3 ]; then echo "::warning::base build not comparable with this node_modules; long-chat A/B skipped"; exit 0; fi
+            [ "$rc" = 0 ] || exit "$rc"
+          }
+          ab --areas stream,type,thread_scroll
+          ab --areas stream_scroll --tall 6 --stream-ms 10
+          ab --areas wheel_sweep
 
   # The suite reads sources and resolves module URLs, so it can break only on Windows.
   # .gitattributes pins LF for studio/frontend, so exact-substring assertions hold.
