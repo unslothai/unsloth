@@ -80,6 +80,39 @@ test("a restore made before learning of other accounts is undone when the mode a
   }
 });
 
+test("a restore is undone when the login mode arrived before settings hydration", async () => {
+  resetStorage("ask");
+  browser.store.set(FLAG, "true");
+  const { state } = await restart("multi-before-hydrate");
+  assert.equal(state().permissionMode, "full");
+  try {
+    setLoginMode("multi");
+    await state().hydratePersistedSettings();
+    assert.equal(state().permissionMode, "ask");
+    assert.equal(state().bypassPermissions, false);
+  } finally {
+    setLoginMode("single", true);
+  }
+});
+
+test("undoing a restore with a chat open returns to that chat's own level", async () => {
+  resetStorage("off");
+  browser.store.set(FLAG, "true");
+  const { state } = await restart("restore-chat-level");
+  await state().hydratePersistedSettings();
+  state().setActiveThreadId("chat-ask");
+  state().applyThreadScopedSettings("chat-ask", { permissionMode: "ask" });
+  assert.equal(state().permissionMode, "full");
+  try {
+    setLoginMode("multi");
+    assert.equal(state().permissionMode, "ask");
+    assert.equal(state().confirmToolCalls, true);
+  } finally {
+    state().setPermissionMode("auto");
+    setLoginMode("single", true);
+  }
+});
+
 test("Full access picked in settings is restored after a restart", async () => {
   resetStorage("off");
   const first = await restart("full-pick");

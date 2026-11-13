@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { getFullAccessAllowed, subscribeLoginMode } from "@/features/auth/login-client";
+import {
+  getConfirmedLoginMode,
+  getFullAccessAllowed,
+  subscribeLoginMode,
+} from "@/features/auth/login-client";
 import { fullAccessRestorable } from "@/lib/account-transition";
 import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "@/features/auth/session-events";
 import {
@@ -2021,23 +2025,27 @@ export async function forgetSavedFullAccess(): Promise<void> {
 
 let fullAccessResetSubscribed = false;
 
+function applyFullAccessPolicy(): void {
+  if (getFullAccessAllowed()) return;
+  const state = useChatRuntimeStore.getState();
+  // Restored before the login mode was known: Full access now needs the dialog again.
+  if (
+    fullAccessRestoredUnconfirmed &&
+    state.permissionMode === "full" &&
+    state.chatFullAccessPreviousMode === null
+  ) {
+    state.setPermissionMode(threadScopedOverride("permissionMode") ?? loadPermissionMode());
+    return;
+  }
+  rememberFullAccess(false);
+}
+
 function subscribeFullAccessReset(): void {
   if (fullAccessResetSubscribed) return;
   fullAccessResetSubscribed = true;
-  subscribeLoginMode(() => {
-    if (getFullAccessAllowed()) return;
-    const state = useChatRuntimeStore.getState();
-    // Restored before the login mode was known: Full access now needs the dialog again.
-    if (
-      fullAccessRestoredUnconfirmed &&
-      state.permissionMode === "full" &&
-      state.chatFullAccessPreviousMode === null
-    ) {
-      state.setPermissionMode(loadPermissionMode());
-      return;
-    }
-    rememberFullAccess(false);
-  });
+  subscribeLoginMode(applyFullAccessPolicy);
+  // The auth guard may have set the mode before this listener existed.
+  if (getConfirmedLoginMode() !== null) applyFullAccessPolicy();
 }
 
 const INITIAL_FULL_ACCESS = loadFullAccess();
