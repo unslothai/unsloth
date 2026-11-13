@@ -186,6 +186,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
+    install_streamed_eager_int8_gemm,
     engage_pinned_denoisers,
     rocm_probe_load_scoped,
     release_rocm_tunableop as _release_rocm_tunableop,
@@ -11421,6 +11422,16 @@ class VideoBackend:
                 # fell back to a hooked placement: compiled through them, each block splits at the hook's
                 # torch.compiler.disable'd pre / post forward.
                 compile_pipe_below_offload_hooks(pipe, logger)
+            # An uncompiled int8 denoiser the pinned prefetcher streams: the bit-identical int8 routes, per call.
+            for view in views:
+                try:
+                    if (
+                        install_streamed_eager_int8_gemm(view, target.torch_device, logger)
+                        and "int8_gemm_streamed" not in speed_optims
+                    ):
+                        speed_optims += ("int8_gemm_streamed",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, torchao's path stays
+                    logger.warning("video.int8_gemm: streamed eager install skipped: %s", exc)
             # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
             graph_applied = arm_graphs_after_placement(
                 pipe, {"cuda_graph": "cuda_graph" in speed_optims}, logger
@@ -12778,6 +12789,14 @@ class VideoBackend:
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
                 )
+            elif denoiser_streamed:
+                # Uncompiled (speed off / eager, or a declined compile): the bit-identical int8 routes, taken per call
+                # while a Linear's weight is on the card.
+                try:
+                    if install_streamed_eager_int8_gemm(speed_view, device, logger):
+                        speed_optims += ("int8_gemm_streamed",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, torchao's path stays
+                    logger.warning("video.h3_int8_gemm: streamed eager install skipped: %s", exc)
             if "int8_gemm" in speed_optims:
                 # before the first forward traces the blocks
                 try:
