@@ -130,7 +130,7 @@ def test_strided_processor_matches_stock_bit_for_bit(monkeypatch, qk_rope):
 @pytest.mark.parametrize(
     "resident, image_env, video_env, want",
     [
-        (False, None, None, False),
+        (False, None, None, True),
         (True, None, None, True),
         (False, "1", None, True),
         (True, "0", None, False),
@@ -138,7 +138,7 @@ def test_strided_processor_matches_stock_bit_for_bit(monkeypatch, qk_rope):
         (False, "1", "0", False),
     ],
 )
-def test_fused_qk_rope_default_follows_the_tier(monkeypatch, resident, image_env, video_env, want):
+def test_fused_qk_rope_is_on_for_every_tier(monkeypatch, resident, image_env, video_env, want):
     for env, value in ((S.QK_ROPE_ENV, image_env), ("UNSLOTH_H3_QK_ROPE", video_env)):
         if value is None:
             monkeypatch.delenv(env, raising = False)

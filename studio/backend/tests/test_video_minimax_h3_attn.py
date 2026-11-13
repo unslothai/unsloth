@@ -510,24 +510,20 @@ def test_fused_qk_rope_kill_switch(quantized, monkeypatch):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("strided", [False, True])
 @pytest.mark.parametrize("seq", [1, 777])
-def test_qk_kernel_matches_the_compiled_stock_math(dtype, strided, seq):
-    import torch._inductor.config as ic
+@pytest.mark.parametrize("norm", [True, False])
+def test_qk_kernel_is_bit_identical_to_the_eager_stock_math(dtype, strided, seq, norm):
+    import torch.nn.functional as F
 
+    if norm and not Q.torch_fused_rms_norm_on_cuda():
+        pytest.skip("this torch normalises through the composite path; the rope form covers it")
     x, w, cos, sin = _qk_inputs("cuda", dtype, seq = seq, heads = 56, strided = strided)
-    ours = Q._launch(x, w, cos, sin, 1e-5)
     eager = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5)
-    prev = ic.emulate_precision_casts
-    ic.emulate_precision_casts = True
-    try:
-        compiled = torch.compile(Q.reference_qk_norm_rope, dynamic = False)(x, w, cos, sin, 1e-5)
-    finally:
-        ic.emulate_precision_casts = prev
+    if norm:
+        ours = Q._launch(x, w, cos, sin, 1e-5)
+    else:
+        ours = Q._launch(F.rms_norm(x, (x.shape[-1],), w, 1e-5), w, cos, sin, 1e-5, norm = False)
     assert ours.is_contiguous() and ours.shape == x.shape
-    budget = ours.numel() // (100000 if dtype == torch.bfloat16 else 20000)
-    for ref in (eager, compiled):
-        diff = (ours.float() - ref.float()).abs()
-        assert int((ours != ref).sum()) <= max(2, budget)
-        assert float(diff.max()) <= float((ref.float().abs().max() * 2**-7))
+    assert torch.equal(ours, eager)
     bad = (ours.float() * (1 + 2**-7)).to(dtype)
     assert int((bad != eager).sum()) > ours.numel() // 2
 
