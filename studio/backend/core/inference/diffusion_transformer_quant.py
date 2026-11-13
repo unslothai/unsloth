@@ -636,8 +636,9 @@ _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = _profile_table("auto_prefer", quan
 _FAMILY_AUTO_SKIP: dict[str, frozenset[str]] = _profile_table("auto_scheme_skip", quant = True)
 
 
-# AUTO keeps bf16 while it fits for these (``FamilyProfile.auto_bf16_when_resident``: measured with both sides compiled,
-# INT8 was at most ~5% faster and failed the default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
+# AUTO keeps bf16 while it fits for these (``FamilyProfile.auto_bf16_when_resident``): the one image AUTO rule (see
+# diffusion_families) keeps bf16 only where INT8 is both over the LPIPS bar and under ~10% faster, measured with both
+# sides compiled. When bf16 would offload, INT8 is still picked.
 _FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = _profile_table(
     "auto_bf16_when_resident", quant = True
 )
