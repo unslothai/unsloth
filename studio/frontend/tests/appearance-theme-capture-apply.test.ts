@@ -219,3 +219,29 @@ test("undo does not restore a selection whose font was deleted after applying", 
   assert.deepEqual(undone.customization.importedFonts, []);
   assert.equal(undone.customization.uiFont, null);
 });
+
+test("undo reverts each color override on its own", () => {
+  const theme = parseOk(JSON.stringify(file({ colors: { light: { accent: "#112233", background: "#fafafa" } } })));
+  const applied = apply(BASE, theme);
+  const edited = { ...applied.customization.colors.light, accent: "#445566" };
+  const now = { ...BASE, palette: applied.palette, glass: applied.glass,
+    customization: { ...applied.customization, colors: { ...applied.customization.colors, light: edited } } };
+  const undone = planUndo(BASE, applied, now);
+  assert.equal(undone.customization.colors.light.accent, "#445566");
+  assert.equal(undone.customization.colors.light.background, null);
+});
+
+test("no selection points at a font the cap dropped while fonts are put back", () => {
+  const before = { ...BASE, customization: sanitizeCustomization({
+    importedFonts: [font("A"), font("B"), font("C")], uiFont: "A", headingFont: "B", chatFont: "C" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "Lato", headingFont: "B", chatFont: "C" }, assets: { fonts: [font("T")] } })));
+  const applied = apply(before, theme);
+  const now = { ...before, palette: applied.palette, glass: applied.glass,
+    customization: { ...applied.customization, codeFont: "T" } };
+  const undone = planUndo(before, applied, now);
+  const names = undone.customization.importedFonts.map((f) => f.name);
+  for (const field of ["uiFont", "headingFont", "chatFont", "codeFont"] as const) {
+    const name = undone.customization[field];
+    assert.ok(name === null || names.includes(name), `${field}=${name} not in ${names}`);
+  }
+});

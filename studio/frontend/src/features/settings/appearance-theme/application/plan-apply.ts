@@ -8,6 +8,7 @@ import type {
 } from "../../../chat-background/model.ts";
 import {
   type AppearanceCustomization,
+  type CustomModeColors,
   type ImportedFont,
   sanitizeCustomization,
 } from "../../lib/appearance-customization.ts";
@@ -46,8 +47,7 @@ function selectedFirst(c: Pick<AppearanceCustomization, (typeof FONT_FIELDS)[num
 
 /**
  * Keeps font selections and imported fonts consistent: a selection naming one of `importedNames`
- * that isn't in the final list is reset, unless `keep` can supply that font, in which case the font
- * is put back (first, so the cap keeps it).
+ * that `keep` can supply is put back, and one whose font is still missing after the cap is reset.
  */
 function reconcileFonts(
   customization: AppearanceCustomization,
@@ -55,21 +55,20 @@ function reconcileFonts(
   keep: ImportedFont[] = [],
 ): AppearanceCustomization {
   const present = new Set(customization.importedFonts.map((font) => font.name));
-  const next = { ...customization };
-  const restored: ImportedFont[] = [];
+  const restored = keep.filter(
+    (font) => !present.has(font.name) && importedNames.has(font.name) &&
+      FONT_FIELDS.some((field) => customization[field] === font.name),
+  );
+  const next = sanitizeCustomization({
+    ...customization,
+    importedFonts: selectedFirst(customization, [...restored, ...customization.importedFonts]),
+  });
+  const kept = new Set(next.importedFonts.map((font) => font.name));
   for (const field of FONT_FIELDS) {
     const name = next[field];
-    if (!name || present.has(name) || !importedNames.has(name)) continue;
-    const font = keep.find((candidate) => candidate.name === name);
-    if (font) {
-      restored.push(font);
-      present.add(name);
-    } else {
-      next[field] = null;
-    }
+    if (name && importedNames.has(name) && !kept.has(name)) next[field] = null;
   }
-  if (restored.length === 0) return next;
-  return sanitizeCustomization({ ...next, importedFonts: [...restored, ...next.importedFonts] });
+  return next;
 }
 
 /** Equality for customization values; font lists compare entries without serializing their data. */
@@ -155,6 +154,19 @@ export function planUndo(
   for (const key of Object.keys(now.customization) as (keyof AppearanceCustomization)[]) {
     customization[key] = revert(before.customization[key], applied.customization[key], now.customization[key]);
   }
+  // Per color, so editing one override after applying does not pin the theme's others.
+  const colors = {} as Record<string, Record<string, unknown>>;
+  for (const mode of ["light", "dark"] as const) {
+    colors[mode] = {};
+    for (const key of Object.keys(now.customization.colors[mode]) as (keyof CustomModeColors)[]) {
+      colors[mode][key] = revert(
+        before.customization.colors[mode][key],
+        applied.customization.colors[mode][key],
+        now.customization.colors[mode][key],
+      );
+    }
+  }
+  customization.colors = colors;
   // A font the user picked after applying keeps its imported file, even if the list itself reverts.
   const fonts = customization.importedFonts as ImportedFont[];
   const selected = new Set(FONT_FIELDS.map((field) => customization[field]));
