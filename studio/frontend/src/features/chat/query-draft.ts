@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createContext } from "react";
+import { createNavigationNonce } from "../../lib/navigation-nonce.ts";
 import {
   QUERY_DRAFT_ID_PREFIX,
   composerDraftKey,
@@ -16,12 +17,7 @@ const temporaryQueries = new Map<string, string>();
 
 // Never sends: any page can link to a local Studio, so the user presses Enter themselves.
 export function seedQueryDraft(text: string, temporary: boolean): string {
-  // Not randomUUID alone: Studio on a LAN address is not a secure context.
-  const id =
-    typeof globalThis.crypto?.randomUUID === "function"
-      ? globalThis.crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  const nonce = QUERY_DRAFT_ID_PREFIX + id;
+  const nonce = QUERY_DRAFT_ID_PREFIX + createNavigationNonce();
   if (temporary) temporaryQueries.set(composerDraftKey(nonce), text);
   else writeComposerDraft(composerDraftKey(nonce), text);
   return nonce;
