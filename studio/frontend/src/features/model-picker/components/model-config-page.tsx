@@ -235,7 +235,9 @@ import {
   savePerModelConfig,
   storedSpeculativeAuto,
   subscribeAdvancedSettingsOpen,
+  sameEngramPrecision,
 } from "../model-config/per-model-config";
+import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import { isNpuModelId, NPU_DEFAULT_CONTEXT_LENGTH } from "../../npu";
 import {
@@ -361,6 +363,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.cacheRam != null ||
     config.tensorParallel ||
     config.disableVision ||
+    config.engramPrecision != null ||
     config.chatTemplateOverride != null ||
     // Hidden flags change behaviour, so do not open collapsed claiming defaults.
     (config.llamaExtraArgs != null && config.llamaExtraArgs.length > 0) ||
@@ -388,6 +391,7 @@ function withoutUnsupportedDiffusionSettings(
     config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
     !config.disableVision &&
+    config.engramPrecision == null &&
     config.nBatch == null &&
     config.nUbatch == null &&
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
@@ -405,6 +409,7 @@ function withoutUnsupportedDiffusionSettings(
     reasoningBudgetMessage: "",
     tensorParallel: false,
     disableVision: false,
+    engramPrecision: null,
     nBatch: null,
     nUbatch: null,
     // The diffusion shim never passes llama-server flags but the load would record them.
@@ -1623,6 +1628,154 @@ function LoadModeRow({
   );
 }
 
+/** The repo, quant and token the Engram row lists tables for. */
+type EngramTableSource = {
+  repoId: string;
+  ggufVariant: string;
+  hfToken: string | null;
+};
+
+type EngramTableListing = {
+  tables: EngramTableDetail[];
+  own: string;
+  ready: string[];
+  quantDownloaded: boolean;
+  supported: boolean | null;
+};
+
+function formatTableSize(bytes: number): string {
+  return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+/** Tables the repo publishes for this quant, or null when it publishes none (the row then hides). */
+function useEngramTables(source: EngramTableSource | null): EngramTableListing | null {
+  const [listing, setListing] = useState<EngramTableListing | null>(null);
+  const repoId = source?.repoId ?? null;
+  const ggufVariant = source?.ggufVariant ?? null;
+  const hfToken = source?.hfToken ?? null;
+  useEffect(() => {
+    setListing(null);
+    if (!repoId || !ggufVariant) return;
+    const controller = new AbortController();
+    // Not preferLocalCache: a cache-only answer has no Hub listing, so it cannot name the tables.
+    listGgufVariants(repoId, hfToken || undefined, { signal: controller.signal })
+      .then((response) => {
+        if (controller.signal.aborted) return;
+        const tables = response.engram_tables ?? [];
+        const variant = response.variants.find(
+          (v) => v.quant.toLowerCase() === ggufVariant.toLowerCase(),
+        );
+        const own = variant?.engram_precision ?? null;
+        if (tables.length === 0 || !variant || !own) return;
+        setListing({
+          tables,
+          own,
+          ready: variant.engram_ready ?? [],
+          quantDownloaded: variant.downloaded === true,
+          supported: response.engram_supported ?? null,
+        });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [repoId, ggufVariant, hfToken]);
+  return listing;
+}
+
+function EngramTableRow({
+  config,
+  update,
+  source,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  source: EngramTableSource | null;
+}) {
+  const noteId = useId();
+  const listing = useEngramTables(source);
+  if (!listing) return null;
+  const { tables, own, ready, quantDownloaded, supported } = listing;
+  const chosen = config.engramPrecision ?? null;
+  // The quant's own precision is the default, stored as null.
+  const selected =
+    chosen && !sameEngramPrecision(chosen, own)
+      ? (tables.find((t) => sameEngramPrecision(t.precision, chosen))?.precision ?? chosen)
+      : own;
+  const swapped = !sameEngramPrecision(selected, own);
+  const table = tables.find((t) => sameEngramPrecision(t.precision, selected));
+  const ownTable = tables.find((t) => sameEngramPrecision(t.precision, own));
+  const ownReady = ready.some((p) => sameEngramPrecision(p, own));
+  let note: string | null = null;
+  if (supported === false) {
+    note = swapped
+      ? "This llama.cpp build cannot load a separate table, so the next load fails. Update llama.cpp, or pick the built-in table."
+      : "Swapping the table needs a newer llama.cpp. Update it to choose another precision.";
+  } else if (swapped && table && !table.downloaded) {
+    note = `The next load downloads the ${table.precision} table (${formatTableSize(table.size_bytes)}).`;
+    if (!ownReady && ownTable) {
+      note += ` The built-in ${own} table (${formatTableSize(ownTable.size_bytes)}) is not needed.`;
+    }
+  } else if (!swapped && quantDownloaded && !ownReady && ownTable) {
+    // On disk with another table in place of its own.
+    note = `The next load downloads the built-in ${own} table (${formatTableSize(ownTable.size_bytes)}).`;
+  }
+  return (
+    <div className="space-y-1">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Engram Table</span>
+          <InfoHint>
+            Precision of the model's n-gram lookup table. A higher precision
+            stays closer to the original model and takes more disk; a lower
+            one saves disk. The table is read from disk as needed, so it uses
+            little RAM or VRAM. Built-in is the table this quant ships with.
+            Another choice is downloaded once, and the built-in table is then
+            not needed.
+          </InfoHint>
+        </div>
+        <Select
+          value={selected}
+          disabled={supported === false && !swapped}
+          onValueChange={(v) =>
+            update({ engramPrecision: sameEngramPrecision(v, own) ? null : v })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={SELECT_TRIGGER_CLASS}
+            aria-describedby={note ? noteId : undefined}
+          >
+            <SelectValue>{selected}</SelectValue>
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            {tables.map((t) => {
+              const builtIn = sameEngramPrecision(t.precision, own);
+              const downloaded = !builtIn && t.downloaded;
+              return (
+                <SelectItem key={t.precision} value={t.precision}>
+                  <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                    <span>{t.precision}</span>
+                    <span className="text-ui-12 tabular-nums text-muted-foreground">
+                      {formatTableSize(t.size_bytes)}
+                      {builtIn ? " · built-in" : downloaded ? " · downloaded" : ""}
+                    </span>
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+      </div>
+      {note && (
+        <p id={noteId} className="text-ui-11 text-muted-foreground">
+          {note}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -1639,9 +1792,11 @@ function GgufAdvancedSettings({
   onExtraArgsLoadableChange,
   draftKey,
   focusParallelSlots,
+  engramSource,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
+  engramSource: EngramTableSource | null;
   showDraftTokens: boolean;
   showSpecDraftCacheDtype: boolean;
   speculativeFallback: string;
@@ -1740,6 +1895,9 @@ function GgufAdvancedSettings({
             onCheckedChange={(checked) => update({ disableVision: !checked })}
           />
         </div>
+      )}
+      {!isDiffusion && (
+        <EngramTableRow config={config} update={update} source={engramSource} />
       )}
       </AdvancedGroup>
       )}
@@ -4083,6 +4241,11 @@ export function ModelConfigPage({
                 draftKey={draftKey}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
                 focusParallelSlots={focusField === "parallelSlots"}
+                engramSource={
+                  target.ggufVariant
+                    ? { repoId: target.id, ggufVariant: target.ggufVariant, hfToken: hfToken || null }
+                    : null
+                }
               />
             )}
           </>

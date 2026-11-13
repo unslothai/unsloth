@@ -20,6 +20,7 @@ type RetrySubject = Pick<
   | "downloadDir"
   | "external"
   | "state"
+  | "engramPrecision"
 >;
 
 /** Only Hub-started rows: engine / STT and training rows belong to the flows that started them. */
@@ -42,6 +43,8 @@ export function retryRequestFor(job: RetrySubject): DownloadRequest {
     ...(job.presentation ? { presentation: job.presentation } : {}),
     ...(job.scopedFiles ? { files: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
+    // The table is part of what the job fetched, so a retry fetches it too.
+    ...(job.engramPrecision ? { engramPrecision: job.engramPrecision } : {}),
     // Same rule as withDownloadDir: only a cancel pins its folder; a failure may have been the folder.
     ...(job.state === "cancelled" && job.downloadDir !== undefined
       ? { downloadDir: job.downloadDir }
