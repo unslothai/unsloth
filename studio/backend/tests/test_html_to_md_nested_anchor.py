@@ -68,7 +68,29 @@ def test_nested_anchor_inside_header_scope():
     assert html_to_markdown(html, main_content = True) == "[nav](/o)[inner](/i)\n\nbody text"
 
 
-def test_nested_anchor_inside_pre_matches_a_real_close():
-    nested = '<pre><a href="/o">x<b>y</b><a href="/i">z</a></pre>'
-    closed = '<pre><a href="/o">x<b>y</b></a><a href="/i">z</a></pre>'
-    assert html_to_markdown(nested) == html_to_markdown(closed)
+def test_nested_anchor_inside_pre_keeps_code_literal():
+    html = '<pre><a href="/o">x<b>y</b><a href="/i">z</a></pre>'
+    assert html_to_markdown(html) == "```\nxyz\n```"
+
+
+def test_outer_text_before_a_header_survives_the_header_strip():
+    nav = "navigation " * 30
+    html = f'<a href="/o">Intro. <header>{nav}<a hidden href="/i">skip</a></header>Conclusion.</a>'
+    assert html_to_markdown(html, main_content = True) == "[Intro.](/o)Conclusion."
+
+
+def test_nested_anchor_credits_the_header_that_holds_the_link():
+    nav = "OuterNav " * 35
+    byline = "Jane wrote this article. " * 8
+    inner = f'<header>InnerNav <a href="/i">Inner</a><p>{byline}</p></header>'
+    nested = f'<main><header><a href="/o">{nav}{inner}</a></header><p>BODY</p></main>'
+    closed = f'<main><header><a href="/o">{nav}</a>{inner}</header><p>BODY</p></main>'
+    out = html_to_markdown(nested, main_content = True)
+    assert "Jane wrote this article." in out
+    assert out == html_to_markdown(closed, main_content = True)
+
+
+def test_nested_anchor_in_long_header_still_strips_as_furniture():
+    nav = "x" * 160
+    html = f'<main><header><a href="/o">{nav} <a href="/i">inner</a></header><article><p>body text</p></article></main>'
+    assert html_to_markdown(html, main_content = True) == "body text"

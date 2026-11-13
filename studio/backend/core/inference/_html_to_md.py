@@ -1264,6 +1264,21 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row = []
         self._row_has_th = False
 
+    def _close_link_before_nested_anchor(self) -> None:
+        # headers opened inside the link stay open; its text belongs to the frame holding the <a>
+        frames = self._header_stack
+        owner = len(frames)
+        while owner and frames[owner - 1].outer_link_seq == self._link_seq:
+            owner -= 1
+        inner = frames[owner:]
+        del frames[owner:]
+        try:
+            if frames:
+                frames[-1].link_chars += self._link_header_chars
+            self._finish_link()
+        finally:
+            frames.extend(inner)
+
     # Link text helper: normalize whitespace so block content in <a> stays single-line.
     def _finish_link(self) -> None:
         text = re.sub(r"\s+", " ", "".join(self._link_text_parts)).strip()
@@ -1702,11 +1717,9 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag == "form":
             self._form_pointer = True
-        # a nested <a> implicitly closes the open one, even when hidden, like its </a> arriving here
-        if tag == "a" and self._in_link:
-            if self._header_stack:
-                self._header_stack[-1].link_chars += self._link_header_chars
-            self._finish_link()
+        # a nested <a> implicitly closes the open one, even when hidden; <pre> text skips the link
+        if tag == "a" and self._in_link and not self._in_pre:
+            self._close_link_before_nested_anchor()
         if not self._enter_tag(tag, attr_dict, hidden, aria_heading):
             return
 
