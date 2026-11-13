@@ -15,6 +15,7 @@ type WithNewlyOffered = (
   savedModels: string[],
   previouslyOffered: string[],
   listed: SubscriptionModels | null,
+  maxAdded?: number,
 ) => { models: string[]; availableModels: string[]; added: string[] } | null;
 
 type WithNewlyListed = (
@@ -56,6 +57,55 @@ before(async () => {
     provider: Connection,
   ) => boolean;
   maxAutoTicked = loaded.MAX_AUTO_TICKED_MODELS as number;
+  newModelCheckDue = loaded.newModelCheckDue as CheckDue;
+  autoTickLimit = loaded.autoTickLimit as typeof autoTickLimit;
+  suggestedBaselines = loaded.suggestedBaselines as Set<string>;
+});
+
+let autoTickLimit: (providerId: string, limit?: number) => number | undefined;
+let suggestedBaselines: Set<string>;
+
+test("a stored list that is only the suggestions is adopted, never ticked from", () => {
+  suggestedBaselines.add("legacy");
+  try {
+    assert.equal(autoTickLimit("legacy", maxAutoTicked), 0);
+    assert.equal(autoTickLimit("listed", maxAutoTicked), maxAutoTicked);
+    assert.equal(autoTickLimit("listed"), undefined);
+    const update = withNewlyOfferedCodexModels(
+      ["gpt-6-sol"],
+      ["gpt-6-sol"],
+      plan("gpt-6-luna", "gpt-6-sol"),
+      autoTickLimit("legacy"),
+    );
+    assert.deepEqual(update, {
+      models: ["gpt-6-sol"],
+      availableModels: ["gpt-6-luna", "gpt-6-sol"],
+      added: [],
+    });
+  } finally {
+    suggestedBaselines.delete("legacy");
+  }
+});
+
+type CheckDue = (
+  interval: "launch" | "daily" | "weekly" | "off",
+  checkedThisLaunch: boolean,
+  lastCheckedAt: number | undefined,
+  now: number,
+) => boolean;
+let newModelCheckDue: CheckDue;
+const DAY = 24 * 60 * 60 * 1000;
+
+test("the chosen interval decides when a connection is listed again", () => {
+  const now = 100 * DAY;
+  assert.equal(newModelCheckDue("off", false, undefined, now), false);
+  assert.equal(newModelCheckDue("launch", false, now, now), true);
+  assert.equal(newModelCheckDue("launch", true, undefined, now), false);
+  assert.equal(newModelCheckDue("daily", true, undefined, now), true);
+  assert.equal(newModelCheckDue("daily", false, now - DAY / 2, now), false);
+  assert.equal(newModelCheckDue("daily", true, now - DAY, now), true);
+  assert.equal(newModelCheckDue("weekly", false, now - 6 * DAY, now), false);
+  assert.equal(newModelCheckDue("weekly", false, now - 7 * DAY, now), true);
 });
 
 after(async () => {

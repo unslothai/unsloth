@@ -36,6 +36,11 @@ import {
   getExternalProviderApiKey,
   isCustomProviderType,
   isPromptCacheTtl,
+  learnCatalogModelCapabilities,
+  loadNewModelChecksAt,
+  newModelCheckOf,
+  type NewModelCheckInterval,
+  saveNewModelCheckAt,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   pruneExternalProviderApiKeys,
   removeExternalProviderApiKey,
@@ -197,6 +202,7 @@ export function mergeLocalProviderOptions(
       : undefined,
     autoReloadModels:
       providerType === "llama_cpp" ? existing.autoReloadModels === true : undefined,
+    newModelCheck: existing.newModelCheck,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof existing.openaiContainerTtlMinutes === "number" &&
@@ -295,6 +301,17 @@ export async function syncExternalProvidersFromBackend(
         serverModels.length === 0 && savedModels.length > 0;
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
+      // Filled from the built-in suggestions, not a listing: nothing in it says what was offered.
+      const defaultSet = new Set(defaultModels);
+      if (
+        serverAvailableModels.length === 0 ||
+        (serverAvailableModels.length === defaultSet.size &&
+          serverAvailableModels.every((id) => defaultSet.has(id)))
+      ) {
+        suggestedBaselines.add(config.id);
+      } else {
+        suggestedBaselines.delete(config.id);
+      }
       if (!config.shared_by_owner && (needsModelBackfill || needsAvailableBackfill)) {
         backfillTasks.push(() =>
           updateProviderConfig(config.id, {
@@ -343,9 +360,16 @@ export async function syncExternalProvidersFromBackend(
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
   void refreshProviderModelCatalogs(syncedProviders, isCurrent);
-  void tickNewlyListedModels(syncedProviders, isCurrent);
+  void tickNewlyListedModels(
+    syncedProviders,
+    registryRows.find((entry) => entry.provider_type === "openai_codex"),
+    isCurrent,
+  );
   return syncedProviders;
 }
+
+/** Connection ids whose stored offered list is the suggestions; a listing becomes their baseline unticked. */
+export const suggestedBaselines = new Set<string>();
 
 type NewlyListed = { models: string[]; availableModels: string[]; added: string[] };
 
@@ -378,14 +402,20 @@ export function withNewlyOfferedCodexModels(
   savedModels: string[],
   previouslyOffered: string[],
   listed: CodexSubscriptionModels | null,
+  maxAdded?: number,
 ): NewlyListed | null {
   if (listed?.source !== "subscription") return null;
   return withNewlyListedModels(
     savedModels,
     previouslyOffered,
     pruneProviderModelIds("openai_codex", listed.models.map((model) => model.id)),
-    { knownIds: (listed.known ?? listed.models).map((model) => model.id) },
+    { knownIds: (listed.known ?? listed.models).map((model) => model.id), maxAdded },
   );
+}
+
+/** How many new ids one listing may tick for this connection. */
+export function autoTickLimit(providerId: string, limit?: number): number | undefined {
+  return suggestedBaselines.has(providerId) ? 0 : limit;
 }
 
 // Gateways list new third-party models every week; ticking each would flood the picker.
@@ -395,7 +425,9 @@ export const MAX_AUTO_TICKED_MODELS = 3;
 
 /** API connections whose listing is the provider's own; local servers and custom endpoints opt in
  *  separately (llama.cpp auto reload), ChatGPT subscriptions use their plan catalog. */
-export function autoTicksNewlyListedModels(provider: ExternalProviderConfig): boolean {
+export function autoTicksNewlyListedModels(
+  provider: Pick<ExternalProviderConfig, "providerType" | "authKind" | "sharedByOwner">,
+): boolean {
   return (
     provider.authKind !== "chatgpt_oauth" &&
     !provider.sharedByOwner &&
@@ -405,24 +437,65 @@ export function autoTicksNewlyListedModels(provider: ExternalProviderConfig): bo
   );
 }
 
-const LISTING_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const lastListingCheck = new Map<string, number>();
+const NEW_MODEL_CHECK_PERIOD_MS: Partial<Record<NewModelCheckInterval, number>> = {
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+};
+
+/** Every focus re-syncs, so a connection is listed only once per launch, day or week as chosen. */
+export function newModelCheckDue(
+  interval: NewModelCheckInterval,
+  checkedThisLaunch: boolean,
+  lastCheckedAt: number | undefined,
+  now: number,
+): boolean {
+  if (interval === "off") return false;
+  const period = NEW_MODEL_CHECK_PERIOD_MS[interval];
+  if (period === undefined) return !checkedThisLaunch;
+  return lastCheckedAt === undefined || now - lastCheckedAt >= period;
+}
+
+const checkedThisLaunch = new Set<string>();
 const ticksInFlight = new Set<string>();
 
+type NewlyListedFor = (row: ExternalProviderConfig) => NewlyListed | null;
+
+/** Lists the connection when due; the result is applied to the row as it is once the listing returns. */
 async function listForNewModels(
   provider: ExternalProviderConfig,
-): Promise<NewlyListed | null> {
-  if (provider.authKind === "chatgpt_oauth") {
-    if (provider.authStatus !== "connected") return null;
-    // Served from the backend's short catalog cache, so repeated syncs do not each ask ChatGPT.
-    const listed = await fetchCodexSubscriptionModels(provider.id);
-    return withNewlyOfferedCodexModels(provider.models, provider.availableModels ?? [], listed);
+  codexEntry: ProviderRegistryEntry | undefined,
+): Promise<NewlyListedFor | null> {
+  const isCodex = provider.authKind === "chatgpt_oauth";
+  if (isCodex ? provider.authStatus !== "connected" : !autoTicksNewlyListedModels(provider)) {
+    return null;
   }
-  if (!autoTicksNewlyListedModels(provider)) return null;
-  // Every focus re-syncs; a provider's own model list is asked at most once a day per tab.
-  const checkedAt = lastListingCheck.get(provider.id);
-  if (checkedAt !== undefined && Date.now() - checkedAt < LISTING_CHECK_INTERVAL_MS) return null;
-  lastListingCheck.set(provider.id, Date.now());
+  const now = Date.now();
+  const due = newModelCheckDue(
+    newModelCheckOf(currentRow(provider.id) ?? provider),
+    checkedThisLaunch.has(provider.id),
+    loadNewModelChecksAt()[provider.id],
+    now,
+  );
+  if (!due) return null;
+  checkedThisLaunch.add(provider.id);
+  saveNewModelCheckAt(provider.id, now);
+  if (isCodex) {
+    const listed = await fetchCodexSubscriptionModels(provider.id);
+    // A newly ticked text-only slug must not inherit the provider's vision default.
+    const capabilities = codexCapabilitiesWithPlanModels(
+      codexEntry,
+      listed,
+      getProviderModelCapabilities("openai_codex"),
+    );
+    if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
+    return (row) =>
+      withNewlyOfferedCodexModels(
+        row.models,
+        row.availableModels ?? [],
+        listed,
+        autoTickLimit(row.id),
+      );
+  }
   const listed = await listProviderModels({
     providerType: toExternalBackendProviderType(provider.providerType),
     providerId: provider.id,
@@ -430,16 +503,49 @@ async function listForNewModels(
     baseUrl: provider.baseUrl || null,
     extraHeaders: provider.extraHeaders,
   });
+  learnCatalogModelCapabilities(provider.providerType, listed);
   const listedIds = pruneProviderModelIds(provider.providerType, [
     ...new Set(listed.map((model) => model.id.trim()).filter((id) => id.length > 0)),
   ]);
-  return withNewlyListedModels(provider.models, provider.availableModels ?? [], listedIds, {
-    maxAdded: MAX_AUTO_TICKED_MODELS,
-  });
+  return (row) =>
+    withNewlyListedModels(row.models, row.availableModels ?? [], listedIds, {
+      maxAdded: autoTickLimit(row.id, MAX_AUTO_TICKED_MODELS),
+    });
 }
+
+export function codexCapabilitiesWithPlanModels(
+  entry: ProviderRegistryEntry | undefined,
+  listed: CodexSubscriptionModels | null,
+  stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+): Record<string, { vision?: boolean; studio_tools?: boolean }> | null {
+  if (!listed || listed.source !== "subscription") return null;
+  // Without the registry row every model reads as unlisted and persisted capabilities go wrong.
+  if (!entry) return null;
+  const registryCapabilities = entry.model_capabilities ?? {};
+  // Keyed by provider type, so merge into what is learned or a second connection drops the first's.
+  const capabilities = mergeLearnedModelCapabilities(
+    stored,
+    registryCapabilities,
+    entry?.supports_studio_tools,
+  );
+  for (const model of listed.known ?? listed.models) {
+    // Only the plan describes unlisted slugs; mirror the backend bool(vision) gate as false, not null.
+    if (!(model.id in registryCapabilities)) {
+      capabilities[model.id] = {
+        ...capabilities[model.id],
+        vision: model.vision === true,
+      };
+    }
+  }
+  return capabilities;
+}
+
+const currentRow = (id: string) =>
+  useExternalProvidersStore.getState().providers.find((candidate) => candidate.id === id);
 
 async function tickNewlyListedModels(
   providers: readonly ExternalProviderConfig[],
+  codexEntry: ProviderRegistryEntry | undefined,
   isCurrent?: () => boolean,
 ): Promise<void> {
   for (const provider of providers) {
@@ -452,12 +558,17 @@ async function tickNewlyListedModels(
     }
     ticksInFlight.add(provider.id);
     try {
-      const update = await listForNewModels(provider);
+      const updateFor = await listForNewModels(provider, codexEntry);
       if (isCurrent && !isCurrent()) return;
-      if (!update || providerSavesInFlight.has(provider.id)) continue;
+      if (!updateFor || providerSavesInFlight.has(provider.id)) continue;
+      // A settings save may have finished during the listing: merge into the row as it is now.
+      const latest = currentRow(provider.id);
+      const update = updateFor(latest ?? provider);
+      if (!update) continue;
       const { models, availableModels } = update;
       await updateProviderConfig(provider.id, { models, availableModels });
       if (isCurrent && !isCurrent()) return;
+      if (currentRow(provider.id) !== latest) continue;
       const store = useExternalProvidersStore.getState();
       store.setProviders(
         store.providers.map((candidate) =>
