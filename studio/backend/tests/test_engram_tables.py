@@ -856,3 +856,34 @@ class TestCachedQuantLoads:
             REPO, "UD-IQ1_S", [repo], None, root = tmp_path, sibling_active = sibling_active
         )
         assert partial.exists() is sibling_active
+
+    def test_switching_the_table_invalidates_saved_kv(self, tmp_path):
+        backend = LlamaCppBackend()
+        first = _write(tmp_path / "m-00001-of-00002.gguf", b"x")
+        tables = [_write(tmp_path / f"t{i}.gguf_file", b"x" * (i + 1)) for i in range(2)]
+        backend._gguf_path, backend._extra_args = first, []
+        backend._launch_ple = None
+        own = backend._slot_launch_fingerprint()
+        fingerprints = []
+        for table in tables:
+            backend._launch_ple = (first, table)
+            fingerprints.append(backend._slot_launch_fingerprint())
+        assert len({own, *fingerprints}) == 3
+
+    def test_a_table_cached_in_another_root_is_reused_not_downloaded(self, monkeypatch, tmp_path):
+        from core.inference.engram_tables import EngramTable
+
+        other = _write(tmp_path / "b" / "snapshots" / "r" / _table_name("Q5_1"), b"x" * 7)
+        monkeypatch.setattr(lc, "_cached_hf_snapshot_file", lambda *a, **k: None)
+        monkeypatch.setattr(lc, "_cached_gguf_snapshots", lambda repo: [Path(other).parents[1]])
+
+        def download(*a, **k):
+            raise AssertionError("downloaded a table that is cached")
+
+        monkeypatch.setattr(lc, "hf_hub_download_with_xet_fallback", download)
+        backend = LlamaCppBackend()
+        near = _write(tmp_path / "a" / "snapshots" / "r" / "m.gguf", b"x")
+        path = backend._download_engram_table(
+            hf_repo = REPO, table = EngramTable("Q5_1", _table_name("Q5_1"), 7), near_path = near
+        )
+        assert path == other

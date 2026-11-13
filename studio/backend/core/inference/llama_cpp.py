@@ -20790,7 +20790,7 @@ class LlamaCppBackend:
         )
         cached = _cached_hf_snapshot_file(
             hf_repo, table.filename, expected_size = table.size_bytes, cache_dir = cache_dir
-        )
+        ) or _cached_engram_table_path(hf_repo, table)
         if cached:
             logger.info("Reusing cached %s Engram table: %s", table.precision, cached)
             return cached
@@ -36052,6 +36052,10 @@ class LlamaCppBackend:
             for cand in candidates:
                 if cand not in files:
                     files.append(cand)
+        # The --ple Engram table: part of the weights, added to the launch, not to _extra_args.
+        ple = self._ple_path_for(getattr(self, "_gguf_path", None))
+        if ple and ple not in files:
+            files.append(ple)
         return files
 
     def _prompt_cache_off(self) -> bool:
