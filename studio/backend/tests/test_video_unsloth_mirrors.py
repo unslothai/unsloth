@@ -11,6 +11,7 @@ or a model with no unsloth repo at all, may stay outside unsloth/*.
 
 from __future__ import annotations
 
+import hashlib
 import types
 
 import pytest
@@ -968,6 +969,8 @@ class _HubRecorder:
     config_reads: list = []
     # Repos whose main advances after their first listing (a later unpinned listing sees a new commit).
     moving: tuple = (_GGUF_REPO,)
+    # Real sha256 blob keys, the shape huggingface_hub's process-unique partial names are parsed with.
+    hex_keys: bool = False
 
     def __init__(self, token = None):
         pass
@@ -1001,11 +1004,17 @@ class _HubRecorder:
                     rfilename = n,
                     size = sz,
                     blob_id = "git-" + n,
-                    lfs = types.SimpleNamespace(sha256 = "lfs-" + n),
+                    lfs = types.SimpleNamespace(
+                        sha256 = _lfs_key(n) if type(self).hex_keys else "lfs-" + n
+                    ),
                 )
                 for n, sz in files.items()
             ],
         )
+
+
+def _lfs_key(name):
+    return hashlib.sha256(name.encode()).hexdigest()
 
 
 def _assembly_config_reads(base, empty_cache, monkeypatch):
@@ -1099,6 +1108,7 @@ def _walk_a_load(
     predownload_leaves_early = False,
     carrier_checkpoint = False,
     top_up = False,
+    on_assemble = None,
 ):
     import huggingface_hub
 
@@ -1142,6 +1152,8 @@ def _walk_a_load(
 
     def _assemble(**kwargs):
         captured.update(kwargs)
+        if on_assemble is not None:
+            on_assemble(backend)
         # What assembly does with the plan: re-open the checkpoint where the prefetch pinned it.
         import inspect
 
@@ -1322,6 +1334,32 @@ def test_roles_sharing_a_repo_share_one_commit(empty_cache, monkeypatch, te_fetc
     pinned = {(p.repo, p.revision) for p in plan.values()}
     assert {(repo, rev) for repo, rev, _ in _HubRecorder.downloads} <= pinned
     assert captured["_expected_bytes"] == video_mod._plan_total(plan)
+
+
+def test_a_dead_partial_of_a_file_the_encoder_fallback_adds_is_not_progress(
+    empty_cache, monkeypatch
+):
+    """The hosted encoder fetch fell back, so the re-plan adds the dense encoder weights. A partial a cancelled attempt
+    left for them before the load started is a dead attempt's, not this load's progress."""
+    monkeypatch.setattr(_HubRecorder, "hex_keys", True)
+    key = _lfs_key("text_encoder/model.safetensors")
+    for repo in (_WAN_UP, _WAN_MIRROR):
+        _blob(empty_cache, repo, f"{key}.0badf00d", b"d" * 5, incomplete = True)
+    seen = {}
+
+    def _at_assembly(backend):
+        loading = backend._loading
+        seen["planned"] = {
+            etag for entry in loading.fetch_plan.values() for _n, etag, _s in entry.files
+        }
+        seen["with"] = backend._planned_bytes(loading.fetch_plan, loading.incomplete_baseline)
+        for partial in empty_cache.glob(f"models--*/blobs/{key}.0badf00d.incomplete"):
+            partial.unlink()
+        seen["without"] = backend._planned_bytes(loading.fetch_plan, loading.incomplete_baseline)
+
+    _walk_a_load(empty_cache, monkeypatch, te_fetch_falls_back = True, on_assemble = _at_assembly)
+    assert key in seen["planned"]
+    assert seen["with"] == seen["without"]
 
 
 def test_load_pipeline_tops_up_through_the_plan():

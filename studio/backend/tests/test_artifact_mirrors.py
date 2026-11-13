@@ -837,7 +837,10 @@ def test_a_preallocated_partial_counts_only_its_written_bytes(monkeypatch, tmp_p
     with open(partial, "wb") as fh:
         fh.write(b"\1" * 4096)
         fh.truncate(1 << 22)
-    if partial.stat().st_blocks * 512 >= 1 << 22:
+    blocks = getattr(partial.stat(), "st_blocks", None)
+    if blocks is None:
+        pytest.skip("this platform does not report allocated blocks")
+    if blocks * 512 >= 1 << 22:
         pytest.skip("this filesystem does not keep the file sparse")
     progress = backend.load_progress()
     assert progress["phase"] == "downloading"

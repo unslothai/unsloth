@@ -1747,8 +1747,9 @@ class _VideoLoadingState:
     # that owns this state (under the load-token check), replaced whole by a re-estimate, never patched by a fetch site.
     # The fetch sites read their repo + revision from it, and load_progress reads nothing else.
     fetch_plan: dict[str, "_PlannedFetch"] = field(default_factory = dict)
-    # ``{partial path: bytes}`` of the first plan's process-unique partials when this load settled it: huggingface_hub
-    # >= 1.18 writes every attempt to a fresh ``<key>.<8 hex>.incomplete``, so one already there is a dead attempt's.
+    # ``{partial path: bytes}`` of each planned file's process-unique partials when a plan first named that file:
+    # huggingface_hub >= 1.18 writes every attempt to a fresh ``<key>.<8 hex>.incomplete``, so one already there is a
+    # dead attempt's. A re-plan adds its new files and never rewrites an entry, since by then this load may be writing.
     incomplete_baseline: dict[str, int] = field(default_factory = dict)
 
 
@@ -6578,14 +6579,22 @@ class VideoBackend:
                         planned_files = (replanned := {}),
                         pin_revisions = _fetched_pins(planned_files),
                     )
-                    planned_files = _keep_fetched_checkpoint(replanned, planned_files)
+                    previous_plan, planned_files = (
+                        planned_files,
+                        _keep_fetched_checkpoint(replanned, planned_files),
+                    )
                     # The total follows the plan actually kept: the retained checkpoint entry, not a re-listed one.
                     expected = _plan_total(planned_files) if expected else expected
+                    added = self._plan_partials(planned_files, known = previous_plan)
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
                             if hasattr(self._loading, "fetch_plan"):
                                 self._loading.fetch_plan = planned_files
+                                self._loading.incomplete_baseline = {
+                                    **added,
+                                    **self._loading.incomplete_baseline,
+                                }
             # Only a pre-cast checkpoint actually on disk earns the dense skip below.
             te_failed: dict = {}
             te_skipped = self._fetch_te_prequant(
@@ -6672,14 +6681,22 @@ class VideoBackend:
                     skip_te_override = actual_te_skip,
                     pin_revisions = _fetched_pins(planned_files),
                 )
-                planned_files = _keep_fetched_checkpoint(replanned, planned_files)
+                previous_plan, planned_files = (
+                    planned_files,
+                    _keep_fetched_checkpoint(replanned, planned_files),
+                )
                 # The total follows the plan actually kept: the retained checkpoint entry, not a re-listed newer one.
                 expected = _plan_total(planned_files) if expected else expected
+                added = self._plan_partials(planned_files, known = previous_plan)
                 with self._lock:
                     if self._load_token == token and self._loading is not None:
                         self._loading.expected_bytes = expected
                         if hasattr(self._loading, "fetch_plan"):
                             self._loading.fetch_plan = planned_files
+                            self._loading.incomplete_baseline = {
+                                **added,
+                                **self._loading.incomplete_baseline,
+                            }
                 base_plan = planned_files.get(_FETCH_BASE)
             checkpoint_plan = planned_files.get(_FETCH_CHECKPOINT)
             if checkpoint_plan is not None:
@@ -9314,8 +9331,22 @@ class VideoBackend:
             return []
 
     @staticmethod
-    def _plan_partials(plan: dict[str, "_PlannedFetch"]) -> dict[str, int]:
-        """``{path: bytes}`` of the process-unique partials of ``plan``'s files right now. Never raises."""
+    def _plan_blob_keys(plan: dict[str, "_PlannedFetch"]) -> set[tuple[str, str]]:
+        """``(repo lower, blob key)`` of every keyed file in ``plan``."""
+        return {
+            ((entry.repo or "").strip().lower(), etag)
+            for entry in plan.values()
+            for _name, etag, _size in entry.files
+            if etag
+        }
+
+    @staticmethod
+    def _plan_partials(
+        plan: dict[str, "_PlannedFetch"], known: Optional[dict[str, "_PlannedFetch"]] = None
+    ) -> dict[str, int]:
+        """``{path: bytes}`` of the process-unique partials of ``plan``'s files right now, leaving out the files
+        ``known`` (an earlier plan of the same load) already had. Never raises."""
+        skip = VideoBackend._plan_blob_keys(known or {})
         out: dict[str, int] = {}
         for root in VideoBackend._plan_cache_roots():
             for entry in plan.values():
@@ -9324,7 +9355,9 @@ class VideoBackend:
                     continue
                 folder = root / ("models--" + repo.replace("/", "--"))
                 for _name, etag, _size in entry.files:
-                    for path in VideoBackend._key_partials(folder, etag) if etag else ():
+                    if not etag or (repo.lower(), etag) in skip:
+                        continue
+                    for path in VideoBackend._key_partials(folder, etag):
                         try:
                             out[str(path)] = blob_bytes_present(path)
                         except OSError:
