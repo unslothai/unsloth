@@ -110,11 +110,14 @@ import {
   useExternalProvidersStore,
 } from "./stores/external-providers-store";
 import {
+  autoTicksNewlyListedModels,
+  MAX_AUTO_TICKED_MODELS,
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
   refreshModelsDevCatalog,
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
+  withNewlyListedModels,
   withNewlyOfferedCodexModels,
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
@@ -883,13 +886,40 @@ export function ChatProvidersSettings({
         );
       }
       if (editingProviderId) {
-        onProvidersChange(
-          providersRef.current.map((provider) =>
-            provider.id === editingProviderId
-              ? { ...provider, availableModels: modelIds }
-              : provider,
-          ),
+        const record = providersRef.current.find(
+          (provider) => provider.id === editingProviderId,
         );
+        // Only a listing made with the saved key and endpoint describes the saved connection.
+        const listedSavedConnection =
+          silent || (!apiKey.trim() && baseUrlDraft.trim() === (record?.baseUrl ?? ""));
+        const fresh =
+          record && listedSavedConnection && autoTicksNewlyListedModels(record)
+            ? withNewlyListedModels(record.models, record.availableModels ?? [], modelIds, {
+                maxAdded: MAX_AUTO_TICKED_MODELS,
+              })
+            : null;
+        if (fresh && fresh.added.length > 0) {
+          const { added } = fresh;
+          setSelectedModelIds((prev) => [...new Set([...prev, ...added])]);
+        }
+        const persisted =
+          fresh !== null &&
+          (await updateProviderConfig(editingProviderId, {
+            models: fresh.models,
+            availableModels: fresh.availableModels,
+          }).then(
+            () => true,
+            () => false,
+          ));
+        const next = providersRef.current.map((provider) =>
+          provider.id !== editingProviderId
+            ? provider
+            : persisted && fresh
+              ? { ...provider, models: fresh.models, availableModels: fresh.availableModels }
+              : { ...provider, availableModels: modelIds },
+        );
+        providersRef.current = next;
+        onProvidersChange(next);
       }
       if (!silent) setModelSearchQuery("");
     } catch (error) {

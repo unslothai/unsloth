@@ -14,6 +14,7 @@ import {
   fetchModelCatalog,
   listProviderConfigs,
   listProviderModelCapabilities,
+  listProviderModels,
   listProviderRegistry,
   migrateProviderApiKey,
   updateProviderConfig,
@@ -33,6 +34,7 @@ import {
   type ExternalProviderConfig,
   extraHeadersFromSaved,
   getExternalProviderApiKey,
+  isCustomProviderType,
   isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   pruneExternalProviderApiKeys,
@@ -45,6 +47,8 @@ import {
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
+  supportsRemoteModelCatalog,
+  toExternalBackendProviderType,
 } from "./external-providers";
 import {
   providerSavesInFlight,
@@ -339,58 +343,117 @@ export async function syncExternalProvidersFromBackend(
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
   void refreshProviderModelCatalogs(syncedProviders, isCurrent);
-  void tickNewlyOfferedCodexModels(syncedProviders, isCurrent);
+  void tickNewlyListedModels(syncedProviders, isCurrent);
   return syncedProviders;
 }
 
-/** Ticks slugs the plan lists now but did not when `previouslyOffered` was saved; null = no change.
- *  A slug offered before and unticked since stays unticked. */
+type NewlyListed = { models: string[]; availableModels: string[]; added: string[] };
+
+/** Ticks ids listed now but not when `previouslyListed` was saved; null = no change. An id listed
+ *  before and unticked since stays unticked. `knownIds` drops saved ids the provider no longer knows. */
+export function withNewlyListedModels(
+  savedModels: string[],
+  previouslyListed: string[],
+  listedIds: string[],
+  options: { knownIds?: string[]; maxAdded?: number } = {},
+): NewlyListed | null {
+  // No baseline (never listed, or a row saved before available_models) cannot tell new from unticked.
+  if (listedIds.length === 0 || savedModels.length === 0 || previouslyListed.length === 0) {
+    return null;
+  }
+  const before = new Set([...previouslyListed, ...savedModels]);
+  const added = listedIds.filter((id) => !before.has(id));
+  if (added.length === 0) return null;
+  if (options.maxAdded !== undefined && added.length > options.maxAdded) {
+    // A jump this size means the baseline was the built-in suggestions, not a listing: adopt it, tick nothing.
+    return { models: savedModels, availableModels: listedIds, added: [] };
+  }
+  const known = options.knownIds ? new Set(options.knownIds) : null;
+  const kept = known ? savedModels.filter((id) => known.has(id)) : savedModels;
+  const models = [...kept, ...added];
+  return { models, availableModels: [...new Set([...listedIds, ...models])], added };
+}
+
 export function withNewlyOfferedCodexModels(
   savedModels: string[],
   previouslyOffered: string[],
   listed: CodexSubscriptionModels | null,
-): { models: string[]; availableModels: string[]; added: string[] } | null {
-  // No baseline (never connected, or a row saved before available_models) cannot tell new from unticked.
-  if (listed?.source !== "subscription" || listed.models.length === 0) return null;
-  if (savedModels.length === 0 || previouslyOffered.length === 0) return null;
-  const before = new Set([...previouslyOffered, ...savedModels]);
-  const offered = pruneProviderModelIds(
-    "openai_codex",
-    listed.models.map((model) => model.id),
+): NewlyListed | null {
+  if (listed?.source !== "subscription") return null;
+  return withNewlyListedModels(
+    savedModels,
+    previouslyOffered,
+    pruneProviderModelIds("openai_codex", listed.models.map((model) => model.id)),
+    { knownIds: (listed.known ?? listed.models).map((model) => model.id) },
   );
-  const added = offered.filter((id) => !before.has(id));
-  if (added.length === 0) return null;
-  const known = new Set((listed.known ?? listed.models).map((model) => model.id));
-  const models = [...savedModels.filter((id) => known.has(id)), ...added];
-  return { models, availableModels: [...new Set([...offered, ...models])], added };
 }
 
-const codexTicksInFlight = new Set<string>();
+// Gateways list new third-party models every week; ticking each would flood the picker.
+const NO_AUTO_TICK_PROVIDER_TYPES = new Set(["openrouter", "huggingface"]);
+// More at once is a first real listing against the suggestions, not a release.
+export const MAX_AUTO_TICKED_MODELS = 3;
 
-async function tickNewlyOfferedCodexModels(
+/** API connections whose listing is the provider's own; local servers and custom endpoints opt in
+ *  separately (llama.cpp auto reload), ChatGPT subscriptions use their plan catalog. */
+export function autoTicksNewlyListedModels(provider: ExternalProviderConfig): boolean {
+  return (
+    provider.authKind !== "chatgpt_oauth" &&
+    !provider.sharedByOwner &&
+    !NO_AUTO_TICK_PROVIDER_TYPES.has(provider.providerType) &&
+    !isCustomProviderType(provider.providerType) &&
+    !supportsRemoteModelCatalog(provider.providerType)
+  );
+}
+
+const LISTING_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const lastListingCheck = new Map<string, number>();
+const ticksInFlight = new Set<string>();
+
+async function listForNewModels(
+  provider: ExternalProviderConfig,
+): Promise<NewlyListed | null> {
+  if (provider.authKind === "chatgpt_oauth") {
+    if (provider.authStatus !== "connected") return null;
+    // Served from the backend's short catalog cache, so repeated syncs do not each ask ChatGPT.
+    const listed = await fetchCodexSubscriptionModels(provider.id);
+    return withNewlyOfferedCodexModels(provider.models, provider.availableModels ?? [], listed);
+  }
+  if (!autoTicksNewlyListedModels(provider)) return null;
+  // Every focus re-syncs; a provider's own model list is asked at most once a day per tab.
+  const checkedAt = lastListingCheck.get(provider.id);
+  if (checkedAt !== undefined && Date.now() - checkedAt < LISTING_CHECK_INTERVAL_MS) return null;
+  lastListingCheck.set(provider.id, Date.now());
+  const listed = await listProviderModels({
+    providerType: toExternalBackendProviderType(provider.providerType),
+    providerId: provider.id,
+    apiKey: provider.hasApiKey ? "" : getExternalProviderApiKey(provider.id),
+    baseUrl: provider.baseUrl || null,
+    extraHeaders: provider.extraHeaders,
+  });
+  const listedIds = pruneProviderModelIds(provider.providerType, [
+    ...new Set(listed.map((model) => model.id.trim()).filter((id) => id.length > 0)),
+  ]);
+  return withNewlyListedModels(provider.models, provider.availableModels ?? [], listedIds, {
+    maxAdded: MAX_AUTO_TICKED_MODELS,
+  });
+}
+
+async function tickNewlyListedModels(
   providers: readonly ExternalProviderConfig[],
   isCurrent?: () => boolean,
 ): Promise<void> {
   for (const provider of providers) {
     if (
-      provider.authKind !== "chatgpt_oauth" ||
-      provider.authStatus !== "connected" ||
       provider.sharedByOwner ||
-      codexTicksInFlight.has(provider.id) ||
+      ticksInFlight.has(provider.id) ||
       providerSavesInFlight.has(provider.id)
     ) {
       continue;
     }
-    codexTicksInFlight.add(provider.id);
+    ticksInFlight.add(provider.id);
     try {
-      // Served from the backend's short catalog cache, so repeated syncs do not each ask ChatGPT.
-      const listed = await fetchCodexSubscriptionModels(provider.id);
+      const update = await listForNewModels(provider);
       if (isCurrent && !isCurrent()) return;
-      const update = withNewlyOfferedCodexModels(
-        provider.models,
-        provider.availableModels ?? [],
-        listed,
-      );
       if (!update || providerSavesInFlight.has(provider.id)) continue;
       const { models, availableModels } = update;
       await updateProviderConfig(provider.id, { models, availableModels });
@@ -404,9 +467,9 @@ async function tickNewlyOfferedCodexModels(
         ),
       );
     } catch {
-      // Upstream or save failed: the next sync tries again.
+      // Offline, unauthorized or the save failed: a later sync tries again.
     } finally {
-      codexTicksInFlight.delete(provider.id);
+      ticksInFlight.delete(provider.id);
     }
   }
 }

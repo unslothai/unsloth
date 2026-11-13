@@ -17,8 +17,24 @@ type WithNewlyOffered = (
   listed: SubscriptionModels | null,
 ) => { models: string[]; availableModels: string[]; added: string[] } | null;
 
+type WithNewlyListed = (
+  savedModels: string[],
+  previouslyListed: string[],
+  listedIds: string[],
+  options?: { knownIds?: string[]; maxAdded?: number },
+) => { models: string[]; availableModels: string[]; added: string[] } | null;
+
+type Connection = {
+  providerType: string;
+  authKind?: string;
+  sharedByOwner?: boolean;
+};
+
 let vite: ViteDevServer;
 let withNewlyOfferedCodexModels: WithNewlyOffered;
+let withNewlyListedModels: WithNewlyListed;
+let autoTicksNewlyListedModels: (provider: Connection) => boolean;
+let maxAutoTicked: number;
 
 const plan = (...ids: string[]): SubscriptionModels => ({
   models: ids.map((id) => ({ id })),
@@ -35,6 +51,11 @@ before(async () => {
   );
   withNewlyOfferedCodexModels =
     loaded.withNewlyOfferedCodexModels as WithNewlyOffered;
+  withNewlyListedModels = loaded.withNewlyListedModels as WithNewlyListed;
+  autoTicksNewlyListedModels = loaded.autoTicksNewlyListedModels as (
+    provider: Connection,
+  ) => boolean;
+  maxAutoTicked = loaded.MAX_AUTO_TICKED_MODELS as number;
 });
 
 after(async () => {
@@ -113,5 +134,82 @@ test("applying the result again is a no-op", () => {
   assert.equal(
     withNewlyOfferedCodexModels(first.models, first.availableModels, listed),
     null,
+  );
+});
+
+test("an API connection ticks a model its provider newly lists and keeps unlisted saved ones", () => {
+  assert.deepEqual(
+    withNewlyListedModels(
+      ["claude-opus-4-7", "my-pinned-id"],
+      ["claude-opus-4-7", "claude-haiku-4-5"],
+      ["claude-opus-5", "claude-opus-4-7", "claude-haiku-4-5"],
+      { maxAdded: maxAutoTicked },
+    ),
+    {
+      models: ["claude-opus-4-7", "my-pinned-id", "claude-opus-5"],
+      availableModels: [
+        "claude-opus-5",
+        "claude-opus-4-7",
+        "claude-haiku-4-5",
+        "my-pinned-id",
+      ],
+      added: ["claude-opus-5"],
+    },
+  );
+});
+
+test("a jump past the limit adopts the listing as the baseline without ticking", () => {
+  const listed = ["a", "b", "c", "d", "e", "f"];
+  const update = withNewlyListedModels(["a"], ["a"], listed, {
+    maxAdded: maxAutoTicked,
+  });
+  assert.deepEqual(update, {
+    models: ["a"],
+    availableModels: listed,
+    added: [],
+  });
+  assert.ok(update);
+  assert.equal(
+    withNewlyListedModels(update.models, update.availableModels, listed, {
+      maxAdded: maxAutoTicked,
+    }),
+    null,
+  );
+});
+
+test("gateways, custom endpoints and local servers are not auto ticked", () => {
+  for (const providerType of ["anthropic", "openai", "gemini"]) {
+    assert.equal(
+      autoTicksNewlyListedModels({ providerType }),
+      true,
+      providerType,
+    );
+  }
+  for (const providerType of [
+    "openrouter",
+    "huggingface",
+    "llama_cpp",
+    "ollama",
+    "vllm",
+  ]) {
+    assert.equal(
+      autoTicksNewlyListedModels({ providerType }),
+      false,
+      providerType,
+    );
+  }
+  assert.equal(
+    autoTicksNewlyListedModels({
+      providerType: "anthropic",
+      sharedByOwner: true,
+    }),
+    false,
+  );
+  assert.equal(
+    autoTicksNewlyListedModels({
+      providerType: "openai_codex",
+      authKind: "chatgpt_oauth",
+    }),
+    false,
   );
 });
