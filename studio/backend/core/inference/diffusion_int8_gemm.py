@@ -212,6 +212,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     except Exception:  # noqa: BLE001 - no Triton means the stock path
         return None
     globals().update(triton = triton, tl = tl)
+    try:
+        from .diffusion_triton_prefetch import fix_triton_sm8x_8bit_prefetch
+        fix_triton_sm8x_8bit_prefetch()
+    except Exception:  # noqa: BLE001 - kernels compile as stock Triton would
+        pass
 
     @triton.jit
     def _rbf16(x):
