@@ -327,7 +327,6 @@ export function ResourcesTab() {
   } = useMonitorOverlayStore();
   const wantsModels = showUnslothShare || showModelBreakdown;
   const [npuStatus] = useNpuStatus();
-  // The NPU card names its resident model, so an NPU host polls the rows too.
   const wantsModelRows = wantsModels || Boolean(npuStatus?.hardware.supported);
   const { polledEntries: loadedModels } = useLoadedModels(
     wantsModelRows,

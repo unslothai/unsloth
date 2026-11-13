@@ -3848,7 +3848,7 @@ def npu_load_percent() -> Optional[float]:
             if cached is not None and now - cached[0] < max(_NPU_LOAD_TTL_S, 4 * cached[1]):
                 return cached[2]
             try:
-                # Once a minute: a host whose NPU reports no LUID would otherwise ask every sample.
+                # Once a minute, not per sample, when the NPU reports no LUID.
                 if _npu_luid is None and now - _npu_luid_at >= _NPU_LUID_TTL_S:
                     raw = (_rocm_windows_counter_stdout_uncached(_NPU_LUID_PS) or "").strip()
                     _npu_luid = int(raw) if raw.isdigit() and int(raw) else None
