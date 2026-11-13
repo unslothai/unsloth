@@ -196,7 +196,6 @@ def test_patched_or_hooked_norms_take_the_stock_chain(monkeypatch):
     with torch.no_grad():
         qr.qk_norm_rope(attn, q, k, torch.float16, _rope(9), tf3.apply_rotary_emb)
     h.remove()
-    # Q may have gone through the fused branch, but the pair falls back to stock as a whole
     assert qr.STATS == {"fused": 0, "stock": 2}
     assert len(calls) <= 2
 
