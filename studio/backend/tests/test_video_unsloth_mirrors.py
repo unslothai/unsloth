@@ -739,6 +739,26 @@ def test_progress_reads_planned_files_by_blob_key_in_the_plan_repo(empty_cache, 
     assert progress["downloaded_bytes"] == 2 + 7
 
 
+def test_progress_counts_a_process_unique_partial_past_the_load_baseline(empty_cache, monkeypatch):
+    """huggingface_hub >= 1.18 writes each attempt to a fresh ``<key>.<8 hex>.incomplete``: the planned shard's live
+    partial counts as it grows, while one a cancelled attempt left before the plan settled never does."""
+    mirror, key = "unsloth/LTX-2-FP8", "c3" * 32
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    _blob(
+        empty_cache, mirror, f"{key}.0badf00d", b"d" * 60, incomplete = True
+    )  # a cancelled attempt's
+    plan = {"base": _plan(mirror, [("transformer/model.safetensors", key, 100)])}
+    backend = video_mod.VideoBackend()
+    backend._loading = video_mod._VideoLoadingState(
+        repo_id = "x/ckpt", base_repo = "x/base", expected_bytes = 100
+    )
+    backend._loading.fetch_plan = plan
+    backend._loading.incomplete_baseline = video_mod.VideoBackend._plan_partials(plan)
+    assert backend.load_progress()["downloaded_bytes"] == 0
+    _blob(empty_cache, mirror, f"{key}.1a2b3c4d", b"t" * 25, incomplete = True)
+    assert backend.load_progress()["downloaded_bytes"] == 25
+
+
 def test_progress_reads_the_fallback_cache_root(empty_cache, monkeypatch):
     """Fetches pass reuse_other_cache_root; an upstream complete only in the import-time root counts."""
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))

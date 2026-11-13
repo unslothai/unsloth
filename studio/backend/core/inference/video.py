@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
+from hub.utils.hf_cache_state import blob_bytes_present, incomplete_blob_hash
 from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
@@ -1746,6 +1747,9 @@ class _VideoLoadingState:
     # that owns this state (under the load-token check), replaced whole by a re-estimate, never patched by a fetch site.
     # The fetch sites read their repo + revision from it, and load_progress reads nothing else.
     fetch_plan: dict[str, "_PlannedFetch"] = field(default_factory = dict)
+    # ``{partial path: bytes}`` of the first plan's process-unique partials when this load settled it: huggingface_hub
+    # >= 1.18 writes every attempt to a fresh ``<key>.<8 hex>.incomplete``, so one already there is a dead attempt's.
+    incomplete_baseline: dict[str, int] = field(default_factory = dict)
 
 
 class _PlannedFetch(NamedTuple):
@@ -6452,6 +6456,7 @@ class VideoBackend:
                     self._loading.base_repo = base
                     if hasattr(self._loading, "fetch_plan"):
                         self._loading.fetch_plan = planned_files
+                        self._loading.incomplete_baseline = self._plan_partials(planned_files)
                     # The conditioner artifact comes from a THIRD repo, neither repo_id nor base_repo, so without this
                     # the delete-cached guard would let it be deleted out from under the in-flight fetch (or out from
                     # under the assembly, while the base snapshot that no longer carries a dense encoder is still coming
@@ -9285,16 +9290,8 @@ class VideoBackend:
             return 0
 
     @staticmethod
-    def _planned_bytes(plan: dict[str, "_PlannedFetch"]) -> int:
-        """Bytes of the load's planned files present in the cache, read by blob key from the plan's repo.
-
-        A blob is named by its content key, so this counts exactly the planned file whichever revision it lands under
-        (a superseded snapshot's same-named file has another key), never a carrier's other checkpoints or an unrelated
-        partial, and the in-flight ``<key>.incomplete`` while it downloads. Both cache roots are read, as every fetch
-        passes ``reuse_other_cache_root``. A file with no key falls back to its entry in the pinned revision (else
-        ``refs/main``). Each file is capped at its listed size and counted once."""
-        import os
-
+    def _plan_cache_roots() -> list[Path]:
+        """The live cache root, then huggingface_hub's own when it differs: every fetch passes ``reuse_other_cache_root``."""
         roots = [Path(hub_cache_dir())]
         try:
             from huggingface_hub import constants
@@ -9302,6 +9299,54 @@ class VideoBackend:
                 roots.append(Path(constants.HF_HUB_CACHE))
         except Exception:  # noqa: BLE001 -- the live root alone
             pass
+        return roots
+
+    @staticmethod
+    def _key_partials(folder: Path, etag: str) -> list[Path]:
+        """``<etag>.<8 hex>.incomplete``, the partials huggingface_hub >= 1.18 writes for ``etag``."""
+        try:
+            return [
+                path
+                for path in (folder / "blobs").glob(f"{etag}.*.incomplete")
+                if incomplete_blob_hash(path.name) == etag
+            ]
+        except OSError:
+            return []
+
+    @staticmethod
+    def _plan_partials(plan: dict[str, "_PlannedFetch"]) -> dict[str, int]:
+        """``{path: bytes}`` of the process-unique partials of ``plan``'s files right now. Never raises."""
+        out: dict[str, int] = {}
+        for root in VideoBackend._plan_cache_roots():
+            for entry in plan.values():
+                repo = (entry.repo or "").strip()
+                if not repo:
+                    continue
+                folder = root / ("models--" + repo.replace("/", "--"))
+                for _name, etag, _size in entry.files:
+                    for path in VideoBackend._key_partials(folder, etag) if etag else ():
+                        try:
+                            out[str(path)] = blob_bytes_present(path)
+                        except OSError:
+                            continue
+        return out
+
+    @staticmethod
+    def _planned_bytes(
+        plan: dict[str, "_PlannedFetch"], baseline: Optional[dict[str, int]] = None
+    ) -> int:
+        """Bytes of the load's planned files present in the cache, read by blob key from the plan's repo.
+
+        A blob is named by its content key, so this counts exactly the planned file whichever revision it lands under
+        (a superseded snapshot's same-named file has another key), never a carrier's other checkpoints or an unrelated
+        partial, and the in-flight partial while it downloads: ``<key>.incomplete`` in full, since a resume appends to
+        it, or ``<key>.<8 hex>.incomplete`` past ``baseline``, since that is a fresh file per attempt and one already
+        there is a dead attempt's. Both cache roots are read, as every fetch passes ``reuse_other_cache_root``. A file
+        with no key falls back to its entry in the pinned revision (else ``refs/main``). Each file is capped at its
+        listed size and counted once."""
+        import os
+
+        roots = VideoBackend._plan_cache_roots()
         total = 0
         seen: set[tuple[str, str]] = set()
         for entry in plan.values():
@@ -9318,10 +9363,10 @@ class VideoBackend:
                     folder = root / ("models--" + repo.replace("/", "--"))
                     try:
                         if etag:
-                            candidates = [
-                                folder / "blobs" / etag,
-                                folder / "blobs" / f"{etag}.incomplete",
-                            ]
+                            candidates = [folder / "blobs" / etag]
+                            stable = folder / "blobs" / f"{etag}.incomplete"
+                            if stable.is_file():
+                                best = max(best, blob_bytes_present(stable))
                         else:
                             ref = folder / "refs" / "main"
                             rev = entry.revision or (
@@ -9331,6 +9376,11 @@ class VideoBackend:
                         for path in candidates:
                             if path.is_file():
                                 best = max(best, os.path.getsize(path))
+                        for path in VideoBackend._key_partials(folder, etag) if etag else ():
+                            best = max(
+                                best,
+                                blob_bytes_present(path) - (baseline or {}).get(str(path), 0),
+                            )
                     except OSError:
                         continue
                 total += min(best, size) if size else best
@@ -9347,7 +9397,7 @@ class VideoBackend:
         # every fetch site reads, and each file's blob key and size. Nothing else is consulted.
         plan = dict(getattr(loading, "fetch_plan", None) or {})
         if plan:
-            downloaded = self._planned_bytes(plan)
+            downloaded = self._planned_bytes(plan, getattr(loading, "incomplete_baseline", None))
         else:
             # No plan (offline, a failed estimate, or a state built outside _run_load): the whole cache of each id's
             # default fetch side.

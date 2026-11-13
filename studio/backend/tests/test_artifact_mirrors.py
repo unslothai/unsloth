@@ -781,6 +781,69 @@ def test_a_resumed_planned_blob_counts_its_earlier_bytes_and_a_siblings_never_co
     assert backend.load_progress()["bytes_downloaded"] == 9_000
 
 
+def _keyed_partial_load(monkeypatch, tmp_path, key, size):
+    from core.inference.diffusion import _LoadingState
+
+    repo = "unsloth/FLUX.1-dev-GGUF"
+    planned = ((repo, "flux1-dev-Q4_K_M.gguf", size),)
+    _snapshot(tmp_path, repo, {"README.md": 10})
+    blobs = tmp_path / f"models--{repo.replace('/', '--')}" / "blobs"
+    blobs.mkdir(parents = True, exist_ok = True)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_cache_repo_dirs",
+        staticmethod(lambda repo_id: [tmp_path / f"models--{repo_id.replace('/', '--')}"]),
+    )
+
+    def start(backend):
+        backend._loading = _LoadingState(
+            repo_id = repo,
+            base_repo = "black-forest-labs/FLUX.1-dev",
+            gguf_filename = planned[0][1],
+            planned_files = planned,
+            expected_bytes = size,
+            incomplete_baseline = DiffusionBackend._incomplete_blob_sizes({repo}),
+            planned_blob_keys = {(repo.lower(), planned[0][1]): key},
+        )
+
+    return blobs, start
+
+
+def test_a_process_unique_partial_counts_while_a_dead_attempts_does_not(monkeypatch, tmp_path):
+    """huggingface_hub >= 1.18 writes each attempt to a fresh ``<blob key>.<8 hex>.incomplete``. The planned file's
+    live partial counts as it grows; one a cancelled attempt left before the load started never does."""
+    key = "a1" * 32
+    blobs, start = _keyed_partial_load(monkeypatch, tmp_path, key, 10_000)
+    (blobs / f"{key}.0badf00d.incomplete").write_bytes(b"\0" * 4_000)  # a cancelled attempt's
+    (blobs / f"{'f' * 64}.12345678.incomplete").write_bytes(b"\0" * 3_000)  # another file's
+    backend = DiffusionBackend()
+    start(backend)
+    assert backend.load_progress()["bytes_downloaded"] == 0
+    (blobs / f"{key}.1a2b3c4d.incomplete").write_bytes(b"\0" * 2_500)
+    assert backend.load_progress()["bytes_downloaded"] == 2_500
+    with open(blobs / f"{key}.1a2b3c4d.incomplete", "ab") as fh:
+        fh.write(b"\0" * 2_500)
+    assert backend.load_progress()["bytes_downloaded"] == 5_000
+
+
+def test_a_preallocated_partial_counts_only_its_written_bytes(monkeypatch, tmp_path):
+    """A writer that sets the partial to its final length first must not read as a finished download, or the
+    progress latches at finalizing for the rest of the transfer."""
+    key = "b2" * 32
+    blobs, start = _keyed_partial_load(monkeypatch, tmp_path, key, 1 << 22)
+    backend = DiffusionBackend()
+    start(backend)
+    partial = blobs / f"{key}.1a2b3c4d.incomplete"
+    with open(partial, "wb") as fh:
+        fh.write(b"\1" * 4096)
+        fh.truncate(1 << 22)
+    if partial.stat().st_blocks * 512 >= 1 << 22:
+        pytest.skip("this filesystem does not keep the file sparse")
+    progress = backend.load_progress()
+    assert progress["phase"] == "downloading"
+    assert 4096 <= progress["bytes_downloaded"] < 1 << 21
+
+
 def test_the_mirror_is_chosen_again_once_the_plan_widens_to_transformer_shards(monkeypatch):
     """FLUX.1-dev's companions are cached upstream but its transformer is not. An explicit transformer quant widens
     the plan to the dense shards after the companion-only mirror choice kept the gated upstream; the final list must
