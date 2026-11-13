@@ -1111,6 +1111,32 @@ def test_terminal_high_risk_classifier(command, high_risk):
 @pytest.mark.parametrize(
     ("command", "high_risk"),
     [
+        ("trap 'rm -rf /tmp/x' EXIT; echo ok", True),
+        ("tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; make", True),
+        ("trap -- 'git clean -fd' INT TERM", True),
+        ("trap 'cat ~/.ssh/id_rsa' EXIT", True),
+        ("script -qc 'rm -rf /tmp/x' /dev/null", True),
+        ("script -c 'git clean -fd'", True),
+        ("script -q -c 'rm -rf build' /dev/null", True),
+        ("script --command='rm -rf build' /dev/null", True),
+        ("script --command 'rm -rf build' /dev/null", True),
+        ("trap 'echo done' EXIT", False),
+        ("trap 'echo done' EXIT; make", False),
+        ("trap - EXIT", False),
+        ("trap -p", False),
+        ("script -qc 'make test' /dev/null", False),
+        ("script -q session.log", False),
+    ],
+)
+def test_command_string_run_by_trap_or_script_is_screened(command, high_risk):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is high_risk
+    code = f"import os\nos.system({command!r})"
+    assert is_high_risk_tool_call("python", {"code": code}) is high_risk
+
+
+@pytest.mark.parametrize(
+    ("command", "high_risk"),
+    [
         ("python3 - <<'PY'\nimport shutil; shutil.rmtree('build')\nPY", True),
         ("python3 - <<'PY'\nimport os; os.system('rm -rf build')\nPY", True),
         ("python <<EOF\nimport os\nos.remove('data.db')\nEOF", True),

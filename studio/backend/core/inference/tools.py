@@ -7957,7 +7957,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 ):
                     return True
                 # Shell `-c PAYLOAD` runs its quoted payload, so screen it recursively; also bash -lc clusters.
-                if current_command in _SHELL_C_INTERPRETERS:
+                if current_command in _SHELL_C_INTERPRETERS or current_command == "script":
                     payload = _short_flag_arg(token, "c")
                     if payload is not None:
                         # Plain letters after `c` (bash -ce) are more options, not an attached payload.
@@ -7970,6 +7970,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                                 return True
                         else:
                             shell_c_pending = True
+                if current_command == "script" and flag == "--command":
+                    if "=" not in token:
+                        shell_c_pending = True
+                    elif _depth >= 3 or _terminal_is_high_risk(token.split("=", 1)[1], _depth + 1):
+                        return True
                 # env -S runs a string as a command; env -C chdirs (enabling relative sensitive reads).
                 if current_command == "env":
                     if flag in ("-C", "--chdir"):
@@ -8156,6 +8161,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     scan_forward = False
                 # Remember the resolved command so its own flags (python -c), git subcommand or chdir target are judged.
                 current_command = base
+                if base == "trap":
+                    shell_c_pending = True
                 if base in _CHDIR_COMMANDS:
                     chdir_pending = True
                 if base in _AWK_COMMANDS:
