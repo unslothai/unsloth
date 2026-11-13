@@ -1485,7 +1485,7 @@ export function ComposerModelPicker({
     row: Row;
     view: "settings" | "info";
   } | null>(null);
-  // Portaled outside the panel, so they would outlive Chat going off-route; the picker closes then too.
+  // Portaled outside the panel, so they close with Chat as the picker does.
   const pageActive = useChatActive();
   useEffect(() => {
     if (!pageActive) {
@@ -3109,8 +3109,7 @@ export function ComposerModelPicker({
     }
   }, [configRequest, adoptedRequestId, onConfigRequestAdopted]);
 
-  // A new search or tab is a new list, so the highlight starts over as on opening; before the
-  // effect below, which then seats `active` inside it.
+  // A new search or tab restarts the highlight; declared before the effect that seats `active`.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `query` and `viewed` are the triggers.
   useEffect(() => {
     setHighlight(false);
