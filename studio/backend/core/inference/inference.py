@@ -3073,7 +3073,12 @@ class InferenceBackend:
                     if kind == "text":
                         text_ids.append(value)
                         full = raw_tokenizer.decode(text_ids, skip_special_tokens = True).lstrip()
-                        if full.startswith(said) and len(full) > len(said):
+                        # A trailing U+FFFD is a character split over byte tokens (an emoji): wait for the rest.
+                        if (
+                            not full.endswith("\ufffd")
+                            and full.startswith(said)
+                            and len(full) > len(said)
+                        ):
                             yield full[len(said) :]
                             said = full
                     else:

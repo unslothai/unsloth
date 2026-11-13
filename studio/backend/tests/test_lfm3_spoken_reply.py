@@ -520,3 +520,38 @@ def test_a_worker_still_alive_after_finishing_keeps_the_reply(monkeypatch):
     monkeypatch.setattr(queue, "Queue", _SlowExit)
     b = _backend(_Model(frames = 0), _Processor(_Codec()))
     assert _spoken(b, speak = True) == ["Paris is the capital."]
+
+
+class _ByteTokenizer:
+    """Byte-level ids, as LFM3's BPE splits an emoji: a prefix ending mid-character decodes to U+FFFD."""
+
+    def decode(
+        self,
+        ids,
+        skip_special_tokens = False,
+    ):
+        ids = ids.tolist() if hasattr(ids, "tolist") else ids
+        return bytes(int(i) for i in ids if int(i) < 256).decode("utf-8", errors = "replace")
+
+
+class _ByteModel(_StreamingModel):
+    reply = "Hi \N{SMILING FACE WITH SMILING EYES} there.".encode()
+
+    def generate(self, streamer, audio_streamer, **kwargs):
+        streamer.put(torch.full((1, 7), 300, dtype = torch.long))
+        for byte in self.reply:
+            streamer.put(torch.tensor([[byte]]))
+        return types.SimpleNamespace(
+            sequences = torch.tensor([[300] * 7 + list(self.reply)]),
+            audio_codes = torch.zeros((1, 12, 0), dtype = torch.long),
+            audio_lengths = torch.tensor([0]),
+        )
+
+
+def test_a_character_split_over_tokens_streams_whole_and_keeps_the_rest_of_the_reply():
+    processor = _Processor(_StreamingCodec())
+    processor.tokenizer = _ByteTokenizer()
+    b = _backend(_ByteModel(), processor)
+    text = [x for x in _spoken_iter(b) if isinstance(x, str)]
+    assert "".join(text) == _ByteModel.reply.decode()
+    assert not any("\ufffd" in t for t in text)
