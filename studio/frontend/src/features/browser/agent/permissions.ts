@@ -10,7 +10,6 @@ export type ActionsRule = "ask" | "allow";
 export type DownloadsRule = "ask" | "allow" | "block";
 /** Clicks and drags on a target with no role, name or link (a canvas), asked once per site per chat. */
 export type UnlabelledRule = "ask" | "allow";
-/** browser_evaluate on the site's pages; Run scripts set to Never still wins. */
 export type ScriptsRule = "ask" | "allow";
 export type SiteRule = {
   browsing: BrowsingRule;

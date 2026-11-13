@@ -294,18 +294,14 @@ test("stored Scripts rules are checked, and a rule saved before Scripts existed 
 test("a script runs without asking only under Always allow or its site's Scripts rule", async () => {
   const { scriptRunsWithoutAsking } = await import("../src/features/browser/agent/permissions.ts");
   const rules = permissions({ "dash.example": rule("allow", "ask", "ask", "allow"), "admin.dash.example": rule("allow") });
-  // Ask every time: only the site with Scripts set to Always allow (and its subdomains) skips the prompt.
   assert.equal(scriptRunsWithoutAsking("ask", "https://dash.example/board", rules), true);
   assert.equal(scriptRunsWithoutAsking("ask", "https://eu.dash.example/", rules), true);
-  // A narrower rule for a subdomain wins, as for every other column.
   assert.equal(scriptRunsWithoutAsking("ask", "https://admin.dash.example/", rules), false);
   assert.equal(scriptRunsWithoutAsking("ask", "https://other.example/", rules), false);
   assert.equal(scriptRunsWithoutAsking("ask", "https://dash.example.evil.test/", rules), false);
-  // A page with no host is asked about even when the default rule allows scripts.
   const everywhere = permissions({}, { ...NONE.defaults, scripts: "allow" });
   assert.equal(scriptRunsWithoutAsking("ask", "https://any.example/", everywhere), true);
   assert.equal(scriptRunsWithoutAsking("ask", "about:blank", everywhere), false);
-  // Always allow covers every site; Never refuses even where the site allows scripts.
   assert.equal(scriptRunsWithoutAsking("allow", "https://other.example/", rules), true);
   assert.equal(scriptRunsWithoutAsking("never", "https://dash.example/", rules), false);
   assert.equal(scriptRunsWithoutAsking("ask", "https://other.example/", NONE), false);

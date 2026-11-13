@@ -9,7 +9,6 @@ register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
 const { agentChat, answerQuestion, useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
-// Actions without a scope act for the chat on screen.
 const CHAT = "new";
 
 const globals = globalThis as Record<string, unknown>;
