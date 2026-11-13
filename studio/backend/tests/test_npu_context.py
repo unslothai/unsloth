@@ -17,7 +17,6 @@ from core.inference import npu_memory
 from core.inference.flm_files import FlmFile, FlmModelFiles
 
 _GIB = 1024
-_REAL_AVAILABLE_MIB = nc._available_mib
 
 # The text fields of FastFlowLM's own config.json for each model (FastFlowLM 1.0.12 packages).
 _QWEN35_9B = {
@@ -484,11 +483,3 @@ def test_the_load_response_reports_the_fit_as_the_ceiling(fitted, expected):
     assert response.npu_context_fit == fitted
     assert response.max_context_length == expected
     assert response.native_context_length == 262144
-
-
-@pytest.mark.parametrize("platform,expected", [("win32", 16 * _GIB), ("linux", 24 * _GIB)])
-def test_windows_sizes_against_the_ram_the_npu_can_map(monkeypatch, platform, expected):
-    monkeypatch.setattr(nc.sys, "platform", platform)
-    monkeypatch.setattr(nc.host_memory, "usable_host_ram_mib", lambda: 24 * _GIB)
-    monkeypatch.setattr(nc.host_memory, "host_ram_capacity_mib", lambda: 32 * _GIB)
-    assert _REAL_AVAILABLE_MIB() == expected

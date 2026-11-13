@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -48,10 +47,7 @@ class ContextPlan:
 
 
 def _available_mib() -> Optional[int]:
-    available = host_memory.usable_host_ram_mib()
-    # Windows maps at most about half of RAM to the NPU (lemonade-sdk/lemonade#839).
-    total = host_memory.host_ram_capacity_mib() if sys.platform == "win32" else None
-    return min(available, total // 2) if available is not None and total else available
+    return host_memory.usable_host_ram_mib()
 
 
 def _npu_window_gb() -> Optional[float]:
