@@ -534,6 +534,44 @@ def test_an_interrupted_tool_run_still_debits_its_finished_pass(final_usage):
     assert _pools()["combined"]["used"] == (1250 if final_usage else 900 + 50 + 100)
 
 
+def test_a_run_stopped_after_a_tool_pass_adds_only_the_later_output():
+    from storage import chat_generation_runs_db as runs
+
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "user",
+            "threadId": "t1",
+            "role": "user",
+            "createdAt": now,
+            "content": [{"type": "text", "text": "hi"}],
+        }
+    )
+    runs.create_run(
+        run_id = "run",
+        owner_subject = "owner",
+        thread_id = "t1",
+        user_message_id = "user",
+        assistant_message_id = "assistant",
+        request_payload = {"model": "local", "messages": []},
+    )
+    token = runs.get_worker_token("run")
+    runs.mark_running("run", token)
+    runs.append_events(
+        "run",
+        token,
+        [
+            ("chunk", {"choices": [{"delta": {"content": "b" * 40}}]}),
+            ("chunk", {"type": "context_usage", "prompt_tokens": 100, "completion_tokens": 10}),
+            ("chunk", {"choices": [{"delta": {"content": "a" * 4000}}]}),
+        ],
+    )
+    runs.finish_run("run", worker_token = token, status = "cancelled")
+    _enable(limit = 10_000)
+    assert _pools()["combined"]["used"] == 110 + 1000
+
+
 def test_a_run_stopped_before_any_usage_frame_settles_an_estimate():
     from storage import chat_generation_runs_db as runs
 

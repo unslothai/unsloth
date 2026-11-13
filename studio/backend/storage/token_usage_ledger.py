@@ -241,17 +241,29 @@ def _text_chars(content) -> int:
 
 
 def settle_interrupted_run(conn: sqlite3.Connection, run_id: str) -> None:
-    """A run stopped before any usage frame (e.g. unattended) still debits an estimate of its
-    persisted output; reported usage, if it ever arrives, replaces it."""
+    """A run stopped before its next usage frame (e.g. unattended) still debits an estimate of the
+    output it persisted after the last one; reported usage, if it ever arrives, replaces it."""
     output = 0
+    reported = False
     for (payload,) in conn.execute(
-        "SELECT payload_json FROM chat_generation_events WHERE run_id = ? AND event_type = 'chunk'",
+        "SELECT payload_json FROM chat_generation_events WHERE run_id = ? AND event_type = 'chunk'"
+        " ORDER BY seq",
         (run_id,),
     ):
         try:
-            choices = json.loads(payload).get("choices") or []
-        except (TypeError, ValueError, AttributeError):
+            chunk = json.loads(payload)
+        except (TypeError, ValueError):
             continue
+        if not isinstance(chunk, dict):
+            continue
+        if (
+            chunk.get("type") == "context_usage"
+            or isinstance(chunk.get("usage"), dict)
+            or isinstance(chunk.get("timings"), dict)
+        ):
+            output, reported = 0, True
+            continue
+        choices = chunk.get("choices")
         for choice in choices if isinstance(choices, list) else ():
             delta = choice.get("delta") if isinstance(choice, dict) else None
             if isinstance(delta, dict):
@@ -259,6 +271,18 @@ def settle_interrupted_run(conn: sqlite3.Connection, run_id: str) -> None:
                     delta.get("reasoning_content")
                 )
     if not output:
+        return
+    tail = -(-output // 4)
+    if reported:
+        # The last frame's counts stand; add only what streamed after it.
+        conn.execute(
+            f"""UPDATE {LEDGER_TABLE} SET completion_tokens = completion_tokens + ?,
+                       total_tokens = total_tokens + ?
+                WHERE message_id = (
+                    SELECT assistant_message_id FROM chat_generation_runs WHERE id = ?
+                )""",
+            (tail, tail, run_id),
+        )
         return
     row = conn.execute(
         "SELECT request_json FROM chat_generation_runs WHERE id = ?", (run_id,)
@@ -268,10 +292,7 @@ def settle_interrupted_run(conn: sqlite3.Connection, run_id: str) -> None:
     except (TypeError, ValueError, AttributeError):
         messages = []
     prompt = sum(_text_chars(m.get("content")) for m in messages if isinstance(m, dict))
-    metadata = {
-        "timing": {"tokenCount": -(-output // 4)},
-        "tokenUsageEstimatedPrompt": -(-prompt // 4),
-    }
+    metadata = {"timing": {"tokenCount": tail}, "tokenUsageEstimatedPrompt": -(-prompt // 4)}
     conn.execute(
         _ledger_insert(
             "m",

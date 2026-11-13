@@ -581,6 +581,7 @@ class ApiMonitor:
         *,
         stamp_first_token: bool = True,
         separate_from_openai_tool: bool = False,
+        counted: bool = False,
     ) -> None:
         if not entry_id or not text:
             return
@@ -592,7 +593,8 @@ class ApiMonitor:
                 if entry.reply and not entry.reply.endswith("\n"):
                     text = "\n" + text
                 entry.openai_stream_last_segment_was_tool = False
-            entry.reply_chars += len(text)
+            if not counted:
+                entry.reply_chars += len(text)
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
                 entry.running_phase = "token_generation"
@@ -688,6 +690,10 @@ class ApiMonitor:
             elif call_id is not None and state.call_id is None:
                 state.call_id = call_id
             entry.openai_stream_last_tool_indexes[choice_index] = tool_index
+            # Generated output, counted in full here: the preview below is capped per field.
+            for fragment in (name_fragment, arguments_fragment):
+                text = _stream_tool_fragment(fragment, serialize_json = True)
+                entry.reply_chars += len(text or "")
             pending_chars = sum(
                 len(candidate.name) + len(candidate.arguments)
                 for candidate in entry.openai_stream_tool_calls

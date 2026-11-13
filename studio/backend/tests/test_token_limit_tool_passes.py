@@ -329,3 +329,40 @@ def test_every_gguf_reasoning_branch_counts_its_length():
     )
     assert len(branches) >= 11
     assert all("output_chars" in args for _, args in branches), branches
+
+
+def _api_key_entry(monitor):
+    return monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "",
+        subject = "o",
+        via_api_key = True,
+    )
+
+
+def test_streamed_tool_arguments_count_in_full_and_once():
+    for flush in (False, True):
+        receipts = []
+        monitor = ApiMonitor()
+        monitor.set_terminal_callback(receipts.append)
+        entry = _api_key_entry(monitor)
+        monitor.accumulate_openai_tool_call(
+            entry,
+            choice_index = 0,
+            tool_index = 0,
+            call_id = "c",
+            name_fragment = None,
+            arguments_fragment = "a" * 4000,
+        )
+        if flush:
+            monitor_before = inference_route.api_monitor
+            inference_route.api_monitor = monitor
+            try:
+                inference_route._flush_monitor_stream_tool_calls(entry)
+            finally:
+                inference_route.api_monitor = monitor_before
+        monitor.finish(entry, "cancelled")
+        [receipt] = receipts
+        assert receipt.completion_tokens == 1000, flush

@@ -7566,7 +7566,10 @@ def _flush_monitor_stream_tool_calls(
             name = name[:497] + "..."
         parts.append(_monitor_call_text(name or "<unknown>", arguments))
     prefix = "\n" if separate else ""
-    api_monitor.append_reply(monitor_id, prefix + "\n".join(parts), stamp_first_token = False)
+    # Their arguments were counted as they streamed; this is only the preview.
+    api_monitor.append_reply(
+        monitor_id, prefix + "\n".join(parts), stamp_first_token = False, counted = True
+    )
 
 
 def _monitor_openai_chunk(
