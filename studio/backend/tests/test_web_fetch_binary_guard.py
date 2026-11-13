@@ -687,6 +687,31 @@ def test_failed_read_past_a_late_heading_keeps_the_first_window():
     assert _read_html(resp) == (None, _first_window(body))
 
 
+def test_failed_read_past_a_later_heading_keeps_the_main_window():
+    body = _menu_page(
+        b"<main><p>BODY-MARK install steps.</p>"
+        + b"<p>x</p>" * (300 * 1024 // 8)
+        + b"<h1>Late</h1>"
+        + _LINES
+        + b"</main>"
+    )
+    resp = _FakeResp(body, "text/html")
+    read = resp.read
+    window_end = body.index(b"<main>") + tools._MAX_FETCH_BYTES
+
+    def stalling_read(n = None):
+        if resp._pos > window_end + 65536:
+            raise TimeoutError("timed out")
+        return read(n)
+
+    resp.read = stalling_read
+    error, read_body = _read_html(resp)
+    assert error is None
+    assert b"BODY-MARK install steps." in read_body
+    assert window_end <= len(read_body) <= window_end + 65536
+    assert read_body == body[: len(read_body)]
+
+
 @pytest.mark.parametrize(
     "content_type,body",
     [

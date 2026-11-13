@@ -16016,8 +16016,7 @@ def _read_capped_body(
                 window_end = fallback_end = got
                 remaining = max_bytes - got
             elif latest + body_window - got > 65536:
-                if fallback_end is None:
-                    fallback_end = got
+                fallback_end = got
                 remaining = min(max_bytes, latest + body_window) - got
     budget_error = _fetch_budget_exceeded(
         None if fallback_end is not None else deadline, cancel_event
