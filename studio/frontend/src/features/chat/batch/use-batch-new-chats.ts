@@ -9,6 +9,7 @@ import { openFilePicker } from "@/lib/open-file-picker";
 import { toast } from "@/lib/toast";
 import { wasAttachmentAddCancelled } from "../draft-attachment-adapter";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { chatHistoryClearBoundary } from "../utils/chat-history-clear-boundary";
 import {
   BATCH_CHAT_DRAFT_ID,
   composerDraftKey,
@@ -105,9 +106,15 @@ export function pickFilesForNewChats(aui: Aui, navigate: Navigate, accept: strin
     return;
   }
   openFilePicker(accept, (files) => {
+    const clearedAt = chatHistoryClearBoundary.capture();
     const started = startBatchNewChats(prompt, files, {
       newNonce: newChatNonce,
       openNewChat: (nonce) => {
+        // Clear all chats ends the batch: no new chats after the history is gone.
+        if (chatHistoryClearBoundary.capture() !== clearedAt) {
+          queueMicrotask(stopBatchNewChats);
+          return;
+        }
         const runtime = useChatRuntimeStore.getState();
         runtime.setActiveThreadId(null);
         runtime.setActiveProjectId(null);
@@ -183,6 +190,7 @@ export function useBatchNewChatsComposer(
       if (!claim) return;
       stopPoll();
       const draftId = aui.threadListItem().getState().id;
+      const clearedAt = chatHistoryClearBoundary.capture();
       void (async () => {
         try {
           let prepTimer: ReturnType<typeof setTimeout> | undefined;
@@ -216,9 +224,13 @@ export function useBatchNewChatsComposer(
           if (
             aui.threadListItem().getState().id !== draftId ||
             draft.text.trim() !== claim.prompt ||
-            draft.attachments.length !== 1
+            draft.attachments.length !== 1 ||
+            draft.attachments[0].name !== claim.file.name
           ) {
             throw new Error("The chat changed before the message was sent.");
+          }
+          if (chatHistoryClearBoundary.capture() !== clearedAt) {
+            throw new Error("Chat history was cleared.");
           }
           if (draft.attachments.some((a) => a.status.type === "incomplete")) {
             throw new Error("Studio couldn't read this file.");
