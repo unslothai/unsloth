@@ -16,6 +16,7 @@ from core.inference import npu_context as nc
 from core.inference.flm_files import FlmFile, FlmModelFiles
 
 _GIB = 1024
+_REAL_AVAILABLE_MIB = nc._available_mib
 
 # The text fields of FastFlowLM's own config.json for each model (FastFlowLM 1.0.12 packages).
 _QWEN35_9B = {
@@ -170,7 +171,20 @@ def test_rounding_prices_the_active_allocation_for_auto_and_pins(tmp_path, free_
     assert "above the 16384 tokens" in caplog.text
 
 
-@pytest.mark.parametrize("tag,reported", [("qwen3:0.6b", 40960), ("lfm2.5-tk:1.2b", 128000)])
+# Every chat tag whose v1.0.12 model card (or qwen3_core_backend.hpp) caps it at 32k.
+@pytest.mark.parametrize(
+    "tag,reported",
+    [
+        ("qwen3:0.6b", 40960),
+        ("qwen3-core:8b", 40960),
+        ("lfm2:1.2b", 128000),
+        ("lfm2:2.6b", 128000),
+        ("lfm2-trans:2.6b", 128000),
+        ("lfm2.5-it:1.2b", 128000),
+        ("lfm2.5-tk:1.2b", 128000),
+        ("lfm3:1.7b", 128000),
+    ],
+)
 def test_roomy_machine_and_explicit_pin_respect_the_engine_limit(tmp_path, free_ram, tag, reported):
     model = _model("model-FLM", tag, 1, reported)
     files = _files(tmp_path, _QWEN35_9B)
@@ -418,3 +432,11 @@ def test_the_load_response_reports_the_fit_as_the_ceiling(fitted, expected):
     assert response.npu_context_fit == fitted
     assert response.max_context_length == expected
     assert response.native_context_length == 262144
+
+
+@pytest.mark.parametrize("platform,expected", [("win32", 16 * _GIB), ("linux", 24 * _GIB)])
+def test_windows_sizes_against_the_ram_the_npu_can_map(monkeypatch, platform, expected):
+    monkeypatch.setattr(nc.sys, "platform", platform)
+    monkeypatch.setattr(nc.host_memory, "usable_host_ram_mib", lambda: 24 * _GIB)
+    monkeypatch.setattr(nc.host_memory, "host_ram_capacity_mib", lambda: 32 * _GIB)
+    assert _REAL_AVAILABLE_MIB() == expected

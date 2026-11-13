@@ -44,19 +44,30 @@ _VALIDATED_MARKER = "npu_validated.json"
 
 # Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
-# Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
-# limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
-# DFlash2 shares the 27B xclbin and fails the same way: https://github.com/ROCm/FastFlowLM/issues/1001
+# Engine limits below checkpoint metadata, from the FastFlowLM v1.0.12 model cards (docs/docs/models)
+# and qwen3_core_backend.hpp; the 27B pair fails above 8192 (ROCm/FastFlowLM#1001). Recheck on pin bumps.
 _FLM_CONTEXT_LIMITS = {
     "qwen3.8-mtp:27b": 8192,
     "qwen3.8-dflash2:27b": 8192,
-    # FastFlowLM 1.0.12 model cards specify 32k for these exact tags, below checkpoint metadata.
-    # https://github.com/ROCm/FastFlowLM/tree/v1.0.12/docs/docs/models (qwen.md and lfm.md)
-    "qwen3:0.6b": 32768,
-    "qwen3:1.7b": 32768,
-    "qwen3:4b": 32768,
-    "qwen3:8b": 32768,
-    "lfm2.5-tk:1.2b": 32768,
+    **dict.fromkeys(
+        (
+            "qwen3:0.6b",
+            "qwen3:1.7b",
+            "qwen3:4b",
+            "qwen3:8b",
+            "qwen3-core:0.6b",
+            "qwen3-core:1.7b",
+            "qwen3-core:4b",
+            "qwen3-core:8b",
+            "lfm2:1.2b",
+            "lfm2:2.6b",
+            "lfm2-trans:2.6b",
+            "lfm2.5-it:1.2b",
+            "lfm2.5-tk:1.2b",
+            "lfm3:1.7b",
+        ),
+        32768,
+    ),
 }
 
 _VALIDATE_PROBLEMS = (
