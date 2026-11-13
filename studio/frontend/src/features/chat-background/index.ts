@@ -7,7 +7,11 @@ export {
 } from "./material";
 export { MATERIAL_LABELS } from "./material-labels";
 export { MATERIALS, sanitizeAdjustments, type WindowMaterial } from "./model";
-export { useChatWelcomeShown, useMarkChatWelcome } from "./welcome";
+export {
+  useChatWelcomeShown,
+  useMarkChatCompare,
+  useMarkChatWelcome,
+} from "./welcome";
 export {
   beginBackgroundUpload,
   finishBackgroundUpload,

@@ -199,6 +199,73 @@ def test_rope_compiled_matches_eager(shape, with_indices, dtype):
         assert _graph_breaks() == 0
 
 
+def _rope_kernel_launches(fn, *args):
+    from torch.profiler import ProfilerActivity, profile
+
+    torch.cuda.synchronize()
+    with profile(activities = [ProfilerActivity.CUDA]) as prof:
+        out = fn(*args)
+        torch.cuda.synchronize()
+    names = [e.name for e in prof.events() if e.device_type == torch.autograd.DeviceType.CUDA]
+    return out, sum("_rope_embedding_QK" in name for name in names)
+
+
+@pytest.mark.parametrize("one_launch", [True, False], ids = ["one_launch", "per_tensor"])
+def test_rope_compiled_positions_one_launch_each_way(monkeypatch, one_launch):
+    """Compiled positions RoPE: one launch each way (per tensor with the flag off), eager's bytes."""
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    monkeypatch.setattr(rope_embedding, "COMPILED_ROPE_QK_ONE_LAUNCH", one_launch)
+    compiled = _compile(lambda q, k, c, s, i: fast_rope_embedding(q, k, c, s, i))
+    shape = (2, 37, 8, 2, 64)
+    _rope_case(compiled, *shape, CDTYPE, False, pure = True)
+    got, launches = _rope_kernel_launches(
+        _rope_case,
+        compiled,
+        *shape,
+        CDTYPE,
+        False,
+        True,
+    )
+    assert launches == (2 if one_launch else 4), launches
+    eager = _rope_case(fast_rope_embedding, *shape, CDTYPE, False)
+    for e, c, name in zip(eager, got, ("Q", "K", "dQ", "dK")):
+        assert _bytes_equal(e, c), name
+    assert _graph_breaks() == 0
+
+
+@pytest.mark.parametrize("grad", ["q", "k"])
+def test_rope_compiled_positions_one_sided_grad_stays_per_tensor(grad):
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    assert rope_embedding.COMPILED_ROPE_QK_ONE_LAUNCH
+    bsz, seq, n_heads, n_kv, head_dim = 2, 37, 8, 2, 64
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    Q = torch.randn(bsz, n_heads, seq, head_dim, device = "cuda", generator = g, dtype = CDTYPE)
+    K = torch.randn(bsz, n_kv, seq, head_dim, device = "cuda", generator = g, dtype = CDTYPE)
+    (Q if grad == "q" else K).requires_grad_(True)
+    cos, sin = _cos_sin(seq + 16, head_dim, CDTYPE)
+    compiled = _compile(lambda q, k, c, s: fast_rope_embedding(q, k, c, s))
+
+    def step():
+        Q.grad = K.grad = None
+        Q_out, K_out = compiled(Q, K, cos, sin)
+        (Q_out.float().sum() + K_out.float().sum()).backward()
+        return Q_out, K_out
+
+    step()
+    (Q_out, K_out), launches = _rope_kernel_launches(step)
+    assert Q_out.requires_grad == (grad == "q")
+    assert K_out.requires_grad == (grad == "k")
+    # Forward: one launch per tensor; backward: one for the tensor that needs the gradient.
+    assert launches == 3, launches
+    eager_Q, eager_K = fast_rope_embedding(Q.detach(), K.detach(), cos, sin)
+    assert _bytes_equal(Q_out.detach(), eager_Q) and _bytes_equal(K_out.detach(), eager_K)
+    leaf = Q if grad == "q" else K
+    assert leaf.grad is not None and (K if grad == "q" else Q).grad is None
+    assert _graph_breaks() == 0
+
+
 @pytest.mark.parametrize("with_indices", [False, True], ids = ["positions", "rope_indices"])
 def test_rope_eager_is_the_autograd_function(with_indices):
     """Outside torch.compile the public function is still the Fast_RoPE autograd Functions."""

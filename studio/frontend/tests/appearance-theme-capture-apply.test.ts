@@ -54,9 +54,9 @@ const FULL: AppearanceSnapshot = {
   customization: sanitizeCustomization({
     colors: { light: { accent: "#3366ff", background: "#fafafa", foreground: "#111111" }, dark: { accent: "#ff8800" } },
     uiFont: "Lato", headingFont: "Georgia", chatFont: "Merriweather", codeFont: "Cascadia Code",
-    chatWidth: "wide", sentAttachments: "chips", uiFontSize: 17, codeFontSize: 13, contrast: 72, composerOutline: 40,
+    chatWidth: "wide", sentAttachments: "chips", uiFontSize: 17, codeFontSize: 13, contrast: 72, composerOutline: 40, elementOutline: 25,
     fontSmoothing: false, codeLineNumbers: true, codeWordWrap: true, codeLigatures: false,
-    pointerCursors: true, reduceMotion: "on",
+    pointerCursors: true, reduceMotion: "off",
     importedFonts: [font("Brand")],
     sidebarNav: [{ id: "tasks", pinned: true }, { id: "hub", pinned: false }],
     sidebarNavAuto: [],
@@ -69,7 +69,7 @@ test("a non-default look survives export, parse and apply onto defaults", () => 
   const plan = apply(BASE, roundTrip(FULL, true));
   assert.equal(plan.palette, "cherry");
   // Personal fields never leave the device, so they come from the target.
-  assert.deepEqual(plan.customization, { ...FULL.customization, pointerCursors: false, reduceMotion: "off" });
+  assert.deepEqual(plan.customization, { ...FULL.customization, pointerCursors: false, reduceMotion: "on" });
   assert.deepEqual(pick(plan.glass, GLASS), pick(FULL.glass, GLASS));
 });
 
@@ -102,13 +102,13 @@ test("a theme without a typography section resets typography to the defaults", (
 });
 
 test("personal settings stay on this device", () => {
-  const current = { ...BASE, customization: sanitizeCustomization({ pointerCursors: true, reduceMotion: "on" }) };
+  const current = { ...BASE, customization: sanitizeCustomization({ pointerCursors: true, reduceMotion: "system" }) };
   const exported = JSON.stringify(captureTheme(FULL, { name: "Dusk", includeLayout: true, includeAssets: true }));
   assert.equal(exported.includes("pointerCursors"), false);
   assert.equal(exported.includes("reduceMotion"), false);
   const plan = apply(current, parseOk(exported));
   assert.equal(plan.customization.pointerCursors, true);
-  assert.equal(plan.customization.reduceMotion, "on");
+  assert.equal(plan.customization.reduceMotion, "system");
 });
 
 test("the default look exports and applies as no change", () => {

@@ -80,6 +80,7 @@ const FULL = {
   base: { palette: "cherry" },
   colors: {
     contrast: 72,
+    elementOutline: 30,
     light: { accent: "#3366ff", background: "#fafafa", foreground: "#111111" },
     dark: { accent: "#ff8800", background: null, foreground: "#eeeeee" },
   },
@@ -102,6 +103,7 @@ test("a full non-default file parses back to every value it holds, with no warni
   assert.deepEqual(theme.look, {
     colors: { light: FULL.colors.light, dark: FULL.colors.dark },
     contrast: 72,
+    elementOutline: 30,
     uiFont: "Lato",
     headingFont: "Georgia",
     chatFont: "Merriweather",

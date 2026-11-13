@@ -16,13 +16,10 @@ import { isTauri } from "@/lib/api-base";
 import {
   ActiveColorControl,
   ChatFontRow,
-  ChatWidthSelect,
   CodeDisplaySwitch,
-  SentAttachmentsSelect,
   CodeFontRow,
   CodeFontSizeRow,
-  ComposerOutlineSliderRow,
-  ComposerPositionSliderRow,
+  ElementOutlineSliderRow,
   ContrastSliderRow,
   FontSmoothingSwitch,
   HeadingFontRow,
@@ -248,6 +245,12 @@ export function AppearanceTab() {
         >
           <InterfaceScaleRow />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.elementOutline.label")}
+          description={t("settings.appearance.custom.elementOutline.description")}
+        >
+          <ElementOutlineSliderRow />
+        </SettingsRow>
         <GreetingSettingsRows />
         <SettingsRow
           label={t("settings.appearance.custom.pointerCursors.label")}
@@ -270,32 +273,6 @@ export function AppearanceTab() {
           )}
         >
           <FontSmoothingSwitch />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.appearance.composer.title")}>
-        <SettingsRow
-          label={t("settings.appearance.custom.chatWidth.label")}
-          description={t("settings.appearance.custom.chatWidth.description")}
-        >
-          <ChatWidthSelect />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.composerPosition")}
-          description={t("settings.chat.composerPositionDescription")}
-        >
-          <ComposerPositionSliderRow />
-        </SettingsRow>
-        <SettingsRow label={t("chatBackground.outline")}>
-          <ComposerOutlineSliderRow />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.sentAttachments.label")}
-          description={t(
-            "settings.appearance.custom.sentAttachments.description",
-          )}
-        >
-          <SentAttachmentsSelect />
         </SettingsRow>
       </SettingsSection>
 

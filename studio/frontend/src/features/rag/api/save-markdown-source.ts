@@ -61,7 +61,7 @@ export function projectSourceFileName(title: string): string {
 const INGEST_POLL_MS = 2_000;
 const INGEST_POLL_ATTEMPTS = 150;
 
-async function watchIngestion(
+export async function watchIngestion(
   projectId: string,
   jobId: string,
   filename: string,

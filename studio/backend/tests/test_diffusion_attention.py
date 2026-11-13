@@ -247,6 +247,11 @@ class _Recorder:
         return types.SimpleNamespace(returncode = 0)
 
 
+def _pip_calls(run):
+    # A kernels install is followed by a `python -c "import transformers.activations"` check.
+    return [c for c in run.calls if "pip" in c]
+
+
 def _stub_subprocess(monkeypatch, run):
     import subprocess
     monkeypatch.setattr(subprocess, "run", run)
@@ -283,7 +288,7 @@ def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
-    assert len(run.calls) == 1
+    assert len(_pip_calls(run)) == 1
     cmd = run.calls[0]
     assert "--only-binary" in cmd and ":all:" in cmd
 
@@ -299,7 +304,7 @@ def test_sage_install_never_asks_pypi_for_sageattention(monkeypatch):
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
     assert run.calls and not any("sageattention" in part for cmd in run.calls for part in cmd)
-    assert run.calls[0][-1] == "kernels"
+    assert run.calls[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 _XFORMERS_WHEEL = "https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
@@ -397,10 +402,8 @@ class _CapturingLogger:
 
 
 def test_a_private_mirrors_credentials_never_reach_the_log(monkeypatch):
-    """UNSLOTH_PYTORCH_MIRROR is allowed to be an authenticated index, and the wheel URL is
-    built from it -- so logging the URL as the package name wrote the token into the backend
-    log on every install. pip is still handed the real URL; only the log is redacted, and
-    pip's own stderr echoes the URL back, so that is redacted too."""
+    """UNSLOTH_PYTORCH_MIRROR can embed credentials in the wheel URL; pip gets the real URL, but the
+    log and pip's echoed stderr are redacted."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
     import subprocess as sp
@@ -435,8 +438,7 @@ def test_a_query_string_token_is_stripped_too():
 
 
 def test_xformers_install_refused_when_no_matching_wheel_exists(monkeypatch):
-    """No matched wheel must mean NO install. Falling back to an unpinned resolve is the
-    bug; the caller stays on torch SDPA and gets the reason back."""
+    """No matched wheel means no install; an unpinned resolve is the bug, so SDPA is kept."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
@@ -513,8 +515,7 @@ def test_xformers_resolution_skipped_when_already_installed(monkeypatch):
 
 
 def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
-    """sage (via kernels) / flash / kernels still go to pip by name -- only xFormers has the silent
-    ABI failure that forces URL resolution."""
+    """Only xFormers has a silent ABI failure; sage, flash and kernels still install by name."""
     assert att._MATCHED_WHEEL_BACKENDS == frozenset({"xformers"})
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
@@ -528,8 +529,8 @@ def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
     monkeypatch.setattr(att, "_kernels_hub_compatible", lambda: True)
     att._ensure_attention_backend_installed("sage")
-    assert len(run.calls) == 1
-    assert run.calls[0][-1] == "kernels"
+    assert len(_pip_calls(run)) == 1
+    assert run.calls[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 def test_failed_install_not_retried_in_same_process(monkeypatch):
@@ -662,7 +663,8 @@ def test_kernels_install_allowed_on_supported_hub(monkeypatch):
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("flash_4_hub")
-    assert len(run.calls) == 1 and "kernels" in run.calls[0]
+    pip = _pip_calls(run)
+    assert len(pip) == 1 and pip[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
 
 
 def test_kernels_gate_also_covers_sage(monkeypatch):
@@ -1097,9 +1099,8 @@ def test_apply_does_not_warn_when_a_real_backend_engaged(monkeypatch):
 
 
 def test_an_unanswerable_probe_is_not_memoised(monkeypatch):
-    """A probe that could not RUN is not an answer about the hardware. Caching it disabled the
-    warning for the rest of the process, including after the memory that broke it was freed --
-    and a device under memory pressure is exactly when this warning matters."""
+    """A probe that could not run says nothing about hardware; caching it would disable the warning
+    for the whole process, even after memory frees."""
     calls: list = []
 
     def _flaky(device, dtype):

@@ -45,11 +45,17 @@ import urllib.parse
 
 from dataclasses import dataclass, field
 from functools import partial
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Protocol
 
 from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
+from core.inference.context_window import (
+    _reply_floor,
+    estimate_messages_tokens_conservative,
+    messages_without_unpriced_media,
+    tool_result_budget,
+)
 from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate, nudge_enabled
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from core.inference.tool_call_parser import (
@@ -255,9 +261,8 @@ def _chunk_payload(line: str) -> dict[str, Any] | None:
 
 
 def _mint_streamed_card_id(taken: set[str], index: Any) -> str:
-    """The id the client painted an id-less call's card under. ``tool_call_<delta index>``, else the
-    lowest free ``tool_call_<n>``: the client's rule, reproduced so tool_start and tool_end reach
-    the card the stream drew. A card id only; the replayed id stays ``call_<round>_<pos>``."""
+    """Card id for an id-less call: tool_call_<delta index>, else lowest free tool_call_<n>, so
+    tool_end reaches the drawn card; the replayed id stays call_<round>_<pos>"""
     preferred = (
         f"tool_call_{index}" if isinstance(index, int) and not isinstance(index, bool) else ""
     )
@@ -392,6 +397,8 @@ class ToolLoopRun:
     supports_vision: bool = False
     # Counted toward the loop's image cap so resumed chats cannot exceed it.
     promoted_image_parts: tuple = ()
+    served_window: Callable[[], Awaitable[int | None]] | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen = True)
@@ -415,6 +422,46 @@ class ToolLoopPolicy:
     deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
     website_policy: dict[str, Any] | None = None
+
+
+def _result_budget_tokens(
+    window: int,
+    max_tokens: int | None,
+    conversation: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    turn: Any,
+    calls: list[dict[str, Any]],
+    tool_messages: list[dict[str, Any]],
+    call_index: int,
+) -> int:
+    thread = messages_without_unpriced_media(conversation)
+    results = [m for m in (*thread, *tool_messages) if m.get("role") == "tool"]
+    rest = [m for m in thread if m.get("role") != "tool"]
+    rest.append(
+        {
+            "role": "assistant",
+            "content": "".join(turn.text),
+            "reasoning_content": "".join(turn.reasoning),
+        }
+    )
+    replayed = [
+        {"name": (call.get("function") or {}).get("name"), "arguments": call.get("arguments")}
+        for call in calls
+    ]
+    batch = [{"role": "assistant", "tool_calls": replayed}]
+    held = estimate_messages_tokens_conservative(results, dense_ascii = True)
+    spent = (
+        estimate_messages_tokens_conservative(rest)
+        + estimate_messages_tokens_conservative(tools or [])
+        + held
+        + estimate_messages_tokens_conservative(batch, dense_ascii = True)
+    )
+    # Uncounted results get two characters a budget token: fit the window even at one token each.
+    room = min(
+        tool_result_budget(window, max_tokens, spent),
+        tool_result_budget(window, _reply_floor(window), spent + held) // 2,
+    )
+    return room // (len(calls) - call_index)
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -906,9 +953,8 @@ class _Turn:
                         )
 
     def _scan(self, key: Any, text: str) -> tuple[list[str], str]:
-        """``_split_top_level_json_objects(text)``, resuming the scan for ``key``. The same answer
-        as scanning from byte zero, at the cost of the bytes this call added rather than of the
-        whole accumulation."""
+        """Resumes _split_top_level_json_objects(text) for key; same as a full rescan, costing only
+        new bytes."""
         scan = self.scan_by_key.get(key)
         if scan is None:
             scan = _BoundaryScan()
@@ -1251,8 +1297,7 @@ def _openai_compaction_item(event: Any) -> str | None:
 def _with_openai_compaction(
     conversation: list[dict[str, Any]], compaction: tuple[list[dict[str, Any]], str] | None
 ) -> list[dict[str, Any]]:
-    """Later rounds replay an OpenAI Responses compaction item after the messages it covers, or the provider compacts
-    the same history again."""
+    """OpenAI compaction item goes after the messages it covers, else the provider re-compacts."""
     if compaction is None:
         return conversation
     sent, encrypted = compaction
@@ -1882,6 +1927,8 @@ async def _stream_with_studio_tools(
         turn_executed_real_tool = False
 
         started_fetches.clear()
+        # Read per batch: Ollama reports a window only once the first turn has loaded the model.
+        window = await run.served_window() if run.served_window is not None else None
         for call_index, call in enumerate(calls):
             if cancel_event.is_set():
                 break
@@ -1898,9 +1945,8 @@ async def _stream_with_studio_tools(
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
-                # The result below has to be replayed with its call: only the call that spent the last slot reaches
-                # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
-                # OpenAI, Anthropic and Gemini all reject that history instead of answering.
+                # Replay the result with its call; orphan tool messages get rejected by OpenAI,
+                # Anthropic, Gemini.
                 exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
                 if (
@@ -2092,6 +2138,7 @@ async def _stream_with_studio_tools(
                 approved = host_access_approved,
                 strict = strict_isolation,
                 share = image_share,
+                index = call_index,
             ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
@@ -2117,9 +2164,20 @@ async def _stream_with_studio_tools(
                     kwargs["conversation_branch"] = extend_live_branch()
                 if approved and accepts_kwarg(execute_tool, "host_access_approved"):
                     kwargs["host_access_approved"] = True
-                # External window is unknowable: 0 keeps the default page cap; unmeasurable budget means one recall, since 8 chunks is ~4K tokens replayed each later call.
+                # 0, not the served window: tools would count with a local GGUF loaded at that window.
                 if accepts_kwarg(execute_tool, "context_tokens"):
                     kwargs["context_tokens"] = 0
+                if window and accepts_kwarg(execute_tool, "result_budget_tokens"):
+                    kwargs["result_budget_tokens"] = _result_budget_tokens(
+                        window,
+                        run.max_tokens,
+                        getattr(transport, "sent_messages", None) or conversation,
+                        controller.active_tools(include_deferred = True),
+                        turn,
+                        calls,
+                        tool_messages,
+                        index,
+                    )
                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                     try:
                         from core.rag import config as rag_config

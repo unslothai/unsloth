@@ -35,6 +35,7 @@ type FieldSpec =
 export const CUSTOMIZATION_FIELDS = {
   colors: { category: "look", section: "colors", key: "", change: "colors" },
   contrast: { category: "look", section: "colors", key: "contrast", change: "colors" },
+  elementOutline: { category: "look", section: "colors", key: "elementOutline", change: "colors" },
   uiFont: { category: "look", section: "typography", key: "uiFont", change: "typography" },
   headingFont: { category: "look", section: "typography", key: "headingFont", change: "typography" },
   chatFont: { category: "look", section: "typography", key: "chatFont", change: "typography" },

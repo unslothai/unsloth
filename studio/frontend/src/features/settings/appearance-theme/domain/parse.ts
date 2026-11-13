@@ -53,7 +53,7 @@ const KNOWN_KEYS: Record<string, readonly string[]> = {
   "": ["$schema", "kind", "schemaVersion", "meta", "base", "glass", "assets", ...CUSTOMIZATION_SECTIONS],
   meta: Object.keys(META_LIMITS),
   base: ["palette"],
-  colors: ["light", "dark", "contrast"],
+  colors: ["light", "dark", ...keysOf("colors").filter(Boolean)],
   "colors.light": MODE_KEYS,
   "colors.dark": MODE_KEYS,
   typography: keysOf("typography"),

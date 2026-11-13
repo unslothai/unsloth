@@ -300,6 +300,17 @@ export function applyActiveModelStatusToStore(
     seedLoadParams,
     modelChanged: slotsModelChanged,
   });
+  // The echo is the table the load runs with; null is the quant's own.
+  const engramPrecisionSeed = resolveBatchSizeSeed<string>({
+    incoming: status.engram_precision,
+    isGguf: (status.is_gguf ?? true) && status.is_diffusion !== true,
+    previous: {
+      value: prevState.engramPrecision,
+      loaded: prevState.loadedEngramPrecision,
+    },
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+  });
   const specDraftCacheSeed = resolveBatchSizeSeed<string>({
     incoming: status.requested_spec_draft_cache_type,
     isGguf: status.is_gguf ?? true,
@@ -656,6 +667,12 @@ export function applyActiveModelStatusToStore(
       loadedLoadMode: loadModeSeed.loaded ?? null,
     }),
     ...("value" in loadModeSeed && { loadMode: loadModeSeed.value ?? null }),
+    ...("loaded" in engramPrecisionSeed && {
+      loadedEngramPrecision: engramPrecisionSeed.loaded ?? null,
+    }),
+    ...("value" in engramPrecisionSeed && {
+      engramPrecision: engramPrecisionSeed.value ?? null,
+    }),
     ...("loaded" in specDraftCacheSeed && {
       loadedSpecDraftCacheDtype: specDraftCacheSeed.loaded ?? null,
     }),

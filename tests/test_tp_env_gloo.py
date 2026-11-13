@@ -30,11 +30,10 @@ from test_tp_native_gloo import (  # noqa: E402
     _trainer_args,
 )
 
-# These arms start the adapters at init_lora_weights = False and compare 3 whole Trainer steps. At AdamW's
-# default eps 1e-8, m / (sqrt(v) + eps) turns the fp32 reduction-order noise between tp = 2 and one process
-# into 1e-5 grad-norm and 1e-4 weight drift by step 3 while the losses still match exactly; at 1e-4 it stays
-# below 1e-6, and a real tp error (a missed all-reduce) still lands at 3.5e-4. Only these runs take it: the
-# native Trainer tests (B = 0 adapters) pass at the default eps on the CI runners and fail at 1e-4 there.
+# Only these arms use eps 1e-4: at the default 1e-8 AdamW turns tp=2 vs one-process fp32 reduction
+# noise into 1e-4 weight drift by step 3; at 1e-4 drift stays below 1e-6 while a real missed
+# all-reduce still gives 3.5e-4; B = 0 native Trainer tests pass at default eps on CI but fail at
+# 1e-4.
 _ADAM_EPS = 1e-4
 
 _ENV_KEYS = (
@@ -122,6 +121,7 @@ def _case_units(rank, world, tmp):
     wrapped = tp_env.tensor_parallel_env_load(loader)
     out["refuse_vllm"] = _raised(lambda: wrapped("m", fast_inference = True))
     out["refuse_8bit"] = _raised(lambda: wrapped("m", load_in_8bit = True))
+    out["refuse_float8"] = _raised(lambda: wrapped("m", full_finetuning = True, float8_training = True))
     layout(UNSLOTH_TP_SIZE = 2, UNSLOTH_FSDP2 = 1, UNSLOTH_FSDP2_SHARDED_LOAD = 1, WORLD_SIZE = 2)
     out["refuse_fsdp2_sharded_load"] = _raised(lambda: wrapped("m", False))
     os.environ.pop("UNSLOTH_FSDP2_SHARDED_LOAD", None)
@@ -616,6 +616,7 @@ def test_env_layout_parsing_and_refusals():
     assert res["fsdp2"] == (2, 2, 4, True)
     assert "native FSDP2 only" in res["accelerate_fsdp"]
     assert "vLLM" in res["refuse_vllm"] and "UNSLOTH_TP_SIZE=2" in res["refuse_vllm"]
+    assert "float8_training" in res["refuse_float8"] and "UNSLOTH_FSDP2=1" in res["refuse_float8"]
     assert "8-bit weights" in res["refuse_8bit"]
     assert "UNSLOTH_FSDP2_SHARDED_LOAD=1" in (res["refuse_fsdp2_sharded_load"] or ""), res[
         "refuse_fsdp2_sharded_load"

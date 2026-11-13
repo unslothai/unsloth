@@ -640,7 +640,9 @@ def prefer_cached_pickle_twins(
     log: bool = True,
     roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
-    """Same-stem cached .pt/.pth moves ahead of its uncached safetensors twin; the twin stays behind it as 404 fallback; PREFER_SAFETENSORS_ENV disables."""
+    """Safetensors stays first, except a same-stem cached .pt/.pth whose sha256 matches the Hub's record moves ahead of
+    its uncached safetensors twin (reused, not re-downloaded); the twin stays behind it as 404 fallback. An unverified
+    cached pickle (offline, no LFS record, mismatch) keeps its place behind the twin. PREFER_SAFETENSORS_ENV disables."""
     import os
 
     out = [n for n in names if n]
@@ -659,13 +661,40 @@ def prefer_cached_pickle_twins(
             except Exception:  # noqa: BLE001 - an unanswerable question is a no
                 return False
 
+        def _verified(name: str) -> bool:
+            from .cached_weight_sha import cached_copy_matches_hub
+
+            if _LOCAL_FILES_ONLY.get():
+                return False  # a load that may not reach the Hub cannot ask it for the hash
+            token = _LOAD_HF_TOKEN.get()
+            for root in roots:
+                hit = _hub_name_cached(repo_id, name, root)
+                if hit is not None and cached_copy_matches_hub(repo_id, name, hit, token = token):
+                    return True
+            return False
+
+        prefer_safetensors = (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        def _reusable(name: str) -> bool:
+            if not _ok(name) or not _cached(name):
+                return False
+            # same pickle trust rule as below
+            if name.lower().endswith(_PICKLE_SUFFIXES):
+                return not prefer_safetensors and _verified(name)
+            return True
+
         # A cached container of an artifact beats an uncached one of the SAME artifact: never download a second copy.
         for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
             stem = _artifact_stem(comfy)
             twins = [n for n in out if n != comfy and _artifact_stem(n) == stem]
             if not twins:
                 continue
-            hit = next((t for t in twins if _ok(t) and _cached(t)), None)
+            hit = next((t for t in twins if _reusable(t)), None)
             if _cached(comfy):
                 if hit is None and _ok(comfy) and out.index(comfy) > out.index(twins[0]):
                     out.remove(comfy)
@@ -689,12 +718,7 @@ def prefer_cached_pickle_twins(
                     hit,
                     comfy,
                 )
-        if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
+        if prefer_safetensors:
             return out
 
         for st in [
@@ -711,7 +735,8 @@ def prefer_cached_pickle_twins(
                 ),
                 None,
             )
-            if twin is None or _cached(st):
+            # Only a cached pickle the Hub's sha256 vouches for is reused; unverified, safetensors stays first.
+            if twin is None or _cached(st) or not _verified(twin):
                 continue
             out.remove(twin)
             out.insert(out.index(st), twin)
@@ -723,8 +748,8 @@ def prefer_cached_pickle_twins(
                     import logging
                     sink = logging.getLogger(__name__)
                 sink.info(
-                    "diffusion.prequant_cached_pickle: %s: using the cached %s; the %s twin is not "
-                    "downloaded (set %s=1 to fetch it instead)",
+                    "diffusion.prequant_cached_pickle: %s: using the cached %s (sha256 matches the Hub); the "
+                    "%s twin is not downloaded (set %s=1 to fetch it instead)",
                     repo_id,
                     twin,
                     st,
@@ -1038,19 +1063,28 @@ def resolve_prequant_source(
         for name in declared + derived:
             if name and name not in names:
                 names.append(name)
+        from .diffusion_transformer_quant import convrot_drops_plain_hosted
+
+        if rotated and convrot_drops_plain_hosted(scheme, fam_name):
+            # Hosted plain int8 files are unrotated: rotated file or rotate at load.
+            names = (
+                [rotated] if str(repo_id).strip().lower() == str(rotated_repo or "").lower() else []
+            )
+            declared = tuple(names)
         names = with_declared_safetensors_twins(names, declared, scheme = scheme)
         if comfy_prequant_enabled() and _comfy_prequant_family(fam):
             names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         names = without_nvfp4_pickles(scheme, names)
-        if not names:
+        if names:
+            return PrequantSource(
+                kind = "repo",
+                location = repo_id,
+                filename = names[0],
+                fallback_filenames = tuple(names[1:]),
+                declared_filenames = declared,
+            )
+        if not (rotated and convrot_drops_plain_hosted(scheme, fam_name)):
             return None
-        return PrequantSource(
-            kind = "repo",
-            location = repo_id,
-            filename = names[0],
-            fallback_filenames = tuple(names[1:]),
-            declared_filenames = declared,
-        )
     # Nothing hosted: try this machine's cache of an earlier build; task names the component (MoE transformer_2).
     try:
         from .diffusion_prequant_cache import lookup
@@ -1287,14 +1321,19 @@ _FINGERPRINT_PAYLOAD: dict = {
 }
 
 
-def _packed_bytes(tensor: Any, torch: Any) -> bytes:
-    """``tensor``'s raw bytes via ``view(torch.uint8)``, exact for dtypes numpy cannot represent."""
+def _packed_view(tensor: Any, torch: Any) -> Any:
+    """``tensor``'s raw bytes as a zero-copy buffer (``view(torch.uint8)``), exact for dtypes numpy cannot represent."""
     t = tensor.detach().contiguous()
     if t.dim() == 0:
         t = t.reshape(1)
     if t.dtype is not torch.uint8:
         t = t.view(torch.uint8)
-    return t.cpu().numpy().tobytes()
+    return memoryview(t.cpu().numpy().reshape(-1))
+
+
+def _packed_bytes(tensor: Any, torch: Any) -> bytes:
+    """``tensor``'s raw bytes via ``view(torch.uint8)``, exact for dtypes numpy cannot represent."""
+    return _packed_view(tensor, torch).tobytes()
 
 
 def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
@@ -1313,7 +1352,7 @@ def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
                 return False
             hashed = True
             continue
-        digest.update(_packed_bytes(value, torch))
+        digest.update(_packed_view(value, torch))
         hashed = True
     return hashed
 
@@ -1324,23 +1363,13 @@ def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
 
     import torch
 
-    modules: dict = {}
-    skipped: list = []
-    items = state_dict.items() if hasattr(state_dict, "items") else ()
-    for key, tensor in items:
-        if key != "weight" and not str(key).endswith(".weight"):
-            continue
-        if select is not None and not select(str(key)):
-            continue
+    def _digest(tensor: Any) -> Optional[str]:
         digest = hashlib.md5()
-        try:
-            covered = _hash_packed_payload(tensor, digest, torch)
-        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
-            covered = False
-        if covered:
-            modules[key] = digest.hexdigest()
-        else:
-            skipped.append(key)
+        if not _hash_packed_payload(tensor, digest, torch):
+            return None
+        return digest.hexdigest()
+
+    modules, skipped = _digest_weights(state_dict, select, _digest)
     return {
         "algo": FINGERPRINT_ALGO,
         "count": len(modules),
@@ -1365,7 +1394,26 @@ _CANONICAL_PARTS: dict = {
     "Float8Tensor": (("q", "qdata"), ("scale", "scale")),
     "NVFP4Tensor": (("q", "qdata"), ("scale", "scale"), ("per_tensor_scale", "per_tensor_scale")),
     "MXTensor": (("q", "qdata"), ("scale", "scale")),
+    "HostedInt8Parts": (("q", "qdata"), ("scale", "scale"), ("zero_point", "zero_point")),
 }
+
+
+class HostedInt8Parts:
+    """An Int8Tensor's stored payload read as plain tensors (no torchao), fingerprinted like the Int8Tensor."""
+
+    __slots__ = ("qdata", "scale", "zero_point")
+
+    def __init__(
+        self,
+        qdata: Any,
+        scale: Any,
+        zero_point: Any = None,
+    ):
+        self.qdata = qdata
+        self.scale = scale
+        self.zero_point = zero_point
+
+
 _CANONICAL_ROLE_ORDER = (
     "q",
     "scale",
@@ -1404,19 +1452,25 @@ def _all_zero(value: Any, torch: Any) -> bool:
         return False
 
 
-def _canonical_bytes(role: str, value: Any, torch: Any) -> bytes:
-    """Version-stable bytes: ``q`` as stored; others flattened to float32 (exact for stored scales) / int64 zero point."""
+def _canonical_parts_of(role: str, value: Any, torch: Any) -> tuple:
+    """(head, zero-copy payload) of ``_canonical_bytes``: hashing them in turn gives the same digest without the copies."""
     t = value.detach()
     if role == "q":
         head = f"q:{str(t.dtype).replace('torch.', '')}:{tuple(t.shape)}".encode("utf-8")
-        return head + _packed_bytes(t, torch)
+        return head, _packed_view(t, torch)
     t = t.reshape(-1)
     if role in _ZERO_POINT_ROLES:
         t = t.to(torch.int64)
     elif t.is_floating_point() and t.dtype is not torch.float64:
         t = t.to(torch.float32)
     head = f"{role}:{str(t.dtype).replace('torch.', '')}:{t.numel()}".encode("utf-8")
-    return head + _packed_bytes(t, torch)
+    return head, _packed_view(t, torch)
+
+
+def _canonical_bytes(role: str, value: Any, torch: Any) -> bytes:
+    """Version-stable bytes: ``q`` as stored; others flattened to float32 (exact for stored scales) / int64 zero point."""
+    head, payload = _canonical_parts_of(role, value, torch)
+    return head + payload.tobytes()
 
 
 def canonical_weight_digest(tensor: Any) -> Optional[str]:
@@ -1433,27 +1487,67 @@ def canonical_weight_digest(tensor: Any) -> Optional[str]:
         value = parts.get(role)
         if value is None or (role in _ZERO_POINT_ROLES and _all_zero(value, torch)):
             continue
-        digest.update(_canonical_bytes(role, value, torch))
+        head, payload = _canonical_parts_of(role, value, torch)
+        digest.update(head)
+        digest.update(payload)
     return digest.hexdigest()
 
 
-def canonical_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
+# Weights hashed at once by the fingerprint check: md5 (over 2 KiB) and the torch casts release the GIL, so threads
+# scale until memory bandwidth does. ``UNSLOTH_PREQUANT_FINGERPRINT_THREADS`` overrides (1 = serial).
+FINGERPRINT_THREADS_ENV = "UNSLOTH_PREQUANT_FINGERPRINT_THREADS"
+_FINGERPRINT_THREADS_DEFAULT = 8
+
+
+def _fingerprint_threads() -> int:
+    import os
+
+    raw = str(os.environ.get(FINGERPRINT_THREADS_ENV, "")).strip()
+    try:
+        wanted = int(raw) if raw else _FINGERPRINT_THREADS_DEFAULT
+    except ValueError:
+        wanted = _FINGERPRINT_THREADS_DEFAULT
+    return max(1, min(wanted, os.cpu_count() or 1))
+
+
+def _digest_weights(state_dict: Any, select: Any, digest_of: Any) -> tuple:
+    """({fqn: digest}, [uncovered fqns]) over the ``.weight`` entries ``select`` keeps, in state-dict order.
+
+    ``digest_of`` returns None for an uncovered weight; a raise counts as uncovered. Runs on a thread pool."""
+    items = state_dict.items() if hasattr(state_dict, "items") else ()
+    picked = [
+        (key, tensor)
+        for key, tensor in items
+        if (key == "weight" or str(key).endswith(".weight"))
+        and (select is None or select(str(key)))
+    ]
+
+    def _one(tensor: Any) -> Optional[str]:
+        try:
+            return digest_of(tensor)
+        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
+            return None
+
+    tensors = [tensor for _key, tensor in picked]
+    threads = min(_fingerprint_threads(), len(picked))
+    if threads > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers = threads, thread_name_prefix = "prequant-fp") as pool:
+            values = list(pool.map(_one, tensors))
+    else:
+        values = [_one(tensor) for tensor in tensors]
     modules: dict = {}
     skipped: list = []
-    items = state_dict.items() if hasattr(state_dict, "items") else ()
-    for key, tensor in items:
-        if key != "weight" and not str(key).endswith(".weight"):
-            continue
-        if select is not None and not select(str(key)):
-            continue
-        try:
-            value = canonical_weight_digest(tensor)
-        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
-            value = None
+    for (key, _tensor), value in zip(picked, values):
         if value is None:
             skipped.append(key)
         else:
             modules[key] = value
+    return modules, skipped
+
+
+def canonical_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
+    modules, skipped = _digest_weights(state_dict, select, canonical_weight_digest)
     return {
         "algo": CANONICAL_FINGERPRINT_ALGO,
         "count": len(modules),
@@ -1815,15 +1909,8 @@ def hosted_prequant_refusal(
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """Why hosted ``source`` would be refused, from its header alone (no weight download).
-
-    Only a ``.safetensors`` checkpoint has a header this reads. The candidate names are walked in the
-    resolver's order (safetensors ahead of the pickle), and when the first one that exists is a
-    ``.pt`` the answer is None: a pickle is never opened here, so it is judged by the loader after its
-    download, as before. A parsed header whose typed fields cannot be validated IS a refusal, since
-    the loader would refuse it too.
-
-    None when usable or unreadable: unknown is never a refusal. Never raises."""
+    """Refusal reason for a hosted safetensors source from its header alone; None when usable or
+    unknown, or when the first existing candidate is a .pt (never opened here); never raises."""
     import os
     import time
 
@@ -2010,12 +2097,7 @@ def usable_prequant_source(
     readable = [n for n in candidates if restricted_prequant_load_supported(scheme, n)]
     if not readable:
         return None
-    # A DERIVED safetensors name is a guess: most repos do not host one yet, and a guess must not be
-    # what planning bets the dense shards on. So when the only readable candidates are safetensors
-    # names, require evidence that one is really there -- the family declared it, or it is already
-    # in the cache. Without that, an install that cannot open a pickle would plan a 6 GB artifact
-    # for a .pt-only repo, get a 404 then a refusal, and fall back to dense under a plan that never
-    # budgeted for it, which is the evict-then-OOM this function exists to prevent.
+    # Guessed safetensors names need a declaration or a cache hit, else a .pt-only repo wastes 6 GB.
     from .prequant_safetensors import is_safetensors_checkpoint
 
     if src.kind == "repo" and all(is_safetensors_checkpoint(n) for n in readable):
@@ -2199,10 +2281,7 @@ def _engage_nvfp4_backend(
     base: Optional[str] = None,
     logger: Any = None,
 ) -> int:
-    """Move a loaded NVFP4 transformer onto the backend ``device`` selects; returns the layers moved to flashinfer.
-
-    The flashinfer coverage warning fires here, once layers really run flashinfer's kernels: scheme selection also
-    runs for planning and validation, which load nothing and must not use up the once-only warning."""
+    """Moves the NVFP4 transformer to its backend; the flashinfer warning fires here, not in planning."""
     from .diffusion_nvfp4_linear import convert_nvfp4_backend
     from .diffusion_nvfp4_ops import select_nvfp4_backend
 
@@ -2392,9 +2471,8 @@ def load_prequantized_transformer(
             _repair_legacy_checkpoint(ckpt, scheme, logger)
             _pin_kernel_preference(state_dict, logger)
 
-            # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
-            # may be gone or read-only, and load_config's raise is swallowed below into a None return, silently dropping a
-            # prequant whose checkpoint is cached and already loaded.
+            # Read from the root that supplied the checkpoint; a pinned root may be gone after a
+            # cache change.
             config = (
                 None
                 if into is not None
@@ -2505,6 +2583,7 @@ def load_prequantized_transformer(
             scheme,
             metadata.get("family") or family,
             min_features = int(metadata.get("min_features") or min_features or 512),
+            device = device,
             logger = logger,
         )
 
@@ -3309,8 +3388,10 @@ def stream_prequantized_module(
     *,
     logger: Any = None,
     label: str = "pre-quantized denoiser",
+    defer_pin: bool = False,
 ) -> Optional[str]:
-    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render."""
+    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render.
+    ``defer_pin``: lazy host copies, no up-front pin (the caller pins what does not end up resident)."""
     if not torchao_group_offload_supported():
         return None
     import inspect
@@ -3362,7 +3443,9 @@ def stream_prequantized_module(
                 kwargs["non_blocking"] = True
             if "record_stream" in params:
                 kwargs["record_stream"] = True
-            if "low_cpu_mem_usage" in params:
+            if "low_cpu_mem_usage" in params and defer_pin:
+                kwargs["low_cpu_mem_usage"] = True
+            elif "low_cpu_mem_usage" in params:
                 from itertools import chain
                 payload_mib = sum(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
