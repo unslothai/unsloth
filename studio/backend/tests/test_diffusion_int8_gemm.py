@@ -69,9 +69,15 @@ def test_force_enables_unmeasured_sm80_plus_only(monkeypatch):
     assert g8.arch_config((7, 5)) is None
 
 
+@pytest.mark.parametrize("fixed", [False, True])
 @pytest.mark.parametrize("newer", [False, True])
-def test_triton38_keeps_every_sm8x_stock(monkeypatch, newer):
+def test_triton38_keeps_every_sm8x_stock(monkeypatch, newer, fixed):
+    """Without the prefetch fix every sm8x stays stock on Triton >= 3.8; with it, as on 3.7."""
+    from core.inference import diffusion_triton_prefetch
+
     monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: newer)
+    monkeypatch.setattr(diffusion_triton_prefetch, "fix_triton_sm8x_8bit_prefetch", lambda: fixed)
+    newer = newer and not fixed
     for cap, cfg in g8._ARCH_CONFIG.items():
         stock = newer and cap[0] == 8
         assert g8.arch_config(cap, "auto") == (None if stock else cfg)

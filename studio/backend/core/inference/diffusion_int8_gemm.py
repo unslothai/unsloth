@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured (every sm8x stock on
-Triton >= 3.8, whose int8 dot spills there), other sm80+ behind a bit-exact probe and a latency check
+"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured (sm8x on Triton >= 3.8
+only behind diffusion_triton_prefetch, without which its int8 dot spills), other sm80+ behind a bit-exact probe and a latency check
 (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock (ROCm and CPU never reach it);
 Linear output bit-identical, compiled block not end to end; sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
 UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
@@ -156,8 +156,14 @@ def _triton_at_least(major: int, minor: int) -> bool:
 
 
 def _triton38_sm8x(cap: tuple) -> bool:
-    """Triton >= 3.8 spills sm8x int8 tiles (triton-lang/triton#12486); even spill-free ones trail cuBLAS."""
-    return cap[0] == 8 and _triton_at_least(3, 8)
+    """Triton >= 3.8 spills sm8x int8 tiles (triton-lang/triton#12486) unless the prefetch fix compiles them."""
+    if cap[0] != 8 or not _triton_at_least(3, 8):
+        return False
+    try:
+        from .diffusion_triton_prefetch import fix_triton_sm8x_8bit_prefetch
+        return not fix_triton_sm8x_8bit_prefetch()
+    except Exception:  # noqa: BLE001 - no fix means the spilling tiles stay off
+        return True
 
 
 def unlisted_mode() -> str:
