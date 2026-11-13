@@ -41388,6 +41388,12 @@ async def _responses_stream(
         if _folds_studio_tool_history(chat_req, llama_backend):
             chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
 
+        # Facts only: this passthrough has no tool loop to offer update_memory.
+        from core.chat_memory import apply_to_request
+
+        chat_req.thread_id = getattr(payload, "thread_id", None)
+        apply_to_request(chat_req, llama_backend.context_length)
+
         # Streaming /v1/responses builds the passthrough body directly (bypassing
         # openai_chat_completions), so apply recommended sampling here too.
         _fill_recommended_sampling_openai(
