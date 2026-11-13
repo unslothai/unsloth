@@ -208,6 +208,10 @@ export const sentPosts = new WeakSet<BrowserEntry>();
 let nextId = 0;
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(nextId++).toString(36)}`;
 
+function isBlankTab(tab: BrowserTab): boolean {
+  return tab.history.length === 1 && tab.history[0].kind === "newtab" && !tab.customTitle && !tab.pinnedId;
+}
+
 function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserTab {
   return {
     id: newId("tab"),
@@ -561,10 +565,15 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const state = get();
       if (chat === state.chat) return;
       const chats = { ...state.chats };
-      if (state.tabs.some((tab) => tab.chat === state.chat)) {
+      const left = state.tabs.filter((tab) => tab.chat === state.chat);
+      // An untouched new tab is remade on return (`fresh` below), so it isn't kept for every chat visited.
+      // Only with the panel open: a closed panel makes no `fresh`, and the chat would lose its closed state.
+      const blank = state.open && left.length === 1 && isBlankTab(left[0]) ? left[0] : null;
+      const tabs = blank ? state.tabs.filter((tab) => tab !== blank) : state.tabs;
+      if (left.length > 0) {
         chats[state.chat] = {
           open: state.open,
-          activeTabId: state.activeTabId,
+          activeTabId: blank ? null : state.activeTabId,
           fullView: state.fullView,
           floating: state.floating,
           floatedForAgent: state.floatedForAgent,
@@ -574,7 +583,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       }
       const saved = chats[chat];
       delete chats[chat];
-      const own = state.tabs.filter((tab) => tab.chat === chat);
+      const own = tabs.filter((tab) => tab.chat === chat);
       const activeTabId =
         saved && own.some((tab) => tab.id === saved.activeTabId) ? saved.activeTabId : (own.at(-1)?.id ?? null);
       const open = saved ? saved.open : state.open;
@@ -583,7 +592,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set({
         chat,
         chats,
-        tabs: fresh ? [...state.tabs, fresh] : state.tabs,
+        tabs: fresh ? [...tabs, fresh] : tabs,
         activeTabId: fresh?.id ?? activeTabId,
         open,
         fullView: open && (saved ? saved.fullView : state.fullView),
