@@ -807,7 +807,16 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
 
 
 @pytest.mark.parametrize(
-    "case", ["editable_fork", "editable_finder", "upgrade", "namespace", "pkgutil_namespace"]
+    "case",
+    [
+        "editable_fork",
+        "editable_finder",
+        "editable_finder_module",
+        "editable_finder_namespace",
+        "upgrade",
+        "namespace",
+        "pkgutil_namespace",
+    ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path, case):
@@ -828,23 +837,38 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
         (workdir / "src" / f"{name}.py").write_text("")
         wheel = _wheel(workdir, name, {f"__editable__.{name}-1.0.pth": str(workdir / "src") + "\n"})
         command, expected = f'{_PIP} {wheel} && python -c "{show}"', str(workdir / "src")
-    elif case == "editable_finder":
-        # setuptools' flat-layout editable wheel: an import-only .pth and a finder module with a MAPPING.
-        # package_dir remap: the source folder is not named after the package.
-        (workdir / "proj" / "implementation").mkdir(parents = True)
-        (workdir / "proj" / "implementation" / "__init__.py").write_text("")
+    elif case.startswith("editable_finder"):
+        # setuptools' editable wheel: an import-only .pth and a finder module with literal MAPPING / NAMESPACES.
+        proj = workdir / "proj"
+        proj.mkdir()
         finder = f"__editable___{name}_1_0_finder"
-        mapping = {name: str(workdir / "proj" / "implementation")}
+        mapping, namespaces = {name: str(proj / "implementation")}, {}
+        if case == "editable_finder":
+            # package_dir remap: the source folder is not named after the package.
+            (proj / "implementation").mkdir()
+            (proj / "implementation" / "__init__.py").write_text("")
+            expected = str(proj / "implementation")
+        elif case == "editable_finder_module":
+            # py_modules: MAPPING holds the module path without its suffix.
+            (proj / "implementation.py").write_text("")
+            expected = str(proj)
+        else:
+            # A PEP 420 namespace root: no __init__.py.
+            (proj / "implementation").mkdir()
+            (proj / "implementation" / "part.py").write_text("")
+            namespaces = {name: [str(proj / "implementation")]}
+            show = f"import {name}.part; print({name}.part.__file__)"
+            expected = str(proj / "implementation")
         wheel = _wheel(
             workdir,
             name,
             {
                 f"__editable__.{name}-1.0.pth": f"import {finder}; {finder}.install()\n",
-                f"{finder}.py": f"MAPPING: dict = {mapping!r}\ndef install():\n    raise SystemExit(9)\n",
+                f"{finder}.py": f"MAPPING: dict = {mapping!r}\nNAMESPACES: dict = {namespaces!r}\n"
+                "def install():\n    raise SystemExit(9)\n",
             },
         )
         command = f'{_PIP} {wheel} && python -c "{show}"'
-        expected = str(workdir / "proj" / "implementation")
     elif case == "upgrade":
         wheel = _wheel(workdir, name, {f"{name}.py": ""})
         command, expected = in_process.format(pre = "", post = show) + f" {wheel}", packages
@@ -876,7 +900,7 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
             capture_output = True,
         )
     assert f"{expected}{os.sep}" in out, out
-    if case.endswith("namespace"):
+    if case in ("namespace", "pkgutil_namespace"):
         assert "['a', 'b']" in out, out
 
 

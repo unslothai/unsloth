@@ -403,17 +403,25 @@ def _session_entries():
 
 
 def _editable_mapping(entry, module):
-    # setuptools' flat-layout editable finder: read its literal MAPPING instead of running the module.
+    # setuptools' editable finder: read its literal MAPPING (name -> path) and NAMESPACES (name -> paths)
+    # instead of running the module.
     import ast
 
     with open(os.path.join(entry, module + ".py"), "rb") as f:
         tree = ast.parse(f.read())
+    found = {}
     for node in tree.body:
         targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
-        if any(isinstance(t, ast.Name) and t.id == "MAPPING" for t in targets) and node.value:
-            mapping = ast.literal_eval(node.value)
-            return {k: v for k, v in mapping.items() if isinstance(k, str) and isinstance(v, str)}
-    return {}
+        names = {t.id for t in targets if isinstance(t, ast.Name)} & {"MAPPING", "NAMESPACES"}
+        if not names or node.value is None:
+            continue
+        for key, value in ast.literal_eval(node.value).items():
+            if isinstance(key, str) and (
+                isinstance(value, str)
+                or (isinstance(value, list) and all(isinstance(v, str) for v in value))
+            ):
+                found.setdefault(key, value)
+    return found
 
 
 # PYTHONPATH skips .pth files: take their path lines and setuptools' editable mappings, never run their imports.
@@ -456,9 +464,11 @@ def _read_pth_files(entries):
 # an install lacks the new portion, and flat-layout editable installs are mapped, not on sys.path.
 class _SessionPackagesFinder:
     # Bound up front: an import inside find_spec would re-enter this finder.
+    from importlib.machinery import ModuleSpec as _module_spec, all_suffixes
     from importlib.util import spec_from_file_location as _from_file
 
     _from_file = staticmethod(_from_file)
+    _suffixes = all_suffixes()
 
     def __init__(self, entries, editable):
         self._entries = entries
@@ -474,16 +484,23 @@ class _SessionPackagesFinder:
         for entry in self._entries:
             if entry in cache and cache[entry] is None and os.path.isdir(entry):
                 del cache[entry]
+        located = self._editable.get(name)
+        if isinstance(located, str):
+            # As setuptools' finder: the package __init__, else the mapped stem with a module suffix.
+            candidates = (
+                os.path.join(located, "__init__.py"),
+                located,
+                *(located + s for s in self._suffixes),
+            )
+            for candidate in candidates:
+                if os.path.isfile(candidate):
+                    return self._from_file(name, candidate)
+            located = [located] if os.path.isdir(located) else None
+        if located:
+            spec = self._module_spec(name, None, is_package = True)
+            spec.submodule_search_locations = list(located)
+            return spec
         if path is None:
-            located = self._editable.get(name)
-            if located and os.path.isfile(os.path.join(located, "__init__.py")):
-                return self._from_file(
-                    name,
-                    os.path.join(located, "__init__.py"),
-                    submodule_search_locations = [located],
-                )
-            if located and located.endswith(".py") and os.path.isfile(located):
-                return self._from_file(name, located)
             return None
         parent = getattr(sys.modules.get(name.rpartition(".")[0]), "__spec__", None)
         namespace = parent is not None and (
