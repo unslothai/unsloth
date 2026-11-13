@@ -295,3 +295,12 @@ test("speaker accent: a connection passes it on as the transcription prompt", ()
     assert.equal(result.request.speakerAccent, "Indian English");
   }
 });
+
+test("speaker accent: a diarizing connection model takes no prompt", () => {
+  const result = connectionTranscribeSwitches(
+    { timestamps: false, speakerAccent: "Indian English" },
+    "gpt-4o-transcribe-diarize",
+  );
+  assert.equal(result.accent.disabled, true);
+  assert.equal(result.request.speakerAccent, "");
+});

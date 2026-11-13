@@ -469,3 +469,15 @@ def test_a_connection_without_an_accent_gets_no_prompt(stub, connection):
         _post(client, provider_id = "conn-1", model = "whisper-1", source = {"input_id": _input(ALICE)})
     (call,) = connection
     assert "prompt" not in call["data"]
+
+
+def test_an_accent_for_a_diarizing_connection_model_is_422(stub, connection):
+    with _client(ALICE) as client:
+        response, _ = _post(
+            client,
+            provider_id = "conn-1",
+            model = "gpt-4o-transcribe-diarize",
+            source = {"input_id": _input(ALICE)},
+            speaker_accent = "Japanese-accented English",
+        )
+    assert response.status_code == 422 and not connection

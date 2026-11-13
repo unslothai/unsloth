@@ -113,6 +113,11 @@ def takes_accent_hint(model: str, engine: Optional[str]) -> bool:
     return runs_whisper(model or None)
 
 
+def connection_takes_accent_hint(model: Optional[str]) -> bool:
+    # OpenAI: "prompt ... is not supported when using gpt-4o-transcribe-diarize".
+    return "diarize" not in str(model or "").lower()
+
+
 def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
     """``timestamps``: "on_request" | "always" | "unsupported"; ``aligner`` only for "on_request"."""
     model = str(model or "").strip()

@@ -159,7 +159,11 @@ export function connectionTranscribeSwitches(
   model: string,
 ): TranscribeSwitches {
   const untimed = OPENAI_UNTIMED_MODEL.test(model);
-  const { accent, speakerAccent } = accentFor(true, prefs.speakerAccent ?? "");
+  // OpenAI: "prompt ... is not supported when using gpt-4o-transcribe-diarize".
+  const { accent, speakerAccent } = accentFor(
+    !/diarize/i.test(model),
+    prefs.speakerAccent ?? "",
+  );
   return {
     timestamps: untimed
       ? {

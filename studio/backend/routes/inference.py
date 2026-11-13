@@ -26549,6 +26549,14 @@ def _source_transcript(result: dict, source, speakers: bool) -> dict:
     return out
 
 
+def _accent_refused() -> HTTPException:
+    return HTTPException(
+        status_code = 422,
+        detail = "This model cannot take a speaker accent hint. Clear it, or pick Whisper, "
+        "Qwen3-ASR (llama.cpp) or a connection.",
+    )
+
+
 async def _external_source_transcript(
     body: TranscribeSourceRequest, source, request: Request
 ) -> dict:
@@ -26642,7 +26650,10 @@ async def transcribe_audio_source(
     from core.inference import audio_inputs, stt_capabilities, stt_details
     from core.inference.transcript_stream import stream_transcript
 
+    accent_prompt = stt_capabilities.accent_prompt(body.speaker_accent)
     if body.provider_id is not None:
+        if accent_prompt and not stt_capabilities.connection_takes_accent_hint(body.model):
+            raise _accent_refused()
 
         def _resolve():
             source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
@@ -26666,13 +26677,8 @@ async def transcribe_audio_source(
     serving_engine = _resolve_serving_stt_engine(engine)
     caps = await asyncio.to_thread(stt_capabilities.capabilities_for, body.model, serving_engine)
     _refuse_stt_caps(caps, timestamps = body.timestamps, speakers = body.speakers)
-    accent_prompt = stt_capabilities.accent_prompt(body.speaker_accent)
     if accent_prompt and not caps.get("accent_hint"):
-        raise HTTPException(
-            status_code = 422,
-            detail = "This model cannot take a speaker accent hint. Clear it, or pick Whisper, "
-            "Qwen3-ASR (llama.cpp) or a connection.",
-        )
+        raise _accent_refused()
     rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
     cap = stt_capabilities.max_seconds_for(serving_engine)
 
