@@ -82,12 +82,12 @@ ROCM_KERNEL_CONFIGS: dict = {
             "bn": 32,
             "warps": 4,
             "stages": 1,
-            "pv": "half_t",
+            "pv": "f16_t",
             "kscale": "tile",
             "long_keys": 8000,
             "long": {"bm": 128, "warps": 8},
         },
-        64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "half_t", "kscale": "tile"},
+        64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "f16_t", "kscale": "tile"},
     },
 }
 QUANT_ROWS = 64  # rows per quantiser block

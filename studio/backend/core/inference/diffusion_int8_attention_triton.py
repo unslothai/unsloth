@@ -219,8 +219,10 @@ if triton is not None:
         x_stride_h,
         T: tl.constexpr,
         D: tl.constexpr,
+        TO_F16: tl.constexpr,
     ):
-        # one tile of T keys of one (batch, head) -> channel-major [BH, D, n_pad] in V's dtype, padded keys zero
+        # one tile of T keys of one (batch, head) -> channel-major [BH, D, n_pad], padded keys zero; in V's dtype,
+        # or (TO_F16) fp16 saturated at +-65504 so P.V can run on fp16 operands (RDNA3 has no bf16 convert)
         bh = tl.program_id(0)
         blk = tl.program_id(1)
         b = bh // n_heads
@@ -236,8 +238,105 @@ if triton is not None:
             mask = (rows < n_rows)[:, None],
             other = 0.0,
         )
+        if TO_F16:
+            x = tl.minimum(tl.maximum(x.to(tl.float32), -65504.0), 65504.0).to(tl.float16)
         base = bh.to(tl.int64) * n_pad * D
         tl.store(o_ptr + base + cols[None, :].to(tl.int64) * n_pad + rows[:, None], x)
+
+    @triton.jit
+    def _attn_tile(
+        acc,
+        l_i,
+        m_i,
+        t,
+        q,
+        qs,
+        q_ptr,
+        k_ptr,
+        ks_ptr,
+        v_ptr,
+        vs_ptr,
+        b,
+        h,
+        bh,
+        kbase,
+        n_ktiles,
+        n_kpad,
+        sk,
+        qk_mul,
+        k_sb,
+        k_ss,
+        k_sh,
+        v_sb,
+        v_ss,
+        v_sh,
+        offs_n,
+        cols,
+        BN: tl.constexpr,
+        D: tl.constexpr,
+        QK_INT8: tl.constexpr,
+        K_TILE: tl.constexpr,
+        PV_MODE: tl.constexpr,
+        ACC_IN_DOT: tl.constexpr,
+        MASK: tl.constexpr,
+    ):
+        # one key tile of the online softmax; MASK only for the ragged last tile
+        keys = t * BN + offs_n
+        if QK_INT8:
+            k = tl.load(k_ptr + (kbase + keys[:, None]) * D + cols[None, :])
+            dots = tl.dot(q, tl.trans(k), out_dtype = tl.int32).to(tl.float32)
+            if K_TILE:
+                kst = tl.load(ks_ptr + bh.to(tl.int64) * n_ktiles + t)
+                s = dots * (qs * kst)[:, None]
+            else:
+                ks = tl.load(ks_ptr + kbase + keys)
+                s = dots * qs[:, None] * ks[None, :]
+        else:
+            k_ptrs = k_ptr + b * k_sb + h * k_sh + keys[:, None].to(tl.int64) * k_ss + cols[None, :]
+            if MASK:
+                k = tl.load(k_ptrs, mask = (keys < sk)[:, None], other = 0.0)
+            else:
+                k = tl.load(k_ptrs)
+            s = tl.dot(q, tl.trans(k)) * qk_mul
+        if MASK:
+            s = tl.where((keys < sk)[None, :], s, -float("inf"))
+        m_tile = tl.max(s, axis = 1)
+        m_new = tl.maximum(m_i, m_tile)
+        alpha = tl.math.exp2(m_i - m_new)
+        if PV_MODE == 2 or PV_MODE == 4:
+            # 127 * 2^(s - tile max): log2(127) folded into the exponent
+            p8 = _rint(tl.math.exp2(s - m_tile[:, None] + 6.988684686772166))
+            if PV_MODE == 4:
+                v = tl.load(v_ptr + kbase * D + cols[None, :].to(tl.int64) * n_kpad + keys[:, None])
+            else:
+                v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
+            vs = tl.load(vs_ptr + bh.to(tl.int64) * n_ktiles + t)
+            pv = tl.dot(p8.to(tl.int8), v, out_dtype = tl.int32).to(tl.float32)
+            w = tl.math.exp2(m_tile - m_new) * (1.0 / 127.0)
+            acc = acc * alpha[:, None] + pv * (w * vs)[:, None]
+            l_i = l_i * alpha + tl.sum(p8, axis = 1) * w
+        else:
+            p = tl.math.exp2(s - m_new[:, None])
+            if PV_MODE == 1:
+                v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
+            elif PV_MODE == 3:
+                v = tl.load(v_ptr + kbase * D + cols[None, :].to(tl.int64) * n_kpad + keys[:, None])
+            else:
+                v_ptrs = (
+                    v_ptr + b * v_sb + h * v_sh + keys[:, None].to(tl.int64) * v_ss + cols[None, :]
+                )
+                if MASK:
+                    v = tl.load(v_ptrs, mask = (keys < sk)[:, None], other = 0.0)
+                else:
+                    v = tl.load(v_ptrs)
+            if ACC_IN_DOT:
+                acc = tl.dot(p.to(v.dtype), v, acc * alpha[:, None])
+            else:
+                acc = acc * alpha[:, None]
+                acc += tl.dot(p.to(v.dtype), v)
+            l_i = l_i * alpha + tl.sum(p, axis = 1)
+        m_i = m_new
+        return acc, l_i, m_i
 
     @triton.jit
     def attn_kernel(
@@ -300,72 +399,85 @@ if triton is not None:
                 mask = (rows < sq)[:, None],
                 other = 0.0,
             )
+            qs = tl.zeros([BM], tl.float32)
         m_i = tl.full([BM], -float("inf"), tl.float32)
         l_i = tl.zeros([BM], tl.float32)
         acc = tl.zeros([BM, D], tl.float32)
-        n_tiles = tl.cdiv(sk, BN)
-        for t in range(0, n_tiles):
-            keys = t * BN + offs_n
-            if QK_INT8:
-                k = tl.load(k_ptr + (kbase + keys[:, None]) * D + cols[None, :])
-                dots = tl.dot(q, tl.trans(k), out_dtype = tl.int32).to(tl.float32)
-                if K_TILE:
-                    kst = tl.load(ks_ptr + bh.to(tl.int64) * n_ktiles + t)
-                    s = dots * (qs * kst)[:, None]
-                else:
-                    ks = tl.load(ks_ptr + kbase + keys)
-                    s = dots * qs[:, None] * ks[None, :]
-            else:
-                k = tl.load(
-                    k_ptr + b * k_sb + h * k_sh + keys[:, None].to(tl.int64) * k_ss + cols[None, :],
-                    mask = (keys < sk)[:, None],
-                    other = 0.0,
-                )
-                s = tl.dot(q, tl.trans(k)) * qk_mul
-            if not EVEN_K:
-                s = tl.where((keys < sk)[None, :], s, -float("inf"))
-            m_tile = tl.max(s, axis = 1)
-            m_new = tl.maximum(m_i, m_tile)
-            alpha = tl.math.exp2(m_i - m_new)
-            if PV_MODE == 2 or PV_MODE == 4:
-                # 127 * 2^(s - tile max): log2(127) folded into the exponent
-                p8 = _rint(tl.math.exp2(s - m_tile[:, None] + 6.988684686772166))
-                if PV_MODE == 4:
-                    v = tl.load(
-                        v_ptr + kbase * D + cols[None, :].to(tl.int64) * n_kpad + keys[:, None]
-                    )
-                else:
-                    v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
-                vs = tl.load(vs_ptr + bh.to(tl.int64) * n_ktiles + t)
-                pv = tl.dot(p8.to(tl.int8), v, out_dtype = tl.int32).to(tl.float32)
-                w = tl.math.exp2(m_tile - m_new) * (1.0 / 127.0)
-                acc = acc * alpha[:, None] + pv * (w * vs)[:, None]
-                l_i = l_i * alpha + tl.sum(p8, axis = 1) * w
-            else:
-                p = tl.math.exp2(s - m_new[:, None])
-                if PV_MODE == 1:
-                    v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
-                elif PV_MODE == 3:
-                    v = tl.load(
-                        v_ptr + kbase * D + cols[None, :].to(tl.int64) * n_kpad + keys[:, None]
-                    )
-                else:
-                    v = tl.load(
-                        v_ptr
-                        + b * v_sb
-                        + h * v_sh
-                        + keys[:, None].to(tl.int64) * v_ss
-                        + cols[None, :],
-                        mask = (keys < sk)[:, None],
-                        other = 0.0,
-                    )
-                if ACC_IN_DOT:
-                    acc = tl.dot(p.to(v.dtype), v, acc * alpha[:, None])
-                else:
-                    acc = acc * alpha[:, None]
-                    acc += tl.dot(p.to(v.dtype), v)
-                l_i = l_i * alpha + tl.sum(p, axis = 1)
-            m_i = m_new
+        n_full = sk // BN
+        for t in range(0, n_full):
+            acc, l_i, m_i = _attn_tile(
+                acc,
+                l_i,
+                m_i,
+                t,
+                q,
+                qs,
+                q_ptr,
+                k_ptr,
+                ks_ptr,
+                v_ptr,
+                vs_ptr,
+                b,
+                h,
+                bh,
+                kbase,
+                n_ktiles,
+                n_kpad,
+                sk,
+                qk_mul,
+                k_sb,
+                k_ss,
+                k_sh,
+                v_sb,
+                v_ss,
+                v_sh,
+                offs_n,
+                cols,
+                BN,
+                D,
+                QK_INT8,
+                K_TILE,
+                PV_MODE,
+                ACC_IN_DOT,
+                False,
+            )
+        if not EVEN_K:
+            acc, l_i, m_i = _attn_tile(
+                acc,
+                l_i,
+                m_i,
+                n_full,
+                q,
+                qs,
+                q_ptr,
+                k_ptr,
+                ks_ptr,
+                v_ptr,
+                vs_ptr,
+                b,
+                h,
+                bh,
+                kbase,
+                n_ktiles,
+                n_kpad,
+                sk,
+                qk_mul,
+                k_sb,
+                k_ss,
+                k_sh,
+                v_sb,
+                v_ss,
+                v_sh,
+                offs_n,
+                cols,
+                BN,
+                D,
+                QK_INT8,
+                K_TILE,
+                PV_MODE,
+                ACC_IN_DOT,
+                True,
+            )
         out = acc / l_i[:, None]
         if PV_MODE == 2 or PV_MODE == 4:
             vg = tl.load(vg_ptr + bh * D + cols)
@@ -394,7 +506,7 @@ def _pad(n: int, multiple: int) -> int:
     return (n + multiple - 1) // multiple * multiple
 
 
-PV_MODES = {"half_strided": 0, "half": 1, "int8": 2, "half_t": 3, "int8_t": 4}
+PV_MODES = {"half_strided": 0, "half": 1, "int8": 2, "half_t": 3, "int8_t": 4, "f16_t": 3}
 
 
 def quantise(
@@ -477,9 +589,12 @@ def quantise(
         if n_kpad > Sk:
             vh[:, :, Sk:].zero_()
         out["vh"] = vh
-    elif pv == "half_t":
-        vh = torch.empty((BH, D, n_kpad), dtype = v.dtype, device = dev)
-        kk.transpose_v[(BH, n_kpad // QUANT_ROWS)](v, vh, Sk, n_kpad, H, *st(v), T = QUANT_ROWS, D = D)
+    elif pv in ("half_t", "f16_t"):
+        f16 = pv == "f16_t"
+        vh = torch.empty((BH, D, n_kpad), dtype = torch.float16 if f16 else v.dtype, device = dev)
+        kk.transpose_v[(BH, n_kpad // QUANT_ROWS)](
+            v, vh, Sk, n_kpad, H, *st(v), T = QUANT_ROWS, D = D, TO_F16 = f16
+        )
         out["vh"] = vh
     return out
 
