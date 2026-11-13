@@ -135,6 +135,7 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { withRunThreadScopedSettings } from "../utils/thread-scoped-settings";
 import { contextUsageMarkers, threadBranchRecords } from "../utils/saved-context-usage";
 import { contextUsageReasoningKey } from "../utils/context-usage-reasoning";
 import {
@@ -301,6 +302,8 @@ import {
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   codeToolsOn,
+  withChatOwnedSettings,
+  withLoadedModelOverrides,
   localMediaToolsForTurn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -1720,6 +1723,19 @@ function serializeAssistantReplayMessages(
   return messages;
 }
 
+/** Strict templates (Qwen3.5) reject a second system turn; the backend joins system parts with "\n\n", so merging is byte-identical there. */
+function prependSystemPrompt<T extends { role: string; content: unknown }>(
+  messages: T[],
+  text: string,
+): void {
+  const first = messages[0];
+  if (first?.role === "system" && typeof first.content === "string") {
+    messages[0] = { ...first, content: `${text}\n\n${first.content}` };
+    return;
+  }
+  messages.unshift({ role: "system", content: text } as T);
+}
+
 function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -2213,10 +2229,7 @@ export async function buildLocalTokenCountHistory(
     systemPrompt: safeSystemPrompt,
   });
   if (combinedSystemPrompt) {
-    outboundMessages.unshift({
-      role: "system",
-      content: combinedSystemPrompt,
-    });
+    prependSystemPrompt(outboundMessages, combinedSystemPrompt);
   }
 
   return {
@@ -4956,6 +4969,9 @@ export function createOpenAIStreamAdapter(
           store.clearPendingImageEditReference();
         }
       };
+      // The waits below let the user open another chat, whose settings then fill the store.
+      const runtimeAtSend = runtime;
+      const chatOwnedAtSend = withChatOwnedSettings(runtime);
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
         try {
@@ -4996,6 +5012,12 @@ export function createOpenAIStreamAdapter(
       }
 
       const liveRuntime = useChatRuntimeStore.getState();
+      // A pending read means the store holds defaults, not this chat's settings.
+      const runChatSettingsLive =
+        !liveRuntime.threadScopedSettingsPending &&
+        (liveRuntime.activeThreadId === runtimeAtSend.activeThreadId ||
+          (resolvedThreadId !== undefined &&
+            liveRuntime.activeThreadId === resolvedThreadId));
       runtime = queuedRunSettings
         ? queuedRunSettings.params.checkpoint
           ? { ...liveRuntime, ...queuedRunSettings }
@@ -5057,7 +5079,16 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime?.modelCapabilities ?? null,
               ),
             }
-        : liveRuntime;
+        : runChatSettingsLive
+          ? liveRuntime
+          : // The same model keeps the chat's effective values; a new one re-derives what its load sets.
+            liveRuntime.params.checkpoint === runtimeAtSend.params.checkpoint &&
+              (liveRuntime.activeGgufVariant ?? null) === (runtimeAtSend.activeGgufVariant ?? null)
+            ? withRunThreadScopedSettings(liveRuntime, runtimeAtSend)
+            : withLoadedModelOverrides(
+                withRunThreadScopedSettings(liveRuntime, chatOwnedAtSend),
+                liveRuntime,
+              );
       runtime = withChatFullAccess(runtime, liveRuntime.chatFullAccessGrants, resolvedThreadId);
       const { params } = runtime;
       const sandboxSessionId = await resolveSandboxSessionId(
@@ -5394,10 +5425,7 @@ export function createOpenAIStreamAdapter(
         { agentsMd: true },
       );
       if (combinedSystemPrompt) {
-        outboundMessages.unshift({
-          role: "system",
-          content: combinedSystemPrompt,
-        });
+        prependSystemPrompt(outboundMessages, combinedSystemPrompt);
       }
       let disabledToolGuard: string | null = null;
       const disabledToolGuardProviderType = externalProvider?.providerType;

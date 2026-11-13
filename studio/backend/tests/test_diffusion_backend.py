@@ -11625,6 +11625,57 @@ def test_cancel_generate_lands_at_the_next_step_boundary(fake_runtime, tmp_path,
     assert seen == [0, 1, 2]
 
 
+def test_cancel_generate_stops_a_denoise_the_device_has_not_caught_up_with(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = _loaded_backend(tmp_path)
+
+    class _UnfinishedStep:
+        def query(self):
+            return False
+
+    monkeypatch.setattr("core.inference.video._record_device_event", lambda: _UnfinishedStep())
+
+    issued: list[int] = []
+
+    def _call(
+        self,
+        *,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self._interrupt = False
+        for index in range(20):
+            if getattr(self, "_interrupt", False):
+                break
+            issued.append(index)
+            callback_on_step_end(self, index, index, {})
+        return types.SimpleNamespace(images = [_FakeImage()])
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+
+    outcome: dict = {}
+
+    def _run():
+        try:
+            outcome["result"] = backend.generate(prompt = "x", steps = 20)
+        except BaseException as exc:  # noqa: BLE001 -- the test asserts on the exact type/text
+            outcome["error"] = exc
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    worker.join(0.5)
+
+    backend.cancel_generate()
+    worker.join(10)
+    assert not worker.is_alive()
+    assert len(issued) < 20, "every step was issued while the device was still on the first"
+    assert str(outcome.get("error")) == DIFFUSION_CANCELLED_MSG
+
+
 def test_cancel_generate_during_the_post_denoise_save_still_cancels(
     fake_runtime, tmp_path, monkeypatch
 ):

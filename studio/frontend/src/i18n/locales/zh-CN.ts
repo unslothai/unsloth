@@ -926,7 +926,7 @@ export const zhCN = {
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
-      api: "API",
+      api: "API 监控",
       lightMode: "浅色模式",
       darkMode: "深色模式",
       guidedTour: "引导教程",
