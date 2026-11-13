@@ -24,6 +24,7 @@ import {
   q4nxWeights,
   q4nxConvertibleFiles,
   q4nxHasSplitFiles,
+  q4nxIsSplitFile,
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
 
@@ -434,4 +435,10 @@ test("a quant shipped whole and split converts from its whole file; split-only i
   );
   assert.deepEqual(q4nxConvertibleFiles(files, new Set([shard])), []);
   assert.deepEqual(q4nxConvertibleFiles(files), []);
+});
+
+test("a shard of a split GGUF is never a standalone source", () => {
+  assert.equal(q4nxIsSplitFile("/models/Q4_K_M-00001-of-00002.gguf"), true);
+  assert.equal(q4nxIsSplitFile("C:\\m\\Q4_K_M-00002-of-00002.gguf "), true);
+  assert.equal(q4nxIsSplitFile("/models/Qwen3-0.6B-Q4_K_M.gguf"), false);
 });

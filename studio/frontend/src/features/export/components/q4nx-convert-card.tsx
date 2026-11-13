@@ -62,6 +62,7 @@ import {
   q4nxIsExpanded,
   q4nxConvertibleFiles,
   q4nxHasSplitFiles,
+  q4nxIsSplitFile,
   q4nxMemoryWarning,
   q4nxNpuMemory,
   q4nxPacking,
@@ -341,6 +342,7 @@ export function Q4nxConvertCard({
       .filter(
         (row) =>
           isGgufRow(row) &&
+          !q4nxIsSplitFile(row.path) &&
           (!q ||
             row.id.toLowerCase().includes(q) ||
             row.display_name.toLowerCase().includes(q) ||
@@ -348,7 +350,8 @@ export function Q4nxConvertCard({
       )
       .map(toRow);
     const typed = localQuery.trim();
-    for (const id of [GGUF_FILE_RE.test(typed) ? typed : "", localId]) {
+    const typedFile = GGUF_FILE_RE.test(typed) && !q4nxIsSplitFile(typed);
+    for (const id of [typedFile ? typed : "", localId]) {
       if (!id || rows.some((row) => row.id === id)) continue;
       const known = localById.get(id);
       rows.unshift(

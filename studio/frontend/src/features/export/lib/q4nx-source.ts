@@ -78,8 +78,12 @@ const PACKING_ORDER: Q4nxPacking[] = ["direct", "by-architecture", "requantized"
 // A split GGUF is listed as one variant named by its first shard; the converter reads one file.
 const SPLIT_SHARD = /-\d{3,}-of-\d{3,}\.gguf$/i;
 
+export function q4nxIsSplitFile(path: string): boolean {
+  return SPLIT_SHARD.test(path.trim());
+}
+
 export function q4nxHasSplitFiles(variants: readonly { filename: string }[]): boolean {
-  return variants.some((v) => SPLIT_SHARD.test(v.filename));
+  return variants.some((v) => q4nxIsSplitFile(v.filename));
 }
 
 /** Drops empty leftover quant folders and split GGUFs. The listing collapses a quant shipped both
