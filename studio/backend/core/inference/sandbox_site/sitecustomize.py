@@ -374,7 +374,14 @@ def _route_pip():
             _chat_prefix = prefix
             # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
             argv = list(getattr(sys, "orig_argv", None) or ())
-            module = argv[argv.index("-m") + 1] if "-m" in argv[:-1] else ""
+            module = ""
+            for i, arg in enumerate(argv[1:], 1):
+                if arg == "-m" and i + 1 < len(argv):
+                    module = argv[i + 1]
+                elif arg.startswith("-m") and arg[2:3] not in ("", "-"):
+                    module = arg[2:]
+                if module or not arg.startswith("-"):
+                    break
             # Python < 3.10 has no orig_argv: any -m launch counts.
             is_pip = module in ("pip", "pip.__main__") or (
                 not module and (sys.argv[0] == "-m" or _is_pip_script(sys.argv[0]))

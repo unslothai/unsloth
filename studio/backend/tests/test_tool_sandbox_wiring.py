@@ -990,6 +990,12 @@ def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
 
     assert f"PIP_PREFIX={packages!r}" in run(sys.executable, "-m", "pip", "config", "debug")
     assert run(sys.executable, *probe).strip() == "None"
+    # python -mvenv: a module glued to -m is still not pip.
+    (tmp_path / "probe_mod.py").write_text(probe[1])
+    glued = subprocess.run(
+        [sys.executable, "-mprobe_mod"], env = env, cwd = tmp_path, capture_output = True, text = True
+    )
+    assert glued.stdout.strip() == "None", glued.stderr
     script = tmp_path / "pipeline.py"
     script.write_text(probe[1])
     assert run(sys.executable, str(script)).strip() == "None"
