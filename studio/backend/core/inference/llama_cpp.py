@@ -31481,6 +31481,7 @@ class LlamaCppBackend:
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     _did_fit_step_retry = False
+                    _fit_off_crashed = False
                     _did_moe_cache_retry = False
                     for _spawn_attempt in (0, 1, 2, 3, 4):
                         if _spawn_attempt:
@@ -31873,6 +31874,10 @@ class LlamaCppBackend:
                             and _crashed_proc.poll() is not None
                             and _crashed_proc.returncode != 0
                         )
+                        # A fit-on child dying in the fit step: a fit-on relaunch repeats it unless it drops a split.
+                        _in_fit_step = fit_is_effectively_on(
+                            run_cmd, env
+                        ) and self._is_fit_step_crash(self._stdout_lines[-50:])
                         # Split-axis aborts and old builds refusing tensor-mode quantized KV are not
                         # fit problems.
                         _startup_output = "\n".join(self._stdout_lines[-50:])
@@ -31976,10 +31981,13 @@ class LlamaCppBackend:
                             not _did_fit_retry
                             and fully_gpu_offloaded
                             and _startup_crashed
+                            and not (_in_fit_step and not self._mixed_split_flags)
                             and not _capability_crash
                             and not _hip_rocr_mismatch
                         ):
                             # Our VRAM math was optimistic: fall back to --fit on and let llama.cpp offload; DSpark takes this path too (fit only skips its sidecar reserve).
+                            # A failed --fit off launch: the fit-step rung must not replay it.
+                            _fit_off_crashed = not fit_is_effectively_on(run_cmd, env)
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
                                 "with forced --fit off; the fit estimate was optimistic, "
@@ -32046,11 +32054,12 @@ class LlamaCppBackend:
                             continue
                         _fit_step_crashed = (
                             not _did_fit_step_retry
+                            and not _fit_off_crashed
                             and _startup_crashed
+                            and _in_fit_step
                             and not _capability_crash
                             and not _hip_rocr_mismatch
                             and self._fit_step_retry_eligible(run_cmd, extra_args, env)
-                            and self._is_fit_step_crash(self._stdout_lines[-50:])
                         )
                         if _fit_step_crashed or (
                             not _did_fit_retry

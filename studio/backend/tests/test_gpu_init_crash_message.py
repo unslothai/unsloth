@@ -1535,7 +1535,14 @@ def _fit_mode(cmd):
     return None
 
 
-def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
+def _run_full_offload_spawns(
+    monkeypatch,
+    tmp_path,
+    *,
+    outputs = (),
+    returncodes = (),
+    outcome = None,
+):
     """Runs load_model with --fit off; use_system_rocm=False skips /opt/rocm/lib, as the retry does."""
 
     def _gguf_string(value: str) -> bytes:
@@ -1612,11 +1619,17 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
             return _real_popen(cmd, **kwargs)
         idx = len(launches)
         launches.append((list(cmd), dict(kwargs["env"])))
+        if outcome is not None:
+            return _Process(outcome(list(cmd))[0])
         code = returncodes[idx] if idx < len(returncodes) else 1
         return _Process(code)
 
     def _wait_for_health(timeout = 600.0, **_kw):
         idx = len(launches) - 1
+        if outcome is not None:
+            code, output = outcome(launches[-1][0])
+            backend._stdout_lines = [output]
+            return code is None
         if 0 <= idx < len(outputs):
             backend._stdout_lines = [outputs[idx]]
         code = returncodes[idx] if 0 <= idx < len(returncodes) else 1
@@ -1863,3 +1876,36 @@ class TestFitStepCrashHelpers:
     )
     def test_retry_eligibility(self, cmd, extras, env, expected):
         assert LlamaCppBackend._fit_step_retry_eligible(cmd, extras, env) is expected
+
+
+class TestForcedFitOffFitStepCrash:
+    """#16395 as logged: --fit off crashes, every --fit on child dies in the fit step, and
+    only --flash-attn off with --fit off is left untried."""
+
+    @staticmethod
+    def _outcome(cmd):
+        fa_off = cmd[cmd.index("--flash-attn") + 1] == "off" if "--flash-attn" in cmd else False
+        if _last_fit_mode(cmd) == "on":
+            return _WINDOWS_ACCESS_VIOLATION, _FIT_STEP_CRASH_OUTPUT
+        if fa_off:
+            return None, ""
+        return _WINDOWS_ACCESS_VIOLATION, "load_tensors: offloaded 17/17 layers to GPU"
+
+    def test_flash_attn_off_retry_tries_fit_off_without_repeating_launches(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(llama_cpp.sys, "platform", "win32")
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch, tmp_path, outcome = self._outcome
+        )
+        cmds = [cmd for cmd, _env in launches]
+        modes = [
+            (
+                _last_fit_mode(cmd),
+                cmd[cmd.index("--flash-attn") + 1] if "--flash-attn" in cmd else None,
+            )
+            for cmd in cmds
+        ]
+        assert error is None, modes
+        assert loaded, modes
+        assert modes == [("off", "on"), ("on", "on"), ("on", "off"), ("off", "off")]
