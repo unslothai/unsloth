@@ -103,6 +103,8 @@ interface BrowserHistoryState {
   downloads: DownloadItem[];
   icons: Record<string, string>;
   recordVisit: (url: string, title: string, temporary?: boolean) => void;
+  /** Merges another browser's visits; `leftOut` counts new ones past the kept period or the history limit. */
+  importVisits: (items: { url: string; title: string; visitedAt: number }[]) => { added: number; leftOut: number };
   recordIcon: (host: string, icon: string, temporary?: boolean) => void;
   /** The new row's id; undefined when download history is off or a temporary chat is shown. */
   recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">, temporary?: boolean) => string | undefined;
@@ -148,6 +150,29 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
           return { history, icons };
         });
+      },
+      // Not gated on the history setting: an import is asked for, not a page the browser happened to load.
+      importVisits: (items) => {
+        const state = get();
+        const cutoff = retentionCutoff();
+        const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
+        const visitKey = (visit: { url: string; visitedAt: number }) => `${visit.visitedAt} ${visit.url}`;
+        const seen = new Set(kept.map(visitKey));
+        const fresh: HistoryItem[] = [];
+        let leftOut = 0;
+        for (const item of items) {
+          if (item.url.length > MAX_URL_CHARS || seen.has(visitKey(item))) continue;
+          seen.add(visitKey(item));
+          if (item.visitedAt < cutoff) leftOut++;
+          else fresh.push({ id: newId(), url: item.url, title: item.title.slice(0, MAX_TITLE_CHARS), visitedAt: item.visitedAt });
+        }
+        const history = [...kept, ...fresh].sort((a, b) => b.visitedAt - a.visitedAt).slice(0, MAX_HISTORY);
+        const ids = new Set(history.map((visit) => visit.id));
+        const added = fresh.filter((visit) => ids.has(visit.id)).length;
+        if (added > 0) {
+          set({ history, icons: history.length < state.history.length + added ? iconsFor(history, state.icons) : state.icons });
+        }
+        return { added, leftOut: leftOut + fresh.length - added };
       },
       recordDownload: (item, temporary) => {
         // Callers that took the state when the download began pass it; the rest go by the chat shown now.
