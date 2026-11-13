@@ -12,7 +12,6 @@ export function ggufCompactionRequestFields(options: {
   isGguf: boolean;
   isMlx?: boolean;
   isManagedEngine?: boolean;
-  // Lemonade does not compact, so the server fits the chat to the NPU's window
   isNpu?: boolean;
   autoCompactEnabled: boolean;
   // /compact: asked for by the user, so it applies with auto-compaction off too

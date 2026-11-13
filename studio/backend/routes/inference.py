@@ -29019,7 +29019,8 @@ def _fit_external_context(
     # A reset strands the evicted turns unless the loop can offer search_conversation afterwards.
     can_reset = can_reset and tool_loop and _can_reset_epoch(thread_id, True)
     force_reset = can_reset and getattr(payload, "compact_context", None) is True
-    sticky = sticky_is_checkpoint = sticky_manual = None
+    sticky = sticky_is_checkpoint = None
+    sticky_manual = False
     if can_reset:
         # Read before the fits check: a /compact epoch replays while the chat still fits.
         sticky, sticky_is_checkpoint, sticky_manual = _sticky_compaction_details(
@@ -29054,7 +29055,7 @@ def _fit_external_context(
         reserve_tokens = _conversation_recall_reserve(thread_id),
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
-        sticky_manual = bool(sticky_manual),
+        sticky_manual = sticky_manual,
         force_reset = force_reset,
         can_reset = can_reset,
         estimate_message = estimate_message_tokens_without_unpriced_media,
