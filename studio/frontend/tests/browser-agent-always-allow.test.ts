@@ -95,7 +95,6 @@ test("an approved site and its Always allow don't carry to another port on that 
   assert.equal(await askedBy(click("p1", p), (id) => answerQuestion(id, true, true)), "click+always");
   assert.equal(await askedBy(navigate("p2", p, "http://shop.example.com:8081/?d=1"), (id) => answerQuestion(id, true)), "open+always");
   assert.equal(await askedBy(click("p3", p), (id) => answerQuestion(id, true)), "click+always", "Always allow carried to another port");
-  // Plain http on the default port is still the approved site.
   assert.equal(await askedBy(navigate("p4", p, "http://shop.example.com/"), (id) => answerQuestion(id, false)), null);
   assert.equal(await askedBy(click("p5", p), (id) => answerQuestion(id, false)), null);
 });

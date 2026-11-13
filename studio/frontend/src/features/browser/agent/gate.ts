@@ -36,8 +36,7 @@ export function hostOfUrl(url: string): string {
   }
 }
 
-/** What an approval covers: the host plus a non-default port, as example.edu:8081 is another service than
- *  example.edu. http and https on their default ports are one site, so an upgrade doesn't ask again. */
+/** What an approval covers: the host plus a non-default port; http and https defaults are one site. */
 export function siteOfUrl(url: string): string {
   const host = hostOfUrl(url);
   try {

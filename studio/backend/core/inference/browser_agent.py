@@ -491,8 +491,7 @@ def _is_loopback(hostname: str) -> bool:
 
 
 def _own_ports() -> set[int]:
-    """The ports this server listens on (`-p 8000`, Docker), which the fixed range can miss.
-    Empty before run.py binds, or when main is not the serving module."""
+    """The ports this server listens on (`-p 8000`), which the fixed range can miss; empty before it binds."""
     state = getattr(getattr(sys.modules.get("main"), "app", None), "state", None)
     ports = (getattr(state, name, None) for name in ("server_port", "loopback_http_port"))
     return {port for port in ports if isinstance(port, int) and port > 0}

@@ -37,7 +37,6 @@ const shownUrls = (module: StoreModule) =>
 
 const A = chatKeyOfThread("a");
 const B = chatKeyOfThread("b");
-// Saved chats: a reload finds them under the same key.
 Object.assign(globalThis, { __storedThreads: new Set(["a", "b"]) });
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -116,7 +115,6 @@ test("file, posted and temporary pages are dropped, leaving the tab on the kept 
   assert.deepEqual(restored.tabs.map((tab) => [tab.id, tab.index]), [["at-post", 1], ["at-last", 2], ["at-file", 0], ["big-icon", 0]]);
   assert.deepEqual(restored.tabs[0]?.history, kept);
   assert.equal(restored.tabs[3]?.favicon, null);
-  // The tab in front was dropped: the chat's last tab takes its place.
   assert.deepEqual(restored.chats[A], { open: true, activeTabId: "big-icon", fullView: true, floating: false });
 });
 
@@ -151,7 +149,6 @@ test("the tabs are saved under the account that opened them, so another account 
   useBrowserStore.getState().openUrl("https://private.example/", { newTab: true });
   assert.equal(TAB_SESSION_KEY, "unsloth_browser_tabs:b1");
   assert.match(session.get(TAB_SESSION_KEY) ?? "", /private\.example/);
-  // Still the page it was opened for, so opening that page again focuses the restored tab.
   assert.equal(loadTabSession().tabs.at(-1)?.openKey, "url:https://private.example/");
   for (const marker of ["account:e2:eve", "unsloth"]) {
     const key = accountDatabaseName("unsloth_browser_tabs", { getItem: () => marker });
@@ -169,7 +166,6 @@ test("an unsaved chat's tabs follow it to the key a reload gives it, by either w
     return module;
   };
   await draft(chatKeyOfThread("draft-1"));
-  // Named at once.
   const first = await reloaded();
   await settled();
   first.useBrowserStore.getState().showChat(chatKeyOfThread("draft-2"));
@@ -184,7 +180,6 @@ test("an unsaved chat's tabs follow it to the key a reload gives it, by either w
     if (late) await settled();
     assert.deepEqual([next.useBrowserStore.getState().open, shownUrls(next)], [true, ["https://draft.example/"]]);
   }
-  // A saved chat's tabs stay its own when the reload lands elsewhere.
   (globalThis as { __storedThreads?: Set<string> }).__storedThreads?.add("draft-true");
   const other = await reloaded();
   await settled();

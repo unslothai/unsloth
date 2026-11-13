@@ -82,7 +82,6 @@ def test_navigate_refuses_the_port_this_studio_listens_on(monkeypatch):
         _request("browser_navigate", {"url": "http://localhost:7860/"})["url"]
         == "http://localhost:7860/"
     )
-    # Before the server binds (or under another entry point) only the fixed rules apply.
     state.server_port = None
     assert (
         _request("browser_navigate", {"url": "http://localhost:8000/"})["url"]

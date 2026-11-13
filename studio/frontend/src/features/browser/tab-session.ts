@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The open tabs and each chat's panel, kept for a reload of this window. sessionStorage, so a new
-// window or a fresh launch starts without a browser, and windows don't share one tab list.
+// Open tabs and each chat's panel, kept in sessionStorage: for a reload of this window only.
 
 import { accountDatabaseName } from "@/lib/account-transition";
 import { isWebUrl } from "./address";
@@ -21,11 +20,10 @@ export type TabSessionSource = {
   floatedForAgent?: boolean;
 };
 
-/** Every chat's panel is in `chats`, the shown chat's too: the chat page's `showChat` puts it on screen. */
 export type TabSession = {
   tabs: BrowserTab[];
   chats: Record<string, ChatBrowser>;
-  /** The chat that was on screen, if it had tabs: an unsaved chat gets a new key on reload (store.ts `claimRestored`). */
+  /** The chat that was on screen, if it had tabs (store.ts `claimRestored`). */
   shown: string | null;
 };
 
@@ -38,8 +36,7 @@ const MAX_ICON_CHARS = 2048;
 const MAX_ID_CHARS = 200;
 const INTERNAL_PAGES: readonly string[] = ["history", "downloads", "bookmarks"] satisfies InternalPage[];
 
-// Named at load, per account: a write after an account switch lands under the account that made it.
-// The switch also clears sessionStorage (account-transition.ts).
+// Per account: a write after an account switch lands under the account that made it.
 export const TAB_SESSION_KEY = accountDatabaseName("unsloth_browser_tabs");
 
 const EMPTY: TabSession = { tabs: [], chats: {}, shown: null };
@@ -65,7 +62,7 @@ function webUrl(value: unknown): string | null {
 const text = (value: unknown, max: number) => (typeof value === "string" ? value.slice(0, max) : "");
 const id = (value: unknown) => (typeof value === "string" && value.length > 0 && value.length <= MAX_ID_CHARS ? value : null);
 
-/** The entry as a reload can show it again; null for a file (its bytes are in memory), a form post or a temporary chat's page. */
+/** null for what a reload can't show: a file, a form post, a temporary chat's page. */
 function keptEntry(entry: unknown): BrowserEntry | null {
   if (!entry || typeof entry !== "object") return null;
   const { kind, page, url, method, body, from, temporary } = entry as Record<string, unknown>;
@@ -78,7 +75,6 @@ function keptEntry(entry: unknown): BrowserEntry | null {
   return source ? { kind, url: target, from: source } : { kind, url: target };
 }
 
-/** The entries a reload can show, and where `at` lands among them: on the kept entry at or before it. */
 function keptHistory(entries: unknown[], at: number, displayUrl: unknown): { history: BrowserEntry[]; index: number } {
   let history: BrowserEntry[] = [];
   let index = 0;
@@ -131,7 +127,6 @@ function keptTab(value: unknown): BrowserTab | null {
   };
 }
 
-/** What a reload restores of `state`: used to write it and, on what was written, to read it back. */
 function kept(tabList: unknown, panels: unknown, first?: string): TabSession {
   if (!Array.isArray(tabList)) return EMPTY;
   const seen = new Set<string>();
@@ -193,7 +188,6 @@ export function loadTabSession(key = TAB_SESSION_KEY, storage = sessionStore()):
 
 let written: string | null | undefined;
 
-/** Writes `state` when what a reload restores of it changed; a full or missing storage is ignored. */
 export function saveTabSession(state: TabSessionSource, key = TAB_SESSION_KEY, storage = sessionStore()): void {
   try {
     const next = serializeTabSession(state);
@@ -202,7 +196,7 @@ export function saveTabSession(state: TabSessionSource, key = TAB_SESSION_KEY, s
     if (next === null) storage?.removeItem(key);
     else storage?.setItem(key, next);
   } catch {
-    // Quota or private mode: the tabs stay for this page only.
+    // Quota or private mode.
   }
 }
 
@@ -219,7 +213,7 @@ export async function chatIsUnsaved(chat: string): Promise<boolean> {
   }
 }
 
-/** Whether unsaved chat `from`'s tabs may move to `to`: a project's new chat only to that project's new chat. */
+/** A project's unsaved chat hands its tabs only to that project's new chat. */
 export function sameKindOfChat(from: string, to: string): boolean {
   const scope = (chat: string) => (chat.startsWith("project:") ? chat.slice(0, chat.lastIndexOf(":") + 1) : chat.slice(0, chat.indexOf(":") + 1));
   return scope(from) === scope(to);

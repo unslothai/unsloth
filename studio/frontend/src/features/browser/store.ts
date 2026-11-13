@@ -498,11 +498,9 @@ export function chatTabs(state: Pick<BrowserState, "tabs" | "chat">): BrowserTab
 }
 
 export const useBrowserStore = create<BrowserState>((set, get) => {
-  // The tabs a reload of this window left (tab-session.ts). Each chat's panel waits in `chats` for showChat.
   const session = loadTabSession();
   const { [NEW_CHAT]: shown, ...restoredChats } = session.chats;
-  // An unsaved chat comes back from a reload under a new key (only a saved chat's is in the URL), so
-  // the first chat named after it takes over its tabs and panel.
+  // An unsaved chat returns from a reload under a new key: the first chat named takes its tabs and panel.
   let restoredShown: string | null = null;
   const claimRestored = (chat: string) => {
     if (!restoredShown || chat === NEW_CHAT || chat === UNNAMED_CHAT) return;

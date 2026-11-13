@@ -70,7 +70,6 @@ test("another port on an approved host is another site, and asks", () => {
   const known = navigation({ knownHosts: new Set(["example.edu"]), userText: "open example.edu" });
   const gate = gateNavigation("http://example.edu:8081/?d=secret", known);
   assert.equal(gate.kind === "ask" && gate.prompt, "Open example.edu:8081?");
-  // http and https on their default ports are the one site, however the port is written.
   for (const url of ["http://example.edu/", "https://www.example.edu:443/a", "http://example.edu:80/"]) {
     assert.equal(gateNavigation(url, navigation({ knownHosts: new Set(["example.edu"]) })).kind, "allow");
   }
