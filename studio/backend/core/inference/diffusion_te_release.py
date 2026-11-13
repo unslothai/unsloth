@@ -223,9 +223,14 @@ class TextEncoderReleaser:
                         self._slots[f"{attr}.{module_name}.{leaf}"] = (module, leaf, False)
 
     def _install_hooks(self) -> None:
-        owners = {id(owner): owner for owner, _, _ in self._slots.values()}
+        tensor_ids = {id(self._tensor(key)) for key in self._slots}
+        owners = {}
         for _, encoder in self._encoders:
             owners.setdefault(id(encoder), encoder)
+            for module in encoder.modules():
+                tensors = (*module._parameters.values(), *module._buffers.values())
+                if any(id(tensor) in tensor_ids for tensor in tensors):
+                    owners[id(module)] = module
 
         def _pre_hook(module: Any, args: Any) -> None:
             if self._released:
@@ -401,7 +406,7 @@ class TextEncoderReleaser:
                     if is_param:
                         owner._parameters[leaf].data = empty
                     else:
-                        owner._buffers[leaf] = empty
+                        owner._buffers[leaf].data = empty
             self._released = True
             self._released_bytes = released
             self.releases += 1
@@ -437,7 +442,7 @@ class TextEncoderReleaser:
                     if is_param:
                         owner._parameters[leaf].data = restored
                     else:
-                        owner._buffers[leaf] = restored
+                        owner._buffers[leaf].data = restored
                 for shard in self._shards:
                     with safe_open(str(shard), framework = "pt", device = "cpu") as handle:
                         for key in handle.keys():
@@ -447,7 +452,7 @@ class TextEncoderReleaser:
                             if is_param:
                                 owner._parameters[leaf].data = restored
                             else:
-                                owner._buffers[leaf] = restored
+                                owner._buffers[leaf].data = restored
             self._released = False
             self.reloads += 1
             self._note(
