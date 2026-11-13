@@ -34,7 +34,6 @@ for (const [page, path] of PAGES) {
   });
 
   test(`the ${page} load toast routes progress through the shared controller`, () => {
-    // media-load-toast.test.ts covers the close itself; this pins that the page feeds it.
     assert.match(SOURCE, /if \(sig !== lastLoadSig\.current\) \{\s*lastLoadSig\.current = sig;\s*loadToast\.update\(p\);/);
     assert.match(SOURCE, /onClosedChange: setClosedLoad,/);
     assert.match(SOURCE, /busy === "loading" && closedLoad && \(\s*<LoadInlineStatus p=\{closedLoad\} \/>/);

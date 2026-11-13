@@ -534,7 +534,6 @@ function loadFraction(p: VideoLoadProgress): number | null {
   return Math.min(1, p.downloaded_bytes / p.expected_bytes);
 }
 
-// Shared by the load toast and the inline status that replaces it once the toast is closed.
 function loadStatus(p: VideoLoadProgress) {
   if (p.phase === "saving_chat_context") {
     return {
@@ -4142,7 +4141,6 @@ function VideoGenerator({
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
             )}
-            {/* Stands in for the load toast once the user closes it. */}
             {pageMode !== "train" && busy === "loading" && closedLoad && (
               <LoadInlineStatus p={closedLoad} />
             )}

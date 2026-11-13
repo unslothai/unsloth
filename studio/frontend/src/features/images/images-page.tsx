@@ -787,7 +787,6 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-// Shared by the load toast and the inline status that replaces it once the toast is closed.
 function loadStatus(p: DiffusionLoadProgress) {
   if (p.phase === "saving_chat_context") {
     return {
@@ -6327,7 +6326,6 @@ export function ImagesPage({
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
             )}
-            {/* Stands in for the load toast once the user closes it. */}
             {pageMode !== "train" && busy === "loading" && closedLoad && (
               <LoadInlineStatus p={closedLoad} />
             )}
