@@ -91,7 +91,7 @@ function FactRow({
       >
         {row}
       </TooltipTrigger>
-      <TooltipContent side="left" className="max-w-[280px]">
+      <TooltipContent side="left" className="max-w-[calc(280px*var(--ui-space-scale,1))]">
         {fact.detail}
       </TooltipContent>
     </Tooltip>
@@ -142,7 +142,7 @@ export function ModelInfoDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-[460px]"
+        className="max-w-[calc(460px*var(--ui-space-scale,1))]"
         onCloseAutoFocus={onCloseAutoFocus}
       >
         <DialogHeader>

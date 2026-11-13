@@ -351,14 +351,14 @@ test("Hub settings configure the cached alias and share the row selection", () =
   const render = new Function(
     "React", "isKnownGgufRepo", "onConfigure", "downloadedRowShellClassName",
     "isValueRow", "ROW_ACTIONS_CLASS", "ModelLoadSettingsAction", "cachedIdFor", "pipelineTagById",
-    "modelConfigTarget",
+    "modelConfigTarget", "ModelRowMenu",
     `${compiled}; return render;`,
   )(
     React, () => false, (...args: unknown[]) => calls.push(args),
     (selected: boolean) => selected ? "selected" : "idle", () => true,
     "actions", "settings", (id: string) => id === "mirror/model" ? "vendor/model" : null,
     new Map([["mirror/model", "text-generation"]]),
-    (id: string, meta: unknown) => ({ id, meta }),
+    (id: string, meta: unknown) => ({ id, meta }), "menu",
   );
   const row = render("mirror/model", "model row");
   assert.equal(row.props.className, "selected");
@@ -369,6 +369,7 @@ test("Hub settings configure the cached alias and share the row selection", () =
     pipelineTag: "text-generation",
   }]);
   assert.deepEqual(gear.savedFor, { id: calls[0][0], meta: calls[0][1] });
+  assert.deepEqual(row.children[1].children[1].props.info, { repoId: "mirror/model" });
   render("new/model", "model row").children[1].children[0].props.onConfigure();
   assert.deepEqual(calls[1], ["new/model", {
     source: "hub", isLora: false, isGguf: false, isDownloaded: false, pipelineTag: null,
