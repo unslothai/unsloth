@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Render counts while a reply streams into a chat with tool cards and web sources.
+"""Check rendering during streaming and scrolling in a long chat with tools and web sources.
 
 A streamed token must not re-render the reply's source badges, and a run starting or ending
 must not re-render the python / terminal cards of earlier replies. Counts come from a React
@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
@@ -28,7 +28,7 @@ from _playwright_robust import (  # noqa: E402
 PORT = int(os.environ.get("SMOKE_PORT", "5217"))
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip().rstrip("/")
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
-# Under MIN_PROGRESSIVE_MESSAGES (40), so the whole history mounts in one commit.
+# The harness page holds every row mounted, so the whole history is in the DOM.
 MESSAGES = 30
 CHUNKS = 60
 
@@ -106,6 +106,72 @@ def run(page) -> dict[str, int]:
     return counts
 
 
+def check_reply_paint(page) -> None:
+    viewport = page.locator(".aui-thread-viewport")
+    replies = page.locator('[data-role="assistant"]')
+    # The first two replies are neighbors. One will contain a wide unwrapped block.
+    first, second = replies.nth(0), replies.nth(1)
+    scroll = "(v, end) => v.scrollTo({top: end ? v.scrollHeight : 0, behavior: 'instant'})"
+    viewport.evaluate(scroll, True)
+    expect(second).to_have_css("contain", "paint")
+    page.emulate_media(media = "print")
+    expect(second).to_have_css("contain", "none")
+    page.emulate_media(media = "screen")
+
+    viewport.evaluate(scroll, False)
+    expect(first).to_have_css("contain", "none")
+    expect(second).to_have_css("contain", "none")
+    first.locator(".aui-assistant-message-content").evaluate("e => e.style.minWidth = '200vw'")
+    viewport.evaluate(scroll, True)
+    expect(second).to_have_css("contain", "paint")
+    assert first.evaluate("e => e.scrollWidth > e.clientWidth"), "fixture has no wide reply"
+    expect(first).to_have_css("contain", "none")
+    assert viewport.evaluate(
+        "v => v.scrollWidth > v.clientWidth"
+    ), "wide reply lost its horizontal scroll range"
+
+
+ROUNDS = 12
+# With KaTeX's MathML on the page, each removal from the middle of the reply restyles all of it.
+CHILD_LIST_WATCH = r"""
+() => {
+  window.__tail = {midRemovals: 0, statuses: 0};
+  const seen = new WeakSet();
+  const watch = () => document.querySelectorAll('.aui-assistant-message-content').forEach((el) => {
+    if (seen.has(el)) return;
+    seen.add(el);
+    new MutationObserver((records) => records.forEach((r) => {
+      if (r.target === el && r.nextSibling) window.__tail.midRemovals += r.removedNodes.length;
+      r.addedNodes.forEach((n) => {
+        if (n.nodeType === 1 && (n.matches('[data-slot="next-round-indicator"]') || n.querySelector('[data-slot="next-round-indicator"]'))) window.__tail.statuses++;
+      });
+    })).observe(el, {childList: true, subtree: true});
+  });
+  new MutationObserver(watch).observe(document.body, {childList: true, subtree: true});
+}
+"""
+
+
+def check_round_tail(page) -> dict[str, int]:
+    page.goto(f"{BASE}/smoke-thread-weight.html?stream=5&rounds={ROUNDS}")
+    page.wait_for_function("() => window.__threadWeight !== undefined", timeout = 120_000)
+    page.evaluate(CHILD_LIST_WATCH)
+    page.evaluate("() => window.__threadWeight.send('go')")
+    page.wait_for_function("() => window.__threadWeight.isRunning()", timeout = 60_000)
+    page.wait_for_function("() => !window.__threadWeight.isRunning()", timeout = 120_000, polling = 100)
+    tail = page.evaluate("() => window.__tail")
+    text = page.evaluate("() => window.__threadWeight.lastAssistantMessage()?.innerText ?? ''")
+    assert "word4" in text and f"Round {ROUNDS - 1}" in text, "the agent stream did not finish"
+    assert page.locator(".katex-mathml").count() >= ROUNDS, "no KaTeX MathML on the page"
+    assert tail["statuses"] >= ROUNDS - 1, f"the next-round status showed {tail['statuses']} times"
+    # One for the first "Working..." status, which the first part replaces.
+    assert tail["midRemovals"] <= 1, (
+        f"{tail['midRemovals']} nodes left the middle of the reply over {ROUNDS} tool rounds: "
+        f"a round's tail is being removed after the next part is appended"
+    )
+    return tail
+
+
 def main() -> int:
     proc = None
     try:
@@ -126,11 +192,22 @@ def main() -> int:
                 errors: list[str] = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 counts = run(page)
+                check_reply_paint(page)
+                tail = check_round_tail(context.new_page())
             finally:
                 browser.close()
         badges = counts.get("SourceBadge", 0)
         cards = counts.get("PythonToolUIImpl", 0) + counts.get("TerminalToolUIImpl", 0)
-        info(json.dumps({"SourceBadge": badges, "python/terminal cards": cards, "chunks": CHUNKS}))
+        info(
+            json.dumps(
+                {
+                    "SourceBadge": badges,
+                    "python/terminal cards": cards,
+                    "chunks": CHUNKS,
+                    "round_tail": tail,
+                }
+            )
+        )
         assert not errors, errors
         # The live reply's six badges may render a couple of times (mount, status change), not per token.
         assert badges <= 2 * 6, (

@@ -57,6 +57,7 @@ _READY_PATH = "/v1/models"
 _IMG_GEN_PATH = "/sdcpp/v1/img_gen"
 _VID_GEN_PATH = "/sdcpp/v1/vid_gen"
 _JOBS_PATH = "/sdcpp/v1/jobs"
+_CAPABILITIES_PATH = "/sdcpp/v1/capabilities"
 
 # Compute-buffer lines excluded: they vary per generation, params stay until exit.
 _TOTAL_PARAMS_VRAM_RE = re.compile(
@@ -64,13 +65,58 @@ _TOTAL_PARAMS_VRAM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# sd.cpp auto-fit device line "[I]  CUDA0  <card>  free N MiB, budget M MiB"; the RAM "params budget" line won't match.
+_AUTO_FIT_DEVICE_FREE_RE = re.compile(
+    r"^\[I\]\s+(\S+)\s.*\bfree\s+([0-9]+)\s*MiB,\s*budget\s+[0-9]+\s*MiB\b"
+)
+
 _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
 _TERMINAL_CANCELLED = "cancelled"
 
-# Grace for the best-effort native cancel to show in job status; without the cap a lost cancel would hold the generate
-# lock until the job ends.
+# Grace for the best-effort native cancel; uncapped, a lost cancel holds the generate lock.
 _CANCEL_GRACE_S = 5.0
+
+
+# Floor between a log line and the next poll; caps log-driven polling at 50/s.
+_LOG_WAKE_FLOOR_S = 0.02
+
+
+class _LogPacedWait:
+    """Sleeps ``interval`` between polls; a server log line cuts it short and starts polls at ``floor``,
+    doubling back to ``interval``. sd-server logs just before a status flip or port bind, not at it.
+    HTTP status stays the only source of truth."""
+
+    def __init__(
+        self,
+        wake: Optional[threading.Event],
+        interval: float,
+        floor: float = _LOG_WAKE_FLOOR_S,
+    ) -> None:
+        self._wake = wake
+        self._interval = max(0.0, float(interval))
+        self._floor = max(0.0, min(float(floor), self._interval))
+        self._follow: Optional[float] = None
+        if wake is not None:
+            wake.clear()
+
+    def wait(self) -> None:
+        if self._wake is None or self._floor <= 0.0:
+            time.sleep(self._interval)
+            return
+        if self._follow is None:
+            woke = self._wake.wait(self._interval)
+        else:
+            woke = self._wake.wait(self._follow)
+        if woke:
+            self._wake.clear()
+            time.sleep(self._floor)
+            self._wake.clear()
+            self._follow = self._floor
+            return
+        if self._follow is not None:
+            nxt = self._follow * 2.0
+            self._follow = nxt if nxt < self._interval else None
 
 
 def _socket_owner_is_always_named() -> bool:
@@ -124,17 +170,22 @@ class SdCppServer:
         self.port: Optional[int] = None
         self._process: Optional[subprocess.Popen] = None
         self._resident_params_vram_gb: Optional[float] = None
+        self._planned_free_vram_mib: dict[str, int] = {}
         # Bounded tail buffer shared by the drain thread (appends) and readers (diagnostics).
         self._tail: deque[str] = deque(maxlen = 200)
+        self._lines_seen = 0
         self._stdout_thread: Optional[threading.Thread] = None
         self._lifecycle_lock = threading.Lock()
         # Set lock-free by stop() so a blocking start()/readiness wait bails promptly.
         self._abort = threading.Event()
         # Set during a generation so the stdout drain feeds the step-progress callback.
         self._step_listener: Optional[Callable[[str], None]] = None
+        # Set by the stdout drain on every line (and at EOF) so readiness / job polls run sooner.
+        self._log_wake = threading.Event()
         # trust_env=False: loopback-only client must not route through HTTP(S)_PROXY.
         self._client = httpx.Client(timeout = 30.0, trust_env = False)
         self._scratch_dir: Optional[str] = None
+        self._vid_gen_features: Optional[dict] = None
         self._stopped = False
         atexit.register(self.stop)
 
@@ -147,6 +198,23 @@ class SdCppServer:
         """Server rescans this dir per request; reference staged files via the lora field, not
         prompt tags."""
         return self._scratch_dir
+
+    def vid_gen_accepts(self, features: tuple[str, ...]) -> bool:
+        """Read once per server, idle only (capabilities can block behind a job); older builds get False."""
+        if not features:
+            return True
+        caps = self._vid_gen_features
+        if caps is None:
+            try:
+                resp = self._client.get(f"{self.base_url}{_CAPABILITIES_PATH}", timeout = 10.0)
+                data = resp.json() if resp.status_code == 200 else {}
+            except (*_TRANSPORT_ERRORS, httpx.TimeoutException, ValueError):
+                return False
+            modes = data.get("features_by_mode") if isinstance(data, dict) else None
+            caps = modes.get("vid_gen") if isinstance(modes, dict) else None
+            caps = caps if isinstance(caps, dict) else {}
+            self._vid_gen_features = caps
+        return all(caps.get(key) is True for key in features)
 
     def is_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
@@ -205,6 +273,7 @@ class SdCppServer:
             # Clear in place; reassigning [] would drop the maxlen bound and grow unbounded.
             self._tail.clear()
             self._resident_params_vram_gb = None
+            self._planned_free_vram_mib = {}
             self._spawn_error: Optional[Exception] = None
             spawned = threading.Event()
 
@@ -290,6 +359,7 @@ class SdCppServer:
         """A 200 is a true ready signal: upstream binds the port only after the model has loaded."""
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}{_READY_PATH}"
+        pacer = _LogPacedWait(getattr(self, "_log_wake", None), interval)
         while time.monotonic() < deadline:
             # stop() sets _abort so the wait bails early instead of holding the load for startup_timeout.
             if self._abort.is_set():
@@ -306,7 +376,7 @@ class SdCppServer:
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
-            time.sleep(interval)
+            pacer.wait()
         logger.error("sd-server readiness timed out after %ss", timeout)
         return False
 
@@ -391,8 +461,7 @@ class SdCppServer:
         return True
 
     def _drain_stdout(self, proc: subprocess.Popen) -> None:
-        """Drain stdout so the pipe never deadlocks; keep a tail for diagnostics and
-        feed each line to the active generation's step callback."""
+        """Drains stdout (no deadlock); keeps a tail, feeds each line to the step callback."""
         try:
             assert proc.stdout is not None
             for raw in proc.stdout:
@@ -400,11 +469,15 @@ class SdCppServer:
                 if not line:
                     continue
                 self._tail.append(line)
+                self._lines_seen += 1
                 match = _TOTAL_PARAMS_VRAM_RE.search(line)
                 if match is not None:
                     value = float(match.group(1)) / 1024.0
                     if value > 0:
                         self._resident_params_vram_gb = value
+                match = _AUTO_FIT_DEVICE_FREE_RE.search(line)
+                if match is not None:
+                    self._planned_free_vram_mib[match.group(1)] = int(match.group(2))
                 logger.debug("[sd-server] %s", line)
                 cb = self._step_listener
                 if cb is not None:
@@ -412,8 +485,21 @@ class SdCppServer:
                         cb(line)
                     except Exception:  # noqa: BLE001 -- a progress callback must never break drain
                         pass
+                # After the callback, so a woken poll never outruns this line's progress event.
+                self._wake_pollers()
         except Exception:  # noqa: BLE001 -- drain thread must never raise (pipe closed at teardown)
             pass
+        self._wake_pollers()
+
+    def _wake_pollers(self) -> None:
+        wake = getattr(self, "_log_wake", None)
+        if wake is not None:
+            wake.set()
+
+    @property
+    def planned_free_vram_mib(self) -> dict[str, int]:
+        """Free VRAM per device (``{"CUDA0": 6666}``) from sd.cpp's startup auto-fit plan; empty without one."""
+        return dict(self._planned_free_vram_mib)
 
     def reclaimable_params_vram_gb(
         self, physical_gpu_id: Optional[int]
@@ -430,8 +516,7 @@ class SdCppServer:
         return {int(physical_gpu_id): float(value)}
 
     def stop(self) -> None:
-        """Terminate the server (SIGTERM -> SIGKILL), join the drain, and release the HTTP
-        client + atexit handler. Idempotent."""
+        """SIGTERM then SIGKILL, join the drain, release HTTP client and atexit; idempotent."""
         # Set abort BEFORE taking the lock so a start() readiness wait bails instead of blocking.
         self._abort.set()
         self._stopped = True
@@ -440,9 +525,8 @@ class SdCppServer:
             self._dispose()
 
     def _dispose(self) -> None:
-        """Release per-instance resources (on stop / failed start). The backend never
-        reuses a disposed server, so this closes the pooled httpx client and drops the
-        atexit handler that would otherwise pin every reloaded instance for the session."""
+        """Closes the httpx client and drops the atexit handler, which would pin each reloaded
+        instance; the backend never reuses a disposed server."""
         try:
             atexit.unregister(self.stop)
         except Exception:  # noqa: BLE001
@@ -548,7 +632,10 @@ class SdCppServer:
             raise RuntimeError("sd-server is not running.")
 
         self._step_listener = on_step
+        job_mark = self._lines_seen
         job_id: Optional[str] = None
+        # Before submit, so a line logged while the POST is in flight already counts.
+        pacer = _LogPacedWait(getattr(self, "_log_wake", None), poll_interval)
         try:
             try:
                 resp = self._client.post(
@@ -634,15 +721,17 @@ class SdCppServer:
                         "sd-server generation failed: "
                         f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
                     )
-                    if kind == "vid_gen":
-                        # The job error is generic; the cause (OOM, abort) is only in the log.
-                        tail = _diagnostic_tail(self._tail)
-                        if tail:
-                            message += "\nLast output:\n" + tail[:1500]
+                    # The cause is only in this job's output; an earlier job's stale OOM would mislabel it.
+                    lines = list(self._tail)
+                    tail = _diagnostic_tail(
+                        lines[max(0, len(lines) - (self._lines_seen - job_mark)) :]
+                    )
+                    if tail:
+                        message += "\nLast output:\n" + tail[:1500]
                     raise RuntimeError(message)
                 if status == _TERMINAL_CANCELLED:
                     raise SdCppCancelled("sd-server generation was cancelled.")
-                time.sleep(poll_interval)
+                pacer.wait()
         finally:
             self._step_listener = None
 

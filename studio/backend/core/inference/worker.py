@@ -594,15 +594,23 @@ def _load_download_repos(
             mapped = mlx_bnb_base_repo(str(base))
         else:
             try:
-                from unsloth.models import loader
-                from unsloth.models.loader_utils import get_model_name
+                from unsloth.models import loader, loader_utils
 
                 quantized = (
                     load_in_4bit
                     and not getattr(mc, "is_audio", False)
                     and getattr(loader, "ALLOW_BITSANDBYTES", True)
                 )
-                mapped = get_model_name(str(base), load_in_4bit = quantized)
+                # Unknown names resolve to themselves; get_model_name would fetch the remote mapper for nothing.
+                mapped = str(base)
+                name = mapped.lower()
+                tables = (
+                    loader_utils.FLOAT_TO_INT_MAPPER,
+                    loader_utils.INT_TO_FLOAT_MAPPER,
+                    loader_utils.MAP_TO_UNSLOTH_16bit,
+                )
+                if name in loader_utils.BAD_MAPPINGS or any(name in t for t in tables):
+                    mapped = loader_utils.get_model_name(str(base), load_in_4bit = quantized)
                 if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
                     mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
             except Exception:
@@ -885,6 +893,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
+                        "precision_folder",
                         "audio_workflows",
                         "audio_reference_text",
                         "audio_required_inputs",
@@ -1155,18 +1164,17 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
         _handle_generate(backend, cmd, resp_queue, cancel_event)
 
 
-def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
+def _decoded_images(backend, encoded) -> list:
     resize = _resize_image
     if _active_model_is_deepseek_ocr(backend):
         from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
         resize = functools.partial(_resize_image, max_size = DEEPSEEK_OCR_MAX_IMAGE_SIDE)
-    image = None
-    image_b64 = cmd.get("image_base64")
-    if image_b64:
-        image = resize(_decode_image(image_b64))
-    images = [
-        resize(_decode_image(encoded)) for encoded in cmd.get("images_base64") or () if encoded
-    ]
+    return [resize(_decode_image(one)) for one in encoded or () if one]
+
+
+def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
+    image = next(iter(_decoded_images(backend, [cmd.get("image_base64")])), None)
+    images = _decoded_images(backend, cmd.get("images_base64"))
 
     gen_kwargs = {
         "messages": cmd["messages"],
@@ -1366,6 +1374,7 @@ def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
             enable_thinking = cmd.get("enable_thinking"),
             reasoning_effort = cmd.get("reasoning_effort"),
             preserve_thinking = cmd.get("preserve_thinking"),
+            images = _decoded_images(backend, cmd.get("images_base64")),
         )
     except Exception as exc:
         _send_response(

@@ -14,6 +14,7 @@ import * as shortcutStore from "@/features/settings/stores/keyboard-shortcuts-st
 /* eslint-enable no-restricted-imports */
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { trustSurfaceRegistry, useSurfaceRef } from "@/lib/surface-registry";
 
 const SELECTION_ACTION_GRACE_MS = 750;
 
@@ -95,6 +96,7 @@ function GenericRow({ id }: { id: registry.ShortcutId }) {
 }
 
 function Harness() {
+  const composerRef = useSurfaceRef<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR);
   const [selectionCount, setSelectionCount] = useState(0);
   const [toolPending, setToolPending] = useState(true);
 
@@ -175,6 +177,7 @@ function Harness() {
       </a>
       <input id="smoke-input" aria-label="plain field" />
       <textarea
+        ref={composerRef}
         id="smoke-composer"
         aria-label="composer"
         className="aui-composer-input"
@@ -212,4 +215,7 @@ window.__shortcutsSmoke = {
   },
 };
 
-createRoot(document.getElementById("root") as HTMLElement).render(<Harness />);
+// As main.tsx: the checks read registered surfaces, so the smoke covers the path the app takes.
+const rootElement = document.getElementById("root") as HTMLElement;
+trustSurfaceRegistry(rootElement);
+createRoot(rootElement).render(<Harness />);

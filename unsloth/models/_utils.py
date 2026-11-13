@@ -582,11 +582,66 @@ def _is_eager_only(model_type):
 _FLEX_ATTENTION_MIN_CAPABILITY = (8, 0)
 
 
-def _flex_attention_gpu_is_supported():
-    """False only for NVIDIA cards below Ampere. ROCm, XPU, MPS, CPU and an unreadable device are left alone, so this can only ever remove a path that was already broken."""
-    try:
-        if getattr(torch.version, "hip", None):
+_TRITON_RUNS_ON_DEVICE = {}
+
+
+def _is_hip_build():
+    return bool(
+        getattr(torch.version, "hip", None)
+        or "rocm" in str(getattr(torch, "__version__", "")).lower()
+    )
+
+
+def _triton_probe(index):
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def _add_one(X, N, BLOCK: tl.constexpr):  # BLOCK: 16, a fixed probe size
+        offsets = tl.arange(0, BLOCK)
+        tl.store(X + offsets, tl.load(X + offsets, offsets < N) + 1, offsets < N)
+
+    x = torch.zeros(16, device = f"cuda:{index}", dtype = torch.float32)
+    with torch.cuda.device(index):
+        _add_one[(1,)](x, 16, BLOCK = 16)
+    torch.cuda.synchronize(index)
+    return bool((x == 1).all().item())
+
+
+def triton_runs_on_device(index = 0):
+    """False when this Triton build cannot build or run a kernel on ROCm card ``index``.
+
+    Triton 3.9 rejects every gfx10xx target (``unsupported target`` -> ``PassManager::run failed``),
+    while ROCm Triton 3.5 builds them, so the answer is the toolchain's, not an arch list.
+    NVIDIA, CPU and a missing Triton keep True: nothing to take away there.
+    """
+    if not _is_hip_build():
+        return True
+    if index not in _TRITON_RUNS_ON_DEVICE:
+        try:
+            import triton  # noqa: F401
+        except Exception:
             return True
+        try:
+            ok = _triton_probe(index)
+        except Exception as error:
+            ok = False
+            logger.info(
+                f"Unsloth: Triton cannot run on ROCm device {index} ({type(error).__name__}: "
+                f"{(str(error).strip().splitlines() or [''])[-1]}); its Triton kernels are skipped."
+            )
+        _TRITON_RUNS_ON_DEVICE[index] = ok
+    return _TRITON_RUNS_ON_DEVICE[index]
+
+
+def _flex_attention_gpu_is_supported():
+    """False for NVIDIA cards below Ampere and ROCm cards this Triton cannot build for. XPU, MPS, CPU and an unreadable device are left alone, so this can only ever remove a path that was already broken."""
+    try:
+        if _is_hip_build():
+            # Current card only: probing the others would open a HIP context on every visible GPU.
+            return not torch.cuda.device_count() or triton_runs_on_device(
+                torch.cuda.current_device()
+            )
         if not torch.cuda.is_available():
             return True
         return all(
@@ -1961,10 +2016,6 @@ def _get_flash_attention_disable_reason(config):
             f"limit of {_FLASH_ATTENTION_MAX_HEAD_DIM}"
         )
     return None
-
-
-def _is_flash_attention_disabled(config):
-    return _get_flash_attention_disable_reason(config) is not None
 
 
 def _is_flash_attention_requested(attn_implementation):
@@ -4853,20 +4904,6 @@ try:
                 "```\n"
             )
 
-    if False:
-        raise ImportError(
-            "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "
-            "then press Disconnect Runtime and then Restart it.\n"
-            "\n"
-            "%%capture\n"
-            "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
-            '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-            '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'
-            "\n"
-            f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"
-            'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
-        )
-
     if Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
         raise ImportError(
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
@@ -5251,10 +5288,6 @@ def _download_statistics(names):
         except Exception:
             logger.debug("Unsloth: stats_check failed with an exception.")
             # Do not retry without a time limit: it would freeze offline.
-
-
-def _get_statistics(statistics = None, force_download = True):
-    _download_statistics([_statistics_environment(statistics)])
 
 
 def get_statistics(local_files_only = False):
@@ -6420,7 +6453,7 @@ def patch_gradient_accumulation_fix(Trainer):
             # before anything below splits or shards the model.
             _parallel_capabilities_pre(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_PP_SIZE: trainers / arguments the pipeline step cannot run, refused before the split.
-            _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs)
+            _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
             tp_env = _tensor_parallel_env_trainer_pre(model)
@@ -6754,7 +6787,13 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     check_layout(layout, type(trainer), model, training_args, cp_backend = backend)
 
 
-def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
+def _pipeline_parallel_env_refusals(
+    trainer,
+    init,
+    args,
+    kwargs,
+    model = None,
+):
     if not os.environ.get("UNSLOTH_PP_SIZE"):
         return
     from .tp_env import env_layout
@@ -6764,13 +6803,17 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
         return
     training_args = kwargs.get("args")
     compute_loss_func = kwargs.get("compute_loss_func")
-    if training_args is None or (compute_loss_func is None and args):
+    train_dataset = kwargs.get("train_dataset")
+    eval_dataset = kwargs.get("eval_dataset")
+    if training_args is None or args:
         try:
             import inspect
 
             bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
             training_args = bound.arguments.get("args", training_args)
             compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
+            train_dataset = bound.arguments.get("train_dataset", train_dataset)
+            eval_dataset = bound.arguments.get("eval_dataset", eval_dataset)
         except (TypeError, ValueError):
             pass
     if layout.tp > 1 and (
@@ -6787,7 +6830,15 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
         )
     from .pp_env import pp_trainer_refusals
 
-    pp_trainer_refusals(type(trainer), training_args, layout, compute_loss_func = compute_loss_func)
+    pp_trainer_refusals(
+        type(trainer),
+        training_args,
+        layout,
+        compute_loss_func = compute_loss_func,
+        model = model,
+        train_dataset = train_dataset,
+        eval_dataset = eval_dataset,
+    )
 
 
 def _tensor_parallel_env_trainer_pre(model):

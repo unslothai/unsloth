@@ -401,7 +401,6 @@ def test_family_entries():
     assert chroma.pipeline_class == "ChromaPipeline"
     assert chroma.comfy_flow_shift == 1.0
     assert dict(chroma.scheduler_overrides) == {"use_beta_sigmas": True}
-    assert {"fp8", "int8", "nvfp4", "mxfp8"} <= chroma.profile.scheme_deny
     anima = detect_family("", override = "anima")
     assert anima.pipeline_class == "AnimaModularPipeline"
     assert default_generation_params("oneObsession_anima29BV2.safetensors", anima.base_repo) == (
@@ -412,6 +411,28 @@ def test_family_entries():
     assert default_generation_params(
         "animagineXL40_v4Opt.safetensors", "stabilityai/stable-diffusion-xl-base-1.0"
     ) == (25, 7.0)
+
+
+def test_a_chroma_fp8_file_computes_in_fp8_and_auto_never_requantizes_chroma(monkeypatch):
+    import types
+
+    import core.inference.diffusion_transformer_quant as tq
+
+    for cap in ((8, 9), (9, 0), (10, 0), (12, 0)):
+        order = tq._auto_scheme_order("chroma", "cuda", cap)
+        assert tq.TQ_FP8 not in order and tq.TQ_INT8 not in order, cap
+    assert tq.TQ_FP8 in tq._auto_scheme_order("flux.1", "cuda", (8, 9))
+    assert tq._family_denied("chroma", tq.TQ_NVFP4) and tq._family_denied("chroma", tq.TQ_MXFP8)
+
+    monkeypatch.delenv(cq.COMFY_FP8_ENV, raising = False)
+    monkeypatch.setattr(tq, "native_quant_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "_scheme_supported", lambda scheme, device, unproven_ok = False: True)
+    monkeypatch.setattr(tq, "_capability", lambda *a: (8, 9))
+    target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+    assert cq.comfy_fp8_backend(target, "chroma") == "torchao"
+    assert tq.select_transformer_quant_scheme(target, tq.TQ_INT8, family = "chroma") == tq.TQ_INT8
+    assert tq.select_transformer_quant_scheme(target, tq.TQ_AUTO, family = "chroma") is None
 
 
 def test_a_local_anima_load_gets_the_anima_defaults():

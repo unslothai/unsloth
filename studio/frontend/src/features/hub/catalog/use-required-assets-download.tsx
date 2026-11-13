@@ -8,6 +8,7 @@ import {
 } from "@/features/images/api";
 import { getVideoDownloadPlan } from "@/features/video/api";
 import { getAudioDownloadPlan } from "@/features/audio/api";
+import { diffusionFileKind } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
 import { useInventoryVersion } from "../stores/inventory-events";
 import { useHfTokenStore } from "../stores/hf-token-store";
@@ -41,7 +42,7 @@ export function useRequiredAssetsDownload({
     const body = {
       model_path: repoId,
       gguf_filename: filename,
-      model_kind: filename ? ("gguf" as const) : ("pipeline" as const),
+      model_kind: diffusionFileKind(filename),
       hf_token: token || undefined,
     };
     const result =
@@ -86,13 +87,26 @@ export function useRequiredAssetsDownload({
     });
     return record.promise;
   }, [fetchPlan, inventoryVersion]);
+  const [installed, setInstalled] = useState<{ plan: typeof resolvePlan } | null>(null);
   useEffect(() => {
     if (!runtime) return;
+    let current = true;
     const timer = window.setTimeout(() => {
-      void resolvePlan().catch(() => {});
+      void resolvePlan()
+        .then((plan) => {
+          if (!current || !filename || diffusionFileKind(filename) !== "single_file") return;
+          const missing = plan.entries.some(
+            (entry) => entry.repo_id === repoId && entry.files.includes(filename),
+          );
+          setInstalled(missing ? null : { plan: resolvePlan });
+        })
+        .catch(() => {});
     }, 200);
-    return () => window.clearTimeout(timer);
-  }, [resolvePlan, runtime]);
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
+  }, [resolvePlan, runtime, repoId, filename]);
   useEffect(() => {
     ++sequence.current;
     setPending(null);
@@ -141,6 +155,7 @@ export function useRequiredAssetsDownload({
   };
   return {
     checking,
+    checkpointInstalled: installed?.plan === resolvePlan,
     request,
     dialog: (
       <RequiredAssetsDownloadDialog

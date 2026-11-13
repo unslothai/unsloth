@@ -112,10 +112,14 @@ DECODE_MIB_PER_LATENT_BY_CLASS = {
     "AutoencoderKLFlux2": (0.17, 0.09),
 }
 DECODE_MIB_PER_LATENT_BY_RATIO = {8: (0.27, 0.18), 16: (1.7, 0.43), 32: (1.3, 1.3)}
+# Strip decode 16-bit peak = slope MiB per latent + four strip buffers; bounds measured tiles 48-256 (L4, A100, T4).
+DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS = {"AutoencoderKLFlux2": 0.048}
 DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
 FREE_FRACTION = 0.75
 MAX_TILE_ENV = "UNSLOTH_DIFFUSION_VAE_MAX_TILE"
+# "0" keeps CPU / MPS decodes at the floor tile (no memory reading), as before the host budget.
+HOST_BUDGET_ENV = "UNSLOTH_DIFFUSION_VAE_HOST_BUDGET"
 
 
 def decode_mib_per_latent(
@@ -304,12 +308,94 @@ def _free_mib(
     return (free - out_bytes) / 2**20, elem / 2
 
 
+def host_budget_disabled() -> bool:
+    return (os.environ.get(HOST_BUDGET_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _host_free_mib(vae: Any, z: Any) -> Optional[tuple[float, float]]:
+    """``_free_mib`` for a CPU / MPS decode: the planner's safe budget of the live reading (MPS: available RAM and
+    Metal's working set less what Metal holds; CPU: available RAM; each less the planner reserve), after the fp32
+    output accumulator. None elsewhere, under the kill switch, or with no reading."""
+    kind = getattr(getattr(z, "device", None), "type", None)
+    if kind not in ("cpu", "mps") or host_budget_disabled():
+        return None
+    from .diffusion_memory import (
+        DeviceMemory,
+        _available_system_memory_mib,
+        _host_ram_capacity_mib,
+        _safe_device_budget_mib,
+        _windows_commit_headroom_mib,
+        snapshot_device_memory,
+    )
+
+    if kind == "cpu":
+        # An enforcing cgroup kills the process past its limit (no OOM to retry on), and Windows fails on commit.
+        free = _available_system_memory_mib()
+        commit = _windows_commit_headroom_mib()
+        if free is not None and commit is not None:
+            free = min(free, commit)
+        memory = DeviceMemory("cpu", "cpu", "system_memory", free, _host_ram_capacity_mib())
+    else:
+        memory = snapshot_device_memory(types.SimpleNamespace(device = kind, backend = kind))
+    budget = _safe_device_budget_mib(memory)
+    if budget is None:
+        return None
+    ratio = _geometry(vae)[0]
+    frames = z.shape[2] if z.dim() == 5 else 1
+    out_bytes = 4 * 4 * z.shape[0] * frames * z.shape[-2] * z.shape[-1] * ratio * ratio
+    elem = next(vae.decoder.parameters()).element_size()
+    return budget - out_bytes / 2**20, elem / 2
+
+
 def _fused(vae: Any) -> bool:
     return (
         bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
         and not getattr(vae, "_unsloth_vae_fused_failed", False)
         and not getattr(vae, "_unsloth_vae_fused_structural", False)
     )
+
+
+def _strips(vae: Any) -> bool:
+    """The fused decode runs in row strips (diffusion_vae_strips)."""
+    if not _fused(vae) or type(vae).__name__ not in DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS:
+        return False
+    try:
+        from .diffusion_vae_strips import engaged
+        return engaged(vae)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def strips_decode_mib(vae: Any, z: Any, height: int, width: int) -> Optional[float]:
+    """16-bit peak MiB of the strip decode of a (height, width) latent tile, or None when that decode would not take
+    the strip path (not engaged, fp32, or a tile small enough that its largest pass fits in one strip)."""
+    try:
+        if not _strips(vae) or next(vae.decoder.parameters()).element_size() != 2:
+            return None
+        from .diffusion_vae_strips import largest_pass_elems, strip_elems
+
+        strip = strip_elems(z.device)
+        if largest_pass_elems(vae.decoder, height, width) < 2 * strip:
+            return None
+        slope = DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__]
+        return slope * int(height) * int(width) + 4 * strip * 2 / 2**20
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _strips_tile_area(vae: Any, z: Any, budget_mib: float) -> Optional[int]:
+    """Largest square-ish tile area the strip decode fits in ``budget_mib``, else None."""
+    try:
+        if not _strips(vae) or next(vae.decoder.parameters()).element_size() != 2:
+            return None
+        from .diffusion_vae_strips import strip_elems
+
+        const = 4 * strip_elems(z.device) * 2 / 2**20
+        area = int((budget_mib - const) / DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS[type(vae).__name__])
+        side = int(area**0.5)
+        return area if area > 0 and strips_decode_mib(vae, z, side, side) is not None else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def decode_platform_cap(vae: Any, z: Any) -> Optional[int]:
@@ -328,7 +414,8 @@ def decode_platform_cap(vae: Any, z: Any) -> Optional[int]:
 
 
 def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
-    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now; None off CUDA."""
+    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now (CPU / MPS: of the safe
+    host budget, ``UNSLOTH_DIFFUSION_VAE_HOST_BUDGET=0`` = None); None on other devices or with no reading."""
     raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw) ** 2
@@ -343,12 +430,17 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         large_stock = stock_tile >= tile > TILE_LATENTS
         free = _free_mib(vae, z, cached = not large_stock)
         if free is None:
+            # CPU / MPS: one pool, nothing cached to stall on, so the stock-tile rule above does not apply.
+            free = _host_free_mib(vae, z)
+        if free is None:
             return None
         mib, scale = free
         per_latent = (
             decode_mib_per_latent(_geometry(vae)[0], _fused(vae), type(vae).__name__) * scale
         )
-        return max(0, int(FREE_FRACTION * mib / per_latent))
+        area = max(0, int(FREE_FRACTION * mib / per_latent))
+        strips = _strips_tile_area(vae, z, FREE_FRACTION * mib)
+        return max(area, strips) if strips is not None else area
     except Exception:  # noqa: BLE001 - unknown budget: the 32-latent tiles the planner budgeted
         return None
 

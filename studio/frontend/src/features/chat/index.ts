@@ -46,6 +46,7 @@ export {
 export type {
   ApiMonitorEntry,
   BackendModelDetails,
+  EngramTableDetail,
   GgufVariantDetail,
   GgufVariantsResponse,
   InferenceStatusResponse,
@@ -94,12 +95,14 @@ export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/part
 export type { PlacementPool } from "./lib/partial-offload";
 export {
   betweenToolRounds,
+  runningReplyTail,
   formatLiveDecode,
   formatPrefillDetails,
   formatPrefillTimeLeft,
   prefillPercent,
 } from "./lib/generation-progress";
 export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
+export { useThrottledLiveGeneration } from "./hooks/use-throttled-live-generation";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -419,6 +422,7 @@ export {
   OpenProjectFolderItem,
 } from "./components/open-chat-folder-item";
 export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
+export { ExportFormatItems } from "./components/export-format-items";
 export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
@@ -499,7 +503,6 @@ export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
   reasoningTailCapped,
-  reasoningTailFlexBox,
   resolveReasoningOpen,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
@@ -529,8 +532,11 @@ export {
 } from "./utils/export-chat-history";
 export {
   adoptLegacyDraft,
+  flushComposerDraft,
   latestDraft,
   latestPasteDraft,
+  NEW_CHAT_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,
@@ -544,6 +550,12 @@ export {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
+export {
+  CONVERSATION_HTML_FORMAT,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_FORMAT,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html-format";
 export {
   COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
@@ -604,13 +616,16 @@ export {
 export { subscribeDictationLevel } from "./adapters/dictation-level";
 export {
   dictationFailed,
+  dictationProducedClip,
   dictationProducedTranscript,
 } from "./adapters/dictation-outcome";
 export {
   StudioDictationAdapter,
   cancelActiveStudioDictation,
   isStudioDictationAvailable,
+  micRecordsForModel,
   notifyStudioDictationUnavailable,
+  setMicAudioClipTarget,
 } from "./adapters/studio-dictation-adapter";
 export {
   StudioModelDictationAdapter,
@@ -655,10 +670,12 @@ export {
   effectiveSendShortcut,
   followUpSubmitIntent,
   imeKeydownBlocksComposerSubmit,
+  parkedSendSteer,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
+  type ParkedSendSteerState,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
 

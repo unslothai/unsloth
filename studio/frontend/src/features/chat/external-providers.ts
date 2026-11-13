@@ -346,6 +346,22 @@ export function externalModelSupportsStudioTools(
   );
 }
 
+export function externalModelTakesVideo(
+  checkpoint: string | null | undefined,
+): boolean {
+  const selection = parseExternalModelId(checkpoint);
+  if (!selection) return false;
+  const provider = loadExternalProviders().find(
+    (candidate) => candidate.id === selection.providerId,
+  );
+  if (!provider) return false;
+  const providerType = provider.backendProviderType ?? provider.providerType;
+  return (
+    isCustomProviderType(providerType) &&
+    !(providerType === LEGACY_CUSTOM_PROVIDER_TYPE && provider.apiType === "responses")
+  );
+}
+
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
@@ -490,7 +506,7 @@ export function allowsManualModelIdsWithCatalog(
   providerType: string | null | undefined,
 ): boolean {
   if (!providerType) return false;
-  if (providerType === "openrouter") return true;
+  if (providerType === "openrouter" || DECISION_PROVIDER_TYPES.has(providerType)) return true;
   return supportsRemoteModelCatalog(providerType);
 }
 

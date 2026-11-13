@@ -82,6 +82,7 @@ class _Swap:
     attended: Optional[float] = None
     # A Transformers or MLX model in the primary has no GGUF identity: it is loaded back by name.
     previous_model: Optional[str] = None
+    previous_launch: Optional[dict] = None
 
 
 @dataclass
@@ -357,7 +358,12 @@ def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[
 
 async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional[_Swap]) -> _Swap:
     """What a load must put back; an unattended run swaps only a restorable GGUF while Studio is idle."""
-    from core.inference.llama_keepwarm import attended_stamp, idle_for, loaded_identity
+    from core.inference.llama_keepwarm import (
+        attended_stamp,
+        idle_for,
+        launch_to_replay,
+        loaded_identity,
+    )
     from routes.inference import (
         _loaded_slot_ident,
         _resident_npu_model,
@@ -384,6 +390,7 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
     keep_carried = carried is not None and carried.model and _model_is_loaded(carried.model)
     previous = carried.previous if keep_carried else loaded_identity()
     previous_model = carried.previous_model if keep_carried else None
+    previous_launch = carried.previous_launch if keep_carried else launch_to_replay()
     if not keep_carried and previous is None and _resident_npu_model() is None:
         previous_model = getattr(
             await asyncio.to_thread(get_inference_backend), "active_model_name", None
@@ -396,6 +403,7 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
         task_id = task["id"],
         attended = attended_stamp(),
         previous_model = previous_model,
+        previous_launch = previous_launch,
     )
 
 
@@ -434,9 +442,8 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         with unattended_activity():
             current = loaded_identity()
             if not _primary_serves(swap.model) and _model_is_loaded(swap.model):
-                # Loaded beside the primary (Keep multiple models loaded with a speech model in it): the primary
-                # was never replaced, so only the task model goes.
-                # Its own task: unloading routes to the slot through a context variable, which must not stick to the loop.
+                # Primary is never replaced; unload runs in its own task so its context variable
+                # cannot stick.
                 await asyncio.ensure_future(
                     _unload_model_impl(UnloadRequest(model_path = swap.model), swap.subject)
                 )
@@ -457,7 +464,7 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
             if swap.previous is None and not swap.previous_model:
                 return
             if swap.previous is not None:
-                stash_for_reload(swap.previous)
+                stash_for_reload(swap.previous, swap.previous_launch)
             # Named for a non-GGUF model, which must not be held to what is loaded now.
             request = _producer_request(
                 app,
@@ -556,8 +563,7 @@ async def generate_answer(
         producer: Optional[asyncio.Future] = None
         response = None
         try:
-            # The deadline covers the wait for a model load or unload to let go too: one that never
-            # does must not keep the scheduler from every other task.
+            # Also bounds a stuck model load or unload so one wait cannot block other tasks.
             try:
                 await asyncio.wait_for(activity.start(cancel_event), timeout = _RUN_TIMEOUT_SECONDS)
             except TimeoutError:
@@ -646,8 +652,7 @@ async def generate_answer(
                     raise RunFailed("model_busy") from None
                 if allow_switch and not _model_is_loaded(payload.model):
                     raise RunFailed("model_load_failed", _error_text(exc.detail)) from None
-                # A named kept model answered for itself, so its refusal is not "nothing loaded",
-                # unless it was unloaded before the request reached it.
+                # Named kept model's refusal is not nothing-loaded, unless unloaded first.
                 if provider is None and not task.get("model"):
                     named = "model" in payload.model_fields_set
                     if (not named and not _chat_model_loaded()) or (

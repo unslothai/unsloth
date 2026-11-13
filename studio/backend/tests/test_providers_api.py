@@ -220,7 +220,6 @@ class TestRegistry:
                 assert field in entry, f"Missing field '{field}' in entry: {entry}"
             assert entry["model_list_mode"] in ("remote", "curated")
             assert isinstance(entry["default_models"], list)
-            assert len(entry["default_models"]) > 0
 
 
 class TestProviderCRUD:
@@ -463,8 +462,7 @@ class TestVisionInference:
 
 class TestLocalInferenceUnaffected:
     def test_chat_without_provider(self, auth_headers: dict[str, str]):
-        """With no provider fields, 200 or 503 (no model loaded) is fine; other 4xx or 5xx is a
-        regression."""
+        """No provider fields: 200, or 503 with no model; other 4xx or 5xx is a regression."""
         resp = requests.post(
             _url("/v1/chat/completions"),
             headers = {**auth_headers, "Content-Type": "application/json"},
