@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AMD Windows GPU utilization reads Get-Counter values the same on comma-decimal hosts (de-DE)."""
-
 import types
 
 import pytest
@@ -18,7 +16,7 @@ _ENGINES = (
 
 
 def _de_de_powershell(samples):
-    """PowerShell on a de-DE host: -f prints 12,5 unless the script asks for the invariant culture."""
+    """de-DE PowerShell: comma decimals unless the script asks for the invariant culture."""
     calls = []
 
     def run(argv, **kwargs):
@@ -67,7 +65,7 @@ def test_de_de_host_sums_only_the_selected_adapter(windows):
 
 
 def test_comma_decimal_output_is_skipped_not_misread():
-    # What the old script printed on de-DE: no sample parses, so no reading rather than a wrong one.
+    # Old de-DE output: no reading rather than a wrong one.
     out = "".join(f"{name}|{value.replace('.', ',')}\n" for name, value in _ENGINES)
     assert _parse(out) is None
 
