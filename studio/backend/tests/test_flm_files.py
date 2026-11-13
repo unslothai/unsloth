@@ -139,7 +139,6 @@ def test_an_interrupted_download_resumes_in_the_next_one(files, tmp_path):
 
     events = list(ff.download_files(model))
     assert files.ranges[-1] == f"bytes={kept}-"
-    # the kept bytes are rehashed first, and the bar says so instead of sitting still
     assert [(e["event"], e["file"]) for e in events[:2]] == [
         ("verifying", "config.json"),
         ("verifying", "model.q4nx"),

@@ -253,7 +253,6 @@ def test_studio_downloads_the_files_and_lemond_only_registers_them(npu, flm_mani
     percents = [event["percent"] for event in events]
     assert percents == sorted(percents) and percents[-1] == 100
     assert events[-1] == {"event": "complete", "model": "qwen3-0.6b-FLM", "percent": 100}
-    # lemond's register step sends nothing Studio relays, so the bar says it is finishing
     assert events[-2] == {"event": "finishing", "percent": 99}
     pulls = [r for r in _requests(npu) if r["path"] in ("/v1/delete", "/v1/pull")]
     assert pulls == [

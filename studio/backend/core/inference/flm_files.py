@@ -69,7 +69,6 @@ class FlmModelFiles:
         return done
 
     def resume_percent(self) -> Optional[int]:
-        """How much of the model an interrupted download left on disk, or None if nothing."""
         done = self.on_disk()
         return done * 100 // self.total if done and self.total else None
 
@@ -228,7 +227,6 @@ def download_files(
                 have = final.stat().st_size
             except FileNotFoundError:
                 have = None
-            # Rehashing what is already on disk can take minutes on a 20 GB model.
             verifying = {
                 "event": "verifying",
                 "file": file.name,

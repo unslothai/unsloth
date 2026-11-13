@@ -666,7 +666,6 @@ class LemonadeNpuBackend:
                 raise NpuDownloadCancelled(f"Downloading {model.id} was cancelled.") from exc
             except FlmDownloadError as exc:
                 raise NpuError(str(exc)) from exc
-            # The pull below only registers the files and its progress is dropped.
             yield {"event": "finishing", "percent": 99}
         elif not model.downloaded:
             logger.warning(
