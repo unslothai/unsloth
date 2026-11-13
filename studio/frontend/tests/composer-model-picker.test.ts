@@ -1275,3 +1275,17 @@ test("a new search or tab restarts the keyboard highlight before the active row 
     "the reset must run before the effect that seats `active`",
   );
 });
+
+test("connected-model dialogs close when Chat goes off-route", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /if \(!pageActive\) \{\s*setConnectedSettings\(null\);\s*\}/,
+  );
+  assert.match(
+    picker,
+    /\{connectedSettings && pageActive\s*\? renderConnectedSettings\(/,
+  );
+});

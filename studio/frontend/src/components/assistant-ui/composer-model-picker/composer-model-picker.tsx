@@ -33,6 +33,7 @@ import {
   type GgufVariantDetail,
   deleteFineTunedModel,
   revealFineTunedModel,
+  useChatActive,
 } from "@/features/chat";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 import {
@@ -1484,6 +1485,13 @@ export function ComposerModelPicker({
     row: Row;
     view: "settings" | "info";
   } | null>(null);
+  // Portaled outside the panel, so they would outlive Chat going off-route; the picker closes then too.
+  const pageActive = useChatActive();
+  useEffect(() => {
+    if (!pageActive) {
+      setConnectedSettings(null);
+    }
+  }, [pageActive]);
   const providers = useExternalProvidersStore((s) => s.providers);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
@@ -5443,7 +5451,7 @@ export function ComposerModelPicker({
           </div>
         ) : null}
       </PopoverContent>
-      {connectedSettings
+      {connectedSettings && pageActive
         ? renderConnectedSettings(connectedSettings.row, connectedSettings.view)
         : null}
       <TransportConflictDialog
