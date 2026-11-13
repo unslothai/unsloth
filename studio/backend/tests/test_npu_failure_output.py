@@ -156,6 +156,23 @@ def test_a_failure_with_nothing_printed_keeps_the_summary_and_logs_nothing(
     assert log.warnings == []
 
 
+def test_a_failure_with_nothing_printed_still_points_at_the_log(tmp_path, monkeypatch, log):
+    server = _server(tmp_path)
+    server.log_dir = tmp_path / "logs" / "lemonade"
+    server._open_log_file(4242)
+    backend = _backend(
+        tmp_path,
+        monkeypatch,
+        server,
+        lambda path: ([], httpx.Response(500, json = {"error": {"message": "boom"}})),
+    )
+    with pytest.raises(nb.NpuError) as raised:
+        backend.load(_MODEL, 32768)
+
+    assert "boom (Lemonade's output is on the Logs page.)" in str(raised.value)
+    assert log.warnings == []
+
+
 def test_output_since_a_mark_is_only_what_came_after(tmp_path):
     server = _server(tmp_path)
     _prints(server, "before")
@@ -587,3 +604,21 @@ def test_only_lemonds_own_line_ends_the_filter_after_a_load(tmp_path, monkeypatc
         "the rest of my secret plan",
     )
     assert server.output_since(0, settle = 0) == []
+
+
+def test_unprefixed_lines_follow_the_record_they_continue(tmp_path):
+    server = _server(tmp_path)
+    _prints(
+        server,
+        _line("Debug", "Server", "chat preview"),
+        "continuation of the chat preview",
+        _line("Info", "Process", "backend request body"),
+        "continuation of the request body",
+        _line("Error", "Router", "model allocation failed"),
+        "continuation of the error",
+    )
+
+    assert server.output_since(0, settle = 0) == [
+        _line("Error", "Router", "model allocation failed"),
+        "continuation of the error",
+    ]

@@ -122,6 +122,7 @@ class LemonadeServer:
         self._tail_lock = threading.Lock()
         self._windows: weakref.WeakSet[OutputWindow] = weakref.WeakSet()
         self._load_window: Optional[OutputWindow] = None
+        self._record_kept = True
         # Set once a load is over, until lemond is seen back at info.
         self._filter_until: Optional[float] = None
         self._drain_thread: Optional[threading.Thread] = None
@@ -215,12 +216,16 @@ class LemonadeServer:
                     self._filter_until = time.monotonic() + 5.0
 
     def _keeps(self, line: str) -> bool:
+        match = _LEMOND_LINE.match(line)
+        if match:
+            severity, tag = match.groups()
+            own = self._record_kept = tag != "Process" and severity not in ("Trace", "Debug")
+        else:
+            # A request preview can continue across unprefixed lines: they follow their record.
+            own = self._record_kept
         window = self._load_window
         if window is not None and not window.shared:
             return True
-        match = _LEMOND_LINE.match(line)
-        severity, tag = match.groups() if match else ("", "")
-        own = tag != "Process" and severity not in ("Trace", "Debug")
         until = self._filter_until
         if window is None and until is None:
             return own

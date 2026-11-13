@@ -261,15 +261,14 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
     log_name = server.log_path.name if server is not None and server.log_path else None
     if server is not None:
         server.note(f"Request failed: {explained}")
-    if not lines:
-        return f"{message} {advice}".rstrip()
-    _events.warning(
-        "Lemonade output before the NPU error",
-        error = message,
-        lemonade_log = log_name,
-        lemonade_output = lines,
-        overlapped_another_request = shared,
-    )
+    if lines:
+        _events.warning(
+            "Lemonade output before the NPU error",
+            error = message,
+            lemonade_log = log_name,
+            lemonade_output = lines,
+            overlapped_another_request = shared,
+        )
     if explained == message and log_name:
         explained = f"{message} (Lemonade's output is on the Logs page.)"
     return f"{explained} {advice}".rstrip()
