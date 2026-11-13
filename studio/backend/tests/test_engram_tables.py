@@ -1,0 +1,637 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Standalone Engram tables swapped in for a GGUF quant's own (llama-server --ple)."""
+
+from __future__ import annotations
+
+import io
+import struct
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+import test_llama_cpp_placement  # noqa: E402,F401 -- stubs jwt for routes.inference
+
+from core.inference import llama_cpp as lc  # noqa: E402
+from core.inference.engram_tables import (  # noqa: E402
+    bundled_table,
+    engram_table_precision,
+    engram_tables,
+    files_llama_reads,
+    find_engram_table,
+)
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from hub.utils.gguf_lookup_tables import ple_only_local  # noqa: E402
+from hub.utils.gguf_plan import build_gguf_variant_plans  # noqa: E402
+from models.inference import LoadRequest  # noqa: E402
+from utils.openai_auto_switch_settings import (  # noqa: E402
+    model_override_load_kwargs,
+    normalize_model_override,
+)
+
+PLE = "per_layer_token_embd.weight"
+IQ4_NL, Q8_0, F16 = 20, 8, 1
+
+# Sizes as published by unsloth/Qwen3.8-Flash-Next-GGUF.
+QWEN_TABLES = {
+    "BF16": 102400491712,
+    "Q8_0": 54400261312,
+    "Q5_1": 38400184512,
+    "IQ4_NL": 28800138432,
+}
+REPO = "unsloth/Qwen3.8-Flash-Next-GGUF"
+
+
+def _table_name(precision: str) -> str:
+    return f"engram/Qwen3.8-Flash-Next-engram-{precision}.gguf_file"
+
+
+def _qwen_listing() -> list[tuple[str, int]]:
+    files = [(_table_name(p), size) for p, size in QWEN_TABLES.items()]
+    files += [
+        ("UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf", 9_000_000),
+        ("UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00002-of-00003.gguf", 37_570_000_000),
+        ("UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00003-of-00003.gguf", QWEN_TABLES["IQ4_NL"]),
+        ("UD-Q6_K_XL/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf", 9_000_000),
+        ("UD-Q6_K_XL/Qwen3.8-Flash-Next-UD-Q6_K_XL-00002-of-00006.gguf", 680_000_000),
+        ("UD-Q6_K_XL/Qwen3.8-Flash-Next-UD-Q6_K_XL-00003-of-00006.gguf", QWEN_TABLES["Q8_0"]),
+        ("UD-Q6_K_XL/Qwen3.8-Flash-Next-UD-Q6_K_XL-00004-of-00006.gguf", 49_810_000_000),
+        ("UD-Q6_K_XL/Qwen3.8-Flash-Next-UD-Q6_K_XL-00005-of-00006.gguf", 49_420_000_000),
+        ("UD-Q6_K_XL/Qwen3.8-Flash-Next-UD-Q6_K_XL-00006-of-00006.gguf", 14_840_000_000),
+    ]
+    return files
+
+
+def _gguf(tensors: list[tuple[str, list[int], int]], arch: str | None = None) -> bytes:
+    kv: list[tuple[str, object]] = [("general.architecture", arch)] if arch else []
+    kv += [("split.no", 0)]
+    buf = io.BytesIO()
+    buf.write(b"GGUF")
+    buf.write(struct.pack("<IQQ", 3, len(tensors), len(kv)))
+    for key, value in kv:
+        raw = key.encode()
+        buf.write(struct.pack("<Q", len(raw)) + raw)
+        if isinstance(value, str):
+            data = value.encode()
+            buf.write(struct.pack("<IQ", 8, len(data)) + data)
+        else:
+            buf.write(struct.pack("<IH", 2, value))
+    offset = 0
+    for name, dims, ggml_type in tensors:
+        raw = name.encode()
+        buf.write(struct.pack("<Q", len(raw)) + raw)
+        buf.write(struct.pack("<I", len(dims)))
+        buf.write(struct.pack(f"<{len(dims)}Q", *dims))
+        buf.write(struct.pack("<IQ", ggml_type, offset))
+        offset += 1024
+    return buf.getvalue()
+
+
+def _write(path: Path, data: bytes) -> str:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(data)
+    return str(path)
+
+
+class TestDiscovery:
+    def test_precision_comes_from_the_table_file_name_only(self):
+        assert engram_table_precision(_table_name("Q8_0")) == "Q8_0"
+        assert (
+            engram_table_precision("engram/DeepSeek-V4.1-Flash-1017-engram-MXFP8.gguf_file")
+            == "MXFP8"
+        )
+        assert engram_table_precision("engram/README.md") is None
+        assert engram_table_precision("engram/set_split.py") is None
+        assert engram_table_precision("UD-Q8_0/model-Q8_0-00001-of-00002.gguf") is None
+
+    def test_tables_are_listed_most_precise_first_and_found_case_insensitively(self):
+        tables = engram_tables(_qwen_listing())
+        assert [t.precision for t in tables] == ["BF16", "Q8_0", "Q5_1", "IQ4_NL"]
+        assert find_engram_table(tables, "q8_0").filename == _table_name("Q8_0")
+        assert find_engram_table(tables, "FP4") is None
+        assert find_engram_table(tables, None) is None
+
+    @pytest.mark.parametrize(
+        "quant, shard, precision",
+        [
+            ("UD-IQ1_S", "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00003-of-00003.gguf", "IQ4_NL"),
+            # Not the last shard: the guide's 3 of 6 slot.
+            ("UD-Q6_K_XL", "UD-Q6_K_XL/Qwen3.8-Flash-Next-UD-Q6_K_XL-00003-of-00006.gguf", "Q8_0"),
+        ],
+    )
+    def test_the_bundled_table_shard_is_the_one_sized_like_a_table(self, quant, shard, precision):
+        tables = engram_tables(_qwen_listing())
+        shards = [(n, s) for n, s in _qwen_listing() if n.startswith(f"{quant}/")]
+        found = bundled_table(shards, tables)
+        assert found is not None
+        assert found[0] == shard and found[1].precision == precision
+
+    def test_an_ambiguous_or_single_file_quant_has_no_bundled_table(self):
+        tables = engram_tables(_qwen_listing())
+        size = QWEN_TABLES["Q8_0"]
+        assert (
+            bundled_table(
+                [("a-00001-of-00002.gguf", size), ("a-00002-of-00002.gguf", size)], tables
+            )
+            is None
+        )
+        assert bundled_table([("a.gguf", size)], tables) is None
+
+
+class TestFilesLlamaReads:
+    def test_the_missing_or_table_only_shard_gives_way_to_the_external_table(self, tmp_path):
+        first = _write(
+            tmp_path / "m-00001-of-00003.gguf",
+            _gguf([("token_embd.weight", [8, 8], F16)], "qwen4exp"),
+        )
+        second = _write(
+            tmp_path / "m-00002-of-00003.gguf", _gguf([("blk.0.attn_q.weight", [8, 8], F16)])
+        )
+        third = str(tmp_path / "m-00003-of-00003.gguf")
+        ple = str(tmp_path / "engram-Q8_0.gguf_file")
+        shards = [first, second, third]
+
+        assert files_llama_reads(shards, None) == shards
+        # Absent: skipped, as llama.cpp does.
+        assert files_llama_reads(shards, ple) == [first, second, ple]
+        # Present but holding only the table: skipped too.
+        _write(Path(third), _gguf([(PLE, [160, 1024], IQ4_NL)]))
+        assert ple_only_local(third) and not ple_only_local(second)
+        assert files_llama_reads(shards, ple) == [first, second, ple]
+
+
+class TestPlan:
+    def _siblings(self):
+        return [
+            SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": f"sha-{i}"})
+            for i, (name, size) in enumerate(_qwen_listing())
+        ]
+
+    def test_with_engram_swaps_the_quant_table_shard_for_the_standalone_file(self):
+        plan = build_gguf_variant_plans(self._siblings())["ud-iq1_s"]
+        shard = "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00003-of-00003.gguf"
+        assert plan.engram_precision == "IQ4_NL"
+        assert plan.engram_shard.path == shard
+
+        swapped = plan.with_engram("q8_0")
+        assert shard not in swapped.target_filenames
+        assert _table_name("Q8_0") in swapped.target_filenames
+        assert swapped.download_size_bytes == (
+            plan.download_size_bytes - QWEN_TABLES["IQ4_NL"] + QWEN_TABLES["Q8_0"]
+        )
+        shard_sha = next(f.sha256 for f in plan.expected_files if f.path == shard)
+        assert shard_sha not in swapped.required_hashes
+
+    def test_with_engram_keeps_the_plan_for_its_own_or_an_unknown_precision(self):
+        plan = build_gguf_variant_plans(self._siblings())["ud-iq1_s"]
+        assert plan.with_engram("IQ4_NL") is plan
+        assert plan.with_engram("FP4") is plan
+        assert plan.with_engram(None) is plan
+
+
+class TestResolveSwap:
+    def _hub(
+        self,
+        monkeypatch,
+        files,
+        *,
+        fail = None,
+    ):
+        names = [n for n, _ in files if n.startswith("UD-IQ1_S/")]
+        monkeypatch.setattr(lc, "_resolve_variant_gguf_files", lambda *a: (names[0], names[1:]))
+
+        class _Api:
+            def __init__(self, token = None):
+                pass
+
+            def model_info(
+                self,
+                repo,
+                files_metadata = False,
+            ):
+                if fail is not None:
+                    raise fail
+                return SimpleNamespace(
+                    siblings = [SimpleNamespace(rfilename = n, size = s) for n, s in files]
+                )
+
+        import huggingface_hub
+
+        monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+
+    def test_another_precision_swaps_and_names_the_shard_not_to_fetch(self, monkeypatch):
+        self._hub(monkeypatch, _qwen_listing())
+        swap = lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "q5_1")
+        assert swap.table.precision == "Q5_1"
+        assert swap.bundled_shard == "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00003-of-00003.gguf"
+
+    def test_the_quant_own_precision_swaps_nothing(self, monkeypatch):
+        self._hub(monkeypatch, _qwen_listing())
+        assert lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "IQ4_NL") is None
+
+    def test_an_unpublished_precision_is_an_error_naming_the_others(self, monkeypatch):
+        self._hub(monkeypatch, _qwen_listing())
+        with pytest.raises(
+            ValueError,
+            match = r"publishes no FP4 Engram table \(available: BF16, Q8_0, Q5_1, IQ4_NL\)",
+        ):
+            lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "FP4")
+
+    def test_offline_reads_the_cache_and_never_claims_the_repo_lacks_a_table(
+        self, monkeypatch, tmp_path
+    ):
+        self._hub(monkeypatch, _qwen_listing(), fail = OSError("no route to host"))
+        snap = tmp_path / "snapshots" / "abc"
+        for name in (
+            "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf",
+            "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00002-of-00003.gguf",
+            _table_name("Q5_1"),
+        ):
+            _write(snap / name, b"x")
+        import utils.models.model_config as mc
+
+        monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo, *a, **k: [snap])
+        swap = lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "Q5_1")
+        # The one absent shard is the one llama.cpp tolerates missing.
+        assert swap.bundled_shard == "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00003-of-00003.gguf"
+        with pytest.raises(ValueError, match = "has no cached Q8_0 Engram table"):
+            lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "Q8_0")
+
+
+class TestRequestAndOverrides:
+    def test_a_blank_precision_is_the_quant_own_table(self):
+        assert LoadRequest(model_path = REPO, engram_precision = "  ").engram_precision is None
+        assert LoadRequest(model_path = REPO, engram_precision = " Q8_0 ").engram_precision == "Q8_0"
+
+    def test_a_malformed_precision_is_rejected(self):
+        with pytest.raises(ValueError):
+            LoadRequest(model_path = REPO, engram_precision = "../x")
+
+    def test_the_override_store_keeps_it_for_gguf_loads_only(self):
+        entry = normalize_model_override({"engram_precision": "Q8_0"})
+        assert entry["engram_precision"] == "Q8_0"
+        assert model_override_load_kwargs(entry, is_gguf = True)["engram_precision"] == "Q8_0"
+        assert "engram_precision" not in model_override_load_kwargs(entry, is_gguf = False)
+        assert "engram_precision" not in normalize_model_override({"engram_precision": "Q8 0"})
+
+
+class TestResidentIdentity:
+    def _resident(self, precision):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = SimpleNamespace(poll = lambda: None)
+        backend._retired_process = None
+        backend._model_identifier = REPO
+        backend._gguf_path = None
+        backend._hf_variant = "UD-IQ1_S"
+        backend._engram_precision = precision
+        return backend
+
+    @pytest.mark.parametrize(
+        "precision, asked, matches",
+        [
+            (None, None, True),
+            (None, "Q8_0", False),
+            ("Q8_0", "q8_0", True),
+            ("Q8_0", None, False),
+            ("Q8_0", "Q5_1", False),
+        ],
+    )
+    def test_the_table_is_part_of_the_resident_weights(
+        self, monkeypatch, precision, asked, matches
+    ):
+        monkeypatch.setattr(LlamaCppBackend, "is_loaded", property(lambda self: True))
+        intent = GgufLoadIntent(
+            model_identifier = REPO, hf_repo = REPO, hf_variant = "UD-IQ1_S", engram_precision = asked
+        )
+        assert self._resident(precision).matches_load_source(intent) is matches
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "shell script stands in for llama-server")
+@pytest.mark.parametrize("has_ple", [True, False])
+def test_the_probe_reads_the_ple_flag(tmp_path, monkeypatch, has_ple):
+    monkeypatch.setattr(LlamaCppBackend, "_capability_cache", {})
+    help_text = "-m,   --model FNAME                    model path\n"
+    if has_ple:
+        help_text += "--ple, --shard FNAME,...               extra GGUF shards for the model\n"
+    script = tmp_path / f"llama-server-{has_ple}"
+    script.write_text("#!/bin/sh\ncat <<'HELP'\n" + help_text + "\nHELP\n")
+    script.chmod(0o755)
+    assert LlamaCppBackend.probe_server_capabilities(str(script))["supports_ple"] is has_ple
+
+
+class TestHubDownload:
+    def _siblings(self):
+        return [
+            SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": f"{i:064x}"})
+            for i, (name, size) in enumerate(_qwen_listing())
+        ]
+
+    def test_the_worker_fetches_the_table_in_place_of_the_quant_shard(self, monkeypatch):
+        from hub.workers import hf_download as w
+
+        siblings = self._siblings()
+        monkeypatch.setattr(
+            w, "_model_info_with_retry", lambda *a, **k: SimpleNamespace(siblings = siblings)
+        )
+        seen = {}
+
+        class _Stop(Exception):
+            pass
+
+        def manifest(repo_type, repo_id, variant, expected, *a, **k):
+            seen["files"] = [f.path for f in expected]
+            raise _Stop()
+
+        monkeypatch.setattr("hub.utils.download_manifest.write_manifest", manifest)
+        with pytest.raises(_Stop):
+            w._download_gguf_variant(REPO, "UD-IQ1_S", None, "http", engram_precision = "Q8_0")
+        assert _table_name("Q8_0") in seen["files"]
+        assert "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00003-of-00003.gguf" not in seen["files"]
+
+    def test_the_worker_refuses_an_unpublished_table(self, monkeypatch):
+        from hub.workers import hf_download as w
+
+        siblings = self._siblings()
+        monkeypatch.setattr(
+            w, "_model_info_with_retry", lambda *a, **k: SimpleNamespace(siblings = siblings)
+        )
+        with pytest.raises(SystemExit):
+            w._download_gguf_variant(REPO, "UD-IQ1_S", None, "http", engram_precision = "FP4")
+
+    def test_the_request_needs_a_quant(self):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from hub.schemas.downloads import DownloadModelRequest
+        from hub.services.models import downloads
+
+        body = DownloadModelRequest(repo_id = REPO, engram_precision = "Q8_0")
+        with pytest.raises(HTTPException) as raised:
+            asyncio.run(downloads.download_model_response(body))
+        assert raised.value.status_code == 400
+        assert "engram_precision needs a gguf_variant" in str(raised.value.detail)
+
+
+class TestDownloadJobCarriesTheTable:
+    """The table is part of a download job's plan, so every path that rebuilds the job fetches it."""
+
+    KEY = "unsloth/qwen3.8-flash-next-gguf::ud-iq1_s"
+
+    def _claim(
+        self,
+        registry,
+        precision,
+        transport = None,
+    ):
+        from hub.utils import download_registry
+        return registry.claim(
+            self.KEY,
+            transport or download_registry.TRANSPORT_XET,
+            repo_type = "model",
+            repo_id = REPO,
+            variant = "UD-IQ1_S",
+            blob_hashes = frozenset({"a"}),
+            engram_precision = precision,
+        )
+
+    def test_a_live_job_is_joined_only_by_the_same_table(self):
+        from hub.utils import download_registry
+
+        registry = download_registry.DownloadRegistry()
+        assert self._claim(registry, "Q8_0")[0]
+        assert registry.get_job_metadata(self.KEY).engram_precision == "Q8_0"
+        assert self._claim(registry, "q8_0") == (False, "running")
+        assert self._claim(registry, None) == (False, "engram_mismatch")
+        assert self._claim(registry, "Q5_1") == (False, "engram_mismatch")
+        # A claim that does not choose a table (a load, a delete) is not a mismatch.
+        assert registry.claim(self.KEY, download_registry.TRANSPORT_XET) == (False, "running")
+
+    def test_the_transport_fallback_worker_fetches_the_same_table(self, monkeypatch, tmp_path):
+        from hub.services import download_lifecycle as dl
+        from hub.utils import download_registry, state_dir
+
+        monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+        registry = download_registry.DownloadRegistry()
+        assert self._claim(registry, "Q8_0")[0]
+        registry.set_job(self.KEY, "error", "xet failed")
+        spawned = []
+
+        def spawn(args, *a, **k):
+            spawned.append(list(args))
+            raise OSError("stop here")
+
+        monkeypatch.setattr(dl, "spawn_worker", spawn)
+        dl._try_transport_retry(
+            registry,
+            self.KEY,
+            hf_token = None,
+            label = "x",
+            log_prefix = "t",
+            logger = SimpleNamespace(
+                **{n: (lambda *a, **k: None) for n in ("debug", "info", "warning", "error")}
+            ),
+            repo_type = "model",
+            repo_id = REPO,
+            watch_name = "x",
+        )
+        assert spawned and spawned[0][spawned[0].index("--engram") + 1] == "Q8_0"
+        assert registry.get_job_metadata(self.KEY).engram_precision == "Q8_0"
+
+    def test_the_transport_is_chosen_by_the_largest_file_this_job_fetches(self, monkeypatch):
+        from hub.services import download_lifecycle as dl
+        from hub.utils import download_registry
+
+        siblings = [
+            SimpleNamespace(rfilename = n, size = s, lfs = {"sha256": f"{i:064x}"})
+            for i, (n, s) in enumerate(_qwen_listing())
+        ]
+        monkeypatch.setattr(dl, "_repo_siblings", lambda *a, **k: tuple(siblings))
+        monkeypatch.setattr(download_registry, "finalized_blob_hashes", lambda *a, **k: frozenset())
+        own = dl.largest_download_file_bytes("model", REPO, variant = "UD-IQ1_S")
+        swapped = dl.largest_download_file_bytes(
+            "model", REPO, variant = "UD-IQ1_S", engram_precision = "Q8_0"
+        )
+        assert own == 37_570_000_000
+        assert swapped == QWEN_TABLES["Q8_0"]
+        job = SimpleNamespace(
+            variant = "UD-IQ1_S", scoped_files = (), hub_cache = None, engram_precision = "Q8_0"
+        )
+        assert dl._largest_file_bytes_for_job("model", REPO, job) == QWEN_TABLES["Q8_0"]
+
+    def test_a_partial_of_the_table_is_purged_like_the_quants_own(self):
+        siblings = [
+            SimpleNamespace(rfilename = n, size = s, lfs = {"sha256": f"{i:064x}"})
+            for i, (n, s) in enumerate(_qwen_listing())
+        ]
+        plan = build_gguf_variant_plans(siblings)["ud-iq1_s"]
+        swapped = plan.with_engram("Q8_0")
+        table_hash = next(f.sha256 for f in swapped.expected_files if f.path == _table_name("Q8_0"))
+        assert table_hash in swapped.main_hashes
+        # The built-in shard keeps its protection too.
+        assert plan.engram_shard.sha256 in swapped.main_hashes
+
+    def test_the_active_download_report_names_the_table(self, monkeypatch):
+        from hub.schemas.downloads import ActiveDownload
+        assert ActiveDownload(state = "running", engram_precision = "Q8_0").engram_precision == "Q8_0"
+
+
+class TestListing:
+    """The variants listing reports each quant's own table and what loads with nothing to fetch."""
+
+    SIZES = {"Q8_0": 500, "Q5_1": 400, "IQ4_NL": 300}
+    SHARDS = {
+        "UD-IQ1_S/M-UD-IQ1_S-00001-of-00003.gguf": 64,
+        "UD-IQ1_S/M-UD-IQ1_S-00002-of-00003.gguf": 900,
+        "UD-IQ1_S/M-UD-IQ1_S-00003-of-00003.gguf": 300,
+    }
+
+    @pytest.fixture
+    def repo(self, monkeypatch, tmp_path):
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import inventory_scan
+        from hub.utils.gguf import GgufVariantInfo
+        from utils import hf_cache_settings
+
+        store = {}
+        monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {})
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+        monkeypatch.setattr(
+            "storage.studio_db.get_app_setting",
+            lambda key, fallback = None: store.get(key, fallback),
+        )
+        monkeypatch.setattr("storage.studio_db.upsert_app_settings", store.update)
+        monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+        monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: tmp_path / "unused")
+        root = hf_cache_settings.get_hf_cache_paths().hub_cache
+        cache = root / "models--Org--M-GGUF"
+        snapshot = cache / "snapshots" / ("e" * 40)
+        snapshot.mkdir(parents = True)
+        (cache / "refs").mkdir()
+        (cache / "refs" / "main").write_text("e" * 40)
+
+        files = dict(self.SHARDS)
+        files.update({f"engram/M-engram-{p}.gguf_file": s for p, s in self.SIZES.items()})
+        siblings = [
+            SimpleNamespace(rfilename = n, size = s, lfs = {"sha256": f"{i:064x}"})
+            for i, (n, s) in enumerate(files.items())
+        ]
+        variant = GgufVariantInfo(
+            filename = "UD-IQ1_S/M-UD-IQ1_S-00001-of-00003.gguf",
+            quant = "UD-IQ1_S",
+            size_bytes = sum(self.SHARDS.values()),
+        )
+        monkeypatch.setattr(gv, "list_gguf_variants", lambda *a, **k: ([variant], False, siblings))
+        monkeypatch.setattr(gv, "_llama_loads_engram_tables", lambda: True)
+
+        def cache_files(*names):
+            for name in names:
+                path = snapshot / name
+                path.parent.mkdir(parents = True, exist_ok = True)
+                path.write_bytes(b"\0" * files[name])
+            inventory_scan.invalidate_hf_cache_scans()
+
+        return cache_files
+
+    def _row(self):
+        import asyncio
+
+        from hub.services.models import gguf_variants as gv
+
+        response = asyncio.run(gv.get_gguf_variants_response("Org/M-GGUF"))
+        return response, response.variants[0]
+
+    def test_a_quant_missing_only_its_table_loads_with_a_cached_standalone_one(self, repo):
+        repo(
+            "UD-IQ1_S/M-UD-IQ1_S-00001-of-00003.gguf",
+            "UD-IQ1_S/M-UD-IQ1_S-00002-of-00003.gguf",
+            "engram/M-engram-Q5_1.gguf_file",
+        )
+        response, row = self._row()
+        assert row.engram_precision == "IQ4_NL"
+        # On disk: it loads with the cached table, though its own table shard is absent.
+        assert row.downloaded is True
+        assert row.engram_ready == ["Q5_1"]
+        assert [(t.precision, t.downloaded) for t in response.engram_tables] == [
+            ("Q8_0", False),
+            ("Q5_1", True),
+            ("IQ4_NL", False),
+        ]
+        assert response.engram_supported is True
+
+    def test_a_complete_quant_is_ready_with_its_own_table_too(self, repo):
+        repo(*self.SHARDS, "engram/M-engram-Q8_0.gguf_file")
+        _, row = self._row()
+        assert row.downloaded is True
+        assert row.engram_ready == ["IQ4_NL", "Q8_0"]
+
+    def test_nothing_is_ready_without_the_rest_of_the_quant(self, repo):
+        repo("UD-IQ1_S/M-UD-IQ1_S-00001-of-00003.gguf", "engram/M-engram-Q5_1.gguf_file")
+        _, row = self._row()
+        assert row.engram_ready == []
+        assert row.downloaded is False
+
+
+class TestManualQaFindings:
+    def test_the_model_size_counts_the_table_llama_reads_not_the_quants_own(self, tmp_path):
+        first = _write(
+            tmp_path / "m-00001-of-00003.gguf",
+            _gguf([("token_embd.weight", [8, 8], F16)], "qwen4exp"),
+        )
+        second = _write(
+            tmp_path / "m-00002-of-00003.gguf", _gguf([("blk.0.attn_q.weight", [8, 8], F16)])
+        )
+        own = _write(tmp_path / "m-00003-of-00003.gguf", _gguf([(PLE, [160, 1024], IQ4_NL)]))
+        with open(own, "ab") as f:
+            f.truncate(3_000_000)
+        table = tmp_path / "engram-Q5_1.gguf_file"
+        table.write_bytes(_gguf([(PLE, [160, 1024], IQ4_NL)]))
+        with open(table, "ab") as f:
+            f.truncate(4_000_000)
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._launch_ple = None
+        size = lambda p: Path(p).stat().st_size  # noqa: E731
+        assert backend._gguf_read_bytes(first) == size(first) + size(second) + size(own)
+        backend._launch_ple = (first, str(table))
+        assert backend._gguf_read_bytes(first) == size(first) + size(second) + size(table)
+
+    @pytest.mark.parametrize(
+        "xet_off, cached, size, refused",
+        [
+            (True, False, 54_400_261_312, True),
+            (False, False, 54_400_261_312, False),
+            (True, True, 54_400_261_312, False),
+            (True, False, 38_400_184_512, False),
+        ],
+    )
+    def test_a_table_https_cannot_fetch_is_refused_up_front_when_xet_is_off(
+        self, monkeypatch, xet_off, cached, size, refused
+    ):
+        from core.inference.engram_tables import EngramTable
+        from hub.utils import download_registry
+        import huggingface_hub.constants as hf_constants
+
+        monkeypatch.setattr(hf_constants, "HF_HUB_DISABLE_XET", xet_off, raising = False)
+        monkeypatch.setattr(
+            download_registry, "download_transport_unavailable_reason", lambda t: None
+        )
+        monkeypatch.setattr(download_registry, "_modelscope_is_source", lambda: False)
+        monkeypatch.setattr(
+            lc, "_cached_hf_snapshot_file", lambda *a, **k: "/x" if cached else None
+        )
+        reason = lc._engram_table_unfetchable_reason(
+            REPO, EngramTable("Q8_0", _table_name("Q8_0"), size)
+        )
+        assert (reason is not None) is refused
+        if refused:
+            assert "Xet is turned off" in reason and "54.4GB" in reason

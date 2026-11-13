@@ -2721,6 +2721,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedCtxCheckpoints",
   "cacheRam",
   "loadedCacheRam",
+  "engramPrecision",
+  "loadedEngramPrecision",
   "tensorParallel",
   "loadedTensorParallel",
   "loadedDisableVision",

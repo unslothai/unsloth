@@ -8235,6 +8235,7 @@ _REPLAY_LOAD_FIELDS = frozenset(
         "cache_ram",
         "tensor_parallel",
         "disable_vision",
+        "engram_precision",
         "gpu_memory_mode",
         "gpu_layers",
         "n_cpu_moe",
@@ -19603,6 +19604,12 @@ async def _load_model_impl(
                     "mlx.launch. Use `mlx.launch ... unsloth chat` or run Unsloth "
                     "without the distributed launcher."
                 ),
+            )
+
+        if request.engram_precision and not config.is_gguf:
+            raise HTTPException(
+                status_code = 400,
+                detail = "An Engram table precision applies only to a GGUF model run by llama.cpp.",
             )
 
         # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.

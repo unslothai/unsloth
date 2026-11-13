@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Sequence
 
 from hub.utils.download_manifest import ExpectedFile
@@ -35,6 +35,81 @@ class GgufVariantPlan:
     expected_files: tuple[ExpectedFile, ...]
     main_size_bytes: int
     download_size_bytes: int
+    # The repo's standalone Engram tables, and the split shard holding this quant's own one.
+    engram_tables: tuple[ExpectedFile, ...] = ()
+    engram_shard: Optional[ExpectedFile] = None
+
+    @property
+    def engram_precision(self) -> Optional[str]:
+        """Precision of the table this quant ships in ``engram_shard``."""
+        from core.inference.engram_tables import engram_table_precision
+
+        shard = self.engram_shard
+        if shard is None:
+            return None
+        return next(
+            (engram_table_precision(t.path) for t in self.engram_tables if t.size == shard.size),
+            None,
+        )
+
+    def engram_table(self, precision: Optional[str]) -> Optional[ExpectedFile]:
+        from core.inference.engram_tables import engram_table_precision
+        wanted = (precision or "").strip().upper()
+        return next(
+            (
+                table
+                for table in self.engram_tables
+                if (engram_table_precision(table.path) or "").upper() == wanted
+            ),
+            None,
+        )
+
+    def with_engram(self, precision: Optional[str]) -> "GgufVariantPlan":
+        """The files a load with the ``precision`` table fetches: the quant's own table shard
+        swapped for the standalone file. Unchanged when the table is the quant's own (same size),
+        the repo has no such table, or the quant's shard is unknown."""
+        table = self.engram_table(precision)
+        shard = self.engram_shard
+        if table is None or shard is None or table.size == shard.size:
+            return self
+        # Any standalone table already swapped in goes too, so a plan never fetches two.
+        dropped = {shard.path, *(t.path for t in self.engram_tables)}
+        expected = tuple(f for f in self.expected_files if f.path not in dropped) + (table,)
+        return replace(
+            self,
+            target_filenames = tuple(f.path for f in expected),
+            # The table is one of this download's own weights, so a partial of it is purged like the
+            # shards' before a transport resumes. The shard's hash stays: dropping it would let a
+            # stale-copy reclaim treat a cached built-in table as foreign.
+            main_hashes = self.main_hashes | ({table.sha256} if table.sha256 else set()),
+            required_hashes = frozenset(f.sha256 for f in expected if f.sha256),
+            expected_files = expected,
+            download_size_bytes = sum(max(0, int(f.size or 0)) for f in expected),
+        )
+
+
+def engram_table_files(siblings: Sequence) -> tuple[ExpectedFile, ...]:
+    """The repo's standalone Engram tables (``engram/*-engram-<PRECISION>.gguf_file``)."""
+    from core.inference.engram_tables import engram_table_precision
+    return tuple(
+        file
+        for sibling in siblings
+        if engram_table_precision(getattr(sibling, "rfilename", "") or "")
+        and (file := expected_file_from_sibling(sibling)) is not None
+        and file.size
+    )
+
+
+def _with_engram_tables(plan: GgufVariantPlan, tables: tuple[ExpectedFile, ...]) -> GgufVariantPlan:
+    if not tables:
+        return plan
+    from core.inference.engram_tables import bundled_table, engram_tables
+
+    known = engram_tables((t.path, t.size) for t in tables)
+    main = [f for f in plan.expected_files if f.path in plan.main_filenames]
+    bundled = bundled_table(((f.path, f.size) for f in main), known)
+    shard = next((f for f in main if bundled and f.path == bundled[0]), None)
+    return replace(plan, engram_tables = tables, engram_shard = shard)
 
 
 def sibling_sha256(sibling) -> Optional[str]:
@@ -367,6 +442,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
     mtp_expected = mtp_plan_files(siblings)
     common_companions_expected = (companion_expected,) if companion_expected is not None else ()
+    engram_expected = engram_table_files(siblings)
 
     for sibling in siblings:
         name = _gguf_rfilename(sibling)
@@ -412,14 +488,17 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             *mtp_expected,
             *dflash_expected,
         )
-        plans[quant] = _with_audio_cpp_extras(
-            plan_from_expected_files(
-                quant,
-                expected_files,
-                all_mmproj_filenames = all_mmproj_filenames,
-                all_mmproj_hashes = all_mmproj_hashes,
+        plans[quant] = _with_engram_tables(
+            _with_audio_cpp_extras(
+                plan_from_expected_files(
+                    quant,
+                    expected_files,
+                    all_mmproj_filenames = all_mmproj_filenames,
+                    all_mmproj_hashes = all_mmproj_hashes,
+                ),
+                siblings,
             ),
-            siblings,
+            engram_expected,
         )
     return plans
 
