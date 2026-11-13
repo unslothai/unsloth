@@ -1032,7 +1032,7 @@ export const cs = {
       showMore: "Zobrazit více",
       showLess: "Zobrazit méně",
       settings: "Nastavení",
-      api: "API",
+      api: "Monitor API",
       lightMode: "Světlý režim",
       darkMode: "Tmavý režim",
       guidedTour: "Průvodce",

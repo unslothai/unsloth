@@ -976,7 +976,7 @@ export const zhTW = {
       showMore: "顯示更多",
       showLess: "顯示較少",
       settings: "設定",
-      api: "API",
+      api: "API 監控",
       lightMode: "淺色模式",
       darkMode: "深色模式",
       guidedTour: "導覽",

@@ -365,3 +365,28 @@ def test_a_build_without_the_sm89_parts_is_returned_unwrapped():
     core = types.SimpleNamespace(SM89_ENABLED = False)
     assert hub.without_sm89_sync(types.SimpleNamespace(core = core), stock_fn) is stock_fn
     assert hub.without_sm89_sync(types.SimpleNamespace(), stock_fn) is stock_fn
+
+
+def _fake_torch(version, cuda, hip):
+    return types.SimpleNamespace(
+        __version__ = version,
+        version = types.SimpleNamespace(cuda = cuda, hip = hip),
+        _C = types.SimpleNamespace(_GLIBCXX_USE_CXX11_ABI = True),
+    )
+
+
+@pytest.mark.parametrize(
+    "version, cuda, hip",
+    [
+        ("2.11.0+rocm7.1", "12.8", None),  # AMD SDK / Radeon wheel: ROCm tag only, hip unset
+        ("2.11.0", "12.8", "7.1.0"),  # stock ROCm wheel
+    ],
+)
+def test_rocm_torch_never_gets_a_cuda_build(monkeypatch, version, cuda, hip):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(version, cuda, hip))
+    assert hub._torch_build() is None
+
+
+def test_cuda_torch_still_gets_its_build(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("2.11.0+cu128", "12.8", None))
+    assert hub._torch_build() == {"torch": (2, 11), "cuda": (12, 8), "cxx11": True}

@@ -930,7 +930,7 @@ export const ja = {
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
-      api: "API",
+      api: "API モニター",
       lightMode: "ライトモード",
       darkMode: "ダークモード",
       guidedTour: "ガイドツアー",

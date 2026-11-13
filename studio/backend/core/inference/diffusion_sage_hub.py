@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from .rocm_bf16 import is_rocm_torch
+
 SAGE_HUB_REPO = "kernels-community/sage-attention"
 _MODULE_PREFIX = "_unsloth_sage_hub_"
 
@@ -33,7 +35,7 @@ def _torch_build() -> Optional[dict]:
     except Exception:  # noqa: BLE001
         return None
     cuda = getattr(torch.version, "cuda", None)
-    if not cuda or getattr(torch.version, "hip", None):
+    if not cuda or is_rocm_torch(torch):
         return None
     tv = re.match(r"(\d+)\.(\d+)", torch.__version__)
     cv = re.match(r"(\d+)\.(\d+)", str(cuda))
