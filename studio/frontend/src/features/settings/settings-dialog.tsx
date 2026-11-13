@@ -375,6 +375,8 @@ export function SettingsDialog() {
     setOpenedResult({ tab, entry });
     setPendingScroll(entry ? { tab, entry } : null);
   };
+  // A panel link can switch tabs, so mark the opened row only while its tab is shown.
+  const currentResult = openedResult?.tab === activeTab ? openedResult : null;
   const clearSearch = () => {
     setQuery("");
     setOpenedResult(null);
@@ -573,7 +575,7 @@ export function SettingsDialog() {
                           type="button"
                           onClick={() => openResult(tab.id)}
                           aria-current={
-                            openedResult?.tab === tab.id && !openedResult.entry
+                            currentResult?.tab === tab.id && !currentResult.entry
                               ? "true"
                               : undefined
                           }
@@ -596,8 +598,8 @@ export function SettingsDialog() {
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
                             aria-current={
-                              openedResult?.tab === tab.id &&
-                              openedResult.entry === entry
+                              currentResult?.tab === tab.id &&
+                              currentResult.entry === entry
                                 ? "true"
                                 : undefined
                             }

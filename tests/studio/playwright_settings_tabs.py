@@ -705,6 +705,14 @@ def run_search_reuse(page, query: str, first_label: str) -> None:
         )
     else:
         log(f"search reuse: '{first_label}' then '{second}' opened from one '{query}' search")
+    # A panel link (Data > Manage storage) switches tabs through openDialog, not the list.
+    page.evaluate("() => window.__settingsSmoke.open('about')")
+    until(page, "() => window.__settingsSmoke.state().activeTab === 'about'")
+    page.wait_for_timeout(100)
+    left = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["after_panel_link"] = left
+    if left["query"] != query or left["current"]:
+        fail(f"search reuse: a panel link left a stale current result ({left})")
     click_forced(page.locator('div[role="dialog"] aside button[aria-label]').first)
     until(page, f"() => ({SEARCH_STATE_JS})()?.navVisible === true")
     cleared = page.evaluate(SEARCH_STATE_JS)
