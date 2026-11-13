@@ -430,7 +430,8 @@ def grouped_packed_choice(
 ) -> tuple:
     """``(keep packed, reason)`` for the W4A8 / W6A8 layers of a load (``GROUPED_PACKED_ENV``). Never under a LoRA
     (dense Linears). ``image``: an image denoiser, packed only when ``tight`` (its placement streams / offloads the
-    denoiser, where 25% fewer bytes move per forward and stay resident); a video denoiser keeps packed codes (measured:
+    denoiser, where 18 to 25% fewer bytes move per forward and stay resident) on a card with Studio's tuned int8 GEMM;
+    a video denoiser keeps packed codes (measured:
     bf16 speed at half the memory)."""
     raw = _env(GROUPED_PACKED_ENV)
     if lora:
@@ -448,8 +449,27 @@ def grouped_packed_choice(
     if not image:
         return True, "video"
     if tight:
+        if not _tuned_arch(device):
+            # measured on L4 (Triton 3.8, no tuned int8 GEMM): streamed packed moves 18% fewer bytes but runs 9%
+            # slower than the streamed int8 grid (the per-forward decode and the stock int8 route cost more)
+            return False, "memory_tight_untuned_arch"
         return True, "memory_tight"
     return False, "image_resident"
+
+
+def _tuned_arch(device: Any) -> bool:
+    """The card ``device`` names has a Studio tuned int8 GEMM tile (``diffusion_int8_gemm.arch_config``): only there
+    does a memory-tight image load gain from packed codes. Eager, host-side only (no probe launch)."""
+    try:
+        import torch
+
+        from .diffusion_int8_gemm import arch_config
+
+        dev = torch.device(device) if not isinstance(device, torch.device) else device
+        index = dev.index if dev.index is not None else torch.cuda.current_device()
+        return arch_config(torch.cuda.get_device_capability(index)) is not None
+    except Exception:  # noqa: BLE001 -- unknown card: decode at load (the INT8 path)
+        return False
 
 
 def grouped_packed_wanted(

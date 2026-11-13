@@ -548,6 +548,7 @@ def test_image_loads_decode_at_load_unless_memory_tight(monkeypatch):
     cpu = type("T", (), {"device": "cpu"})()
     monkeypatch.delenv(gi.GROUPED_PACKED_ENV, raising = False)
     choice = gi.grouped_packed_choice
+    monkeypatch.setattr(gi, "_tuned_arch", lambda device: True)
     assert choice(cuda, "torchao", image = True) == (False, "image_resident")
     assert choice(cuda, "native", image = True, tight = True) == (True, "memory_tight")
     assert choice(cuda, "torchao") == (True, "video")
@@ -761,3 +762,30 @@ def test_int8_epilogue_kernel_declines_what_it_does_not_cover():
     xs, ws = torch.ones(32), torch.ones(16)
     assert int8_epilogue_triton(acc, xs, ws, None) is None  # CPU: the eager reference runs
     assert int8_epilogue_triton(acc.float(), xs, ws, None) is None
+
+
+def test_memory_tight_images_stay_packed_only_on_a_tuned_int8_arch(monkeypatch):
+    import core.inference.diffusion_int8_gemm as g
+
+    cuda = type("T", (), {"device": "cuda:0"})()
+    monkeypatch.delenv(gi.GROUPED_PACKED_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: cap[0])
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    cap = [(8, 9)]
+    monkeypatch.setattr(
+        g, "_triton38_sm8x", lambda c: c[0] == 8
+    )  # L4 on Triton >= 3.8: no tuned tile
+    assert gi.grouped_packed_choice(cuda, "native", image = True, tight = True) == (
+        False,
+        "memory_tight_untuned_arch",
+    )
+    assert gi.grouped_packed_choice(cuda, "native") == (True, "video")  # video keeps packed codes
+    cap[0] = (12, 0)  # RTX PRO 6000: tuned tile
+    assert gi.grouped_packed_choice(cuda, "native", image = True, tight = True) == (
+        True,
+        "memory_tight",
+    )
+    cap[0] = (10, 0)  # B200: stock cuBLAS, no tuned tile
+    assert gi.grouped_packed_choice(cuda, "native", image = True, tight = True)[0] is False
+    monkeypatch.setenv(gi.GROUPED_PACKED_ENV, "1")  # forced packed still wins
+    assert gi.grouped_packed_choice(cuda, "native", image = True, tight = True) == (True, "env_on")
