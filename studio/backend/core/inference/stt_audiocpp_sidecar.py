@@ -96,10 +96,8 @@ _TIMESTAMP_OPTIONS = {
     "qwen3_asr.preserve_punctuation": "true",
 }
 
-# MOSS-Transcribe-Diarize fails at max_tokens (no partial text) and defaults to the checkpoint's 5120,
-# which a ~14 minute conversation outruns (~6.3 tokens/s measured on dense two-speaker speech).
-# audio.cpp sizes the KV cache to prompt + max_tokens and refuses a total past the 131,072-token
-# context; the prompt is 12.5 audio tokens/s plus a time marker of at most 5 digits every 5 s.
+# MOSS fails outright at max_tokens (default 5120, ~14 min of speech); audio.cpp refuses prompt + max_tokens
+# past the 131,072 context (prompt = 12.5 audio tokens/s + a time marker every 5 s).
 _MOSS_FAMILY = "moss_transcribe_diarize"
 _MOSS_DEFAULT_MAX_TOKENS = 5120
 _MOSS_TOKENS_PER_SECOND = 12
@@ -109,7 +107,6 @@ _MOSS_PROMPT_OVERHEAD_TOKENS = 512
 
 
 def _moss_max_tokens(duration: Optional[float]) -> Optional[int]:
-    """The output budget for a ``duration`` s clip, or None to keep the runtime's default."""
     if not duration or duration <= 0:
         return None
     budget = max(_MOSS_DEFAULT_MAX_TOKENS, math.ceil(duration * _MOSS_TOKENS_PER_SECOND))
@@ -119,7 +116,7 @@ def _moss_max_tokens(duration: Optional[float]) -> Optional[int]:
         - _MOSS_PROMPT_OVERHEAD_TOKENS
     )
     budget = min(budget, room)
-    # No room left: the runtime's own "exceeds context" error says why.
+    # None: the runtime default, or no room, where its own "exceeds context" error says why.
     if budget <= 0 or budget == _MOSS_DEFAULT_MAX_TOKENS:
         return None
     return budget

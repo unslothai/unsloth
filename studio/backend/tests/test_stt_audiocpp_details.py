@@ -312,11 +312,10 @@ def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side,
 @pytest.mark.parametrize(
     ("duration", "expected"),
     [
-        (60.0, None),  # under the checkpoint's 5120 budget: the runtime default stays
+        (60.0, None),
         (420.0, None),
-        (900.0, 10800),  # the 15 minute conversation that ran out at 5120
+        (900.0, 10800),
         (960.0, 11520),
-        # Past ~85 minutes the budget is whatever the 131,072-token context leaves after the audio.
         (7200.0, 131_072 - 97_200 - 512),
         (9700.0, None),  # the audio alone fills the context
     ],
@@ -331,7 +330,6 @@ def test_moss_max_tokens_follow_the_clip_and_stay_inside_the_context(
         assert "options" not in body
     else:
         assert body["options"] == {"max_tokens": expected}
-        # The runtime's own check: prompt + max_tokens must fit the context.
         prompt = math.ceil(duration * 12.5) + duration // 5 * 5
         assert prompt + expected <= 131_072
 
@@ -341,7 +339,6 @@ def test_moss_budget_is_left_out_when_a_strict_spec_has_no_max_tokens(fake):
     assert stt._request_options(entry, False, 900.0) == {"max_tokens": 10800}
     strict = replace(entry, request_keys = frozenset({"instruct"}))
     assert stt._request_options(strict, False, 900.0) == {}
-    # Other families keep their options as they were.
     qwen3 = stt.resolve_audio_cpp_stt_model(QWEN3)
     assert stt._request_options(qwen3, False, 900.0) == {}
     assert stt._request_options(qwen3, True, 900.0) == stt._TIMESTAMP_OPTIONS
