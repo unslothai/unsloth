@@ -117,7 +117,7 @@ def test_no_placement_keeps_only_the_engram_table_off_the_device_map():
     assert device_map.get("model.layers") == 0 and "model.engram_tables.1" not in device_map
 
 
-def test_deepseek_v41_loads_with_model_compile_disabled():
+def test_deepseek_v41_compiles_only_with_a_compile_safe_checkpoint():
     import re
 
     import unsloth.models.loader as loader_module
@@ -129,6 +129,13 @@ def test_deepseek_v41_loads_with_model_compile_disabled():
         source,
         re.S,
     )
-    assert branch and 'os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"' in branch.group(1)
-    # The trailing comma keeps deepseek_v4 (and any other prefix) out of the branch.
+    assert branch
+    body = branch.group(1)
+    # torch.compile stays on only when unsloth_zoo can make the non-reentrant recompute match the forward;
+    # an older unsloth_zoo (ImportError) or a torch without specialize_float keeps the old partial disable.
+    assert "prepare_compiled_checkpoint" in body and "except ImportError" in body
+    assert re.search(
+        r'if prepare_compiled_checkpoint is None or not prepare_compiled_checkpoint\(\):\s*\n\s*os\.environ\["UNSLOTH_COMPILE_DISABLE"\] = "partial"',
+        body,
+    )
     assert "deepseek_v41," not in "deepseek_v4,"
