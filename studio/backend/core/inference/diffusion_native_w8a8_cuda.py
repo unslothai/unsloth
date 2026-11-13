@@ -40,19 +40,21 @@ _STATE: dict = {
     "gemm": {},
     "gemm_cfg": {},
     "res": {},
+    "act": {},
     "pro": {},
 }
-# Inductor folds into the fused kernels (post-grad, after the Q / K / V share), each with its own switch (=0 keeps the
-# traced maths): the tanh GELU in front of a quant, the RMSNorm + AdaLN modulation in front of a quant, and the block's
-# gated residual into the fused-dequant GEMM's epilogue.
+# Inductor folds into the fused kernels (post-grad, after the Q / K / V share), each with its own switch: the tanh GELU
+# on a native Linear's output and the block's gated residual into the fused-dequant GEMM's epilogue (on; =0 keeps the
+# traced maths), and the RMSNorm + AdaLN modulation in front of a quant (off: on an L4 it cost what it saved; =1 opts in).
 FOLD_ENVS = {
     "gelu": "UNSLOTH_NATIVE_INT8_FUSE_GELU",
     "norm": "UNSLOTH_NATIVE_INT8_FUSE_NORM",
     "residual": "UNSLOTH_NATIVE_INT8_FUSE_RESIDUAL",
 }
-_GELU_OP = "native_cuda_rotq_gelu"
+_FOLD_DEFAULT = {"gelu": True, "norm": False, "residual": True}
 _NORM_OP = "native_cuda_rotq_norm"
 _GEMM_RES_OP = "native_cuda_i8mm_res"
+_GEMM_GELU_OP = "native_cuda_i8mm_gelu"
 # (M, K): ragged rows, the narrow per-K tile (3 / 16 / 8 groups), deep K (64 groups: two rows per tile; 128: one), the
 # arch default (36 groups between the per-K rules), an all-zero row (the 1e-12 floor) and outliers in every shape.
 _PROBE_SHAPES = ((257, 768), (33, 4096), (130, 2048), (17, 16384), (65, 9216), (19, 32768))
@@ -71,7 +73,11 @@ def disabled() -> bool:
 
 def fold_enabled(kind: str) -> bool:
     raw = (os.environ.get(FOLD_ENVS[kind]) or "").strip().lower()
-    return raw not in ("0", "off", "false", "no")
+    if raw in ("0", "off", "false", "no"):
+        return False
+    if raw in ("1", "on", "true", "yes"):
+        return True
+    return _FOLD_DEFAULT[kind]
 
 
 def shape_ok(in_features: int, group: int) -> bool:
@@ -205,19 +211,18 @@ def _launch_pro(
     tokens: int = 1,
     eps: float = 1e-6,
 ) -> tuple:
-    """``_launch`` with a prologue fused in front of the rotation (1 tanh GELU, 2 RMSNorm [+ AdaLN])."""
+    """``_launch`` with the RMSNorm [+ AdaLN] prologue (``prologue`` 2) fused in front of the rotation."""
     import torch
 
     from .diffusion_convrot_quant import _rotq_launch
 
     def ref() -> tuple:
-        y = gelu_reference(x2) if prologue == 1 else norm_reference(x2, scale, shift, tokens, eps)
-        return reference(y, group)
+        return reference(norm_reference(x2, scale, shift, tokens, eps), group)
 
     _STATE["pro_calls"] = _STATE.get("pro_calls", 0) + 1
     x2 = x2 if x2.is_contiguous() else x2.contiguous()
     index = x2.device.index
-    kind = "gelu" if prologue == 1 else "norm"
+    kind = "norm"
     tile = _tile(index, int(x2.shape[1])) if x2.dim() == 2 and int(group) == _GROUP else None
     if (
         tile is None
@@ -258,34 +263,19 @@ def _launch_pro(
     return q, s.view(-1, 1)
 
 
-def _pro_ops() -> tuple:
-    """(``native_cuda_rotq_gelu``, ``native_cuda_rotq_norm``) custom ops, or (None, None)."""
+def _norm_op() -> Any:
+    """``unsloth_studio::native_cuda_rotq_norm`` (RMSNorm [+ AdaLN] then the fused quant), or None."""
     try:
         import torch
     except Exception:  # noqa: BLE001
-        return None, None
+        return None
     ns = getattr(torch.ops, _NS, None)
-    if ns is not None and hasattr(ns, _GELU_OP) and hasattr(ns, _NORM_OP):
-        return getattr(ns, _GELU_OP), getattr(ns, _NORM_OP)
+    if ns is not None and hasattr(ns, _NORM_OP):
+        return getattr(ns, _NORM_OP)
     custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
     if custom_op is None:
-        return None, None
+        return None
     try:
-
-        @custom_op(
-            f"{_NS}::{_GELU_OP}",
-            mutates_args = (),
-            schema = "(Tensor x, int group) -> (Tensor, Tensor)",
-        )
-        def _rotq_gelu(x, group):
-            return _launch_pro(x, group, 1)
-
-        @_rotq_gelu.register_fake
-        def _(x, group):
-            return (
-                x.new_empty(x.shape, dtype = torch.int8),
-                x.new_empty((x.shape[0], 1), dtype = torch.float32),
-            )
 
         @custom_op(
             f"{_NS}::{_NORM_OP}",
@@ -302,13 +292,12 @@ def _pro_ops() -> tuple:
                 x.new_empty((x.shape[0], 1), dtype = torch.float32),
             )
     except Exception:  # noqa: BLE001
-        return None, None
-    ns = getattr(torch.ops, _NS)
-    return getattr(ns, _GELU_OP), getattr(ns, _NORM_OP)
+        return None
+    return getattr(getattr(torch.ops, _NS), _NORM_OP)
 
 
 def _pro_probe(index: int) -> dict:
-    """Per prologue: the fused kernel vs its reference maths then the stock rotation + quant (``codes_close``), ragged
+    """The RMSNorm [+ AdaLN] prologue vs its reference maths then the stock rotation + quant (``codes_close``), ragged
     rows, per-batch and per-token modulation, outliers."""
     import torch
 
@@ -317,7 +306,7 @@ def _pro_probe(index: int) -> dict:
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(17)
     out = {}
-    for kind in ("gelu", "norm"):
+    for kind in ("norm",):
         if not fold_enabled(kind):
             continue
         ok = True
@@ -331,11 +320,6 @@ def _pro_probe(index: int) -> dict:
                 if tile is None:
                     continue
                 x = (_probe_input(b * t, k, g) * 3).to(torch.bfloat16).to(dev)
-                if kind == "gelu":
-                    q, s = _rotq_launch(x, _GROUP, "native", tile, prologue = 1)
-                    rq, rs = reference(gelu_reference(x), _GROUP)
-                    ok = ok and codes_close(q, s.view(-1), rq, rs.view(-1))
-                    continue
                 for mod in (False, True):
                     sc = sh = None
                     if mod:
@@ -449,7 +433,7 @@ def prepare(device: Any = None) -> bool:
             # Plain dict entries: a compiled graph reads the handle without tracing the registration.
             _STATE["op"] = _op()
             _STATE["on"][index] = True
-            if _pro_ops()[0] is not None:
+            if _norm_op() is not None:
                 _STATE["pro"][index] = _pro_probe(index)
     if why is None:
         prepare_gemm(index)
@@ -561,6 +545,7 @@ def _gemm_launch(
     residual: Any = None,
     gate: Any = None,
     tokens: int = 1,
+    act: int = 0,
 ) -> Any:
     from . import diffusion_int8_gemm as g8
 
@@ -576,6 +561,7 @@ def _gemm_launch(
         and g8._aligned(xq, wq)
         and xq.shape[0] >= g8._MIN_ROWS
         and (not res or _STATE["res"].get(index))
+        and (not act or _STATE["act"].get(index))
     ):
         try:
             if res:
@@ -594,7 +580,9 @@ def _gemm_launch(
                     gate = gate,
                     tokens = tokens,
                 )
-            return g8._launch(xq, wq, xs, ws, bias, cfg, native = True)
+            if act:
+                _STATE["act_calls"] = _STATE.get("act_calls", 0) + 1
+            return g8._launch(xq, wq, xs, ws, bias, cfg, native = True, act = act)
         except Exception as exc:  # noqa: BLE001 - this card keeps cuBLAS from here on
             _STATE["gemm"][index] = False
             _log().warning(
@@ -604,7 +592,39 @@ def _gemm_launch(
             )
     if res:
         return reference_gemm_res(xq, wq, xs, ws, bias, residual, gate, tokens)
+    if act:
+        return gelu_reference(reference_gemm(xq, wq, xs, ws, bias))
     return reference_gemm(xq, wq, xs, ws, bias)
+
+
+def _gemm_gelu_op() -> Any:
+    """``unsloth_studio::native_cuda_i8mm_gelu``: the GEMM with a tanh GELU on its bf16 output, or None."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    ns = getattr(torch.ops, _NS, None)
+    if ns is not None and hasattr(ns, _GEMM_GELU_OP):
+        return getattr(ns, _GEMM_GELU_OP)
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return None
+    try:
+
+        @custom_op(
+            f"{_NS}::{_GEMM_GELU_OP}",
+            mutates_args = (),
+            schema = "(Tensor xq, Tensor wq, Tensor xs, Tensor ws, Tensor? bias) -> Tensor",
+        )
+        def _native_cuda_i8mm_gelu(xq, wq, xs, ws, bias):
+            return _gemm_launch(xq, wq, xs, ws, bias, act = 1)
+
+        @_native_cuda_i8mm_gelu.register_fake
+        def _(xq, wq, xs, ws, bias):
+            return xq.new_empty((xq.shape[0], wq.shape[0]), dtype = torch.bfloat16)
+    except Exception:  # noqa: BLE001
+        return None
+    return getattr(getattr(torch.ops, _NS), _GEMM_GELU_OP)
 
 
 def _gemm_op() -> Any:
@@ -752,6 +772,33 @@ def _res_probe(index: int) -> bool:
         return False
 
 
+def _act_probe(index: int) -> bool:
+    """The GELU epilogue vs ``gelu_reference`` of ``reference_gemm`` (bias and none, ragged rows): ``bf16_close``."""
+    import torch
+
+    from . import diffusion_int8_gemm as g8
+
+    dev = torch.device("cuda", index)
+    g = torch.Generator(device = "cpu").manual_seed(19)
+    try:
+        for m, n, k, bias in ((257, 384, 512, True), (300, 1040, 1024, False)):
+            a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
+            w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
+            xs = (torch.rand(m, 1, generator = g) * 0.02 + 1e-4).to(dev)
+            ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(dev)
+            b = (torch.randn(n, generator = g) * 0.5).to(torch.bfloat16).to(dev) if bias else None
+            cfg = _gemm_tile(index, m, n, k)
+            if cfg is None or not g8._aligned(a, w):
+                return False
+            out = g8._launch(a, w, xs.reshape(-1), ws, b, cfg, native = True, act = 1)
+            if not bf16_close(out, gelu_reference(reference_gemm(a, w, xs, ws, b)), 1e-3):
+                return False
+        torch.cuda.synchronize(dev)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def bf16_close(out: Any, ref: Any, frac: float) -> bool:
     """Same shape and dtype, finite where ``ref`` is, every value within one bf16 step, at most ``frac`` of them off."""
     import torch
@@ -785,7 +832,8 @@ def prepare_gemm(index: int) -> bool:
             _STATE["gemm_op"] = _gemm_op()
             if fold_enabled("residual") and _gemm_res_op() is not None and _res_probe(index):
                 _STATE["res"][index] = True
-                _STATE["res_op"] = _gemm_res_op()
+            if fold_enabled("gelu") and _gemm_gelu_op() is not None and _act_probe(index):
+                _STATE["act"][index] = True
     if why is None:
         _log().info(
             "diffusion.native_rotq: int8 W8A8 Linears on cuda:%d run the fused-dequant GEMM when compiled",
@@ -1040,15 +1088,15 @@ def _fake_node(graph: Any, target: Any, args: tuple) -> Any:
     return node
 
 
-def fold_prologues(graph: Any, kinds: tuple = ("gelu", "norm")) -> int:
-    """Re-point every fused-quant call whose input is a tanh GELU or an RMSNorm (+ AdaLN modulation) used by nothing
-    else at the prologue variant reading the pre-activation / pre-norm tensor. Returns the calls folded."""
+def fold_norms(graph: Any) -> int:
+    """Re-point every fused-quant call whose input is an RMSNorm (+ AdaLN modulation) used by nothing else at the
+    prologue variant reading the pre-norm tensor. Returns the calls folded."""
     import torch
 
     ns = getattr(torch.ops, _NS, None)
     packet = getattr(ns, _OP, None) if ns is not None else None
-    gelu_op, norm_op = _pro_ops()
-    if packet is None or gelu_op is None:
+    norm_op = _norm_op()
+    if packet is None or norm_op is None:
         return 0
     folded = 0
     for node in list(graph.nodes):
@@ -1058,30 +1106,58 @@ def fold_prologues(graph: Any, kinds: tuple = ("gelu", "norm")) -> int:
         root, _shape = _view_root(x_in)
         v = _val(x_in)
         index = getattr(getattr(v, "device", None), "index", None)
-        pro = _STATE["pro"].get(index, {})
+        if not _STATE["pro"].get(index, {}).get("norm"):
+            continue
         if v is None or v.dim() != 2 or not _only_feeds(root, node):
             continue
-        k = int(v.shape[1])
-        group = int(node.args[1])
-        new = None
-        if "gelu" in kinds and pro.get("gelu"):
-            y = _match_gelu(root)
-            if y is not None:
-                with graph.inserting_before(node):
-                    y2 = _fake_node(graph, torch.ops.aten.reshape.default, (y, [-1, k]))
-                    new = _fake_node(graph, gelu_op.default, (y2, group))
-        if new is None and "norm" in kinds and pro.get("norm"):
-            hit = _match_norm(root)
-            if hit is not None:
-                x, sc, sh, eps = hit
-                tokens = int(_val(x).shape[1])
-                with graph.inserting_before(node):
-                    x2 = _fake_node(graph, torch.ops.aten.reshape.default, (x, [-1, k]))
-                    new = _fake_node(graph, norm_op.default, (x2, sc, sh, tokens, eps, group))
-        if new is None:
+        hit = _match_norm(root)
+        if hit is None:
             continue
+        x, sc, sh, eps = hit
+        k, group, tokens = int(v.shape[1]), int(node.args[1]), int(_val(x).shape[1])
+        with graph.inserting_before(node):
+            x2 = _fake_node(graph, torch.ops.aten.reshape.default, (x, [-1, k]))
+            new = _fake_node(graph, norm_op.default, (x2, sc, sh, tokens, eps, group))
         node.replace_all_uses_with(new)
         graph.erase_node(node)
+        folded += 1
+    return folded
+
+
+def fold_gelus(graph: Any) -> int:
+    """A tanh GELU (as decomposed for Inductor) whose input is only a native GEMM op's output becomes that GEMM with
+    the GELU in its epilogue. Returns the GELUs folded."""
+    import torch
+
+    ns = getattr(torch.ops, _NS, None)
+    gemm = getattr(ns, _GEMM_OP, None) if ns is not None else None
+    gelu_gemm = _gemm_gelu_op()
+    if gemm is None or gelu_gemm is None:
+        return 0
+    folded = 0
+    for root in list(graph.nodes):
+        y = _match_gelu(root)
+        if y is None:
+            continue
+        a = next(iter(u for u in y.users), None)  # the fp32 upcast the GELU decomposition reads
+        y0, _ = _view_root(y)
+        yv = _val(y0)
+        if (
+            not _fn(y0, gemm, gemm.default)
+            or yv is None
+            or len(y.users) != 1
+            or not _only_feeds(y0, a)
+        ):
+            continue
+        if y0 is not y and len(y0.users) != 1:
+            continue
+        if not _STATE["act"].get(getattr(yv.device, "index", None)):
+            continue
+        with graph.inserting_before(root):
+            new = _fake_node(graph, gelu_gemm.default, tuple(y0.args[:5]))
+            out = _fake_node(graph, torch.ops.aten.reshape.default, (new, list(_val(root).shape)))
+        root.replace_all_uses_with(out)
+        graph.erase_node(root)
         folded += 1
     return folded
 
@@ -1170,9 +1246,10 @@ if _CustomGraphPass is not None:
                 share_rotq(graph)
             folds = getattr(self, "folds", ())
             changed = 0
-            pro = tuple(k for k in ("gelu", "norm") if k in folds)
-            if pro:
-                changed += fold_prologues(graph, pro)
+            if "gelu" in folds:
+                changed += fold_gelus(graph)
+            if "norm" in folds:
+                changed += fold_norms(graph)
             if "residual" in folds:
                 changed += fold_residuals(graph)
             if changed:

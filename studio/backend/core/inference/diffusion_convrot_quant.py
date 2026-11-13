@@ -192,7 +192,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         EPS: tl.constexpr,  # norm epsilon, per model
         FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
         NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear's quant: fp32 s = max(amax, EPS) * DIV, fp32 1 / s
-        PRO: tl.constexpr = 0,  # prologue on the loaded bf16 x: 0 none, 1 tanh GELU, 2 RMSNorm (no affine) [+ AdaLN]
+        PRO: tl.constexpr = 0,  # prologue on the loaded bf16 x: 0 none, 2 RMSNorm (no affine) [+ AdaLN]
         MOD: tl.constexpr = False,  # PRO 2: x * (1 + pa) + pb, pa / pb rows (row // T, row % T)
         NORM_EPS: tl.constexpr = 1e-6,  # PRO 2: RMSNorm epsilon
     ):
@@ -226,11 +226,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 p_off = pbase[:, None] + offs_k[None, :]
         for _k in range(0, G // BLOCK_K):
             a = tl.load(a_ptrs, mask = live[:, None], other = 0.0)
-            if PRO == 1:
-                # aten.gelu(approximate="tanh") as Inductor decomposes it, fp32, one bf16 round
-                af = a.to(tl.float32)
-                inner = (af + af * af * af * 0.044715) * 0.7978845608028654
-                a = ((af * 0.5) * (libdevice.tanh(inner) + 1.0)).to(tl.bfloat16)
             if PRO == 2:
                 # diffusers RMSNorm (bf16 out), then the block's AdaLN modulation in fp32, one bf16 round
                 a = _rbf16(a.to(tl.float32) * rs_t[:, None])
@@ -964,8 +959,8 @@ def _rotq_launch(
     tokens: int = 1,
     norm_eps: float = 1e-6,
 ) -> tuple:
-    """``prologue`` 1: quantise tanh-GELU(x); 2: RMSNorm(x) (no affine, ``norm_eps``), times ``1 + scale`` plus
-    ``shift`` when given ([B, T | 1, K], unit last stride, B * ``tokens`` == rows; shift with scale's strides)."""
+    """``prologue`` 2: quantise RMSNorm(x) (no affine, ``norm_eps``), times ``1 + scale`` plus ``shift`` when given
+    ([B, T | 1, K], unit last stride, B * ``tokens`` == rows; shift with scale's strides)."""
     import torch
     from .diffusion_convrot import build_convrot_hadamard
 

@@ -276,6 +276,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
         NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear epilogue: fp32 acc * xs * ws (+ bias), one bf16 round
         RES: tl.constexpr = False,  # gated residual: r + bf16(linear out) * g, rows of T tokens per batch
+        ACT: tl.constexpr = 0,  # 1: tanh GELU of the bf16 Linear out (Inductor's decomposition, fp32, one bf16 round)
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -329,6 +330,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 g = tl.load(g_ptr + gb[:, None] + rn[None, :]).to(tl.float32)
                 r = tl.load(r_ptr + rm[:, None] * stride_rm + rn[None, :]).to(tl.float32)
                 y = tl.extra.cuda.libdevice.fma_rn(_rbf16(y), g, r)
+            if ACT == 1:
+                y = _rbf16(y)
+                inner = (y + y * y * y * 0.044715) * 0.7978845608028654
+                y = (y * 0.5) * (tl.extra.cuda.libdevice.tanh(inner) + 1.0)
         else:
             if XS_FP32:
                 y = acc.to(tl.float32)
@@ -439,9 +444,10 @@ def _launch(
     residual: Any = None,
     gate: Any = None,
     tokens: int = 1,
+    act: int = 0,
 ) -> Any:
     """``residual`` [m, n] (unit last stride) and ``gate`` [B, T | 1, n] (unit last stride, B * tokens == m) add the
-    gated residual in the native epilogue."""
+    gated residual in the native epilogue; ``act`` 1 applies a tanh GELU to its output."""
     import torch
 
     k = _kernels()
@@ -485,6 +491,7 @@ def _launch(
             PREFETCH_FIX = _prefetch_fix_key(),
             NATIVE = bool(native),
             RES = res,
+            ACT = int(act),
             num_warps = warps,
             num_stages = stages,
             enable_fp_fusion = False,

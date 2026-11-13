@@ -412,7 +412,7 @@ def test_gemm_kernel_native_flag(monkeypatch):
     assert seen["NATIVE"] is False
 
 
-# ---------------------------------------------------------------- folds (GELU / RMSNorm + AdaLN prologues, residual)
+# ---------------------------------------------------------------- folds (GELU / residual epilogues, norm prologue)
 def _fold_block(cr):
     """A post-grad-like aten graph (make_fx with Inductor's decompositions) of an LTX-2.5 style sublayer pair: RMSNorm +
     AdaLN into a quant, the fused GEMM, tanh GELU into a quant, the GEMM, gated residual."""
@@ -420,7 +420,7 @@ def _fold_block(cr):
     from torch._inductor.decomposition import select_decomp_table
     from torch.fx.experimental.proxy_tensor import make_fx
 
-    cr._op(), cr._gemm_op(), cr._pro_ops(), cr._gemm_res_op()
+    cr._op(), cr._gemm_op(), cr._norm_op(), cr._gemm_res_op(), cr._gemm_gelu_op()
     rotq = torch.ops.unsloth_studio.native_cuda_rotq
     gemm = torch.ops.unsloth_studio.native_cuda_i8mm
 
@@ -458,22 +458,33 @@ def _targets(gm):
     return [str(n.target) for n in gm.graph.nodes if "unsloth_studio" in str(n.target)]
 
 
-def test_folds_match_and_keep_the_maths(cr):
-    """All three folds match the decomposed graph (per-token modulation, batch 2), the folded graph runs the fused ops,
-    and its output stays within int8 code-flip noise of the unfolded graph (the folds read the materialised bf16
-    modulation and gate, as eager does)."""
-    cr._STATE["pro"][None] = {"gelu": True, "norm": True}
+def _arm_all(cr):
+    cr._STATE["pro"][None] = {"norm": True}
     cr._STATE["res"][None] = True
+    cr._STATE["act"][None] = True
+
+
+def test_folds_match_and_keep_the_maths(cr):
+    """All three folds match the decomposed graph (per-token modulation, batch 2): the GELU and the gated residual land
+    in the GEMMs' epilogues, the norm in front of the first quant, the replaced GEMMs and quant leave the graph, and
+    the output stays within int8 code-flip noise of the unfolded graph (the folds read the materialised bf16
+    modulation and gate, as eager does)."""
+    _arm_all(cr)
     gm, args, ref = _fold_block(cr)
-    assert cr.fold_prologues(gm.graph) == 2
+    assert cr.fold_gelus(gm.graph) == 1
+    assert cr.fold_norms(gm.graph) == 1
     assert cr.fold_residuals(gm.graph) == 1
     gm.graph.eliminate_dead_code()
     gm.recompile()
     names = _targets(gm)
-    assert any("native_cuda_rotq_norm" in n for n in names)
-    assert any("native_cuda_rotq_gelu" in n for n in names)
-    assert any("native_cuda_i8mm_res" in n for n in names)
-    assert not any(n.endswith("native_cuda_rotq.default") for n in names)
+    assert sum(n.endswith("native_cuda_rotq_norm.default") for n in names) == 1
+    assert (
+        sum(n.endswith("native_cuda_rotq.default") for n in names) == 1
+    )  # the GELU output's quant
+    assert sum(n.endswith("native_cuda_i8mm_gelu.default") for n in names) == 1
+    assert sum(n.endswith("native_cuda_i8mm_res.default") for n in names) == 1
+    assert not any(n.endswith("native_cuda_i8mm.default") for n in names)
+    assert not any("tanh" in str(n.target) for n in gm.graph.nodes)
     out = gm(*args)
     assert out.shape == ref.shape and out.dtype == ref.dtype
     # a bf16 step in the modulation / gate can flip an int8 code in the next quant: compare the block, not values
@@ -484,45 +495,58 @@ def test_folds_match_and_keep_the_maths(cr):
 def test_folds_need_their_probe_and_respect_other_users(cr):
     import torch
 
-    cr._STATE["pro"][None] = {"gelu": False, "norm": False}
+    cr._STATE["pro"][None] = {"norm": False}
     cr._STATE["res"][None] = False
+    cr._STATE["act"][None] = False
     gm, _args, _ref = _fold_block(cr)
-    assert cr.fold_prologues(gm.graph) == 0 and cr.fold_residuals(gm.graph) == 0
+    assert cr.fold_gelus(gm.graph) == 0
+    assert cr.fold_norms(gm.graph) == 0
+    assert cr.fold_residuals(gm.graph) == 0
     # a second user of the modulated input (a bf16 Linear such as LTX-2.5's attention gate logits) keeps the norm
-    cr._STATE["pro"][None] = {"gelu": False, "norm": True}
+    _arm_all(cr)
     gm, _args, _ref = _fold_block(cr)
     rotq = [n for n in gm.graph.nodes if str(n.target).endswith("native_cuda_rotq.default")][0]
     root, _ = cr._view_root(rotq.args[0])
     with gm.graph.inserting_after(root):
         gm.graph.call_function(torch.ops.aten.sum.default, (root,))
-    assert cr.fold_prologues(gm.graph) == 0
-
-
-def test_fold_kinds_and_switches(cr, monkeypatch):
-    cr._STATE["pro"][None] = {"gelu": True, "norm": True}
-    cr._STATE["res"][None] = True
+    assert cr.fold_norms(gm.graph) == 0
+    # a second user of the GEMM output keeps the GELU outside the GEMM
     gm, _args, _ref = _fold_block(cr)
-    assert cr.fold_prologues(gm.graph, ("gelu",)) == 1
-    for kind, env in cr.FOLD_ENVS.items():
-        monkeypatch.setenv(env, "0")
-        assert not cr.fold_enabled(kind)
-        assert kind not in cr.ShareRotqPass().folds
-        monkeypatch.delenv(env)
-        assert cr.fold_enabled(kind)
-    assert set(cr.ShareRotqPass().folds) == {"gelu", "norm", "residual"}
-    on, off = cr.ShareRotqPass(), cr.ShareRotqPass(folds = ())
+    gemm = [n for n in gm.graph.nodes if str(n.target).endswith("native_cuda_i8mm.default")][0]
+    with gm.graph.inserting_after(gemm):
+        gm.graph.call_function(torch.ops.aten.sum.default, (gemm,))
+    assert cr.fold_gelus(gm.graph) == 0
+
+
+def test_fold_switches_and_defaults(cr, monkeypatch):
+    for env in cr.FOLD_ENVS.values():
+        monkeypatch.delenv(env, raising = False)
+    # norm prologue opt-in (measured no faster on an L4), GELU and residual epilogues on
+    assert set(cr.ShareRotqPass().folds) == {"gelu", "residual"}
+    monkeypatch.setenv(cr.FOLD_ENVS["norm"], "1")
+    assert cr.fold_enabled("norm") and "norm" in cr.ShareRotqPass().folds
+    for kind in ("gelu", "residual"):
+        monkeypatch.setenv(cr.FOLD_ENVS[kind], "0")
+        assert not cr.fold_enabled(kind) and kind not in cr.ShareRotqPass().folds
+    on, off = cr.ShareRotqPass(folds = ("gelu",)), cr.ShareRotqPass(folds = ())
     assert on.uuid() != off.uuid()  # a switch flip misses the FX graph cache
 
 
-def test_prologue_and_residual_references_on_cpu(cr):
-    """The ops' CPU fallbacks equal their references: GELU = the tanh decomposition, RMSNorm + AdaLN per batch and per
-    token, and the residual = bf16 Linear out, fp32 ``r + y * g``, one round."""
+def test_pass_runs_the_folds_it_was_built_with(cr):
+    _arm_all(cr)
+    gm, _args, _ref = _fold_block(cr)
+    cr.ShareRotqPass(share = True, folds = ("residual",))(gm.graph)
+    names = _targets(gm)
+    assert sum(n.endswith("native_cuda_i8mm_res.default") for n in names) == 1
+    assert not any("i8mm_gelu" in n or "rotq_norm" in n for n in names)
+
+
+def test_epilogue_and_prologue_references_on_cpu(cr):
+    """The ops' CPU fallbacks equal their references: GELU = the tanh decomposition on the bf16 Linear out, RMSNorm +
+    AdaLN per batch and per token, and the residual = bf16 Linear out, fp32 ``r + y * g``, one round."""
     import torch
 
     x = _x(rows = 48, k = 512)
-    q, s = cr._launch_pro(x, 256, 1)
-    rq, rs = cr.reference(cr.gelu_reference(x), 256)
-    assert torch.equal(q, rq) and torch.equal(s, rs)
     xf = x.float()
     assert torch.equal(
         cr.gelu_reference(x),
@@ -542,11 +566,12 @@ def test_prologue_and_residual_references_on_cpu(cr):
         assert torch.equal(q, rq) and torch.equal(s, rs)
     m = _linear(i = 512, o = 96)
     xq, xs = cr.reference(x, 256)
+    ws = m.weight_scale.view(torch.float32)
+    y = cr.reference_gemm(xq, m.weight_q, xs, ws, m.bias)
+    assert torch.equal(cr._gemm_launch(xq, m.weight_q, xs, ws, m.bias, act = 1), cr.gelu_reference(y))
     r = (torch.randn(48, 96, generator = g) * 3).bfloat16()
     gate = torch.randn(2, 1, 96, generator = g).bfloat16()
-    ws = m.weight_scale.view(torch.float32)
     out = cr._gemm_launch(xq, m.weight_q, xs, ws, m.bias, r, gate, 24)
-    y = cr.reference_gemm(xq, m.weight_q, xs, ws, m.bias)
     want = (
         (r.float().view(2, 24, 96) + y.float().view(2, 24, 96) * gate.float())
         .bfloat16()
@@ -557,8 +582,10 @@ def test_prologue_and_residual_references_on_cpu(cr):
 
 
 def test_gemm_probe_does_not_need_the_torchao_route(cr, monkeypatch):
-    """A card the torchao route's own probe turns down (its bf16 tie cases) still takes the native epilogue on the arch
-    tile, probed here; no arch tile (gated / switched off) keeps cuBLAS."""
+    """A card the torchao route's own probe turns down still takes the native epilogue on the arch tile, probed here;
+    no arch tile (gated / switched off) keeps cuBLAS."""
+    import torch
+
     from core.inference import diffusion_int8_gemm as g8
 
     src = inspect.getsource(cr._gemm_probe)
@@ -567,24 +594,23 @@ def test_gemm_probe_does_not_need_the_torchao_route(cr, monkeypatch):
     monkeypatch.setattr(g8, "_triton_version_ok", lambda: True)
     monkeypatch.setattr(g8, "device_config", lambda index: None)
     monkeypatch.setattr(g8, "arch_config", lambda cap, mode = None: None)
-    import torch
-
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (8, 9))
     assert "no fused-dequant GEMM tile" in cr._gemm_probe(0)
 
 
-def test_native_epilogue_uses_fma_for_bias_and_gates_the_residual():
-    """addcmul is one FMA on CUDA: the native bias epilogue must be too; the residual epilogue rounds the Linear out to
-    bf16 before ``fma(y, gate, residual)``."""
+def test_native_epilogue_kernel_source():
+    """addcmul is one FMA on CUDA, so the native bias epilogue is too; the residual epilogue rounds the Linear out to
+    bf16 before ``fma(y, gate, residual)``; the GELU epilogue runs on the bf16 Linear out."""
     from core.inference import diffusion_int8_gemm as g8
 
     src = inspect.getsource(g8._kernels)
     assert "fma_rn(\n                    y, ws[None, :]" in src
     assert "fma_rn(_rbf16(y), g, r)" in src
-    assert "RES: tl.constexpr = False" in src
+    assert "RES: tl.constexpr = False" in src and "ACT: tl.constexpr = 0" in src
+    assert {"residual", "gate", "tokens", "act"} <= set(inspect.signature(g8._launch).parameters)
 
 
-def test_rotq_kernel_prologue_flags():
+def test_rotq_kernel_norm_prologue_flags():
     from core.inference import diffusion_convrot_quant as cq
 
     src = inspect.getsource(cq._kernels)
