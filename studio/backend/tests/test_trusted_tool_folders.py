@@ -112,6 +112,16 @@ def test_a_symlink_to_a_file_elsewhere_is_not_granted(folder):
     assert os_sandbox.trusted_tool_folder_roots() == ()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "junctions are Windows-only")
+def test_a_junction_to_a_folder_elsewhere_is_not_granted(folder):
+    import _winapi
+
+    outside = folder.parent / "outside"
+    outside.mkdir()
+    _winapi.CreateJunction(str(outside), str(folder / "alias"))
+    assert os_sandbox.trusted_tool_folder_roots() == ()
+
+
 def test_a_symlink_inside_the_folder_is_still_granted(folder):
     try:
         os.symlink(folder / "run.sh", folder / "alias.sh")

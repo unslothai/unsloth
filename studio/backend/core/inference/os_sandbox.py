@@ -772,8 +772,10 @@ def _holds_a_nested_credential(folder: str) -> bool:
                 if entry.name.casefold() in names or _references_sensitive_path(entry.path):
                     return True
                 try:
-                    # A link out of the folder reads its target unchecked: the scan never follows it.
-                    if entry.is_symlink() and not _is_within(os.path.realpath(entry.path), folder):
+                    # A link or Windows junction out of the folder reads its target unchecked: the scan
+                    # never follows it, and is_symlink() is False for a junction.
+                    linked = entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
+                    if linked and not _is_within(os.path.realpath(entry.path), folder):
                         return True
                     if entry.is_dir(follow_symlinks = False):
                         pending.append(entry.path)
