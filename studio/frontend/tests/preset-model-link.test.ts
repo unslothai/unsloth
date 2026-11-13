@@ -17,7 +17,7 @@ register("./store-settings-resolver.mjs", import.meta.url);
 const { settingsHttp, deepMerge } = await import(
   "./helpers/store-stubs/settings-http.ts"
 );
-const { useChatRuntimeStore } = await import(
+const { suspendLinkedPresetSync, useChatRuntimeStore } = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
 );
 const {
@@ -123,6 +123,17 @@ test.beforeEach(async () => {
   await Promise.resolve();
 });
 
+// Runs first: no model has reached this page yet, as on a reload whose status lands after settings.
+test("the first model adopted after a reload keeps a restored edit of its linked preset", async () => {
+  pickPreset(RESEARCH);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, temperature: 0.9 });
+  store.setActivePresetSource("modified");
+  await switchTo(QWEN);
+  assert.equal(live().activePreset, "Research");
+  assert.equal(live().temperature, 0.9);
+});
+
 test("hydration keeps the server's links and drops the removed ones", () => {
   assert.deepEqual(useChatRuntimeStore.getState().modelPresets, {
     [QWEN]: RESEARCH.name,
@@ -202,6 +213,54 @@ test("a custom pick from before the link comes back, a pick made on the linked m
   pickPreset(CREATIVE);
   await switchTo(LLAMA);
   assert.equal(live().activePreset, "Creative", "picked by hand, so it is not the link's");
+});
+
+test("without per-model memory the pre-link values and provenance come back", async () => {
+  useChatRuntimeStore.setState({ rememberParamsPerModel: false });
+  try {
+    await switchTo(LLAMA);
+    const store = useChatRuntimeStore.getState();
+    store.setParams({ ...store.params, temperature: 0.77, systemPrompt: "Be brief." });
+    store.setActivePresetSource("modified");
+    await switchTo(QWEN);
+    assert.equal(live().activePreset, "Research");
+    await switchTo(GEMMA);
+    assert.deepEqual(live(), {
+      activePreset: "Default",
+      activePresetSource: "modified",
+      temperature: 0.77,
+      systemPrompt: "Be brief.",
+    });
+  } finally {
+    useChatRuntimeStore.setState({ rememberParamsPerModel: true });
+  }
+});
+
+test("a background load that puts the visible model back is no switch", async () => {
+  await switchTo(QWEN);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, temperature: 0.9 });
+  store.setActivePresetSource("modified");
+  const visible = { ...useChatRuntimeStore.getState().params };
+  const resume = suspendLinkedPresetSync();
+  loadOrPoll(LLAMA);
+  await Promise.resolve();
+  useChatRuntimeStore.setState({ params: visible });
+  resume();
+  await Promise.resolve();
+  assert.equal(live().activePreset, "Research");
+  assert.equal(live().temperature, 0.9, "the visible temporary edit is not replaced");
+});
+
+test("a switch the background load ended on still syncs on resume", async () => {
+  await switchTo(QWEN);
+  const resume = suspendLinkedPresetSync();
+  loadOrPoll(LLAMA);
+  await Promise.resolve();
+  assert.equal(live().activePreset, "Research", "suspended");
+  resume();
+  await Promise.resolve();
+  assert.equal(live().activePreset, "Default");
 });
 
 test("an unlinked model under Default still follows its recommendation", async () => {

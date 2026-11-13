@@ -6658,8 +6658,30 @@ export function syncKeepModelsLoaded(mode: unknown): void {
 
 /** The pick in force before a link took over: leaving the linked model for one with no link puts
  *  it back, or the link's sampling and system prompt leak into every other model (#14900). */
-let pickBeforeLink: { name: string; source: ChatPresetSource } | null = null;
+let pickBeforeLink: {
+  name: string;
+  source: ChatPresetSource;
+  params: ReturnType<typeof getPresetOwnedParams>;
+} | null = null;
 let lastLinkCheckpoint = "";
+let linkSyncSuspended = 0;
+
+/** A background load that puts the visible model back afterwards is no switch: links ignore it. */
+export function suspendLinkedPresetSync(): () => void {
+  linkSyncSuspended += 1;
+  let resumed = false;
+  return () => {
+    if (resumed) return;
+    resumed = true;
+    linkSyncSuspended -= 1;
+    if (linkSyncSuspended > 0) return;
+    const modelId = useChatRuntimeStore.getState().params.checkpoint;
+    if (!modelId || modelId === lastLinkCheckpoint) return;
+    const outgoing = lastLinkCheckpoint;
+    lastLinkCheckpoint = modelId;
+    queueMicrotask(() => syncLinkedPreset(modelId, outgoing, false));
+  };
+}
 
 function providerTypeFor(modelId: string): string | null {
   const external = isExternalModelId(modelId) ? parseExternalModelId(modelId) : null;
@@ -6672,9 +6694,9 @@ function providerTypeFor(modelId: string): string | null {
   );
 }
 
-/** `onHydration`: settings landed under a resident model, so a restored pick of the linked preset
- *  stands, edits included, and a reload keeps a temporary override. */
-function syncLinkedPreset(modelId: string, outgoing: string, onHydration: boolean): void {
+/** `keepRestored`: settings or the first model of this page landed, so a restored pick of the
+ *  linked preset stands, edits included, whichever of the two arrived first. */
+function syncLinkedPreset(modelId: string, outgoing: string, keepRestored: boolean): void {
   const state = useChatRuntimeStore.getState();
   if (!state.settingsHydrated || !modelId || state.params.checkpoint !== modelId) {
     return;
@@ -6683,9 +6705,13 @@ function syncLinkedPreset(modelId: string, outgoing: string, onHydration: boolea
   const outgoingLink = getLinkedPreset(outgoing, state.modelPresets, state.customPresets);
   const linkActive = outgoingLink != null && state.activePreset === outgoingLink.name;
   if (preset) {
-    if (onHydration && state.activePreset === preset.name) return;
+    if (keepRestored && state.activePreset === preset.name) return;
     if (!linkActive) {
-      pickBeforeLink = { name: state.activePreset, source: state.activePresetSource };
+      pickBeforeLink = {
+        name: state.activePreset,
+        source: state.activePresetSource,
+        params: getPresetOwnedParams(state.params),
+      };
     }
     state.setParams(applyPresetForProvider(state.params, preset, null), {
       minPChoiceEdited: true,
@@ -6699,21 +6725,19 @@ function syncLinkedPreset(modelId: string, outgoing: string, onHydration: boolea
     pickBeforeLink = null;
     return;
   }
-  // As if the link had never applied: the earlier pick's values, then this model's memory over them.
-  const before =
-    (pickBeforeLink &&
-      [...BUILTIN_PRESETS, ...state.customPresets].find(
-        (saved) => saved.name === pickBeforeLink?.name,
-      )) ||
-    BUILTIN_PRESETS[0];
+  // As if the link had never applied: the earlier values, then this model's memory over them.
+  const before = pickBeforeLink;
   pickBeforeLink = null;
-  state.setActivePreset(before.name);
-  state.setActivePresetSource(getPresetSource(before.name));
-  useChatRuntimeStore
-    .getState()
-    .setParams(applyPresetForProvider(state.params, before, providerTypeFor(modelId)), {
-      fromModelDefaults: true,
-    });
+  const fallback = BUILTIN_PRESETS[0];
+  state.setActivePreset(before?.name ?? fallback.name);
+  state.setActivePresetSource(before?.source ?? getPresetSource(fallback.name));
+  const live = useChatRuntimeStore.getState();
+  live.setParams(
+    before
+      ? { ...live.params, ...before.params }
+      : applyPresetForProvider(live.params, fallback, providerTypeFor(modelId)),
+    { fromModelDefaults: true },
+  );
 }
 
 // Deferred a microtask: a switch moves the checkpoint inside the load path's own setParams, and the
@@ -6722,10 +6746,10 @@ function syncLinkedPreset(modelId: string, outgoing: string, onHydration: boolea
 useChatRuntimeStore.subscribe((state, previous) => {
   const modelId = state.params.checkpoint;
   if (modelId !== previous.params.checkpoint) {
-    if (!modelId) return;
+    if (!modelId || linkSyncSuspended > 0) return;
     const outgoing = lastLinkCheckpoint;
     lastLinkCheckpoint = modelId;
-    queueMicrotask(() => syncLinkedPreset(modelId, outgoing, false));
+    queueMicrotask(() => syncLinkedPreset(modelId, outgoing, !outgoing));
   } else if (state.settingsHydrated && !previous.settingsHydrated) {
     lastLinkCheckpoint = modelId;
     queueMicrotask(() => syncLinkedPreset(modelId, modelId, true));
