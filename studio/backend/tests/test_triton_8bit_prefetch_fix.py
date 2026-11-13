@@ -370,9 +370,6 @@ def test_real_triton_compile_only_changes_8bit_dots_on_sm8x(real_triton, monkeyp
     assert _ptx(real_triton, kernel, "*i8", "*i32", 89) == stock[("*i8", 89)]
 
 
-# ---- import-time install and Inductor's compile workers ----
-
-
 @pytest.fixture
 def clean_meta_path(monkeypatch):
     monkeypatch.setattr(
