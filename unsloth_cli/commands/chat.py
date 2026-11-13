@@ -370,7 +370,6 @@ def chat(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
-    # Only when asked, so the existing loader payloads stay byte-identical.
     if trust_remote_code:
         load_opts["trust_remote_code"] = trust_remote_code
     if speculative_type is not None:

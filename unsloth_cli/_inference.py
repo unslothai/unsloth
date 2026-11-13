@@ -750,6 +750,18 @@ def _load_gguf_backend(
     return ChatBackend("gguf", llama_backend)
 
 
+def _exit_if_needs_remote_code(model: str, exc: Exception, trust_remote_code: bool) -> None:
+    # transformers and the server both phrase this refusal with the kwarg name.
+    if trust_remote_code or "trust_remote_code" not in str(exc):
+        return
+    typer.echo(
+        f"Error: {model} needs its own modelling code to load. If you trust this repository, "
+        "rerun with --trust-remote-code (it executes Python from the repo).",
+        err = True,
+    )
+    raise typer.Exit(code = 1)
+
+
 def load_chat_backend(
     model: str,
     *,
@@ -814,12 +826,11 @@ def load_chat_backend(
                 tensor_parallel = tensor_parallel,
                 mlx_distributed = is_mlx_distributed,
             )
-            # Only when asked: the default call stays identical for every other load, and the
-            # value stays the caller's so no code path switches remote execution on by itself.
             if trust_remote_code:
                 load_kwargs["trust_remote_code"] = trust_remote_code
             loaded = backend.load_model(**load_kwargs)
         except Exception as exc:
+            _exit_if_needs_remote_code(model, exc, trust_remote_code)
             if not is_mlx_distributed:
                 raise
             if rank == 0:
@@ -1093,7 +1104,6 @@ class HttpChatBackend:
             payload["speculative_type"] = speculative_type
         if spec_draft_n_max is not None:
             payload["spec_draft_n_max"] = spec_draft_n_max
-        # Only when asked, so an existing payload stays byte-identical for everyone else.
         if trust_remote_code:
             payload["trust_remote_code"] = trust_remote_code
         resident_variant = self._resident_gguf_variant(model)
@@ -1107,6 +1117,7 @@ class HttpChatBackend:
                 self._request("POST", "/api/inference/load", payload),
             )
         except Exception as exc:
+            _exit_if_needs_remote_code(model, exc, trust_remote_code)
             typer.echo(f"Model load failed: {exc}", err = True)
             raise typer.Exit(code = 1)
         self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))

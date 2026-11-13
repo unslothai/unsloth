@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-# `unsloth train` gained --trust-remote-code in #16332; inference and chat load through a different
-# path (a local orchestrator or a running server), so the flag has to reach both of those too.
-
 from __future__ import annotations
 
 import sys
@@ -26,8 +23,7 @@ def _app(command):
 
 @pytest.mark.parametrize("command", [infermod.inference, chatmod.chat])
 def test_both_commands_offer_the_flag(command):
-    # Read the registered options, not the rendered help: a narrow terminal truncates the option
-    # column, so the flag's text can be missing from --help while the command accepts it.
+    # Registered options, not --help: a narrow terminal truncates the option column.
     cmd = get_command(_app(command))
     names = [
         opt
@@ -42,12 +38,17 @@ class _FakeModelConfig:
     is_gguf = False
 
 
-def _install_fake_backend(monkeypatch):
+_REFUSAL = "Please pass the argument `trust_remote_code=True` to allow custom code to be run."
+
+
+def _install_fake_backend(monkeypatch, error = None):
     calls: list[dict] = []
 
     class _FakeBackend:
         def load_model(self, **kwargs):
             calls.append(kwargs)
+            if error is not None:
+                raise error
             return True
 
     fake_inference = types.ModuleType("core.inference")
@@ -84,7 +85,6 @@ def test_local_load_defaults_to_refusing_remote_code(monkeypatch):
         model_config = _FakeModelConfig(),
     )
 
-    # Omitted rather than passed as False, so every other load call is unchanged.
     assert "trust_remote_code" not in calls[0]
 
 
@@ -129,5 +129,53 @@ def test_server_payload_is_unchanged_by_default(monkeypatch):
 
     backend.ensure_loaded("m", hf_token = None, max_seq_length = 2048, load_in_4bit = True)
 
-    # No key at all, so an existing payload stays byte-identical for everyone else.
     assert "trust_remote_code" not in captured["payload"]
+
+
+def _local_load(**kwargs):
+    inference.load_chat_backend(
+        "fake-model",
+        hf_token = None,
+        max_seq_length = 2048,
+        load_in_4bit = True,
+        model_config = _FakeModelConfig(),
+        **kwargs,
+    )
+
+
+def test_local_refusal_points_at_the_flag(monkeypatch, capsys):
+    _install_fake_backend(monkeypatch, error = ValueError(_REFUSAL))
+
+    with pytest.raises(typer.Exit):
+        _local_load()
+
+    assert "--trust-remote-code" in capsys.readouterr().err
+
+
+def test_local_failure_with_the_flag_keeps_its_traceback(monkeypatch):
+    _install_fake_backend(monkeypatch, error = ValueError(_REFUSAL))
+
+    with pytest.raises(ValueError):
+        _local_load(trust_remote_code = True)
+
+
+def test_unrelated_local_failure_is_not_rewritten(monkeypatch):
+    _install_fake_backend(monkeypatch, error = RuntimeError("out of memory"))
+
+    with pytest.raises(RuntimeError):
+        _local_load()
+
+
+def test_server_refusal_points_at_the_flag(monkeypatch, capsys):
+    _capture_server_payload(monkeypatch)
+
+    def refuse(url, response):
+        raise RuntimeError("Model 'm' requires trust_remote_code to be enabled.")
+
+    monkeypatch.setattr(inference, "read_json_checking_deferred_error", refuse)
+    backend = inference.HttpChatBackend("http://127.0.0.1:1", "token")
+
+    with pytest.raises(typer.Exit):
+        backend.ensure_loaded("m", hf_token = None, max_seq_length = 2048, load_in_4bit = True)
+
+    assert "--trust-remote-code" in capsys.readouterr().err
