@@ -100,9 +100,8 @@ def staged_output(out_dir: Path):
         shutil.rmtree(staging, ignore_errors = True)
 
 
-# (layers, hidden size, experts) per GGUF architecture of the models FastFlowLM ships AIE2P
-# kernels for (src/xclbins/*-NPU2 config.json) that the pinned converters can produce. The
-# architecture alone is not enough: the converter applies the 35B-A3B config to any qwen35moe.
+# (layers, hidden, experts) of FastFlowLM's AIE2P catalog (src/xclbins/*-NPU2 config.json):
+# the architecture alone is not enough, the converter applies the 35B-A3B config to any qwen35moe.
 _NPU_SHAPES = {
     "llama": {
         (16, 2048, 0): "Llama 3.2 1B",
