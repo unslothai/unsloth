@@ -75,6 +75,7 @@ from storage.studio_db import (
     lookup_chat_sidebar_row_ids,
     SidebarCursorError,
     SIDEBAR_ROWS_MAX_LIMIT,
+    ProjectParentError,
     list_chat_legacy_imports,
     list_chat_settings,
     list_chat_messages,
@@ -319,6 +320,7 @@ class ChatProject(BaseModel):
     instructions: str = ""
     rootPath: Optional[str] = None
     sandboxPath: Optional[str] = None
+    parentId: Optional[str] = None
     # Read only: a saved record cannot set the folder.
     workingFolder: Optional[str] = None
     archived: bool = False
@@ -349,6 +351,7 @@ class ChatProjectDeleted(ChatProject):
 class ChatProjectPatch(BaseModel):
     name: Optional[str] = None
     instructions: Optional[str] = None
+    parentId: Optional[str] = None
     archived: Optional[bool] = None
     createdAt: Optional[SqliteInt] = None
     updatedAt: Optional[SqliteInt] = None
@@ -1350,7 +1353,9 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
     if lease is not None and not is_owner_context():
         raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
     try:
-        project = payload.model_dump(exclude = {"nativePathLease"})
+        # Preserve optional hierarchy fields on idempotent retries from older clients that do
+        # not know about nested projects yet.
+        project = payload.model_dump(exclude = {"nativePathLease"}, exclude_unset = True)
         if lease is None:
             return ChatProject(**upsert_chat_project(project))
         working_folder = _resolve_project_working_folder(lease)
@@ -1359,6 +1364,8 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
         raise
     except ProjectWorkingFolderConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ProjectParentError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
     except ProjectWorkspaceError as exc:
         # Only this project path error: the same upsert also opens the database elsewhere.
         raise log_and_http_error(
@@ -1413,7 +1420,10 @@ def patch_project(
     for field in ("name", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
-    project = update_chat_project(project_id, patch)
+    try:
+        project = update_chat_project(project_id, patch)
+    except ProjectParentError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
     if project is not None:
         project = ensure_chat_project_workspace(project_id)
     if project is None:

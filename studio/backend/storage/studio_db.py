@@ -431,6 +431,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             instructions TEXT,
             root_path TEXT,
+            parent_id TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
@@ -442,6 +443,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    if "parent_id" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN parent_id TEXT")
     # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
     if "working_folder" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
@@ -449,6 +452,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder_identity TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_projects_parent_id ON chat_projects(parent_id)"
     )
     conn.execute(
         """
@@ -2203,6 +2209,7 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "instructions": data.get("instructions") or "",
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
+        "parentId": data.get("parent_id") or None,
         "workingFolder": data.get("working_folder") or None,
         "workingFolderIdentity": data.get("working_folder_identity") or None,
         "archived": bool(data["archived"]),
@@ -3203,6 +3210,34 @@ class ProjectWorkingFolderConflictError(ValueError):
     pass
 
 
+class ProjectParentError(ValueError):
+    pass
+
+
+def _validate_project_parent(
+    conn: sqlite3.Connection, project_id: str, parent_id: Optional[str]
+) -> Optional[str]:
+    """Validate a project tree edge without coupling workspace paths to its hierarchy."""
+    normalized = parent_id or None
+    if normalized is None:
+        return None
+    if normalized == project_id:
+        raise ProjectParentError("A project cannot be its own parent.")
+    seen = {project_id}
+    current = normalized
+    while current is not None:
+        if current in seen:
+            raise ProjectParentError("Project folders cannot contain themselves.")
+        seen.add(current)
+        row = conn.execute(
+            "SELECT parent_id FROM chat_projects WHERE id = ?", (current,)
+        ).fetchone()
+        if row is None:
+            raise ProjectParentError("Parent project not found.")
+        current = row["parent_id"] or None
+    return normalized
+
+
 def upsert_chat_project(
     project: dict, *, working_folder: Optional[tuple[str, tuple[int, int]]] = None
 ) -> dict:
@@ -3213,6 +3248,10 @@ def upsert_chat_project(
     root_path = _ensure_project_workspace(root_path)
     conn = get_connection()
     try:
+        requested_parent = (
+            project["parentId"] if "parentId" in project else (existing or {}).get("parentId")
+        )
+        parent_id = _validate_project_parent(conn, project["id"], requested_parent)
         if working_folder is not None:
             # Create-only: an existing project changes its folder via the working-folder route.
             conn.execute("BEGIN IMMEDIATE")
@@ -3225,12 +3264,13 @@ def upsert_chat_project(
         conn.execute(
             """
             INSERT INTO chat_projects
-                (id, name, instructions, root_path, archived, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, name, instructions, root_path, parent_id, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 instructions = excluded.instructions,
                 root_path = COALESCE(chat_projects.root_path, excluded.root_path),
+                parent_id = excluded.parent_id,
                 archived = excluded.archived,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at
@@ -3240,6 +3280,7 @@ def upsert_chat_project(
                 project["name"],
                 project.get("instructions") or "",
                 root_path,
+                parent_id,
                 1 if project.get("archived") else 0,
                 int(project["createdAt"]),
                 int(project["updatedAt"]),
@@ -3263,21 +3304,27 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
     allowed = {
         "name": ("name", patch.get("name")),
         "instructions": ("instructions", patch.get("instructions")),
+        "parentId": ("parent_id", patch.get("parentId")),
         "archived": ("archived", 1 if patch.get("archived") else 0),
         "createdAt": ("created_at", patch.get("createdAt")),
         "updatedAt": ("updated_at", patch.get("updatedAt")),
     }
-    assignments = []
-    values = []
-    for key, (column, value) in allowed.items():
-        if key in patch:
-            assignments.append(f"{column} = ?")
-            values.append(value)
-    if not assignments:
+    if not any(key in patch for key in allowed):
         return get_chat_project(id)
 
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        if "parentId" in patch:
+            values_for_parent = _validate_project_parent(conn, id, patch.get("parentId"))
+            # Keep the normalized value used for the SQL assignment below.
+            allowed["parentId"] = ("parent_id", values_for_parent)
+        assignments = []
+        values = []
+        for key, (column, value) in allowed.items():
+            if key in patch:
+                assignments.append(f"{column} = ?")
+                values.append(value)
         conn.execute(
             f"UPDATE chat_projects SET {', '.join(assignments)} WHERE id = ?",
             (*values, id),
@@ -3449,6 +3496,8 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         # Tombstone this membership so a late writer cannot recreate a member.
         _tombstone_chat_threads(conn, thread_ids)
         conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
+        # Deleting a parent must not delete otherwise independent child projects.
+        conn.execute("UPDATE chat_projects SET parent_id = NULL WHERE parent_id = ?", (id,))
         conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
         _load_chat_pins_in_conn(conn, repair = True, remember_removed = True)
         _mark_chat_attachment_inventory_clean(conn)

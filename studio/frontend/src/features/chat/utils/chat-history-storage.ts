@@ -958,6 +958,7 @@ export async function createStoredChatProject(
   name: string,
   nativePathLease?: string,
   id: string = crypto.randomUUID(),
+  parentId?: string | null,
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -968,6 +969,7 @@ export async function createStoredChatProject(
     id,
     name: trimmed,
     instructions: "",
+    parentId: parentId ?? null,
     archived: false,
     createdAt: now,
     updatedAt: now,

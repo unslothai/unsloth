@@ -87,7 +87,7 @@ test("pinning a project takes one click, and says which way it goes", () => {
 
 // Hover-revealed actions are invisible on touch screens.
 test("the pin and the menu are on show, the disclosure follows the cursor", () => {
-  const start = PAGE.indexOf("{visibleProjects.map((project) => {");
+  const start = PAGE.indexOf("{visibleProjectRows.map(({ project, depth }) => {");
   assert.notEqual(start, -1, "the row list moved");
   const row = PAGE.slice(start, PAGE.indexOf("<DropdownMenuContent", start));
   assert.ok(row.length > 0, "the row moved");
