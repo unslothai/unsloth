@@ -126,7 +126,7 @@ def test_rocm_config_is_keyed_by_measured_gfx_arch(monkeypatch):
     for config in I.ROCM_KERNEL_CONFIGS.values():
         assert set(config) <= set(I.HEAD_DIMS)
         assert all(
-            c["pv"] in ("int8", "half", "half_strided")
+            c["pv"] in ("int8", "half", "half_strided", "half_t", "int8_t")
             and c.get("kscale", "key") in ("key", "tile")
             for c in config.values()
         )
@@ -244,7 +244,7 @@ _INTERPRET = textwrap.dedent(
             q, k, v = I.probe_inputs("cpu", torch.float16, tokens, 2, D, seed = tokens)
             q, k = q * gain, k * gain
             ref = F.scaled_dot_product_attention(*(t.double().permute(0, 2, 1, 3) for t in (q, k, v))).permute(0, 2, 1, 3)
-            for pv in ("int8", "half", "half_strided"):
+            for pv in ("int8", "half", "half_strided", "half_t", "int8_t"):
                 for cfg in ({"bm": 64, "bn": 64, "warps": 4, "stages": 1, "kscale": "key"},
                             {"bm": 32, "bn": 32, "warps": 2, "stages": 1, "kscale": "tile", "long_keys": 150,
                              "long": {"bm": 64}, "acc_in_dot": True}):
@@ -284,7 +284,7 @@ def test_triton_kernel_numerics_interpreted():
     line = [x for x in r.stdout.splitlines() if x.startswith("RESULT ")]
     assert line, (r.stdout[-2000:], r.stderr[-3000:])
     res = json.loads(line[0][7:])
-    assert len(res) == 24
+    assert len(res) == 40
     for key, m in res.items():
         gain = float(key.split("/")[2])
         assert m["finite"], key

@@ -174,9 +174,10 @@ if triton is not None:
         x_stride_h,
         T: tl.constexpr,
         D: tl.constexpr,
+        TRANS: tl.constexpr,
     ):
         # one tile of T keys of one (batch, head): (x - centre) / gain per channel, one scale for the tile,
-        # stored key-major [BH, n_pad, D]
+        # stored key-major [BH, n_pad, D] or (TRANS) channel-major [BH, D, n_pad]
         bh = tl.program_id(0)
         blk = tl.program_id(1)
         b = bh // n_heads
@@ -200,10 +201,43 @@ if triton is not None:
         tile = bh.to(tl.int64) * (n_pad // T) + blk
         tl.store(s_ptr + tile, amax / 127.0)
         base = bh.to(tl.int64) * n_pad
-        tl.store(
-            q_ptr + (base + rows[:, None]) * D + cols[None, :],
-            _rint(x * (127.0 / amax)).to(tl.int8),
+        q = _rint(x * (127.0 / amax)).to(tl.int8)
+        if TRANS:
+            tl.store(q_ptr + base * D + cols[None, :].to(tl.int64) * n_pad + rows[:, None], q)
+        else:
+            tl.store(q_ptr + (base + rows[:, None]) * D + cols[None, :], q)
+
+    @triton.jit
+    def transpose_v_kernel(
+        x_ptr,
+        o_ptr,
+        n_rows,
+        n_pad,
+        n_heads,
+        x_stride_b,
+        x_stride_s,
+        x_stride_h,
+        T: tl.constexpr,
+        D: tl.constexpr,
+    ):
+        # one tile of T keys of one (batch, head) -> channel-major [BH, D, n_pad] in V's dtype, padded keys zero
+        bh = tl.program_id(0)
+        blk = tl.program_id(1)
+        b = bh // n_heads
+        h = bh % n_heads
+        rows = blk * T + tl.arange(0, T)
+        cols = tl.arange(0, D)
+        x = tl.load(
+            x_ptr
+            + b * x_stride_b
+            + h * x_stride_h
+            + rows[:, None].to(tl.int64) * x_stride_s
+            + cols[None, :],
+            mask = (rows < n_rows)[:, None],
+            other = 0.0,
         )
+        base = bh.to(tl.int64) * n_pad * D
+        tl.store(o_ptr + base + cols[None, :].to(tl.int64) * n_pad + rows[:, None], x)
 
     @triton.jit
     def attn_kernel(
@@ -244,7 +278,9 @@ if triton is not None:
         ACC_IN_DOT: tl.constexpr,
     ):
         # PV_MODE 0: 16-bit P.V, V read from the strided input; 1: 16-bit P.V, V from a heads-major padded copy;
-        # 2: INT8 P.V, P as 0..127 relative to each (row, key tile) maximum, V centred / gained, one scale per tile
+        # 2: INT8 P.V, P as 0..127 relative to each (row, key tile) maximum, V centred / gained, one scale per tile;
+        # 3: as 1 and 4: as 2, with V stored channel-major [BH, D, n_kpad] so that the P.V operand reads keys
+        # contiguously (a key-major V tile is gathered element by element from shared memory on RDNA3 WMMA)
         pid_m = tl.program_id(0)
         bh = tl.program_id(1)
         b = bh // n_heads
@@ -291,10 +327,15 @@ if triton is not None:
             m_tile = tl.max(s, axis = 1)
             m_new = tl.maximum(m_i, m_tile)
             alpha = tl.math.exp2(m_i - m_new)
-            if PV_MODE == 2:
+            if PV_MODE == 2 or PV_MODE == 4:
                 # 127 * 2^(s - tile max): log2(127) folded into the exponent
                 p8 = _rint(tl.math.exp2(s - m_tile[:, None] + 6.988684686772166))
-                v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
+                if PV_MODE == 4:
+                    v = tl.load(
+                        v_ptr + kbase * D + cols[None, :].to(tl.int64) * n_kpad + keys[:, None]
+                    )
+                else:
+                    v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
                 vs = tl.load(vs_ptr + bh.to(tl.int64) * n_ktiles + t)
                 pv = tl.dot(p8.to(tl.int8), v, out_dtype = tl.int32).to(tl.float32)
                 w = tl.math.exp2(m_tile - m_new) * (1.0 / 127.0)
@@ -304,6 +345,10 @@ if triton is not None:
                 p = tl.math.exp2(s - m_new[:, None])
                 if PV_MODE == 1:
                     v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
+                elif PV_MODE == 3:
+                    v = tl.load(
+                        v_ptr + kbase * D + cols[None, :].to(tl.int64) * n_kpad + keys[:, None]
+                    )
                 else:
                     v = tl.load(
                         v_ptr
@@ -322,7 +367,7 @@ if triton is not None:
                 l_i = l_i * alpha + tl.sum(p, axis = 1)
             m_i = m_new
         out = acc / l_i[:, None]
-        if PV_MODE == 2:
+        if PV_MODE == 2 or PV_MODE == 4:
             vg = tl.load(vg_ptr + bh * D + cols)
             vc = tl.load(vc_ptr + bh * D + cols)
             out = out * vg[None, :] + vc[None, :]
@@ -337,7 +382,11 @@ def kernels() -> Any:
     if triton is None:
         raise RuntimeError("Triton is not installed")
     return types.SimpleNamespace(
-        stats = stats_kernel, quant_rows = quant_rows_kernel, quant_v = quant_v_kernel, attn = attn_kernel
+        stats = stats_kernel,
+        quant_rows = quant_rows_kernel,
+        quant_v = quant_v_kernel,
+        transpose_v = transpose_v_kernel,
+        attn = attn_kernel,
     )
 
 
@@ -345,7 +394,7 @@ def _pad(n: int, multiple: int) -> int:
     return (n + multiple - 1) // multiple * multiple
 
 
-PV_MODES = {"half_strided": 0, "half": 1, "int8": 2}
+PV_MODES = {"half_strided": 0, "half": 1, "int8": 2, "half_t": 3, "int8_t": 4}
 
 
 def quantise(
@@ -412,19 +461,25 @@ def quantise(
         "shape": (B, Sq, Sk, H, D),
         "config": config,
     }
-    if pv == "int8":
+    if pv in ("int8", "int8_t"):
         vc = torch.empty((BH, D), dtype = torch.float32, device = dev)
         vg = torch.empty((BH, D), dtype = torch.float32, device = dev)
         kk.stats[(BH,)](v, vc, vg, Sk, H, *st(v), STEP = STATS_STEP, R = 32, D = D, MODE = 1)
         vi = torch.empty((BH, n_kpad, D), dtype = torch.int8, device = dev)
         vs = torch.empty((BH, n_kpad // bn), dtype = torch.float32, device = dev)
-        kk.quant_v[(BH, n_kpad // bn)](v, vc, vg, vi, vs, Sk, n_kpad, H, *st(v), T = bn, D = D)
+        kk.quant_v[(BH, n_kpad // bn)](
+            v, vc, vg, vi, vs, Sk, n_kpad, H, *st(v), T = bn, D = D, TRANS = pv == "int8_t"
+        )
         out.update(vi = vi, vs = vs, vc = vc, vg = vg)
     elif pv == "half":
         vh = torch.empty((B, H, n_kpad, D), dtype = v.dtype, device = dev)
         vh[:, :, :Sk].copy_(v.permute(0, 2, 1, 3))
         if n_kpad > Sk:
             vh[:, :, Sk:].zero_()
+        out["vh"] = vh
+    elif pv == "half_t":
+        vh = torch.empty((BH, D, n_kpad), dtype = v.dtype, device = dev)
+        kk.transpose_v[(BH, n_kpad // QUANT_ROWS)](v, vh, Sk, n_kpad, H, *st(v), T = QUANT_ROWS, D = D)
         out["vh"] = vh
     return out
 
@@ -439,7 +494,7 @@ def attend(p: dict) -> Any:
     v = p["v"]
     out = torch.empty((B, Sq, H, D), dtype = v.dtype, device = v.device)
     mode = PV_MODES[p["pv"]]
-    vv = {0: v, 1: p.get("vh"), 2: p.get("vi")}[mode]
+    vv = {0: v, 1: p.get("vh"), 2: p.get("vi"), 3: p.get("vh"), 4: p.get("vi")}[mode]
     dummy = p["qs"]
     kk.attn[(p["n_qpad"] // bm, B * H)](
         p["qi"],
