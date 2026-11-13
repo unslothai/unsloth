@@ -310,6 +310,33 @@ def test_a_failed_provider_reply_is_charged_to_the_api_pool():
     assert pools["api"]["used"] == 100
 
 
+@pytest.mark.parametrize("method", ["total", "incremental"])
+def test_a_rejected_continuation_does_not_charge_the_reply_it_continues(method):
+    now = _now_ms()
+    _thread("t1", now)
+    for message_id, created_at, timing, extra in (
+        ("original", now + 1, {"tokenCount": 100}, {}),
+        (
+            "continued",
+            now + 2,
+            {"tokenCount": 100},
+            {"tokenUsageParentId": "original", "tokenUsagePriorCount": 100},
+        ),
+    ):
+        studio_db.upsert_chat_message(
+            {
+                "id": message_id,
+                "threadId": "t1",
+                "role": "assistant",
+                "createdAt": created_at,
+                "content": [{"type": "text", "text": "answer"}],
+                "metadata": {"timing": timing, **extra},
+            }
+        )
+    _enable(limit = 1000, method = method)
+    assert _pools()["combined"]["used"] == 100
+
+
 def test_usage_before_the_period_does_not_count():
     start, end = token_limit.period_window("day", "UTC")
     _thread("t1", start - 10_000)

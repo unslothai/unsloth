@@ -29,3 +29,19 @@ test("live, final and failed replies all carry the provider stamp", () => {
   );
   assert.match(final, /tokenUsageProvider,/);
 });
+
+test("cumulative timings name the continued reply's count so it is not charged twice", () => {
+  assert.equal(
+    ADAPTER.match(/tokenUsagePriorCount: priorTiming\?\.tokenCount,/g)?.length,
+    2,
+  );
+});
+
+test("the allowance switch saves the visible draft with it", () => {
+  const SECTION = readSrc("features/settings/components/token-limit-section.tsx");
+  assert.match(
+    SECTION,
+    /onCheckedChange=\{\(next\) => void save\(\{ \.\.\.\(draftPatch\(\) \?\? \{\}\), enabled: next \}\)\}/,
+  );
+  assert.match(SECTION, /disabled=\{busy \|\| needsPassword \|\| \(!enabled && !capsValid\)\}/);
+});

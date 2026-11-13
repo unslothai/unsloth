@@ -146,17 +146,23 @@ export function TokenLimitSection() {
   const needsPassword = locked && password.length === 0;
   const busy = !status || !draft || saving;
 
+  const draftPatch = (): TokenLimitUpdate | null =>
+    draft && caps && capsValid
+      ? {
+          period: draft.period,
+          mode: draft.mode,
+          method: draft.method,
+          ...(caps.limit !== null ? { limit: caps.limit } : {}),
+          ...(caps.localLimit !== null ? { localLimit: caps.localLimit } : {}),
+          ...(caps.apiLimit !== null ? { apiLimit: caps.apiLimit } : {}),
+          ...(newPassword ? { newPassword } : {}),
+        }
+      : null;
+  const enabled = status?.settings.enabled ?? false;
+
   const saveDraft = () => {
-    if (!draft || !caps || !capsValid) return;
-    void save({
-      period: draft.period,
-      mode: draft.mode,
-      method: draft.method,
-      ...(caps.limit !== null ? { limit: caps.limit } : {}),
-      ...(caps.localLimit !== null ? { localLimit: caps.localLimit } : {}),
-      ...(caps.apiLimit !== null ? { apiLimit: caps.apiLimit } : {}),
-      ...(newPassword ? { newPassword } : {}),
-    });
+    const patch = draftPatch();
+    if (patch) void save(patch);
   };
 
   const capInput = (
@@ -233,9 +239,10 @@ export function TokenLimitSection() {
       >
         <Switch
           aria-label={t("settings.profile.tokenLimit.enable")}
-          checked={status?.settings.enabled ?? false}
-          disabled={busy || needsPassword}
-          onCheckedChange={(enabled) => void save({ enabled })}
+          checked={enabled}
+          // The switch saves the visible draft too, or typed caps and passwords are silently dropped.
+          disabled={busy || needsPassword || (!enabled && !capsValid)}
+          onCheckedChange={(next) => void save({ ...(draftPatch() ?? {}), enabled: next })}
         />
       </SettingsRow>
       {status?.pools.map((pool) => (

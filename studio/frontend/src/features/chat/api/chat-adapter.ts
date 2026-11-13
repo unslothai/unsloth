@@ -8946,6 +8946,7 @@ export function createOpenAIStreamAdapter(
               ...reasoningDurationTracker.metadata(),
               tokenUsageParentId: continuation?.sourceMessageId,
               tokenUsageProvider,
+              tokenUsagePriorCount: priorTiming?.tokenCount,
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
@@ -9131,6 +9132,8 @@ export function createOpenAIStreamAdapter(
                 ...reasoningDurationTracker.metadata(),
                 tokenUsageParentId: continuation?.sourceMessageId,
                 tokenUsageProvider,
+                // timing below adds the continued reply's count, which its own row already charged.
+                tokenUsagePriorCount: priorTiming?.tokenCount,
                 contextTruncation,
                 compactionMarkers,
                 providerCompaction,

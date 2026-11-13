@@ -23,7 +23,9 @@ def _usage_columns(row: str) -> str:
     )
     usage_completion = _count(row, "$.contextUsage.completionTokens")
     server_completion = _count(row, "$.serverTimings.predicted_n")
-    timing_completion = _count(row, "$.timing.tokenCount")
+    timing_completion = (
+        f"MAX({_count(row, '$.timing.tokenCount')} - {_count(row, '$.tokenUsagePriorCount')}, 0)"
+    )
     return f"""
         CASE WHEN {usage_prompt} > 0 THEN {usage_prompt} ELSE {server_prompt} END AS prompt_tokens,
         CASE WHEN {usage_completion} > 0 THEN {usage_completion}
