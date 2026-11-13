@@ -495,3 +495,39 @@ def test_video_clip_canvas(monkeypatch, batch):
         torch.testing.assert_close(got[~corner], ref[~corner], rtol = 1e-5, atol = 1e-5)
     oracle = _overlap_add(_raw_tiles(stock, z, plan), plan[0], plan[1])
     torch.testing.assert_close(got.double(), oracle, rtol = 1e-5, atol = 1e-5)
+
+
+def test_pipeline_release_drops_the_tile_graphs_while_the_vae_is_still_referenced():
+    """An unload must not leave the tile graphs' private pools reserved because something outside still holds the
+    VAE (``release`` empties the weights in place for exactly that case)."""
+    from core.inference import diffusion_minimax_h3_image as H
+
+    vae = _tiny_image_vae()
+    assert C.install(vae, "cpu")
+    dropped = []
+
+    class _Graphs:
+        replicas = [object()]
+
+        def drop(self):
+            dropped.append(True)
+            self.replicas = []
+
+    race = C._Race((1, 2))
+    race.graphs = _Graphs()
+    race.reference = (torch.zeros(1), torch.zeros(1))
+    vae._unsloth_canvas_races = {"key": race}
+    pipe = H.MiniMaxH3ImagePipeline(
+        transformer = None,
+        vae = vae,
+        text_encoder = None,
+        tokenizer = None,
+        scheduler = H.MiniMaxH3ImageScheduler(sample_sigmas = list(H.H3_IMAGE_SIGMAS)),
+        processor = None,
+    )
+    pipe._unsloth_h3_owned = frozenset({"vae"})
+    outside = vae  # a retained frame or cached closure
+    pipe.release()
+    assert dropped == [True], "release() left the tile graphs (and their pools) alive"
+    assert "_unsloth_canvas_races" not in outside.__dict__
+    assert race.graphs is None and race.reference is None

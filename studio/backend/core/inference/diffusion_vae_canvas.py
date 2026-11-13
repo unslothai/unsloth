@@ -837,17 +837,24 @@ def install(
     return tuple(levers)
 
 
+def release_graphs(vae: Any) -> None:
+    """Drop the tile graphs and their private pools (an unload: they would outlive the freed weights for as long
+    as anything still references the VAE)."""
+    for r in (vae.__dict__.pop("_unsloth_canvas_races", None) or {}).values():
+        if r.graphs is not None:
+            r.graphs.drop()
+            r.graphs = None
+        r.reference = None
+
+
 def uninstall(vae: Any) -> None:
     stock = vae.__dict__.pop("_unsloth_canvas_stock_decode", None)
     if stock is not None:
         vae.__dict__.pop("_decode", None)
     if vae.__dict__.pop("_unsloth_canvas_half", False):
         set_decoder_dtype(vae, vae.post_quant_conv.weight.dtype)
-    for r in (vae.__dict__.get("_unsloth_canvas_races") or {}).values():
-        if r.graphs is not None:
-            r.graphs.drop()
+    release_graphs(vae)
     for name in (
-        "_unsloth_canvas_races",
         "_unsloth_canvas_graphs",
         "_unsloth_canvas_logger",
         "_unsloth_canvas_stats",

@@ -1166,6 +1166,11 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         for name in ("transformer", "text_encoder", "vae"):
             module = getattr(self, name, None)
             if module is not None:
+                if name == "vae":
+                    # the VAE canvas's tile graphs keep their private pools while anything references the VAE
+                    from .diffusion_vae_canvas import release_graphs
+
+                    release_graphs(module)
                 if name in owned:
                     free_module_storage(module)
                 setattr(self, name, None)
