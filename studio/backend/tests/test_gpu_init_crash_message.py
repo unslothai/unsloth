@@ -108,6 +108,8 @@ def _run_cpu_fallback_load(
     gpu_memory = None,
     n_ctx = 4096,
     health_predicate = None,
+    outcome = None,
+    caps = None,
 ):
     """``stall_launches``: 0-based launch indexes whose child stays alive while the
     health wait reports a startup stall (a hung driver rather than a crash), ended
@@ -156,6 +158,7 @@ def _run_cpu_fallback_load(
     backend.probe_server_capabilities = lambda _binary: {
         "found": True,
         "supports_no_mmproj_offload": True,
+        **(caps or {}),
     }
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
@@ -192,6 +195,8 @@ def _run_cpu_fallback_load(
     def _popen(cmd, **kwargs):
         index = len(launches)
         launches.append((list(cmd), dict(kwargs["env"])))
+        if outcome is not None:
+            return _Process(outcome(list(cmd))[0])
         return _Process(returncodes[index])
 
     def _wait_for_health(timeout, **_kw):
@@ -199,6 +204,10 @@ def _run_cpu_fallback_load(
         health_timeouts.append(timeout)
         backend._health_wait_stalled = False
         backend._health_wait_stall_kind = None
+        if outcome is not None:
+            code, output = outcome(launches[-1][0])
+            backend._stdout_lines = [output]
+            return code is None
         if len(launches) == 1 and first_output:
             backend._stdout_lines = [first_output]
         if cancel_after is not None and len(launches) >= cancel_after:
@@ -1542,6 +1551,7 @@ def _run_full_offload_spawns(
     outputs = (),
     returncodes = (),
     outcome = None,
+    caps = None,
 ):
     """Runs load_model with --fit off; use_system_rocm=False skips /opt/rocm/lib, as the retry does."""
 
@@ -1569,7 +1579,7 @@ def _run_full_offload_spawns(
     monkeypatch.setattr(
         LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
     )
-    backend.probe_server_capabilities = lambda _binary: {"found": True}
+    backend.probe_server_capabilities = lambda _binary: {"found": True, **(caps or {})}
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
     monkeypatch.setattr(
@@ -1909,3 +1919,70 @@ class TestForcedFitOffFitStepCrash:
         assert error is None, modes
         assert loaded, modes
         assert modes == [("off", "on"), ("on", "on"), ("on", "off"), ("off", "off")]
+
+
+_LOCK = ["--load-mode", "mmap+mlock"]
+
+
+def _has_lock(cmd):
+    return any(cmd[i : i + 2] == _LOCK for i in range(len(cmd) - 1))
+
+
+def _flash(cmd):
+    return cmd[cmd.index("--flash-attn") + 1] if "--flash-attn" in cmd else None
+
+
+@pytest.fixture
+def keep_resident(monkeypatch):
+    monkeypatch.setattr(
+        "utils.model_memory_settings.capture_model_memory_settings",
+        lambda publish: (publish((True, False)), (True, False))[1],
+    )
+
+
+class TestFitStepRetryPageLock:
+    def test_the_fit_off_rung_drops_a_lock_an_earlier_rung_added(
+        self, monkeypatch, tmp_path, keep_resident
+    ):
+        monkeypatch.setattr(llama_cpp.sys, "platform", "win32")
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outcome = TestForcedFitOffFitStepCrash._outcome,
+            caps = {"supports_load_mode": True},
+        )
+        cmds = [cmd for cmd, _env in launches if "-m" in cmd]
+        assert error is None and loaded
+        assert [(_last_fit_mode(c), _flash(c)) for c in cmds][-1] == ("off", "off")
+        assert _has_lock(cmds[1])
+        assert not _has_lock(cmds[-1])
+
+    def test_a_no_flash_fit_on_relaunch_re_arms_the_lock(
+        self, monkeypatch, tmp_path, keep_resident
+    ):
+        def outcome(cmd):
+            if _flash(cmd) == "off" and _last_fit_mode(cmd) == "on":
+                return None, ""
+            if _last_fit_mode(cmd) == "on":
+                return _WINDOWS_ACCESS_VIOLATION, _FIT_STEP_CRASH_OUTPUT
+            return _WINDOWS_ACCESS_VIOLATION, "load_tensors: offloaded 17/17 layers to GPU"
+
+        backend, loaded, launches, _sources = _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [],
+            platform = "win32",
+            cpu_fallback_available = False,
+            outcome = outcome,
+            caps = {"supports_load_mode": True},
+        )
+        cmds = [cmd for cmd, _env in launches if "-m" in cmd]
+        assert loaded is True
+        assert [(_last_fit_mode(c), _flash(c)) for c in cmds] == [
+            ("on", "on"),
+            ("off", "on"),
+            ("on", "off"),
+        ]
+        assert _has_lock(cmds[0]) and not _has_lock(cmds[1])
+        assert _has_lock(cmds[2])
+        assert backend._memory_mlock_applicable is True

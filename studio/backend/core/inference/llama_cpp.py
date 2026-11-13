@@ -31394,6 +31394,25 @@ class LlamaCppBackend:
                 # An inherited LLAMA_ARG_FIT=off belongs to the user, and the flip would override it on the CLI.
                 _did_rocm_retry = False
 
+                # The page-lock a recovery rung appended; a later --fit off rung strips it.
+                _retry_lock_flags: list = []
+
+                def _rearm_resident_lock(run: list, reason: str) -> list:
+                    """A relaunch that turns the fitter on may leave weights in host RAM."""
+                    nonlocal _mem_host_resident
+                    if not _mem_should_mlock or _mem_host_resident:
+                        return run
+                    lock = keep_resident_lock_flags(load_mode_support(server_caps))
+                    _mem_host_resident = True
+                    # An unknown build gets no lock, so none is owed either.
+                    self._memory_mlock_applicable = bool(lock)
+                    if not lock:
+                        return run
+                    _retry_lock_flags[:] = lock
+                    self._memory_policy_active = True
+                    logger.info("Model Memory: re-applying the page-lock for the %s.", reason)
+                    return [*run, *lock]
+
                 def _enable_managed_fit_for_no_flash(fa_cmd: list) -> list:
                     """Restores Unsloth's own --fit on for a --flash-attn off respawn, which is re-
                     placed and needs it."""
@@ -31418,7 +31437,12 @@ class LlamaCppBackend:
                         "V cache the retry runs with is bigger than the placement the fit "
                         "priced with flash attention on."
                     )
-                    return flipped
+                    rearmed = _rearm_resident_lock(
+                        flipped, "--flash-attn off retry; it runs the fitter again"
+                    )
+                    if rearmed != flipped:
+                        self._record_memory_state(rearmed, env)
+                    return rearmed
 
                 def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
                     """Drops Unsloth's --load-mode on a --flash-attn off respawn (OOM instead of paging); do NOT clear the record, since the CPU fallback replays these tokens."""
@@ -32031,21 +32055,9 @@ class LlamaCppBackend:
                                 clear_record = False,
                             )
                             # With --fit off, -ngl defaults to every layer, so the host-resident verdict may no longer hold.
-                            if _mem_should_mlock and not _mem_host_resident:
-                                _retry_lock = keep_resident_lock_flags(
-                                    load_mode_support(server_caps)
-                                )
-                                _run.extend(_retry_lock)
-                                _mem_host_resident = True
-                                # An unknown build gets no lock, so none is owed either.
-                                self._memory_mlock_applicable = bool(_retry_lock)
-                                if _retry_lock:
-                                    self._memory_policy_active = True
-                                    logger.info(
-                                        "Model Memory: re-applying the page-lock for "
-                                        "the --fit on retry; the full-offload "
-                                        "prediction did not hold."
-                                    )
+                            _run = _rearm_resident_lock(
+                                _run, "--fit on retry; the full-offload prediction did not hold"
+                            )
                             run_cmd = _run
                             self._record_memory_state(_run, env)
                             _did_fit_retry = True
@@ -32113,8 +32125,13 @@ class LlamaCppBackend:
                                 # So a later save is not compared against a lock this
                                 # launch dropped.
                                 self._memory_mlock_applicable = False
-                                if _mem_managed:
-                                    run_cmd = _without_subsequence(run_cmd, _mem_managed)
+                                _locks = [
+                                    flags for flags in (_mem_managed, _retry_lock_flags) if flags
+                                ]
+                                for _lock in _locks:
+                                    run_cmd = _without_subsequence(run_cmd, _lock)
+                                _retry_lock_flags.clear()
+                                if _locks:
                                     # The managed flag was the policy's only mark on
                                     # this child unless it also scrubbed or stripped,
                                     # and a child equal to an unmanaged one must not

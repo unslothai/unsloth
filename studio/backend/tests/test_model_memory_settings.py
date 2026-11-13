@@ -2316,7 +2316,7 @@ class TestFitOffRetryDropsTheLock:
         for needle in (
             "self._weights_in_host_memory(",
             "fully_gpu_offloaded = True",
-            "_without_subsequence(run_cmd, _mem_managed)",
+            "run_cmd = _without_subsequence(run_cmd, _lock)",
             "_mem_host_resident = False",
             "self._memory_mlock_applicable = False",
             "self._record_memory_state(run_cmd, env)",
