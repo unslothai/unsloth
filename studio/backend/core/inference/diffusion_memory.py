@@ -7665,6 +7665,38 @@ def _late_encoder_pin_cap(
     return cap
 
 
+# "0": an image load whose streamed text encoders miss the pin budget at plan time pins only that plan-time prefix.
+# The plan runs while the load still holds the denoiser's host copy: on a 12 GB host the prefix was 0 and the
+# encoder re-read its memory-mapped weights from disk on every prompt.
+LATE_IMAGE_ENCODER_PIN_ENV = "UNSLOTH_DIFFUSION_LATE_IMAGE_ENCODER_PIN"
+
+
+def _late_image_encoder_pin_enabled(small_host: bool) -> bool:
+    # a forced GROUP_OFFLOAD_PIN keeps its plan: "0" queues no encoder pinner at all, as before
+    return (
+        not small_host
+        and not _env_off(LATE_IMAGE_ENCODER_PIN_ENV)
+        and not _env_off(PARTIAL_ENCODER_PIN_ENV)
+        and not _env_off(GROUP_OFFLOAD_PIN_ENV)
+    )
+
+
+def _late_image_encoder_pin_cap(
+    pipe: Any,
+    module: Any,
+    device: Any = None,
+) -> Callable[[], int]:
+    """``_late_encoder_pin_cap`` that first returns the load's freed heap to the OS, so the budget it reads counts
+    the denoiser host copy the load has dropped by then."""
+    late = _late_encoder_pin_cap(pipe, module, device)
+
+    def cap() -> int:
+        trim_host_heap_after_load(None)
+        return late()
+
+    return cap
+
+
 def _streamed_pin_leftover_mib(
     transformer_mib: int,
     pin_transformer: bool,
@@ -8809,9 +8841,20 @@ def _apply_group_offload(
                 "diffusion.memory: streamed encoders pin the prefix of their offload groups that fits the host RAM "
                 "free when the load returns"
             )
+        late_image = False
         if encoders_defer and stream_text_encoders and not pin_streamed[1] and not small_host:
             encoder_cap_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_streamed[0], onload)
-            if encoder_cap_mib and logger is not None:
+            # only an encoder that can defer takes it (not torchao weights, not a pipe with none)
+            late_image = _late_image_encoder_pin_enabled(small_host) and any(
+                _encoder_defers(m) for m in streamed_encoders.values()
+            )
+            if late_image and logger is not None:
+                logger.info(
+                    "diffusion.memory: streamed encoders pin the prefix of their offload groups that fits the host RAM "
+                    "free once the load has placed the denoiser (%d MiB would fit now)",
+                    encoder_cap_mib,
+                )
+            elif encoder_cap_mib and logger is not None:
                 logger.info(
                     "diffusion.memory: streamed encoders pin a %d MiB prefix of their offload groups in the background",
                     encoder_cap_mib,
@@ -8886,9 +8929,14 @@ def _apply_group_offload(
                         fast = True,
                         byte_cap = _late_encoder_pin_cap(pipe, module, onload),
                     )
-                elif _encoder_defers(module) and (whole or encoder_left_mib > 0):
+                elif _encoder_defers(module) and (whole or late_image or encoder_left_mib > 0):
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
-                    cap = None if whole else int(encoder_left_mib) << 20
+                    if whole:
+                        cap = None
+                    elif late_image:
+                        cap = _late_image_encoder_pin_cap(pipe, module, onload)
+                    else:
+                        cap = int(encoder_left_mib) << 20
                     _defer_pinning(
                         pipe, module, onload, logger, fast = True, byte_cap = cap, lazy_resident = True
                     )
