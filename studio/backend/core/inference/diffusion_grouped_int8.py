@@ -549,35 +549,6 @@ def _fused_on(index: Any) -> bool:
     return _FUSED[index] is not None
 
 
-# the int8r route's torch._int_mm + torchao epilogue as one compiled function (eager forwards), or False once it failed
-_EPILOGUE: dict = {}
-
-
-def _int8r_epilogue(device: Any) -> Any:
-    """``diffusion_int8_gemm.reference`` compiled (its four float32 passes over [rows, N] fused into one), under the
-    native int8 linear's own gate (inductor runtime, arch, not failed, not in a generation whose compile is in
-    flight); None keeps the eager reference (same maths)."""
-    if _EPILOGUE.get("failed"):
-        return None
-    try:
-        from .diffusion_bg_compile import eager_forced
-        from .diffusion_native_quant import _fused_w8a8
-
-        if eager_forced() or _fused_w8a8(device) is None:
-            return None
-        fn = _EPILOGUE.get("fn")
-        if fn is None:
-            import torch
-
-            from .diffusion_int8_gemm import reference
-
-            fn = torch.compile(reference, dynamic = True, fullgraph = True)
-            _EPILOGUE["fn"] = fn
-        return fn
-    except Exception:  # noqa: BLE001 -- the eager reference
-        return None
-
-
 def race_winner(times: dict) -> str:
     """The race verdict: the faster incumbent (``int8`` / ``dense``) unless an added route (``fused``, ``int8r``) beats
     it by more than ``_RACE_MARGIN``; with no incumbent timed, the fastest route."""
@@ -826,6 +797,7 @@ def grouped_linear_class():
             ``torch._int_mm`` and torchao's epilogue (``diffusion_int8_gemm.reference``), rows chunked like ``_int8``;
             the same output as the tuned route."""
             from .diffusion_convrot_quant import convrot_act_quant
+            from .diffusion_grouped_int8_triton import int8_epilogue_triton
             from .diffusion_int8_gemm import reference
             from .diffusion_native_quant import _INT_MM_CHUNK_ELEMS
 
@@ -845,7 +817,6 @@ def grouped_linear_class():
                 return out.reshape(*x.shape[:-1], self.out_features)
             chunk = max(_MIN_ROWS, _INT_MM_CHUNK_ELEMS // max(self.in_features, self.out_features))
             out = x2.new_empty((rows, self.out_features))
-            epilogue = _int8r_epilogue(x.device) or reference
             for start in range(0, rows, chunk):
                 part = x2[
                     start : start + chunk
@@ -854,17 +825,13 @@ def grouped_linear_class():
                 if q is None:
                     return self._int8(x)
                 xq, xs = q
-                args = (xq, q8, xs.reshape(-1).to(torch.float32), ws, bias)
-                try:
-                    got = epilogue(*args)
-                except torch.cuda.OutOfMemoryError:
-                    raise
-                except Exception:  # noqa: BLE001 -- a compiled epilogue that fails here: the eager one from now on
-                    if epilogue is reference:
-                        raise
-                    _EPILOGUE["failed"] = True
-                    epilogue = reference
-                    got = reference(*args)
+                xs = xs.reshape(-1).to(torch.float32)
+                got = None
+                if part.shape[0] >= _MIN_ROWS:
+                    # torch._int_mm, then the epilogue in one Triton pass (bit-identical to the eager reference)
+                    got = int8_epilogue_triton(torch._int_mm(xq, q8.t()), xs, ws, bias)
+                if got is None:
+                    got = reference(xq, q8, xs, ws, bias)
                 out[start : start + part.shape[0]] = got
             return out.reshape(*x.shape[:-1], self.out_features)
 

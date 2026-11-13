@@ -754,14 +754,10 @@ def test_compiled_default_route_without_a_race(monkeypatch):
     assert calls == ["_int8"]
 
 
-def test_int8r_epilogue_follows_the_native_gate_and_its_failure(monkeypatch):
-    import core.inference.diffusion_native_quant as nq
+def test_int8_epilogue_kernel_declines_what_it_does_not_cover():
+    from core.inference.diffusion_grouped_int8_triton import int8_epilogue_triton
 
-    gi._EPILOGUE.clear()
-    monkeypatch.setattr(nq, "_fused_w8a8", lambda device = None: None)
-    assert gi._int8r_epilogue(None) is None  # no compiled native linear here: the eager reference
-    monkeypatch.setattr(nq, "_fused_w8a8", lambda device = None: object())
-    assert gi._int8r_epilogue(None) is not None
-    gi._EPILOGUE["failed"] = True
-    assert gi._int8r_epilogue(None) is None
-    gi._EPILOGUE.clear()
+    acc = torch.zeros(32, 16, dtype = torch.int32)
+    xs, ws = torch.ones(32), torch.ones(16)
+    assert int8_epilogue_triton(acc, xs, ws, None) is None  # CPU: the eager reference runs
+    assert int8_epilogue_triton(acc.float(), xs, ws, None) is None

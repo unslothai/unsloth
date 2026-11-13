@@ -67,3 +67,37 @@ def grouped_decode_kernel(
     s = tl.load(sf_ptr + r64[:, None] * groups + (c64 // GROUP)[None, :], mask = mask, other = 0)
     q = _rint_clamp(level * _e4m3(s.to(tl.int32)))
     tl.store(out_ptr + r64[:, None] * k + c64[None, :], q.to(tl.int8), mask = mask)
+
+
+@triton.jit
+def int8_epilogue_kernel(
+    acc_ptr,
+    xs_ptr,
+    ws_ptr,
+    b_ptr,
+    out_ptr,
+    M,
+    N,
+    HAS_BIAS: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    # torchao's epilogue on a torch._int_mm result, every rounding kept (as Studio's int8 GEMM epilogue with fp32
+    # scales): fp32(acc) * xs -> bf16, * ws in fp32, + bias in fp32, -> bf16
+    rm = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    rn = tl.program_id(1) * BLOCK_N + tl.arange(0, BLOCK_N)
+    mm = rm < M
+    mn = rn < N
+    mask = mm[:, None] & mn[None, :]
+    offs = rm.to(tl.int64)[:, None] * N + rn[None, :]
+    acc = tl.load(acc_ptr + offs, mask = mask, other = 0)
+    xs = tl.load(xs_ptr + rm, mask = mm, other = 0.0)
+    ws = tl.load(ws_ptr + rn, mask = mn, other = 0.0)
+    y = tl.extra.cuda.libdevice.mul_rn(acc.to(tl.float32), xs[:, None])
+    y = y.to(tl.bfloat16).to(tl.float32)
+    y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
+    if HAS_BIAS:
+        y = tl.extra.cuda.libdevice.add_rn(
+            y, tl.load(b_ptr + rn, mask = mn, other = 0.0).to(tl.float32)[None, :]
+        )
+    tl.store(out_ptr + offs, y.to(tl.bfloat16), mask = mask)

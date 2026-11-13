@@ -158,3 +158,67 @@ def decode_int8_op() -> Any:
 
         _OP["op"] = decode
         return decode
+
+
+_EPI_BLOCK = (32, 128)
+
+
+def int8_epilogue_triton(acc: Any, xs: Any, ws: Any, bias: Any) -> Optional[Any]:
+    """bf16 ``[M, N]`` of torchao's epilogue on an int32 ``torch._int_mm`` result with fp32 row / column scales (and a
+    bf16 bias) in one pass, bit-identical to ``diffusion_int8_gemm.reference``; None when not covered here."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        if not acc.is_cuda or acc.dtype != torch.int32 or acc.dim() != 2 or not acc.is_contiguous():
+            return None
+        m, n = int(acc.shape[0]), int(acc.shape[1])
+        if xs.dtype != torch.float32 or ws.dtype != torch.float32:
+            return None
+        if xs.numel() != m or ws.numel() != n or xs.device != acc.device or ws.device != acc.device:
+            return None
+        if bias is not None and (
+            bias.dtype != torch.bfloat16 or bias.numel() != n or bias.device != acc.device
+        ):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    with _LOCK:
+        kernel = _STATE.get("epilogue", False)
+        if kernel is False:
+            try:
+                from .diffusion_grouped_int8_kernels import int8_epilogue_kernel as kernel
+            except Exception:  # noqa: BLE001
+                kernel = None
+            _STATE["epilogue"] = kernel
+    if kernel is None:
+        return None
+    import triton
+
+    out = torch.empty((m, n), dtype = torch.bfloat16, device = acc.device)
+    if m == 0 or n == 0:
+        return out
+    bm, bn = _EPI_BLOCK
+    xs = xs.reshape(-1).contiguous()
+    ws = ws.reshape(-1).contiguous()
+    try:
+        with torch.cuda.device(acc.device):
+            kernel[(triton.cdiv(m, bm), triton.cdiv(n, bn))](
+                acc,
+                xs,
+                ws,
+                bias.contiguous() if bias is not None else ws,
+                out,
+                m,
+                n,
+                HAS_BIAS = bias is not None,
+                BLOCK_M = bm,
+                BLOCK_N = bn,
+                enable_fp_fusion = False,
+            )
+    except Exception:  # noqa: BLE001 -- the eager epilogue is the same maths
+        with _LOCK:
+            _STATE["epilogue"] = None
+        return None
+    return out
