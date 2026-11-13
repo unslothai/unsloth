@@ -17,6 +17,8 @@ MAX_CHUNK_SIZE = 20000
 _MIN_BREAK_RATIO = 0.6
 _CACHE_DIR = LazyPath(unstructured_seed_cache_root)
 _WHITESPACE = re.compile(r"\s+")
+# Same matches as \n{3,}, but the literal prefix lets re skip to each newline instead of trying every offset.
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 # Bump when chunk output changes so cached Parquet seeds are rebuilt.
 _CHUNKER_VERSION = 2
 
@@ -252,7 +254,7 @@ def load_unstructured_text_file(path: Path) -> str:
 
 def normalize_unstructured_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    return re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    return _BLANK_LINE_RUN.sub("\n\n", normalized).strip()
 
 
 def split_text_into_chunks(*, text: str, chunk_size: int, chunk_overlap: int) -> list[str]:

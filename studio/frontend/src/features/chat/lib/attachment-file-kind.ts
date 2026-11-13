@@ -4,13 +4,13 @@
 // Name and MIME only: this runs on every tile and row.
 
 import {
+  CodeXmlIcon,
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
   ImageIcon,
   Pdf01Icon,
   Presentation01Icon,
-  SourceCodeIcon,
   Zip02Icon,
 } from "@hugeicons/core-free-icons";
 // Relative so the node tests can load this file.
@@ -105,8 +105,8 @@ export const ATTACHMENT_KIND_ICONS = {
   document: FileEmpty02Icon,
   spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
-  web: SourceCodeIcon,
-  code: SourceCodeIcon,
+  web: CodeXmlIcon,
+  code: CodeXmlIcon,
   text: FileEmpty02Icon,
   archive: Zip02Icon,
   file: FileEmpty02Icon,

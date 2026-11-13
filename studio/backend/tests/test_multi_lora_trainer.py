@@ -376,6 +376,34 @@ def test_completion_masking_masks_the_prompt():
     assert labels[response:] == ids[response:]
 
 
+def test_completion_drops_from_truncation_name_the_context_length():
+    tokenizer = _tokenizer()
+    tokenizer._unsloth_input_part = "[U]"
+    tokenizer._unsloth_output_part = "[B]"
+    long_prompt = "[U] " + " ".join(WORDS[:20]) + " [B] w4 w5 [EOS]"
+    info = {
+        "dataset": Dataset.from_dict({"text": [long_prompt] * 3 + ["[U] w1 [B] w2 [EOS]"]}),
+        "final_format": "",
+    }
+    with pytest.raises(ValueError) as exc:
+        mlt._tokenize_member(info, tokenizer, {"train_on_completions": True}, "tiny/qwen3", 16)
+    message = str(exc.value)
+    assert "3/4 samples (75.0%) were dropped" in message
+    assert "3 of them reach the context length (16 tokens)" in message
+    assert "response template was not found in the formatted samples" not in message
+
+
+def test_completion_drops_without_a_template_keep_the_template_advice():
+    tokenizer = _tokenizer()
+    tokenizer._unsloth_input_part = "[U]"
+    tokenizer._unsloth_output_part = "[B]"
+    info = {"dataset": Dataset.from_dict({"text": ["[U] w1 w2 [EOS]"] * 3}), "final_format": ""}
+    with pytest.raises(ValueError) as exc:
+        mlt._tokenize_member(info, tokenizer, {"train_on_completions": True}, "tiny/qwen3", 64)
+    assert "response template was not found" in str(exc.value)
+    assert "context length" not in str(exc.value)
+
+
 def test_batch_trains_through_sft_trainer_and_saves_checkpoints(monkeypatch, tmp_path):
     from trl import SFTTrainer
 
@@ -963,6 +991,20 @@ def test_packing_is_refused_where_packed_documents_see_each_other(monkeypatch, t
     events, _, _ = _run(monkeypatch, PACKED[:2], max_seq_length = 24)
     assert seen == []
     assert all(_member_events(events, m["run_id"])[-1]["type"] == "complete" for m in PACKED[:2])
+
+
+@pytest.mark.parametrize("target", ["embed_tokens", "lm_head", "model.embed_tokens"])
+def test_an_embedding_target_fails_instead_of_training_something_else(
+    monkeypatch, tmp_path, target
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, model, pristine = _run(monkeypatch, MEMBERS[:2], target_modules = ["q_proj", target])
+    for m in MEMBERS[:2]:
+        mine = _member_events(events, m["run_id"])
+        assert mine[-1]["type"] == "error" and target in mine[-1]["error"], mine[-1]
+        assert not any(e.get("output_dir") for e in mine)
+    assert type(model.lm_head) is type(pristine.lm_head)
+    assert [e["type"] for e in events if "member_run_id" not in e][-1] == "error"
 
 
 def test_an_expert_only_moe_target_trains_batched(monkeypatch, tmp_path):

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export {
+  clearDownloadTransportCapabilitiesCache,
   DOWNLOAD_KIND,
   DownloadProgressBar,
   downloadManager,
@@ -51,6 +52,7 @@ export {
   type DeviceInventoryRows,
   type DeviceInventorySource,
   type DeviceInventorySourceState,
+  type EngramTableDetail,
   type GgufVariantDetail,
   type GgufVariantsResponse,
   type HubInventory,

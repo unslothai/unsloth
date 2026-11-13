@@ -399,8 +399,7 @@ def _download_app(monkeypatch, tmp_path: Path, jobs_route):
 
 
 def test_download_link_is_minted_over_the_bearer_and_used_without_one(monkeypatch, tmp_path: Path):
-    """The URL is fetched without a header, so it carries a signed capability rather than the
-    session token, which download history would keep."""
+    """Download history would keep a session token, so the URL carries a signed capability."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -750,6 +749,146 @@ def test_jsonl_export_stays_a_plain_file_without_images(tmp_path: Path, monkeypa
         file_path.unlink(missing_ok = True)
 
 
+def _schema_transform_artifact(tmp_path: Path, monkeypatch) -> Path:
+    dataset_path = tmp_path / "recipe-datasets" / "job-schema-transform"
+    _write_parquet_rows(dataset_path / "parquet-files", [{"question": "Q1", "answer": "A1"}])
+    _write_parquet_rows(
+        dataset_path / "processors-files" / "chat_format",
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "Q1"},
+                    {"role": "assistant", "content": "A1"},
+                ]
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+    return dataset_path
+
+
+def test_jsonl_export_includes_schema_transform_output(tmp_path: Path, monkeypatch):
+    dataset_path = _schema_transform_artifact(tmp_path, monkeypatch)
+
+    from core.data_recipe.export import download_filename
+
+    assert (
+        download_filename(artifact_path = str(dataset_path), export_format = "jsonl", stem = "run")
+        == "run.jsonl.zip"
+    )
+    file_path, media_type, download_name = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "run",
+    )
+    try:
+        assert (media_type, download_name) == ("application/zip", "run.jsonl.zip")
+        with zipfile.ZipFile(file_path) as archive:
+            names = sorted(archive.namelist())
+            rows = archive.read("run.jsonl").decode("utf-8")
+            transformed = archive.read("processors/chat_format.jsonl").decode("utf-8")
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert names == ["processors/chat_format.jsonl", "run.jsonl"]
+    assert json.loads(rows.strip()) == {"question": "Q1", "answer": "A1"}
+    assert json.loads(transformed.strip()) == {
+        "messages": [
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+        ]
+    }
+
+
+def test_parquet_export_includes_schema_transform_output(tmp_path: Path, monkeypatch):
+    dataset_path = _schema_transform_artifact(tmp_path, monkeypatch)
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "parquet",
+        filename_stem = "run",
+    )
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            names = sorted(archive.namelist())
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert names == ["batch_00000.parquet", "processors/chat_format/batch_00000.parquet"]
+
+
+@pytest.mark.parametrize(
+    ("export_format", "expected"),
+    [
+        (
+            "jsonl",
+            [
+                "images/a.png",
+                "processors/alpaca.jsonl",
+                "processors/chat_format.jsonl",
+                "run.jsonl",
+            ],
+        ),
+        (
+            "parquet",
+            [
+                "batch_00000.parquet",
+                "images/a.png",
+                "processors/alpaca/batch_00000.parquet",
+                "processors/chat_format/batch_00000.parquet",
+            ],
+        ),
+    ],
+)
+def test_export_includes_every_schema_transform_beside_images(
+    tmp_path: Path, monkeypatch, export_format: str, expected: list[str]
+):
+    dataset_path = _schema_transform_artifact(tmp_path, monkeypatch)
+    _write_parquet_rows(dataset_path / "processors-files" / "alpaca", [{"instruction": "Q1"}])
+    (dataset_path / "images").mkdir()
+    (dataset_path / "images" / "a.png").write_bytes(b"png")
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = export_format,
+        filename_stem = "run",
+    )
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            assert sorted(archive.namelist()) == expected
+            if export_format == "jsonl":
+                alpaca = archive.read("processors/alpaca.jsonl").decode("utf-8")
+                assert json.loads(alpaca.strip()) == {"instruction": "Q1"}
+    finally:
+        file_path.unlink(missing_ok = True)
+
+
+def test_jsonl_export_stays_plain_when_no_transform_wrote_shards(tmp_path: Path, monkeypatch):
+    dataset_path = tmp_path / "recipe-datasets" / "job-empty-transform"
+    _write_parquet_rows(dataset_path / "parquet-files", [{"question": "Q1"}])
+    (dataset_path / "processors-files" / "empty").mkdir(parents = True)
+    (dataset_path / "processors-files" / "preview.parquet").write_bytes(b"not a folder")
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    from core.data_recipe.export import download_filename
+
+    assert (
+        download_filename(artifact_path = str(dataset_path), export_format = "jsonl", stem = "run")
+        == "run.jsonl"
+    )
+    file_path, media_type, download_name = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "run",
+    )
+    file_path.unlink(missing_ok = True)
+    assert (media_type, download_name) == ("application/x-ndjson", "run.jsonl")
+
+
 def test_jsonl_reader_preserves_columns_named_like_old_reader_helpers(tmp_path: Path):
     from core.data_recipe.export import _write_jsonl_from_parquet
 
@@ -778,8 +917,7 @@ def test_minting_refuses_a_run_whose_shards_are_gone(tmp_path: Path, monkeypatch
 
 
 def test_minting_is_refused_for_a_keyless_caller(monkeypatch, tmp_path: Path):
-    """The capability outlives the setting that admitted the caller, so a keyless request may not
-    mint one. Same refusal the signed gallery-video links make."""
+    """Keyless callers cannot mint one: the capability outlives the setting that admitted them."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -796,8 +934,7 @@ def test_minting_is_refused_for_a_keyless_caller(monkeypatch, tmp_path: Path):
 
 
 def test_download_link_outlasts_the_native_save_dialog():
-    """The chooser opens before the request, so a link expiring while it sits open 401s after the
-    destination was picked."""
+    """The save chooser opens before the request, so _DOWNLOAD_LINK_TTL must outlast it."""
     jobs_route = pytest.importorskip("routes.data_recipe.jobs")
 
     assert jobs_route._DOWNLOAD_LINK_TTL >= 15 * 60
@@ -904,9 +1041,8 @@ def test_jsonl_reader_preserves_hugging_face_image_struct_bytes(tmp_path: Path):
 
 
 def test_a_row_is_not_mistaken_for_an_image(tmp_path: Path):
-    """to_preview_jsonable's Hugging Face image detection matches any mapping carrying `bytes` or
-    `path`, and a row is one. Passing whole rows in replaced every column, labels included, with a
-    single JPEG preview payload."""
+    """to_preview_jsonable's image detection matches any mapping with bytes or path, and a row is
+    one, so passing whole rows replaced every column (labels included) with a JPEG preview."""
     pyarrow = pytest.importorskip("pyarrow")
     import pyarrow.parquet as pyarrow_parquet
     from PIL import Image

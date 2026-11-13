@@ -533,7 +533,7 @@ test("Record is offered only where the browser can capture audio", () => {
 });
 
 test("a Transcribe recording is stopped at the 30 minute limit the inputs route accepts", () => {
-  // 30 minutes of 16 kHz PCM is ~58 MB, under the 200 MB backend cap.
+  // 30 minutes of 16 kHz PCM is ~58 MB, under the backend cap's 200 MB floor.
   assert.match(audioPageSource, /const RECORDING_MAX_SECONDS = 30 \* 60;/);
   assert.match(audioPageSource, /maxRecordSeconds=\{RECORDING_MAX_SECONDS\}/);
   assert.match(
@@ -1063,7 +1063,7 @@ test("deleting the audio.cpp package forgets the folders remembered from it", ()
 });
 
 
-test("Eject is offered only for a resident Transcribe model, and never while busy", () => {
+test("Eject is offered only for a resident Transcribe model, and never while loading or unloading", () => {
   const idle = { busy: null, hasValue: true, showLastPageModel: false } as const;
   assert.equal(audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true }), true);
   // After an unload the selector still shows the last model; Eject there released nothing.
@@ -1076,6 +1076,14 @@ test("Eject is offered only for a resident Transcribe model, and never while bus
   assert.equal(
     audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true, busy: "unloading" }),
     false,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, busy: "generating" }),
+    true,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true, busy: "transcribing" }),
+    true,
   );
   assert.equal(
     audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, hasValue: false }),

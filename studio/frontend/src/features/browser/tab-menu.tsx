@@ -15,8 +15,8 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useChatRuntimeStore } from "@/features/chat";
-import { resetToNewChat } from "@/features/library";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { resetToNewChat } from "@/features/library/start-chat";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { ForkIcon } from "@/lib/fork-icon";

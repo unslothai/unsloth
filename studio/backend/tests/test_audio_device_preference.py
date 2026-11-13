@@ -68,6 +68,32 @@ def test_without_the_environment_variable_nothing_is_forced_to_cpu(monkeypatch):
     assert not audio_device_forces_cpu(None)
 
 
+def test_saved_voice_settings_device_is_the_stt_default_when_env_is_unset(monkeypatch, tmp_path):
+    """Cold /v1/audio/transcriptions must honour Voice Settings "Load into" (#15280)."""
+    from core.inference.audio_device import stt_device_default, stt_device_forces_cpu
+    from storage import studio_db
+    from utils import stt_device_settings as sds
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    sds.forget_cached_stt_device()
+
+    assert stt_device_default() == "auto"
+    sds.set_stt_device("cpu")
+    assert stt_device_default() == "cpu"
+    assert stt_device_forces_cpu(None)
+    assert not stt_device_forces_cpu("gpu")
+    # The STT choice does not move TTS / native audio, which read the env-only default.
+    assert audio_device_default() == "auto"
+    assert not audio_device_forces_cpu(None)
+
+    # Env still outranks the saved choice (headless/CLI).
+    monkeypatch.setenv("UNSLOTH_AUDIO_DEVICE", "auto")
+    assert stt_device_default() == "auto"
+    assert not stt_device_forces_cpu(None)
+
+
 def _torch_with_cuda(monkeypatch):
     """A torch whose CUDA is available, so anything but CPU is a real choice."""
     torch = types.SimpleNamespace(
@@ -321,6 +347,8 @@ def test_the_mtmd_reuse_branch_still_records_the_choice(monkeypatch):
     sidecar._model_id = "m"
     sidecar._binary_path_revision = 1
     sidecar._active_requests = 0
+    sidecar._context_preference = 0
+    sidecar._context_length = 4096
     monkeypatch.setattr(sidecar, "_process_alive", lambda: True)
     monkeypatch.setattr(sidecar, "_schedule_idle_unload_locked", lambda: None)
     monkeypatch.setattr(stt_mtmd_sidecar, "_training_active", lambda: True)
@@ -331,8 +359,7 @@ def test_the_mtmd_reuse_branch_still_records_the_choice(monkeypatch):
 
 
 def test_stt_unload_can_skip_a_sidecar_that_is_mid_transcription():
-    """The Voice device switch is an early release, not a reclaim: draining a
-    live transcription for 30s and then killing it loses the recording."""
+    """Early release, not reclaim: killing a mid-transcription sidecar loses the recording."""
     import inspect
 
     from core.inference import stt_registry

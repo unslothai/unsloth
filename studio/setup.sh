@@ -1999,8 +1999,15 @@ _packaged_frontend_available() {
 _install_oxc_runtime() {
 # Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
 # Node, so do not run npm install against an unsuitable/absent system Node.
-if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null \
+    && [ -f "$_OXC_DIR/package-lock.json" ] && [ -f "$_OXC_DIR/install-stamp.mjs" ] \
+    && node "$_OXC_DIR/install-stamp.mjs" check >/dev/null 2>&1; then
+    verbose_substep "oxc validator runtime up to date"
+    cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
     cd "$_OXC_DIR"
+    # Gone before npm touches the tree, so an interrupted install is never trusted.
+    rm -f "$_OXC_DIR/node_modules/.unsloth-install-stamp.json" 2>/dev/null || :
     _OXC_INSTALL_LOG=$(mktemp)
     _CAPTURE_LOG="$_OXC_INSTALL_LOG"
     # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
@@ -2019,6 +2026,7 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
         setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
     fi
     rm -f "$_OXC_INSTALL_LOG"
+    [ "$_NPM_INSTALL" != ci ] || node "$_OXC_DIR/install-stamp.mjs" write >/dev/null 2>&1 || :
     cd "$SCRIPT_DIR"
 elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     # No npm on PATH: skip rather than abort; the backend Node resolver degrades
@@ -3585,15 +3593,15 @@ elif [ -d "$STUDIO_HOME/.venv_t5" ]; then
     _NEED_T5_510=true
 fi
 _sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
-_sidecar_current "$VENV_T5_550_DIR" "5.5.0" || _NEED_T5_550=true
-_sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
+_sidecar_current "$VENV_T5_550_DIR" "5.5.4" || _NEED_T5_550=true
+_sidecar_current "$VENV_T5_510_DIR" "5.13.1" || _NEED_T5_510=true
 # Sidecar rebuilds reach the network; defer under offline keep. Deferred tiers are not reported current.
 _DEFER_T5_530=false
 _DEFER_T5_550=false
 _DEFER_T5_510=false
 # The pip fallback does not read UV_OFFLINE.
 if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
-    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
+    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.13.1"; do
         # Not `set --`: at top-level scope that overwrites the script's own "$@".
         _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
         if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
@@ -3605,7 +3613,7 @@ if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
     unset _ofp _ofp_key _ofp_ver
 fi
 if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
-    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
+    for _ofp in "530 5.3.0" "550 5.5.4" "510 5.13.1"; do
         _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
         if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
             substep "transformers $_ofp_ver sidecar is stale but UV_OFFLINE is set -- left for the next online update"
@@ -3625,20 +3633,20 @@ else
     _sidecar_top_up_tiktoken "$VENV_T5_530_DIR" "5.3"
 fi
 if [ "$_NEED_T5_550" = true ]; then
-    _install_sidecar "$VENV_T5_550_DIR" "5.5.0" "5.5"
+    _install_sidecar "$VENV_T5_550_DIR" "5.5.4" "5.5"
 elif [ "$_DEFER_T5_550" = true ]; then
-    step "transformers" "5.5.0 sidecar stale -- left for the next online update"
+    step "transformers" "5.5.4 sidecar stale -- left for the next online update"
 else
-    step "transformers" "5.5.0 sidecar current"
+    step "transformers" "5.5.4 sidecar current"
     _sidecar_top_up_tiktoken "$VENV_T5_550_DIR" "5.5"
 fi
 if [ "$_NEED_T5_510" = true ]; then
-    _install_sidecar "$VENV_T5_510_DIR" "5.10.2" "5.10"
+    _install_sidecar "$VENV_T5_510_DIR" "5.13.1" "5.13"
 elif [ "$_DEFER_T5_510" = true ]; then
-    step "transformers" "5.10.2 sidecar stale -- left for the next online update"
+    step "transformers" "5.13.1 sidecar stale -- left for the next online update"
 else
-    step "transformers" "5.10.2 sidecar current"
-    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.10"
+    step "transformers" "5.13.1 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.13"
 fi
 fi
 

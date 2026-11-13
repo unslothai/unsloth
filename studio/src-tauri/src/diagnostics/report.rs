@@ -38,6 +38,10 @@ pub(crate) fn render_report(
         std::env::var_os("APPIMAGE").is_some()
     ));
     raw.push_str(&format!(
+        "appimage_webkit_mode={}\n",
+        crate::appimage_webkit::mode_label(|name| std::env::var_os(name))
+    ));
+    raw.push_str(&format!(
         "cpu_logical_count={}\n",
         std::thread::available_parallelism()
             .map(|n| n.get().to_string())

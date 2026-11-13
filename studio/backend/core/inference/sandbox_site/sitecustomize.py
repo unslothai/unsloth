@@ -10,8 +10,7 @@ import json
 import os
 import sys
 
-# Code-interpreter convention prefixes. Remapping is gated on the prefix being ABSENT (see _remap) so a genuine host
-# mount / user dir is never shadowed.
+# Prefixes remapped only when ABSENT (see _remap), so a real host mount is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # /tmp exists on the host; separate only to note that. The absence gate applies alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
@@ -151,7 +150,14 @@ def _remap(path, notify = True):
         return path
     if not isinstance(text, str):
         return path
+    # Windows renders Path("/mnt/data/x") as "\\mnt\\data\\x": compare both sides with forward slashes. A drive or UNC
+    # path still cannot match a rooted prefix like "/mnt/data".
+    windows = os.sep == "\\"
+    if windows:
+        text = text.replace("\\", "/")
     for prefix in _PREFIXES + _CONDITIONAL_PREFIXES:
+        if windows:
+            prefix = prefix.replace("\\", "/")
         # Heal only while the prefix directory is absent, so a real host mount is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
             return _map_onto_cwd(prefix, text, notify = notify)
@@ -221,8 +227,7 @@ def _install():
     # Path.touch() and other low-level opens call os.open directly, so patch it too.
     os.open = _os_open
     os.makedirs = _makedirs
-    # Path.mkdir(parents=True) calls os.mkdir per component, so patch os.mkdir; patch Path.mkdir itself too so
-    # exist_ok/parents land on the mapped path.
+    # Path.mkdir calls os.mkdir per part; patch both, since exist_ok/parents need Path.mkdir.
     os.mkdir = _mkdir
     pathlib.Path.mkdir = _path_mkdir
 
@@ -239,8 +244,8 @@ except Exception:  # noqa: BLE001 - a broken shim must never break user code
 class _HostPackagesFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 
-    def __init__(self, folder):
-        self._folder = folder
+    def __init__(self, folders):
+        self._folders = [folder for folder in folders.split(os.pathsep) if folder]
 
     def find_spec(
         self,
@@ -253,7 +258,7 @@ class _HostPackagesFinder:
         if "." not in name:
             if path is not None or name in self._skip:
                 return None
-            return importlib.machinery.PathFinder.find_spec(name, [self._folder])
+            return importlib.machinery.PathFinder.find_spec(name, self._folders)
         parent, _, _ = name.rpartition(".")
         module = sys.modules.get(parent)
         spec = getattr(module, "__spec__", None)
@@ -263,15 +268,18 @@ class _HostPackagesFinder:
         pkgutil_style = spec.origin not in (None, "namespace")
         if pkgutil_style and not self._extends_path(spec.origin):
             return None
-        portion = os.path.join(self._folder, *parent.split("."))
-        if not os.path.isdir(portion):
+        portions = [os.path.join(folder, *parent.split(".")) for folder in self._folders]
+        portions = [portion for portion in portions if os.path.isdir(portion)]
+        if not portions:
             return None
-        found = importlib.machinery.PathFinder.find_spec(name, [portion])
+        found = importlib.machinery.PathFinder.find_spec(name, portions)
         if found is not None:
-            # The portion extend_path / PEP 420 would have collected; a _NamespacePath drops it on sys.path changes.
+            # The portions extend_path / PEP 420 would have collected; a _NamespacePath drops them on sys.path changes.
             search = getattr(module, "__path__", None)
-            if search is not None and hasattr(search, "append") and portion not in list(search):
-                search.append(portion)
+            if search is not None and hasattr(search, "append"):
+                for portion in portions:
+                    if portion not in list(search):
+                        search.append(portion)
         return found
 
     _extends = {}
@@ -324,8 +332,55 @@ class _HostPackagesFinder:
         import importlib.metadata
 
         return importlib.metadata.MetadataPathFinder.find_distributions(
-            importlib.metadata.DistributionFinder.Context(name = name, path = [self._folder])
+            importlib.metadata.DistributionFinder.Context(name = name, path = self._folders)
         )
+
+
+# --ignore-installed never uninstalls, so a reinstall leaves stale dist-info importlib.metadata may pick;
+# RECORD is written last, so the newest RECORD per project is the finished install.
+def _prune_stale_dist_info():
+    try:
+        prefix = os.environ.get("PIP_PREFIX")
+        if not prefix:
+            return
+        root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
+        for entry in sys.path:
+            if not entry or not os.path.normcase(os.path.abspath(entry)).startswith(root):
+                continue
+            try:
+                names = os.listdir(entry)
+            except OSError:
+                continue
+            projects = {}
+            for name in names:
+                if name.endswith(".dist-info"):
+                    project = (
+                        name[:-10].rpartition("-")[0].lower().replace("-", "_").replace(".", "_")
+                    )
+                    projects.setdefault(project, []).append(name)
+            for found in projects.values():
+                if len(found) < 2:
+                    continue
+                stamped = []
+                for name in found:
+                    try:
+                        stamped.append(
+                            (os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns, name)
+                        )
+                    except OSError:
+                        pass
+                import shutil
+
+                for _, name in sorted(stamped)[:-1]:
+                    shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
+    except Exception:  # noqa: BLE001 - a broken shim must never break user code
+        pass
+
+
+if os.environ.get("PIP_PREFIX"):
+    import atexit
+    _prune_stale_dist_info()
+    atexit.register(_prune_stale_dist_info)
 
 
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
@@ -333,10 +388,8 @@ if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.me
     sys.meta_path.append(_HostPackagesFinder(_host_packages))
 
 
-# Helper modules the approved script imports by name come from the chat folder, after everything
-# else, so they never shadow anything. Served by a last-resort finder for exactly those names rather
-# than sys.path: site imports `usercustomize` after this file, and a library probing an optional
-# import must not find a module an earlier sandboxed call planted there.
+# Helpers come from the chat folder via a last-resort finder, not sys.path, since site imports
+# usercustomize after this file and an earlier sandboxed call must not plant a module there.
 class _HostWorkdirFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 
@@ -382,3 +435,69 @@ if (
     and not any(isinstance(f, _HostWorkdirFinder) for f in sys.meta_path)
 ):
     sys.meta_path.append(_HostWorkdirFinder(_host_workdir, _host_modules))
+
+
+# The static host check cannot see DNS aliases or redirects; every connect does see the final address.
+_METADATA_NAMES = frozenset(
+    (
+        "metadata",
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata.tencentyun.com",
+        "instance-data.ec2.internal",
+    )
+)
+_METADATA_ADDRS = frozenset(("fd00:ec2::254", "fd20:ce::254", "100.100.100.200", "100.100.100.110"))
+
+
+def _metadata_address(host):
+    import ipaddress
+
+    if not isinstance(host, str):
+        return False
+    host = host.split("%", 1)[0].rstrip(".").lower()
+    if host in _METADATA_NAMES:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.version == 6:
+        ip = ip.ipv4_mapped or ip.sixtofour or ip
+    if ip.version == 4 and ip in ipaddress.ip_network("169.254.0.0/16"):
+        return True
+    return ip.compressed in _METADATA_ADDRS
+
+
+def _resolves_to_metadata(host):
+    import ipaddress
+    import socket
+
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return False
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        return False
+    return any(_metadata_address(info[4][0]) for info in infos)
+
+
+def _metadata_connect_hook(event, args):
+    if event != "socket.connect":
+        return
+    address = args[1] if len(args) > 1 else None
+    if not (isinstance(address, tuple) and address and isinstance(address[0], str)):
+        return
+    # The event carries the caller's address, so a raw connect to a name is resolved here.
+    if _metadata_address(address[0]) or _resolves_to_metadata(address[0]):
+        raise PermissionError(f"Blocked: cloud-metadata host ({address[0]})")
+
+
+if os.environ.get("_UNSLOTH_SANDBOX_BLOCK_METADATA") == "1" and not getattr(
+    sys, "_unsloth_metadata_hook", False
+):
+    sys.addaudithook(_metadata_connect_hook)
+    sys._unsloth_metadata_hook = True

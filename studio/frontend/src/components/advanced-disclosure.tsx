@@ -4,7 +4,7 @@
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import type { ReactNode } from "react";
 
-import { Settings02Icon } from "@hugeicons/core-free-icons";
+import { Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { cn } from "@/lib/utils";
@@ -40,7 +40,7 @@ export function AdvancedDisclosure({
         )}
       >
         <HugeiconsIcon
-          icon={Settings02Icon}
+          icon={Settings01Icon}
           className="size-3.5 shrink-0 text-muted-foreground"
         />
         <span className="min-w-0 flex-1 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">

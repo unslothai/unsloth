@@ -28,10 +28,9 @@ _LPIPS = {"fn": None}
 
 
 def _lpips(ref_arr, arr):
-    """Perceptual LPIPS (alexnet) vs reference; lower is closer. None if unavailable.
-
-    Runs on CPU so the scorer never holds CUDA memory: each row resets peak VRAM, so a
-    resident GPU LPIPS module would inflate the reported load/gen VRAM and could even OOM."""
+    """Perceptual LPIPS (alexnet) distance, lower is closer; None if unavailable. Runs on CPU so the
+    scorer never holds CUDA memory: a resident GPU module would inflate per-row peak VRAM and
+    could OOM."""
     try:
         import torch
         import lpips
@@ -108,9 +107,8 @@ def _quant_config(name):
 
 
 def _make_filter_fn(min_features):
-    """Keep only the FLOP-heavy linears: nn.Linear with both in/out >= min_features.
-    The int8 dynamic path uses torch._int_mm (needs activation M>16), and the tiny
-    timestep/pooled projections (in_features=256) run at M=1 and crash it -- skip them."""
+    """Keep only nn.Linear layers with both in and out >= min_features; torch._int_mm needs
+    activation M>16, so tiny M=1 projections crash it and are skipped."""
     import torch.nn as nn
 
     def filter_fn(module, fqn = ""):

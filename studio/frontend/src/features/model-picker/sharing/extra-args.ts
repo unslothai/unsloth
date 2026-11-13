@@ -40,7 +40,8 @@ const threads = number(-1, 1024, true);
 const context: ValueRule = (value) =>
   value === "0" || number(CONTEXT_LENGTH_MIN, 2_147_483_647)(value);
 const batch: ValueRule = (value) => number(N_BATCH_MIN, N_BATCH_MAX)(value);
-const layers = number(-1, 2_147_483_647);
+const layers: ValueRule = (value) =>
+  value === "auto" || value === "all" || number(-1, 2_147_483_647)(value);
 const cache: ValueRule = (value) =>
   value === "f16" || KV_CACHE_DTYPES.some((dtype) => dtype === value);
 const ratio = number(0, 1);

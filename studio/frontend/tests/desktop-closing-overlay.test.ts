@@ -171,8 +171,8 @@ test("the overlay names the wait it is covering", async () => {
   const screen = await readSrc("components/tauri/startup-screen.tsx");
   const body = closingContent(screen);
 
-  assert.match(body, /Closing Unsloth Desktop\.\.\./);
-  assert.match(body, /Shutting down the backend\./);
+  assert.match(body, /t\("desktopStartup\.closing"\)/);
+  assert.match(body, /t\("desktopStartup\.closingDetail"\)/);
   assert.match(body, /<Spinner className="size-6 text-primary" \/>/);
 });
 

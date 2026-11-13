@@ -88,6 +88,8 @@ export interface LoadModelRequest {
   cache_type_kv?: string | null;
   mlx_kv_quant?: string | null;
   mlx_int8_prefill?: boolean;
+  mlx_ane_prefill?: boolean;
+  mlx_fast_verify?: boolean;
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlx_ple_offload?: "off" | number | null;
   mlx_expert_offload?: "off" | number | null;
@@ -116,6 +118,8 @@ export interface LoadModelRequest {
   llama_extra_args?: string[] | null;
   tensor_parallel?: boolean | null;
   disable_vision?: boolean | null;
+  /** GGUF only: load with the repo's standalone Engram table of this precision; null keeps the quant's own. */
+  engram_precision?: string | null;
   /** "manual": gpu_layers -1 hands sizing to llama.cpp --fit, >= 0 pins layers/n_cpu_moe. */
   gpu_memory_mode?: "auto" | "manual";
   /** -1 = Auto (--fit). */
@@ -163,6 +167,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  estimated_resident_gb?: number | null;
   /** Streamed lookup-table bytes inside `size_bytes`; 0 when none or on an older backend. */
   lookup_table_bytes?: number;
   pending_drafter_filename?: string | null;
@@ -172,6 +177,18 @@ export interface GgufVariantDetail {
   partial?: boolean;
   /** Not repo-wide: one repo can hold several GGUF families. Null means the repo is one group. */
   dependency_key?: string | null;
+  /** Precision of the Engram table this quant ships with, when the repo publishes others. */
+  engram_precision?: string | null;
+  /** Engram precisions this quant loads with without downloading anything. */
+  engram_ready?: string[];
+}
+
+/** A standalone Engram table a GGUF repo publishes. */
+export interface EngramTableDetail {
+  precision: string;
+  filename: string;
+  size_bytes: number;
+  downloaded: boolean;
 }
 
 export interface GgufVariantsResponse {
@@ -183,6 +200,10 @@ export interface GgufVariantsResponse {
   context_length?: number | null;
   /** "mlx" for precision folders of an MLX repo. */
   variant_format?: string | null;
+  /** Standalone Engram tables, most precise first; absent or empty when the repo has none. */
+  engram_tables?: EngramTableDetail[];
+  /** Whether this server's llama.cpp takes --ple; null when there are no tables or no probe. */
+  engram_supported?: boolean | null;
 }
 
 export function isMultimodalResponse(
@@ -233,6 +254,7 @@ export interface LoadModelResponse {
   audio_device_fallback?: "cpu" | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
+  speaks?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -267,6 +289,12 @@ export interface LoadModelResponse {
   mlx_int8_prefill?: boolean | null;
   mlx_int8_prefill_requested?: boolean | null;
   mlx_int8_prefill_reason?: string | null;
+  mlx_ane_prefill?: boolean | null;
+  mlx_ane_prefill_requested?: boolean | null;
+  mlx_ane_prefill_reason?: string | null;
+  mlx_fast_verify?: boolean | null;
+  mlx_fast_verify_requested?: boolean | null;
+  mlx_fast_verify_reason?: string | null;
   mlx_offload?: MlxOffloadReport | null;
   chat_template?: string | null;
   speculative_type?: string | null;
@@ -276,11 +304,17 @@ export interface LoadModelResponse {
   tensor_parallel?: boolean;
   /** Echoes the request, unlike vision_disabled_by_user below. */
   disable_vision?: boolean;
+  /** Standalone Engram table the model runs with; null when it runs with the quant's own. */
+  engram_precision?: string | null;
   vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
+  overflow_layers?: number | null;
+  gpu_weights_mib?: number | null;
+  host_weights_mib?: number | null;
+  expert_cache_mib?: number | null;
   offload_overridden?: boolean | null;
   gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
@@ -357,13 +391,18 @@ export interface InferenceStatusResponse {
   audio_device_fallback?: "cpu" | null;
   /** Unknown-shaped on purpose: validated by parseMusicCapabilities. */
   audio_music?: unknown;
+  /** Unknown-shaped on purpose: audioModelContextFor reads only what it needs. */
+  audio_clone?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
+  /** Answers a spoken question in its own voice when asked for modalities ["text", "audio"]. */
+  speaks?: boolean;
   loading: string[];
   loaded: string[];
   serving?: string[];
   serving_checkpoints?: string[];
   resident_mib?: number | null;
+  resident_on_gpu?: boolean | null;
   /** Keep multiple models loaded, as saved on the server. Absent from older servers. */
   multi_model_mode?: "off" | "fit" | "always";
   inference?: {
@@ -401,6 +440,12 @@ export interface InferenceStatusResponse {
   mlx_int8_prefill?: boolean | null;
   mlx_int8_prefill_requested?: boolean | null;
   mlx_int8_prefill_reason?: string | null;
+  mlx_ane_prefill?: boolean | null;
+  mlx_ane_prefill_requested?: boolean | null;
+  mlx_ane_prefill_reason?: string | null;
+  mlx_fast_verify?: boolean | null;
+  mlx_fast_verify_requested?: boolean | null;
+  mlx_fast_verify_reason?: string | null;
   mlx_offload?: MlxOffloadReport | null;
   chat_template_override?: string | null;
   speculative_type?: string | null;
@@ -409,6 +454,8 @@ export interface InferenceStatusResponse {
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   disable_vision?: boolean;
+  /** Standalone Engram table the model runs with; null when it runs with the quant's own. */
+  engram_precision?: string | null;
   vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;

@@ -101,6 +101,13 @@ export function GenerateActions({ actions }: { actions?: GenerateAction[] }) {
   );
 }
 
+export const AUDIO_ACTION_BUTTON =
+  "relative z-10 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100";
+export const AUDIO_GO_BUTTON =
+  "h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85";
+export const AUDIO_STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
+export const AUDIO_NOTE_SLOT = "min-h-[1lh] text-ui-11p5 leading-snug";
+
 /** Under Generate: why it is off, then the fixes. One alternative sits inline; several share a menu. */
 export function BlockerNote({
   id,
@@ -452,9 +459,8 @@ export function TtsFooter({
         {secondaryAction}
         <Button
           className={cn(
-            "relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
-            // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
-            generationPresentation && "hover:bg-muted dark:hover:bg-muted",
+            AUDIO_ACTION_BUTTON,
+            generationPresentation ? AUDIO_STOP_BUTTON : AUDIO_GO_BUTTON,
           )}
           onClick={
             generationPresentation?.canStop
@@ -470,7 +476,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation ? "outline" : "dark"}
+          variant={generationPresentation ? "outline" : "primary"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={
@@ -492,17 +498,19 @@ export function TtsFooter({
           )}
         </Button>
       </div>
-      {blocker && !generationPresentation ? (
-        <BlockerNote id="audio-generate-blocker" blocker={blocker} />
-      ) : error && !generationPresentation ? (
-        <p
-          role="alert"
-          className="text-center text-ui-11p5 leading-snug text-destructive"
-        >
-          {error.reason}
-          <GenerateActions actions={error.actions} />
-        </p>
-      ) : null}
+      <div className={AUDIO_NOTE_SLOT}>
+        {blocker && !generationPresentation ? (
+          <BlockerNote id="audio-generate-blocker" blocker={blocker} />
+        ) : error && !generationPresentation ? (
+          <p
+            role="alert"
+            className="text-center text-ui-11p5 leading-snug text-destructive"
+          >
+            {error.reason}
+            <GenerateActions actions={error.actions} />
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }

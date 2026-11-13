@@ -15,7 +15,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -32,10 +31,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import {
-  COMBINED_EXPORT_FORMATS_LIST,
-  EXPORT_FORMATS_LIST,
   type FineTuneFormat,
   archiveAllChatItems,
+  BulkExportItems,
   bulkExportConversationsByScope,
   clearAllChats,
   countAllChats,
@@ -77,14 +75,13 @@ import {
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  Archive03Icon,
-  Delete02Icon,
+  ArchiveIcon,
   Download01Icon,
   FlimSlateIcon,
-  Image03Icon,
+  ImageIcon,
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
-import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -218,8 +215,10 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
-  // Chat-only hosts redirect /studio, so a Train-tab load would strand the user.
-  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  // Hosts that cannot train redirect /studio, so a Train-tab load would strand the user.
+  const trainUnavailable = usePlatformStore(
+    (s) => s.isTrainUnavailable() && !s.capabilitiesUnknown(),
+  );
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
     s.availabilityUnknown(),
@@ -233,9 +232,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const restoredAction = FINE_TUNE_ACTIONS.includes(storedFineTuneAction)
     ? storedFineTuneAction
     : "export";
-  // derived, not corrected: a stored "train" returns when chat-only flips off.
+  // derived, not corrected: a stored "train" returns when Train becomes available.
   const fineTuneAction =
-    chatOnly && restoredAction === "train" ? "export" : restoredAction;
+    trainUnavailable && restoredAction === "train" ? "export" : restoredAction;
   const fineTuneFormat: FineTuneFormat = "openai";
   // Search needs the main-page anchors even when a subpage is open.
   useEffect(() => {
@@ -571,7 +570,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const fineTuneBusy = loadingTraining || openingRecipe || fineTuneExporting;
   const runFineTuneAction = () => {
     if (fineTuneAction === "train") {
-      if (chatOnly) return;
+      if (trainUnavailable) return;
       void handleUseInTraining();
     } else if (fineTuneAction === "recipes") void handleOpenInRecipes();
     else void handleFineTuneExport();
@@ -670,26 +669,41 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             </p>
           </div>
           {archivedItems.length > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-[var(--ui-title-cap-inset)] shrink-0"
-              onClick={handleExportArchived}
-              disabled={archivedExporting}
-            >
-              {archivedExporting ? (
-                <Spinner className="size-4" />
-              ) : (
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-[var(--ui-title-cap-inset)] shrink-0"
+                  disabled={archivedExporting}
+                >
+                  {archivedExporting ? (
+                    <Spinner className="size-4" />
+                  ) : (
+                    <HugeiconsIcon
+                      icon={Download01Icon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  )}
+                  {archivedExporting
+                    ? t("settings.data.exportingArchivedChats")
+                    : t("settings.data.exportArchivedChats")}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <BulkExportItems
+                  combinedLead={
+                    <DropdownMenuItem onSelect={() => void handleExportArchived()}>
+                      JSON
+                    </DropdownMenuItem>
+                  }
+                  onExport={(fmt, merged) =>
+                    void bulkExportConversationsByScope("archived", fmt, merged)
+                  }
                 />
-              )}
-              {archivedExporting
-                ? t("settings.data.exportingArchivedChats")
-                : t("settings.data.exportArchivedChats")}
-            </Button>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
         <ArchivedChatsView />
@@ -820,7 +834,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 "archived-images",
                 "archivedImages",
                 "shell.navigation.images",
-                Image03Icon,
+                ImageIcon,
               ],
               [
                 "archived-videos",
@@ -870,7 +884,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             size="sm"
             onClick={() => setArchiveConfirmOpen(true)}
           >
-            <HugeiconsIcon icon={Archive03Icon} data-icon="inline-start" />
+            <HugeiconsIcon icon={ArchiveIcon} data-icon="inline-start" />
             {t("settings.data.archiveAllAction")}
           </Button>
         </SettingsRow>
@@ -934,16 +948,31 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           label={t("settings.chat.exportHistory")}
           description={t("settings.chat.exportHistoryDescription")}
         >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExport}
-            disabled={exporting || count === 0}
-          >
-            {exporting
-              ? t("settings.chat.exportingAction")
-              : t("settings.chat.exportAction")}
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={exporting || count === 0}
+              >
+                {exporting
+                  ? t("settings.chat.exportingAction")
+                  : t("settings.chat.exportAction")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <BulkExportItems
+                combinedLead={
+                  <DropdownMenuItem onSelect={() => void handleExport()}>
+                    JSON
+                  </DropdownMenuItem>
+                }
+                onExport={(fmt, merged) =>
+                  void bulkExportConversationsByScope("history", fmt, merged)
+                }
+              />
+            </DropdownMenuContent>
+          </DropdownMenu>
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.exportConversations")}
@@ -972,27 +1001,11 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                     {t(`settings.chat.${label}`)}
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-56">
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
-                      <DropdownMenuItem
-                        key={`${scope}-m-${fmt}`}
-                        onSelect={() =>
-                          void bulkExportConversationsByScope(scope, fmt, true)
-                        }
-                      >
-                        {fmtLabel} {t("settings.chat.exportCombinedSuffix")}
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
-                      <DropdownMenuItem
-                        key={`${scope}-s-${fmt}`}
-                        onSelect={() =>
-                          void bulkExportConversationsByScope(scope, fmt, false)
-                        }
-                      >
-                        {fmtLabel} {t("settings.chat.exportPerChatSuffix")}
-                      </DropdownMenuItem>
-                    ))}
+                    <BulkExportItems
+                      onExport={(fmt, merged) =>
+                        void bulkExportConversationsByScope(scope, fmt, merged)
+                      }
+                    />
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
               ))}
@@ -1026,7 +1039,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 {FINE_TUNE_ACTIONS.map((action) => (
                   <DropdownMenuItem
                     key={action}
-                    disabled={action === "train" && chatOnly}
+                    disabled={action === "train" && trainUnavailable}
                     onSelect={() => setFineTuneAction(action)}
                   >
                     <span className="flex-1">
@@ -1120,7 +1133,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                   disabled={count === null || count === 0 || clearing}
                   className="text-destructive hover:text-destructive aria-expanded:text-destructive hover:border-destructive/60"
                 >
-                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                  <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                   {t("settings.data.deleteAllAction")}
                   <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5" />
                 </Button>

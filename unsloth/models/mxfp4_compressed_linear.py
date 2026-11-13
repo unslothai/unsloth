@@ -13,6 +13,7 @@
 
 """Trains mxfp4-pack-quantized Linears in place; frozen weight dequantized per use, no 16-bit copy."""
 
+import contextlib
 import functools
 import os
 import types
@@ -72,7 +73,22 @@ def mxfp4_keep_packed_enabled() -> bool:
     return os.environ.get(MXFP4_KEEP_PACKED_ENV, "1").strip() != "0"
 
 
+def _operand_device_guard(tensor):
+    """Make ``tensor``'s GPU current: torch.ldexp (>= 2.11) launches on the current device, so split-model operands
+    decode garbage or fault otherwise. Compiled code gets Inductor's own guard."""
+    device = tensor.device
+    if device.index is None or device.type not in ("cuda", "xpu") or torch.compiler.is_compiling():
+        return contextlib.nullcontext()
+    guard = getattr(getattr(torch, device.type, None), "device", None)
+    return contextlib.nullcontext() if guard is None else guard(device)
+
+
 def _dequantize_torch(blocks, scales, dtype):
+    with _operand_device_guard(blocks):
+        return _dequantize_torch_impl(blocks, scales, dtype)
+
+
+def _dequantize_torch_impl(blocks, scales, dtype):
     work = torch.float32 if dtype == torch.float16 and _LDEXP_IN_INPUT_DTYPE else dtype
     key = (blocks.device, work)
     lut = _LUT_CACHE.get(key)
@@ -123,10 +139,9 @@ def mxfp4_packed_matmul(
     out = None,
     bias = None,
 ):
-    """``x @ W^T (+ bias)`` (``transpose=False``) or ``x @ W`` for the packed ``[out, in / 2]`` weight, in x's dtype.
-    Skinny forward inputs (decode, small batches) never build the 16-bit weight on sm_80+; below sm_80 they decode it
-    for cuBLAS only as far as memory allows (row chunks, else the tile kernel); the rest decode it once for cuBLAS.
-    Differentiable in ``x`` / ``bias``: the kernels and the reused chunk buffer have no autograd of their own."""
+    """x @ W^T (+ bias) when transpose is False, else x @ W, for the packed [out, in / 2] weight in
+    x dtype; skinny inputs never build the 16-bit weight on sm_80+, and below sm_80 decode only
+    as memory allows; the rest decode it once for cuBLAS; differentiable in x and bias."""
     if torch.is_grad_enabled() and (
         x.requires_grad or (bias is not None and not transpose and bias.requires_grad)
     ):
@@ -216,9 +231,8 @@ def _bounded_dense_matmul_eager(
     out = None,
     bias = None,
 ):
-    """``x @ W^T (+ bias)`` without ever holding more of the 16-bit W than fits: the whole W when it allocates
-    (one decode + one cuBLAS call), else row chunks of W written to ``y[..., r0:r1]`` (no cross-chunk sums),
-    else the tile kernel."""
+    """x @ W^T (+ bias) without holding more of the 16-bit W than fits: the whole W if it allocates,
+    else row chunks written to y[..., r0:r1] with no cross-chunk sums, else the tile kernel."""
     N, half = packed.shape
     K = half * 2
     dtype, device = x.dtype, x.device

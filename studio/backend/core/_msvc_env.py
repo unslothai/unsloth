@@ -85,9 +85,7 @@ def _triton_cc() -> str:
 
 
 def _needs_msvc_headers() -> bool:
-    """Only cl and clang-cl need them; Triton otherwise picks bundled TinyCC, which carries its own.
-    The fallback needs both halves: an in-place ROCm-to-XPU repair leaves the compiler on disk without
-    the Triton that selects it. Unanswerable means ungated: gating wrongly breaks a working box."""
+    """Only cl and clang-cl need MSVC headers; unanswerable means ungated, as gating wrongly breaks it."""
     try:
         cc = _triton_cc()
     except Exception:  # noqa: BLE001
@@ -97,8 +95,7 @@ def _needs_msvc_headers() -> bool:
 
 
 def _toolchain_summary() -> str:
-    """0 include dirs means no Visual Studio; dirs missing only `vcruntime.h` means an SDK
-    without the VC toolset."""
+    """0 include dirs: no Visual Studio. Only vcruntime.h missing: an SDK without VC toolset."""
     try:
         cc = os.path.basename(_triton_cc())
     except Exception:  # noqa: BLE001
@@ -236,7 +233,7 @@ def _triton_windows_spec() -> str:
 
     Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.12 and
     2.13 pin triton 3.7 (2.12.0 exactly 3.7.0) and 2.14 pins 3.8; anything older (or unreadable)
-    keeps the long-standing <3.7.
+    keeps the long-standing <3.7. A ROCm torch 2.11 / 2.12 gets 3.8, the build setup.ps1 pairs it with.
     A native ARM64 interpreter gets setup.ps1's Windows-on-ARM floor: no win_arm64 wheel predates it.
     """
     import platform  # noqa: PLC0415
@@ -253,6 +250,9 @@ def _triton_windows_spec() -> str:
         patch = int(match.group(3)) if match.group(3) is not None else None
     except Exception:  # noqa: BLE001 -- a hint must never raise
         return "triton-windows<3.7"
+    # setup.ps1's ROCm pairing: 3.9 has no block pointers for 2.11 / 2.12's flex_decoding, 3.6 has no HIP headers.
+    if major == 2 and minor in (11, 12) and _torch_is_rocm_build():
+        return "triton-windows>=3.8,<3.9"
     if (major, minor, patch) == (2, 12, 0):
         return "triton-windows>=3.7,<3.7.1"
     if (major, minor) in ((2, 12), (2, 13)):

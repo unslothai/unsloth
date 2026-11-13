@@ -23,6 +23,7 @@ from .storage import (
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
+    STUDIO_CHAT_TOOLS_KEY_NAME,
     validate_api_key_account,
     validate_api_key_with_credential,
     verify_refresh_token,
@@ -116,9 +117,7 @@ def request_admitted_without_credential(request: Request) -> bool:
 
 
 def admitted_without_session(request: Any) -> bool:
-    """True when keyless API access lets this request through with no Unsloth sign-in. The single
-    predicate behind both the auth dependency below and the route-level checks that ask whether a
-    caller is the Unsloth UI or a programmatic client."""
+    """True when keyless API access admits this request with no sign-in; shared by auth and routes."""
     from utils.keyless_api_access import request_was_admitted_keyless
 
     recorded = request_was_admitted_keyless(request)
@@ -213,9 +212,7 @@ def create_access_token(
     desktop: bool = False,
     secret: Optional[str] = None,
 ) -> str:
-    """Create a signed JWT for the given subject (e.g. username). Valid across restarts: the signing
-    secret is stored in SQLite. Callers that already verified a credential pass ``secret`` so a
-    rotation landing mid-request cannot sign the token with the credential that just replaced it."""
+    """Signed JWT for a subject; pass the verified secret so a mid-request rotation cannot sign it."""
     to_encode = {"sub": subject}
     if desktop:
         to_encode["desktop"] = True
@@ -268,10 +265,7 @@ def create_refresh_token(
     desktop: bool = False,
     secret: Optional[str] = None,
 ) -> str:
-    """Create a random refresh token, store its hash in SQLite, and return it. Refresh tokens are opaque (not
-    JWTs); expire after REFRESH_TOKEN_EXPIRE_DAYS. ``secret`` stamps the token with the credential version the
-    caller verified, so a rotation cannot leave a token minted from the replaced credential valid.
-    """
+    """Refresh token stamped with the verified credential version, so a rotation invalidates it."""
     token, expires_at = new_refresh_token_value()
     save_refresh_token(
         token,
@@ -284,9 +278,7 @@ def create_refresh_token(
 
 
 def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[str], bool]:
-    """Validate a refresh token and issue a new access token. The refresh token is NOT consumed; it stays valid
-    until expiry. Returns a new access_token, or None if the refresh token is invalid/expired.
-    """
+    """Issues a new access token; the refresh token is not consumed and stays valid until expiry."""
     verified = verify_refresh_token(refresh_token)
     if verified is None:
         return None, None, False
@@ -299,8 +291,7 @@ def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[st
 
 
 def reload_secret() -> None:
-    """Legacy API compat for callers expecting auth storage init. Auth now resolves the current signing
-    secret directly from SQLite."""
+    """Legacy compat: reloads the signing secret, which now always comes from SQLite."""
     load_jwt_secret()
 
 
@@ -394,9 +385,7 @@ async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_a
 async def authenticated_via_desktop_jwt(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> bool:
-    """True when the caller is the local desktop app, not a browser session or API key. Lets routes treat the
-    desktop as an authority of its own: it authenticates with a local secret rather than the account password.
-    """
+    """True for the local desktop app, which uses a local secret rather than the account password."""
     return await run_in_threadpool(is_desktop_access_token, credentials.credentials)
 
 
@@ -416,8 +405,7 @@ API_KEY_PLACEHOLDER = f"{API_KEY_PREFIX}YOUR_KEY"
 
 
 def _invalid_api_key_detail(token: str) -> str:
-    """Why the key failed. Only the example placeholder is called out; every real
-    key gets one indistinguishable message, so this leaks no key existence."""
+    """Only the placeholder key gets a specific message, so no real key's existence leaks."""
     if token == API_KEY_PLACEHOLDER:
         return (
             "This is the placeholder key from the example. Create an API key in "
@@ -460,6 +448,8 @@ async def _get_current_credential(
     token = credentials.credentials
 
     if token.startswith(API_KEY_PREFIX):
+        from core.inference.load_policy import policy_for_credential
+
         verified = await run_in_threadpool(validate_api_key_account, token)
         if verified is None:
             raise HTTPException(
@@ -467,13 +457,24 @@ async def _get_current_credential(
                 detail = _invalid_api_key_detail(token),
             )
         record, secret = verified
+        generation = credential_generation(secret)
         # A second lookup by username would bind whoever owns that name after a delete and re-create.
         bind_account(
             AccountContext(
-                record["account_id"], record["username"], record["role"], via_api_key = True
+                record["account_id"],
+                record["username"],
+                record["role"],
+                credential_gen = generation,
+                via_api_key = True,
+                load_policy = policy_for_credential(
+                    internal = bool(record.get("key_internal")), key_name = record.get("key_name")
+                ).value,
+                ui_chat = bool(record.get("key_internal"))
+                and record.get("key_name") == STUDIO_CHAT_TOOLS_KEY_NAME,
+                key_id = record.get("key_id"),
             )
         )
-        return record["username"], credential_generation(secret)
+        return record["username"], generation
 
     subject = _decode_subject_without_verification(token)
     if subject is None:
@@ -503,7 +504,14 @@ async def _get_current_credential(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid token payload",
         )
-    bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
+    bind_account(
+        AccountContext(
+            record["account_id"],
+            record["username"],
+            record["role"],
+            credential_gen = credential_generation(jwt_secret),
+        )
+    )
     # A managed token carrying the desktop marker gets no owner password-change bypass.
     is_desktop = payload.get("desktop") is True and record.get("role") == "owner"
     if must_change_password and not allow_password_change and not is_desktop:
