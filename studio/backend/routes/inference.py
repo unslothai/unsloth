@@ -29933,13 +29933,16 @@ async def _proxy_to_external_provider(
                     first_pass = first_pass,
                 )
 
+            refit = not later
             if later:
                 fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                     fit, _checkpoint_pass["fitted"] + messages[len(seen) :], payload, False
                 )
-                if truncation and (
-                    truncation.get("dropped_messages") or not truncation.get("fits")
-                ):
+                refit = bool(
+                    truncation
+                    and (truncation.get("dropped_messages") or not truncation.get("fits"))
+                )
+                if refit:
                     # Boundaries must count the full branch, so an overflow refits it without /compact.
                     fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                         fit, messages, payload.model_copy(update = {"compact_context": None}), True
@@ -29948,8 +29951,9 @@ async def _proxy_to_external_provider(
                 fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                     fit, messages, payload, True
                 )
-                if truncation and truncation.get("checkpoint") is True:
-                    _checkpoint_pass.update(input = list(messages), fitted = fitted)
+            # A refit moves the boundary, so the next pass extends this result, not the stale one.
+            if refit and truncation and truncation.get("checkpoint") is True:
+                _checkpoint_pass.update(input = list(messages), fitted = fitted)
             _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
