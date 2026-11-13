@@ -187,6 +187,21 @@ def test_a_denoise_peak_above_the_decode_peak_still_records_the_larger(monkeypat
     assert card.render(denoise_peak = DENOISE_PEAK, decode_peak = 1000) == DENOISE_PEAK
 
 
+def test_no_lend_while_another_render_shares_the_card(monkeypatch):
+    """An image render opened its own window on the card after the fit: the denoise keeps the fit's residency."""
+    card = _Card(monkeypatch)
+    card.fit()
+    card.render()
+    card.fit()
+    assert card.module._unsloth_video_lend is not None
+    card.module._unsloth_video_window = ("cuda:0", types.SimpleNamespace(overlapped = True))
+    assert vr.begin_denoise(card.pipe) == 0
+    assert card.held == _base_room()
+    assert card.module._unsloth_video_decode_room is None
+    assert vr.prepare_decode(card.pipe) == 0
+    assert card.released == []
+
+
 def test_kill_switch_keeps_the_whole_request_room(monkeypatch):
     monkeypatch.setenv(vr.VIDEO_DIT_DECODE_LEND_ENV, "0")
     card = _Card(monkeypatch)

@@ -477,6 +477,11 @@ def begin_denoise(pipe: Any, *, logger: Any = None) -> int:
         )
 
         module._unsloth_video_lend = None
+        window = getattr(module, "_unsloth_video_window", None)
+        if window is not None and getattr(window[1], "overlapped", False):
+            # another render on this card planned around what the fit kept: growing now could starve it
+            module._unsloth_video_decode_room = None
+            return 0
         room_at_fit, pre = lend
         work, start, dev = pending
         free, total = torch.cuda.mem_get_info(dev)
