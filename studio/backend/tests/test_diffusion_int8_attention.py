@@ -891,6 +891,22 @@ def test_peaked_and_flat_rows_stay_accurate():
 
 
 @needs_kernel
+@pytest.mark.parametrize("tokens", [65, 1000])
+def test_padded_keys_get_no_weight_when_the_score_scale_underflows(tokens):
+    """q = 0 and k = 0: both scales sit on their floor and their product underflows to 0. The padded keys of the last
+    tile then scored 0 like every real key and took a share of the weight."""
+    g = torch.Generator(device = "cuda").manual_seed(tokens)
+    shape = (1, tokens, 2, 128)
+    q = torch.zeros(shape, device = "cuda", dtype = torch.bfloat16)
+    v = torch.exp(2.0 * torch.randn(shape, generator = g, device = "cuda")).to(torch.bfloat16)
+    p = I.quantise(q, q.clone(), v, _cuda_config(128))
+    out = I.attend(p).float()
+    want = emulate(p)
+    rel = float((out - want).abs().mean() / want.abs().mean())
+    assert rel < 4e-3, rel
+
+
+@needs_kernel
 def test_op_runs_the_kernel_only_where_it_was_verified(monkeypatch):
     q, k, v = I.probe_inputs("cuda", torch.bfloat16, 512, 2, 128)
     I.int8_attention_op()

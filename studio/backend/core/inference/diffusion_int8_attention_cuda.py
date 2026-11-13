@@ -315,7 +315,9 @@ extern "C" __global__ void unsloth_i8attn(
         mx0 = max(mx0, max(c[nb][0], c[nb][1]));
         mx1 = max(mx1, max(c[nb][2], c[nb][3]));
       }
-      const float f0 = sc[qt][0] * ksc, f1 = sc[qt][1] * ksc;
+      // never 0: a score scale that underflowed (all-zero q and k rows) would turn the padded keys' -3e38 into 0,
+      // the largest score of the tile
+      const float f0 = fmaxf(sc[qt][0] * ksc, 1e-30f), f1 = fmaxf(sc[qt][1] * ksc, 1e-30f);
       const float g0 = -MAGIC_F * f0, g1 = -MAGIC_F * f1;  // score = fma(bits as float, f, g)
       float mt0 = fmaf(__int_as_float(mx0), f0, g0), mt1 = fmaf(__int_as_float(mx1), f1, g1);
       mt0 = fmaxf(mt0, __shfl_xor_sync(0xffffffffu, mt0, 1));
