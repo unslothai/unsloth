@@ -1749,9 +1749,32 @@ def test_python_code_string_and_spawn_apis_are_screened(code, high_risk):
     assert is_high_risk_tool_call("python", {"code": code}) is high_risk
 
 
-def test_starred_spawn_arguments_do_not_crash_the_classifier():
-    code = "import os\nos.spawnlp(*(os.P_WAIT, 'echo', 'echo', 'ok'))"
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import os\nos.spawnlp(*(os.P_WAIT, 'echo', 'echo', 'ok'))",
+        "import os\nos.execlp()",
+        "import os\nos.spawnlp(0)",
+    ],
+)
+def test_malformed_spawn_arguments_do_not_crash_the_classifier(code):
     assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
+
+
+def test_rebound_runner_alias_keeps_the_builtin_import_check():
+    code = "from cProfile import run as __import__\nfrom builtins import __import__\n__import__('ctypes')"
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+def test_repeated_timeit_bindings_are_screened_linearly():
+    code = (
+        "import timeit\n"
+        + "stmt = 'pass'\nsetup = 'pass'\n" * 300
+        + "timeit.timeit(stmt, setup, number=1)"
+    )
+    started = time.perf_counter()
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+    assert time.perf_counter() - started < 5
 
 
 @pytest.mark.parametrize("code", ["value = " + "+".join(["1"] * 400), "value = data" + "[0]" * 400])

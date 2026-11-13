@@ -8706,21 +8706,21 @@ def _python_is_high_risk(code: str) -> bool:
             # timeit also takes callables: screen resolvable strings, setup + stmt as one program.
             stmt = _runner_arg(node, 0, ("stmt",))
             setup = _runner_arg(node, 1, ("setup",))
-            stmts = _code_strings(stmt)[0] if stmt is not None else []
-            setups = _code_strings(setup)[0] if setup is not None else []
-            if any(
-                _python_is_high_risk(f"{before}\n{after}")
-                for before in setups or [""]
-                for after in stmts or [""]
-            ):
+            parts = [
+                *(_code_strings(setup)[0] if setup is not None else ()),
+                *(_code_strings(stmt)[0] if stmt is not None else ()),
+            ]
+            parts = list(dict.fromkeys(parts))
+            if len(parts) > 1:
+                parts.append("\n".join(parts))
+            if any(_python_is_high_risk(part) for part in parts):
                 return True
         elif runner is not None:
             arg = _runner_arg(node, 0, _PY_CODE_RUNNER_SOURCE_KWARGS)
             if arg is not None:
                 sources, unresolved = _code_strings(arg)
-                if unresolved or any(_python_is_high_risk(source) for source in sources):
+                if unresolved or any(_python_is_high_risk(src) for src in dict.fromkeys(sources)):
                     return True
-            continue
         name = None
         if isinstance(func, ast.Name):
             name = func.id
@@ -18577,7 +18577,7 @@ def _check_signal_escape_patterns(code: str):
                     # exec*/spawn* run their path argument; argv[0] is only a label.
                     argv = []
                     tail = positional[argv_start:]
-                    if argv_start:
+                    if argv_start and len(positional) >= argv_start:
                         program = _extract_string_from_node(positional[argv_start - 1])
                         if program is not None and tail:
                             argv.append(program)
