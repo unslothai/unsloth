@@ -1629,6 +1629,8 @@ def fake_studio(tmp_path, monkeypatch):
                 raise urllib.error.HTTPError(url, state["providers_status"], "error", None, None)
             return state.get("providers", [])
         if "/served-window?" in url:
+            if state.get("served_window_error"):
+                raise state["served_window_error"]
             return {"context_length": state.get("served_window")}
         if url.endswith("/api/inference/load"):
             already_loaded = state["models"][0]["id"] == payload["model_path"]
@@ -7339,6 +7341,17 @@ def test_a_connection_too_small_for_the_agent_is_refused(fake_studio, launched, 
     assert f"{OLLAMA_ID} is loaded with 4,096 tokens of context, too few" in result.output
     assert "OLLAMA_CONTEXT_LENGTH" in result.output
     assert not launched
+
+
+@pytest.mark.parametrize(
+    "error", [http.client.RemoteDisconnected("closed"), json.JSONDecodeError("bad", "", 0)]
+)
+def test_an_unreadable_served_window_falls_back_to_the_hint(fake_studio, error):
+    fake_studio.state["providers"] = [OLLAMA_CONNECTION]
+    fake_studio.state["served_window_error"] = error
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", "qwen3:8b"])
+    assert result.exit_code == 0, result.output
+    assert "Pass --max-seq-length with the model's context window" in result.output
 
 
 def test_max_seq_length_below_the_served_window_still_applies(fake_studio):

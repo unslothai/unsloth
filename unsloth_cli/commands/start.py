@@ -5188,7 +5188,7 @@ def _served_window(base: str, key: str, model_id: str) -> Optional[int]:
             key,
             timeout = 150,
         )
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+    except (OSError, ValueError):
         return None
     window = answer.get("context_length")
     return window if isinstance(window, int) and window > 0 else None
