@@ -328,6 +328,15 @@ def _resolved_app(name: str, backend: Backend) -> str:
         return name
 
 
+def _app_under_pointer(backend: Backend) -> str:
+    """Where a scroll without a point lands: the window under the pointer, not the one in front."""
+    try:
+        window = backend.window_at(*backend.cursor())
+    except Exception:  # noqa: BLE001 - the app in front answers instead
+        return ""
+    return window.app if window is not None else ""
+
+
 def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
     """The apps a call's clicks and keys would land in, in order: where each click points, and
     for keys the app in front after the clicks before them."""
@@ -347,7 +356,8 @@ def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontW
                 current = _app_at(action, session, backend, "to_") or current
                 used.append(current)
         elif op == "scroll":
-            used.append((_app_at(action, session, backend) if "x" in action else "") or current)
+            at = _app_at(action, session, backend) if "x" in action else _app_under_pointer(backend)
+            used.append(at or current)
         elif op in ("type", "key"):
             used.append(current)
     return list(dict.fromkeys(name for name in used if name))

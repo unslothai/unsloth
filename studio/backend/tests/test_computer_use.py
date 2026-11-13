@@ -855,6 +855,19 @@ def test_a_drag_is_charged_to_the_app_it_ends_in_too(desktop):
     assert not [event for event in desktop.events if event[0] == "drag"]
 
 
+def test_a_scroll_without_a_point_asks_about_the_app_under_the_pointer(desktop):
+    look()
+    desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
+    desktop.pointer = (1150.0, 400.0)
+    scroll = {"action": "scroll", "direction": "down"}
+    assert policy.call_asks(scroll, SESSION)["apps"] == ["Mail"]
+    assert _asks("auto", scroll)
+    assert "Mail has not been allowed" in run(scroll)
+    # The user's answer lets it through, so asking again is not a dead end.
+    assert run(scroll, approved = True).startswith("Done:")
+    assert not _asks("auto", scroll)
+
+
 def test_opening_an_app_asks_and_then_covers_what_follows(desktop):
     look()
     open_and_type = {
