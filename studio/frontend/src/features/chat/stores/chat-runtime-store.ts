@@ -5474,7 +5474,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           own && own.modelId && own.modelId !== state.params.checkpoint ? null : own,
       };
     }),
-  applyThreadScopedSettings: (threadId, settings) =>
+  applyThreadScopedSettings: (threadId, settings) => {
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
       // The pending write belongs to the outgoing thread, so it goes out before the swap.
@@ -5674,7 +5674,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         threadScopedSettingsPending: pending,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
+    });
+    // A chat's own values landing under a link still showing go under it, as a replay's do.
+    reapplyShownLink();
+  },
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
     if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
@@ -6849,6 +6852,16 @@ function withLinkOverlay(params: InferenceParams): InferenceParams {
   );
   linkValues = { ...shownValues, ...kept };
   return { ...params, ...kept };
+}
+
+function reapplyShownLink(): void {
+  if (linkShown === null) return;
+  const state = useChatRuntimeStore.getState();
+  if (state.activePreset !== linkShown || !state.settingsHydrated) return;
+  const preset = getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
+  if (preset?.name !== linkShown) return;
+  state.setParams(linkedParams(state.params, preset), { persist: false });
+  linkValues = getPresetOwnedParams(useChatRuntimeStore.getState().params);
 }
 
 /** A chat write still waiting on its debounce reads live values when it fires: take them now,

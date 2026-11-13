@@ -742,6 +742,26 @@ test("a reload with a smaller window keeps the capped linked budget", async () =
   }
 });
 
+test("a chat's settings landing after the link go under it", async () => {
+  const store = useChatRuntimeStore.getState();
+  await switchTo(QWEN);
+  store.setActiveThreadId("chat-r");
+  store.applyThreadScopedSettings("chat-r", { temperature: 0.4, systemPrompt: "Mine." });
+  try {
+    assert.equal(live().temperature, 0.2);
+    assert.equal(live().systemPrompt, "Cite your sources.");
+    loadOrPoll(QWEN);
+    await Promise.resolve();
+    assert.equal(live().temperature, 0.2);
+    await switchTo(LLAMA);
+    assert.equal(live().temperature, 0.4);
+    assert.equal(live().systemPrompt, "Mine.");
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+  }
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);
