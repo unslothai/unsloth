@@ -57,6 +57,18 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
     width = mediabox.width - 2 * _PAGE_MARGIN_PT
     height = mediabox.height - 2 * _PAGE_MARGIN_PT
     pages = 0
+    links = []
+
+    def add_link(position):
+        if position.open_close & 1 and (position.href or "").startswith(
+            ("http:", "https:", "mailto:")
+        ):
+            rect = pymupdf.Rect(position.rect) * matrix
+            if links and links[-1][:2] == (pages, position.href) and links[-1][2].y0 == rect.y0:
+                links[-1][2].include_rect(rect)
+            else:
+                links.append((pages, position.href, rect))
+
     more = 1
     while more:
         if pages >= MAX_EXPORT_PAGES:
@@ -71,7 +83,9 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
                 break
             scale = width / filled[2]
             more, filled = story.place(pymupdf.Rect(0, 0, width / scale, height / scale))
-        story.draw(device, pymupdf.Matrix(scale, 0, 0, scale, _PAGE_MARGIN_PT, _PAGE_MARGIN_PT))
+        matrix = pymupdf.Matrix(scale, 0, 0, scale, _PAGE_MARGIN_PT, _PAGE_MARGIN_PT)
+        story.element_positions(add_link)
+        story.draw(device, matrix)
         writer.end_page()
         pages += 1
     writer.close()
@@ -79,6 +93,8 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
     pdf = pymupdf.open("pdf", buffer.getvalue())
     try:
         pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth"})
+        for page, uri, rect in links:
+            pdf[page].insert_link({"kind": pymupdf.LINK_URI, "from": rect, "uri": uri})
         # The CJK fallback font alone is ~2 MB; keep only the glyphs used.
         pdf.subset_fonts()
         return pdf.tobytes(garbage = 3, deflate = True)
