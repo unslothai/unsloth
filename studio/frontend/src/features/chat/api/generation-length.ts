@@ -66,8 +66,10 @@ export function lengthIncompleteReason(
 /** llama.cpp counts include reasoning. Ignore usage counts: providers may exclude reasoning
  *  or enforce a lower output cap, so those counts cannot establish context exhaustion. */
 export function windowEvidenceCount(
-  timings: { predicted_n?: unknown } | null | undefined,
+  timings: { predicted_n?: unknown; source?: unknown } | null | undefined,
 ): number | null {
+  // Studio-measured provider timings copy predicted_n from usage, so they are no evidence either.
+  if (timings?.source === "studio") return null;
   const count = timings?.predicted_n;
   return typeof count === "number" && Number.isFinite(count) ? count : null;
 }

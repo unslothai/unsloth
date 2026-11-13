@@ -88,6 +88,9 @@ export const MessageTiming: FC<{
     st?.cache_n ?? custom?.contextUsage?.cachedTokens ?? 0;
   const cacheWrites = custom?.contextUsage?.cacheWriteTokens ?? 0;
   const isDiffusion = (st as { diffusion?: boolean } | undefined)?.diffusion === true;
+  // Studio-measured provider timings: prompt time is time to first token, network included.
+  const approx =
+    (st as { source?: unknown } | undefined)?.source === "studio" ? "~" : "";
 
   // llama.cpp emits predicted_ms=0 on no-op turns; guard against an Infinity rate.
   const hasPredicted =
@@ -234,6 +237,7 @@ export const MessageTiming: FC<{
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">{t("generationStats.timing.promptEval")}</span>
                   <span className="font-mono tabular-nums">
+                    {approx}
                     {formatTimingMs(st.prompt_ms)}
                   </span>
                 </div>
@@ -244,6 +248,7 @@ export const MessageTiming: FC<{
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">{t("generationStats.timing.promptSpeed")}</span>
                   <span className="font-mono tabular-nums">
+                    {approx}
                     {st.prompt_per_second.toFixed(1)} tok/s
                   </span>
                 </div>

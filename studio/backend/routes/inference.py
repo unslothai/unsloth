@@ -3766,6 +3766,7 @@ from core.inference.external_provider import (
     _is_kimi_k3,
     _is_openai_family_cloud,
     compacts_server_side,
+    with_studio_timings,
 )
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
@@ -30048,6 +30049,9 @@ async def _proxy_to_external_provider(
                 stream = payload.stream,
                 **_provider_kwargs,
             )
+            # Managed FastFlowLM reports its own speeds or none at all.
+            if payload.stream and managed is None:
+                gen = with_studio_timings(gen)
         if managed is not None:
             # Stopping the read stops FastFlowLM, which a model swap is waiting on.
             gen = _stop_on_cancel(gen, cancel_event)

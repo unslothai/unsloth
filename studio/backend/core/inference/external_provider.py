@@ -8221,6 +8221,102 @@ def _with_fastflowlm_timings(line: str) -> str:
     return "data: " + _json.dumps(chunk)
 
 
+def _int_field(container: Any, field: str) -> Optional[int]:
+    value = container.get(field) if isinstance(container, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+_MIN_RATE_WINDOW_S = 0.05
+
+
+def _studio_timings(
+    usage: dict[str, Any], prompt_s: float, predicted_s: float, reasoning_streamed: bool
+) -> Optional[dict[str, Any]]:
+    """llama-server-shaped timings from provider usage and Studio's own clock."""
+    completion = _int_field(usage, "completion_tokens")
+    if completion is None:
+        return None
+    # completion_tokens counts reasoning tokens. They are generated, so they count when they streamed
+    # inside the measured window; hidden reasoning ran before the first delta, so drop it from the rate.
+    reasoning = _int_field(usage.get("completion_tokens_details"), "reasoning_tokens")
+    if not reasoning_streamed and reasoning is not None and 0 < reasoning <= completion:
+        completion -= reasoning
+    # "studio": measured here, so prompt_ms is time to first token including network latency.
+    timings: dict[str, Any] = {
+        "source": "studio",
+        "predicted_n": completion,
+        "predicted_ms": predicted_s * 1000.0,
+    }
+    # A reply that lands in one burst has no measurable decode window, so a rate over it is noise.
+    if completion >= 1 and predicted_s >= _MIN_RATE_WINDOW_S:
+        timings["predicted_per_second"] = completion / predicted_s
+    cached = _int_field(usage.get("prompt_tokens_details"), "cached_tokens")
+    if cached is None:
+        cached = _int_field(usage, "cache_read_input_tokens")
+    if cached is not None:
+        timings["cache_n"] = cached
+    prompt = _int_field(usage, "prompt_tokens")
+    if prompt is not None:
+        # llama-server semantics, as in _fastflowlm_timings: prompt_n is the uncached part.
+        prompt_n = max(prompt - (cached or 0), 0)
+        timings["prompt_n"] = prompt_n
+        timings["prompt_ms"] = prompt_s * 1000.0
+        if prompt_n >= 1 and prompt_s > 0:
+            timings["prompt_per_second"] = prompt_n / prompt_s
+    return timings
+
+
+async def with_studio_timings(upstream: Any) -> AsyncGenerator[str, None]:
+    """Attach Studio-measured timings to usage chunks of a provider stream that sends none of its own."""
+    start = time.monotonic()
+    first: Optional[float] = None
+    last: Optional[float] = None
+    upstream_timed = False
+    reasoning_streamed = False
+    try:
+        async for line in upstream:
+            if upstream_timed or not line.startswith("data:"):
+                yield line
+                continue
+            try:
+                chunk = _json.loads(line[len("data:") :])
+            except ValueError:
+                yield line
+                continue
+            if not isinstance(chunk, dict):
+                yield line
+                continue
+            if "timings" in chunk:
+                # Real engine timings (llama.cpp, FastFlowLM) win for the rest of the stream.
+                upstream_timed = True
+                yield line
+                continue
+            choices = chunk.get("choices")
+            for choice in choices if isinstance(choices, list) else ():
+                delta = choice.get("delta") if isinstance(choice, dict) else None
+                if not isinstance(delta, dict):
+                    continue
+                if delta.get("reasoning_content") or delta.get("reasoning"):
+                    reasoning_streamed = True
+                if any(v for k, v in delta.items() if k != "role"):
+                    last = time.monotonic()
+                    if first is None:
+                        first = last
+            usage = chunk.get("usage")
+            if first is not None and isinstance(usage, dict):
+                # Generation ends at the last delta, not the usage chunk, which may trail it.
+                timings = _studio_timings(usage, first - start, last - first, reasoning_streamed)
+                if timings is not None:
+                    chunk["timings"] = timings
+                    line = "data: " + _json.dumps(chunk)
+            yield line
+    finally:
+        aclose = getattr(upstream, "aclose", None)
+        if aclose is not None:
+            with contextlib.suppress(RuntimeError, GeneratorExit, StopAsyncIteration):
+                await aclose()
+
+
 def _error_sse_line(
     status_code: int,
     message: str,

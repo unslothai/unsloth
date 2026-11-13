@@ -12,7 +12,11 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from core.inference.external_provider import ExternalProviderClient, _is_kimi_k3
+from core.inference.external_provider import (
+    ExternalProviderClient,
+    _is_kimi_k3,
+    with_studio_timings,
+)
 
 
 # The cancel paths only set a threading.Event, so poll it (same interval as the Codex client).
@@ -124,13 +128,15 @@ class OAICompatTransport:
         continue_final_message = bool(self._continue_final_message) and bool(
             messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
         )
-        upstream = self._client.stream_chat_completion(
-            messages = messages,
-            model = self._model,
-            tools = tools,
-            tool_choice = tool_choice,
-            continue_final_message = continue_final_message,
-            **request_kwargs,
+        upstream = with_studio_timings(
+            self._client.stream_chat_completion(
+                messages = messages,
+                model = self._model,
+                tools = tools,
+                tool_choice = tool_choice,
+                continue_final_message = continue_final_message,
+                **request_kwargs,
+            )
         )
         try:
             async for line in upstream:
