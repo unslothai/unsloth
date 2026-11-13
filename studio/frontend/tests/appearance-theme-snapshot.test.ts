@@ -47,6 +47,7 @@ function createHost() {
       },
     },
     "@/lib/base64-bytes": { decodeBase64Bytes },
+    "./application/plan-apply.ts": { FONT_FIELDS: ["uiFont", "headingFont", "chatFont", "codeFont"] },
     "@/features/chat-background": {
       sanitizeAdjustments,
       nativeMaterialAvailable: () => native.available,
@@ -197,4 +198,26 @@ test("undo leaves the background alone while a newer upload is pending or anothe
   host.state.background = { ...applied };
   assert.equal(await snapshot.undoBackground(prev, applied), true);
   assert.equal(host.calls.filter((c) => c[0] === "begin").length, 1);
+});
+
+test("embedded fonts the browser cannot load are dropped with their selections", async () => {
+  const host = createHost();
+  const snapshot = load(host);
+  const g = globalThis as { FontFace?: unknown };
+  const saved = g.FontFace;
+  g.FontFace = function (name: string) {
+    return { load: () => (name === "Bad" ? Promise.reject(new Error("decode")) : Promise.resolve()) };
+  };
+  try {
+    const font = (name: string) => ({ name, dataUrl: "data:font/woff2;base64,QUJD" });
+    const theme = { meta: { name: "t" }, palette: "standard", glass: GLASS, layout: null, background: null,
+      look: { ...DEFAULT_CUSTOMIZATION, uiFont: "Bad", codeFont: "Good" }, fonts: [font("Bad"), font("Good")] };
+    const [kept, dropped] = await snapshot.withLoadableFonts(theme as never);
+    assert.deepEqual(dropped, ["Bad"]);
+    assert.deepEqual(kept.fonts?.map((f) => f.name), ["Good"]);
+    assert.equal(kept.look.uiFont, null);
+    assert.equal(kept.look.codeFont, "Good");
+  } finally {
+    g.FontFace = saved;
+  }
 });

@@ -27,6 +27,7 @@ import {
   readAppearanceSnapshot,
   readLoadedAppearanceSnapshot,
   undoBackground,
+  withLoadableFonts,
 } from "../snapshot";
 
 export type ParsedThemeFile = Extract<ThemeParseResult, { ok: true }>;
@@ -133,7 +134,11 @@ function ImportThemeForm({
     try {
       // Wait for the stored background, or Undo would think there was none and delete it.
       const prev = await readLoadedAppearanceSnapshot();
-      const next = portableGlass(planThemeApply(prev, theme, { applyLayout, applyAssets }));
+      const [loadable, badFonts] = applyAssets ? await withLoadableFonts(theme) : [theme, []];
+      for (const name of badFonts) {
+        toast.warning(t("settings.appearance.themeFile.warning.dropped", { path: name }));
+      }
+      const next = portableGlass(planThemeApply(prev, loadable, { applyLayout, applyAssets }));
       applyAppearanceSnapshot(next);
       // Undo restores the background only while it is still the one the theme set.
       let appliedBackground: ReturnType<typeof readAppearanceSnapshot>["background"] = null;

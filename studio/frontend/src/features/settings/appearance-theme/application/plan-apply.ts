@@ -73,7 +73,8 @@ function reconcileFonts(
   );
   const next = sanitizeCustomization({
     ...customization,
-    importedFonts: selectedFirst(customization, [...restored, ...customization.importedFonts]),
+    // Restored fonts go last: under the cap, fonts already in the list (later choices) win.
+    importedFonts: selectedFirst(customization, [...customization.importedFonts, ...restored]),
   });
   // Selections take the imported font's own spelling, so exact-name removal still finds them.
   const kept = new Map(next.importedFonts.map((font) => [key(font.name), font.name]));

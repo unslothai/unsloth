@@ -346,3 +346,14 @@ test("a case-variant selection takes the imported font's spelling, so removing t
   const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "brand sans" }, assets: { fonts: [font("Brand Sans")] } })));
   assert.equal(apply(BASE, theme).customization.uiFont, "Brand Sans");
 });
+
+test("undo keeps a font chosen after Apply over an old selection it cannot fit", () => {
+  const before = { ...BASE, customization: sanitizeCustomization({
+    importedFonts: [font("A"), font("B"), font("C")], uiFont: "A", headingFont: "B", chatFont: "C" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "Lato", headingFont: "B", chatFont: "C" }, assets: { fonts: [font("T")] } })));
+  const applied = apply(before, theme);
+  const now = { ...before, palette: applied.palette, glass: applied.glass, customization: { ...applied.customization, codeFont: "T" } };
+  const undone = planUndo(before, applied, now).customization;
+  assert.equal(undone.codeFont, "T");
+  assert.ok(undone.importedFonts.some((f) => f.name === "T"));
+});

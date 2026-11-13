@@ -15,8 +15,8 @@ import {
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { useAppearanceCustomStore } from "../stores/appearance-custom-store.ts";
 import { getPalette, setPalette } from "../stores/theme-store.ts";
-import type { AppearanceSnapshot } from "./application/plan-apply.ts";
-import type { ThemeBackground } from "./domain/schema.ts";
+import { type AppearanceSnapshot, FONT_FIELDS } from "./application/plan-apply.ts";
+import type { AppearanceTheme, ThemeBackground } from "./domain/schema.ts";
 
 export type AppearanceTarget = Omit<AppearanceSnapshot, "background">;
 
@@ -75,6 +75,24 @@ export function portableGlass<T extends AppearanceTarget>(target: T): T {
 export function restoreBackground(prev: AppearanceSnapshot["background"]): Promise<boolean> {
   if (!prev) return resetChatBackground();
   return finishBackgroundUpload(beginBackgroundUpload(), { ...prev.adjustments, blob: prev.blob });
+}
+
+/**
+ * The theme with only the embedded fonts the browser can load, as the font picker requires; a
+ * selection of a dropped font goes back to the default. Also returns the dropped names.
+ */
+export async function withLoadableFonts(theme: AppearanceTheme): Promise<[AppearanceTheme, string[]]> {
+  if (!theme.fonts?.length) return [theme, []];
+  const loads = await Promise.all(
+    theme.fonts.map((font) =>
+      new FontFace(font.name, `url(${font.dataUrl})`).load().then(() => true, () => false),
+    ),
+  );
+  const dropped = theme.fonts.filter((_, i) => !loads[i]).map((font) => font.name);
+  if (dropped.length === 0) return [theme, []];
+  const look = { ...theme.look };
+  for (const field of FONT_FIELDS) if (dropped.includes(look[field] ?? "")) look[field] = null;
+  return [{ ...theme, look, fonts: theme.fonts.filter((_, i) => loads[i]) }, dropped];
 }
 
 /** Undo's background step: puts `prev` back only while the theme's own background is still shown. */
