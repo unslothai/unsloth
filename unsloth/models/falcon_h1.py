@@ -397,7 +397,7 @@ def FalconH1DecoderLayer_fast_forward(
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         attention_hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states = hidden_states,
+            hidden_states = hidden_states * self.attention_in_multiplier,
             causal_mask = causal_mask,
             attention_mask = attention_mask,
             position_ids = position_ids,
@@ -439,7 +439,7 @@ def FalconH1DecoderLayer_fast_forward(
         mamba_hidden_states = mamba_hidden_states * self.ssm_out_multiplier
 
         attention_hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states = hidden_states,
+            hidden_states = hidden_states * self.attention_in_multiplier,
             causal_mask = causal_mask,
             attention_mask = attention_mask,
             position_ids = position_ids,
