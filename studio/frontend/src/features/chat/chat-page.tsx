@@ -346,6 +346,7 @@ import {
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./components/export-format-items";
+import { providerModelDisplayName } from "./model-display-names";
 import { lazyWithoutSuspense, preloadWhenIdle } from "@/lib/lazy-without-suspense";
 
 // Not lazy(): a Suspense reveal is held up to 300 ms, which was most of the pane's first open.
@@ -4476,7 +4477,7 @@ export function ChatPage({
         .flatMap((provider) =>
           provider.models.map((model) => {
             // OpenRouter free router: show `openrouter:<chosen>` minus `/free` and the org prefix.
-            let displayName = model;
+            let displayName = providerModelDisplayName(provider.providerType, model);
             if (
               provider.providerType === "openrouter" &&
               model === "openrouter/free" &&

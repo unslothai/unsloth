@@ -23,6 +23,7 @@ import {
   isDecisionConnection,
   syncKeepModelsLoaded,
   useExternalProvidersStore,
+  providerModelDisplayName,
 } from "@/features/chat";
 import { useHubInventory } from "@/features/hub";
 import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
@@ -1459,7 +1460,7 @@ export function AudioPage({
                 c.id === dictationProviderId ? dictationModel.trim() : undefined,
               ).map((model) => ({
                 id: buildExternalModelId(c.id, model),
-                name: model,
+                name: providerModelDisplayName(c.providerType, model),
                 providerId: c.id,
                 providerName: c.name,
                 providerType: c.providerType,

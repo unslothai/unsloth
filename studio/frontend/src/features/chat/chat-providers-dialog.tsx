@@ -127,6 +127,7 @@ import {
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 import { SettingsRow } from "@/features/settings/components/settings-row";
+import { learnModelDisplayNames, providerModelDisplayName } from "./model-display-names";
 
 const PROVIDER_FORM_EASE: [number, number, number, number] = [
   0.165, 0.84, 0.44, 1,
@@ -235,11 +236,31 @@ function shouldShowProviderApiType(providerType: string): boolean {
   return providerType === LEGACY_CUSTOM_PROVIDER_TYPE;
 }
 
-function formatModelSummary(models: string[]): string {
+function ModelOptionLabel({
+  providerType,
+  modelId,
+}: {
+  providerType: string;
+  modelId: string;
+}) {
+  const name = providerModelDisplayName(providerType, modelId);
+  return (
+    <span className="min-w-0 break-all text-sm leading-tight">
+      {name}
+      {name === modelId ? null : (
+        <span className="ml-2 text-xs text-muted-foreground">{modelId}</span>
+      )}
+    </span>
+  );
+}
+
+function formatModelSummary(providerType: string, models: string[]): string {
   if (models.length === 0) {
     return "No models enabled";
   }
-  const visible = models.slice(0, 4);
+  const visible = models
+    .slice(0, 4)
+    .map((model) => providerModelDisplayName(providerType, model));
   const remaining = models.length - visible.length;
   return `${visible.join(", ")}${remaining > 0 ? ` +${remaining}` : ""}`;
 }
@@ -496,10 +517,12 @@ export function ChatProvidersSettings({
     if (!query) {
       return availableModels;
     }
-    return availableModels.filter((model) =>
-      model.toLowerCase().includes(query),
+    return availableModels.filter(
+      (model) =>
+        model.toLowerCase().includes(query) ||
+        providerModelDisplayName(providerType, model).toLowerCase().includes(query),
     );
-  }, [availableModels, modelSearchQuery]);
+  }, [availableModels, modelSearchQuery, providerType]);
   const availableModelsLabel = modelSearchQuery.trim()
     ? `${filteredAvailableModels.length} of ${availableModels.length} models`
     : `${availableModels.length} models`;
@@ -840,6 +863,7 @@ export function ChatProvidersSettings({
       if (silent && autoLoadedCatalogRef.current !== autoLoad) return;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
+      learnModelDisplayNames(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : liveModelSeeds(
@@ -1331,6 +1355,9 @@ export function ChatProvidersSettings({
       getProviderModelCapabilities("openai_codex"),
     );
     if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
+    if (listed?.source === "subscription") {
+      learnModelDisplayNames("openai_codex", listed.known ?? listed.models);
+    }
     if (listed?.source === "reauthorization_required") {
       void syncExternalProvidersFromBackend(providersRef.current)
         .then((synced) => {
@@ -2353,11 +2380,10 @@ export function ChatProvidersSettings({
                                   onCheckedChange={() => toggleModel(model)}
                                   onClick={(event) => event.stopPropagation()}
                                 />
-                                <span
-                                  className="min-w-0 break-all text-sm leading-tight"
-                                >
-                                  {model}
-                                </span>
+                                <ModelOptionLabel
+                                  providerType={providerType}
+                                  modelId={model}
+                                />
                               </li>
                             ))
                           )}
@@ -2442,11 +2468,10 @@ export function ChatProvidersSettings({
                                   onCheckedChange={() => toggleModel(model)}
                                   onClick={(event) => event.stopPropagation()}
                                 />
-                                <span
-                                  className="min-w-0 break-all text-sm leading-tight"
-                                >
-                                  {model}
-                                </span>
+                                <ModelOptionLabel
+                                  providerType={providerType}
+                                  modelId={model}
+                                />
                               </li>
                             ))
                           )}
@@ -2585,7 +2610,7 @@ export function ChatProvidersSettings({
                 const providerLabel =
                   registryEntry?.display_name ??
                   customProviderDisplayName(provider.providerType);
-                const modelSummary = formatModelSummary(provider.models);
+                const modelSummary = formatModelSummary(provider.providerType, provider.models);
                 return (
                   <div
                     key={provider.id}

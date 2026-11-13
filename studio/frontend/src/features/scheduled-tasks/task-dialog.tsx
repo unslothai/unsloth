@@ -34,6 +34,7 @@ import {
   type ExternalProviderConfig,
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
+  providerModelDisplayName,
   useChatProjects,
   useChatRuntimeStore,
   useExternalProvidersStore,
@@ -424,7 +425,7 @@ export function TaskDialog({
                         <SelectLabel>{group.provider.name}</SelectLabel>
                         {group.models.map((option) => (
                           <SelectItem key={option.id} value={option.id}>
-                            {option.modelId}
+                            {providerModelDisplayName(group.provider.providerType, option.modelId)}
                           </SelectItem>
                         ))}
                       </SelectGroup>

@@ -179,6 +179,7 @@ import {
   isDecisionConnection,
   parseExternalModelId,
   useExternalProvidersStore,
+  providerModelDisplayName,
 } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { cancelConnectionImageGeneration } from "./connection-cancel";
@@ -1798,7 +1799,7 @@ export function ImagesPage({
             .flatMap((c) =>
               c.models.map((model) => ({
                 id: buildExternalModelId(c.id, model),
-                name: model,
+                name: providerModelDisplayName(c.providerType, model),
                 providerId: c.id,
                 providerName: c.name,
                 providerType: c.providerType,

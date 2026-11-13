@@ -6,6 +6,7 @@ import {
   buildExternalModelId,
   isDecisionConnection,
   useExternalProvidersStore,
+  providerModelDisplayName,
 } from "@/features/chat";
 import type { ExternalModelOption } from "@/features/model-picker/components/model-selector/types";
 import { connectionSpeechModels } from "../speak-connection-models";
@@ -31,7 +32,7 @@ export function useSpeakConnection() {
             .flatMap((c) =>
               connectionSpeechModels(c).map((model) => ({
                 id: buildExternalModelId(c.id, model),
-                name: model,
+                name: providerModelDisplayName(c.providerType, model),
                 providerId: c.id,
                 providerName: c.name,
                 providerType: c.providerType,
