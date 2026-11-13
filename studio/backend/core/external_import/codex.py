@@ -140,6 +140,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     messages: list[dict] = []
     inherited = 0
     open_calls: dict[str, dict] = {}
+    from_items = read_items = False
     for position, (origin, ordinal, line) in enumerate(_records(path)):
         payload = line.get("payload")
         if not isinstance(payload, dict):
@@ -148,9 +149,18 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         # Thread + origin file + ordinal: a revert's inherited messages keep their ids, and a fork
         # (another thread) gets its own, since message ids are unique across threads.
         message_id = stable_id("codex", session_id, origin, str(ordinal), length = 16)
+        item = payload.get("item") if kind == ("event_msg", "item_completed") else None
         if kind in (("event_msg", "user_message"), ("event_msg", "agent_message")):
             role = "user" if payload["type"] == "user_message" else "assistant"
             parts = [{"type": "text", "text": clean_text(str(payload.get("message") or ""))}]
+        elif isinstance(item, dict) and item.get("type") in ("UserMessage", "AgentMessage"):
+            role = "user" if item["type"] == "UserMessage" else "assistant"
+            text = "".join(
+                str(part.get("text") or "")
+                for part in item.get("content") or []
+                if isinstance(part, dict)
+            )
+            parts = [{"type": "text", "text": clean_text(text)}]
         elif kind in (("response_item", "function_call"), ("response_item", "custom_tool_call")):
             role, parts = "assistant", [_call(payload, message_id)]
             open_calls[parts[0]["toolCallId"]] = parts[0]
@@ -168,6 +178,14 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             continue
         if parts[0]["type"] == "text" and not parts[0]["text"]:
             continue
+        if (
+            messages
+            and (item is None) == from_items
+            and (messages[-1]["role"], messages[-1]["content"]) == (role, parts)
+        ):
+            continue  # the same turn written both as a legacy event and as a completed item
+        from_items = item is not None
+        read_items |= from_items
         timestamp = iso_ms(line.get("timestamp"))
         inherited += origin != revision
         messages.append(
@@ -188,7 +206,8 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         created_at_ms = messages[0]["createdAt"] if messages else file_created,
         updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
         messages = messages,
-        revision = revision,
+        # Older imports skipped completed items and counted fewer turns: re-base them.
+        revision = f"{revision}:items" if read_items else revision,
         inherited = inherited,
     )
 

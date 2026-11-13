@@ -879,6 +879,87 @@ def test_codex_revert_and_fork_rebuild_the_inherited_prefix(codex_home):
     assert chain == ["Fork of the retry", "Try again", "List the files"]
 
 
+_PAGINATED_ROLLOUT = Path(__file__).parent / "fixtures" / "codex_paginated_rollout.jsonl"
+_PAGINATED_SID = "01a1d5af-1734-7651-b549-42d9e5803184"
+
+
+def _paginated_rollout(home, keep = lambda record: True):
+    records = [json.loads(line) for line in _PAGINATED_ROLLOUT.read_text().splitlines()]
+    name = f"rollout-2026-11-13T16-13-04-{_PAGINATED_SID}.jsonl"
+    return _write(home / "sessions" / "2026" / "11" / "13" / name, list(filter(keep, records)))
+
+
+def _turns(sid):
+    return [
+        (m["role"], m["content"][0].get("text") or m["content"][0]["toolName"])
+        for m in _messages(codex.SOURCE, sid)
+    ]
+
+
+_PAGINATED_TURNS = [
+    ("user", "Why does checkout fail on empty carts? MARK-N1"),
+    ("assistant", "Codex reply to MARK-N1"),
+    ("user", "[RUN] run the cart tests MARK-N2"),
+    ("assistant", "shell"),
+    ("assistant", "Codex reply to MARK-N2 after tool"),
+    ("user", "Great, now summarise the fix MARK-N3"),
+    ("assistant", "Codex reply to MARK-N3"),
+]
+
+
+def test_codex_imports_every_turn_of_a_current_rollout(codex_home):
+    _paginated_rollout(codex_home)
+    summary = run_import(codex.SOURCE)
+
+    assert (summary.new_chats, summary.messages) == (1, 7)
+    assert _turns(_PAGINATED_SID) == _PAGINATED_TURNS
+    thread = studio_db.get_chat_thread(thread_id_for(codex.SOURCE, _PAGINATED_SID))
+    assert thread["title"] == "Why does checkout fail on empty carts? MARK-N1"
+
+
+def _completed(
+    kind,
+    text,
+    ts = "2026-11-13T16:20:00Z",
+):
+    part = "text" if kind == "UserMessage" else "Text"
+    item = {"type": kind, "id": text, "content": [{"type": part, "text": text}]}
+    return x_line("event_msg", {"type": "item_completed", "item": item}, ts = ts)
+
+
+def test_codex_reimport_brings_turns_an_older_import_missed(codex_home):
+    path = _paginated_rollout(
+        codex_home, keep = lambda r: r["payload"].get("type") != "item_completed"
+    )
+    assert run_import(codex.SOURCE).messages == 1
+    _paginated_rollout(codex_home)
+
+    assert run_import(codex.SOURCE).messages == 7
+    assert _turns(_PAGINATED_SID) == _PAGINATED_TURNS
+    assert run_import(codex.SOURCE).messages == 0
+
+    _append(path, [{**_completed("UserMessage", "One more"), "ordinal": 38}])
+    assert run_import(codex.SOURCE).messages == 1
+    assert _turns(_PAGINATED_SID) == [*_PAGINATED_TURNS, ("user", "One more")]
+
+
+def test_codex_turn_written_in_both_formats_imports_once(codex_home):
+    path = _rollout(
+        codex_home,
+        body = [
+            x_line("event_msg", {"type": "user_message", "message": "Hello"}),
+            _completed("UserMessage", "Hello"),
+            _completed("AgentMessage", "Hi"),
+            x_line("event_msg", {"type": "agent_message", "message": "Hi"}),
+        ],
+    )
+    messages = codex.read_transcript(path, "t", "s1").messages
+    assert [(m["role"], m["content"][0]["text"]) for m in messages] == [
+        ("user", "Hello"),
+        ("assistant", "Hi"),
+    ]
+
+
 def test_an_empty_tool_output_still_completes_the_call(claude_home):
     path = _session(
         claude_home,
