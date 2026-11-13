@@ -90,9 +90,13 @@ test("the live denoise preview shows only the in-flight preview and offers no ac
 test("an image picked during a run takes the stage from the live preview until the run is followed again", () => {
   assert.ok(page.includes("const stagePreviewSrc = pickedDuringRun ? undefined : livePreviewSrc;"));
   // Strip and Library picks both count; the strip's live tile and a new direct Generate give the stage back.
-  const select = between(page, "select: (id) => {", "},");
-  assert.ok(select.includes("setSelectedId(id);") && select.includes("setPickedDuringRun(true);"));
-  assert.ok(page.includes("setSelectedId(routedItem);\n        setPickedDuringRun(true);"));
+  const pick = between(page, "const pickImage = useCallback((id: string) => {", "}, []);");
+  // The cache copy is written before the render, so a gallery refresh already in flight keeps the pick loaded.
+  assert.ok(pick.includes("galleryCache.selectedId = id;"));
+  assert.ok(pick.includes("setSelectedId(id);") && pick.includes("setPickedDuringRun(true);"));
+  assert.ok(page.includes("select: pickImage,"));
+  assert.ok(page.includes("pickImage(routedItem);"));
+  assert.ok(page.includes("() => galleryCache.selectedId,"));
   const liveTile = between(page, 'data-testid="images-live-tile"', "</button>");
   assert.ok(liveTile.includes("onClick={() => setPickedDuringRun(false)}"));
   assert.ok(page.includes("localRun.current = true;\n    setPickedDuringRun(false);"));

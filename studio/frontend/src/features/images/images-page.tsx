@@ -2134,6 +2134,12 @@ export function ImagesPage({
   useEffect(() => {
     pickedDuringRunRef.current = pickedDuringRun;
   }, [pickedDuringRun]);
+  const pickImage = useCallback((id: string) => {
+    // Written now, not after the render: a gallery refresh in flight reads it to keep this image loaded.
+    galleryCache.selectedId = id;
+    setSelectedId(id);
+    setPickedDuringRun(true);
+  }, []);
   // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
   const [sessionSeed, setSessionSeed] = useState<number | null>(null);
   // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
@@ -2822,7 +2828,7 @@ export function ImagesPage({
           (offset, limit) => getGallery(offset, limit),
           Math.max(count, galleryCache.images.length, PAGE_SIZE),
           PAGE_SIZE,
-          galleryCache.selectedId,
+          () => galleryCache.selectedId,
         );
         if (stillFresh && !stillFresh()) return;
         if (resyncSeq.current !== ticket) return;
@@ -4178,10 +4184,7 @@ export function ImagesPage({
   useLayoutEffect(() => {
     stripTileActions.set({
       tileProps: stripReorder.tileProps,
-      select: (id) => {
-        setSelectedId(id);
-        setPickedDuringRun(true);
-      },
+      select: pickImage,
       setMenuId: setTileMenuId,
       togglePin: (id, pinned) => void handleTogglePin(id, pinned),
       archive: (id) => void handleArchive(id),
@@ -4745,15 +4748,14 @@ export function ImagesPage({
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
       if (found) {
-        setSelectedId(routedItem);
-        setPickedDuringRun(true);
+        pickImage(routedItem);
       } else {
         toast(translate("library.toast.imageNotFound"), {
           description: translate("library.toast.notFoundDescription"),
         });
       }
     });
-  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+  }, [routedItem, navigateSelf, loadGallery, loadMore, pickImage]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {

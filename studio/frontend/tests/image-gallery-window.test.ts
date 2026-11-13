@@ -30,7 +30,7 @@ test("a finished run that inserts at the front does not push the selected image 
   const gallery = fakeGallery(range(300));
   // 100 loaded, image 100 selected; the finished job adds one record at the front.
   gallery.insertNewest("new1");
-  const refreshed = await collectGalleryWindow(gallery.fetchPage, 100, 50, "old100");
+  const refreshed = await collectGalleryWindow(gallery.fetchPage, 100, 50, () => "old100");
   assert.ok(refreshed.images.some((image) => image.id === "old100"));
   assert.equal(refreshed.images[0].id, "new1");
   assert.equal(refreshed.hasMore, true);
@@ -44,24 +44,45 @@ test("a finished run that inserts at the front does not push the selected image 
 test("without a selection past the window, the refresh fetches the same count as before", async () => {
   const gallery = fakeGallery(range(300));
   gallery.insertNewest("new1");
-  const refreshed = await collectGalleryWindow(gallery.fetchPage, 100, 50, "old10");
+  const refreshed = await collectGalleryWindow(gallery.fetchPage, 100, 50, () => "old10");
   assert.equal(refreshed.images.length, 100);
   assert.equal(gallery.calls, 2);
-  const noSelection = await collectGalleryWindow(gallery.fetchPage, 100, 50, null);
+  const noSelection = await collectGalleryWindow(gallery.fetchPage, 100, 50, () => null);
   assert.equal(noSelection.images.length, 100);
 });
 
 test("a selection deleted elsewhere costs one extra page, not the whole gallery", async () => {
   const gallery = fakeGallery(range(4000));
-  const refreshed = await collectGalleryWindow(gallery.fetchPage, 100, 50, "gone");
+  const refreshed = await collectGalleryWindow(gallery.fetchPage, 100, 50, () => "gone");
   assert.equal(refreshed.images.length, 150);
   assert.equal(gallery.calls, 3);
 });
 
 test("a short gallery stops at its end", async () => {
   const gallery = fakeGallery(range(30));
-  const refreshed = await collectGalleryWindow(gallery.fetchPage, 50, 50, "gone");
+  const refreshed = await collectGalleryWindow(gallery.fetchPage, 50, 50, () => "gone");
   assert.equal(refreshed.images.length, 30);
   assert.equal(refreshed.hasMore, false);
   assert.equal(gallery.calls, 1);
+});
+
+test("a pick made while the refresh is fetching is kept, even one pushed past the window by the new record", async () => {
+  for (const pickDuringCall of [1, 2]) {
+    const gallery = fakeGallery(range(100));
+    gallery.insertNewest("new1");
+    let selected: string | null = "old5";
+    const fetchPage = async (offset: number, limit: number) => {
+      const page = await gallery.fetchPage(offset, limit);
+      // The user picks the last loaded image (now record 101) while this request is in flight.
+      if (gallery.calls === pickDuringCall) selected = "old100";
+      return page;
+    };
+    const refreshed = await collectGalleryWindow(fetchPage, 100, 50, () => selected);
+    assert.ok(
+      refreshed.images.some((image) => image.id === "old100"),
+      `picked during request ${pickDuringCall}`,
+    );
+    assert.equal(refreshed.images.length, 101);
+    assert.equal(refreshed.hasMore, false);
+  }
 });
