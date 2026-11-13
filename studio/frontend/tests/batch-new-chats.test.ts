@@ -128,13 +128,11 @@ test("each file gets its own new chat, the next opening only after the reply fin
   try {
     const h = harness();
     assert.equal(startBatchNewChats("  Describe this clip  ", [file("b.mp4"), file("a.mp4")], h.deps), true);
-    // A second batch can't start while one runs.
     assert.equal(startBatchNewChats("again", [file("c.mp4")], h.deps), false);
     assert.deepEqual(h.opened, ["n0"]);
     // Its own draft slot, so the New chat draft stays where the user left it.
     assert.equal(isBatchTargetKey(batchTargetKey("n0")), true);
     assert.equal(isBatchTargetKey("single:other"), false);
-    // Only the composer of that new chat can claim the step, and only once.
     assert.equal(claimBatchStep("single:other"), null);
     const first = claimBatchStep(batchTargetKey("n0"));
     assert.ok(first);
@@ -203,7 +201,6 @@ test("a send Studio refused, or a chat nobody opened, ends the batch instead of 
     startBatchNewChats("p", [file("a.mp4")], refused.deps);
     const claim = claimBatchStep(batchTargetKey("n0"));
     assert.ok(claim);
-    // Nothing reached the chat, whether the prompt is still in the composer or not.
     // An upload still preparing the send holds the timeout until it lands or is released.
     let sending = true;
     claim.sent({ read: () => ({ isRunning: false, messages: [] }), sending: () => sending });

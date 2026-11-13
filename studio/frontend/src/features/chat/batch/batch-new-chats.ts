@@ -53,7 +53,6 @@ export interface ThreadListLike {
   getById: (id: string) => { getState: () => BatchThreadSnapshot };
 }
 
-/** Reads one chat by id, following its id from local to saved. */
 export function batchThreadReader(threads: ThreadListLike, itemId: string) {
   const ids = new Set([itemId]);
   return (): BatchThreadSnapshot | null => {
@@ -77,7 +76,6 @@ export function batchThreadReader(threads: ThreadListLike, itemId: string) {
   };
 }
 
-// Natural order: clip-2 before clip-10.
 export function orderBatchFiles(files: readonly File[]): File[] {
   return [...files].sort((a, b) =>
     a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }),
@@ -116,7 +114,6 @@ export interface BatchDeps {
 }
 
 export interface BatchStepWatch {
-  /** The chat this step sent into, or null while it cannot be read. */
   read: () => BatchThreadSnapshot | null;
   /** True while the send is still preparing (an attachment upload), before the message lands. */
   sending: () => boolean;
@@ -225,8 +222,7 @@ function watchStep(id: number, index: number, watch: BatchStepWatch): void {
     if (outcome !== "done") doneSince = null;
     if (outcome === "pending") {
       const nothingSent = !snapshot || snapshot.messages.length === 0;
-      // A refused send keeps the prompt in the composer, a failed attachment send clears it: either
-      // way nothing reaches this chat.
+      // Refused (prompt kept) or failed attachment send (composer cleared): nothing reached the chat.
       if (nothingSent && !watch.sending() && Date.now() - startedAt > BATCH_SEND_TIMEOUT_MS) {
         fail(id, "Studio didn't send this chat. Check its message box, then start the batch again.");
       }
@@ -271,7 +267,6 @@ export function startBatchNewChats(
   return true;
 }
 
-/** Stops before the next chat; the chat already sending keeps its reply. */
 export function stopBatchNewChats(): void {
   const run = useBatchNewChatsStore.getState().run;
   if (!run) return;

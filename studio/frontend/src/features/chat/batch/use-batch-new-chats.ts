@@ -227,8 +227,7 @@ export function useBatchNewChatsComposer(
           // Let the composer render the file and text, so its send checks see them.
           await nextFrame();
           await nextFrame();
-          // A New chat opened meanwhile can reuse this blank draft and clear it; a file the user
-          // added meanwhile would ride along with this one.
+          // A New chat opened meanwhile can reuse and clear this draft, or a user file can join it.
           const draft = aui.composer().getState();
           if (
             aui.threadListItem().getState().id !== draftId ||
