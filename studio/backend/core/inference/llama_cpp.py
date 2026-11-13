@@ -31437,11 +31437,23 @@ class LlamaCppBackend:
                         "V cache the retry runs with is bigger than the placement the fit "
                         "priced with flash attention on."
                     )
+                    return flipped
+
+                def _refit_for_no_flash(fa_cmd: list) -> list:
+                    """The re-enabled fitter may leave layers on the host, so residency is re-asked."""
+                    flipped = _enable_managed_fit_for_no_flash(fa_cmd)
+                    if flipped is fa_cmd:
+                        return fa_cmd
+                    # DirectIO reads CPU layers into buffers.
+                    flipped = self._drop_managed_dio(
+                        flipped,
+                        "the --flash-attn off retry runs the fitter again",
+                        clear_record = False,
+                    )
                     rearmed = _rearm_resident_lock(
                         flipped, "--flash-attn off retry; it runs the fitter again"
                     )
-                    if rearmed != flipped:
-                        self._record_memory_state(rearmed, env)
+                    self._record_memory_state(rearmed, env)
                     return rearmed
 
                 def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
@@ -33180,7 +33192,7 @@ class LlamaCppBackend:
                                 "--flash-attn off retry."
                             )
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
-                        _fa_cmd = _enable_managed_fit_for_no_flash(_fa_cmd)
+                        _fa_cmd = _refit_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
@@ -33254,7 +33266,7 @@ class LlamaCppBackend:
                                 "--flash-attn off retry."
                             )
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
-                        _fa_cmd = _enable_managed_fit_for_no_flash(_fa_cmd)
+                        _fa_cmd = _refit_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = (

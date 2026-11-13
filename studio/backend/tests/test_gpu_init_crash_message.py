@@ -1986,3 +1986,45 @@ class TestFitStepRetryPageLock:
         assert _has_lock(cmds[0]) and not _has_lock(cmds[1])
         assert _has_lock(cmds[2])
         assert backend._memory_mlock_applicable is True
+
+
+def test_a_no_flash_fit_on_relaunch_drops_the_fit_off_rungs_directio(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "utils.model_memory_settings.capture_model_memory_settings",
+        lambda publish: (publish((False, True)), (False, True))[1],
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_weights_in_host_memory",
+        lambda _self, **kw: not kw["fully_gpu_offloaded"],
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_gpu_offload_confirmed",
+        lambda _self, _binary, _env, _gpus, host_resident, dio_possible, *_a: (
+            dio_possible and not host_resident
+        ),
+    )
+
+    def outcome(cmd):
+        if _flash(cmd) == "off" and _last_fit_mode(cmd) == "on":
+            return None, ""
+        if _last_fit_mode(cmd) == "on":
+            return _WINDOWS_ACCESS_VIOLATION, _FIT_STEP_CRASH_OUTPUT
+        return _WINDOWS_ACCESS_VIOLATION, "load_tensors: offloaded 17/17 layers to GPU"
+
+    _backend, loaded, launches, _sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [],
+        platform = "win32",
+        cpu_fallback_available = False,
+        outcome = outcome,
+        caps = {"supports_load_mode": True},
+    )
+    cmds = [cmd for cmd, _env in launches if "-m" in cmd]
+    dio = ["--load-mode", "dio"]
+    has_dio = [any(c[i : i + 2] == dio for i in range(len(c) - 1)) for c in cmds]
+    assert loaded is True
+    assert [_last_fit_mode(c) for c in cmds] == ["on", "off", "on"]
+    assert has_dio == [False, True, False]

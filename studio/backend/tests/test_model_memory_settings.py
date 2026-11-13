@@ -2747,11 +2747,11 @@ class TestTheLaunchWithdrawsTheDio:
             self._src(),
             inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch),
         )
-        # --fit retry, arch-crash retry, arch gate here; CPU replay in the builder. The gate also
-        # strips, or a narrowed set keeps the pair.
-        assert launch.count("self._drop_managed_dio(") == 3
+        # --fit retry, no-flash fitter re-enable, arch-crash retry, arch gate here; CPU replay in
+        # the builder. The gate also strips, or a narrowed set keeps the pair.
+        assert launch.count("self._drop_managed_dio(") == 4
         assert replay.count("self._drop_managed_dio(") == 1
-        assert launch.count("clear_record = False") == 1
+        assert launch.count("clear_record = False") == 2
         assert replay.count("clear_record = False") == 1
 
     def test_the_projector_retry_does_not(self):
