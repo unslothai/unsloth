@@ -195,6 +195,21 @@ test("a send Studio refused, or a chat nobody opened, ends the batch instead of 
     mock.timers.tick(BATCH_OPEN_TIMEOUT_MS + 1);
     assert.equal(unopened.finished[0]?.kind, "failed");
     assert.equal(claimBatchStep(batchTargetKey("n0")), null);
+
+    // A hidden tab throttles the claim poll: wait for Studio to be visible before timing out.
+    const doc = { hidden: true };
+    (globalThis as { document?: unknown }).document = doc;
+    try {
+      const hidden = harness();
+      startBatchNewChats("p", [file("a.mp4")], hidden.deps);
+      mock.timers.tick(BATCH_OPEN_TIMEOUT_MS * 3);
+      assert.equal(hidden.finished.length, 0);
+      doc.hidden = false;
+      mock.timers.tick(BATCH_OPEN_TIMEOUT_MS + 1);
+      assert.equal(hidden.finished[0]?.kind, "failed");
+    } finally {
+      delete (globalThis as { document?: unknown }).document;
+    }
   } finally {
     mock.timers.reset();
   }

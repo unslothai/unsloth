@@ -164,11 +164,17 @@ function openStep(id: number, index: number): void {
   const nonce = deps.newNonce();
   useBatchNewChatsStore.setState({ run: { ...run, index, nonce, phase: "opening" } });
   deps.notify.progress(index, run.files.length, run.files[index].name);
-  timer = setTimeout(() => {
+  const expire = () => {
     const now = currentRun(id);
     if (!now || now.phase !== "opening" || now.nonce !== nonce) return;
+    // A hidden tab throttles the composer's claim poll, so only a visible Studio times out.
+    if (typeof document !== "undefined" && document.hidden) {
+      timer = setTimeout(expire, BATCH_OPEN_TIMEOUT_MS);
+      return;
+    }
     fail(id, "Couldn't open a new chat for this file. Keep Chat open while the batch runs.");
-  }, BATCH_OPEN_TIMEOUT_MS);
+  };
+  timer = setTimeout(expire, BATCH_OPEN_TIMEOUT_MS);
   deps.openNewChat(nonce);
 }
 

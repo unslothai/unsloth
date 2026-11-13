@@ -117,8 +117,15 @@ export function pickFilesForNewChats(aui: Aui, navigate: Navigate, accept: strin
 // A new chat's composer can remount while a step is being sent; the newest one for a key sends.
 const composerForms = new Map<string, RefObject<HTMLFormElement | null>>();
 
+// Hidden tabs pause animation frames; the timer keeps an unattended batch moving.
 function nextFrame(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 100);
+    requestAnimationFrame(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 export function useBatchNewChatsComposer(
@@ -195,7 +202,8 @@ export function useBatchNewChatsComposer(
           claim.sent({
             read,
             unsent: () => {
-              if (aui.threadListItem().getState().id !== draftId) return false;
+              // A draft left unsent counts as unsent, so the send timeout still ends the batch.
+              if (aui.threadListItem().getState().id !== draftId) return true;
               return aui.composer().getState().text.trim() === claim.prompt;
             },
           });
