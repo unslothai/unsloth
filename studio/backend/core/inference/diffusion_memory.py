@@ -3255,6 +3255,38 @@ def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
     return streamed
 
 
+# "0" keeps run-once companions resident under streaming offload.
+STREAM_RUN_ONCE_COMPANIONS_ENV = "UNSLOTH_VIDEO_STREAM_RUN_ONCE_COMPANIONS"
+# Run once per request before step 0 (LTX-2 text connectors).
+_RUN_ONCE_COMPANION_CLASSES = ("LTX2TextConnectors",)
+
+
+def run_once_companions(pipe: Any) -> dict[str, Any]:
+    """Run-once companions to stream leaf by leaf with the encoders, keeping them off the card for the denoise."""
+    if _env_off(STREAM_RUN_ONCE_COMPANIONS_ENV):
+        return {}
+    components = getattr(pipe, "components", None)
+    if not isinstance(components, dict):
+        return {}
+    return {
+        str(name): module
+        for name, module in components.items()
+        if type(module).__name__ in _RUN_ONCE_COMPANION_CLASSES
+        and callable(getattr(module, "parameters", None))
+    }
+
+
+def _run_once_companions_pin(dit_mib: int, leaf_mib: int, companion_mib: int, device: Any) -> bool:
+    """Pin budget fits the companions too; unpinned streaming is slower than resident."""
+    forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
+    if forced in ("0", "off", "false", "no") or not host_pinning_allowed(device):
+        return False
+    if forced in ("1", "on", "true", "yes"):
+        return True
+    budget = None if _pinned_memory_capped() else _pin_budget_mib()
+    return budget is not None and budget > 0 and dit_mib + leaf_mib + companion_mib <= budget
+
+
 def _module_storage_bytes(module: Any, seen: set[int]) -> int:
     storage_bytes = 0
     for tensor in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
@@ -4179,6 +4211,24 @@ def denoise_phase_residency_enabled() -> bool:
     return not _env_off(DENOISE_PHASE_RESIDENCY_ENV)
 
 
+# (denoise, tiled decode) MiB, streamed int8, default tier, 1024^2, window excluded, no margin; measured on an L4 at
+# 6 GiB. The resident table (901 / 2437) left ~2 GiB unused. "0" = the resident table.
+STREAMED_PHASE_SEED_ENV = "UNSLOTH_DIFFUSION_STREAMED_PHASE_SEED"
+_MEASURED_STREAMED_PHASE_MIB: dict[str, tuple[int, int]] = {
+    "flux.3-klein": (308, 904),
+}
+
+
+def _streamed_phase_seed(
+    family: Optional[str], speed_mode: Optional[str], quant: Optional[str], tiled: bool
+) -> Optional[tuple[int, int]]:
+    if _env_off(STREAMED_PHASE_SEED_ENV) or not tiled or str(speed_mode or "") != "default":
+        return None
+    if "int8" not in str(quant or "").split("|", 1)[0].lower():
+        return None
+    return _MEASURED_STREAMED_PHASE_MIB.get(str(family or "").lower())
+
+
 def _top_level_group_mib(pipe: Any) -> Optional[int]:
     """MiB of the largest denoiser's weights outside its block stacks (``ModuleList`` / ``Sequential`` children):
     block-level group offload keeps them in one top-level group that is onloaded for the whole forward when it is not
@@ -4247,6 +4297,9 @@ def _denoise_phase_reserve(
             and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
         ):
             row = phases[1 if speed_mode == "max" else 0]
+            streamed = _streamed_phase_seed(family, speed_mode, quant, tiled)
+            if streamed is not None:
+                row = (row[0], streamed[0], row[2], streamed[1], row[4])
             denoise = int(math.ceil(row[_PHASE_DENOISE_COLUMN] * _MEASURED_PEAK_MARGIN))
             decode = int(row[_PHASE_TILED_DECODE_COLUMN if tiled else _PHASE_UNTILED_DECODE_COLUMN])
         if quant is not None:
@@ -5008,7 +5061,41 @@ def _refine_plan_from_loaded_weights(
                     measured_decode_peak_quadratic = split["quadratic"],
                     decode_lend_text_encoder_mib = lend,
                 )
-        if dit_room <= 0 and te_room <= 0:
+        reference_cut = 0
+        if (
+            policy == OFFLOAD_GROUP
+            and stream_te
+            and not whole_dit
+            and not wide_dit
+            and (not bool(getattr(plan, "stream_transformer", True)) or dit_room >= dit)
+        ):
+            # The resident transformer must also hold an edit's denoise, else the first edit streams it mid-render.
+            reference = _load_reference_need(
+                pipe,
+                family = family,
+                speed_mode = speed_mode,
+                quant = read_quant,
+                static_seed = static_seed,
+            )
+            if reference is not None:
+                basis = phase_headroom if lend > 0 and phase_headroom is not None else headroom
+                spare = max(
+                    0, int(room) + int(headroom) - int(basis) - int(dit_room) - int(te_room)
+                )
+                short = max(0, int(reference[1]) - int(basis) - spare)
+                # Cut the encoder only when a render-time release of it could not cover the reference.
+                reference_cut = int(te_room) if short > int(te_room) else 0
+                te_room -= reference_cut
+                if lend > 0:
+                    lend = max(0, lend - reference_cut)
+                    estimates["decode_lend_text_encoder_mib"] = lend
+                estimates.update(
+                    measured_reference_phase_mib = reference[0],
+                    measured_reference_need_mib = reference[1],
+                    measured_reference_reserve_mib = int(basis) + spare + reference_cut,
+                    measured_reference_te_cut_mib = reference_cut,
+                )
+        if dit_room <= 0 and te_room <= 0 and not reference_cut:
             return plan
         if whole_dit or wide_dit:
             estimates["resident_dit_slack_mib"] = _resident_dit_slack_mib(memory)
@@ -5042,6 +5129,12 @@ def _refine_plan_from_loaded_weights(
                     else ""
                 )
                 + "); the rest streams"
+                + (
+                    f" ({reference_cut} MiB of the encoders stream instead so the transformer also holds a "
+                    f"{estimates['measured_reference_need_mib']} MiB edit denoise)"
+                    if reference_cut
+                    else ""
+                )
                 + (
                     f" (whole transformer within free memory less a {_resident_dit_slack_mib(memory)} MiB slack;"
                     f" {encode_room} MiB of it while the encoders run)"
@@ -5309,6 +5402,8 @@ def _resident_tensors(group: Any) -> list:
 
 
 def _release_group(group: Any) -> None:
+    # resident encoder groups with a dropped host copy get it back first
+    rebuild_dropped_host_copy(group)
     onload_, offload_ = getattr(group, "_unsloth_streamed_hooks", (None, None))
     for name, fn in (("onload_", onload_), ("offload_", offload_)):
         if fn is not None:
@@ -5386,12 +5481,37 @@ def release_resident_groups(
             return None
         modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
         left = int(need_mib) * 1024 * 1024
+        # Groups the load kept no host copy of get theirs back in one batch (one slab, one sync) before any streams.
+        pending: list = []
+        budget = left
+        for module in modules:
+            for group in reversed(_offload_groups(module) or []):
+                if budget <= 0:
+                    break
+                if not getattr(group, "_unsloth_resident", False):
+                    continue
+                for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
+                    if getattr(member, "_unsloth_resident", False) and member not in pending:
+                        pending.append(member)
+                        budget -= int(getattr(member, "_unsloth_resident_bytes", 0))
+        try:
+            rebuild_dropped_host_copies(pending)
+        except Exception as exc:  # noqa: BLE001 - a group still without a host copy stays resident below
+            if logger is not None:
+                logger.warning(
+                    "diffusion.memory: copying resident groups back to the host failed (%s)", exc
+                )
         for module in modules:
             for group in reversed(_offload_groups(module) or []):
                 if left <= 0:
                     break
                 if not getattr(group, "_unsloth_resident", False):
                     continue
+                if any(
+                    getattr(m, _HOST_DROPPED_ATTR, None)
+                    for m in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]
+                ):
+                    continue  # no host copy to stream from: it stays resident, later groups may still free room
                 # Before demoting: a release that fails part way must still wait on the copy stream.
                 state = getattr(module, "_unsloth_stream_state", None)
                 if isinstance(state, dict):
@@ -6174,6 +6294,142 @@ def derived_reference_need_mib(
     return int(-(-total // step) * step)
 
 
+# "0": the load places for text-to-image only; an edit's reference then streams resident groups mid-render.
+EDIT_LOAD_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_EDIT_LOAD_PLACEMENT"
+# ``_unsloth_measured_reserve`` slot: (denoise phase MiB, MiB the placement covers).
+MEASURED_RESERVE_REFERENCE_INDEX = 14
+
+
+def edit_load_placement_enabled() -> bool:
+    return derived_reference_pricing_enabled() and not _env_off(EDIT_LOAD_PLACEMENT_ENV)
+
+
+def _default_reference_pixels(family: str) -> int:
+    """Uses the request path's helpers so the load and the render-time guard price the same image."""
+    try:
+        from .diffusion_conditioning import default_reference_pixels
+        from .diffusion_families import _FAMILIES
+
+        fam = next((f for f in _FAMILIES if str(f.name).lower() == family), None)
+        return default_reference_pixels(fam) if fam is not None else 0
+    except Exception:  # noqa: BLE001 - unreadable: no edit placement
+        return 0
+
+
+def _load_reference_need(
+    pipe: Any,
+    *,
+    family: Optional[str],
+    speed_mode: Optional[str],
+    quant: Optional[str],
+    static_seed: bool,
+) -> Optional[tuple[int, int]]:
+    """(denoise phase MiB, denoise MiB) of a guidance-free default edit; None when unpriced or switched off."""
+    name = (str(family or "").split() or [""])[0].lower()
+    if not edit_load_placement_enabled() or name not in _DERIVED_REFERENCE_FAMILIES:
+        return None
+    phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(name)
+    if (
+        phases is None
+        or not static_seed
+        or not bool(getattr(pipe, "_unsloth_phase_seeds", False))
+        or str(speed_mode or "") not in _MEASURED_PEAK_SPEED_MODES
+    ):
+        return None
+    reference = _default_reference_pixels(name)
+    if not reference:
+        return None
+    step = _MEASURED_PEAK_ROUND_MIB
+    row = phases[1 if speed_mode == "max" else 0]
+    phase = int(math.ceil(row[_PHASE_DENOISE_COLUMN] * _MEASURED_PEAK_MARGIN))
+    phase = int(-(-phase // step) * step)
+    need = derived_reference_need_mib(
+        pipe,
+        family = family,
+        phase_mib = phase,
+        width = DEFAULT_IMAGE_WIDTH,
+        height = DEFAULT_IMAGE_HEIGHT,
+        reference_pixels = reference,
+        cfg = False,
+    )
+    if need is None:
+        return None
+    if quant is not None:
+        learned = measured_image_runtime_mib(
+            family, speed_mode, quant = with_workflow(quant, "edit"), static_seed = False
+        )
+        if learned is not None:
+            need = max(int(need), int(learned))
+    return phase, int(need)
+
+
+def load_covered_reference_need_mib(
+    pipe: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    reference_pixels: int = 0,
+    cfg: Optional[bool] = None,
+    quadratic_attention: bool = False,
+) -> Optional[int]:
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None) or ()
+    if len(reserve) <= MEASURED_RESERVE_REFERENCE_INDEX or int(reference_pixels or 0) <= 0:
+        return None
+    covered = reserve[MEASURED_RESERVE_REFERENCE_INDEX]
+    if not covered or not edit_load_placement_enabled():
+        return None
+    return derived_reference_need_mib(
+        pipe,
+        family = reserve[1],
+        phase_mib = int(covered[0]),
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        reference_pixels = int(reference_pixels),
+        cfg = cfg,
+        compute_bytes = reserve[4] if len(reserve) > 4 and reserve[4] else 2,
+        quadratic_attention = quadratic_attention,
+    )
+
+
+def static_reference_release_mib(pipe: Any, need_mib: int) -> Optional[int]:
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None)
+    if not reserve or len(reserve) <= MEASURED_RESERVE_REFERENCE_INDEX:
+        return None
+    covered = reserve[MEASURED_RESERVE_REFERENCE_INDEX]
+    if not covered:
+        return None
+    return max(0, int(need_mib) - max(int(reserve[0]), int(covered[1])))
+
+
+def live_reference_shortfall_mib(
+    pipe: Any,
+    need_mib: int,
+    device: Any = None,
+) -> Optional[int]:
+    """MiB ``need_mib`` lacks in free memory now (driver free less budget reserve, plus reusable cache); None if unreadable."""
+    try:
+        import torch
+
+        dev = torch.device(device if device is not None else "cuda")
+        if dev.type != "cuda":
+            return None
+        if dev.index is None:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        free, total = (int(x) for x in torch.cuda.mem_get_info(dev))
+        free -= user_budget_reserve_bytes(dev, total)
+        cached = max(
+            0,
+            int(torch.cuda.memory_reserved(dev))
+            - int(torch.cuda.memory_allocated(dev))
+            - _graph_held_cache_bytes(dev.index),
+        )
+        return max(0, int(need_mib) + _DECODE_SLACK_MIB - ((free + cached) >> 20))
+    except Exception:  # noqa: BLE001 - unreadable: the planned release stands
+        return None
+
+
 def measured_request_extra_mib(
     pipe: Any,
     *,
@@ -6325,6 +6581,34 @@ def measured_request_extra_mib(
                 need = own if need is None else max(need, own)
     if need is None:
         return 0
+    covered = (
+        reserve[MEASURED_RESERVE_REFERENCE_INDEX]
+        if len(reserve) > MEASURED_RESERVE_REFERENCE_INDEX
+        else None
+    )
+    if (
+        not phase
+        and covered
+        and allowance > 0
+        and int(reference_pixels or 0) > 0
+        and tier_peak is None
+        and base_need is not None
+        and int(base_need) <= int(headroom)
+    ):
+        # only the steps grow with the reference (encode and decode run under their own hooks)
+        derived = load_covered_reference_need_mib(
+            pipe,
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            reference_pixels = int(reference_pixels),
+            cfg = cfg,
+            quadratic_attention = quadratic_attention,
+        )
+        if derived is not None:
+            if own_learned is not None:
+                derived = max(int(derived), int(own_learned))
+            return max(0, int(derived) - max(int(headroom), int(covered[1])))
     if phase:
         pixels = (
             max(64, int(width or DEFAULT_IMAGE_WIDTH))
@@ -7162,6 +7446,150 @@ def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
     return waited
 
 
+# "0": an image load pins (and keeps) the host copy of every text-encoder offload group, resident ones too.
+RESIDENT_HOST_DROP_ENV = "UNSLOTH_DIFFUSION_DROP_RESIDENT_HOST_COPY"
+_HOST_DROPPED_ATTR = "_unsloth_host_dropped"
+
+
+def _resident_host_drop_enabled() -> bool:
+    return not _env_off(RESIDENT_HOST_DROP_ENV)
+
+
+def drop_resident_host_copies(
+    groups: list,
+    logger: Any = None,
+    label: str = "",
+) -> tuple[list, int]:
+    """Free the pageable host copy of each resident group (its weights live on the card); returns ``(kept, bytes)``:
+    the groups that still need a pin, and the bytes freed. A group whose eviction ever streams it again gets an exact
+    copy back from the card first (``rebuild_dropped_host_copy``). Tied partners drop together or not at all."""
+    import torch
+
+    def droppable(group: Any) -> bool:
+        if not getattr(group, "_unsloth_resident", False) or getattr(
+            group, "offload_to_disk_path", None
+        ):
+            return False
+        cpu = getattr(group, "cpu_param_dict", None)
+        if not isinstance(cpu, dict) or not cpu:
+            return False
+        for t, src in cpu.items():
+            if (
+                type(src) is not torch.Tensor
+                or src.device.type != "cpu"
+                or src.is_pinned()
+                # the weight itself must be on the card, not reading this host copy
+                or getattr(t, "device", None) is None
+                or t.device.type == "cpu"
+            ):
+                return False
+        return True
+
+    kept: list = []
+    dropped: set = set()
+    freed = 0
+    for group in groups:
+        if id(group) in dropped:
+            continue
+        closure = [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]
+        if not all(droppable(g) for g in closure):
+            kept.append(group)
+            continue
+        seen: set = set()
+        for member in closure:
+            cpu = member.cpu_param_dict
+            for src in cpu.values():
+                key = (src.data_ptr(), src.nbytes)
+                if key not in seen:
+                    seen.add(key)
+                    freed += int(src.nbytes)
+            setattr(member, _HOST_DROPPED_ATTR, list(cpu.keys()))
+            cpu.clear()
+            dropped.add(id(member))
+    if freed and logger is not None:
+        try:
+            logger.info(
+                "diffusion.memory: %s keeps no host copy of its %d resident offload groups (%.1f GiB not pinned); "
+                "an eviction copies them back from the card",
+                label,
+                len(dropped),
+                freed / 2**30,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return kept, freed
+
+
+def rebuild_dropped_host_copy(group: Any) -> int:
+    """Give ``group`` (and its tied partners) host copies of their device weights again; returns bytes copied."""
+    return rebuild_dropped_host_copies([group])
+
+
+_REBUILD_ALIGN = 512
+
+
+def rebuild_dropped_host_copies(groups: Iterable[Any]) -> int:
+    """Host copies of the device weights of every dropped group in ``groups`` (tied partners included), in one
+    registered slab filled by device-to-host copies; returns bytes copied. Each tensor shared by tied partners is
+    copied once. Without a registered slab (refused, or no CUDA) each tensor gets its own pageable copy."""
+    import torch
+
+    members: list = []
+    seen_groups: set = set()
+    for group in groups:
+        for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
+            if id(member) not in seen_groups and getattr(member, _HOST_DROPPED_ATTR, None):
+                seen_groups.add(id(member))
+                members.append(member)
+    if not members:
+        return 0
+    tensors: dict = {}
+    for member in members:
+        for t in getattr(member, _HOST_DROPPED_ATTR, None) or ():
+            tensors.setdefault(id(t), t)
+    lives = {key: (t.data if hasattr(t, "data") else t) for key, t in tensors.items()}
+    offsets: dict = {}
+    total = 0
+    for key, live in lives.items():
+        offsets[key] = total
+        total += -(-int(live.nbytes) // _REBUILD_ALIGN) * _REBUILD_ALIGN
+    device = next((live.device for live in lives.values() if live.device.type == "cuda"), None)
+    slab = None
+    # Pinned only where pinning is allowed now and the copy fits what host RAM can pin now; else pageable copies
+    # (the group streams slower, the release itself never waits on a pin).
+    budget = None if device is None or _pinned_memory_capped() else _pin_budget_mib()
+    if (
+        device is not None
+        and host_pinning_allowed(device)
+        and budget is not None
+        and (total >> 20) <= budget
+    ):
+        try:
+            slab = registered_pinned_empty(total)
+        except Exception:  # noqa: BLE001 - per-tensor pageable copies below
+            slab = None
+    hosts: dict = {}
+    with torch.no_grad():
+        if device is not None:
+            torch.cuda.current_stream(device).synchronize()
+        for key, live in lives.items():
+            if slab is not None:
+                off = offsets[key]
+                host = slab[off : off + int(live.nbytes)].view(live.dtype).view(live.shape)
+                host.copy_(live, non_blocking = True)
+            else:
+                host = live.detach().to("cpu", copy = True)
+            hosts[key] = host
+        if slab is not None:
+            torch.cuda.current_stream(device).synchronize()
+    for member in members:
+        cpu = member.cpu_param_dict
+        for t in getattr(member, _HOST_DROPPED_ATTR, None) or ():
+            cpu[t] = hosts[id(t)]
+        setattr(member, _HOST_DROPPED_ATTR, None)
+    return sum(int(live.nbytes) for live in lives.values())
+
+
 def _encoder_background_pin_wanted(pipe: Any, device: Any = None) -> bool:
     # Needs the registered pin: per-tensor pin_memory() rounds to a power of two, past the weight-byte budget.
     return (
@@ -7540,6 +7968,8 @@ class _GroupPinner:
         self._lock = threading.Lock()
         self.after: list = []
         self.late = False
+        # image-load text encoders: groups resident when the pin starts drop their host copy instead of pinning it
+        self.lazy_resident = False
         self._thread = threading.Thread(target = self._entry, name = "unsloth-offload-pin", daemon = True)
         self._started = False
         for group in groups:
@@ -7675,6 +8105,14 @@ class _GroupPinner:
         failed = None
         pool = None
         try:
+            if self.lazy_resident and _resident_host_drop_enabled():
+                # Resident groups are read from the card; pinning their host copy only cost RAM and load time.
+                kept, _freed = drop_resident_host_copies(self.groups, self.logger, self.label)
+                kept_ids = {id(g) for g in kept}
+                for group in self.groups:
+                    if id(group) not in kept_ids:
+                        self._done[id(group)].set()
+                self.groups = kept
             if callable(self.byte_cap):
                 self.byte_cap = max(0, int(self.byte_cap()))
                 if self.logger is not None:
@@ -7884,6 +8322,7 @@ def _defer_pinning(
     *,
     fast: Optional[bool] = None,
     byte_cap: Optional[int] = None,
+    lazy_resident: bool = False,
 ) -> bool:
     groups = _offload_groups(module)
     if not groups:
@@ -7892,6 +8331,7 @@ def _defer_pinning(
         fast = bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False))
     fast = bool(fast) and _fast_pin_supported(device)
     pinner = _GroupPinner(module, groups, device, logger, fast = fast, byte_cap = byte_cap)
+    pinner.lazy_resident = bool(lazy_resident)
     pending = getattr(pipe, _PENDING_PINS_ATTR, None)
     if pending is None:
         pending = []
@@ -8443,7 +8883,9 @@ def _apply_group_offload(
                 elif _encoder_defers(module) and (whole or encoder_left_mib > 0):
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
                     cap = None if whole else int(encoder_left_mib) << 20
-                    _defer_pinning(pipe, module, onload, logger, fast = True, byte_cap = cap)
+                    _defer_pinning(
+                        pipe, module, onload, logger, fast = True, byte_cap = cap, lazy_resident = True
+                    )
                     if not whole:
                         encoder_left_mib = max(0, encoder_left_mib - _module_registered_mib(module))
                 else:
@@ -9080,9 +9522,10 @@ def _apply_streaming_offload(
             onload.type == "cuda" and "low_cpu_mem_usage" in params and host_pinning_allowed(onload)
         )
 
+        companions = run_once_companions(pipe)
         # Small companions (tiled VAE) stay resident; transformers and encoders stay on CPU behind hooks.
         for name, component in components.items():
-            if str(name) in streamed:
+            if str(name) in streamed or str(name) in companions:
                 continue
             if isinstance(component, torch.nn.Module):
                 component.to(onload)
@@ -9128,6 +9571,24 @@ def _apply_streaming_offload(
             leaf_mib = sum(
                 leaf_pin_mib(n, m, t) for n, (m, t) in streamed.items() if t != "block_level"
             )
+            companion_mib = sum(pin_mib(m) for m in companions.values())
+            if companions and _run_once_companions_pin(
+                dit_pin_mib, leaf_mib, companion_mib, onload
+            ):
+                for comp_name, module in companions.items():
+                    streamed[comp_name] = (module, "leaf_level")
+                leaf_mib += companion_mib
+                if logger is not None:
+                    logger.info(
+                        "diffusion.memory: streaming %s (%d MiB) leaf by leaf: run once before step 0, off the "
+                        "card for the denoise",
+                        ", ".join(type(m).__name__ for m in companions.values()),
+                        companion_mib,
+                    )
+        for comp_name, module in companions.items():
+            if comp_name not in streamed:
+                module.to(onload)
+        if prefetch:
             pin_dits, pin_encoders = _streamed_pin_plan(
                 dit_pin_mib, leaf_mib, logger, device = onload
             )

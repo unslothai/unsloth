@@ -52,6 +52,7 @@ from core.inference.sd_cpp_multigpu import split_for_load
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
+    sd_cpp_flow_shift_for,
     MOSS_IMAGE_FAMILY_NAME,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -572,10 +573,33 @@ def _usable_or_discard_managed(binary: str) -> bool:
     return False
 
 
+# Successful ``--help`` text per (path, size, mtime_ns); a rewritten binary changes the key.
+_HELP_TEXT_CACHE: dict[tuple[str, int, int], str] = {}
+_HELP_TEXT_CACHE_MAX = 8
+_help_text_cache_lock = threading.Lock()
+
+
+def _help_cache_key(binary: str) -> Optional[tuple[str, int, int]]:
+    # A bare name is resolved by the spawn through PATH, not by stat; only explicit paths are cached.
+    if not os.path.dirname(binary):
+        return None
+    try:
+        st = os.stat(binary)
+    except (OSError, ValueError):
+        return None
+    return (os.path.abspath(binary), int(st.st_size), int(st.st_mtime_ns))
+
+
 def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     """Identifying output settles it whatever the exit code (old builds exit 1); else only a clean exit is evidence, and rc 127 from the loader is not."""
     import subprocess
 
+    cache_key = _help_cache_key(str(binary)) if args == ("--help",) else None
+    if cache_key is not None:
+        with _help_text_cache_lock:
+            cached = _HELP_TEXT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
     try:
         with windows_loader_error_boxes_suppressed():
             proc = subprocess.run(
@@ -592,7 +616,16 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
         return None
     if proc.returncode != 0:
         return None
-    return (proc.stdout or "") + (proc.stderr or "")
+    text = (proc.stdout or "") + (proc.stderr or "")
+    # Re-stat: a binary replaced while it ran must not leave this text under the old build's key.
+    if cache_key is not None and _help_cache_key(str(binary)) == cache_key:
+        with _help_text_cache_lock:
+            for stale in [k for k in _HELP_TEXT_CACHE if k[0] == cache_key[0]]:
+                del _HELP_TEXT_CACHE[stale]
+            while len(_HELP_TEXT_CACHE) >= _HELP_TEXT_CACHE_MAX:
+                del _HELP_TEXT_CACHE[next(iter(_HELP_TEXT_CACHE))]
+            _HELP_TEXT_CACHE[cache_key] = text
+    return text
 
 
 # --ref-video arrived with H3 upstream; --version is "unknown" on release prebuilts.
@@ -1632,12 +1665,6 @@ def _accelerator_fingerprint(binary: Optional[str] = None) -> dict:
 _RUNTIME_FINGERPRINT_MEMO: Optional[dict] = None
 # Kept under its old name, and still wins when set, for a caller that pinned the whole host half.
 _HOST_FINGERPRINT_MEMO: Optional[dict] = None
-
-
-def _reset_host_fingerprint() -> None:
-    global _HOST_FINGERPRINT_MEMO, _RUNTIME_FINGERPRINT_MEMO
-    _HOST_FINGERPRINT_MEMO = None
-    _RUNTIME_FINGERPRINT_MEMO = None
 
 
 def _runtime_fingerprint() -> dict:
@@ -2906,6 +2933,7 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
+    scheduler: Optional[str] = None
     # The base's shipped ``sample_sigmas`` grid, sent as custom sigmas; None keeps sd.cpp's own schedule.
     sample_sigmas: Optional[tuple[float, ...]] = None
     server: Optional[SdCppServer] = None
@@ -3123,8 +3151,15 @@ def _request_extra_sample_args(state: Any) -> Optional[str]:
     )
 
 
+def _request_scheduler(state: Any) -> Optional[str]:
+    """The family's ``--scheduler``; None under custom sigmas (they replace the schedule) or the kill switch."""
+    if getattr(state, "sample_sigmas", None) or not sd_cpp_args_mod.family_scheduler_enabled():
+        return None
+    return getattr(state, "scheduler", None)
+
+
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
-    """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
+    """The family's ``--flow-shift``; Krea 2 Raw follows output size, variants apply under the family scheduler."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
         state.gguf_filename,
         getattr(state, "display_repo_id", None),
@@ -3132,6 +3167,14 @@ def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
         state.base_repo,
     ):
         return krea2_sd_cpp_flow_shift(width, height)
+    if _request_scheduler(state) and getattr(state.family, "sd_cpp_flow_shift_variants", ()):
+        # Not base_repo: an unnamed dev GGUF can fall back to the family's schnell base.
+        return sd_cpp_flow_shift_for(
+            state.family,
+            getattr(state, "gguf_filename", None),
+            getattr(state, "repo_id", None),
+            getattr(state, "display_repo_id", None),
+        )
     return state.flow_shift
 
 
@@ -4110,6 +4153,7 @@ class SdCppDiffusionBackend:
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
                     flow_shift = fam.sd_cpp_flow_shift,
+                    scheduler = fam.sd_cpp_scheduler,
                     sample_sigmas = sample_sigmas,
                     server = server,
                     mode = mode,
@@ -5077,6 +5121,7 @@ class SdCppDiffusionBackend:
                     seed = chunk_seed,
                     batch_count = count,
                     sample_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     flow_shift = _request_flow_shift(state, int(width), int(height)),
                     custom_sigmas = (
                         sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
@@ -5503,6 +5548,7 @@ class SdCppDiffusionBackend:
                     guidance = flux_guidance,
                     seed = seed_i,
                     sampling_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     batch_count = 1,
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,

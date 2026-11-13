@@ -75,9 +75,9 @@ CASES = {
         "<main><h2><svg><title>icon</title><foreignObject><button>in svg</button></foreignObject></svg>Text</h2><math><mi>x</mi><annotation-xml encoding='text/html'><p>html in math</p></annotation-xml></math><svg><p>breakout</p></svg><p>"
         + _PROSE
         + "</p></main>",
-        "## Text\n\nbreakout\n\n" + _PROSE + "",
-        "## Text\n\nbreakout\n\n" + _PROSE + "",
-        "## Text\n\nbreakout\n\n" + _PROSE + "",
+        "## Text\n\n$x$\n\nbreakout\n\n" + _PROSE + "",
+        "## Text\n\n$x$\n\nbreakout\n\n" + _PROSE + "",
+        "## Text\n\n$x$\n\nbreakout\n\n" + _PROSE + "",
     ),
     "skipped_subtrees": (
         "<main><nav><h3><button>Nav q</button></h3></nav><h3><button>Real q</button></h3><div><p>"

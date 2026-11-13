@@ -27,7 +27,7 @@ const ITEM_META: Record<
   SidebarMenuItemPref["id"],
   { icon: IconSvgElement; labelKey: TranslationKey }
 > = {
-  api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
+  api: { icon: ApiIcon, labelKey: "settings.tabs.apiKeys" },
   darkMode: { icon: Moon02Icon, labelKey: "settings.appearance.sidebarMenu.darkModeToggle" },
   guidedTour: { icon: CursorInfo02Icon, labelKey: "shell.navigation.guidedTour" },
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },

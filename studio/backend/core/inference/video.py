@@ -274,6 +274,8 @@ from .video_families import (
     local_cosmos3_pipeline_family,
     local_ltx_pipeline_family,
     pipeline_available_video_families,
+    COSMOS3_CONTINUATION_FRAMES,
+    DEFAULT_VIDEO_CONTINUATION_KEEP,
     VideoFamily,
     default_video_generation_params,
     detect_video_family,
@@ -281,9 +283,11 @@ from .video_families import (
     snap_num_frames,
     snap_video_size,
     supported_video_family_names,
+    validate_video_continuation,
     validate_video_flow_controls,
     validate_video_keyframe_conditioning,
     validate_video_reference_conditioning,
+    validate_video_fps,
     validate_video_request_shape,
     video_custom_size_bounds,
     video_family_prequant_available,
@@ -323,9 +327,9 @@ from .video_minimax_h3 import (
     h3_transformer_task,
 )
 from .video_minimax_h3_te import (
-    H3_TE_QUANT_DEFAULT,
-    H3_TE_QUANT_REPO,
+    h3_te_auto_scheme,
     h3_te_quant_scheme,
+    h3_te_quant_source,
     h3_te_resident_gb,
 )
 from .video_encode import encode_x264
@@ -948,7 +952,7 @@ def _assert_video_precision_for_target(
     if (
         te_mode == "int8"
         and model_kind in ("pipeline", "single_file")
-        and family_te_int8_convrot(fam, "text_encoder") is not None
+        and family_te_int8_convrot(fam, "text_encoder", include_pending = True) is not None
         and int8_convrot_te_runs_on(target)
     ):
         # An unpublished file otherwise failed inside the load, after the eviction.
@@ -1073,6 +1077,9 @@ def _decode_b64_media(data: Optional[str]) -> bytes:
             f"{_MAX_REFERENCE_MEDIA_BYTES / 1e6:.0f} MB."
         )
     return blob
+
+
+VIDEO_CONTINUATION_CONDITIONING = "v2v"
 
 
 class _VideoGenerationCancelled(Exception):
@@ -1206,6 +1213,17 @@ class _CompletedStepTicker:
             self._events.append((enqueued, event))
             self._event_backed = True
 
+    def caught_up(self, lead: int) -> bool:
+        """Whether the device has finished every step but the last ``lead`` enqueued; never blocks."""
+        with self._lock:
+            if self._enqueued >= self.total or len(self._events) <= lead:
+                return True
+            event = self._events[-1 - lead][1]
+        try:
+            return bool(event.query())
+        except Exception:  # noqa: BLE001 -- an unqueryable marker counts as finished
+            return True
+
     def completed(self) -> int:
         """Steps the GPU has finished. Never decreases, never exceeds what was enqueued, never
         blocks, and never raises."""
@@ -1239,6 +1257,19 @@ def _hold_off_cuda_graph_capture():
         return
     with guard() as clear:
         yield clear
+
+
+def _hold_for_device(
+    ticker: Any,
+    cancel: Any,
+    lead: int = 1,
+) -> None:
+    """Keeps the host at most ``lead`` steps ahead of the device: an enqueued step cannot be cancelled."""
+    while not cancel.is_set():
+        with _hold_off_cuda_graph_capture() as clear:
+            if not clear or ticker.caught_up(lead):
+                return
+        cancel.wait(0.002)
 
 
 @contextlib.contextmanager
@@ -1675,6 +1706,7 @@ class _VideoResolvedInputs:
     references: Any
     flow_shift: Optional[float]
     audio_flow_shift: Optional[float]
+    continuation: Any = None
 
 
 @dataclass
@@ -3255,7 +3287,11 @@ def _h3_residency_budget_bytes(
         if free is None:
             return 0
         cached = cuda_reusable_cache_bytes(device)
-        available = int(free) + cached + int(residency.resident_bytes())
+        # The conditioner's device share is demotable like a resident block (and it yields first).
+        held = getattr(residency, "device_bytes", None)
+        available = (
+            int(free) + cached + int(held() if callable(held) else residency.resident_bytes())
+        )
         te_gb = (
             H3_TE_STREAMED_GB
             if te_streamed
@@ -3272,6 +3308,47 @@ def _h3_residency_budget_bytes(
         return available - int(need * 1e9)
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _h3_resident_pin_deferral(
+    fam: Any, denoiser: Any, device: str, *, te_streamed: bool, te_scheme: Optional[str]
+) -> Optional[int]:
+    """Denoiser bytes if the initial fit is predicted to hold it whole (so pins can be deferred), else None."""
+    try:
+        from .video_minimax_h3_residency import (
+            h3_defer_resident_pin_enabled,
+            h3_dit_resident_enabled,
+            h3_resident_unpin_enabled,
+        )
+
+        if denoiser is None or not str(device).startswith("cuda"):
+            return None
+        if not (
+            h3_defer_resident_pin_enabled()
+            and h3_dit_resident_enabled()
+            and h3_resident_unpin_enabled()
+        ):
+            return None
+        from itertools import chain
+
+        from .diffusion_prequant import tensor_payload_bytes
+
+        total = sum(
+            tensor_payload_bytes(t) for t in chain(denoiser.parameters(), denoiser.buffers())
+        )
+        big_w, big_h = max(fam.resolution_presets, key = lambda wh: wh[0] * wh[1])
+        budget = _h3_residency_budget_bytes(
+            types.SimpleNamespace(resident_bytes = lambda: 0),
+            device,
+            width = big_w,
+            height = big_h,
+            frames = fam.default_num_frames,
+            te_streamed = te_streamed,
+            te_scheme = te_scheme,
+        )
+        return int(total) if 0 < total <= budget else None
+    except Exception:  # noqa: BLE001 -- unpredictable: pin up front
+        return None
 
 
 def _h3_placement_tier(
@@ -4911,6 +4988,8 @@ def _video_offload_vram_floor_mib(
             if bool(getattr(plan, "stream_text_encoders", False)):
                 streamed |= encoders
         elif policy == OFFLOAD_STREAMING:
+            from .diffusion_memory import run_once_companions
+            encoders |= {n for n in run_once_companions(pipe) if n in sizes}
             streamed = denoisers | encoders
         else:
             return None
@@ -6356,7 +6435,9 @@ class VideoBackend:
                     # under the assembly, while the base snapshot that no longer carries a dense encoder is still coming
                     # down). Same registration the native H3 path makes for its companions.
                     if h3_te_scheme:
-                        self._loading.asset_repos = self._loading.asset_repos + (H3_TE_QUANT_REPO,)
+                        self._loading.asset_repos = self._loading.asset_repos + (
+                            h3_te_quant_source(h3_te_scheme),
+                        )
                     # The same for a hosted pre-cast encoder (unsloth/Wan2.2-TI2V-5B-FP8 for every Wan base).
                     te_repos = tuple(
                         src.location
@@ -7484,10 +7565,10 @@ class VideoBackend:
             if _h3_precision_pinned_dense(text_encoder_quant):
                 return None
             if _h3_precision_unset(text_encoder_quant):
+                auto = h3_te_auto_scheme()
                 return (
-                    H3_TE_QUANT_DEFAULT
-                    if h3_te_quant_scheme(H3_TE_QUANT_DEFAULT) is not None
-                    and _h3_auto_precision_ok(target)
+                    auto
+                    if h3_te_quant_scheme(auto) is not None and _h3_auto_precision_ok(target)
                     else None
                 )
             return h3_te_quant_scheme(normalize_te_quant(text_encoder_quant))
@@ -7873,10 +7954,9 @@ class VideoBackend:
         filename = h3_te_quant_filename(scheme)
         if filename is None:
             return None, []
-        # Cached check uses the fetch repo; size comes from the mirror, as the repack may be gone.
         repo = h3_te_quant_source(scheme)
         try:
-            info = api.model_info(H3_TE_QUANT_REPO, files_metadata = True)
+            info = api.model_info(repo, files_metadata = True)
         except Exception:  # noqa: BLE001 -- an unavailable artifact keeps the dense encoder
             return None, []
         files = [
@@ -12069,7 +12149,7 @@ class VideoBackend:
                 pipe.update_components(text_encoder = text_encoder)
                 text_encoder_quant_engaged = te_scheme
                 text_encoder_quant_reason = (
-                    f"hosted quantized {te_scheme} conditioner ({H3_TE_QUANT_REPO})"
+                    f"hosted quantized {te_scheme} conditioner ({h3_te_quant_source(te_scheme)})"
                 )
                 logger.info(
                     "video.text_encoder_quant: %s quantized conditioner seeded for %s",
@@ -12253,8 +12333,25 @@ class VideoBackend:
                             ),
                             logger = logger,
                         )
+                    pin_deferred_bytes = (
+                        _h3_resident_pin_deferral(
+                            fam,
+                            denoiser,
+                            device,
+                            te_streamed = bool(te_streamed),
+                            te_scheme = text_encoder_quant_engaged,
+                        )
+                        if stream
+                        else None
+                    )
                     placed = (
-                        stream_prequantized_module(manager, denoiser, device, logger = logger)
+                        stream_prequantized_module(
+                            manager,
+                            denoiser,
+                            device,
+                            logger = logger,
+                            **({"defer_pin": True} if pin_deferred_bytes is not None else {}),
+                        )
                         if stream
                         else None
                     )
@@ -12286,6 +12383,9 @@ class VideoBackend:
                             h3_dit_resident_enabled,
                         )
 
+                        pin_deferred = False
+                        pin_deferred_budget = 0
+
                         if denoiser_streamed in ("stream", "stream_lazy"):
                             from .video_minimax_h3_residency import pin_streamed_top_level_group
 
@@ -12294,6 +12394,37 @@ class VideoBackend:
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_top_group: %s", exc)
                             block_pinner = None
+                            if (
+                                pin_deferred_bytes is not None
+                                and denoiser_streamed == "stream_lazy"
+                            ):
+                                from .video_minimax_h3_residency import defer_resident_block_pins
+                                try:
+                                    residency = H3Residency(denoiser, device, logger = logger)
+                                    big_w, big_h = max(
+                                        fam.resolution_presets, key = lambda wh: wh[0] * wh[1]
+                                    )
+                                    pin_deferred_budget = _h3_residency_budget_bytes(
+                                        residency,
+                                        device,
+                                        width = big_w,
+                                        height = big_h,
+                                        frames = fam.default_num_frames,
+                                        te_streamed = bool(te_streamed),
+                                        te_scheme = text_encoder_quant_engaged,
+                                    )
+                                    pin_deferred = defer_resident_block_pins(
+                                        residency, pin_deferred_budget, logger = logger
+                                    )
+                                except Exception as exc:  # noqa: BLE001 -- pin as the lazy path does
+                                    logger.warning("video.h3_block_pin: %s", exc)
+                                    pin_deferred = False
+                                if pin_deferred:
+                                    # every block is promoted and released by the fit below
+                                    denoiser_streamed = "stream"
+                                    denoiser_single_host_copy = True
+                                else:
+                                    residency = None
                             if denoiser_streamed == "stream_lazy":
                                 from .video_minimax_h3_residency import (
                                     defer_streamed_block_pins,
@@ -12339,7 +12470,8 @@ class VideoBackend:
                             "stream_lazy",
                         ):
                             try:
-                                residency = H3Residency(denoiser, device, logger = logger)
+                                if not pin_deferred:
+                                    residency = H3Residency(denoiser, device, logger = logger)
                                 if residency.usable:
                                     from .video_minimax_h3_te import yield_h3_te_resident
 
@@ -12356,11 +12488,18 @@ class VideoBackend:
                                             _te, logger = logger
                                         )
                                     )
+                                    from .video_minimax_h3_te import h3_te_device_share
+
+                                    residency.te_share = h3_te_device_share(
+                                        _te_for_yield, device, te_streamed, logger = logger
+                                    )
                                     big_w, big_h = max(
                                         fam.resolution_presets, key = lambda wh: wh[0] * wh[1]
                                     )
                                     residency.fit(
-                                        _h3_residency_budget_bytes(
+                                        pin_deferred_budget
+                                        if pin_deferred
+                                        else _h3_residency_budget_bytes(
                                             residency,
                                             device,
                                             width = big_w,
@@ -12382,6 +12521,12 @@ class VideoBackend:
                                     from .video_minimax_h3_residency import release_all
                                     release_all(residency, logger = logger)
                                 residency = None
+                        if pin_deferred:
+                            from .video_minimax_h3_residency import pin_deferred_block_groups
+                            try:
+                                pin_deferred_block_groups(denoiser, logger = logger)
+                            except Exception as exc:  # noqa: BLE001 -- they pin on each onload
+                                logger.warning("video.h3_block_pin: %s", exc)
                     else:
                         denoiser_pinned = pin_prequantized_module(
                             manager, denoiser, device, logger = logger
@@ -12633,6 +12778,16 @@ class VideoBackend:
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
                 )
+            if "int8_gemm" in speed_optims:
+                # before the first forward traces the blocks
+                try:
+                    from .video_minimax_h3_ffn import install as install_h3_ffn
+                    if install_h3_ffn(
+                        getattr(pipe, denoiser_component, None), device = device, logger = logger
+                    ):
+                        speed_optims += ("h3_fused_swiglu",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, the stock MLP stays
+                    logger.warning("video.h3_ffn: skipped: %s", exc)
             if "h3_strided_attn" in speed_optims:
                 from .video_minimax_h3_attn import shared_qkv_count
                 shared_qkv = shared_qkv_count(getattr(pipe, denoiser_component, None))
@@ -12755,6 +12910,7 @@ class VideoBackend:
         if offload_policy != "none" and (te_streamed or denoiser_streamed):
             # Only the VAEs rotate now, evicting each other every render. Installed last: the levers above replace weights.
             from .video_minimax_h3_residency import install_pinned_swap
+
             for vae_name in ("vae", "audio_vae"):
                 try:
                     install_pinned_swap(
@@ -12762,6 +12918,9 @@ class VideoBackend:
                     )
                 except Exception as exc:  # noqa: BLE001 -- stock moves
                     logger.warning("video.h3_pinned_swap: %s: %s", vae_name, exc)
+            from .video_minimax_h3_residency import install_h3_rotation_park
+
+            install_h3_rotation_park(pipe, park = bool(denoiser_streamed), logger = logger)
         if te_streamed == "stream_lazy":
             # Last host copy, so available RAM is final.
             from .video_minimax_h3_te import h3_te_resident_enabled, keep_h3_te_resident
@@ -13074,6 +13233,8 @@ class VideoBackend:
         reference_image_size: Optional[str] = None,
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
+        continuation_video: Optional[str] = None,
+        continuation_keep: Optional[str] = None,
         video_id: Optional[str] = None,
         decoded_reference_audios: Optional[Any] = None,
         decoded_reference_images: Optional[Any] = None,
@@ -13149,6 +13310,19 @@ class VideoBackend:
                 run_num_frames = k * step + offset
             if references:
                 conditioning = h3_conditioning_mode(has_references = True)
+            continuation, canvas_w, canvas_h = self._resolve_continuation(
+                state.family,
+                continuation_video,
+                continuation_keep,
+                requested_size = (width, height),
+                canvas = (canvas_w, canvas_h),
+                fps = fps,
+                num_frames = run_num_frames,
+                has_keyframes = bool(resolved_first_frame or last_frame),
+                has_references = bool(references),
+            )
+            if continuation is not None:
+                conditioning = VIDEO_CONTINUATION_CONDITIONING
             resolved_inputs = _VideoResolvedInputs(
                 state = state,
                 first_frame = first_pil,
@@ -13159,6 +13333,7 @@ class VideoBackend:
                 references = references,
                 flow_shift = shift,
                 audio_flow_shift = audio_shift,
+                continuation = continuation,
             )
             with self._lock:
                 if self._state is not state:
@@ -13166,7 +13341,11 @@ class VideoBackend:
                 if self._generate_job_active:
                     raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
                 validate_video_request_shape(
-                    state.family, width = width, height = height, num_frames = run_num_frames
+                    state.family,
+                    width = width,
+                    height = height,
+                    num_frames = run_num_frames,
+                    fps = fps,
                 )
                 if before_commit is not None:
                     before_commit()
@@ -13437,6 +13616,8 @@ class VideoBackend:
         reference_image_size: Optional[str] = None,
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
+        continuation_video: Optional[str] = None,
+        continuation_keep: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         _resolved_inputs: Optional[_VideoResolvedInputs] = None,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
@@ -13495,6 +13676,7 @@ class VideoBackend:
                     )
                 fam = state.family
                 if _resolved_inputs is None:
+                    requested_size = (width, height)
                     first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
                         fam, state.h3_task, first_frame, last_frame, width, height
                     )
@@ -13511,6 +13693,19 @@ class VideoBackend:
                     )
                     if references:
                         conditioning = h3_conditioning_mode(has_references = True)
+                    continuation, width, height = self._resolve_continuation(
+                        fam,
+                        continuation_video,
+                        continuation_keep,
+                        requested_size = requested_size,
+                        canvas = (width, height),
+                        fps = fps,
+                        num_frames = num_frames,
+                        has_keyframes = bool(first_frame or last_frame),
+                        has_references = bool(references),
+                    )
+                    if continuation is not None:
+                        conditioning = VIDEO_CONTINUATION_CONDITIONING
                     shift, audio_shift = self._resolve_flow_shifts(
                         fam, state.engine, flow_shift, audio_flow_shift
                     )
@@ -13521,9 +13716,11 @@ class VideoBackend:
                     height = _resolved_inputs.height
                     conditioning = _resolved_inputs.conditioning
                     references = _resolved_inputs.references
+                    continuation = _resolved_inputs.continuation
                     shift = _resolved_inputs.flow_shift
                     audio_shift = _resolved_inputs.audio_flow_shift
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
+                validate_video_fps(fam, fps)
                 out_fps = (
                     fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
                 )
@@ -13935,6 +14132,9 @@ class VideoBackend:
                 if references:
                     from .video_minimax_h3 import h3_diffusers_references
                     kwargs["references"] = h3_diffusers_references(references)
+                if continuation is not None:
+                    kwargs["video"], kwargs["condition_video_keep"] = continuation
+                    request_shape["continuation"] = continuation[1]
                 # Set scheduler shifts every run so prior requests cannot leak state.
                 for component, value in (
                     ("scheduler", shift),
@@ -13944,14 +14144,15 @@ class VideoBackend:
                     if callable(setter) and value is not None:
                         setter(float(value))
                 if fam.name == "minimax-h3":
+                    from .video_minimax_h3 import h3_num_inference_steps
                     from .video_minimax_h3_pdd import (
                         bind_h3_pdd_render,
                         h3_pdd_num_inference_steps,
                     )
 
-                    # A PDD head bank reads each step's (sigma, sigma_next) off this render's video schedule. The
-                    # H3 scheduler's grid holds the terminal 0, so `steps` model evaluations (ComfyUI's count, which
-                    # the bank's 8-step partition is distilled for) is a grid of steps + 1.
+                    # H3 grid includes the terminal 0: `steps` evaluations need steps + 1 points.
+                    kwargs["num_inference_steps"] = h3_num_inference_steps(steps)
+                    # PDD bank is distilled for ComfyUI's count, so it keeps steps + 1 even under the kill switch.
                     if bind_h3_pdd_render(pipe, shift, audio_shift):
                         kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
                         request_shape["pdd"] = True
@@ -14037,6 +14238,7 @@ class VideoBackend:
                             return
                         ticker.record(enqueued)
                         _report(ticker.completed())
+                    _hold_for_device(ticker, cancel)
 
                 def _finish_denoise() -> None:
                     """Finish the bar once the denoise is over: H3 makes 29 scheduler.step calls for
@@ -14084,15 +14286,14 @@ class VideoBackend:
                     if static_skip:
                         mark_step_end(_skip_pipe(state, pipe))
                     # Called after scheduler.step, so the step's latent update is already submitted.
+                    if not cancel.is_set():
+                        _tick(step_index + 1)
+                        if previewer is not None:
+                            previewer.on_step(
+                                callback_kwargs.get("latents"), getattr(p, "scheduler", None)
+                            )
                     if cancel.is_set():
                         p._interrupt = True
-                        cross_forward_step(p, step_index, timestep = timestep)
-                        return callback_kwargs
-                    _tick(step_index + 1)
-                    if previewer is not None:
-                        previewer.on_step(
-                            callback_kwargs.get("latents"), getattr(p, "scheduler", None)
-                        )
                     cross_forward_step(p, step_index, timestep = timestep)
                     return callback_kwargs
 
@@ -14230,18 +14431,43 @@ class VideoBackend:
                     publish = _publish_preview,
                     total_steps = steps,
                 )
+                render_call = (
+                    ltx25_render_call
+                    if ltx25_render_call is not None
+                    else (
+                        lambda: _carried_call(pipe, kwargs, has_step_callback or carry_by_scheduler)
+                    )
+                )
+
+                def _render_streamed_after_oom() -> Any:
+                    try:
+                        return render_call()
+                    except Exception as exc:  # noqa: BLE001
+                        if static_skip or cancel.is_set() or not is_oom_error(exc):
+                            raise
+                        from . import video_stream_residency
+                        if not video_stream_residency.may_stream_after_oom(state.pipe):
+                            raise
+                    from . import diffusion_cuda_graph, video_stream_residency
+
+                    # outside the handler so the failed attempt's tensors are freed; graph pools escape empty_cache()
+                    diffusion_cuda_graph.reset_all(
+                        getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ()
+                    )
+                    video_stream_residency.stream_after_oom(state.pipe, logger = logger)
+                    from .diffusion_nvfp4_protect import restart_protect_generation
+
+                    restart_protect_generation(pipe)
+                    if state.transformer_cache:
+                        self._reset_step_cache(pipe)
+                    seeded = kwargs.get("generator")
+                    if isinstance(seeded, torch.Generator):
+                        seeded.manual_seed(int(seed))
+                    return render_call()
+
                 try:
                     with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:
-                        output = render_thread.run(
-                            "video",
-                            ltx25_render_call
-                            if ltx25_render_call is not None
-                            else (
-                                lambda: _carried_call(
-                                    pipe, kwargs, has_step_callback or carry_by_scheduler
-                                )
-                            ),
-                        )
+                        output = render_thread.run("video", _render_streamed_after_oom)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); offloaded modules would stay on GPU.
                     free_hooks = getattr(pipe, "maybe_free_model_hooks", None)
@@ -14263,7 +14489,12 @@ class VideoBackend:
                         reset_static_step_skip(_skip_pipe(state, pipe), None)
                     if fam.modular_workflow:
                         from .video_minimax_h3_vae import settle_h3_vae_fallback
+
                         settle_h3_vae_fallback(state, pipe)
+                        from .video_minimax_h3_residency import park_h3_rotation
+
+                        # The next request's VRAM floor reads free memory before its first forward evicts these.
+                        park_h3_rotation(pipe)
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
@@ -14437,6 +14668,47 @@ class VideoBackend:
             last = fit_h3_keyframe(last, width, height, anchor = H3_ANCHOR_LAST)
         conditioning = h3_conditioning_mode(has_first = first is not None, has_last = last is not None)
         return first, last, width, height, conditioning
+
+    @staticmethod
+    def _resolve_continuation(
+        fam: VideoFamily,
+        video: Optional[str],
+        keep: Optional[str],
+        *,
+        requested_size: tuple[Optional[int], Optional[int]],
+        canvas: tuple[int, int],
+        fps: Optional[int],
+        num_frames: Optional[int],
+        has_keyframes: bool,
+        has_references: bool,
+    ) -> tuple[Any, int, int]:
+        """Omitting both dimensions takes the preset nearest the clip's aspect, as a first frame does."""
+        validate_video_continuation(
+            fam,
+            has_video = bool(video),
+            keep = keep,
+            has_keyframes = has_keyframes,
+            has_references = has_references,
+            num_frames = (
+                snap_num_frames(fam, num_frames or fam.default_num_frames) if video else None
+            ),
+        )
+        if not video:
+            return None, *canvas
+        from .video_cosmos3 import decode_continuation_clip, fit_continuation_frames
+
+        validate_video_fps(fam, fps)
+        keep = keep or DEFAULT_VIDEO_CONTINUATION_KEEP
+        clip = decode_continuation_clip(
+            _decode_b64_media(video),
+            keep = keep,
+            fps = int(fps or fam.default_fps),
+            count = COSMOS3_CONTINUATION_FRAMES,
+        )
+        width, height = canvas
+        if requested_size == (None, None):
+            width, height = first_frame_canvas(fam, *clip[0].size)
+        return (fit_continuation_frames(clip, width, height), keep), width, height
 
     @staticmethod
     def _resolve_ltx25_first_frame(
@@ -15291,6 +15563,7 @@ class VideoBackend:
                 "supports_first_frame": False,
                 "supports_last_frame": False,
                 "supports_references": False,
+                "supports_video_continuation": False,
                 "h3_task": None,
                 "defaults": None,
                 "resolved": None,
@@ -15367,12 +15640,17 @@ class VideoBackend:
             "supports_last_frame": video_family_accepts_last_frame(fam)
             and state.h3_task != H3_TASK_REFERENCES,
             "supports_references": fam.supports_references and state.h3_task == H3_TASK_REFERENCES,
+            "supports_video_continuation": fam.supports_video_continuation,
             "h3_task": state.h3_task,
             "defaults": {
                 "steps": default_steps,
                 "guidance": default_guidance,
                 "num_frames": fam.default_num_frames,
                 "fps": fam.default_fps,
+                "fps_range": list(fam.fps_range) if fam.fps_range else None,
+                "fps_choices": list(fam.fps_choices),
+                "min_num_frames": max(int(fam.frame_offset), int(fam.min_num_frames)),
+                "max_num_frames": fam.max_num_frames,
                 "frame_step": fam.frame_step,
                 "frame_offset": fam.frame_offset,
                 "duration_presets": list(fam.duration_presets),

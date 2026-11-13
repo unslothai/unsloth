@@ -90,17 +90,29 @@ def _backend_value(backend: Any) -> Optional[str]:
     return str(getattr(backend, "value", backend))
 
 
+def _diffusers_h3_processor() -> Any:
+    from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3AttnProcessor
+    return MiniMaxH3AttnProcessor
+
+
+def strided_processor_class(base: Any = None) -> Any:
+    """Strided subclass of the H3-layout processor ``base`` (diffusers' when None). One cached class per base: dynamo
+    guards on the class id, so a class per call would retrace every block."""
+    return _strided_processor_for(_diffusers_h3_processor() if base is None else base)
+
+
 @lru_cache(maxsize = None)
-def strided_processor_class() -> Any:
-    """Strided ``MiniMaxH3AttnProcessor`` subclass. Built once: dynamo guards on the class id, so a class per call
-    would retrace every block. Masks, context parallelism and other backends take the stock ``__call__``."""
+def _strided_processor_for(base: Any) -> Any:
+    import sys
+
     import torch
     import torch.nn.functional as F
-    from diffusers.models.transformers.transformer_minimax_h3 import (
-        MiniMaxH3AttnProcessor,
-        _apply_rotary_emb,
-    )
     from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    MiniMaxH3AttnProcessor = base
+    _apply_rotary_emb = getattr(sys.modules.get(base.__module__), "_apply_rotary_emb", None)
+    if not callable(_apply_rotary_emb):
+        raise TypeError(f"{base.__name__}: its module has no _apply_rotary_emb")
 
     from . import diffusion_int8_gemm as int8_gemm
 
@@ -189,30 +201,72 @@ def strided_processor_class() -> Any:
     return UnslothH3StridedAttnProcessor
 
 
-def _h3_attention_modules(transformer: Any) -> list:
+_H3_ATTN_FORWARD = ("self", "hidden_states", "rotary_emb", "attention_mask")
+_H3_PROC_CALL = ("self", "attn", "hidden_states", "rotary_emb", "attention_mask")
+
+
+@lru_cache(maxsize = None)
+def _params(fn: Any) -> tuple:
+    import inspect
     try:
-        from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3Attention
-    except Exception:  # noqa: BLE001
-        return []
+        return tuple(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        return ()
+
+
+def h3_processor_base(module: Any) -> Any:
+    """The stock H3-layout processor class of ``module``, or None. Gated on structure (forward signature, norms, QKV,
+    a processor module defining ``_apply_rotary_emb``), not class, so the vendored H3-Image attention matches too."""
+    import sys
+
+    from torch import nn
+
+    cls = type(module)
+    base = getattr(cls, "_default_processor_cls", None)
+    if not isinstance(module, nn.Module) or not isinstance(base, type):
+        return None
+    if _params(cls.forward) != _H3_ATTN_FORWARD or _params(base.__call__) != _H3_PROC_CALL:
+        return None
+    if not callable(getattr(sys.modules.get(base.__module__), "_apply_rotary_emb", None)):
+        return None
+    if not all(isinstance(getattr(module, n, None), nn.RMSNorm) for n in ("norm_q", "norm_k")):
+        return None
+    if not isinstance(getattr(module, "to_out", None), nn.ModuleList) or not callable(
+        getattr(module, "set_processor", None)
+    ):
+        return None
+    fused = getattr(module, "fused_projections", False)
+    if not (fused and hasattr(module, "to_qkv")) and not all(
+        hasattr(module, n) for n in ("to_q", "to_k", "to_v")
+    ):
+        return None
+    if not isinstance(getattr(module, "processor", None), base):
+        return None
+    return base
+
+
+def _h3_attention_modules(transformer: Any) -> list:
     modules = getattr(transformer, "modules", None)
     if not callable(modules):
         return []
-    return [m for m in modules() if isinstance(m, MiniMaxH3Attention)]
+    return [m for m in modules() if h3_processor_base(m) is not None]
 
 
-def install_strided_attention(transformer: Any, logger: Any = None) -> int:
-    """Swap every H3 attention processor for the strided one, keeping its backend. Returns the count."""
+def install_strided_attention(
+    transformer: Any,
+    logger: Any = None,
+    qk_rope: Optional[bool] = None,
+) -> int:
+    """Swap every H3 attention processor for the strided one, keeping its backend. Returns the count.
+    ``qk_rope=False`` keeps the stock q/k norm + rope; ``None`` follows UNSLOTH_H3_QK_ROPE."""
     if not _enabled(STRIDED_ATTN_ENV):
         return 0
-    try:
-        cls = strided_processor_class()
-    except Exception as exc:  # noqa: BLE001 -- older diffusers without the H3 processor
-        if logger is not None:
-            logger.info("video.h3_attn: strided processor unavailable, keeping stock: %s", exc)
+    modules = _h3_attention_modules(transformer)
+    if not modules:
         return 0
     from .video_minimax_h3_qknorm import qk_norm_rope_op, qk_rope_enabled
 
-    qk_rope_on = qk_rope_enabled()
+    qk_rope_on = qk_rope_enabled() and qk_rope is not False
     if qk_rope_on:
         try:
             qk_norm_rope_op()
@@ -221,8 +275,14 @@ def install_strided_attention(transformer: Any, logger: Any = None) -> int:
             if logger is not None:
                 logger.info("video.h3_attn: fused q/k norm+rope unavailable: %s", exc)
     swapped = 0
-    for module in _h3_attention_modules(transformer):
+    for module in modules:
         old = getattr(module, "processor", None)
+        try:
+            cls = strided_processor_class(h3_processor_base(module))
+        except Exception as exc:  # noqa: BLE001 -- older diffusers without the H3 processor
+            if logger is not None:
+                logger.info("video.h3_attn: strided processor unavailable, keeping stock: %s", exc)
+            return swapped
         if old is None or isinstance(old, cls):
             continue
         new = cls()
@@ -239,15 +299,14 @@ def install_strided_attention(transformer: Any, logger: Any = None) -> int:
 
 def strided_attention_count(transformer: Any) -> int:
     """Engagement census."""
-    try:
-        cls = strided_processor_class()
-    except Exception:  # noqa: BLE001
-        return 0
-    return sum(
-        1
-        for m in _h3_attention_modules(transformer)
-        if isinstance(getattr(m, "processor", None), cls)
-    )
+    count = 0
+    for m in _h3_attention_modules(transformer):
+        try:
+            cls = strided_processor_class(h3_processor_base(m))
+        except Exception:  # noqa: BLE001
+            return 0
+        count += isinstance(getattr(m, "processor", None), cls)
+    return count
 
 
 def shared_qkv_count(transformer: Any) -> int:

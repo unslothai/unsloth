@@ -97,8 +97,10 @@ import {
   removeJob,
   repoKeyOf,
   scheduleRemoval,
+  scheduleRetention,
   setExpectedBytesForJob,
 } from "./download-manager-state";
+import { isRetryableDownload } from "./retry-download";
 import {
   floorHoldEnded,
   hasObservedExpectedBytes,
@@ -300,7 +302,9 @@ export function finalize(
       etaSeconds: 0,
     });
     notify(job, "onError", 0);
-    scheduleRemoval(key, ERROR_LINGER_MS);
+    // A retryable failure stays listed until dismissed or retried; the linger only ends its inventory row.
+    if (isRetryableDownload(job)) scheduleRetention(key, ERROR_LINGER_MS);
+    else scheduleRemoval(key, ERROR_LINGER_MS);
   }
   scheduleInventoryBump();
 }

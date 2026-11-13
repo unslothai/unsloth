@@ -239,7 +239,8 @@ test("keyboard steps go straight to the owner", () => {
 test("the Run settings and model picker sliders drag on a draft", () => {
   for (const [file, rows] of [
     ["features/chat/chat-settings-sheet.tsx", 1],
-    ["features/model-picker/components/model-config-page.tsx", 3],
+    ["features/model-picker/components/model-config-page.tsx", 2],
+    ["features/model-picker/components/advanced-gpu-slider.tsx", 1],
   ] as const) {
     const source = readSrc(file);
     assert.equal(source.match(/= useSliderDraft\(/g)?.length, rows, file);
@@ -248,9 +249,10 @@ test("the Run settings and model picker sliders drag on a draft", () => {
 });
 
 test("what an owner shows beside its slider follows the drag", () => {
+  const budget = readSrc("features/settings/components/vram-budget-control.tsx");
+  assert.match(budget, /onDraft=\{setDraftPercent\}/);
+  assert.match(budget, /\{shownPercent !== defaultPercent && \(/, "the VRAM advice contradicted the dragged percent");
   const picker = readSrc("features/model-picker/components/model-config-page.tsx");
-  assert.match(picker, /onDraft=\{setDraftPercent\}/);
-  assert.match(picker, /\{shownPercent !== defaultPercent && \(/, "the VRAM advice contradicted the dragged percent");
   assert.match(picker, /displayValue=\{isMlx && windowUnknown && !dragging \? "—" : undefined\}/, "an unknown MLX window showed a dash for the whole drag");
   assert.match(picker, /\{renderWarning\(shown\)\}/);
   const music = readSrc("features/audio/components/music-edit-inputs.tsx");

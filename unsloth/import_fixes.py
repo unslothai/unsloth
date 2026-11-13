@@ -420,7 +420,6 @@ def fix_xformers_performance_issue():
 # flash-attn 4 makes flash_attn a namespace package without flash_attn_interface, which breaks
 # `import xformers.ops`; import xformers once with flash_attn hidden from find_spec.
 _FLASH_ATTN_INTERFACE_NAME = "flash_attn_interface"
-_FLASH_ATTN_INTERFACE_MODULE = "flash_attn." + _FLASH_ATTN_INTERFACE_NAME
 _FA4_NAMESPACE_WARNED = [False]
 
 
@@ -9597,6 +9596,8 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
     "UnlimitedOcrTextModel": "qwen2_moe",
+    # Same shape: transformers (main, November 2026) aliases the dots3-note text model's class.
+    "Dots3NoteTextModel": "qwen2_moe",
 }
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's

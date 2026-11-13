@@ -76,6 +76,9 @@
     "steps": 30
    }
   },
+  "minimax-h3-image": {
+   "MiniMaxAI/MiniMax-H3-Image": null
+  },
   "moss-image": {
    "OpenMOSS-Team/MOSS-Image-Base": null,
    "OpenMOSS-Team/MOSS-Image-SFT": null
@@ -247,6 +250,10 @@
     1.0
    ]
   },
+  "minimax-h3-image": [
+   6,
+   1.0
+  ],
   "moss-image": [
    25,
    2.5
@@ -468,6 +475,12 @@
   "minimax-h3": {
    "cudnn_benchmark": true,
    "filter_reduction_configs": true,
+   "filter_reduction_configs_archs": [],
+   "vae_fused_encoder": true
+  },
+  "minimax-h3-image": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -3134,6 +3147,106 @@
    "preview_key": null,
    "te_int8_effective": "fp8"
   },
+  "minimax-h3-image": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
   "moss-image": {
    "auto": {
     "convrot_filename": null,
@@ -4881,6 +4994,7 @@
    "krea-2": "Krea 2",
    "ltx-2": "LTX-2",
    "minimax-h3": "MiniMax-H3",
+   "minimax-h3-image": "MiniMax-H3-Image",
    "moss-image": "MOSS-Image",
    "qwen-image": "Qwen-Image",
    "sdxl": "SDXL",
@@ -4916,6 +5030,7 @@
    "krea/krea-2-raw",
    "krea/krea-2-turbo",
    "lodestones/chroma1-hd",
+   "minimaxai/minimax-h3-image",
    "openmoss-team/moss-image-base",
    "openmoss-team/moss-image-sft",
    "qwen/qwen-image",

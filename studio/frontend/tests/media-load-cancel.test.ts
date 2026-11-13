@@ -137,7 +137,7 @@ for (const [page, path] of PAGES) {
   test(`the ${page} eject is still offered only for a resident model`, () => {
     assert.match(
       SOURCE,
-      /onEject=\{status\?\.loaded \? handleUnload : undefined\}/,
+      /onEject=\{status\?\.loaded && busy !== "unloading" \? handleEject : undefined\}/,
     );
   });
 

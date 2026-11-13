@@ -930,7 +930,7 @@ export const ja = {
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
-      api: "API",
+      api: "API モニター",
       lightMode: "ライトモード",
       darkMode: "ダークモード",
       guidedTour: "ガイドツアー",
@@ -3031,11 +3031,11 @@ export const ja = {
       showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
       showReplyTimesKeywords:
         "タイムスタンプ 時刻 時間 日付 完了 応答 メッセージ timestamp time clock date reply",
-      showGenerationDetails: "速度と読み込みの詳細情報",
+      showGenerationDetails: "速度の詳細情報",
       showGenerationDetailsDescription:
-        "ライブ表示にプロンプトの読み取り速度、トークン数、ドラフトの採用率を追加し、モデルのレイヤーの読み込み先を表示します。",
+        "ライブ表示にプロンプトの読み取り速度、トークン数、ドラフトの採用率を追加します。",
       showGenerationDetailsKeywords:
-        "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "詳細 速度 トークン 統計 verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "速度とコンテキストの統計",
       generationStatsUpdatesDescription:
         "リアルタイムでは、応答のストリーミング中に毎秒トークン数とコンテキスト使用量を数えます。完了時は各応答の終了時に更新します。",

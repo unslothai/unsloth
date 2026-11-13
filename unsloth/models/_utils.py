@@ -597,7 +597,7 @@ def _triton_probe(index):
     import triton.language as tl
 
     @triton.jit
-    def _add_one(X, N, BLOCK: tl.constexpr):
+    def _add_one(X, N, BLOCK: tl.constexpr):  # BLOCK: 16, a fixed probe size
         offsets = tl.arange(0, BLOCK)
         tl.store(X + offsets, tl.load(X + offsets, offsets < N) + 1, offsets < N)
 
@@ -2016,10 +2016,6 @@ def _get_flash_attention_disable_reason(config):
             f"limit of {_FLASH_ATTENTION_MAX_HEAD_DIM}"
         )
     return None
-
-
-def _is_flash_attention_disabled(config):
-    return _get_flash_attention_disable_reason(config) is not None
 
 
 def _is_flash_attention_requested(attn_implementation):
@@ -4908,20 +4904,6 @@ try:
                 "```\n"
             )
 
-    if False:
-        raise ImportError(
-            "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "
-            "then press Disconnect Runtime and then Restart it.\n"
-            "\n"
-            "%%capture\n"
-            "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
-            '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-            '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'
-            "\n"
-            f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"
-            'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
-        )
-
     if Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
         raise ImportError(
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
@@ -5306,10 +5288,6 @@ def _download_statistics(names):
         except Exception:
             logger.debug("Unsloth: stats_check failed with an exception.")
             # Do not retry without a time limit: it would freeze offline.
-
-
-def _get_statistics(statistics = None, force_download = True):
-    _download_statistics([_statistics_environment(statistics)])
 
 
 def get_statistics(local_files_only = False):
