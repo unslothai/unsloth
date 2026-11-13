@@ -3272,9 +3272,6 @@ def test_int8_gemm_live_drops_the_eager_key_when_nothing_swapped(monkeypatch):
     ]
 
 
-# ---- streamed eager int8 GEMM: an uncompiled int8 denoiser the pinned prefetcher streams ----
-
-
 def _streamed_gemm_spy(
     monkeypatch,
     n = 5,
@@ -3301,7 +3298,6 @@ def test_streamed_eager_int8_gemm_engages_behind_the_prefetcher(monkeypatch):
     dit, calls = _streamed_gemm_spy(monkeypatch)
     assert ds_mod.install_streamed_eager_int8_gemm(object(), "cuda:0") is True
     assert calls == [(dit, "cuda:0")] and dit._unsloth_int8_gemm == 5
-    # idempotent
     assert ds_mod.install_streamed_eager_int8_gemm(object(), "cuda:0") is False
     assert len(calls) == 1
 

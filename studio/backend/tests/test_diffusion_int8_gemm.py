@@ -1698,9 +1698,6 @@ def test_eager_install_is_bit_identical_to_torchao_convrot_linear(forced, monkey
     g8.uninstall(holder)
 
 
-# ---- install_streamed_eager: the eager routes on a denoiser the pinned prefetcher streams ----
-
-
 @pytest.mark.parametrize(
     "env",
     [
