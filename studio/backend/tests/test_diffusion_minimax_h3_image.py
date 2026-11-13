@@ -547,7 +547,7 @@ def test_a_quantized_dit_without_the_adaln_table_budgets_the_dense_adaln(h3i):
     )
 
 
-# (compute capability, free VRAM GB, host GB): Colab G4 RTX PRO 6000, A100 80 GB, L4, T4.
+# (capability, free VRAM GB, host GB)
 _H3_CARDS = {
     "g4": ((12, 0), 95.0, 160.0),
     "a100_80": ((8, 0), 79.0, 160.0),
@@ -564,7 +564,6 @@ def _fake_card(monkeypatch, cap):
 @pytest.mark.parametrize("card", sorted(_H3_CARDS))
 @pytest.mark.parametrize("width, height", [(1024, 1024), (2048, 2048)])
 def test_auto_takes_int8_on_every_card_even_where_bf16_fits(h3i, monkeypatch, card, width, height):
-    """Auto is int8 first on every tier: the bf16-fits shortcut (G4 / A100 80 GB took bf16) is gone."""
     pytest.importorskip("torchao")
     cap, vram, host = _H3_CARDS[card]
     _fake_card(monkeypatch, cap)
@@ -591,7 +590,6 @@ def test_explicit_requests_are_untouched_by_the_auto_order(h3i, monkeypatch, car
 
 
 def test_auto_falls_to_fp8_then_bf16_when_int8_is_ruled_out(h3i, monkeypatch):
-    """A family deny / auto skip on int8 hands auto fp8 where the card has it, else bf16."""
     pytest.importorskip("torchao")
     from core.inference import diffusion_transformer_quant as tq
 
@@ -604,8 +602,31 @@ def test_auto_falls_to_fp8_then_bf16_when_int8_is_ruled_out(h3i, monkeypatch):
     monkeypatch.setitem(tq._FAMILY_AUTO_SKIP, h3i.H3_IMAGE_FAMILY_NAME, frozenset({"int8", "fp8"}))
     _fake_card(monkeypatch, (12, 0))
     assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] is None
-    # an explicit int8 is still honoured
     assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = 95.0)[0] == "int8"
+
+
+@pytest.mark.parametrize(
+    "rocm, cap",
+    [(True, (9, 4)), (True, (11, 5)), (True, (11, 0)), (False, (7, 0)), (False, (6, 1))],
+)
+def test_auto_keeps_the_fit_choice_on_rocm_and_pre_turing(h3i, monkeypatch, rocm, cap):
+    """ROCm capability is a gfx version and pre-Turing has no int8 tensor cores: auto stays bf16 where bf16 fits
+    (MI300X, a large Strix Halo carve-out) and int8 where it does not (V100 32 GB, P100), as before the order."""
+    pytest.importorskip("torchao")
+    import core._torchao_stub as stub
+
+    monkeypatch.setattr(stub, "torch_is_rocm", lambda: rocm)
+    _fake_card(monkeypatch, cap)
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 192.0)[0] is None
+    te = h3i.te_gb_for("int8")
+    assert (
+        h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 192.0, host_gb = 512.0, te_gb = te)[0]
+        is None
+    )
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 32.0)[0] == "int8"
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 16.0)[0] == "int8"
+    assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = 192.0)[0] == "int8"
+    assert h3i.resolve_dit_scheme("bf16", device = "cuda", vram_gb = 16.0)[0] is None
 
 
 def test_auto_off_cuda_stays_bf16(h3i):

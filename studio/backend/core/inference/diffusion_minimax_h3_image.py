@@ -1866,6 +1866,48 @@ def wrap_row_multiple(module: Any, names: Sequence[str]) -> int:
     return wrapped
 
 
+def _auto_scheme_by_fit(
+    vram_gb: Optional[float],
+    width: int,
+    height: int,
+    host_gb: Optional[float],
+    te_gb: Optional[float],
+    inflight: int,
+) -> tuple[Optional[str], str]:
+    """Auto by fit: bf16 when the table-form bf16 DiT stays on the card (beside the encoder with ``te_gb``), else
+    int8."""
+    need = H3_IMAGE_DIT_TABLE_BF16_GB + activation_gb(width, height) + 1.5
+    if vram_gb is not None and vram_gb >= need:
+        if te_gb is None:
+            return None, f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) fits {vram_gb:.1f} GB"
+        try:
+            placement = plan_placement(
+                vram_gb = vram_gb,
+                host_gb = host_gb,
+                dit_gb = dit_gb_for(None, adaln_table_enabled()),
+                te_gb = te_gb,
+                width = width,
+                height = height,
+                inflight = inflight,
+            ).placement
+        except RuntimeError:  # no bf16 placement fits this host at all
+            placement = None
+        if placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
+            return (
+                None,
+                f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) stays on {vram_gb:.1f} GB",
+            )
+        return (
+            "int8",
+            f"auto: beside the {te_gb:.1f} GB encoder the bf16 DiT would not stay on {vram_gb:.1f} GB "
+            f"({placement or 'no placement fits'}), int8 ConvRot",
+        )
+    return (
+        "int8",
+        f"auto: bf16 DiT would not fit {vram_gb if vram_gb is not None else 0:.1f} GB, int8 ConvRot",
+    )
+
+
 def resolve_dit_scheme(
     requested: Optional[str],
     *,
@@ -1877,9 +1919,8 @@ def resolve_dit_scheme(
     te_gb: Optional[float] = None,
     inflight: int = 1,
 ) -> tuple[Optional[str], str]:
-    """(scheme or None for bf16, reason). Auto: int8, then fp8, then bf16 (``hosted_auto_scheme_order``), on every
-    card: int8 was faster than bf16 on cards that hold bf16 (RTX PRO 6000 2048px 2.30 vs 3.52 s/image, LPIPS 0.045).
-    An explicit fp8 needs SM 8.9+ (else int8). The size arguments are kept for callers; auto no longer reads them."""
+    """(scheme or None for bf16, reason). Auto on NVIDIA sm_75+: int8, fp8, bf16 (int8 beat bf16 even where bf16 fits:
+    RTX PRO 6000 2048px 2.30 vs 3.52 s/image); ROCm and pre-Turing keep the fit-based pick. Explicit fp8 needs SM 8.9+."""
     import torch
 
     req = (requested or "auto").strip().lower()
@@ -1904,9 +1945,15 @@ def resolve_dit_scheme(
         return "fp8", "fp8 requested"
     if req == "int8":
         return "int8", "int8 requested"
+    from core._torchao_stub import torch_is_rocm
+
     from .diffusion_transformer_quant import hosted_auto_scheme_order
 
     cap = tuple(torch.cuda.get_device_capability(dev))
+    if torch_is_rocm() or cap < (7, 5):
+        # ROCm reports gfx versions through the capability API, and pre-Turing cards have no int8 tensor cores: no
+        # measurement covers either, so they keep the fit-based choice (bf16 only when it fits, else int8).
+        return _auto_scheme_by_fit(vram_gb, width, height, host_gb, te_gb, inflight)
     order = hosted_auto_scheme_order(H3_IMAGE_FAMILY_NAME, cap)
     if not order:
         return None, f"auto: no int8 or fp8 rung on compute capability {cap[0]}.{cap[1]}, bf16"
