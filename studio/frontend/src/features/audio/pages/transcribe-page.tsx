@@ -23,7 +23,7 @@ import {
 import { Copy01Icon } from "@/lib/copy-icon";
 import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type Ref, useEffect, useState } from "react";
+import { type ReactNode, type Ref, useEffect, useState } from "react";
 import type { AudioGalleryClip } from "../api";
 import { RECORDING_MAX_SECONDS } from "../audio-workspace-constants";
 import { formatClipDuration } from "../audio-workspace-utils";
@@ -287,8 +287,11 @@ export function TranscribeOutput({
   });
   const iconAction =
     "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground";
-  const top =
-    transcriptionStartedAt !== null && !transcript ? (
+  // A finished run that failed shows its error, not a stopped progress row.
+  const top = (currentMenu: ReactNode) =>
+    transcriptionStartedAt !== null &&
+    !transcript &&
+    (transcriptionFinishedAt === null || !transcriptError) ? (
       <div className={CLIPS_TOP_ROW}>
         <TranscriptionProgress
           startedAt={transcriptionStartedAt}
@@ -387,6 +390,7 @@ export function TranscribeOutput({
                   </DropdownMenuContent>
                 </DropdownMenu>
               ) : null}
+              {currentMenu}
             </div>
           }
         />

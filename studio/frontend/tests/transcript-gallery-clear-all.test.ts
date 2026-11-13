@@ -112,6 +112,7 @@ test("Clear all deletes the history only after the in-app confirmation", async (
         onDelete: () => {},
         canSelect: () => true,
         sendHandlersFor: () => ({}),
+        top: () => null,
       },
       h: (
         type: unknown,
@@ -190,4 +191,72 @@ test("Clear all deletes the history only after the in-app confirmation", async (
   } finally {
     (globalThis as { window?: unknown }).window = previousWindow;
   }
+});
+
+test("the open transcript keeps its archive and delete actions on the top row", async () => {
+  const state: unknown[] = [];
+  const refs: { current: unknown }[] = [];
+  let stateIndex = 0;
+  let refIndex = 0;
+  const deletes: unknown[][] = [];
+  const menus: unknown[] = [];
+  const record = { id: "a", title: "Only", text: "hi", archived: false, created_at: "2026-10-27T00:00:00Z" };
+  const render = galleryRenderer({
+    props: {
+      active: true,
+      currentId: "a",
+      latest: record,
+      autoSelect: false,
+      onSelect: () => {},
+      onDelete: () => {},
+      canSelect: () => true,
+      sendHandlersFor: () => ({}),
+      top: (menu: unknown) => {
+        menus.push(menu);
+        return { type: "top", props: {}, children: [menu] };
+      },
+    },
+    h: (type: unknown, props: Record<string, unknown> | null, ...children: unknown[]) => ({
+      type,
+      props: props ?? {},
+      children: children.flat(),
+    }),
+    useState: (initial: unknown) => {
+      const index = stateIndex++;
+      if (!(index in state)) state[index] = initial;
+      return [state[index], (value: unknown) => {
+        state[index] = typeof value === "function" ? (value as (v: unknown) => unknown)(state[index]) : value;
+      }];
+    },
+    useRef: (initial: unknown) => (refs[refIndex++] ??= { current: initial }),
+    useCallback: (callback: unknown) => callback,
+    useLayoutEffect: (effect: () => void) => effect(),
+    useEffect: () => {},
+    deleteTranscript: async (...args: unknown[]) => {
+      deletes.push(args);
+    },
+    listTranscripts: async () => ({ transcripts: [], next_cursor: null }),
+    toast: { error: (message: string) => assert.fail(message) },
+  });
+  const view = () => {
+    stateIndex = 0;
+    refIndex = 0;
+    return render();
+  };
+  view();
+  state[0] = [record];
+  const tree = view();
+  const menu = menus.at(-1);
+  assert.ok(menu, "the selected transcript's menu is handed to the top row");
+  const items = find(menu, (element) => (element.type as { name?: string }).name === "DropdownMenuItem");
+  assert.ok(items.some((item) => text(item).includes("Archive")));
+  const remove = items.find((item) => text(item).includes("Delete"));
+  assert.ok(remove);
+  // The list leaves the open transcript out, so the top row is its only menu.
+  const listMenus = find(tree, (element) => (element.type as { name?: string }).name === "DropdownMenuItem")
+    .filter((item) => text(item).includes("Delete"));
+  assert.equal(listMenus.length, 1);
+  (remove.props.onClick as () => void)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(deletes, [["a"]]);
 });

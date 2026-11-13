@@ -130,6 +130,11 @@ export type TranscriptSendHandlers = (transcript: {
   duration: number | null;
 }) => ClipSendHandlers;
 
+const ROW_MENU_TRIGGER =
+  "size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100";
+const TOP_MENU_TRIGGER =
+  "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground";
+
 export function TranscriptGallery({
   active,
   currentId,
@@ -142,7 +147,7 @@ export function TranscriptGallery({
   top,
   emptyText,
 }: {
-  top: ReactNode;
+  top: (currentMenu: ReactNode) => ReactNode;
   emptyText: string;
   active: boolean;
   autoSelect: boolean;
@@ -254,6 +259,72 @@ export function TranscriptGallery({
       );
     }
   };
+  const recordMenu = (record: TranscriptRecord, triggerClassName: string) => (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={triggerClassName}
+            title="More"
+            aria-label="Transcript actions"
+          >
+            <HugeiconsIcon icon={MoreVerticalIcon} className="size-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <ClipSendToMenu handlers={sendHandlersFor(record)} />
+          <TranscriptExportItems
+            timed={(record.segment_count ?? 0) > 0}
+            label={(format) => (
+              <>
+                <HugeiconsIcon icon={Download01Icon} />
+                Download .{format}
+              </>
+            )}
+            onExport={(format) => void downloadRecord(record, format)}
+          />
+          <DropdownMenuItem
+            onClick={() =>
+              void copyToClipboard(record.text).then((ok) =>
+                ok
+                  ? toast.success("Transcript copied")
+                  : toast.error("Could not copy transcript."),
+              )
+            }
+          >
+            <HugeiconsIcon icon={Copy01Icon} />
+            Copy
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onClick={() =>
+              void mutate(
+                () => archiveTranscript(record.id, !record.archived),
+                [record.id],
+              )
+            }
+          >
+            <HugeiconsIcon icon={ArchiveIcon} />
+            {record.archived ? "Unarchive" : "Archive"}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() =>
+              void mutate(() => deleteTranscript(record.id), [record.id])
+            }
+          >
+            <HugeiconsIcon icon={TrashIcon} />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+  );
+  // The open transcript leaves the list, so its row menu moves onto the top row.
+  const current =
+    records.find((record) => record.id === currentId) ??
+    (latest && latest.id === currentId ? latest : null);
+  const topRow = top(current ? recordMenu(current, TOP_MENU_TRIGGER) : null);
   return (
     // `contents`: the card is the layout box; this wrapper only holds it and the confirm dialog.
     <div className="contents">
@@ -301,16 +372,16 @@ export function TranscriptGallery({
           ) : null
         }
       >
-        {top}
-        {!top && !archived && !loading && records.length === 0 ? (
+        {topRow}
+        {!topRow && !archived && !loading && records.length === 0 ? (
           <ClipsCardEmpty text={emptyText} />
         ) : null}
         {/* The open transcript is the top row, so the list leaves it out. */}
-        {records.some((record) => !top || record.id !== currentId) ||
+        {records.some((record) => !topRow || record.id !== currentId) ||
         (archived && !loading) ||
         cursor ? (
       <div
-        className={cn(CLIPS_LIST, !top && "mt-0 border-t-0 pt-0")}
+        className={cn(CLIPS_LIST, !topRow && "mt-0 border-t-0 pt-0")}
         onScroll={(event) => {
           const el = event.currentTarget;
           if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40)
@@ -318,7 +389,7 @@ export function TranscriptGallery({
         }}
       >
         {records
-          .filter((record) => !top || record.id !== currentId)
+          .filter((record) => !topRow || record.id !== currentId)
           .map((record) => (
           <div
             key={record.id}
@@ -352,65 +423,7 @@ export function TranscriptGallery({
                 </span>
               ) : null}
             </button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100"
-                  title="More"
-                  aria-label="Transcript actions"
-                >
-                  <HugeiconsIcon icon={MoreVerticalIcon} className="size-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <ClipSendToMenu handlers={sendHandlersFor(record)} />
-                <TranscriptExportItems
-                  timed={(record.segment_count ?? 0) > 0}
-                  label={(format) => (
-                    <>
-                      <HugeiconsIcon icon={Download01Icon} />
-                      Download .{format}
-                    </>
-                  )}
-                  onExport={(format) => void downloadRecord(record, format)}
-                />
-                <DropdownMenuItem
-                  onClick={() =>
-                    void copyToClipboard(record.text).then((ok) =>
-                      ok
-                        ? toast.success("Transcript copied")
-                        : toast.error("Could not copy transcript."),
-                    )
-                  }
-                >
-                  <HugeiconsIcon icon={Copy01Icon} />
-                  Copy
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() =>
-                    void mutate(
-                      () => archiveTranscript(record.id, !record.archived),
-                      [record.id],
-                    )
-                  }
-                >
-                  <HugeiconsIcon icon={ArchiveIcon} />
-                  {record.archived ? "Unarchive" : "Archive"}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() =>
-                    void mutate(() => deleteTranscript(record.id), [record.id])
-                  }
-                >
-                  <HugeiconsIcon icon={TrashIcon} />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {recordMenu(record, ROW_MENU_TRIGGER)}
           </div>
         ))}
         {archived && !loading && !records.length ? (

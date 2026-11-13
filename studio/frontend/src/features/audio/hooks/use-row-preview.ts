@@ -27,6 +27,7 @@ export function useRowPreview(
     audio.addEventListener("ended", onEnded);
     document.addEventListener("play", onOtherPlay, true);
     return () => {
+      requestRef.current += 1;
       audio.pause();
       audio.removeEventListener("ended", onEnded);
       document.removeEventListener("play", onOtherPlay, true);

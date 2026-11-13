@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ComponentProps, useEffect, useMemo, useState } from "react";
+import { type ComponentProps, type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   type AudioGalleryClip,
   addAudioClipToProject,
@@ -261,11 +261,13 @@ function SelectedSeparation({
   group,
   autoFocus,
   active,
+  actions,
   onSendStem,
 }: {
   group: SeparationGroup;
   autoFocus: boolean;
   active: boolean;
+  actions: ReactNode;
   onSendStem: (
     target: SendTarget,
     clip: AudioGalleryClip,
@@ -301,6 +303,7 @@ function SelectedSeparation({
         stems={stems}
         autoFocus={autoFocus}
         active={active}
+        actions={actions}
         sendTargets={STEM_SEND_TARGETS}
         onDownloadStem={(clipId) => {
           const clip = group.stems.find((item) => item.id === clipId);
@@ -447,6 +450,36 @@ export function SeparateOutput({
     );
   };
 
+  // The selected run leaves the list, so its menu moves onto the stem mixer.
+  const groupMenu = (group: SeparationGroup, variant: "row" | "toolbar") => (
+    <GalleryItemMenu
+      variant={variant}
+      className={
+        variant === "toolbar"
+          ? "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground hover:text-foreground"
+          : undefined
+      }
+      noun="clip"
+      active={active}
+      pinned={group.pinned}
+      archived={false}
+      onTogglePin={() => pinGroup(group, !group.pinned)}
+      onToggleArchive={() => void archiveGroup(group)}
+      onDelete={() => void deleteGroup(group)}
+      onDownload={() => void downloadGroup(group)}
+      onAddToProject={async (projectId) => {
+        let already = true;
+        for (const clip of group.stems) {
+          const result = await addAudioClipToProject(
+            clip.id,
+            projectId,
+          );
+          already = already && result.already;
+        }
+        return { already };
+      }}
+    />
+  );
   return (
     <>
       <output aria-live="polite" aria-atomic="true" className="sr-only">
@@ -498,6 +531,7 @@ export function SeparateOutput({
               group={selected}
               autoFocus={focusedGroup === selected.groupId}
               active={active}
+              actions={groupMenu(selected, "toolbar")}
               onSendStem={(target, clip, name) => {
                 clearLastResult();
                 onSendStem(target, clip, name);
@@ -617,28 +651,7 @@ export function SeparateOutput({
                       onUnpin={() => pinGroup(group, false)}
                     />
                   )}
-                  <GalleryItemMenu
-                    variant="row"
-                    noun="clip"
-                    active={active}
-                    pinned={group.pinned}
-                    archived={false}
-                    onTogglePin={() => pinGroup(group, !group.pinned)}
-                    onToggleArchive={() => void archiveGroup(group)}
-                    onDelete={() => void deleteGroup(group)}
-                    onDownload={() => void downloadGroup(group)}
-                    onAddToProject={async (projectId) => {
-                      let already = true;
-                      for (const clip of group.stems) {
-                        const result = await addAudioClipToProject(
-                          clip.id,
-                          projectId,
-                        );
-                        already = already && result.already;
-                      }
-                      return { already };
-                    }}
-                  />
+                  {groupMenu(group, "row")}
                 </div>
               );
             })}

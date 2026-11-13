@@ -51,6 +51,7 @@ export function StemMixer({
   autoFocus = false,
   onDownloadStem,
   onDownloadAll,
+  actions,
   sendTargets,
   onSend,
   active,
@@ -207,6 +208,7 @@ export function StemMixer({
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
+        {actions}
       </header>
       <ul className={cn("grid gap-2", CLIPS_TITLE_INSET)}>
         {stems.map((stem) => {
