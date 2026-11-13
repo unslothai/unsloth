@@ -1745,6 +1745,12 @@ export const pl = {
       learnMore: "Więcej informacji",
       managedNote:
         "Piaskownicę systemu operacyjnego konfiguruje właściciel tego serwera Unsloth.",
+      trustedFoldersTitle: "Zaufane foldery",
+      trustedFoldersLabel: "Uruchamiaj bez pytania",
+      trustedFoldersDescription: "Python i Terminal mogą odczytywać i uruchamiać pliki z tych folderów bez prośby o zgodę, tylko w Twoich własnych czatach. Zapis do nich nadal wymaga zgody. Jeden folder w wierszu.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Nie udało się wczytać zaufanych folderów.",
+      trustedFoldersSaveError: "Nie udało się zapisać zaufanych folderów.",
     },
     debugging: {
       description: "Czytaj dzienniki Unsloth bez opuszczania aplikacji.",

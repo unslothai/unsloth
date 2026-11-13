@@ -1576,6 +1576,12 @@ export const es = {
       levelFullAccessNote: "Acceso total desactiva el sandbox. Este ajuste vuelve a aplicarse cuando elijas otro nivel.",
       learnMore: "Más información",
       managedNote: "El propietario de este servidor de Unsloth configura el sandbox del sistema.",
+      trustedFoldersTitle: "Carpetas de confianza",
+      trustedFoldersLabel: "Ejecutar sin preguntar",
+      trustedFoldersDescription: "Python y el Terminal pueden leer y ejecutar archivos de estas carpetas sin pedir aprobación, solo en tus propios chats. Escribir en ellas sigue pidiendo aprobación. Una carpeta por línea.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "No se han podido cargar las carpetas de confianza.",
+      trustedFoldersSaveError: "No se han podido guardar las carpetas de confianza.",
     },
     debugging: {
       description: "Lee los registros de Unsloth sin salir de la aplicación.",

@@ -1638,6 +1638,12 @@ export const he = {
       learnMore: "מידע נוסף",
       managedNote:
         "הבעלים של שרת Unsloth זה מגדיר את ארגז החול של מערכת ההפעלה.",
+      trustedFoldersTitle: "תיקיות מהימנות",
+      trustedFoldersLabel: "הרצה בלי לשאול",
+      trustedFoldersDescription: "Python והטרמינל יכולים לקרוא ולהריץ קבצים בתיקיות האלה בלי לבקש אישור, רק בצ'אטים שלך. כתיבה אליהן עדיין מבקשת אישור. תיקייה אחת בכל שורה.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "לא ניתן לטעון את התיקיות המהימנות.",
+      trustedFoldersSaveError: "לא ניתן לשמור את התיקיות המהימנות.",
     },
     debugging: {
       description: "קרא את יומני Unsloth בלי לצאת מהאפליקציה.",

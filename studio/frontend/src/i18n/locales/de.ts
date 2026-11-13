@@ -1577,6 +1577,12 @@ export const de = {
       levelFullAccessNote: "Vollzugriff schaltet die Sandbox aus. Diese Einstellung gilt wieder, sobald du eine andere Stufe wählst.",
       learnMore: "Weitere Informationen",
       managedNote: "Der Besitzer dieses Unsloth-Servers richtet die OS-Sandbox ein.",
+      trustedFoldersTitle: "Vertrauenswürdige Ordner",
+      trustedFoldersLabel: "Ohne Nachfrage ausführen",
+      trustedFoldersDescription: "Python und Terminal dürfen Dateien in diesen Ordnern ohne Freigabe lesen und ausführen, nur in deinen eigenen Chats. Schreiben in diese Ordner fragt weiterhin nach. Ein Ordner pro Zeile.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Die vertrauenswürdigen Ordner konnten nicht geladen werden.",
+      trustedFoldersSaveError: "Die vertrauenswürdigen Ordner konnten nicht gespeichert werden.",
     },
     debugging: {
       description: "Lies die Unsloth-Logs, ohne die App zu verlassen.",

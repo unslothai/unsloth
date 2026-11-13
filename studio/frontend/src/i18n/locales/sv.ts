@@ -1670,6 +1670,12 @@ export const sv = {
         "Fullständig åtkomst stänger av sandlådan. Den här inställningen gäller igen när du väljer en annan nivå.",
       learnMore: "Läs mer",
       managedNote: "Ägaren av den här Unsloth-servern konfigurerar OS-sandlådan.",
+      trustedFoldersTitle: "Betrodda mappar",
+      trustedFoldersLabel: "Kör utan att fråga",
+      trustedFoldersDescription: "Python och Terminal får läsa och köra filer i de här mapparna utan att be om godkännande, bara i dina egna chattar. Att skriva till dem frågar fortfarande. En mapp per rad.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Det gick inte att läsa in de betrodda mapparna.",
+      trustedFoldersSaveError: "Det gick inte att spara de betrodda mapparna.",
     },
     debugging: {
       description: "Läs Unsloths loggar utan att lämna appen.",

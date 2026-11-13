@@ -1722,6 +1722,12 @@ export const fa = {
       learnMore: "بیشتر بدانید",
       managedNote:
         "مالک این سرور Unsloth سندباکس سیستم‌عامل را راه‌اندازی می‌کند.",
+      trustedFoldersTitle: "پوشه‌های مورد اعتماد",
+      trustedFoldersLabel: "اجرا بدون پرسیدن",
+      trustedFoldersDescription: "Python و ترمینال می‌توانند فایل‌های این پوشه‌ها را بدون درخواست تأیید بخوانند و اجرا کنند، فقط در گفتگوهای خودتان. نوشتن در آن‌ها همچنان تأیید می‌خواهد. هر پوشه در یک خط.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "بارگیری پوشه‌های مورد اعتماد ممکن نشد.",
+      trustedFoldersSaveError: "ذخیرهٔ پوشه‌های مورد اعتماد ممکن نشد.",
     },
     debugging: {
       description: "گزارش‌های Unsloth را بدون خروج از برنامه بخوانید.",

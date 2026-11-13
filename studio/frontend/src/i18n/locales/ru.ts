@@ -1576,6 +1576,12 @@ export const ru = {
       levelFullAccessNote: "Полный доступ отключает песочницу. Эта настройка снова действует, когда вы выберете другой уровень.",
       learnMore: "Подробнее",
       managedNote: "Песочницу ОС настраивает владелец этого сервера Unsloth.",
+      trustedFoldersTitle: "Доверенные папки",
+      trustedFoldersLabel: "Запускать без запроса",
+      trustedFoldersDescription: "Python и Терминал могут читать и запускать файлы в этих папках без запроса подтверждения, только в ваших собственных чатах. Запись в них по-прежнему требует подтверждения. Одна папка на строку.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Не удалось загрузить доверенные папки.",
+      trustedFoldersSaveError: "Не удалось сохранить доверенные папки.",
     },
     debugging: {
       description: "Читайте журналы Unsloth, не выходя из приложения.",

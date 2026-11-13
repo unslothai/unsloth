@@ -1736,6 +1736,12 @@ export const cs = {
       learnMore: "Další informace",
       managedNote:
         "Sandbox operačního systému nastavuje vlastník tohoto serveru Unsloth.",
+      trustedFoldersTitle: "Důvěryhodné složky",
+      trustedFoldersLabel: "Spouštět bez ptaní",
+      trustedFoldersDescription: "Python a Terminál mohou číst a spouštět soubory v těchto složkách bez žádosti o schválení, pouze ve vašich vlastních chatech. Zápis do nich se stále ptá. Jedna složka na řádek.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Důvěryhodné složky se nepodařilo načíst.",
+      trustedFoldersSaveError: "Důvěryhodné složky se nepodařilo uložit.",
     },
     debugging: {
       description: "Čtěte protokoly Unsloth, aniž byste opustili aplikaci.",

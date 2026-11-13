@@ -1575,6 +1575,12 @@ export const ptBR = {
       levelFullAccessNote: "Acesso total desliga o sandbox. Esta configuração volta a valer quando você escolher outro nível.",
       learnMore: "Saiba mais",
       managedNote: "O proprietário deste servidor Unsloth configura o sandbox do sistema.",
+      trustedFoldersTitle: "Pastas confiáveis",
+      trustedFoldersLabel: "Executar sem perguntar",
+      trustedFoldersDescription: "Python e o Terminal podem ler e executar arquivos nestas pastas sem pedir aprovação, apenas nos seus próprios chats. Gravar nelas ainda pede aprovação. Uma pasta por linha.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Não foi possível carregar as pastas confiáveis.",
+      trustedFoldersSaveError: "Não foi possível salvar as pastas confiáveis.",
     },
     debugging: {
       description: "Leia os logs do Unsloth sem sair do app.",

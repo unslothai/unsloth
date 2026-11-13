@@ -1751,6 +1751,12 @@ export const nl = {
       learnMore: "Meer informatie",
       managedNote:
         "De eigenaar van deze Unsloth-server stelt de OS-sandbox in.",
+      trustedFoldersTitle: "Vertrouwde mappen",
+      trustedFoldersLabel: "Uitvoeren zonder te vragen",
+      trustedFoldersDescription: "Python en Terminal mogen bestanden in deze mappen lezen en uitvoeren zonder om goedkeuring te vragen, alleen in je eigen chats. Schrijven naar deze mappen vraagt nog steeds om goedkeuring. Eén map per regel.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "De vertrouwde mappen konden niet worden geladen.",
+      trustedFoldersSaveError: "De vertrouwde mappen konden niet worden opgeslagen.",
     },
     debugging: {
       description: "Lees de Unsloth-logboeken zonder de app te verlaten.",

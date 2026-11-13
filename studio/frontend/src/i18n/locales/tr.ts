@@ -1727,6 +1727,12 @@ export const tr = {
       learnMore: "Daha fazla bilgi",
       managedNote:
         "İşletim sistemi korumalı alanını bu Unsloth sunucusunun sahibi ayarlar.",
+      trustedFoldersTitle: "Güvenilen klasörler",
+      trustedFoldersLabel: "Sormadan çalıştır",
+      trustedFoldersDescription: "Python ve Terminal bu klasörlerdeki dosyaları onay istemeden okuyabilir ve çalıştırabilir, yalnızca kendi sohbetlerinizde. Bu klasörlere yazmak yine onay ister. Her satıra bir klasör.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Güvenilen klasörler yüklenemedi.",
+      trustedFoldersSaveError: "Güvenilen klasörler kaydedilemedi.",
     },
     debugging: {
       description: "Unsloth günlüklerini uygulamadan çıkmadan okuyun.",

@@ -1476,6 +1476,12 @@ export const it = {
       levelFullAccessNote: "Accesso completo disattiva la sandbox. Questa impostazione torna valida quando scegli un altro livello.",
       learnMore: "Scopri di più",
       managedNote: "Il proprietario di questo server Unsloth configura la sandbox del sistema.",
+      trustedFoldersTitle: "Cartelle attendibili",
+      trustedFoldersLabel: "Esegui senza chiedere",
+      trustedFoldersDescription: "Python e il Terminale possono leggere ed eseguire i file in queste cartelle senza chiedere l'approvazione, solo nelle tue chat. La scrittura al loro interno chiede ancora conferma. Una cartella per riga.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Impossibile caricare le cartelle attendibili.",
+      trustedFoldersSaveError: "Impossibile salvare le cartelle attendibili.",
     },
     debugging: {
       description: "Leggi i log di Unsloth senza uscire dall'app.",

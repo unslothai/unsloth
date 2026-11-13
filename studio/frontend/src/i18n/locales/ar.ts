@@ -1573,6 +1573,12 @@ export const ar = {
       levelFullAccessNote: "الوصول الكامل يوقف وضع الحماية. يُطبَّق هذا الإعداد مجدداً عند اختيار مستوى آخر.",
       learnMore: "مزيد من المعلومات",
       managedNote: "يُعدّ مالك خادم Unsloth هذا وضع حماية نظام التشغيل.",
+      trustedFoldersTitle: "المجلدات الموثوقة",
+      trustedFoldersLabel: "تشغيل دون سؤال",
+      trustedFoldersDescription: "يمكن لـ Python والطرفية قراءة الملفات في هذه المجلدات وتشغيلها دون طلب موافقة، في محادثاتك فقط. الكتابة فيها لا تزال تطلب الموافقة. مجلد واحد في كل سطر.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "تعذّر تحميل المجلدات الموثوقة.",
+      trustedFoldersSaveError: "تعذّر حفظ المجلدات الموثوقة.",
     },
     debugging: {
       description: "اقرأ سجلات Unsloth دون مغادرة التطبيق.",

@@ -1649,6 +1649,12 @@ export const zhTW = {
         "完整存取權會關閉沙箱。當您選擇其他等級時，此設定會再次生效。",
       learnMore: "瞭解詳情",
       managedNote: "作業系統沙箱由此 Unsloth 伺服器的擁有者設定。",
+      trustedFoldersTitle: "受信任的資料夾",
+      trustedFoldersLabel: "無需詢問即可執行",
+      trustedFoldersDescription: "僅在你自己的聊天中，Python 和終端機可以無需核准即可讀取和執行這些資料夾中的檔案。寫入這些資料夾仍會詢問。每行一個資料夾。",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "無法載入受信任的資料夾。",
+      trustedFoldersSaveError: "無法儲存受信任的資料夾。",
     },
     debugging: {
       description: "不必離開應用程式即可閱讀 Unsloth 記錄檔。",

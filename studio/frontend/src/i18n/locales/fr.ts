@@ -1577,6 +1577,12 @@ export const fr = {
       levelFullAccessNote: "L'Accès complet désactive le bac à sable. Ce réglage s'applique de nouveau quand vous choisissez un autre niveau.",
       learnMore: "En savoir plus",
       managedNote: "Le propriétaire de ce serveur Unsloth configure le bac à sable du système.",
+      trustedFoldersTitle: "Dossiers de confiance",
+      trustedFoldersLabel: "Exécuter sans demander",
+      trustedFoldersDescription: "Python et le Terminal peuvent lire et exécuter les fichiers de ces dossiers sans demander d'approbation, dans vos propres discussions uniquement. L'écriture dans ces dossiers demande toujours. Un dossier par ligne.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Impossible de charger les dossiers de confiance.",
+      trustedFoldersSaveError: "Impossible d'enregistrer les dossiers de confiance.",
     },
     debugging: {
       description: "Consultez les journaux d'Unsloth sans quitter l'application.",

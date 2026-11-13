@@ -1740,6 +1740,12 @@ export const uk = {
         "Повний доступ вимикає пісочницю. Цей параметр знову застосується, коли ви виберете інший рівень.",
       learnMore: "Докладніше",
       managedNote: "Пісочницю ОС налаштовує власник цього сервера Unsloth.",
+      trustedFoldersTitle: "Довірені папки",
+      trustedFoldersLabel: "Запускати без запиту",
+      trustedFoldersDescription: "Python і Термінал можуть читати й запускати файли в цих папках без запиту на схвалення, лише у ваших власних чатах. Запис у них і далі потребує схвалення. Одна папка на рядок.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Не вдалося завантажити довірені папки.",
+      trustedFoldersSaveError: "Не вдалося зберегти довірені папки.",
     },
     debugging: {
       description: "Читайте журнали Unsloth, не виходячи із застосунку.",

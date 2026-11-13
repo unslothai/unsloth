@@ -1577,6 +1577,12 @@ export const hi = {
       levelFullAccessNote: "पूरी पहुंच सैंडबॉक्स बंद कर देता है। दूसरा स्तर चुनने पर यह सेटिंग फिर से लागू होती है।",
       learnMore: "और जानें",
       managedNote: "OS सैंडबॉक्स इस Unsloth सर्वर का स्वामी सेट अप करता है।",
+      trustedFoldersTitle: "भरोसेमंद फ़ोल्डर",
+      trustedFoldersLabel: "बिना पूछे चलाएँ",
+      trustedFoldersDescription: "Python और टर्मिनल इन फ़ोल्डरों की फ़ाइलें बिना अनुमति माँगे पढ़ और चला सकते हैं, केवल आपकी अपनी चैट में। इनमें लिखने के लिए अब भी पूछा जाता है। हर पंक्ति में एक फ़ोल्डर।",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "भरोसेमंद फ़ोल्डर लोड नहीं हो सके।",
+      trustedFoldersSaveError: "भरोसेमंद फ़ोल्डर सहेजे नहीं जा सके।",
     },
     debugging: {
       description: "ऐप छोड़े बिना Unsloth के लॉग पढ़ें।",

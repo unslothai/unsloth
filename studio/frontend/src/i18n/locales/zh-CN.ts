@@ -1571,6 +1571,12 @@ export const zhCN = {
       levelFullAccessNote: "完全访问会关闭沙盒。选择其他级别后，此设置将重新生效。",
       learnMore: "了解详情",
       managedNote: "操作系统沙盒由此 Unsloth 服务器的所有者设置。",
+      trustedFoldersTitle: "受信任的文件夹",
+      trustedFoldersLabel: "无需询问即可运行",
+      trustedFoldersDescription: "仅在你自己的聊天中，Python 和终端可以无需批准即可读取和运行这些文件夹中的文件。写入这些文件夹仍会询问。每行一个文件夹。",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "无法加载受信任的文件夹。",
+      trustedFoldersSaveError: "无法保存受信任的文件夹。",
     },
     debugging: {
       description: "无需离开应用即可查看 Unsloth 日志。",

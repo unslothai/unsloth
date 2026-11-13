@@ -1575,6 +1575,12 @@ export const ja = {
       levelFullAccessNote: "フルアクセスではサンドボックスがオフになります。別のレベルを選ぶと、この設定が再び適用されます。",
       learnMore: "詳細",
       managedNote: "OS サンドボックスは、この Unsloth サーバーの所有者が設定します。",
+      trustedFoldersTitle: "信頼済みフォルダー",
+      trustedFoldersLabel: "確認せずに実行",
+      trustedFoldersDescription: "Python とターミナルは、あなた自身のチャットでのみ、これらのフォルダー内のファイルを承認なしで読み取り・実行できます。フォルダーへの書き込みは引き続き確認されます。1 行に 1 フォルダー。",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "信頼済みフォルダーを読み込めませんでした。",
+      trustedFoldersSaveError: "信頼済みフォルダーを保存できませんでした。",
     },
     debugging: {
       description: "アプリを離れずに Unsloth のログを確認できます。",

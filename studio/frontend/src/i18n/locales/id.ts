@@ -1730,6 +1730,12 @@ export const id = {
         "Akses penuh menonaktifkan sandbox. Pengaturan ini berlaku lagi saat Anda memilih tingkat lain.",
       learnMore: "Pelajari lebih lanjut",
       managedNote: "Pemilik server Unsloth ini yang menyiapkan sandbox OS.",
+      trustedFoldersTitle: "Folder tepercaya",
+      trustedFoldersLabel: "Jalankan tanpa bertanya",
+      trustedFoldersDescription: "Python dan Terminal dapat membaca dan menjalankan file di folder ini tanpa meminta persetujuan, hanya di chat Anda sendiri. Menulis ke folder ini tetap meminta persetujuan. Satu folder per baris.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Tidak dapat memuat folder tepercaya.",
+      trustedFoldersSaveError: "Tidak dapat menyimpan folder tepercaya.",
     },
     debugging: {
       description: "Baca log Unsloth tanpa meninggalkan aplikasi.",

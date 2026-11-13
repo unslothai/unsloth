@@ -1736,6 +1736,12 @@ export const vi = {
       learnMore: "Tìm hiểu thêm",
       managedNote:
         "Chủ sở hữu máy chủ Unsloth này thiết lập sandbox hệ điều hành.",
+      trustedFoldersTitle: "Thư mục tin cậy",
+      trustedFoldersLabel: "Chạy không cần hỏi",
+      trustedFoldersDescription: "Python và Terminal có thể đọc và chạy tệp trong các thư mục này mà không cần xin phê duyệt, chỉ trong các cuộc trò chuyện của riêng bạn. Ghi vào các thư mục này vẫn cần hỏi. Mỗi dòng một thư mục.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Không thể tải các thư mục tin cậy.",
+      trustedFoldersSaveError: "Không thể lưu các thư mục tin cậy.",
     },
     debugging: {
       description: "Đọc nhật ký Unsloth mà không cần rời khỏi ứng dụng.",

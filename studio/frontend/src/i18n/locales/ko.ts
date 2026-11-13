@@ -1573,6 +1573,12 @@ export const ko = {
       levelFullAccessNote: "전체 액세스는 샌드박스를 끕니다. 다른 수준을 선택하면 이 설정이 다시 적용됩니다.",
       learnMore: "자세히 알아보기",
       managedNote: "OS 샌드박스는 이 Unsloth 서버의 소유자가 설정합니다.",
+      trustedFoldersTitle: "신뢰할 수 있는 폴더",
+      trustedFoldersLabel: "묻지 않고 실행",
+      trustedFoldersDescription: "Python과 터미널은 내 채팅에서만 이 폴더의 파일을 승인 없이 읽고 실행할 수 있습니다. 폴더에 쓰는 작업은 계속 확인을 요청합니다. 한 줄에 폴더 하나씩 입력하세요.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "신뢰할 수 있는 폴더를 불러오지 못했습니다.",
+      trustedFoldersSaveError: "신뢰할 수 있는 폴더를 저장하지 못했습니다.",
     },
     debugging: {
       description: "앱을 벗어나지 않고 Unsloth 로그를 확인하세요.",
