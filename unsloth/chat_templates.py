@@ -2882,19 +2882,24 @@ def get_chat_template(
         )
         # Per turn, not from messages[0]: datasets rows carry None for the other schema's columns.
         chat_template = \
+            "{%- set unsloth_roles = {" + user + " : 'user', " + assistant + " : 'assistant'} -%}" + \
             "{%- set sharegpt = namespace(messages = []) -%}" + \
             "{%- for message in messages -%}" + \
-            "{%- set turn = message -%}" + \
-            "{%- if message.get(" + role + ") is not none -%}" + \
-            "{%- set turn = dict(turn, role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
-            ".get(message[" + role + "], message[" + role + "])) -%}" + \
+            "{%- set mapped_role = message.get(" + role + ") -%}" + \
+            "{%- set mapped_content = message.get(" + content + ") -%}" + \
+            "{%- if mapped_role is not none and mapped_content is not none -%}" + \
+            "{%- set message = dict(message, role = unsloth_roles.get(mapped_role, mapped_role), content = mapped_content) -%}" + \
+            "{%- else -%}" + \
+            "{%- if mapped_role is not none -%}" + \
+            "{%- set message = dict(message, role = unsloth_roles.get(mapped_role, mapped_role)) -%}" + \
             "{%- endif -%}" + \
-            "{%- if message.get(" + content + ") is not none -%}" + \
-            "{%- set turn = dict(turn, content = message[" + content + "]) -%}" + \
+            "{%- if mapped_content is not none -%}" + \
+            "{%- set message = dict(message, content = mapped_content) -%}" + \
             "{%- elif " + content + " in message and message.get('content') is none -%}" + \
-            "{%- set turn = dict(turn, content = none) -%}" + \
+            "{%- set message = dict(message, content = none) -%}" + \
             "{%- endif -%}" + \
-            "{%- set sharegpt.messages = sharegpt.messages + [turn] -%}" + \
+            "{%- endif -%}" + \
+            "{%- set sharegpt.messages = sharegpt.messages + [message] -%}" + \
             "{%- endfor -%}" + \
             "{%- set messages = sharegpt.messages %}" + \
             chat_template
