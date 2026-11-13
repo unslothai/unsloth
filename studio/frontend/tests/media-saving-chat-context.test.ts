@@ -68,10 +68,9 @@ for (const [path, read] of [
       'if (p.phase === "saving_chat_context") {',
       'title: "Saving chat context…",',
       `message: "Saving the chat model's context so it can resume after this load.",`,
-      // Fenced on a cancel or a newer load; showLoadProgress keeps the same toast id and its Cancel,
-      // or updates the inline status when the user closed the toast.
-      "if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {\n          showLoadProgress(SAVING_PROGRESS);",
-      "toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast, onLoadToastDismiss));",
+      // Fenced on a cancel or a newer load; update keeps the same toast id and its Cancel, or
+      // updates the inline status when the user closed the toast.
+      "if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {\n          loadToast.update(SAVING_PROGRESS);",
     ]) {
       assert.ok(source.includes(pin), `missing: ${pin}`);
     }
@@ -79,7 +78,7 @@ for (const [path, read] of [
       source.indexOf("const handleLoad = useCallback("),
     );
     const order = [
-      "loadToastId.current = toast(",
+      "loadToast.open(IDLE_PROGRESS, pickToast.take(pickToastId));",
       `const savePoll = watchSavingPhase(${read}, () => {`,
       "const answer = await startRequest;",
       "savePoll.stop();",

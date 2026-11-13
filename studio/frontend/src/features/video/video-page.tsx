@@ -229,6 +229,7 @@ import {
   downloadUrlStreaming,
   isDownloadCancelled,
 } from "@/lib/native-files";
+import { createMediaLoadToast } from "@/lib/media-load-toast";
 import { toast } from "@/lib/toast";
 import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
@@ -577,19 +578,12 @@ function LoadInlineStatus({ p }: { p: VideoLoadProgress }) {
 }
 
 // `onCancel` is the only control that reaches a load in flight; the eject is hidden then.
-function loadToastArgs(
-  p: VideoLoadProgress,
-  id: string | number | undefined,
-  onCancel: () => void,
-  onDismiss: (t: { id: string | number }) => void,
-) {
+function loadToastArgs(p: VideoLoadProgress, onCancel: () => void) {
   return {
-    ...(id != null ? { id } : {}),
     description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
     cancel: { label: "Cancel", onClick: onCancel },
-    onDismiss,
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
@@ -1413,9 +1407,7 @@ function VideoGenerator({
   // The page stays mounted across tab switches, so only a true unmount flips this.
   const isMounted = useRef(true);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadToastId = useRef<string | number | null>(null);
-  // Latest load progress, and its copy for the inline status once the user closes the toast (null while it shows).
-  const latestLoad = useRef<VideoLoadProgress>(IDLE_PROGRESS);
+  // The load's progress for the inline status once the user closes its toast; null while the toast shows.
   const [closedLoad, setClosedLoad] = useState<VideoLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);
@@ -1438,37 +1430,15 @@ function VideoGenerator({
   // awaiting one. Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
-  const dismissLoadToast = useCallback(() => {
-    if (loadToastId.current != null) toast.dismiss(loadToastId.current);
-    loadToastId.current = null;
-    latestLoad.current = IDLE_PROGRESS;
-    setClosedLoad(null);
-  }, []);
-  // Without this, the next progress tick re-issues the toast id and Sonner shows the closed toast again.
-  const onLoadToastDismiss = useCallback((t: { id: string | number }) => {
-    // dismissLoadToast clears the ref first, so only a user close gets past this.
-    if (t.id !== loadToastId.current) {
-      return;
-    }
-    loadToastId.current = null;
-    setClosedLoad(latestLoad.current);
-  }, []);
+  const [loadToast] = useState(() =>
+    createMediaLoadToast<VideoLoadProgress>({
+      toastOptions: loadToastArgs,
+      onClosedChange: setClosedLoad,
+    }),
+  );
+  const dismissLoadToast = loadToast.dismiss;
   const pickToast = useDiffusionPickToast();
 
-  // A ref keeps onClick stable; the toast is built before handleCancelLoad exists.
-  const cancelLoadRef = useRef<() => void>(() => {});
-  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
-  const showLoadProgress = useCallback(
-    (p: VideoLoadProgress) => {
-      latestLoad.current = p;
-      if (loadToastId.current != null) {
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast, onLoadToastDismiss));
-      } else {
-        setClosedLoad((closed) => closed && p);
-      }
-    },
-    [cancelLoadFromToast, onLoadToastDismiss],
-  );
   // Requests awaiting a response compare against this and discard their result.
   const cancelSeq = useRef(0);
   // The compensating unload carries no identity, so it must not fire once a newer load owns the page.
@@ -2742,14 +2712,14 @@ function VideoGenerator({
       const sig = `${p.phase}:${p.downloaded_bytes}:${p.expected_bytes ?? 0}`;
       if (sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        showLoadProgress(p);
+        loadToast.update(p);
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, showLoadProgress, offerLoadAnywayFor]);
+  }, [dismissLoadToast, refreshStatus, loadToast, offerLoadAnywayFor]);
 
   // The unload failed so the load still runs; restore its poll and toast. refreshStatus cannot,
   // since a first load is not resident yet.
@@ -2757,9 +2727,9 @@ function VideoGenerator({
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast, onLoadToastDismiss));
+    loadToast.open(IDLE_PROGRESS);
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast, onLoadToastDismiss]);
+  }, [pollLoadProgress, loadToast]);
 
   const stopGenPoll = useCallback(() => {
     if (genPollTimer.current) clearInterval(genPollTimer.current);
@@ -2831,7 +2801,7 @@ function VideoGenerator({
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast, onLoadToastDismiss));
+          loadToast.open(p);
           void pollLoadProgress();
         }
       } catch {
@@ -2870,7 +2840,7 @@ function VideoGenerator({
       stopGenPoll();
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, ensureThumbnail, cancelLoadFromToast, onLoadToastDismiss]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, ensureThumbnail, loadToast]);
 
   // Stable because route effects depend on loadOrStage.
   const loadControlsRef = useRef({
@@ -2973,8 +2943,7 @@ function VideoGenerator({
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast, onLoadToastDismiss));
+      loadToast.open(IDLE_PROGRESS, pickToast.take(pickToastId));
       // A load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
@@ -2993,7 +2962,7 @@ function VideoGenerator({
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
         if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {
-          showLoadProgress(SAVING_PROGRESS);
+          loadToast.update(SAVING_PROGRESS);
         }
       });
       try {
@@ -3054,9 +3023,7 @@ function VideoGenerator({
       pollLoadProgress,
       refreshStatus,
       dismissLoadToast,
-      cancelLoadFromToast,
-      onLoadToastDismiss,
-      showLoadProgress,
+      loadToast,
       canReapply,
       currentLoadAdvanced,
       pickToast,
@@ -3691,8 +3658,8 @@ function VideoGenerator({
   }, [busy, handleUnload, restoreLoadTracking]);
 
   useEffect(() => {
-    cancelLoadRef.current = () => void handleCancelLoad();
-  }, [handleCancelLoad]);
+    loadToast.setCancel(() => void handleCancelLoad());
+  }, [loadToast, handleCancelLoad]);
 
   const handleCancelGenerate = useCallback(async () => {
     setStopping(true);

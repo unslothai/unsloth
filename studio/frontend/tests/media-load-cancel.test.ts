@@ -26,37 +26,17 @@ for (const [page, path] of PAGES) {
       /cancel: \{ label: "Cancel", onClick: onCancel \}/,
       "the load toast must carry a cancel action, not just a close button",
     );
-    // Every toast site has to pass it: the toast is created by handleLoad, by
-    // the mount-time resume of a load started elsewhere, and rebuilt by
-    // handleCancelLoad when the unload fails and the load it could not stop has
-    // to stay visible. The fourth is showLoadProgress, which re-creates it in
-    // place on each progress tick and for handleLoad's "Saving chat context…"
-    // update; a tick that dropped the action would make the button vanish one
-    // second into the load. Each site also passes onLoadToastDismiss, or the
-    // next tick re-issues the id and reopens a toast the user closed.
-    // Call sites only: the declaration's own argument list opens with a newline.
-    const sites = SOURCE.match(/loadToastArgs\((?!\n)[^)\n]*\)/g) ?? [];
-    assert.equal(sites.length, 4, "expected the four load-toast call sites");
-    for (const site of sites) {
-      assert.match(
-        site,
-        /cancelLoadFromToast, onLoadToastDismiss\)$/,
-        `a load toast built without the cancel action or the dismiss handler: ${site}`,
-      );
-    }
+    // createMediaLoadToast raises every load toast, from open and update alike, so each one carries
+    // the Cancel; the page must not build one past it.
+    assert.match(SOURCE, /toastOptions: loadToastArgs,/);
+    assert.doesNotMatch(SOURCE, /toast\(null, loadToastArgs/);
+    assert.match(SOURCE, /loadToast\.setCancel\(\(\) => void handleCancelLoad\(\)\);/);
   });
 
-  test(`the ${page} load toast stays closed once the user closes it`, () => {
-    // Sonner re-shows a closed toast when its id is issued again, and the poll re-issues it on every
-    // progress change, so a close has to stop the re-issue and hand progress to the inline status.
-    assert.match(SOURCE, /closeButton: true,\n\s*cancel: \{ label: "Cancel", onClick: onCancel \},\n\s*onDismiss,/);
-    const handler = SOURCE.slice(
-      SOURCE.indexOf("const onLoadToastDismiss = useCallback("),
-      SOURCE.indexOf("const pickToast = useDiffusionPickToast();"),
-    );
-    assert.match(handler, /if \(t\.id !== loadToastId\.current\) \{\s*return;\s*\}/);
-    assert.match(handler, /loadToastId\.current = null;\s*setClosedLoad\(latestLoad\.current\);/);
-    assert.match(SOURCE, /if \(sig !== lastLoadSig\.current\) \{\s*lastLoadSig\.current = sig;\s*showLoadProgress\(p\);/);
+  test(`the ${page} load toast routes progress through the shared controller`, () => {
+    // media-load-toast.test.ts covers the close itself; this pins that the page feeds it.
+    assert.match(SOURCE, /if \(sig !== lastLoadSig\.current\) \{\s*lastLoadSig\.current = sig;\s*loadToast\.update\(p\);/);
+    assert.match(SOURCE, /onClosedChange: setClosedLoad,/);
     assert.match(SOURCE, /busy === "loading" && closedLoad && \(\s*<LoadInlineStatus p=\{closedLoad\} \/>/);
   });
 
@@ -86,7 +66,7 @@ for (const [page, path] of PAGES) {
   test(`the ${page} cancel routes through the backend unload`, () => {
     const handler = SOURCE.slice(
       SOURCE.indexOf("const handleCancelLoad = useCallback("),
-      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+      SOURCE.indexOf("useEffect(() => {\n    loadToast.setCancel"),
     );
     assert.ok(handler.length > 0, "expected handleCancelLoad");
     assert.match(
@@ -139,12 +119,12 @@ for (const [page, path] of PAGES) {
     // Restoring twice raises a duplicate toast and a second poll.
     const restore = SOURCE.slice(
       SOURCE.indexOf("const restoreLoadTracking = useCallback("),
-      SOURCE.indexOf("}, [pollLoadProgress, cancelLoadFromToast]);"),
+      SOURCE.indexOf("}, [pollLoadProgress, loadToast]);"),
     );
     assert.match(restore, /loadTrackingRestored[.]current = true;/);
     const handler = SOURCE.slice(
       SOURCE.indexOf("const handleCancelLoad = useCallback("),
-      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+      SOURCE.indexOf("useEffect(() => {\n    loadToast.setCancel"),
     );
     assert.match(handler, /if [(]!wasLoading [|][|] loadTrackingRestored[.]current[)] return;/);
   });
@@ -229,16 +209,16 @@ for (const [page, path] of PAGES) {
     // dropResidentState already killed the poll, so a failed unload must restore tracking.
     const handler = SOURCE.slice(
       SOURCE.indexOf("const handleCancelLoad = useCallback("),
-      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+      SOURCE.indexOf("useEffect(() => {\n    loadToast.setCancel"),
     );
     assert.match(handler, /const wasLoading = busy === "loading";/);
     assert.match(handler, /restoreLoadTracking\(\);/);
     const restore = SOURCE.slice(
       SOURCE.indexOf("const restoreLoadTracking = useCallback("),
-      SOURCE.indexOf("}, [pollLoadProgress, cancelLoadFromToast]);"),
+      SOURCE.indexOf("}, [pollLoadProgress, loadToast]);"),
     );
     assert.match(restore, /setBusy\("loading"\);/);
-    assert.match(restore, /loadToastId\.current = toast\(/);
+    assert.match(restore, /loadToast\.open\(IDLE_PROGRESS\);/);
     assert.match(restore, /void pollLoadProgress\(\);/);
   });
 
@@ -246,7 +226,7 @@ for (const [page, path] of PAGES) {
     // begin_load refuses a second load while one is registered, so stay busy until it settles.
     const handler = SOURCE.slice(
       SOURCE.indexOf("const handleUnload = useCallback("),
-      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+      SOURCE.indexOf("useEffect(() => {\n    loadToast.setCancel"),
     );
     assert.match(handler, /const pending = pendingStart\.current;/);
     assert.match(handler, /setBusy\("unloading"\);/);
