@@ -2815,9 +2815,13 @@ def _slot_rope_regime(lines: list[str]) -> Optional[bool]:
     thresholds = set()
     lengths = set()
     for line in lines:
-        if match := re.fullmatch(r"(?:\d+\.\d+\.\d+\.\d+ I )?print_info: n_ctx_orig_yarn\s*= (\d+)", line):
+        if match := re.fullmatch(
+            r"(?:\d+\.\d+\.\d+\.\d+ I )?print_info: n_ctx_orig_yarn\s*= (\d+)", line
+        ):
             thresholds.add(int(match[1]))
-        elif match := re.fullmatch(r"(?:\d+\.\d+\.\d+\.\d+ I )?llama_context: n_ctx_seq\s*= (\d+)", line):
+        elif match := re.fullmatch(
+            r"(?:\d+\.\d+\.\d+\.\d+ I )?llama_context: n_ctx_seq\s*= (\d+)", line
+        ):
             lengths.add(int(match[1]))
     if len(thresholds) != 1 or len(lengths) != 1:
         return None

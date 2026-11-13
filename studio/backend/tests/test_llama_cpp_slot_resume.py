@@ -672,7 +672,12 @@ def test_reload_uses_engine_sequence_length_even_when_props_caps_the_window(tmp_
 def test_context_change_requires_unambiguous_engine_values_on_both_launches(tmp_path):
     threshold = "print_info: n_ctx_orig_yarn = 2048"
     sequence = "llama_context: n_ctx_seq = 4096"
-    for lines in ([], [threshold], [sequence], [threshold, sequence, "llama_context: n_ctx_seq = 1024"]):
+    for lines in (
+        [],
+        [threshold],
+        [sequence],
+        [threshold, sequence, "llama_context: n_ctx_seq = 1024"],
+    ):
         assert llama_cpp._slot_rope_regime(lines) is None
 
     source = _ctx_backend(tmp_path, n_ctx = 1024)
