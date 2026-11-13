@@ -19,6 +19,11 @@ test("the Export page puts each flow behind its own tab", async () => {
   const page = await readSrcAsync("features/export/export-page.tsx");
   for (const tab of ["llm", "diffusion-lora", "q4nx"]) {
     assert.match(page, new RegExp(`<TabsTrigger value="${tab}"`));
+    // Each tab owns a panel, kept mounted so a running export survives a switch.
+    assert.match(
+      page,
+      new RegExp(`<TabsContent value="${tab}" forceMount className=\\{TAB_PANEL\\}>`),
+    );
   }
   assert.equal(page.match(/<ImageLoraExportCard /g)?.length, 1);
   assert.equal(page.match(/<Q4nxConvertCard /g)?.length, 1);
