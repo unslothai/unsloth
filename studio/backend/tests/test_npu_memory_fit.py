@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from core.inference import npu_backend as nb
+from core.inference import npu_memory as nm
 
 # Approximate Lemonade catalog sizes of the flagship FastFlowLM models, plus a small one.
 _SIZES_GB = {
@@ -41,7 +42,7 @@ class _Server:
 
 
 def _catalog(tmp_path, monkeypatch, total_ram_gb, platform):
-    monkeypatch.setattr(nb, "_total_ram_gb", lambda: total_ram_gb)
+    monkeypatch.setattr(nm, "system_ram_gb", lambda: total_ram_gb)
     monkeypatch.setattr(nb.sys, "platform", platform)
     backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
     monkeypatch.setattr(backend, "_ensure_running", lambda: _Server())
@@ -51,19 +52,19 @@ def _catalog(tmp_path, monkeypatch, total_ram_gb, platform):
 
 
 def test_windows_window_is_half_of_ram():
-    assert nb.npu_memory_window_gb(32.0, "win32") == 16.0
-    assert nb.npu_memory_window_gb(64.0, "win32") == 32.0
+    assert nm.npu_memory_window_gb(32.0, "win32") == 16.0
+    assert nm.npu_memory_window_gb(64.0, "win32") == 32.0
 
 
 def test_other_systems_keep_all_but_a_reserve():
-    assert nb.npu_memory_window_gb(32.0, "linux") == 30.0
-    assert nb.npu_memory_window_gb(1.0, "linux") == 0.0
+    assert nm.npu_memory_window_gb(32.0, "linux") == 30.0
+    assert nm.npu_memory_window_gb(1.0, "linux") == 0.0
 
 
 @pytest.mark.parametrize("total", [None, 0, -1.0])
 def test_unknown_ram_gives_no_window(total):
-    assert nb.npu_memory_window_gb(total, "win32") is None
-    assert nb.fits_npu_memory(18.0, nb.npu_memory_window_gb(total, "win32")) is None
+    assert nm.npu_memory_window_gb(total, "win32") is None
+    assert nm.fits_npu_memory(18.0, nm.npu_memory_window_gb(total, "win32")) is None
 
 
 def test_32gb_windows_flags_the_flagship_models(tmp_path, monkeypatch):
@@ -92,7 +93,7 @@ def test_unknown_ram_flags_nothing(tmp_path, monkeypatch):
 
 
 def test_status_reports_the_window(tmp_path, monkeypatch):
-    monkeypatch.setattr(nb, "_total_ram_gb", lambda: 32.0)
+    monkeypatch.setattr(nm, "system_ram_gb", lambda: 32.0)
     monkeypatch.setattr(nb.sys, "platform", "win32")
     monkeypatch.setattr(nb, "detect_amd_npu", lambda: {"present": True, "supported": True})
     backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
