@@ -171,8 +171,7 @@ export function sameBrowserAccount(
   );
 }
 
-/** The login client's hint, set while this install has other accounts or forbids Full access.
- *  Spelled out here: the store reads it while loading, before the login client may have. */
+/** Login client's hint, set while other accounts exist or Full access is forbidden. */
 export const FULL_ACCESS_HINT_KEY = "unsloth.auth-login-mode.v1";
 
 /** A saved Full access may come back at startup only when no such hint is stored. */

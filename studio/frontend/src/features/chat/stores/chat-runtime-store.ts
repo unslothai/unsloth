@@ -185,10 +185,9 @@ export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
-/** App-wide Full access, kept apart from the per-chat level so a chat snapshot never holds it. */
+/** App-wide Full access, apart from the per-chat level so a chat snapshot never holds it. */
 export const CHAT_FULL_ACCESS_KEY = "unsloth_chat_full_access";
-/** Code switched off under that Full access. Browser-only: a server restore keeps Code off unless
- *  its own switch is on. */
+/** Code switched off under that Full access; browser-only. */
 export const CHAT_FULL_ACCESS_CODE_OFF_KEY = "unsloth_chat_full_access_code_off";
 export const CHAT_SANDBOX_LEVEL_KEY = "unsloth_chat_sandbox_level";
 
@@ -1994,9 +1993,7 @@ function savePermissionMode(mode: PermissionMode): void {
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
-/** Full access picked in an earlier session, restored without the dialog the owner already accepted.
- *  Never restored while the server says this install has other accounts or forbids it. Runs while
- *  the module loads, so it reads the stored hint rather than the login client's live state. */
+/** Runs at module load, so it reads the stored login-mode hint, not the login client's live state. */
 function loadFullAccess(): boolean {
   return (
     loadOptionalBool(CHAT_FULL_ACCESS_KEY) === true &&
@@ -2004,7 +2001,7 @@ function loadFullAccess(): boolean {
   );
 }
 
-/** The only writer of the app-wide flag. Not chat-scoped, so a pick with a chat open still lands. */
+/** The only writer of the app-wide flag. */
 function rememberFullAccess(on: boolean, codeDeclined = false): void {
   fullAccessRestoredUnconfirmed = false;
   if (on && !getFullAccessAllowed()) return;
@@ -2016,8 +2013,7 @@ function rememberFullAccessCodeOff(off: boolean): void {
   writeStorageValue(CHAT_FULL_ACCESS_CODE_OFF_KEY, off ? "true" : "false");
 }
 
-/** "Reset all preferences" clears the saved Full access on the server too, before its reload.
- *  Sent directly: the queued write may still be held for a settings load that has not landed. */
+/** Sent directly: the queued write may still be held for a settings load that has not landed. */
 export async function forgetSavedFullAccess(): Promise<void> {
   rememberFullAccess(false);
   await savePersistedChatSettingsPatch({ fullAccess: false }).catch(() => undefined);
@@ -2025,8 +2021,6 @@ export async function forgetSavedFullAccess(): Promise<void> {
 
 let fullAccessResetSubscribed = false;
 
-/** Other accounts or a restricted install appearing while Studio runs reset Full access too, so the
- *  saved copy is cleared then, whichever browser saved it, rather than only at the next load. */
 function subscribeFullAccessReset(): void {
   if (fullAccessResetSubscribed) return;
   fullAccessResetSubscribed = true;
@@ -2057,8 +2051,7 @@ function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
     : false;
 }
 
-/** Full access restored from the server on a browser that never held it is not a fresh grant
- *  either: Code runs only when its own switch is on. */
+/** A server restore is not a fresh grant either: Code runs only when its own switch is on. */
 function codeDeclinedOnRestore(codeToolsEnabled: boolean): boolean {
   return !codeToolsEnabled;
 }
@@ -3653,8 +3646,7 @@ function getHydratedSettingsState(
   ) {
     notePreserveThinkingPreference(settings.preserveThinking);
   }
-  // The server's Full access answer, unless a pick made while this response was out is newer.
-  // Where Full access is not allowed to persist it is session-only, so the saved value has no say.
+  // Ignored when a pick made while this response was out is newer, or Full access cannot persist.
   const serverFullAccess =
     settings.fullAccess !== undefined &&
     scalarSettingMutationVersions.fullAccess === versions.scalarSettings.fullAccess &&
@@ -4686,8 +4678,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         if (applied) {
           cacheHydratedSettings(hydratedSettings, hydrationVersions);
           mirroredSettingsHydrated = true;
-          // Other accounts or a restricted install reset Full access; the saved copy goes too, or
-          // it would come back without the dialog once Full access is allowed again.
+          // Else it would come back without the dialog once Full access is allowed again.
           if (fromServer && hydratedSettings.fullAccess === true && !getFullAccessAllowed()) {
             rememberFullAccess(false);
           }
