@@ -173,6 +173,19 @@ def test_refresh_reports_a_folder_that_was_removed(settings_store, tmp_path):
     assert "no longer exists" in docs.offline_docs_status()["error"]
 
 
+def test_status_survives_an_unreadable_folder(settings_store, tmp_path, monkeypatch):
+    docs.set_offline_docs_settings(path = str(tmp_path))
+    docs.refresh_offline_docs(fetch = lambda: "# docs\n")
+
+    def denied(self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "is_file", denied)
+    status = docs.offline_docs_status()
+    assert status["path"] == str(tmp_path.resolve())
+    assert status["file"] is None
+
+
 def test_refresh_is_due_once_per_release(settings_store, tmp_path, monkeypatch):
     docs.set_offline_docs_settings(path = str(tmp_path), auto_update = True)
     assert docs.offline_docs_refresh_due() is True

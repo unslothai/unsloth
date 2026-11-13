@@ -172,8 +172,12 @@ def offline_docs_status() -> dict[str, Any]:
     # A copy written to a folder the owner has since moved away from is not this folder's copy.
     if directory is not None and file_name and stored_dir == str(directory):
         candidate = directory / file_name
-        if candidate.is_file():
-            file_path = str(candidate)
+        try:
+            if candidate.is_file():
+                file_path = str(candidate)
+        except OSError:
+            # is_file() re-raises EACCES; the rows must still load so the folder can be changed.
+            pass
     return {
         "path": str(directory) if directory is not None else None,
         "auto_update": get_offline_docs_auto_update(),
