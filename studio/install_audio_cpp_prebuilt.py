@@ -846,10 +846,8 @@ def _sweep_retired_trees(target: Path) -> None:
 
 
 def _retire_tree(target: Path, retired: Path) -> None:
-    """Move the installed tree to ``retired`` (a fresh sibling). overlayfs refuses to rename a
-    directory that comes from an image layer (EXDEV), which is where the Docker image keeps
-    audio.cpp (#17638): copy it to ``retired`` then remove it instead, so the rollback copy
-    stays and the new tree, made on the writable layer, renames into place as usual."""
+    """os.replace, or on EXDEV copy then remove: overlayfs will not rename an image-layer
+    directory, where the Docker image keeps audio.cpp (#17638)."""
     try:
         os.replace(target, retired)
         return
@@ -857,7 +855,7 @@ def _retire_tree(target: Path, retired: Path) -> None:
         if exc.errno != errno.EXDEV or target.is_symlink():
             raise
         print(f"audio.cpp: {exc.strerror}; copying {target} aside instead", flush = True)
-    # Published only once whole, so a ``retired`` tree is always a complete one to roll back to.
+    # Renamed to ``retired`` only once whole, so a rollback never restores a partial copy.
     copying = retired.with_name(retired.name + ".copying")
     shutil.rmtree(copying, ignore_errors = True)
     try:
@@ -869,7 +867,7 @@ def _retire_tree(target: Path, retired: Path) -> None:
     try:
         shutil.rmtree(target)
     except OSError:
-        # A half-removed tree is no install: put the whole copy back when the path is clear.
+        # A half-removed tree is no install: put the copy back.
         shutil.rmtree(target, ignore_errors = True)
         if not target.exists():
             os.replace(retired, target)

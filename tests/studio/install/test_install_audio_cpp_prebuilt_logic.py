@@ -2454,7 +2454,12 @@ def test_the_sweep_skips_a_retired_tree_it_cannot_read(monkeypatch, tmp_path):
         stuck.chmod(0o755)
 
 
-# #17638: in the Docker image audio.cpp is a directory of an image layer, which overlayfs will not rename
+# #17638: the Docker image keeps audio.cpp on an image layer, which overlayfs will not rename.
+
+
+def _siblings(root):
+    lock = M.core.install_lock_path(root).name
+    return sorted(p.name for p in root.parent.iterdir() if p.name != lock)
 
 
 def _refuse_renaming_the_install(
@@ -2462,8 +2467,7 @@ def _refuse_renaming_the_install(
     root,
     err = None,
 ):
-    """os.replace as overlayfs answers it for a lower-layer directory: the installed tree cannot be
-    renamed (EXDEV unless ``err`` says otherwise), anything made since can."""
+    """Only the installed tree's first rename is refused (EXDEV unless ``err``), as overlayfs does."""
     real = M.os.replace
     refused = []
 
@@ -2490,9 +2494,8 @@ def test_an_install_overlayfs_cannot_rename_is_copied_aside_and_replaced(
     assert refused == [root.with_name(f"audio.cpp.old-{os.getpid()}")]
     assert server.read_bytes() == b"binary " + CPU_ZIP.encode()
     assert M.read_install_record(root)["release_tag"] == FORK_TAG
-    # The old tree is gone, not merged into the new one, and no aside copy is left behind.
     assert not (root / "bin" / "leftover.txt").exists()
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["audio.cpp", "src"]
+    assert _siblings(root) == ["audio.cpp", "src"]
     assert "copying" in capsys.readouterr().out
 
 
@@ -2514,7 +2517,7 @@ def test_a_copied_aside_install_is_put_back_when_the_new_tree_cannot_go_in(monke
     with pytest.raises(OSError, match = "I/O error"):
         _install(monkeypatch, tmp_path, new, release_tag = FORK_TAG)
     assert _tree_digest(root) == before
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["audio.cpp", "src"]
+    assert _siblings(root) == ["audio.cpp", "src"]
 
 
 def test_a_half_removed_install_is_restored_from_its_copy(monkeypatch, tmp_path):
@@ -2542,7 +2545,7 @@ def test_a_half_removed_install_is_restored_from_its_copy(monkeypatch, tmp_path)
     with pytest.raises(PermissionError):
         _install(monkeypatch, tmp_path, new, release_tag = FORK_TAG)
     assert failed and _tree_digest(root) == before
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["audio.cpp", "src"]
+    assert _siblings(root) == ["audio.cpp", "src"]
 
 
 def test_a_rename_refused_for_another_reason_is_not_copied(monkeypatch, tmp_path):
@@ -2556,7 +2559,7 @@ def test_a_rename_refused_for_another_reason_is_not_copied(monkeypatch, tmp_path
     with pytest.raises(PermissionError):
         _install(monkeypatch, tmp_path, new, release_tag = FORK_TAG)
     assert _tree_digest(root) == before
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["audio.cpp", "src"]
+    assert _siblings(root) == ["audio.cpp", "src"]
 
 
 def test_driver_cuda_version_is_asked_again_after_the_memo_window(monkeypatch, tmp_path):
