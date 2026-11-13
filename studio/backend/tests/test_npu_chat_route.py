@@ -76,7 +76,9 @@ _FULL_USAGE = {
 
 
 def _script(prompt: str) -> str:
-    if "PYCALL" in prompt and prompt.count('"role": "tool"') < (2 if "PYBIG" in prompt else 1):
+    if "PYCALL" in prompt and prompt.count('"role": "tool"') < (
+        2 if "PYBIG" in prompt or "PYTWO" in prompt else 1
+    ):
         call = {
             "index": 0,
             "id": "call_py",
@@ -1891,3 +1893,34 @@ def test_only_the_active_copy_of_a_repeated_prompt_is_pinned(monkeypatch):
     )
     ri._fit_external_context(chat, payload, tools = [], branch = chat, tool_loop = True, can_reset = True)
     assert seen["anchor_ids"] == {id(chat[-1])}
+
+
+def test_compact_on_a_chat_with_nothing_to_evict_spares_the_tool_results(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-nothing"
+    chat = [{"role": "user", "content": "work it out PYCALL PYTWO"}]
+    _seed_thread(studio_db, thread, chat)
+
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded = flm(tools = True)
+    status, _ = _call(
+        stream = True,
+        messages = chat,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    roles = [m["role"] for m in recorded[-1]["body"]["messages"]]
+    assert "tool" in roles

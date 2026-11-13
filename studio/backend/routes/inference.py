@@ -29921,10 +29921,11 @@ async def _proxy_to_external_provider(
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
         _request_branch = chat_messages
         _checkpoint_pass: dict = {}
+        _first_payload = payload
 
         # The loop passes this turn's catalogue: a withdrawn one (tool_choice "none", spent budget) costs nothing.
         async def _external_context_fitter(messages, tools = _external_fit_tools):
-            nonlocal _external_truncation
+            nonlocal _external_truncation, _first_payload
             # After a checkpoint fit, later passes extend its result, as the GGUF loop does.
             seen = _checkpoint_pass.get("input")
             later = seen is not None and messages[: len(seen)] == seen
@@ -29957,9 +29958,11 @@ async def _proxy_to_external_provider(
                         fit, messages, payload.model_copy(update = {"compact_context": None}), True
                     )
             else:
+                # /compact applies to the loop's first fit only, whether or not it evicted anything.
                 fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                    fit, messages, payload, True
+                    fit, messages, _first_payload, True
                 )
+                _first_payload = payload.model_copy(update = {"compact_context": None})
             # A refit moves the boundary, so the next pass extends this result, not the stale one.
             if refit and truncation and truncation.get("checkpoint") is True:
                 _checkpoint_pass.update(input = list(messages), fitted = fitted)
