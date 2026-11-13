@@ -15,6 +15,7 @@ import binascii
 import io
 import json
 import math
+import re
 import struct
 import zipfile
 import zlib
@@ -32,6 +33,8 @@ MAX_PORTRAIT_PIXELS = 40_000_000
 _PORTRAIT_FORMATS = {
     "PNG": "image/png",
     "JPEG": "image/jpeg",
+    # A JPEG with extra pictures (MPF), as many phone cameras write; Pillow names it MPO.
+    "MPO": "image/jpeg",
     "WEBP": "image/webp",
     "GIF": "image/gif",
 }
@@ -62,9 +65,26 @@ def _finite(text: str) -> Optional[float]:
     return value if math.isfinite(value) else None
 
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _well_formed(value: Any) -> Any:
+    # A "\ud835" escape with no partner (an emoji or styled letter cut in half by a site's truncation) parses,
+    # but SQLite cannot store it; it becomes U+FFFD.
+    if isinstance(value, str):
+        return _LONE_SURROGATE.sub("�", value)
+    if isinstance(value, list):
+        return [_well_formed(item) for item in value]
+    if isinstance(value, dict):
+        return {_well_formed(key): _well_formed(item) for key, item in value.items()}
+    return value
+
+
 def _json_loads(text: str):
     # NaN, Infinity and overflowing numbers (1e309) parse in Python but cannot be served back as JSON; read them as null.
-    return json.loads(text, parse_constant = lambda _constant: None, parse_float = _finite)
+    return _well_formed(
+        json.loads(text, parse_constant = lambda _constant: None, parse_float = _finite)
+    )
 
 
 @dataclass
@@ -433,6 +453,16 @@ def normalize_card(card: dict) -> dict[str, Any]:
                 "This is a website's API response, not a character card. Download the card's PNG instead."
             )
         raise CardError("The card has no name.")
+    # Without a spec, any JSON with a name (an app's preset, for one) would import as an empty character.
+    if (
+        data is card
+        and not any(_text(card.get(key)).strip() for key in _CARD_TEXT_KEYS)
+        and not card.get("alternate_greetings")
+        and not isinstance(card.get("character_book"), dict)
+    ):
+        raise CardError(
+            "This file is not a character card: it has a name but no description, personality, scenario or greeting."
+        )
     extensions = data.get("extensions") if isinstance(data.get("extensions"), dict) else {}
     talkativeness = extensions.get("talkativeness", card.get("talkativeness", 0.5))
     try:

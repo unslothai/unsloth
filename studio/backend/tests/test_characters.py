@@ -182,6 +182,11 @@ def test_reads_a_charx_archive_with_its_icon():
         (b"not a card", "not a PNG"),
         (_png(), "no character card"),
         (json.dumps({"description": "nameless"}).encode(), "no name"),
+        # An app's preset has a name and nothing a card holds.
+        (
+            json.dumps({"name": "ChatML", "story_string": "{{system}}"}).encode(),
+            "not a character card",
+        ),
     ],
 )
 def test_rejects_files_that_are_not_cards(data, message):
@@ -552,7 +557,9 @@ def test_export_survives_a_damaged_portrait():
 def test_a_non_finite_card_imports_and_the_library_still_lists(client, value):
     response = client.post(
         "/api/characters/import?filename=nan.json",
-        content = b'{"name": "Nan", "extensions": {"x": ' + value + b', "y": 1.5}}',
+        content = b'{"name": "Nan", "description": "d", "extensions": {"x": '
+        + value
+        + b', "y": 1.5}}',
     )
     assert response.status_code == 201
     assert response.json()["character"]["extensions"] == {"x": None, "y": 1.5}
@@ -847,3 +854,23 @@ def test_an_existing_studio_db_gains_the_character_tables_and_keeps_its_chats(cl
         client.post("/api/characters/chats", json = {"characterIds": [again["id"]]}).status_code
         == 201
     )
+
+
+def test_a_card_with_half_an_emoji_imports_and_lists(client):
+    # A site's truncation can cut a surrogate pair; JSON parsers accept the lone half, SQLite does not.
+    card = b'{"name": "Kuro", "description": "d", "creator_notes": "Bold \\ud835"}'
+    response = client.post("/api/characters/import?filename=kuro.json", content = card)
+    assert response.status_code == 201
+    assert response.json()["character"]["creatorNotes"] == "Bold \ufffd"
+    assert client.get("/api/characters").status_code == 200
+
+
+def test_a_phone_jpeg_with_extra_pictures_is_a_portrait(client):
+    # Many phone cameras write MPF data into their JPEGs; Pillow opens those as MPO.
+    buffer = io.BytesIO()
+    Image.new("RGB", (40, 60), (200, 30, 30)).save(
+        buffer, format = "MPO", save_all = True, append_images = [Image.new("RGB", (20, 30))]
+    )
+    created = client.post("/api/characters", json = {"name": "Rowan"}).json()
+    response = client.put(f"/api/characters/{created['id']}/avatar", content = buffer.getvalue())
+    assert response.status_code == 200 and response.json()["avatarType"] == "image/jpeg"
