@@ -51,7 +51,6 @@ def caches(monkeypatch, tmp_path):
     monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: roots["legacy"])
     monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: roots["default"])
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: list(folders))
-    # Every test registers its folders before the first lookup, so only a memo from an earlier test can be stale.
     _forget_custom_folder_memos(monkeypatch)
     stt_mtmd_sidecar._forget_downloaded_probe()
     yield {"active": active, "known": known, "folders": folders, **roots}
@@ -199,7 +198,6 @@ def test_whisper_engines_find_moved_cache_trees(caches, monkeypatch, tmp_path):
     )
     assert stt_sidecar.is_model_downloaded("tiny") is False
     caches["known"].append(previous)
-    # A Models folder change reaches the location list within its 2 s memo; the test does not wait for it.
     _forget_custom_folder_memos(monkeypatch)
     assert stt_sidecar._find_complete_cached_snapshot("tiny") == snapshot.resolve()
 
@@ -470,7 +468,6 @@ def test_one_accounts_custom_folder_is_not_anothers(monkeypatch, tmp_path):
     run_as(alice, studio_db.add_scan_folder, str(folder))
     try:
         assert run_as(alice, stt_mtmd_sidecar.is_model_downloaded, _MODEL_ID) is True
-        # Both memos are warm for alice now; bob must not read them.
         assert run_as(bob, stt_mtmd_sidecar.is_model_downloaded, _MODEL_ID) is False
         assert run_as(bob, stt_mtmd_sidecar._cached_model_paths, _MODEL_ID) is None
     finally:
@@ -546,7 +543,6 @@ def test_upsampler_moved_into_a_custom_folder_is_found(upsampler, tmp_path):
     assert pup.mmproj_path() == str(snapshot / pup.UPSAMPLER_MMPROJ_FILE)
     status = pup.status()
     assert status["downloaded"] is True and status["current_downloaded"] is True
-    # The download's own check reads only the cache it wrote.
     assert (
         pup._cached_download_paths(pup.UPSAMPLER_ID, hub_cache = upsampler["active"], revision = _SHA)
         is None
@@ -612,7 +608,6 @@ def test_segmenter_moved_into_a_custom_folder_is_found(segmenter, tmp_path):
     snapshot = _segmenter_tree(tmp_path / "custom", diffusion_segment.DEFAULT_VARIANT)
     _register(segmenter, tmp_path / "custom")
     assert diffusion_segment.model_dir() == str(snapshot)
-    # The download's own check reads only the cache it wrote.
     assert (
         diffusion_segment._cached_download_paths(
             diffusion_segment.DEFAULT_VARIANT, hub_cache = segmenter["active"], revision = _SHA

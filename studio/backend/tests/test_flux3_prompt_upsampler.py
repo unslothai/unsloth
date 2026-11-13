@@ -1692,7 +1692,6 @@ def test_no_repo_download_beside_an_override(routes, monkeypatch):
     client, backend, saved = routes
     started = []
     monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, "/models/pup.gguf")
-    # The route answers from the override alone; a full status read would search every cache on the event loop.
     monkeypatch.setattr(pup, "status", lambda: pytest.fail("status() read on the download route"))
     monkeypatch.setattr(pup, "start_download", lambda token: started.append(token) or "dl")
     r = client.post("/api/inference/images/prompt-upsampler/download")

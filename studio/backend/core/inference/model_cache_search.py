@@ -18,7 +18,6 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-# One status poll runs a dozen lookups; listings are reused briefly, per account (custom folders are per account).
 _LOCATION_TTL_SECONDS = 2.0
 _location_lock = threading.Lock()
 # (row key, path, recursive, kind): kind "cache" is a Hub cache root, "folder" a custom folder.
@@ -143,8 +142,7 @@ def _build_custom_folder_listing(path: Path, recursive: bool) -> LocationListing
             )
         # Loose files one level down: the Model Hub lists a sub-folder holding a GGUF as a model.
         note_subdir_files(subdirs(entries))
-    # <publisher>/<model>/ under the folder itself, which the Model Hub's LM Studio scan lists even when not recursive;
-    # bounded like that scan, by one entry budget over the folder and its publisher folders.
+    # <publisher>/<model>/: the Model Hub's LM Studio scan lists it even when not recursive, under one entry budget.
     budget = _MAX_CUSTOM_FOLDER_ENTRIES - len(root_entries)
     for publisher in subdirs(root_entries):
         if budget <= 0:
