@@ -17,6 +17,7 @@ import {
   composerDraftKey,
   latestDraft,
   publishDraft,
+  tryAdoptServerActiveModel,
   useChatPreferencesStore,
   useChatRuntimeStore,
   writeComposerDraft,
@@ -133,6 +134,10 @@ export function TranslatePage() {
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+  // Chat adopts the server's loaded model; a direct visit or reload here never mounts Chat.
+  useEffect(() => {
+    void tryAdoptServerActiveModel();
+  }, []);
 
   const systemPrompt = useMemo(
     () => buildTranslateSystemPrompt({ source, target, mode, tone }),

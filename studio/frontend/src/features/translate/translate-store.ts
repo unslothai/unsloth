@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import {
   type TranslateLanguageCode,
   type TranslateMode,
@@ -106,3 +107,6 @@ export const useTranslateStore = create<TranslateState>()(
     },
   ),
 );
+
+// persist writes the whole snapshot, so a window holding stale history would drop another's entries.
+syncAcrossWindows(useTranslateStore);
