@@ -428,7 +428,7 @@ function csvToConversations(csvText: string, basename: string): ParsedConversati
   let chatKey: string | undefined;
   for (const row of rows) {
     if (row.length < 4) continue;
-    if (chats.length === 0 || row[0] !== chatKey) {
+    if (row[0] !== chatKey) {
       chatKey = row[0];
       chats.push({ title: row[1]?.trim() || `${basename} ${chats.length + 1}`, rows: [] });
     }
