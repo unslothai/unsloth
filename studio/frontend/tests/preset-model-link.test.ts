@@ -634,6 +634,30 @@ test("leaving a link replays the destination's window, not the earlier budget", 
   }
 });
 
+test("a chat edit just before switching onto a link is saved as typed", async () => {
+  const store = useChatRuntimeStore.getState();
+  const saved = store.customPresets;
+  store.setCustomPresets(
+    saved.map((p) => (p.name === "Research" ? { ...p, params: { ...p.params, topK: 20 } } : p)),
+  );
+  await switchTo(LLAMA);
+  store.setActiveThreadId("chat-k");
+  store.applyThreadScopedSettings("chat-k", { temperature: 0.4 });
+  try {
+    const s = useChatRuntimeStore.getState();
+    s.setParams({ ...s.params, topK: 19 });
+    await switchTo(QWEN);
+    assert.equal(useChatRuntimeStore.getState().params.topK, 20);
+    await settled();
+    await switchTo(LLAMA);
+    assert.equal(useChatRuntimeStore.getState().params.topK, 19);
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+    store.setCustomPresets(saved);
+  }
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);

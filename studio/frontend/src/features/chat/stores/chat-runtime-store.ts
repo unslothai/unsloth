@@ -6744,6 +6744,7 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
         params: getPresetOwnedParams(withoutActiveThreadParams(state, state.params)),
       };
     }
+    freezePendingChatWrite(shown);
     recommendationMergedFor = null;
     state.setParams(linkedParams(state.params, preset), { persist: false });
     // Preset-backed, like a pick: a later edit files only itself into the model's memory.
@@ -6755,20 +6756,7 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
     linkShown = preset.name;
     return;
   }
-  // A chat write still waiting on its debounce would read the link's values once it is gone.
-  const outgoingPreset = shown
-    ? (state.customPresets.find((saved) => saved.name === linkShown) ?? null)
-    : null;
-  if (
-    outgoingPreset &&
-    threadSettingsWriteThreadId !== null &&
-    threadSettingsWriteThreadId === threadScopedSettingsThreadId &&
-    threadSettingsWriteSnapshot === null
-  ) {
-    const pending = readThreadScopedSettings(state);
-    withoutLinkOverlay(pending, outgoingPreset);
-    threadSettingsWriteSnapshot = pending;
-  }
+  freezePendingChatWrite(shown);
   const before = pickBeforeLink;
   linkShown = null;
   pickBeforeLink = null;
@@ -6834,6 +6822,27 @@ function withLinkOverlay(params: InferenceParams): InferenceParams {
     ),
   );
   return { ...params, ...kept };
+}
+
+/** A chat write still waiting on its debounce reads live values when it fires: take them now,
+ *  before a link changes them, and without a link that is going away. */
+function freezePendingChatWrite(shown: boolean): void {
+  if (
+    threadSettingsWriteThreadId === null ||
+    threadSettingsWriteThreadId !== threadScopedSettingsThreadId ||
+    threadSettingsWriteSnapshot !== null
+  ) {
+    return;
+  }
+  const state = useChatRuntimeStore.getState();
+  const pending = readThreadScopedSettings(state);
+  if (shown) {
+    withoutLinkOverlay(
+      pending,
+      state.customPresets.find((saved) => saved.name === linkShown) ?? null,
+    );
+  }
+  threadSettingsWriteSnapshot = pending;
 }
 
 /** A chat snapshot takes the open chat's own value, not the link's, for every key the user left
