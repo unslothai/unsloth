@@ -691,10 +691,16 @@ def detect_multimodal_dataset(dataset):
 
     detected_text_col = None
     if audio_columns:
-        text_keywords = ["text", "sentence", "transcript", "transcription", "label"]
-        for col_name in column_names:
-            if col_name.lower() in text_keywords:
-                detected_text_col = col_name
+        # Two passes so a real "transcript" beats an instruction-like "prompt".
+        transcript_names = ("text", "sentence", "transcript", "transcription", "label")
+        # TTS sets name the line to speak: SparkTTS "prompt", LJSpeech "normalized_text".
+        fallback_names = ("prompt", "normalized_text")
+        for candidates in (transcript_names, fallback_names):
+            for col_name in column_names:
+                if col_name.lower() in candidates:
+                    detected_text_col = col_name
+                    break
+            if detected_text_col:
                 break
 
     is_audio = len(audio_columns) > 0
