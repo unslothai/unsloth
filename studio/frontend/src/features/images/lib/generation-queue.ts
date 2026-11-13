@@ -18,6 +18,13 @@ export function queueBusy(jobs: readonly ImageQueueJob[]): boolean {
   return jobs.some((job) => job.status === "queued" || job.status === "running");
 }
 
+/** Whether an image picked during a run gives the stage back to the live preview's next run. Only once the page
+ *  knows nothing runs or waits: a fresh mount has not heard from the server yet, and the gap between queued jobs
+ *  is not idle. */
+export function pickReleased(run: { statusKnown: boolean; generating: boolean; queueBusy: boolean }): boolean {
+  return run.statusKnown && !run.generating && !run.queueBusy;
+}
+
 /** Jobs that finished between two polls, including one queued and finished in between. `prev` null is the first
  *  poll (a reload): what already finished then is not news. */
 export function newlyFinished(

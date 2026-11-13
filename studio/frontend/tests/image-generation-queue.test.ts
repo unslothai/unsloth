@@ -7,6 +7,7 @@ import test from "node:test";
 import type { ImageQueueJob } from "../src/features/images/api.ts";
 import {
   newlyFinished,
+  pickReleased,
   promptSnippet,
   queueBusy,
   queuedJobs,
@@ -78,4 +79,16 @@ test("while a render runs the page offers Queue beside Stop, and Generate queues
   // Queue reuses Generate's validation and request, then hands the runs to the server.
   assert.match(page, /if \(toQueue && !compare && !external\) \{[\s\S]*?enqueueDiffusionImage\(requestFor\(i\)\)/);
   assert.match(page, /res = await generateDiffusionImage\(requestFor\(i\), { id: sequenceId, more: i < runTotal - 1 }\);/);
+});
+
+test("an image picked during a run keeps the stage until the page knows nothing runs or waits", () => {
+  const idle = { statusKnown: true, generating: false, queueBusy: false };
+  assert.equal(pickReleased(idle), true);
+  // A fresh mount (opened from the Library) has not heard the run status or the queue yet: not idle.
+  assert.equal(pickReleased({ ...idle, statusKnown: false }), false);
+  assert.equal(pickReleased({ ...idle, generating: true }), false);
+  // Between two queued jobs: nothing is generating, but the queue still runs or waits.
+  assert.equal(pickReleased({ ...idle, queueBusy: queueBusy([job("next", "running")]) }), false);
+  assert.equal(pickReleased({ ...idle, queueBusy: queueBusy([job("done", "done"), job("next", "queued")]) }), false);
+  assert.equal(pickReleased({ ...idle, queueBusy: queueBusy([job("done", "done")]) }), true);
 });

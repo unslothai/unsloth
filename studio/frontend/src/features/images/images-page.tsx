@@ -339,7 +339,7 @@ import {
   unloadDiffusionModel,
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
-import { queuedJobs, runningJob } from "./lib/generation-queue";
+import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
   shouldContinueGenerating,
@@ -2044,6 +2044,8 @@ export function ImagesPage({
   );
   const componentsReconciled = useRef(false);
   const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
+  // The mount probe has asked whether a generation started elsewhere is running.
+  const [generateProbed, setGenerateProbed] = useState(false);
   const reconcileInitialComponents = useCallback(
     (loaded: DiffusionStatus) => {
       if (componentsReconciled.current || initialLoadProbe === "pending") return;
@@ -2125,7 +2127,7 @@ export function ImagesPage({
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   // The user picked an image while a run was in flight: the stage shows it instead of the live preview, and
-  // finished runs do not move the selection. Cleared by the strip's live tile, a new Generate, or going idle.
+  // finished runs do not move the selection. Cleared by the strip's live tile, a new Generate, or `pickReleased`.
   const [pickedDuringRun, setPickedDuringRun] = useState(false);
   const pickedDuringRunRef = useRef(false);
   useEffect(() => {
@@ -2843,20 +2845,19 @@ export function ImagesPage({
     [ensureThumb],
   );
 
+  /** Refetches every loaded strip page, so an image picked past the first page stays loaded and selected. */
+  const refreshLoadedGallery = useCallback(() => {
+    // Bumped FIRST so in-flight reads are discarded.
+    stripEpoch.current += 1;
+    const epoch = stripEpoch.current;
+    void resyncWindow(
+      galleryCache.images.length,
+      () => stripEpoch.current === epoch,
+    ).catch(() => void loadGallery());
+  }, [loadGallery, resyncWindow]);
+
   // This page stays mounted across routes, so an archive restore needs a resync.
-  useEffect(
-    () =>
-      subscribeGalleryChanged("images", () => {
-        // Bumped FIRST so in-flight reads are discarded.
-        stripEpoch.current += 1;
-        const epoch = stripEpoch.current;
-        void resyncWindow(
-          galleryCache.images.length,
-          () => stripEpoch.current === epoch,
-        ).catch(() => void loadGallery());
-      }),
-    [loadGallery, resyncWindow],
-  );
+  useEffect(() => subscribeGalleryChanged("images", refreshLoadedGallery), [refreshLoadedGallery]);
 
   const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
@@ -3653,7 +3654,7 @@ export function ImagesPage({
           if (!isMounted.current) return;
           setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
-          void loadGallery();
+          refreshLoadedGallery();
           void refreshStatus();
           return;
         }
@@ -3672,14 +3673,10 @@ export function ImagesPage({
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
-  }, [loadGallery, refreshStatus]);
+  }, [refreshLoadedGallery, refreshStatus]);
 
   const imageQueue = useImageQueue(active, (finished) => {
-    if (finished.some((job) => job.status === "done")) {
-      // Fences an earlier refresh still in flight, so it refetches instead of landing after this one.
-      stripEpoch.current += 1;
-      void loadGallery();
-    }
+    if (finished.some((job) => job.status === "done")) refreshLoadedGallery();
     let latest: ImageQueueJob | null = null;
     for (const job of finished) {
       if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
@@ -3695,8 +3692,16 @@ export function ImagesPage({
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
-  // Cleared only once nothing runs or waits: the gap between queued jobs must not hand the stage back.
-  if (pickedDuringRun && busy !== "generating" && !queueRunningId && !queueWaiting) setPickedDuringRun(false);
+  if (
+    pickedDuringRun &&
+    pickReleased({
+      statusKnown: generateProbed && imageQueue.polled,
+      generating: busy === "generating",
+      queueBusy: queueBusy(imageQueue.jobs),
+    })
+  ) {
+    setPickedDuringRun(false);
+  }
   useEffect(() => {
     if (busy !== null) return;
     followingJob.current = null;
@@ -3776,6 +3781,7 @@ export function ImagesPage({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      setGenerateProbed(true);
     })();
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);

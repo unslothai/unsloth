@@ -96,14 +96,16 @@ test("an image picked during a run takes the stage from the live preview until t
   const liveTile = between(page, 'data-testid="images-live-tile"', "</button>");
   assert.ok(liveTile.includes("onClick={() => setPickedDuringRun(false)}"));
   assert.ok(page.includes("localRun.current = true;\n    setPickedDuringRun(false);"));
-  // Held while a queued job runs or waits, so the gap between jobs does not hand the stage back.
-  assert.ok(
-    page.includes(
-      'if (pickedDuringRun && busy !== "generating" && !queueRunningId && !queueWaiting) setPickedDuringRun(false);',
-    ),
+  // Released only on a known idle state: the mount probe and the first queue poll must both have answered.
+  assert.match(
+    page,
+    /pickedDuringRun &&\s*pickReleased\(\{\s*statusKnown: generateProbed && imageQueue\.polled,\s*generating: busy === "generating",\s*queueBusy: queueBusy\(imageQueue\.jobs\),/,
   );
   // A finished direct run does not move a picked selection to its new image.
   assert.ok(page.includes("if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);"));
+  // Post-run refreshes keep every loaded strip page, so a pick past the first page is not dropped.
+  assert.ok(page.includes('if (finished.some((job) => job.status === "done")) refreshLoadedGallery();'));
+  assert.match(page, /setGenStep\(null\);\s*refreshLoadedGallery\(\);\s*void refreshStatus\(\);/);
   // The strip highlights whichever image the stage shows, so no tile is marked while the live preview has it.
   assert.ok(page.includes("selected={!stagePreviewSrc && image.id === selected?.id}"));
 });
