@@ -254,3 +254,22 @@ def test_cublas_without_cublaslt_still_installs(tmp_path, monkeypatch):
     install.mkdir()
     _install(install, "app-b1-windows-x64-cuda13-newer.zip", "windows-cuda")
     assert ip._missing_cuda_runtime_wheels(install) == ("nvidia-cuda-runtime", "nvidia-cublas")
+
+
+def test_uv_off_path_is_still_used(tmp_path, monkeypatch):
+    # A Desktop-started backend can lack uv's dir on PATH, and the uv-made venv has no pip.
+    name = "uv.exe" if ip.os.name == "nt" else "uv"
+    uv = tmp_path / ".local" / "bin" / name
+    uv.parent.mkdir(parents = True)
+    uv.write_text("")
+    uv.chmod(0o755)
+    monkeypatch.setattr(ip.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(ip.Path, "home", classmethod(lambda cls: tmp_path))
+    calls = []
+    monkeypatch.setattr(
+        ip.subprocess,
+        "run",
+        lambda cmd, **kw: calls.append(cmd) or ip.subprocess.CompletedProcess(cmd, 0),
+    )
+    assert ip._install_cuda_runtime_wheels(("nvidia-cuda-runtime",))
+    assert calls[0][:3] == [str(uv), "pip", "install"]

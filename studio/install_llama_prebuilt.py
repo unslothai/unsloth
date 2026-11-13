@@ -11555,9 +11555,28 @@ def _missing_cuda_runtime_wheels(install_dir: Path) -> tuple[str, ...]:
     return wheels
 
 
+def _uv_for_wheels() -> str | None:
+    """uv on PATH, else where install.sh / install.ps1 put it: a Desktop launch can start with a
+    minimal PATH, and the uv-made venv has no pip to fall back on (as utils.mlx_repair)."""
+    found = shutil.which("uv")
+    if found:
+        return found
+    name = "uv.exe" if os.name == "nt" else "uv"
+    for candidate in (
+        Path.home() / ".local" / "bin" / name,
+        Path.home() / ".cargo" / "bin" / name,
+    ):
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
 def _install_cuda_runtime_wheels(wheels: tuple[str, ...]) -> bool:
     """Installs these wheels into this env; False when the install failed."""
-    uv = shutil.which("uv")
+    uv = _uv_for_wheels()
     cmd = (
         [uv, "pip", "install", "--python", sys.executable]
         if uv
