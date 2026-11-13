@@ -209,7 +209,7 @@ class RawTextDataLoader:
 
                 chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
-                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
+                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = False)
                 if is_last:
                     chunk_text += eos_token
 
