@@ -5226,6 +5226,12 @@ export const ptBR = {
       openFileFailed: "Não foi possível abrir o arquivo",
     },
   },
+  exportTabs: {
+    ariaLabel: "Tipo de exportação",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Converter para Q4NX",
+  },
   exportDecision: {
     title: "Modelo de decisão",
     description: "Modelos de decisão {layout} são exportados para GGUF para o servidor de decisão do llama.cpp. Escolha uma ou mais quantizações.",

@@ -5225,6 +5225,12 @@ export const ru = {
       openFileFailed: "Не удалось открыть файл",
     },
   },
+  exportTabs: {
+    ariaLabel: "Тип экспорта",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Преобразовать в Q4NX",
+  },
   exportDecision: {
     title: "Модель принятия решений",
     description: "Модели принятия решений {layout} экспортируются в GGUF для сервера решений llama.cpp. Выберите одну или несколько квантизаций.",

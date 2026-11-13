@@ -5326,6 +5326,12 @@ export const th = {
       openFileFailed: "ไม่สามารถเปิดไฟล์ได้",
     },
   },
+  exportTabs: {
+    ariaLabel: "ประเภทการส่งออก",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "แปลงเป็น Q4NX",
+  },
   exportDecision: {
     title: "โมเดลการตัดสินใจ",
     description:

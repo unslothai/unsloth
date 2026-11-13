@@ -5235,6 +5235,12 @@ export const en = {
       openFileFailed: "Could not open the file",
     },
   },
+  exportTabs: {
+    ariaLabel: "Export type",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Convert to Q4NX",
+  },
   exportDecision: {
     title: "Decision model",
     description: "{layout} decision models export to GGUF for llama.cpp's decision server. Pick one or more quantizations.",

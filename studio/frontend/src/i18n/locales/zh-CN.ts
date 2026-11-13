@@ -5099,6 +5099,12 @@ export const zhCN = {
       openFileFailed: "无法打开文件",
     },
   },
+  exportTabs: {
+    ariaLabel: "导出类型",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "转换为 Q4NX",
+  },
   exportDecision: {
     title: "决策模型",
     description: "{layout} 决策模型会导出为 GGUF，供 llama.cpp 决策服务器使用。请选择一个或多个量化级别。",

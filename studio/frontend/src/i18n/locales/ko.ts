@@ -5188,6 +5188,12 @@ export const ko = {
       openFileFailed: "파일을 열 수 없습니다",
     },
   },
+  exportTabs: {
+    ariaLabel: "내보내기 유형",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Q4NX로 변환",
+  },
   exportDecision: {
     title: "의사결정 모델",
     description: "{layout} 의사결정 모델은 llama.cpp 의사결정 서버용 GGUF로 내보냅니다. 양자화를 하나 이상 선택하세요.",

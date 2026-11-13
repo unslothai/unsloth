@@ -5637,6 +5637,12 @@ export const pl = {
       openFileFailed: "Nie udało się otworzyć pliku",
     },
   },
+  exportTabs: {
+    ariaLabel: "Typ eksportu",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Konwertuj do Q4NX",
+  },
   exportDecision: {
     title: "Model decyzyjny",
     description:

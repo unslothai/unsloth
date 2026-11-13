@@ -5148,6 +5148,12 @@ export const ja = {
       openFileFailed: "ファイルを開けませんでした",
     },
   },
+  exportTabs: {
+    ariaLabel: "エクスポートの種類",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Q4NX に変換",
+  },
   exportDecision: {
     title: "意思決定モデル",
     description: "{layout} 意思決定モデルは llama.cpp の意思決定サーバー向けに GGUF へエクスポートされます。量子化を 1 つ以上選択してください。",

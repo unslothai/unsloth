@@ -5283,6 +5283,12 @@ export const zhTW = {
       openFileFailed: "無法開啟檔案",
     },
   },
+  exportTabs: {
+    ariaLabel: "匯出類型",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "轉換為 Q4NX",
+  },
   exportDecision: {
     title: "決策模型",
     description:

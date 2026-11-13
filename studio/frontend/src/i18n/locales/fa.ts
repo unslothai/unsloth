@@ -5555,6 +5555,12 @@ export const fa = {
       openFileFailed: "باز کردن فایل ممکن نشد",
     },
   },
+  exportTabs: {
+    ariaLabel: "نوع خروجی",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "تبدیل به Q4NX",
+  },
   exportDecision: {
     title: "مدل تصمیم‌گیری",
     description:

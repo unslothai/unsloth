@@ -5197,6 +5197,12 @@ export const ar = {
       openFileFailed: "تعذّر فتح الملف",
     },
   },
+  exportTabs: {
+    ariaLabel: "نوع التصدير",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "التحويل إلى Q4NX",
+  },
   exportDecision: {
     title: "نموذج القرار",
     description: "تُصدَّر نماذج القرار {layout} إلى GGUF لخادم القرار في llama.cpp. اختر مستوى تكميم واحدًا أو أكثر.",

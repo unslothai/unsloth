@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -76,7 +77,12 @@ import {
   fetchCheckpointExportProbe,
   fetchMoeInfo,
 } from "./api/export-api";
-import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
+import {
+  adapterCompatibilityTip,
+  type AdapterFormat,
+  type ExportTab,
+  resolveExportTab,
+} from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
 import {
   ExportSummaryCard,
@@ -353,6 +359,17 @@ export function ExportPage() {
   const { run: preselectRun, imageLora: preselectImageLora } = useSearch({
     from: "/export",
   });
+  const [exportTab, setExportTab] = useState<ExportTab>(() =>
+    preselectImageLora ? "diffusion-lora" : "llm",
+  );
+  const activeTab = resolveExportTab(exportTab, hasNpu);
+  useEffect(() => {
+    if (preselectImageLora) setExportTab("diffusion-lora");
+  }, [preselectImageLora]);
+  // The tour only walks the LLM flow.
+  useEffect(() => {
+    if (tour.open) setExportTab("llm");
+  }, [tour.open]);
   const appliedRunRef = useRef<string | null>(null);
   useEffect(() => {
     if (!preselectRun) {
@@ -1152,33 +1169,62 @@ export function ExportPage() {
             Export
           </h1>
           <p className="text-sm text-muted-foreground">
-            Export fine-tuned or base models for deployment
+            Export models and adapters for deployment, or convert GGUFs for AMD
+            NPUs
           </p>
         </header>
 
-        {loadingCheckpoints && (
+        <Tabs
+          value={activeTab}
+          onValueChange={(next) => setExportTab(next as ExportTab)}
+          className="-mt-3"
+        >
+          <TabsList aria-label={t("exportTabs.ariaLabel")}>
+            <TabsTrigger value="llm" className="px-3">
+              {t("exportTabs.llm")}
+            </TabsTrigger>
+            <TabsTrigger value="diffusion-lora" className="px-3">
+              {t("exportTabs.diffusionLora")}
+            </TabsTrigger>
+            {hasNpu && (
+              <TabsTrigger value="q4nx" className="px-3">
+                {t("exportTabs.q4nx")}
+              </TabsTrigger>
+            )}
+          </TabsList>
+        </Tabs>
+
+        {/* Hidden rather than unmounted so a running export keeps its state across tabs. */}
+        <div className={cn(activeTab !== "diffusion-lora" && "hidden")}>
+          <ImageLoraExportCard preselect={preselectImageLora} />
+        </div>
+        {hasNpu && (
+          <div className={cn(activeTab !== "q4nx" && "hidden")}>
+            <Q4nxConvertCard />
+          </div>
+        )}
+
+        {activeTab === "llm" && loadingCheckpoints && (
           <div className="flex items-center gap-3 rounded-2xl border border-border/60 p-8 text-sm text-muted-foreground">
             <Spinner className="size-4 shrink-0" />
             Loading checkpoints…
           </div>
         )}
 
-        {checkpointError && (
+        {activeTab === "llm" && checkpointError && (
           <div className="flex items-center gap-3 rounded-2xl border border-border/60 p-8 text-sm text-destructive">
             <HugeiconsIcon icon={Alert02Icon} className="size-4 shrink-0" />
             {checkpointError}
           </div>
         )}
 
-        {(loadingCheckpoints || !!checkpointError) && (
-          <>
-            <ImageLoraExportCard preselect={preselectImageLora} />
-            {hasNpu && <Q4nxConvertCard />}
-          </>
-        )}
-
         {!loadingCheckpoints && !checkpointError && (
-          <div className="@container/export-configure">
+          <div
+            className={cn(
+              "@container/export-configure",
+              activeTab !== "llm" && "hidden",
+            )}
+          >
             <div className="grid grid-cols-1 gap-8 @4xl/export-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/export-configure:gap-10">
               <div className="flex min-w-0 flex-col gap-6">
                 <SectionBox
@@ -2228,8 +2274,6 @@ export function ExportPage() {
                     />
                   </button>
                 )}
-                <ImageLoraExportCard preselect={preselectImageLora} />
-                {hasNpu && <Q4nxConvertCard />}
               </div>
               <div className="@4xl/export-configure:sticky @4xl/export-configure:top-6 @4xl/export-configure:self-start">
                 <ExportSummaryCard

@@ -5583,6 +5583,12 @@ export const vi = {
       openFileFailed: "Không thể mở tệp",
     },
   },
+  exportTabs: {
+    ariaLabel: "Loại xuất",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Chuyển sang Q4NX",
+  },
   exportDecision: {
     title: "Mô hình quyết định",
     description:

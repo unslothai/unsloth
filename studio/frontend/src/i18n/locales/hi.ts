@@ -5208,6 +5208,12 @@ export const hi = {
       openFileFailed: "फ़ाइल खोली नहीं जा सकी",
     },
   },
+  exportTabs: {
+    ariaLabel: "एक्सपोर्ट प्रकार",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Q4NX में बदलें",
+  },
   exportDecision: {
     title: "निर्णय मॉडल",
     description: "{layout} निर्णय मॉडल llama.cpp के निर्णय सर्वर के लिए GGUF में एक्सपोर्ट होते हैं। एक या अधिक क्वांटाइज़ेशन चुनें।",
