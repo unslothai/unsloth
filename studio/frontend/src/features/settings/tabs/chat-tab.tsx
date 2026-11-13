@@ -31,7 +31,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  ComputerIcon,
+  MousePointer01Icon,
   Download01Icon,
   LayoutTwoColumnIcon,
   LibrariesIcon,
@@ -111,7 +111,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.computerUse",
     icon: (
       <HugeiconsIcon
-        icon={ComputerIcon}
+        icon={MousePointer01Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />

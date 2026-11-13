@@ -26,7 +26,7 @@ import {
   Cancel01Icon,
   CancelCircleIcon,
   CloudIcon,
-  ComputerIcon,
+  MousePointer01Icon,
   ComputerTerminal01Icon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
@@ -312,7 +312,7 @@ const TABS: TabDef[] = [
   {
     id: "computer-use",
     labelKey: "computerUse.settings.title",
-    icon: ComputerIcon,
+    icon: MousePointer01Icon,
   },
   {
     id: "keyboard-shortcuts",
