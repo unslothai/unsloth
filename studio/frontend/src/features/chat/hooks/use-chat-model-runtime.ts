@@ -47,6 +47,7 @@ import {
 } from "../lib/server-wide-reload";
 import {
   type OffloadCounts,
+  expertSpillNote,
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
@@ -3441,6 +3442,7 @@ export function useChatModelRuntime() {
             cpuFallbackReason,
             mmprojFallbackReason,
             offloadWarning(offloadCounts),
+            expertSpillNote(offloadCounts),
           );
           const loadedTitle = notice.title;
           const loadedDescription = notice.description;

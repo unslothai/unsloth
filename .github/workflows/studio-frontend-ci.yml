@@ -41,6 +41,7 @@ on:
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_long_chat_renders.py'
+      - 'tests/studio/playwright_thread_window.py'
       - 'tests/studio/playwright_long_thread_gate.py'
       - 'tests/studio/_css_culprit.py'
       - 'tests/studio/test_css_culprit.py'
@@ -106,6 +107,7 @@ on:
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_long_chat_renders.py'
+      - 'tests/studio/playwright_thread_window.py'
       - 'tests/studio/playwright_long_thread_gate.py'
       - 'tests/studio/_css_culprit.py'
       - 'tests/studio/test_css_culprit.py'
@@ -610,6 +612,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 5
         run: python3 tests/studio/playwright_long_chat_renders.py
+
+      # Structure, not timings: a long thread mounts only the rows near the reader, and scrolling,
+      # jumping, copying and a streamed reply must not show it.
+      - name: Browser check for the windowed thread
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 10
+        run: python3 tests/studio/playwright_thread_window.py
 
       # Render counts, not timings: a search keystroke or a quant probe answer in the model
       # picker's On Device tab must not re-render every row, and the rows must still navigate.

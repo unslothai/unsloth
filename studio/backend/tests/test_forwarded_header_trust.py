@@ -249,6 +249,19 @@ def test_client_ip_ignores_cf_connecting_ip_without_the_managed_tunnel():
     assert client_ip(_request("127.0.0.1")) == "127.0.0.1"
 
 
+@pytest.mark.parametrize(
+    "header",
+    [
+        ("x-forwarded-proto", "https"),
+        ("via", "1.1 proxy"),
+        ("x-forwarded-port", "443"),
+        ("x-forwarded-server", "proxy.example.com"),
+    ],
+)
+def test_client_ip_treats_proxy_hop_headers_as_relayed(header):
+    assert not is_loopback_host(client_ip(_request("127.0.0.1", [header])))
+
+
 def test_client_ip_honours_cf_connecting_ip_through_the_managed_tunnel():
     request = _request(
         "127.0.0.1",
