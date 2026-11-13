@@ -1766,6 +1766,11 @@ def test_rebound_runner_alias_keeps_the_builtin_import_check():
     assert is_high_risk_tool_call("python", {"code": code}) is True
 
 
+def test_self_reproducing_runner_source_asks_instead_of_recursing():
+    code = "import timeit;s='import timeit;s={0!r};timeit.timeit(s.format(s))';timeit.timeit(s.format(s))"
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
 def test_repeated_timeit_bindings_are_screened_linearly():
     code = (
         "import timeit\n"

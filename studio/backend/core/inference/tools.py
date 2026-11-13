@@ -8305,6 +8305,23 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     return False
 
 
+_RUNNER_SOURCES_ACTIVE: "contextvars.ContextVar[tuple[str, ...]]" = contextvars.ContextVar(
+    "_RUNNER_SOURCES_ACTIVE", default = ()
+)
+
+
+def _runner_source_is_high_risk(source: str) -> bool:
+    # Folded sources can reproduce their caller (s.format(s)): a cycle or deep nesting asks.
+    active = _RUNNER_SOURCES_ACTIVE.get()
+    if source in active or len(active) >= 8:
+        return True
+    token = _RUNNER_SOURCES_ACTIVE.set((*active, source))
+    try:
+        return _python_is_high_risk(source)
+    finally:
+        _RUNNER_SOURCES_ACTIVE.reset(token)
+
+
 def _python_is_high_risk(code: str) -> bool:
     """Flags code the static checks refuse, credential-path access, or code built to run past them."""
     if not code or not code.strip():
@@ -8713,13 +8730,15 @@ def _python_is_high_risk(code: str) -> bool:
             parts = list(dict.fromkeys(parts))
             if len(parts) > 1:
                 parts.append("\n".join(parts))
-            if any(_python_is_high_risk(part) for part in parts):
+            if any(_runner_source_is_high_risk(part) for part in parts):
                 return True
         elif runner is not None:
             arg = _runner_arg(node, 0, _PY_CODE_RUNNER_SOURCE_KWARGS)
             if arg is not None:
                 sources, unresolved = _code_strings(arg)
-                if unresolved or any(_python_is_high_risk(src) for src in dict.fromkeys(sources)):
+                if unresolved or any(
+                    _runner_source_is_high_risk(src) for src in dict.fromkeys(sources)
+                ):
                     return True
         name = None
         if isinstance(func, ast.Name):
