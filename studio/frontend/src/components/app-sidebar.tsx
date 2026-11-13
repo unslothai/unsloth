@@ -3767,6 +3767,7 @@ export function AppSidebar() {
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
 
   /** Always through here: a stale switch would delete an unrelated sandbox. */
   function openDeleteDialog(target: DeleteTarget) {
@@ -3796,6 +3797,23 @@ export function AppSidebar() {
         target.kind === "chats" ||
         target.kind === "clearAll") &&
       deleteFilesOnDelete;
+    if (target.kind === "clearAll") {
+      // Stay modal until done: the backend clear is unfiltered, so a chat sent meanwhile would go too.
+      setClearingAll(true);
+      clearSelection();
+      if (activeThreadId !== undefined) {
+        useChatRuntimeStore.getState().setActiveThreadId(null);
+        navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+      }
+      try {
+        await clearAllChatsWithToast({ deleteFiles: shouldDeleteChatFiles });
+      } finally {
+        setClearingAll(false);
+        setConfirmingDelete(null);
+        setDeleteFilesOnDelete(false);
+      }
+      return;
+    }
     setConfirmingDelete(null);
     setDeleteFilesOnDelete(false);
     if (target.kind === "chat") {
@@ -3811,16 +3829,6 @@ export function AppSidebar() {
           deleteFiles: shouldDeleteChatFiles,
         });
       }
-      return;
-    }
-    if (target.kind === "clearAll") {
-      clearSelection();
-      // Leave before the await, like a single delete: the open chat or Compare pair is being cleared.
-      if (activeThreadId !== undefined) {
-        useChatRuntimeStore.getState().setActiveThreadId(null);
-        navigate({ to: "/chat", search: { new: createNavigationNonce() } });
-      }
-      await clearAllChatsWithToast({ deleteFiles: shouldDeleteChatFiles });
       return;
     }
     if (target.kind === "projects") {
@@ -6939,7 +6947,7 @@ export function AppSidebar() {
     <Dialog
       open={confirmingDelete !== null}
       onOpenChange={(open) => {
-        if (!open) {
+        if (!open && !clearingAll) {
           setConfirmingDelete(null);
           setDeleteFilesOnDelete(false);
         }
@@ -7009,6 +7017,7 @@ export function AppSidebar() {
               id="delete-files-on-delete"
               checked={deleteFilesOnDelete}
               onCheckedChange={setDeleteFilesOnDelete}
+              disabled={clearingAll}
               aria-label={t("shell.selection.deleteFilesLabel")}
             />
           </div>
@@ -7017,6 +7026,7 @@ export function AppSidebar() {
           <Button
             type="button"
             variant="ghost"
+            disabled={clearingAll}
             onClick={() => setConfirmingDelete(null)}
           >
             {t("common.cancel")}
@@ -7024,11 +7034,14 @@ export function AppSidebar() {
           <Button
             type="button"
             variant="destructive"
+            disabled={clearingAll}
             onClick={() => void commitDelete()}
           >
-            {deleteTargetHasFiles(confirmingDelete) && deleteFilesOnDelete
-              ? "Delete all"
-              : t("common.delete")}
+            {clearingAll
+              ? t("settings.chat.clearingAction")
+              : deleteTargetHasFiles(confirmingDelete) && deleteFilesOnDelete
+                ? "Delete all"
+                : t("common.delete")}
           </Button>
         </DialogFooter>
       </DialogContent>

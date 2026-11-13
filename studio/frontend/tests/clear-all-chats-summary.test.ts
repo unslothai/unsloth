@@ -55,6 +55,10 @@ test("the Recents menu and Settings share one clear-and-report path", () => {
   // The open chat (or Compare pair id) is left before the clear can yield.
   assert.ok(branch.indexOf("navigate(") < branch.indexOf("await clearAllChatsWithToast({ deleteFiles: shouldDeleteChatFiles })"));
   assert.ok(branch.indexOf("navigate(") > 0);
+  // The dialog stays open and busy until the clear settles, so nothing can be sent into it.
+  assert.ok(branch.indexOf("setClearingAll(true)") < branch.indexOf("await clearAllChatsWithToast"));
+  assert.match(branch, /finally \{\s*setClearingAll\(false\);\s*setConfirmingDelete\(null\);/);
+  assert.match(sidebar, /if \(!open && !clearingAll\)/);
   const dataTab = readSrc("features/settings/tabs/data-tab.tsx");
   assert.match(dataTab, /clearAllChatsWithToast\(/);
   const wrapper = readSrc("features/chat/utils/clear-all-chats-toast.ts");
