@@ -514,7 +514,7 @@ def _read_pth_files(entries):
                         line
                         and not line.startswith("#")
                         and path not in sys.path + added
-                        and os.path.isdir(path)
+                        and os.path.exists(path)
                     ):
                         added.append(path)
             except Exception:  # noqa: BLE001
@@ -563,14 +563,29 @@ class _SessionPackagesFinder:
         if path is None:
             return None
         parent = getattr(sys.modules.get(name.rpartition(".")[0]), "__spec__", None)
-        namespace = parent is not None and (
-            parent.origin in (None, "namespace") or _HostPackagesFinder._extends_path(parent.origin)
-        )
-        if namespace and hasattr(path, "append"):
-            for entry in self._entries:
-                portion = os.path.join(entry, *parent.name.split("."))
-                if portion not in list(path) and os.path.isdir(portion):
-                    path.append(portion)
+        if parent is None or not hasattr(path, "append"):
+            return None
+        # Only a package the chat installed into: parsing every parent __init__ would tax all imports.
+        portions = [
+            p
+            for p in (os.path.join(e, *parent.name.split(".")) for e in self._entries)
+            if p not in list(path) and os.path.isdir(p)
+        ]
+        if not portions:
+            return None
+        if parent.origin not in (None, "namespace"):
+            if "ast" not in sys.modules:
+                # _extends_path imports ast: the stdlib one, never a chat-planted copy.
+                saved = sys.path[:]
+                sys.path[:] = [e for e in saved if e not in self._entries]
+                try:
+                    import ast  # noqa: F401
+                finally:
+                    sys.path[:] = saved
+            if not _HostPackagesFinder._extends_path(parent.origin):
+                return None
+        for portion in portions:
+            path.append(portion)
         return None
 
 

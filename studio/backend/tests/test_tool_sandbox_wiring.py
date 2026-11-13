@@ -9,6 +9,7 @@ import ast
 import errno
 import importlib
 import inspect
+import io
 import os
 import shutil
 import socket
@@ -768,6 +769,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "pip_user_off",
         "isolated",
         "pip_python",
+        "pth_zip",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -778,6 +780,12 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
     workdir.mkdir()
     packages = str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
     files = {f"{name}.py": ""}
+    if case == "pth_zip":
+        # A .pth line naming a zip archive, which zipimport serves like site.addpackage would.
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as inner:
+            inner.writestr(f"{name}.py", "")
+        files = {f"{name}.pth": f"{name}.zip\n", f"{name}.zip": archive.getvalue()}
     if case == "editable":
         (workdir / "src").mkdir()
         (workdir / "src" / f"{name}.py").write_text("")
@@ -792,6 +800,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "pip_user_off": f"PIP_USER=0 {_PIP} {wheel} && {show}",
         # --isolated ignores PIP_TARGET, so it chooses nothing here.
         "isolated": f"PIP_TARGET=vendor python -m pip --isolated install -q --no-index --no-deps {wheel} && {show}",
+        "pth_zip": f"{_PIP} {wheel} && {show}",
         "pip_python": f"python -m venv venv && python -m pip --isolated --python venv/bin/python install -q "
         f"--no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
         "editable": f"{_PIP} {wheel} && {show}",
@@ -822,6 +831,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "env_target": str(workdir / "vendor"),
         "pip_user_off": packages,
         "isolated": packages,
+        "pth_zip": packages,
         "pip_python": str(workdir / "venv"),
         "same_process": packages,
         "editable": str(workdir / "src"),
@@ -947,25 +957,26 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
-def test_an_editable_finder_never_loads_a_chat_planted_stdlib_module(monkeypatch, tmp_path):
-    """Building an editable finder imports its helpers from the stdlib, not from the tool-writable chat folder."""
+@pytest.mark.parametrize("editable", [True, False])
+def test_the_shim_never_loads_a_chat_planted_stdlib_module(monkeypatch, tmp_path, editable):
+    """The shim's helpers come from the stdlib, not the tool-writable chat folder, with or without an editable."""
     workdir = tmp_path / "chat"
     workdir.mkdir()
     marker = tmp_path / "planted_ran"
     site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
     site_dir.mkdir(parents = True)
-    finder = "__editable___planted_1_0_finder"
-    (site_dir / f"__editable__.planted-1.0.pth").write_text(
-        f"import {finder}; {finder}.install()\n"
-    )
-    (site_dir / f"{finder}.py").write_text("MAPPING = {}\nNAMESPACES = {}\n")
+    if editable:
+        finder = "__editable___planted_1_0_finder"
+        (site_dir / f"__editable__.planted-1.0.pth").write_text(
+            f"import {finder}; {finder}.install()\n"
+        )
+        (site_dir / f"{finder}.py").write_text("MAPPING = {}\nNAMESPACES = {}\n")
     # What reading the finder data imports; types and pathlib are shadowable on main already.
     for helper in ("sysconfig", "ast"):
         (site_dir / f"{helper}.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
-    out = tools._bash_exec(
-        "python -c 'print(41 + 1)'", None, 60, _SESSION, tool_execution_mode = "software"
-    )
+    command = "python -c 'import collections.abc, xml.dom; print(41 + 1)'"
+    out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
     assert "42" in out, out
     assert not marker.exists()
 
