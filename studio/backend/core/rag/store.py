@@ -926,9 +926,12 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
                 embedding_model,
                 untagged,
             )
-            if len(kept[s]) < k and len(rows) >= fetch and fetch < cap:
-                fetches[s] = min(fetch * 4, cap)
-                widen.append(s)
+            if len(kept[s]) < k and len(rows) >= fetch:
+                if fetch < cap:
+                    fetches[s] = min(fetch * 4, cap)
+                    widen.append(s)
+                else:
+                    kept[s] = _search_compatible_dense(conn, s, query, embedding_model, untagged)
         pending = widen
     out = [hit for s in scopes for hit in kept[s]]
     out.sort(key = lambda t: t[1], reverse = True)
@@ -957,6 +960,29 @@ def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
 # One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
 _ID_BATCH = 900
 
+_COMPATIBLE_CHUNKS = (
+    "NOT EXISTS (SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+    "AND (d.linked_folder_id IS NULL OR EXISTS "
+    "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
+    "AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=? "
+    "OR d.embedding_model=?)"
+)
+
+
+def _search_compatible_dense(conn, scope, query, embedding_model, untagged):
+    rows = conn.execute(
+        "SELECT chunk_id, distance FROM chunks_vec "
+        "WHERE scope=? AND embedding MATCH ? AND k=? AND chunk_id IN ("
+        "SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
+        f"WHERE c.scope=? AND {_COMPATIBLE_CHUNKS}) ORDER BY distance",
+        (scope, query, _MAX_DENSE_FETCH, scope, embedding_model, embedding_model, untagged),
+    ).fetchall()
+    return [
+        (r["chunk_id"], 1.0 - r["distance"])
+        for r in rows
+        if r["distance"] is not None and math.isfinite(r["distance"])
+    ]
+
 
 def _drop_incompatible(
     conn: sqlite3.Connection,
@@ -975,12 +1001,7 @@ def _drop_incompatible(
             r["id"]
             for r in conn.execute(
                 f"SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
-                f"WHERE c.id IN ({placeholders}) AND NOT EXISTS "
-                f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
-                f"AND (d.linked_folder_id IS NULL OR EXISTS "
-                f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
-                f"AND (? IS NULL OR d.embedding_model IS NULL OR d.embedding_model=? "
-                f"OR d.embedding_model=?)",
+                f"WHERE c.id IN ({placeholders}) AND {_COMPATIBLE_CHUNKS}",
                 (*batch, embedding_model, embedding_model, untagged),
             ).fetchall()
         )

@@ -5,7 +5,9 @@
 
 import math
 
-from core.rag import config, embeddings, ingestion, retrieval, store
+import pytest
+
+from core.rag import config, embeddings, ingestion, retrieval, store, vec_cache
 from core.rag.chunking import Chunk
 from storage import rag_db
 
@@ -322,6 +324,30 @@ def test_stale_backend_chunks_do_not_starve_the_current_backend(rag_conn):
     _put(rag_conn, "kb_s", "new", ["alpha bravo"], current)
     hits = store.search_dense(rag_conn, "kb_s", _vector("alpha"), 5, embedding_model = current)
     assert [cid for cid, _ in hits] == ["new:0"]
+
+
+@pytest.mark.parametrize("cache", ["off", "exact", "ann"])
+def test_stale_chunks_cannot_exhaust_the_dense_candidate_limit(rag_conn, monkeypatch, cache):
+    monkeypatch.setenv("RAG_VEC_CACHE", "0" if cache == "off" else "1")
+    monkeypatch.setenv("RAG_VEC_ANN", "1" if cache == "ann" else "0")
+    monkeypatch.setenv("RAG_VEC_ANN_MIN_ROWS", "50")
+    if cache == "ann":
+        pytest.importorskip("usearch")
+        monkeypatch.setattr(vec_cache, "_ANN_MAX_FETCH", 16)
+    stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
+    current = config.embedding_identity("sentence-transformers", MODEL)
+    _put(rag_conn, "kb_limit", "old", ["alpha"] * (4100 if cache == "off" else 64), stale)
+    _put(rag_conn, "kb_limit", "new", ["alpha bravo"], current)
+    _put(rag_conn, "kb_limit", "legacy", ["alpha bravo bravo"], MODEL)
+    _put(rag_conn, "kb_limit", "unknown", ["alpha bravo bravo bravo"], None)
+    _put(rag_conn, "other_scope", "other", ["alpha"], current)
+    query = _vector("alpha")
+    if cache != "off":
+        store.search_dense(rag_conn, "kb_limit", query, 3)
+        assert vec_cache.drain()
+        assert vec_cache._ann if cache == "ann" else vec_cache._entries
+    hits = store.search_dense(rag_conn, "kb_limit", query, 3, embedding_model = current)
+    assert [cid for cid, _ in hits] == ["new:0", "legacy:0", "unknown:0"]
 
 
 def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(rag_conn, monkeypatch):
