@@ -1911,15 +1911,15 @@ export function loadOptionalBool(key: string): boolean | null {
   return raw === "true";
 }
 
-// A tools list makes FastFlowLM build a grammar, which turns NPU speculative decoding off
-// (ROCm/FastFlowLM#1016), so NPU models start with Search and Code off unless the chat or a
-// saved click says otherwise. The captured global defaults are skipped: they echo the GPU default.
-function npuPillPreference(key: "toolsEnabled" | "codeToolsEnabled"): boolean {
-  return (
-    pillOverride(key) ??
-    loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ??
-    false
-  );
+// A tools list costs FastFlowLM its speculative decoding (ROCm/FastFlowLM#1016), so NPU models
+// default Search and Code to a saved click, else off; captured chat defaults echo the GPU default.
+function npuPillDefault(
+  checkpoint: string | null | undefined,
+  key: string,
+): boolean | undefined {
+  if (!isNpuModelId(checkpoint)) return undefined;
+  if (key !== "toolsEnabled" && key !== "codeToolsEnabled") return undefined;
+  return loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ?? false;
 }
 
 export function resolveToolsEnabledOnLoad(
@@ -1937,9 +1937,12 @@ export function resolveToolsEnabledOnLoad(
       deepResearchEnabled: false,
     };
   }
-  const preference = isNpuModelId(checkpoint)
-    ? npuPillPreference
-    : pillPreference;
+  const preference = (key: "toolsEnabled" | "codeToolsEnabled") => {
+    const npuDefault = npuPillDefault(checkpoint, key);
+    return npuDefault === undefined
+      ? pillPreference(key)
+      : (pillOverride(key) ?? npuDefault);
+  };
   return {
     deepResearchEnabled:
       !useChatRuntimeStore.getState().incognito &&
@@ -5112,6 +5115,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
         const value = firstSetThreadScopedValue(
           stored?.[key],
+          npuPillDefault(state.params.checkpoint, key),
           globalThreadScopedDefaults?.[key],
         );
         if (value === undefined) continue;

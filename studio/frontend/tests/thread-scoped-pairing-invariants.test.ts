@@ -619,7 +619,7 @@ test("the in-memory defaults follow the model defaults that were just written", 
   // Not ??: a cleared seed is stored as null and must not fall through to the installation pin.
   assert.match(
     store,
-    /firstSetThreadScopedValue\(\s*stored\?\.\[key\],\s*globalThreadScopedDefaults\?\.\[key\],/,
+    /firstSetThreadScopedValue\(\s*stored\?\.\[key\],\s*(?:npuPillDefault\([^)]*\),\s*)?globalThreadScopedDefaults\?\.\[key\],/,
   );
 });
 
