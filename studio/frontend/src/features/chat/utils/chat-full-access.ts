@@ -34,8 +34,6 @@ interface PermissionState {
   chatFullAccessPreviousMode: BasePermissionMode | null;
 }
 
-/** The app-wide Full access state: no confirmations, no sandbox, and Deep Research off.
- *  Shared by the explicit pick, the restore at startup and server hydration. */
 export function appFullAccessState() {
   return {
     permissionMode: "full" as const,

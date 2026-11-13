@@ -174,7 +174,6 @@ export function sameBrowserAccount(
 /** Login client's hint, set while other accounts exist or Full access is forbidden. */
 export const FULL_ACCESS_HINT_KEY = "unsloth.auth-login-mode.v1";
 
-/** A saved Full access may come back at startup only when no such hint is stored. */
 export function fullAccessRestorable(read: (key: string) => string | null): boolean {
   return read(FULL_ACCESS_HINT_KEY) === null;
 }

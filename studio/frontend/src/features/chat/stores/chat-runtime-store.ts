@@ -1981,8 +1981,7 @@ export function loadSandboxLevel(): SandboxLevel {
   return normalizeSandboxLevel(readStorageValue(CHAT_SANDBOX_LEVEL_KEY));
 }
 
-/** The stored level is ask, auto or off; Full access is a separate flag. First run derives from
- *  the legacy confirm toggle. */
+/** First run derives from the legacy confirm toggle. */
 function loadPermissionMode(): PermissionMode {
   return normalizeStoredPermissionMode(
     readStorageValue(CHAT_PERMISSION_MODE_KEY),
@@ -4406,7 +4405,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   permissionMode: INITIAL_PERMISSION_MODE,
   chatPermissionChoiceVersion: 0,
   chatFullAccessPreviousMode: null,
-  // Full access the owner accepted before: the stored level stays underneath to return to.
   ...(INITIAL_FULL_ACCESS ? appFullAccessState() : null),
   chatFullAccessGrants: {},
   chatFullAccessPendingRunId: null,
