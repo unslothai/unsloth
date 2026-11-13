@@ -983,6 +983,7 @@ export const sv = {
       showLess: "Visa mindre",
       settings: "Inställningar",
       api: "API",
+      apiMonitor: "API-monitor",
       lightMode: "Ljust läge",
       darkMode: "Mörkt läge",
       guidedTour: "Guidad tur",

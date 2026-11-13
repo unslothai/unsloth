@@ -966,6 +966,7 @@ export const he = {
       showLess: "הצג פחות",
       settings: "הגדרות",
       api: "API",
+      apiMonitor: "ניטור API",
       lightMode: "מצב בהיר",
       darkMode: "מצב כהה",
       guidedTour: "סיור מודרך",

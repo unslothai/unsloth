@@ -933,6 +933,7 @@ export const fr = {
       showLess: "Afficher moins",
       settings: "Paramètres",
       api: "API",
+      apiMonitor: "Moniteur API",
       lightMode: "Mode clair",
       darkMode: "Mode sombre",
       guidedTour: "Visite guidée",

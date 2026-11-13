@@ -933,6 +933,7 @@ export const de = {
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
       api: "API",
+      apiMonitor: "API-Monitor",
       lightMode: "Heller Modus",
       darkMode: "Dunkler Modus",
       guidedTour: "Geführte Tour",

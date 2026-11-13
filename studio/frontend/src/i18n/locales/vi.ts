@@ -1032,6 +1032,7 @@ export const vi = {
       showLess: "Ẩn bớt",
       settings: "Cài đặt",
       api: "API",
+      apiMonitor: "Giám sát API",
       lightMode: "Chế độ sáng",
       darkMode: "Chế độ tối",
       guidedTour: "Hướng dẫn tham quan",

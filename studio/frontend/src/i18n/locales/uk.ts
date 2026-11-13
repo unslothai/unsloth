@@ -1038,6 +1038,7 @@ export const uk = {
       showLess: "Показати менше",
       settings: "Налаштування",
       api: "API",
+      apiMonitor: "Монітор API",
       lightMode: "Світлий режим",
       darkMode: "Темний режим",
       guidedTour: "Ознайомлювальний тур",

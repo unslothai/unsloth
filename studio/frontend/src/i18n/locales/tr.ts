@@ -1027,6 +1027,7 @@ export const tr = {
       showLess: "Daha az göster",
       settings: "Ayarlar",
       api: "API",
+      apiMonitor: "API İzleyicisi",
       lightMode: "Açık Mod",
       darkMode: "Koyu Mod",
       guidedTour: "Rehberli Tur",

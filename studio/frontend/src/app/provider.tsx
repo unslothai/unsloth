@@ -57,6 +57,10 @@ import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
+import {
+  getDesktopFullscreen,
+  subscribeDesktopFullscreen,
+} from "@/lib/desktop-fullscreen";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
 import { installDismissClickStreakGuard } from "@/lib/dismiss-click-streak";
 import { useDocumentFlag } from "@/lib/document-flag";
@@ -85,6 +89,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import {
@@ -645,13 +650,29 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-window-control-inset": "138px",
 } as CSSProperties;
 
+// Fullscreen hides the titlebar (it slides back in from the top edge), so content takes its band.
+const CUSTOM_CHROME_FULLSCREEN_STYLE = {
+  ...CUSTOM_CHROME_STYLE,
+  "--studio-custom-titlebar-height": "0px",
+  "--studio-desktop-titlebar-height": "0px",
+  "--studio-startup-top-inset": "8px",
+  "--studio-content-top-inset": "0px",
+  "--studio-non-chat-content-top-inset": "0px",
+  "--studio-non-chat-scroller-top": "0px",
+  "--studio-chat-scroller-top": "0px",
+  "--studio-hidden-route-top-inset": "0px",
+  "--studio-window-control-inset": "0px",
+} as CSSProperties;
+
 // Mirrored onto <html>: overlays portalled into document.body cannot read the wrapper styles.
 function DesktopChromeVarsEffect({
   usesCustomTitlebar,
   usesNativeMacTitlebar,
+  customTitlebarHidden,
 }: {
   usesCustomTitlebar: boolean;
   usesNativeMacTitlebar: boolean;
+  customTitlebarHidden: boolean;
 }) {
   useEffect(() => {
     const el = document.documentElement;
@@ -659,18 +680,22 @@ function DesktopChromeVarsEffect({
       value === null
         ? el.style.removeProperty(name)
         : el.style.setProperty(name, value);
-    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
+    const customTop = customTitlebarHidden ? "0px" : "34px";
+    set("--studio-custom-titlebar-height", usesCustomTitlebar ? customTop : null);
     set(
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "138px" : null);
+    set(
+      "--studio-window-control-inset",
+      usesCustomTitlebar ? (customTitlebarHidden ? "0px" : "138px") : null,
+    );
     // The toaster renders outside the wrapper.
-    set("--studio-content-top-inset", usesCustomTitlebar ? "34px" : null);
+    set("--studio-content-top-inset", usesCustomTitlebar ? customTop : null);
     set(
       "--studio-window-chrome-top",
       usesCustomTitlebar
-        ? "34px"
+        ? customTop
         : usesNativeMacTitlebar
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,
@@ -688,7 +713,7 @@ function DesktopChromeVarsEffect({
       set("--studio-window-chrome-top", null);
       refreshWindowChromeTop();
     };
-  }, [usesCustomTitlebar, usesNativeMacTitlebar]);
+  }, [usesCustomTitlebar, usesNativeMacTitlebar, customTitlebarHidden]);
   return null;
 }
 
@@ -763,6 +788,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [windowRevealRevision, setWindowRevealRevision] = useState(0);
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
   const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
+  const windowFullscreen = useSyncExternalStore(
+    subscribeDesktopFullscreen,
+    getDesktopFullscreen,
+    () => false,
+  );
+  const customTitlebarHidden = usesCustomTitlebar && windowFullscreen;
   const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   useEffect(() => {
@@ -1046,6 +1077,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     <DesktopChromeVarsEffect
       usesCustomTitlebar={usesCustomTitlebar}
       usesNativeMacTitlebar={usesNativeMacTitlebar}
+      customTitlebarHidden={customTitlebarHidden}
     />
   );
 
@@ -1095,10 +1127,15 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   return (
     <div
       className="relative h-dvh min-h-0 overflow-hidden bg-background"
-      style={CUSTOM_CHROME_STYLE}
+      style={
+        customTitlebarHidden ? CUSTOM_CHROME_FULLSCREEN_STYLE : CUSTOM_CHROME_STYLE
+      }
     >
       {chromeVars}
-      <WindowTitlebar showSidebarSurface={showSidebarSurface} />
+      <WindowTitlebar
+        showSidebarSurface={showSidebarSurface}
+        fullscreen={customTitlebarHidden}
+      />
       <div
         className={
           hidesTitlebarSidebar

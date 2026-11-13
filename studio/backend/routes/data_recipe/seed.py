@@ -1149,7 +1149,8 @@ def inspect_seed_dataset(
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
     """Extract text from an uploaded file by extension, to markdown where possible."""
     if ext in {".txt", ".md"}:
-        raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
+        from core.rag import parsers
+        raw = "\n\n".join(page.text for page in parsers.parse(str(file_path)))
     elif ext == ".pdf":
         from core.rag import config, pdf_ocr
         raw = pdf_ocr.extract_text(str(file_path), config.OCR_SCANNED, config.OCR_MAX_PAGES)

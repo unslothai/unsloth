@@ -1044,6 +1044,7 @@ export const nl = {
       showLess: "Minder weergeven",
       settings: "Instellingen",
       api: "API",
+      apiMonitor: "API-monitor",
       lightMode: "Lichte modus",
       darkMode: "Donkere modus",
       guidedTour: "Rondleiding",
