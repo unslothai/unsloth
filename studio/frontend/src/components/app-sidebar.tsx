@@ -3815,16 +3815,12 @@ export function AppSidebar() {
     }
     if (target.kind === "clearAll") {
       clearSelection();
-      const { result } = await clearAllChatsWithToast({
-        deleteFiles: shouldDeleteChatFiles,
-      });
-      if (
-        isChatRoute &&
-        activeThreadId &&
-        result?.deletedThreadIds.includes(activeThreadId)
-      ) {
+      // Leave before the await, like a single delete: the open chat or Compare pair is being cleared.
+      if (activeThreadId !== undefined) {
+        useChatRuntimeStore.getState().setActiveThreadId(null);
         navigate({ to: "/chat", search: { new: createNavigationNonce() } });
       }
+      await clearAllChatsWithToast({ deleteFiles: shouldDeleteChatFiles });
       return;
     }
     if (target.kind === "projects") {

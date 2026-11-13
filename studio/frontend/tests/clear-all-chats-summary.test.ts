@@ -51,7 +51,10 @@ test("named failures report cleared and remaining counts", () => {
 test("the Recents menu and Settings share one clear-and-report path", () => {
   const sidebar = readSrc("components/app-sidebar.tsx");
   assert.match(sidebar, /onSelect=\{\(\) => openDeleteDialog\(\{ kind: "clearAll" \}\)\}/);
-  assert.match(sidebar, /clearAllChatsWithToast\(\{\s*deleteFiles: shouldDeleteChatFiles,/);
+  const branch = sidebar.slice(sidebar.indexOf('if (target.kind === "clearAll")'));
+  // The open chat (or Compare pair id) is left before the clear can yield.
+  assert.ok(branch.indexOf("navigate(") < branch.indexOf("await clearAllChatsWithToast({ deleteFiles: shouldDeleteChatFiles })"));
+  assert.ok(branch.indexOf("navigate(") > 0);
   const dataTab = readSrc("features/settings/tabs/data-tab.tsx");
   assert.match(dataTab, /clearAllChatsWithToast\(/);
   const wrapper = readSrc("features/chat/utils/clear-all-chats-toast.ts");
