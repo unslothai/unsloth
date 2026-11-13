@@ -135,6 +135,8 @@ Turing has no bfloat16; Unsloth falls back to float16 there. These images are CU
 | `UNSLOTH_ALLOW_CPU=1` | Allow starting without a GPU (`latest` already does). Dropped when a GPU is visible, where it would turn off Unsloth's training patches. |
 | `UNSLOTH_STUDIO_SECURE=1` | Serve Unsloth Studio over a Cloudflare HTTPS link only, bound to loopback inside the container so no raw port is published. Fails closed if the tunnel does not come up. |
 | `UNSLOTH_STUDIO_CLOUDFLARE=1` | The same HTTPS link, with the local port still served. Not valid together with `UNSLOTH_STUDIO_SECURE=1`. |
+| `UNSLOTH_STUDIO_SSL_CERTFILE` | Path to Studio's PEM certificate/full chain. Used when `--ssl-certfile` is omitted; the file must exist inside the container. |
+| `UNSLOTH_STUDIO_SSL_KEYFILE` | Path to Studio's PEM private key. Used when `--ssl-keyfile` is omitted; the file must exist inside the container. |
 | `UNSLOTH_JUPYTER_CLOUDFLARE=1` | Publish JupyterLab through a Cloudflare quick tunnel and print the URL. |
 | `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub on start; the copy baked into the image is still used. |
 | `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: nothing is created at `/workspace/unsloth-notebooks` or `/workspace/Unsloth Notebooks`. |

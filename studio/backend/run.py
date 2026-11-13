@@ -2314,7 +2314,9 @@ def run_server(
     when a Tauri-owned backend has a live tunnel. ``emit_tauri_port`` prints the machine-readable
     TAURI_PORT line the desktop app parses; ``run --api-only`` turns it off so it does not pollute
     the URL and API-key banner. ``enable_tools`` of None leaves the default on, honouring a
-    request's own ``enable_tools: false``. ``ssl_certfile`` + ``ssl_keyfile`` serve HTTPS from that pair.
+    request's own ``enable_tools: false``. ``ssl_certfile`` + ``ssl_keyfile`` serve HTTPS from that pair;
+    when either argument is omitted, the corresponding ``UNSLOTH_STUDIO_SSL_*`` environment variable
+    is used.
 
     Signal handlers are NOT registered here, so embedders keep their own interrupt semantics;
     standalone callers register them afterwards.
@@ -3040,12 +3042,15 @@ def _build_arg_parser():
     parser.add_argument(
         "--ssl-certfile",
         default = None,
-        help = "Serve HTTPS with this certificate (PEM, full chain). Needs --ssl-keyfile.",
+        help = (
+            "Serve HTTPS with this certificate (PEM, full chain). Needs --ssl-keyfile; "
+            "if omitted, reads UNSLOTH_STUDIO_SSL_CERTFILE."
+        ),
     )
     parser.add_argument(
         "--ssl-keyfile",
         default = None,
-        help = "Private key (PEM) for --ssl-certfile.",
+        help = "Private key (PEM) for --ssl-certfile; if omitted, reads UNSLOTH_STUDIO_SSL_KEYFILE.",
     )
     return parser
 

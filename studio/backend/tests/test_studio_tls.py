@@ -68,8 +68,16 @@ def _write_pair(tmp_path: Path, name: str = "studio.example.ts.net") -> tuple[Pa
     return crt, key_path
 
 
-def test_no_flags_is_plain_http():
-    from utils.studio_tls import resolve_studio_tls
+def test_no_flags_is_plain_http(monkeypatch):
+    from utils.studio_tls import (
+        STUDIO_SSL_CERTFILE_ENV,
+        STUDIO_SSL_KEYFILE_ENV,
+        resolve_studio_tls,
+    )
+
+    # Keep this invariant even when a developer's shell has Studio TLS configured.
+    monkeypatch.delenv(STUDIO_SSL_CERTFILE_ENV, raising = False)
+    monkeypatch.delenv(STUDIO_SSL_KEYFILE_ENV, raising = False)
     assert resolve_studio_tls(None, None) is None
     assert resolve_studio_tls("", "  ") is None
 
@@ -81,6 +89,55 @@ def test_valid_pair_resolves_to_absolute_paths(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     tls = resolve_studio_tls(crt.name, key.name)
     assert tls.certfile == str(crt) and tls.keyfile == str(key)
+
+
+def test_environment_pair_resolves_when_flags_are_omitted(tmp_path, monkeypatch):
+    from utils.studio_tls import (
+        STUDIO_SSL_CERTFILE_ENV,
+        STUDIO_SSL_KEYFILE_ENV,
+        resolve_studio_tls,
+    )
+
+    crt, key = _write_pair(tmp_path)
+    monkeypatch.setenv(STUDIO_SSL_CERTFILE_ENV, str(crt))
+    monkeypatch.setenv(STUDIO_SSL_KEYFILE_ENV, str(key))
+    tls = resolve_studio_tls(None, None)
+    assert tls is not None
+    assert tls.certfile == str(crt) and tls.keyfile == str(key)
+
+
+def test_explicit_flags_override_environment_values(tmp_path, monkeypatch):
+    from utils.studio_tls import (
+        STUDIO_SSL_CERTFILE_ENV,
+        STUDIO_SSL_KEYFILE_ENV,
+        resolve_studio_tls,
+    )
+
+    crt, key = _write_pair(tmp_path, "explicit.example")
+    monkeypatch.setenv(STUDIO_SSL_CERTFILE_ENV, str(tmp_path / "env.crt"))
+    monkeypatch.setenv(STUDIO_SSL_KEYFILE_ENV, str(tmp_path / "env.key"))
+    tls = resolve_studio_tls(str(crt), str(key))
+    assert tls is not None
+    assert tls.certfile == str(crt) and tls.keyfile == str(key)
+
+
+@pytest.mark.parametrize("which", ["cert", "key"])
+def test_half_environment_pair_is_refused(tmp_path, monkeypatch, which):
+    from utils.studio_tls import (
+        STUDIO_SSL_CERTFILE_ENV,
+        STUDIO_SSL_KEYFILE_ENV,
+        resolve_studio_tls,
+    )
+
+    crt, key = _write_pair(tmp_path)
+    monkeypatch.delenv(STUDIO_SSL_CERTFILE_ENV, raising = False)
+    monkeypatch.delenv(STUDIO_SSL_KEYFILE_ENV, raising = False)
+    monkeypatch.setenv(
+        STUDIO_SSL_CERTFILE_ENV if which == "cert" else STUDIO_SSL_KEYFILE_ENV,
+        str(crt if which == "cert" else key),
+    )
+    with pytest.raises(SystemExit, match = "must be passed together"):
+        resolve_studio_tls(None, None)
 
 
 @pytest.mark.parametrize("which", ["cert", "key"])

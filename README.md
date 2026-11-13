@@ -237,6 +237,13 @@ setx UNSLOTH_STUDIO_PROXY_HOSTS studio.example.com              # Windows
 ```
 The proxy must send that hostname as `Host` (cloudflared's default, so leave its HTTP Host Header override unset) or as `X-Forwarded-Host`. Sign in with the password from `Settings > Remote access > Remote password`.
 
+For a direct HTTPS launch with your own certificate, set both variables before starting Studio. Explicit `--ssl-certfile` and `--ssl-keyfile` options override these values:
+```bash
+UNSLOTH_STUDIO_SSL_CERTFILE=/path/to/full-chain.pem \
+UNSLOTH_STUDIO_SSL_KEYFILE=/path/to/private-key.pem \
+unsloth studio
+```
+
 #### Password management & headless starts
 Exposing Unsloth (`--secure`, `--cloudflare`, or a non-loopback `-H`) asks once at the terminal for a new admin password. Ctrl+C there aborts the launch rather than exposing the auto-generated one; set a password non-interactively instead, or use `-H 127.0.0.1` to stay off the network.
 
