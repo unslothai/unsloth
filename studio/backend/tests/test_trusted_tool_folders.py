@@ -102,6 +102,24 @@ def test_a_hard_link_to_a_file_elsewhere_is_not_granted(folder):
     assert os_sandbox.trusted_tool_folder_roots() == ()
 
 
+def test_a_symlink_to_a_file_elsewhere_is_not_granted(folder):
+    secret = folder.parent / "secret.txt"
+    secret.write_text("s")
+    try:
+        os.symlink(secret, folder / "notes.txt")
+    except OSError:
+        pytest.skip("this volume does not allow symlinks here")
+    assert os_sandbox.trusted_tool_folder_roots() == ()
+
+
+def test_a_symlink_inside_the_folder_is_still_granted(folder):
+    try:
+        os.symlink(folder / "run.sh", folder / "alias.sh")
+    except OSError:
+        pytest.skip("this volume does not allow symlinks here")
+    assert os_sandbox.trusted_tool_folder_roots() == (os.path.realpath(folder),)
+
+
 def test_a_folder_too_large_to_check_is_not_granted(folder, monkeypatch):
     monkeypatch.setattr(os_sandbox, "_TRUSTED_FOLDER_SCAN_LIMIT", 3)
     for index in range(4):
