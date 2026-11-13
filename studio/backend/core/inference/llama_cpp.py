@@ -8627,7 +8627,6 @@ class LlamaCppBackend:
         self._memory_mlock_applicable: bool = True
         # --load-mode none tokens FIT emitted, removed by paths replacing placement; empty if user chose one.
         self._fit_load_mode_flags: list[str] = []
-        self._sized_cache_ram_flags: list[str] = []
         self._lazy_mode_flags: list[str] = []
         self._apple_lazy_flags: list[str] = []
         # Mixed-pin --tensor-split tokens; the --fit on retry strips them (fit.cpp aborts on a set split).
@@ -16290,6 +16289,9 @@ class LlamaCppBackend:
             else:
                 high = mid - 1
         return low if low > _LLAMA_CACHE_RAM_DEFAULT_MIB else None
+
+    # Only ever reassigned, so the shared default is safe; the --cache-ram pair this launch sized.
+    _sized_cache_ram_flags: list[str] = []
 
     # Chosen by measurement: dio was fastest cold on large models; kept at none because that was
     # requested. dio has no pre-enum spelling, so old builds would emit nothing.
