@@ -2669,6 +2669,8 @@ _PY_CODE_STRING_RUNNERS = {
     "profile": frozenset({"run", "runctx"}),
     "pdb": frozenset({"run", "runeval", "runctx"}),
 }
+_PY_CODE_RUNNER_CLASSES = {"cProfile": "Profile", "profile": "Profile", "pdb": "Pdb"}
+_PY_CODE_RUNNER_SOURCE_KWARGS = frozenset({"cmd", "command", "statement", "expression"})
 # Gated only on the os module or an alias so same-named methods stay out; os.truncate zeroes a file, os.kill and os.killpg terminate processes
 _PY_DESTRUCTIVE_FS_OS_ATTRS = frozenset({"remove", "truncate", "ftruncate", "kill", "killpg"})
 _PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
@@ -8598,21 +8600,64 @@ def _python_is_high_risk(code: str) -> bool:
             folded = _folded_path(node, str_vars)
             if folded and _folded_is_sensitive(folded):
                 return True
-    runner_modules = {m: m for m in _PY_CODE_STRING_RUNNERS}
+    runner_modules: "dict[str, str]" = {}
     runner_funcs: "dict[str, str]" = {}
+    runner_class_names: "dict[str, str]" = {}
     for node in _tree_nodes(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name in _PY_CODE_STRING_RUNNERS:
                     runner_modules[alias.asname or alias.name] = alias.name
         elif isinstance(node, ast.ImportFrom) and node.module in _PY_CODE_STRING_RUNNERS:
+            runner_class = _PY_CODE_RUNNER_CLASSES.get(node.module)
             for alias in node.names:
                 if alias.name == "*":
                     runner_funcs.update(
                         dict.fromkeys(_PY_CODE_STRING_RUNNERS[node.module], node.module)
                     )
+                    if runner_class:
+                        runner_class_names[runner_class] = node.module
                 elif alias.name in _PY_CODE_STRING_RUNNERS[node.module]:
                     runner_funcs[alias.asname or alias.name] = node.module
+                elif alias.name == runner_class:
+                    runner_class_names[alias.asname or alias.name] = node.module
+
+    def _runner_instance_module(value):
+        # cProfile.Profile() / pdb.Pdb(): their run* methods take code strings too.
+        if not isinstance(value, ast.Call):
+            return None
+        ctor = value.func
+        if isinstance(ctor, ast.Name):
+            return runner_class_names.get(ctor.id)
+        if isinstance(ctor, ast.Attribute) and isinstance(ctor.value, ast.Name):
+            module = runner_modules.get(ctor.value.id)
+            if module and ctor.attr == _PY_CODE_RUNNER_CLASSES.get(module):
+                return module
+        return None
+
+    runner_instances: "dict[str, str]" = {}
+    for node in _tree_nodes(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and (module := _runner_instance_module(node.value))
+        ):
+            runner_instances[node.targets[0].id] = module
+
+    def _code_runner_module(func):
+        if isinstance(func, ast.Name):
+            return runner_funcs.get(func.id)
+        if not isinstance(func, ast.Attribute):
+            return None
+        receiver = func.value
+        if isinstance(receiver, ast.Name) and receiver.id in runner_instances:
+            module = runner_instances[receiver.id]
+        elif isinstance(receiver, ast.Name):
+            module = runner_modules.get(receiver.id)
+        else:
+            module = _runner_instance_module(receiver)
+        return module if func.attr in _PY_CODE_STRING_RUNNERS.get(module, ()) else None
 
     def _code_string(arg):
         value = _folded_path(arg, str_vars)
@@ -8625,16 +8670,26 @@ def _python_is_high_risk(code: str) -> bool:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            module = runner_modules.get(func.value.id)
-            runs_code_string = func.attr in _PY_CODE_STRING_RUNNERS.get(module, ())
-        else:
-            runs_code_string = isinstance(func, ast.Name) and func.id in runner_funcs
-        if runs_code_string and any(
-            (source := _code_string(arg)) is not None and _python_is_high_risk(source)
-            for arg in [*node.args, *(kw.value for kw in node.keywords)]
-        ):
-            return True
+        runner = _code_runner_module(func)
+        if runner == "timeit":
+            # timeit also takes callables, so only a resolvable string is screened.
+            if any(
+                (source := _code_string(arg)) is not None and _python_is_high_risk(source)
+                for arg in [*node.args, *(kw.value for kw in node.keywords)]
+            ):
+                return True
+        elif runner is not None:
+            arg = node.args[0] if node.args else None
+            if arg is None:
+                arg = next(
+                    (kw.value for kw in node.keywords if kw.arg in _PY_CODE_RUNNER_SOURCE_KWARGS),
+                    None,
+                )
+            if arg is not None:
+                source = _code_string(arg)
+                if source is None or _python_is_high_risk(source):
+                    return True
+            continue
         name = None
         if isinstance(func, ast.Name):
             name = func.id
@@ -18161,6 +18216,8 @@ def _check_signal_escape_patterns(code: str):
                         "asyncio",
                         "asyncio.subprocess",
                         "pty",
+                        "psutil",
+                        "anyio",
                     ):
                         names = _STAR_EXPORTS
                     else:
