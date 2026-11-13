@@ -671,6 +671,27 @@ def test_what_fastflowlm_would_drop_is_refused(flm, fields, message):
     assert nb.get_npu_backend().marks == 0
 
 
+def test_a_request_the_proxy_refuses_opens_no_output_window(flm, monkeypatch):
+    # The proxy's own preflight (an MCP image, a video, the confirm gate) can still refuse.
+    import routes.inference as ri
+
+    flm()
+
+    async def refuse(*args, **kwargs):
+        raise HTTPException(status_code = 400, detail = "refused in preflight")
+
+    monkeypatch.setattr(ri, "_proxy_to_external_provider", refuse)
+    with pytest.raises(HTTPException, match = "refused in preflight"):
+        _call(stream = False)
+    assert nb.get_npu_backend().marks == 0
+
+
+def test_a_reply_opens_one_output_window(flm):
+    flm()
+    _call(stream = False)
+    assert nb.get_npu_backend().marks == 1
+
+
 def test_a_saved_connection_cannot_name_the_managed_type():
     from core.inference.providers import get_connectable_provider_info, list_available_providers
 
