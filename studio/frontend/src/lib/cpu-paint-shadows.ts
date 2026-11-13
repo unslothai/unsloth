@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// When WebKitGTK paints on the CPU, Skia re-blurs every blurred box-shadow over
-// its whole area on each repaint (68%+ of the web process while scrolling
-// Settings). Large surfaces draw the same shadow from an image instead: the
-// blurred layers are drawn once onto a canvas and painted with border-image,
-// which is a plain image copy. index.css switches surfaces over under
-// html.webkit-cpu-paint and reads the images from the variables set here.
+// WebKitGTK's CPU painter re-blurs every box-shadow on each repaint, so large surfaces paint it
+// from a canvas-drawn 9-slice image instead (index.css reads the variables set here).
 
 import {
   type CornerRadii,
@@ -25,7 +21,6 @@ export const CPU_PAINT_CLASS = "webkit-cpu-paint";
 interface ShadowVariant {
   /** Publishes --cpu-<name> (border-image) and --cpu-<name>-rest (box-shadow left over). */
   name: string;
-  /** The shadow, as the surface's own rule writes it. */
   shadow: string;
   radius: string;
   /** The smallest box the image is used on, CSS px. */
@@ -38,7 +33,6 @@ export const TOAST_RADIUS = "calc(var(--radius-lg) + 2px)";
 const COMPOSER_FOCUS_SHADOW =
   "var(--composer-focus-shadow, var(--composer-shadow))";
 
-// Composer first: it is on screen from the first frame.
 export const CPU_PAINT_SHADOW_VARIANTS: readonly ShadowVariant[] = [
   {
     name: "composer",
@@ -149,7 +143,7 @@ function mapRadii(r: CornerRadii, f: (v: number) => number): CornerRadii {
   return { tl: f(r.tl), tr: f(r.tr), br: f(r.br), bl: f(r.bl) };
 }
 
-/** False when canvas cannot parse the color, which it ignores silently. */
+/** Canvas silently ignores a color it cannot parse. */
 function canvasAcceptsColor(ctx: Context, color: string): boolean {
   ctx.fillStyle = "#010203";
   ctx.fillStyle = color;
@@ -347,7 +341,6 @@ export function startCpuPaintShadows(
 
   const cache = new Map<string, Published>();
   const shown = new Map<string, string>();
-  // Drawn one per task; a task whose variant changed again since it was queued does nothing.
   const queue: (() => void)[] = [];
   let pending: ReturnType<typeof setTimeout> | undefined;
   const pump = () => {
@@ -371,7 +364,6 @@ export function startCpuPaintShadows(
       const shadow = style.boxShadow;
       const radius = px(style.borderTopLeftRadius);
       const key = `${shadow}|${radius}|${scale}|${variant.minWidth}x${variant.minHeight}`;
-      // Most <html> mutations change nothing here.
       if (shown.get(variant.name) === key) continue;
       shown.set(variant.name, key);
       const hit = cache.get(key);
@@ -379,7 +371,6 @@ export function startCpuPaintShadows(
         publish(variant.name, hit);
         continue;
       }
-      // Until the image is drawn, the surface keeps its CSS shadow.
       publish(variant.name, {
         image: "none",
         rest: shadow && shadow !== "none" ? shadow : NO_SHADOW,
@@ -397,7 +388,6 @@ export function startCpuPaintShadows(
   root.classList.add(CPU_PAINT_CLASS);
   refresh();
 
-  // Theme, palette, contrast and custom appearance colors all land on <html>.
   const observer = new MutationObserver(refresh);
   observer.observe(root, {
     attributes: true,

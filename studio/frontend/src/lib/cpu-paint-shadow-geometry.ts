@@ -19,7 +19,6 @@ export interface CornerRadii {
   bl: number;
 }
 
-/** One axis of the 9-slice, in device pixels unless named in CSS px. */
 export interface SliceAxis {
   /** border-image-slice for both ends of this axis, image px. */
   slice: number;
@@ -32,23 +31,18 @@ export interface NineSliceGeometry {
   outset: number;
   /** Shadow margin in device px; the box edge sits this far into the image. */
   outsetPx: number;
-  /** Top and bottom slices. */
   y: SliceAxis;
-  /** Left and right slices. */
   x: SliceAxis;
   /** Device px of the stretched middle strip. */
   middle: number;
-  /** Image size, device px. */
   imageWidth: number;
   imageHeight: number;
   /** The larger scratch canvas the shadow is drawn on, device px. */
   scratchWidth: number;
   scratchHeight: number;
-  /** How far the scratch's corners are spread apart, device px. */
   gap: number;
 }
 
-/** Split on separators outside parentheses. */
 function splitTopLevel(
   value: string,
   isSeparator: (ch: string) => boolean,
@@ -126,7 +120,6 @@ function formatLayer(layer: ShadowLayer): string {
   return `${inset}${layer.x}px ${layer.y}px ${layer.blur}px ${layer.spread}px ${layer.color}`;
 }
 
-/** What stays a real box-shadow: the layers not drawn into the image. */
 export function remainingShadow(layers: ShadowLayer[]): string {
   const drawn = imageLayers(layers);
   const kept = layers.filter((layer) => !drawn.includes(layer));
