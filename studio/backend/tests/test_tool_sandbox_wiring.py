@@ -1043,7 +1043,7 @@ def test_a_chat_reinstall_retires_the_files_the_old_version_had(monkeypatch, tmp
     name = "unsloth_chat_retire"
     workdir = tmp_path / "chat"
     workdir.mkdir()
-    old = _wheel(workdir, name, {f"{name}/__init__.py": "", f"{name}/old.py": ""}, "1.0")
+    old = _wheel(workdir, name, {f"{name}/__init__.py": "", f"{name}/old/__init__.py": ""}, "1.0")
     new = _wheel(workdir, name, {f"{name}/__init__.py": ""}, "2.0")
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
     command = (
@@ -1056,6 +1056,31 @@ def test_a_chat_reinstall_retires_the_files_the_old_version_had(monkeypatch, tmp
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_same_version_reinstall_drops_metadata_the_new_wheel_lacks(monkeypatch, tmp_path):
+    """--force-reinstall of the same version: an entry point only the old wheel declared is gone."""
+    name = "unsloth_chat_reinstall_meta"
+    workdir = tmp_path / "chat"
+    (workdir / "again").mkdir(parents = True)
+    info = f"{name}-1.0.dist-info"
+    first = _wheel(
+        workdir,
+        name,
+        {f"{name}.py": "", f"{info}/entry_points.txt": f"[pytest11]\n{name} = {name}\n"},
+    )
+    second = "again/" + _wheel(workdir / "again", name, {f"{name}.py": ""})
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    probe = (
+        "import importlib.metadata as m; "
+        f"print('EP', m.distribution('{name}').read_text('entry_points.txt'))"
+    )
+    command = (
+        f'{_PIP} {first} && sleep 1 && {_PIP} --force-reinstall {second} && python -c "{probe}"'
+    )
+    out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
+    assert "EP None" in out, out
+
+
 def test_an_editable_over_a_chat_wheel_of_the_same_version_wins(monkeypatch, tmp_path):
     """The same-version editable rewrites RECORD in place; the wheel's own files go, so the source loads."""
     name = "unsloth_chat_wheel_then_editable"
@@ -1126,6 +1151,10 @@ def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
     result = subprocess.run(probe_x, env = env, cwd = tmp_path, capture_output = True, text = True)
     assert result.stdout.strip() == "None", result.stdout + result.stderr
     result = subprocess.run(pip_x, env = env, cwd = tmp_path, capture_output = True, text = True)
+    assert f"PIP_PREFIX={packages!r}" in result.stdout, result.stdout + result.stderr
+    # Clustered short options: -um pip is still pip.
+    clustered = [sys.executable, "-um", "pip", "config", "debug"]
+    result = subprocess.run(clustered, env = env, cwd = tmp_path, capture_output = True, text = True)
     assert f"PIP_PREFIX={packages!r}" in result.stdout, result.stdout + result.stderr
 
 

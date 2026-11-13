@@ -363,13 +363,23 @@ def _is_pip_launch():
         if skip:
             skip = False
             continue
-        if arg == "-m" and i + 1 < len(argv):
-            module = argv[i + 1]
-        elif arg.startswith("-m") and arg[2:3] not in ("", "-"):
-            module = arg[2:]
-        # The interpreter options that take a separate operand.
-        skip = arg in ("-W", "-X", "--check-hash-based-pycs")
-        if module or not arg.startswith("-") or arg.startswith("-c"):
+        if arg == "--check-hash-based-pycs":
+            skip = True
+            continue
+        if not arg.startswith("-") or arg.startswith("--") or arg == "-":
+            break
+        # Short options cluster (-um pip, -Bm pip); -m, -c, -W and -X take the rest or the next word.
+        for j, flag in enumerate(arg[1:], 1):
+            rest = arg[j + 1 :]
+            if flag == "m":
+                module = rest or (argv[i + 1] if i + 1 < len(argv) else "")
+                break
+            if flag == "c":
+                return False
+            if flag in "WX":
+                skip = not rest
+                break
+        if module:
             break
     # Python < 3.10 has no orig_argv: any -m launch counts.
     return module in ("pip", "pip.__main__") or (
@@ -617,18 +627,42 @@ if _entries and not any(isinstance(f, _SessionPackagesFinder) for f in sys.meta_
 
 # --ignore-installed never uninstalls, so a reinstall leaves stale dist-info importlib.metadata may pick;
 # RECORD is written last, so the newest RECORD per project is the finished install.
-def _recorded_files(entry, dist_info, root):
+def _recorded_files(
+    entry,
+    dist_info,
+    root,
+    metadata = False,
+):
     files = set()
     try:
         with open(os.path.join(entry, dist_info, "RECORD"), encoding = "utf-8") as f:
             for line in f:
                 path = line.rstrip("\n").rsplit(",", 2)[0].strip('"')
                 full = os.path.normcase(os.path.abspath(os.path.join(entry, path)))
-                if path and full.startswith(root) and not path.startswith(dist_info + "/"):
-                    files.add(full)
+                in_meta = path.startswith(dist_info + "/")
+                if path and full.startswith(root) and (metadata or not in_meta):
+                    if not (in_meta and path.endswith("/RECORD")):
+                        files.add(full)
     except OSError:
         pass
     return files
+
+
+def _remove_files(paths, entry):
+    # As pip's uninstall: the files, then any folder they leave empty, never above the site dir.
+    stop = os.path.normcase(os.path.abspath(entry))
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        parent = os.path.dirname(path)
+        while parent.startswith(stop) and parent != stop:
+            try:
+                os.rmdir(parent)
+            except OSError:
+                break
+            parent = os.path.dirname(parent)
 
 
 def _prune_stale_dist_info():
@@ -668,11 +702,7 @@ def _prune_stale_dist_info():
                 keep = _recorded_files(entry, stamped[-1][1], root) if stamped else set()
                 for _, name in stamped[:-1]:
                     # Also the files only the replaced version had, as pip's uninstall would remove.
-                    for path in _recorded_files(entry, name, root) - keep:
-                        try:
-                            os.remove(path)
-                        except OSError:
-                            pass
+                    _remove_files(_recorded_files(entry, name, root) - keep, entry)
                     shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
     except Exception:  # noqa: BLE001 - a broken shim must never break user code
         pass
@@ -696,7 +726,7 @@ def _record_snapshot():
                     stamp = os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns
                 except OSError:
                     continue
-                snapshot[(entry, name)] = (stamp, _recorded_files(entry, name, root), root)
+                snapshot[(entry, name)] = (stamp, _recorded_files(entry, name, root, True), root)
     except Exception:  # noqa: BLE001
         pass
     return snapshot
@@ -709,11 +739,7 @@ def _retire_rewritten(snapshot):
                 continue
         except OSError:
             continue
-        for path in files - _recorded_files(entry, name, root):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        _remove_files(files - _recorded_files(entry, name, root, True), entry)
 
 
 if os.environ.get("PIP_PREFIX"):
