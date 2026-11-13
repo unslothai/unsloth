@@ -78,6 +78,8 @@ test("a step settles only on a finished reply; errors fail it and a user stop st
   assert.equal(batchStepOutcome({ isRunning: false, messages: [user, research("completed")] }), "done");
   assert.equal(batchStepOutcome({ isRunning: false, messages: [user, research("failed")] }), "failed");
   assert.equal(batchStepOutcome({ isRunning: false, messages: [user, research("cancelled")] }), "stopped");
+  const stalled = { ...reply("complete"), metadata: { custom: { generationLocallyInterrupted: true } } };
+  assert.equal(batchStepOutcome({ isRunning: false, messages: [user, stalled] }), "failed");
 });
 
 test("files run in natural name order, so clip-2 comes before clip-10", () => {

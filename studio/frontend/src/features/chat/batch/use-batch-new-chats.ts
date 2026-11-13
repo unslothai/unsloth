@@ -187,6 +187,9 @@ export function useBatchNewChatsComposer(
           ) {
             throw new Error("The chat changed before the message was sent.");
           }
+          if (draft.attachments.some((a) => a.status.type === "incomplete")) {
+            throw new Error("Studio couldn't read this file.");
+          }
           const form = formRef.current ?? composerForms.get(targetKey)?.current;
           if (!form) {
             throw new Error("The chat changed before the message was sent.");
