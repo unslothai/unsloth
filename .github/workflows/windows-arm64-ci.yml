@@ -23,13 +23,7 @@ on:
       - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
       - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
       - '.github/workflows/windows-arm64-ci.yml'
-      # Imported or read by the ARM64 tests above: woa_ps_harness.py and
-      # tests/_shared/unsloth_pwsh_runner.py, the fixtures in
-      # tests/studio/install/conftest.py and the root conftest chain, woa-wheelhouse.yml
-      # (whose release_tag test_woa_wheelhouse_prefers_pypi.py checks against
-      # install.ps1), and the installer modules the tests load by path
-      # (install_manifest.py, install_llama_prebuilt.py, and the backend utils
-      # install_python_stack.py imports at module scope).
+      # Imported or read by the ARM64 tests above.
       - 'tests/studio/install/woa_ps_harness.py'
       - 'tests/studio/install/conftest.py'
       - 'tests/conftest.py'
@@ -64,13 +58,7 @@ on:
       - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
       - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
       - '.github/workflows/windows-arm64-ci.yml'
-      # Imported or read by the ARM64 tests above: woa_ps_harness.py and
-      # tests/_shared/unsloth_pwsh_runner.py, the fixtures in
-      # tests/studio/install/conftest.py and the root conftest chain, woa-wheelhouse.yml
-      # (whose release_tag test_woa_wheelhouse_prefers_pypi.py checks against
-      # install.ps1), and the installer modules the tests load by path
-      # (install_manifest.py, install_llama_prebuilt.py, and the backend utils
-      # install_python_stack.py imports at module scope).
+      # Imported or read by the ARM64 tests above.
       - 'tests/studio/install/woa_ps_harness.py'
       - 'tests/studio/install/conftest.py'
       - 'tests/conftest.py'
@@ -123,7 +111,7 @@ jobs:
             exit 1
           }
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
           # Required: the image ships an emulated x64 Python whose sysconfig says win-amd64.

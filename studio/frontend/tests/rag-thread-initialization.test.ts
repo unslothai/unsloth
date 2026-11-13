@@ -152,6 +152,8 @@ function harness(
       "react/jsx-runtime": stubJsxRuntime(),
       "@hugeicons/react": {},
       "@hugeicons/core-free-icons": {},
+      "@/lib/folder-icons": {},
+      "@/lib/hugeicons-derived": {},
       "lucide-react": {},
       "@/lib/tick-icon": {},
       "@/lib/open-file-picker": {

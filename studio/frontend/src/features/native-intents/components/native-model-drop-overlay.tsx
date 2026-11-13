@@ -1,5 +1,6 @@
+import { HugeiconsIcon } from "@hugeicons/react";
+import { FileUploadIcon } from "@hugeicons/core-free-icons";
 import { cn } from "@/lib/utils";
-import { FileUpIcon } from "lucide-react";
 import type { NativeModelDropState } from "../use-native-drop";
 
 function overlayCopy(state: NativeModelDropState): { title: string; description: string } {
@@ -39,7 +40,6 @@ export function NativeModelDropOverlay({ state }: { state: NativeModelDropState 
   return (
     <div
       className={cn(
-        // Clear the chat header, which owns the top of this container.
         "pointer-events-none absolute left-1/2 top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+0.5rem)] z-50 w-[clamp(16rem,28vw,22rem)] max-w-[calc(100vw-1rem)] -translate-x-1/2 transition-all duration-200 ease-out",
         isIdle ? "-translate-y-1 opacity-0" : "translate-y-0 opacity-100",
       )}
@@ -58,7 +58,7 @@ export function NativeModelDropOverlay({ state }: { state: NativeModelDropState 
                 : "border-border bg-muted text-muted-foreground",
           )}
         >
-          <FileUpIcon className="size-4" aria-hidden="true" />
+          <HugeiconsIcon icon={FileUploadIcon} className="size-4" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium text-foreground">

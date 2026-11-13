@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Flatten searchable text once and retain offsets back to its text nodes. The module is pure, so
-// the Node tests can use a hand-rolled DOM.
+// Pure module, so the Node tests can use a hand-rolled DOM.
 
 import { FIND_SKIP_ATTRIBUTE } from "./find-attributes.ts";
 
 export const ELEMENT_NODE = 1;
 export const TEXT_NODE = 3;
 
-/** Written at block boundaries. NUL because no query can contain it, bar a paste, which
- *  `normalizeQuery` rejects. */
+/** NUL: no typed query can contain it, and `normalizeQuery` rejects pasted ones. */
 export const BLOCK_SEPARATOR = "\u0000";
 
-/** A thread is bounded by what a person scrolled through; a tool result is not. */
 export const MAX_INDEX_CHARS = 4_000_000;
 
 export const MAX_MATCHES = 5_000;
@@ -21,10 +18,8 @@ export const MAX_MATCHES = 5_000;
 /** A log arrives as one text node and would otherwise spend the whole budget on its own. */
 export const MAX_NODE_CHARS = 100_000;
 
-/** Reserve space for visible portaled surfaces after walking the workspace. */
 export const PORTAL_RESERVE_CHARS = 100_000;
 
-/** Form controls carry their text in `value`; `SVG`/`CANVAS` content is not paintable everywhere. */
 const SKIP_TAGS: ReadonlySet<string> = new Set([
   "SCRIPT",
   "STYLE",
@@ -93,7 +88,7 @@ export {
   FIND_SKIP_ATTRIBUTE,
 } from "./find-attributes.ts";
 
-/** Spaces that render as a space but are not one. Each is one UTF-16 unit, keeping the map valid. */
+/** Each is one UTF-16 unit, keeping the offset map valid. */
 const HARD_SPACE_PATTERN = /[\u00A0\u2002\u2003\u2007\u2009\u202F]/g;
 
 export interface FindTextNodeLike {
@@ -133,15 +128,11 @@ interface IndexedSurface {
 
 export interface FindTextIndex {
   text: string;
-  /** Sorted by `start`, gapped wherever a separator was written. */
   segments: TextSegment[];
   truncated: boolean;
-  /** Offsets where the walk dropped text and the page runs on across the gap. A match may not
-   *  end on one: nothing indexed says where the grapheme it cuts through ends. */
+  /** Offsets where text was dropped; a match may not end on one. */
   seams: ReadonlySet<number>;
-  /** Where the portaled surfaces begin. The whole length when none are open. */
   rootLength: number;
-  /** Stable portal roots and the offsets occupied by their searchable text. */
   surfaces: IndexedSurface[];
 }
 
@@ -154,12 +145,10 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
   surfaces: [],
 };
 
-/** The only code point whose `toLowerCase` grows. Mapped to the Turkic fold, a bare `i`, since one
- *  index char must stand for one document char. */
+/** The only code point whose `toLowerCase` grows; folded to `i` to keep lengths equal. */
 const DOTTED_I_PATTERN = /\u0130/g;
 
-/** Mapped to medial as `CaseFolding.txt` does: `toLowerCase` picks by what follows, so otherwise
- *  only one of the two spellings a reader can type would match. */
+/** Mapped to medial sigma as CaseFolding.txt does, so both spellings match. */
 const FINAL_SIGMA_PATTERN = /\u03c2/g;
 
 export function foldText(raw: string): string {
@@ -170,7 +159,6 @@ export function foldText(raw: string): string {
   if (folded.length === spaced.length) {
     return folded.replace(FINAL_SIGMA_PATTERN, "\u03c3");
   }
-  // Unreachable, but a wrong length would misplace every offset after it.
   let plain = "";
   for (const point of spaced) {
     const lower = point.toLowerCase();
@@ -179,18 +167,15 @@ export function foldText(raw: string): string {
   return plain.replace(FINAL_SIGMA_PATTERN, "\u03c3");
 }
 
-/** Check cheap markup before resolving styles, which avoids layout work for skipped subtrees. */
 function hasClassToken(element: FindElementLike, token: string): boolean {
   return (element.getAttribute("class") ?? "").split(/\s+/).includes(token);
 }
 function skipsByMarkup(element: FindElementLike): boolean {
-  // Uppercased: SVG and MathML keep their source casing, so `<svg>` answers "svg" and walks past.
+  // Uppercased: SVG and MathML keep their source casing.
   if (SKIP_TAGS.has(element.tagName.toUpperCase())) return true;
   if (hasClassToken(element, "katex-mathml")) return true;
   if (element.getAttribute(FIND_SKIP_ATTRIBUTE) !== null) return true;
-  // Boolean attributes, so presence is the whole signal. The shell parks an off-route workspace under `inert`;
-  // Radix marks the page `aria-hidden` behind a modal. KaTeX is the narrow exception: its painted HTML tree is
-  // deliberately aria-hidden because a clipped MathML mirror speaks it.
+  // KaTeX's painted HTML is deliberately aria-hidden, so it is excepted.
   if (element.getAttribute("hidden") !== null) return true;
   if (element.getAttribute("inert") !== null) return true;
   return (
@@ -204,10 +189,8 @@ export function skipsSubtree(
   style: ResolvedStyle | null = computedStyle(element),
 ): boolean {
   if (skipsByMarkup(element)) return true;
-  // `contentVisibilityAuto` off, since such a subtree is skipped rather than hidden and nothing would put it back
-  // (scrolling renders without mutating, so the observer never fires); opacity off, so a message fading in stays
-  // findable. Both spellings of each option, since an engine reads only the name it knows: the modern one alone
-  // is a no-op on Chrome 105-120, Firefox 106-121.
+  // contentVisibilityAuto and opacity off; both spellings since older Chrome and Firefox
+  // read only the old names.
   const painted = element.checkVisibility?.({
     contentVisibilityAuto: false,
     opacityProperty: false,
@@ -216,8 +199,7 @@ export function skipsSubtree(
     checkVisibilityCSS: true,
   });
   if (painted === false) {
-    // No box is the first thing `checkVisibility` calls invisible, and the shell is built out of
-    // `display: contents` wrappers whose children are all on screen.
+    // Shell wrappers are `display: contents`, which checkVisibility calls invisible.
     return style?.display !== "contents";
   }
   // `checkVisibility` landed in Safari 17.4 and WebKitGTK is supported here, so this is a real path.
@@ -233,8 +215,7 @@ interface ResolvedStyle {
   clipPath?: string;
 }
 
-/** `skipsSubtree` lets a `display: contents` wrapper through, but `visibility` inherits and only
- *  ELEMENT children are re-checked, so a direct text child of a hidden one would be indexed. */
+/** `visibility` inherits and only element children are re-checked, so check own text. */
 function hidesOwnText(style: ResolvedStyle | null): boolean {
   return (
     style?.display === "contents" &&
@@ -242,7 +223,6 @@ function hidesOwnText(style: ResolvedStyle | null): boolean {
   );
 }
 
-/** For engines with no `checkVisibility`. `display: contents` is boxless, not hidden. */
 function paintsNothing(style: ResolvedStyle | null): boolean {
   if (style?.display === "none") return true;
   if (style?.display === "contents") return false;
@@ -274,7 +254,7 @@ function isBlockDisplay(display: string | undefined): boolean {
   );
 }
 
-/** `pre-line` is excluded: it still collapses runs of spaces, which is the half that matters. */
+/** `pre-line` is excluded: it still collapses runs of spaces. */
 function preservesWhitespace(whiteSpace: string | undefined): boolean {
   return (
     whiteSpace === "pre" ||
@@ -283,8 +263,7 @@ function preservesWhitespace(whiteSpace: string | undefined): boolean {
   );
 }
 
-/** Recursive rather than a `TreeWalker`, which reports entering an element but not leaving one, and
- *  the closing separator is what stops `<p>a</p>b` reading as "ab". */
+/** Recursive, not a TreeWalker, which cannot report leaving an element. */
 export function buildTextIndex(
   root: FindElementLike,
   extraRoots: readonly FindElementLike[] = [],
@@ -294,25 +273,20 @@ export function buildTextIndex(
 
   const surfaces: IndexedSurface[] = [];
   const seams = new Set<number>();
-  /** The end of what has been indexed, kept to what `joinsAcross` reads. */
   let tail = "";
-  /** What a cut dropped, readable here and nowhere later: it settles that cut's far side. */
   let dropped: string | null = null;
   let length = 0;
   let truncated = false;
-  /** The ceiling, the only thing that stops the walk. */
   let full = false;
   let ceiling =
     MAX_INDEX_CHARS - (extraRoots.length > 0 ? PORTAL_RESERVE_CHARS : 0);
-  // Written lazily, so a run of empty blocks costs nothing and no separator lands at either end.
+  // Written lazily, so no separator lands at either end.
   let pendingSeparator = false;
 
   const visit = (element: FindElementLike, inherited: boolean): void => {
-    // Markup first, so a subtree turned down on a tag or attribute costs no layout read at all.
     if (skipsByMarkup(element)) return;
     const style = computedStyle(element);
     if (skipsSubtree(element, style)) return;
-    // The tag set answers `<br>`, whose display is inline; layout catches two stacked `span.block`.
     const block =
       BLOCK_TAGS.has(element.tagName) || isBlockDisplay(style?.display);
     if (block) {
@@ -323,7 +297,6 @@ export function buildTextIndex(
       style?.whiteSpace === undefined
         ? inherited
         : preservesWhitespace(style.whiteSpace);
-    // Its own text is the one thing `skipsSubtree` never gets to judge.
     const ownTextHidden = hidesOwnText(style);
     const children = element.childNodes;
     for (let i = 0; i < children.length; i += 1) {
@@ -334,11 +307,9 @@ export function buildTextIndex(
         const node = child as FindTextNodeLike;
         const data = node.data;
         if (data.length === 0) continue;
-        // Before the separator, not after: one emitted past the ceiling makes `take` negative, and
-        // `slice(0, negative)` takes all but the last character of the next node.
+        // Before the separator: past the ceiling `take` goes negative and slice misbehaves.
         if (length >= ceiling) {
           truncated = true;
-          // The node is still there to be read, so its first code point settles the junction.
           if (!pendingSeparator && joinsAcross(tail, firstPointOf(data))) {
             seams.add(length);
           }
@@ -355,16 +326,13 @@ export function buildTextIndex(
             separated = true;
           }
         }
-        // The far side of a cut, settled by what it dropped.
         if (dropped !== null) {
           if (joinsAcross(dropped, firstPointOf(data))) seams.add(length);
           dropped = null;
         }
-        // A share, not all: one huge node given the rest leaves out everything after it.
+        // A share, not all: one huge node must not starve everything after it.
         let take = Math.min(ceiling - length, MAX_NODE_CHARS);
-        // Never between the halves of a pair: keeping the leading one leaves a code unit that is not a character,
-        // which reads as a grapheme of its own and lets a match end against it, inside what the page draws as one.
-        // Dropping it instead makes the cut a real boundary.
+        // Never cut between surrogate halves; drop the lead one so the cut is a real boundary.
         if (take > 0 && take < data.length && isPairedHalf(data, take))
           take -= 1;
         if (take <= 0) {
@@ -380,10 +348,9 @@ export function buildTextIndex(
         segments.push({ node, start: length, length: raw.length, preserved });
         length += raw.length;
         tail = (tail + raw).slice(-JOIN_CONTEXT);
-        // What was dropped must leave a boundary, or a match across the seam paints over the gap.
+        // Dropped text must leave a boundary, or a match across the seam paints over the gap.
         if (raw.length < data.length) {
           truncated = true;
-          // Both edges settle from the node: the next code point here, the dropped tail later.
           if (joinsAcross(raw, firstPointOf(data.slice(take))))
             seams.add(length);
           dropped = data.slice(-JOIN_CONTEXT);
@@ -394,7 +361,6 @@ export function buildTextIndex(
         if (full) return;
       }
     }
-    // As on the way in: what a clip inside this block dropped cannot reach the sibling after it.
     if (block) {
       pendingSeparator = true;
       dropped = null;
@@ -402,17 +368,13 @@ export function buildTextIndex(
   };
 
   visit(root, false);
-  // Before the surfaces and the separator joining them, so this slice is exactly the workspace.
-  // `foldText` cannot change a length, so the offset survives it.
+  // `foldText` cannot change a length, so this offset survives it.
   const rootLength = length;
-  // The reserve, handed over. Portaled surfaces come after the workspace, so without this the one
-  // thing in front of the reader is the one left out. `truncated` stays as the workspace left it.
+  // Hand portals the reserve, or the surface in front of the reader is the one left out.
   ceiling = MAX_INDEX_CHARS;
   full = false;
   for (const extra of extraRoots) {
     if (full) break;
-    // Its own surface, so a boundary whatever the last root ended on, and whatever tags either of
-    // them happen to use: nothing dropped back there can reach into what a portal paints.
     pendingSeparator = true;
     dropped = null;
     const firstSegment = segments.length;
@@ -425,7 +387,7 @@ export function buildTextIndex(
       });
     }
   }
-  // Folded once, over the joined document: see foldText for why it cannot be done a node at a time.
+  // Folded once over the joined document; see foldText.
   return {
     text: foldText(parts.join("")),
     segments,
@@ -436,35 +398,21 @@ export function buildTextIndex(
   };
 }
 
-/**
- * True when a rebuild renumbers the match list, so the search has to re-anchor to the viewport.
- *
- * The index is the workspace followed by the surfaces portaled in front of it, joined at `rootLength`. A monitor
- * stays searchable while it is up and rewrites its reading on a timer, so judged as one string every poll reads
- * as a renumbered document and throws the reader out of the conversation behind it. What decides is whether text
- * moved AHEAD of the reader's offset.
- *
- * This is the cheap half of the answer. `search` asks the exact question afterwards, by looking for a match
- * still starting at that offset, so this only has to turn down the rebuilds where the offset would be
- * meaningless. Here rather than beside its caller: the hook imports React and cannot run under `node --test`.
- */
+/** True when a rebuild moved text ahead of the reader's offset, so search re-anchors.
+ *  Kept here, not in the hook, so it runs under `node --test`. */
 export function renumbersMatches(
   before: FindTextIndex,
   after: FindTextIndex,
-  /** Where the reader's occurrence started in `before`, or null when there was none. */
   activeStart: number | null,
 ): boolean {
-  // One slice, and none at all without a surface open, where the workspace is the whole text.
   const workspaceGrewAtTail =
     before.rootLength <= after.rootLength &&
     after.text.startsWith(before.text.slice(0, before.rootLength));
-  // The workspace is the prefix, so no surface can move an offset inside it. `search` re-anchors on
-  // its own when there was no occurrence to keep.
+  // The workspace is the prefix, so no surface can move an offset inside it.
   if (activeStart === null || activeStart < before.rootLength) {
     return !workspaceGrewAtTail;
   }
-  // A stable surface root tells whether another portal was inserted, removed, or reordered ahead of
-  // the occurrence. Equal-width polling within that root keeps its start and therefore the reader.
+  // A stable surface root tells whether a portal was inserted or reordered ahead.
   const beforeSurface = before.surfaces.find(
     ({ start, end }) => start <= activeStart && activeStart < end,
   );
@@ -481,7 +429,6 @@ export function renumbersMatches(
   return !workspaceGrewAtTail || after.rootLength !== before.rootLength;
 }
 
-/** Null when the query cannot match: empty, or carrying the separator (only a paste can). */
 export function normalizeQuery(query: string): string | null {
   if (query.length === 0) return null;
   const folded = foldText(query);
@@ -491,7 +438,6 @@ export function normalizeQuery(query: string): string | null {
 
 export interface FindMatch {
   start: number;
-  /** Exclusive, as a `Range` end is. */
   end: number;
 }
 
@@ -499,8 +445,7 @@ const REGEX_META_PATTERN = /[.*+?^${}()|[\]\\]/g;
 
 const COMBINING_DOT = "̇";
 
-/** Longest first. Normalizing the index instead would change its length, and every offset stands
- *  for one document character. */
+/** Longest first. The index itself is never normalized, to keep offsets 1:1. */
 function canonicalVariants(needle: string, dotted: boolean): string[] {
   const variants = [needle];
   for (const form of ["NFC", "NFD"] as const) {
@@ -517,8 +462,7 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
   return variants;
 }
 
-/** One canonical cluster. Hangul conjoining sequences can contain repeated leading, vowel, and trailing Jamo,
- * so the whole L*V*T* run has to win before the generic character alternative. */
+/** Hangul L*V*T* runs must win before the generic character alternative. */
 const CLUSTER_PATTERN =
   // biome-ignore lint/suspicious/noMisleadingCharacterClass: Jamo and combining marks intentionally form canonical clusters.
   /(?:[ᄀ-ᅟꥠ-꥿]+[ᅠ-ᆧힰ-ퟆ]+[ᆨ-ᇿퟋ-ퟻ]*|[\s\S])[̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
@@ -531,15 +475,10 @@ const VOWEL_OR_TRAILING_HANGUL_JAMO_SOURCE =
   "[\\u1160-\\u11a7\\ud7b0-\\ud7c6\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
 const TRAILING_HANGUL_JAMO_SOURCE = "[\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
 
-/** Any Hangul at all, asked first so an ASCII query pays one test and stops. */
 const HANGUL_HINT_PATTERN = /[ᄀ-ᇿꥠ-꥿가-ퟻ]/u;
 
-/**
- * True when a cluster needs the trailing-jamo boundary, which only the pattern path writes. Extended and Old
- * Hangul jamo have no precomposed form, so NFC and NFD spell them the same way and the single-spelling query
- * would take the literal scan, where an open syllable prefix-matches a closed one. Modern Hangul always has two
- * spellings and reaches the pattern anyway.
- */
+/** Old and Extended Hangul jamo have one spelling, so force the pattern path to get the
+ * trailing-jamo boundary; otherwise an open syllable prefix-matches a closed one. */
 function needsHangulBoundary(needle: string): boolean {
   if (!HANGUL_HINT_PATTERN.test(needle)) return false;
   for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
@@ -552,12 +491,10 @@ function needsHangulBoundary(needle: string): boolean {
   return false;
 }
 
-/** A closed syllable's L+V pair and everything after it. */
 const HANGUL_LVT_PATTERN =
   /^([\u1100-\u115f\ua960-\ua97f][\u1160-\u11a7\ud7b0-\ud7c6])([\u11a8-\u11ff\ud7cb-\ud7fb][\s\S]*)$/u;
 
-/** The half-composed spelling of a closed syllable: the L+V pair precomposed, the trailing jamo left as it is.
- * Neither NFC nor NFD writes it, so a document holding one is invisible to both. */
+/** L+V precomposed with a loose trailing jamo; neither NFC nor NFD writes this form. */
 function partiallyComposedHangul(cluster: string): string | null {
   const parts = HANGUL_LVT_PATTERN.exec(cluster);
   if (!parts) return null;
@@ -565,9 +502,7 @@ function partiallyComposedHangul(cluster: string): string | null {
   return partial === cluster ? null : partial;
 }
 
-/** The second half of a surrogate pair, and only where there is a pair: a low surrogate on its own
- *  is a character in its own right, and one can reach a page through JSON or a pasted log. Taking
- *  it for half of something joined it to whatever preceded it, hiding both. */
+/** A lone low surrogate is a character in its own right, so only a real pair counts. */
 function isPairedHalf(text: string, at: number): boolean {
   const low = text.charCodeAt(at);
   if (!(low >= 0xdc00 && low <= 0xdfff) || at === 0) return false;
@@ -575,19 +510,12 @@ function isPairedHalf(text: string, at: number): boolean {
   return high >= 0xd800 && high <= 0xdbff;
 }
 
-/**
- * Per cluster, because alternating whole spellings of the WHOLE query reaches only all-composed or
- * all-decomposed text, and one occurrence can be neither: joining two text nodes joins two sources, so `café` in
- * one and `café` in the next make one visible word with a spelling the query cannot be written in. Every
- * engine's own find matches it.
- */
+/** Per cluster: joined text nodes can mix composed and decomposed spellings in one word. */
 function canonicalSource(needle: string, dotted: boolean): string {
   let out = "";
   for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
     if (/^\s/.test(cluster)) {
-      // The space flexes, what is attached to it does not: a mark on a space is part of that
-      // grapheme, and dropping it left the match ending inside one, which the fence then threw
-      // away. Only one `\s+` for a run of them, so the marks of the last still follow it.
+      // Only one `\s+` per run, so marks attached to the last space still follow it.
       out += out.endsWith("\\s+") ? "" : "\\s+";
       out += escapeForRegex(cluster.slice(1));
       continue;
@@ -595,18 +523,13 @@ function canonicalSource(needle: string, dotted: boolean): string {
     const spellings = [cluster];
     const composed = cluster.normalize("NFC");
     if (composed !== cluster) spellings.push(composed);
-    // Hangul composes in two steps, and text can stop after the first. Joining two text nodes
-    // produces exactly that, an LV syllable in one and its trailing Jamo in the next.
+    // Joined text nodes can split Hangul after its first composition step.
     const partial = partiallyComposedHangul(cluster);
     if (partial !== null && !spellings.includes(partial))
       spellings.push(partial);
-    // A decomposed dotted I folds to `i` plus a combining dot, which has no precomposed form, so
-    // NFC cannot put it back and the plain query would miss a word plainly on screen.
+    // A decomposed dotted I folds to `i` plus a combining dot, which NFC cannot recompose.
     if (dotted && cluster === "i") spellings.push(`i${COMBINING_DOT}`);
-    // Longest first, as `canonicalVariants` is: alternation takes the first that fits, so a short spelling that is
-    // a prefix of a long one wins and the rest of the cluster is left outside the match: `i` before `i` plus its
-    // combining dot ended the match inside the grapheme, and the boundary check threw the occurrence away rather
-    // than reaching for the longer spelling.
+    // Longest first: alternation takes the first fit, so a prefix spelling would end mid-grapheme.
     if (spellings.length > 1) spellings.sort((a, b) => b.length - a.length);
     const spellingSource =
       spellings.length === 1
@@ -622,17 +545,11 @@ function canonicalSource(needle: string, dotted: boolean): string {
   return out;
 }
 
-/** The index's segmentation, made at the first match that needs one and kept for as long as the
- *  index lives. Making it walks nothing: `containing` seeks to the offset asked about, so a 4M
- *  index costs 4ms once and a fraction of a microsecond a question. */
+/** Built lazily per index; `containing` seeks, so no full walk is needed. */
 const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
 
-/** Every boundary in the index, once seeking for them has cost more than walking the lot would. In time, not
- *  in seeks: a seek is 0.2us into a page of Hangul and 1236us into a page of flags, so any count is far too
- *  small for one and far too large for the other, and the large end cost a first search twenty seconds. The
- *  budget is what a scan of this index would itself cost, so the total stays within twice the better of the two
- *  and no constant is left to be wrong about. The rate is the slower of the two measured, 1.3M characters
- *  scanned in 82ms. */
+/** All boundaries, tabulated once seek time exceeds what a full scan would cost. Budgeted
+ *  in time since seek cost varies by script (1.3M chars scanned in 82ms). */
 const boundaryCache = new WeakMap<FindTextIndex, Uint8Array>();
 const seekCosts = new WeakMap<
   FindTextIndex,
@@ -640,13 +557,10 @@ const seekCosts = new WeakMap<
 >();
 const SCAN_CHARS_PER_MS = 16_000;
 const MIN_SEEK_BUDGET_MS = 8;
-/** Timed in blocks, so the clock is read twice per block rather than twice per seek. The whole
- *  block is measured, so what accumulates is the real cost and not a sample of it. */
+/** Timed per block so the clock is read twice per block, not per seek. */
 const SEEK_BLOCK = 32;
 
-/** Drop a block left open by a search that ended inside one: it is wall time, and between two
- *  searches that is the reader thinking, which was being billed to the next query. What is lost
- *  is under a block of seeks, which the budget will not miss. */
+/** Drop a block left open between searches so idle time is not billed to the next query. */
 function endSeekWindow(index: FindTextIndex): void {
   const cost = seekCosts.get(index);
   if (cost === undefined) return;
@@ -654,14 +568,11 @@ function endSeekWindow(index: FindTextIndex): void {
   cost.since = 0;
 }
 
-/** The one thing below U+0300 that joins (GB3), and so the one exception to the fast path below.
- *  Everywhere whitespace is collapsed a newline is its own grapheme; in a `<pre>` the pair arrives
- *  intact and a search for the feed alone landed between them. */
+/** CRLF is the only pair below U+0300 that joins (GB3); seen intact inside `<pre>`. */
 function splitsCrlf(text: string, at: number): boolean {
   return at > 0 && text.charCodeAt(at - 1) === 13 && text.charCodeAt(at) === 10;
 }
 
-/** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
 const JOINS_GRAPHEME = /[^\u0000-\u02ff]/;
 
 interface GraphemeSegments {
@@ -671,7 +582,6 @@ interface GraphemeSegments {
 
 let segmenter: { segment(input: string): GraphemeSegments } | null | undefined;
 
-/** The platform's own grapheme segmenter, or null where there is none. */
 function graphemeSegmenter() {
   if (segmenter !== undefined) return segmenter;
   const scope = globalThis as unknown as {
@@ -684,12 +594,7 @@ function graphemeSegmenter() {
   return segmenter;
 }
 
-/**
- * Whether this engine's `containing` agrees with its own iterator about where a segment starts. WebKit's answers
- * the segment that ENDS at the offset: over `x` and a thumbs up it reads 0, 0, 1 where Chromium and Firefox read
- * 0, 1, 1, so every interior boundary comes back "not a boundary". Where it is wrong the boundaries are
- * tabulated instead, which is the same answer more slowly.
- */
+/** WebKit's `containing` answers the segment ending at the offset; there, tabulate instead. */
 let seeksBoundaries: boolean | undefined;
 function segmenterSeeksBoundaries(platform: {
   segment(input: string): GraphemeSegments;
@@ -707,9 +612,8 @@ function segmenterSeeksBoundaries(platform: {
 
 const JOIN_CONTEXT = 32;
 
-/** As much of the end of `before` as segments the same alone as in the whole string: back to a
- *  character below U+0300, which always begins a cluster. A fixed-size window would not do, since
- *  regional indicators pair off from the START of a run and an odd tail reads as even. */
+/** Back to a char below U+0300, which always begins a cluster; regional indicators pair from
+ *  the start of a run, so a fixed window would not do. */
 function exactTail(before: string): string | null {
   const from = Math.max(0, before.length - JOIN_CONTEXT);
   for (let at = before.length - 1; at >= from; at -= 1) {
@@ -718,21 +622,18 @@ function exactTail(before: string): string | null {
   return null;
 }
 
-/** The first whole code point of `text`, or "" when there is none. */
 function firstPointOf(text: string): string {
   return text.length === 0
     ? ""
     : String.fromCodePoint(text.codePointAt(0) as number);
 }
 
-/** Whether the grapheme `before` ends on runs on into `point`: the one question a cut has to
- *  answer. False without a segmenter, which leaves the search where it is today. */
+/** False without a segmenter, keeping the old behaviour. */
 function joinsAcross(before: string, point: string): boolean {
   if (before.length === 0 || point.length === 0) return false;
   const platform = graphemeSegmenter();
   if (platform === null) return false;
   const window = exactTail(before);
-  // No anchor, so unknown rather than open: costs an occurrence ending exactly inside a run.
   if (window === null) return true;
   const at = window.length;
   const body = window + point;
@@ -746,13 +647,7 @@ function joinsAcross(before: string, point: string): boolean {
   return true;
 }
 
-/**
- * True when `[start, end)` begins and ends where a grapheme does. Asked of the platform, which knows the whole
- * of UAX 29 and is kept current with it; enumerating the ranges here kept missing one more way to land inside a
- * cluster every round. Asked one offset at a time, so neither the size of the index nor where the match landed
- * in it costs anything: tabulating a block's boundaries instead paid 250ms per block, and paid it again on every
- * reindex.
- */
+/** Asks the platform segmenter one offset at a time; hand-rolled UAX 29 kept missing cases. */
 function alignsToGraphemes(
   index: FindTextIndex,
   start: number,
@@ -766,10 +661,7 @@ function alignsToGraphemes(
   ) {
     return false;
   }
-  // Almost every match is in text that cannot join at either edge, and asking the segmenter costs far more than
-  // looking. Nothing below U+0300 joins: the lowest combining mark is U+0300, the lowest spacing mark U+0903,
-  // Prepend starts at U+0600, Hangul Jamo at U+1100, and everything astral arrives as a surrogate. Both sides of
-  // each edge, since the query can end with one.
+  // Fast path: nothing below U+0300 joins a grapheme, so skip the segmenter there.
   if (
     !splitsCrlf(text, start) &&
     !splitsCrlf(text, end) &&
@@ -783,9 +675,7 @@ function alignsToGraphemes(
   return startsGrapheme(index, start) && startsGrapheme(index, end);
 }
 
-/** True when a grapheme starts at `at`, and true where there is no segmenter to ask: Firefox
- *  shipped one in 125, and hand-rolling UAX 29 for the versions behind it is a second Unicode
- *  implementation to keep current, against those readers keeping today's behaviour. */
+/** True with no segmenter (Firefox before 125) rather than hand-rolling UAX 29. */
 function startsGrapheme(index: FindTextIndex, at: number): boolean {
   const text = index.text;
   if (at === 0 || at === text.length) return true;
@@ -814,8 +704,7 @@ function startsGrapheme(index: FindTextIndex, at: number): boolean {
     }
     return answer;
   }
-  // Past the budget, and a capped search anchored near the end walks the candidates up to three
-  // times, so this is bought once and answers every question after it.
+  // Past the budget, tabulate once: a capped search can walk candidates up to three times.
   const marks = new Uint8Array(text.length + 1);
   for (const { index: start } of segments) marks[start] = 1;
   marks[text.length] = 1;
@@ -827,8 +716,7 @@ function escapeForRegex(text: string): string {
   return text.replace(REGEX_META_PATTERN, "\\$&");
 }
 
-/** Null for a plain scan. Whitespace flexes because a soft-wrapped paragraph renders as one line
- *  while its node holds the newline; the separator is not whitespace, so blocks stay shut. */
+/** Null for a plain scan. Whitespace flexes for soft-wrapped text; the separator does not. */
 function matchPattern(variants: string[], needle: string): RegExp | null {
   const dotted = variants.some((variant) => variant.includes(COMBINING_DOT));
   if (
@@ -844,14 +732,12 @@ function matchPattern(variants: string[], needle: string): RegExp | null {
     pattern.exec("");
     return pattern;
   } catch {
-    // Every engine caps how large a pattern it compiles and the spec sets none, so there is no
-    // length to test against. A pasted log reaches it, and the throw took the bar down with it.
+    // Engines cap pattern size with no spec limit; a pasted log can hit it and must not throw.
     return null;
   }
 }
 
-/** Non-overlapping, like every browser's own find, which terminates a self-overlapping query.
- *  Inside a `<pre>` the whitespace on screen IS the whitespace in the node, so it cannot flex. */
+/** Non-overlapping like browser find. Whitespace in `<pre>` cannot flex. */
 function eachMatch(
   index: FindTextIndex,
   needle: string,
@@ -861,12 +747,11 @@ function eachMatch(
     needle,
     index.text.includes(COMBINING_DOT),
   );
-  // Against the SHORTEST spelling: a decomposed query is longer than the text it is meant to find.
+  // Against the shortest spelling: a decomposed query is longer than the text it finds.
   if (
     Math.min(...variants.map((variant) => variant.length)) > index.text.length
   )
     return;
-  // "Spelt as typed" survives NFC, so a hit that only flexed a space is still told apart.
   const composedNeedle = needle.normalize("NFC");
   const asTyped = (hit: string): boolean =>
     variants.includes(hit) || hit.normalize("NFC") === composedNeedle;
@@ -876,7 +761,6 @@ function eachMatch(
       const hit = pattern.exec(index.text);
       if (hit === null) return;
       const end = hit.index + hit[0].length;
-      // Never part way through a grapheme, whichever way the match was found.
       if (!alignsToGraphemes(index, hit.index, end)) {
         pattern.lastIndex = hit.index + 1;
         continue;
@@ -923,8 +807,7 @@ function collectMatches(
   return out;
 }
 
-/** At most `limit` matches, as a window around `anchor`: keeping the first `limit` instead keeps
- *  only the top of the document. `anchor` may be a thunk, because working it out reads layout. */
+/** A window of `limit` around `anchor`; `anchor` may be a thunk since it reads layout. */
 export function findMatches(
   index: FindTextIndex,
   query: string,
@@ -940,8 +823,7 @@ export function findMatches(
   const at = typeof anchor === "function" ? anchor() : anchor;
   if (at <= 0) return head;
 
-  // The count stops early: `total` only keeps the window off the end, and once `total - limit`
-  // reaches the left edge it can no longer pull it back. Past the anchor `before` is final.
+  // The count may stop early once the window can no longer move.
   let total = 0;
   let before = 0;
   let enough = Number.POSITIVE_INFINITY;
@@ -963,14 +845,12 @@ export function findMatches(
   return start === 0 ? head : collectMatches(index, needle, limit, start);
 }
 
-/** Drop the one match asked for over the cap, from whichever end the reader is further from. Taking
- *  it off the tail is right only while the window starts at the top of the document. */
+/** Drop the over-cap probe match from the end farther from the reader. */
 export function dropProbeFurthestFrom(
   matches: FindMatch[],
   anchor: number | null,
   limit = MAX_MATCHES,
 ): void {
-  // No anchor means the window starts at the document's first match, with nothing above to give up.
   if (
     anchor !== null &&
     matches.length > 0 &&
@@ -988,7 +868,7 @@ function touchesPreserved(
   end: number,
 ): boolean {
   let at = segmentAt(segments, start);
-  // A match can open on a separator, which belongs to no segment; take the next one along.
+  // A match can open on a separator, which belongs to no segment; take the next one.
   if (at === -1) {
     at = segments.findIndex((segment) => segment.start >= start);
     if (at === -1) return false;
@@ -1033,8 +913,7 @@ export function startPositionAt(
   return { node: segment.node, offset: offset - segment.start };
 }
 
-/** Located from the match's last character: an exclusive end sits one past the run whenever the
- *  match finishes a text node, which is the boundary `setEnd` wants there. */
+/** From the last char: an exclusive end at a node's end is the boundary `setEnd` wants. */
 export function endPositionAt(
   segments: TextSegment[],
   end: number,

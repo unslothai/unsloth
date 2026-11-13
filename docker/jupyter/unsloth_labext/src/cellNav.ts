@@ -9,9 +9,8 @@ import { CodeMirrorEditor } from '@jupyterlab/codemirror';
 import { INotebookTracker } from '@jupyterlab/notebook';
 
 /**
- * Colab-style cell navigation: at a cell boundary, move to the next cell and align
- * its TOP to the viewport. JupyterLab centers tall cells instead, dropping the view
- * mid-output, and no setting changes that.
+ * Colab-style navigation: at a cell boundary, move to the next cell and align its top to the
+ * viewport, since JupyterLab centers tall cells and no setting changes that.
  */
 const cellNavPlugin: JupyterFrontEndPlugin<void> = {
   id: 'unsloth-jupyterlab:cell-nav',
@@ -59,9 +58,7 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
         ) {
           return;
         }
-        // `lineCount` counts LOGICAL lines, but JupyterLab wraps markdown and raw
-        // editors by default, so one logical line can own several visual rows and a
-        // logical test makes them unreachable: every arrow leaves the cell.
+        // `lineCount` counts logical lines, but wrapped editors have several visual rows each.
         const view = editor instanceof CodeMirrorEditor ? editor.editor : null;
         if (view) {
           const range = view.state.selection.main;

@@ -9,7 +9,7 @@ type PlayerState = Pick<
   "currentTime" | "paused" | "ended" | "muted" | "volume" | "readyState"
 >;
 
-// HTMLMediaElement.HAVE_METADATA, spelled out so this also runs where there is no DOM.
+// Spelled out so this also runs where there is no DOM.
 const HAVE_METADATA = 1;
 
 export function readPlayback(

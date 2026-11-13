@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Condensed row actions for model rows so pin, update, and delete do not grow into an icon strip.
-// Mirrors the sidebar chat rows' MoreVertical menu pattern.
+// Condensed row actions so pin, update and delete do not grow into an icon strip.
 
 import {
   DropdownMenu,
@@ -24,13 +23,14 @@ import { useRevealLabel } from "@/features/library";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { RefreshGlyph } from "@/lib/refresh-icon";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
-  Folder01Icon,
   MoreVerticalIcon,
-  PinIcon,
-  PinOffIcon,
+  StarIcon,
+  StarOffIcon,
+  Undo02Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -39,19 +39,25 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  forgetRunSettings,
+  useHasRememberedRunSettings,
+} from "../../model-config/remembered-run-settings";
+import type { ModelPickTarget } from "./types";
 
-/** A caller-supplied entry. Rendered under the pin and above cache/update, so delete stays last. */
+/** Rendered under the pin and above cache/update, so delete stays last. */
 export interface ModelRowMenuItem {
   key: string;
   label: string;
   icon: ReactNode;
   onSelect: () => void;
   disabled?: boolean;
+  /** Listed in red under Delete. */
+  destructive?: boolean;
 }
 
 interface ModelRowMenuPin {
   pinned: boolean;
-  /** Menu item labels, e.g. "Pin quant to the top" / "Unpin quant". */
   pinLabel: string;
   unpinLabel: string;
   onToggle: () => void;
@@ -60,7 +66,6 @@ interface ModelRowMenuPin {
 interface ModelRowMenuUpdate {
   title: string;
   description: ReactNode;
-  /** Repo + variant the update targets. */
   repoId: string;
   variant?: string | null;
   disabled?: boolean;
@@ -71,8 +76,7 @@ interface ModelRowMenuUpdate {
 interface ModelRowMenuDelete {
   title: string;
   description: ReactNode;
-  /** Repo (and quant) to preview the delete for, so the dialog can state what it actually reclaims
-   *  and what shared assets it leaves behind. Omit to keep the plain wording. */
+  /** Lets the delete dialog state what it reclaims and what shared assets remain. */
   impact?: { repoId: string; variant?: string | null; cachePath?: string | null };
   successMessage: string;
   disabled?: boolean;
@@ -80,7 +84,6 @@ interface ModelRowMenuDelete {
   onDeleted?: () => void;
 }
 
-/** Managed-cache location for "Reveal in Finder" (resolved server-side). */
 interface ModelRowMenuCachePath {
   repoId: string;
   variant?: string;
@@ -94,23 +97,27 @@ export function ModelRowMenu({
   onReveal,
   pin,
   items,
+  runSettings,
   update,
   del,
+  details,
+  contentClassName,
 }: {
+  contentClassName?: string;
+  details?: ReactNode;
   ariaLabel: string;
   buttonClassName?: string;
   iconClassName?: string;
-  /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
-  /** Enables "Reveal in Finder" for paths outside the cache. */
   onReveal?: () => Promise<void>;
   pin?: ModelRowMenuPin;
-  /** Extra entries for actions this menu has no shape of its own for. */
   items?: readonly ModelRowMenuItem[];
+  runSettings?: ModelPickTarget;
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
-  // Null unless this is the owner on the backend's own machine with a file manager.
+  const destructiveItems = items?.filter((item) => item.destructive) ?? [];
+  // Null unless the owner is on the backend's own machine with a file manager.
   const revealLabel = useRevealLabel();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -122,7 +129,6 @@ export function ModelRowMenu({
   );
   const [updateOpen, setUpdateOpen] = useState(false);
 
-  // Refresh the caller when this repo+variant's managed update completes.
   const onUpdatedRef = useRef(update?.onUpdated);
   useEffect(() => {
     onUpdatedRef.current = update?.onUpdated;
@@ -163,8 +169,7 @@ export function ModelRowMenu({
 
   const onUpdateConfirm = update?.onConfirm;
   const handleUpdateConfirm = useCallback(() => {
-    // Start the re-download and close the dialog; the Downloads panel owns progress and cancel. Only
-    // a failure to START toasts.
+    // The Downloads panel owns progress and cancel; only a failure to start toasts.
     void Promise.resolve()
       .then(onUpdateConfirm)
       .catch((err) => {
@@ -190,8 +195,37 @@ export function ModelRowMenu({
     });
   }, [onReveal, cachePathRepoId, cachePathVariant]);
 
+  const hasSavedRunSettings = useHasRememberedRunSettings(runSettings ?? null);
+  const handleResetRunSettings = useCallback(() => {
+    if (!runSettings) return;
+    const undo = forgetRunSettings(runSettings);
+    if (!undo) {
+      toast.error("Could not reset run settings");
+      return;
+    }
+    toast.success(`Run settings reset for ${runSettings.displayName}`, {
+      description: "Takes effect the next time it loads.",
+      // Longer than a status toast: this one carries the only way back.
+      duration: 10000,
+      action: {
+        label: "Undo",
+        onClick: () => {
+          if (!undo()) toast.error("Could not restore run settings");
+        },
+      },
+    });
+  }, [runSettings]);
+
   const canReveal = Boolean(revealLabel && (cachePath || onReveal));
-  if (!pin && !update && !del && !canReveal && !items?.length) return null;
+  if (
+    !pin &&
+    !update &&
+    !del &&
+    !canReveal &&
+    !items?.length &&
+    !hasSavedRunSettings
+  )
+    return null;
 
   return (
     <>
@@ -202,7 +236,6 @@ export function ModelRowMenu({
             onClick={(e) => e.stopPropagation()}
             aria-label={ariaLabel}
             className={cn(
-              // Fixed box, matching ModelLoadSettingsAction beside it.
               "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
               buttonClassName,
             )}
@@ -218,8 +251,18 @@ export function ModelRowMenu({
           side="bottom"
           align="end"
           sideOffset={2}
-          className="unsloth-plus-menu menu-flat-destructive w-48"
+          className={cn(
+            "unsloth-plus-menu menu-flat-destructive",
+            details ? "w-60" : "w-48",
+            contentClassName,
+          )}
         >
+          {details ? (
+            <>
+              {details}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           {pin && (
             <DropdownMenuItem
               onSelect={(e) => {
@@ -228,26 +271,43 @@ export function ModelRowMenu({
               }}
             >
               <HugeiconsIcon
-                icon={pin.pinned ? PinOffIcon : PinIcon}
+                icon={pin.pinned ? StarOffIcon : StarIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />
               <span>{pin.pinned ? pin.unpinLabel : pin.pinLabel}</span>
             </DropdownMenuItem>
           )}
-          {items?.map((item) => (
+          {items
+            ?.filter((item) => !item.destructive)
+            .map((item) => (
+              <DropdownMenuItem
+                key={item.key}
+                disabled={item.disabled}
+                onSelect={(e) => {
+                  e.stopPropagation();
+                  item.onSelect();
+                }}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </DropdownMenuItem>
+            ))}
+          {hasSavedRunSettings && (
             <DropdownMenuItem
-              key={item.key}
-              disabled={item.disabled}
               onSelect={(e) => {
                 e.stopPropagation();
-                item.onSelect();
+                handleResetRunSettings();
               }}
             >
-              {item.icon}
-              <span>{item.label}</span>
+              <HugeiconsIcon
+                icon={Undo02Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              <span>Reset run settings</span>
             </DropdownMenuItem>
-          ))}
+          )}
           {canReveal && (
             <DropdownMenuItem
               onSelect={(e) => {
@@ -275,11 +335,14 @@ export function ModelRowMenu({
               <span>Update</span>
             </DropdownMenuItem>
           )}
+          {(del || destructiveItems.length > 0) &&
+            (canReveal ||
+              pin ||
+              update ||
+              items?.some((item) => !item.destructive) ||
+              hasSavedRunSettings) && <DropdownMenuSeparator />}
           {del && (
             <>
-              {(canReveal || pin || update || items?.length) && (
-                <DropdownMenuSeparator />
-              )}
               <DropdownMenuItem
                 variant="destructive"
                 disabled={del.disabled}
@@ -289,7 +352,7 @@ export function ModelRowMenu({
                 }}
               >
                 <HugeiconsIcon
-                  icon={Delete02Icon}
+                  icon={TrashIcon}
                   strokeWidth={1.75}
                   className="size-icon"
                 />
@@ -297,6 +360,20 @@ export function ModelRowMenu({
               </DropdownMenuItem>
             </>
           )}
+          {destructiveItems.map((item) => (
+            <DropdownMenuItem
+              key={item.key}
+              variant="destructive"
+              disabled={item.disabled}
+              onSelect={(e) => {
+                e.stopPropagation();
+                item.onSelect();
+              }}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </DropdownMenuItem>
+          ))}
         </DropdownMenuContent>
       </DropdownMenu>
 

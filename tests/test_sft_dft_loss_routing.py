@@ -145,3 +145,22 @@ def test_nll_keeps_the_unsloth_path():
     model = _FusedModel()
     assert Trainer("nll").compute_loss(model, {}, num_items_in_batch = 7) == ("super", 7)
     assert model.calls == []
+
+
+def test_dft_with_label_smoothing_still_trains_dft():
+    Trainer = _trainer_class()
+    trainer = Trainer("dft")
+    trainer.label_smoother = lambda *args, **kwargs: pytest.fail("dft was trained as smoothed NLL")
+    model = _FusedModel()
+    loss = trainer.compute_loss(model, {"input_ids": None}, num_items_in_batch = 3)
+    assert [bool(c.get("fused_lm_head")) for c in model.calls] == [True]
+    assert loss.item() == pytest.approx(_dft(model.log_probs.detach(), 3))
+
+
+def test_nll_with_label_smoothing_keeps_the_unsloth_path():
+    Trainer = _trainer_class()
+    trainer = Trainer("nll")
+    trainer.label_smoother = object()
+    model = _FusedModel()
+    assert trainer.compute_loss(model, {}, num_items_in_batch = 7) == ("super", 7)
+    assert model.calls == []

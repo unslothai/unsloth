@@ -16,7 +16,7 @@ import { FolderBrowser } from "@/features/model-picker";
 import { pickHuggingFaceCacheDir } from "@/features/native-intents";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
-import { Folder02Icon } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { setDownloadDir, useDownloadDir } from "../download-manager";

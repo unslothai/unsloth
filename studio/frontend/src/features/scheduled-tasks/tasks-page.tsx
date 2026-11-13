@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Add01Icon,
-  Delete02Icon,
+  Edit03Icon,
   FilterMailIcon,
   MoreHorizontalIcon,
-  PencilEdit02Icon,
+  PlusSignIcon,
   Search01Icon,
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { PauseIcon, PlayIcon } from "lucide-react";
+import { PlayIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -117,12 +119,24 @@ function repeatsText(
   t: (key: TranslationKey, values?: InterpolationValues) => string,
 ): string {
   const summary = summarizeRepeats(schedule, locale);
+  if (summary.key === "everyHours") {
+    return t("scheduledTasks.schedule.everyHours", { hours: summary.hours });
+  }
   if (summary.key === "weekly") return summary.days;
   if (summary.key === "monthly") return t("scheduledTasks.monthlyDay", { day: summary.day });
   return t(`scheduledTasks.form.${summary.key}`);
 }
 
-function clockText(schedule: TaskSchedule, locale: string): string {
+function clockText(task: ScheduledTask, locale: string): string {
+  const { schedule } = task;
+  if (schedule.kind === "hourly") {
+    return task.nextRunAt === null
+      ? "—"
+      : new Intl.DateTimeFormat(
+          locale,
+          withTimeFormat({ hour: "numeric", minute: "2-digit", timeZone: task.timezone }, locale),
+        ).format(task.nextRunAt);
+  }
   return formatClock(schedule.kind === "once" ? schedule.at.split("T")[1] : schedule.time, locale);
 }
 
@@ -158,6 +172,7 @@ function TaskRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const navigate = useNavigate();
   const update = useScheduledTasksStore((state) => state.update);
   const runNow = useScheduledTasksStore((state) => state.runNow);
@@ -182,7 +197,7 @@ function TaskRow({
     formatRelativeTime(locale, ...relativeTimeParts(Math.min(at, now - 1_000), now));
   const finishedAt = run?.finishedAt ?? null;
   const repeats = repeatsText(task.schedule, locale, t);
-  const clock = clockText(task.schedule, locale);
+  const clock = clockText(task, locale);
   const nextDay = task.nextRunAt === null ? "—" : formatRunDay(task.nextRunAt, now, locale, task.timezone);
 
   return (
@@ -285,7 +300,7 @@ function TaskRow({
             className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-48 font-heading rounded-[14px] border-0"
           >
             <DropdownMenuItem onSelect={onEdit}>
-              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               {t("scheduledTasks.edit")}
             </DropdownMenuItem>
             {task.status !== "completed" && (
@@ -296,7 +311,7 @@ function TaskRow({
                 }
               >
                 {task.enabled ? (
-                  <PauseIcon strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={PauseIcon} strokeWidth={1.75} className="size-icon" />
                 ) : (
                   <PlayIcon strokeWidth={1.75} className="size-icon" />
                 )}
@@ -304,7 +319,7 @@ function TaskRow({
               </DropdownMenuItem>
             )}
             <DropdownMenuItem variant="destructive" onSelect={onDelete}>
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
               {t("common.delete")}
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -433,11 +448,11 @@ export function TasksPage() {
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("scheduledTasks.search")}
               aria-label={t("scheduledTasks.search")}
-              className="h-9 w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
+              className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
             />
           </div>
-          <Button onClick={() => setEditing(null)}>
-            <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+          <Button variant="dark" onClick={() => setEditing(null)}>
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
             {t("scheduledTasks.newTask")}
           </Button>
         </div>
@@ -477,7 +492,7 @@ export function TasksPage() {
             className="mt-3 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
             onClick={() => setEditing(null)}
           >
-            <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
             {t("scheduledTasks.createFirst")}
           </Button>
         </div>
@@ -498,7 +513,7 @@ export function TasksPage() {
                     title={t("scheduledTasks.filter")}
                     className={cn(ROW_BUTTON, shown.length < STATUSES.length && "text-foreground")}
                   >
-                    <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+                    <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5 -translate-y-[0.5px]" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent

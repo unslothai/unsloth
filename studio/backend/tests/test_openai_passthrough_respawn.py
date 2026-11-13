@@ -74,8 +74,7 @@ class _Request:
 
 
 class _Lease:
-    """Records that the slot came back. Repeat calls are fine: the real lease is
-    idempotent, and the stream's nested handlers both release."""
+    """Repeat release is safe: the real lease is idempotent and nested handlers both release."""
 
     def __init__(self):
         self.released = False
@@ -210,8 +209,7 @@ def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
 
 
 def test_non_streaming_respawns_at_most_once(monkeypatch):
-    """A relaunch that reports success but is not serving must end in a 502, not a
-    loop that respawns the model on every attempt."""
+    """A relaunch reporting success but not serving must end in a 502 after one respawn."""
     client = _FakeNonStreamingClient()
     monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     backend = _Backend(stays_dead = True)
@@ -510,11 +508,12 @@ class _SlowRespawnBackend(_Backend):
         return True
 
 
-def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch):
+@pytest.mark.parametrize("failure_delay", [0, 0.3])
+def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch, failure_delay):
     """Keepalives must continue during a respawn, or a proxy drops the stream before the retry."""
     monkeypatch.setattr(inf_mod, "_OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S", 0.05)
     calls = []
-    transport = _SlowDeadTransport(calls)
+    transport = _SlowDeadTransport(calls, delay = failure_delay)
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
         inf_mod.httpx,

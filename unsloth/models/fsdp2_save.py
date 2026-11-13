@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Saving an FSDP2-sharded model. Every rank must call the save: the shards are all-gathered one
-parameter at a time, rank 0 swaps the full tensors (on CPU) into the modules, runs the ordinary
-single-GPU save code, and puts the sharded parameters back. bitsandbytes 4-bit weights are gathered
-as raw bytes and rebuilt as Params4bit with their QuantState, so a merge can still dequantize them.
-"""
+"""FSDP2 save: every rank must call it; rank 0 runs the single-GPU save on gathered CPU tensors."""
 
 __all__ = [
     "fsdp2_units",
     "fsdp2_gathered",
     "fsdp2_gather_active",
+    "fsdp2_export_on_writer",
     "mesh_writer_rank",
     "writes_off_rank0",
     "install_dcp_bnb_state_dict",
@@ -93,6 +90,57 @@ def _unit_mesh(unit):
         return None
 
 
+def _root_mesh(mesh):
+    get = getattr(mesh, "_get_root_mesh", None)
+    if get is not None:
+        return get()
+    from torch.distributed.device_mesh import _mesh_resources
+
+    return _mesh_resources.get_root_mesh(mesh)
+
+
+def _same_mesh(a, b):
+    """Same device type, dim names and rank layout. DTensor ops may hand back an equal mesh from an earlier
+    init_device_mesh of the same shape (torch caches specs by mesh equality), so identity is not enough."""
+    if a is b:
+        return True
+    try:
+        return (
+            a.device_type == b.device_type
+            and tuple(a.mesh_dim_names or ()) == tuple(b.mesh_dim_names or ())
+            and torch.equal(a.mesh, b.mesh)
+        )
+    except Exception:
+        return False
+
+
+def _composed_writer_rank(meshes):
+    try:
+        root = _root_mesh(meshes[0])
+        if any(not _same_mesh(_root_mesh(m), root) for m in meshes[1:]):
+            return None
+        axes = set()
+        for m in meshes:
+            # Flattened mesh names need not exist in the root.
+            coordinates = torch.isin(root.mesh, m.mesh.reshape(-1)).nonzero()
+            if coordinates.shape[0] != m.mesh.numel():
+                return None
+            axes.update((coordinates != coordinates[0]).any(dim = 0).nonzero().flatten().tolist())
+        coordinate = root.get_coordinate()
+        index = tuple(slice(None) if axis in axes else c for axis, c in enumerate(coordinate))
+        return int(root.mesh[index].min())
+    except Exception:
+        return None
+
+
+def _recorded_mesh(model):
+    """The mesh shard_model recorded on the root (under a torch.compile wrapper, on `_orig_mod`)."""
+    if not isinstance(model, torch.nn.Module):
+        return None
+    model = model._modules.get("_orig_mod", model)
+    return model.__dict__.get("_unsloth_fsdp2_mesh", None)
+
+
 def mesh_writer_rank(model):
     """Lowest global rank of the model's FSDP2 mesh: a sub-mesh without rank 0 never gathers there."""
     dist = _dist()
@@ -102,12 +150,29 @@ def mesh_writer_rank(model):
     mesh = None
     if isinstance(model, torch.nn.Module):
         if DTensor is not None:
-            mesh = next((p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None)
+            meshes = []
+            for p in model.parameters():
+                if isinstance(p, DTensor) and p.device_mesh not in meshes:
+                    meshes.append(p.device_mesh)
+            if meshes:
+                # The dp mesh too: unsharded parameters (eval forward, no reshard) or every
+                # parameter in ignored_params leave only tp DTensors, one writer per tp group.
+                for dp_mesh in (
+                    *map(_unit_mesh, fsdp2_units(model)),
+                    _recorded_mesh(model),
+                ):
+                    if dp_mesh is not None and dp_mesh not in meshes:
+                        meshes.append(dp_mesh)
+            if len(meshes) > 1:
+                writer = _composed_writer_rank(meshes)
+                if writer is not None:
+                    return writer
+            mesh = meshes[0] if meshes else None
         if mesh is None:
             # Unsharded parameters (eval forward, no reshard) carry no mesh; the units still do.
             mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
         if mesh is None:
-            mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
+            mesh = _recorded_mesh(model)
     try:
         return int(mesh.mesh.min()) if mesh is not None else 0
     except Exception:
@@ -138,10 +203,8 @@ def _wait_for_writer(
     writer,
     writer_rank = 0,
 ):
-    """The other ranks wait for the writer's write, so no later collective overtakes it. A store key,
-    not a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
-    collective timeout, and NCCL ranks blocked in a barrier would abort before the writer arrives.
-    Keyed per writer rank so disjoint sub-meshes do not release each other."""
+    """Store key, not a barrier: other ranks wait so no later collective overtakes the write, and a
+    long export can outlast the collective timeout; keyed per writer rank."""
     _SAVE_COUNTER[writer_rank] = _SAVE_COUNTER.get(writer_rank, 0) + 1
     count = _SAVE_COUNTER[writer_rank]
     key = (
@@ -281,11 +344,8 @@ def fsdp2_gathered(
     if not units or DTensor is None:
         yield None
         return
-    for unit in units:
-        # An eval forward leaves the last block and the lm_head unit gathered; make every
-        # parameter a DTensor again so all ranks gather the same list.
-        if hasattr(unit, "reshard"):
-            unit.reshard()
+    # An eval forward leaves units gathered; reshard first so all ranks gather the same list.
+    _reshard_units(units)
     dist = _dist()
     rank = dist.get_rank() if dist is not None else 0
     writer_rank = mesh_writer_rank(model)
@@ -399,8 +459,7 @@ _MERGED_4BIT_METHODS = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit
 
 
 def _merges_onto_dequantized_4bit(model):
-    """unsloth_zoo folds a merged_16bit LoRA onto dequant(W4) for a few architectures (falcon_h1),
-    dequantizing the live packed weight where it sits."""
+    """zoo folds merged_16bit LoRA onto dequantized W4 for some architectures (falcon_h1)."""
     try:
         from unsloth_zoo.saving_utils import (
             _model_type_needs_dequant_merge_base,
@@ -484,6 +543,348 @@ def fsdp2_gather_active():
     return bool(_ACTIVE)
 
 
+_EXPORT_COUNTER = {}
+_GIB = 1024**3
+
+
+def _reshard_units(units):
+    for unit in units:
+        if hasattr(unit, "reshard"):
+            unit.reshard()
+
+
+def _gathered_host_bytes(
+    model,
+    trainable_only = False,
+    include = None,
+    offload_to_cpu = True,
+    offload_4bit = False,
+):
+    """Bytes `fsdp2_gathered` with these options leaves in the writer's host RAM: every selected
+    sharded parameter it moves to the CPU, at its full (global) size."""
+    DTensor = _dtensor_class()
+    if DTensor is None:
+        return 0
+    # Reshards first so the count matches what the gather finds.
+    _reshard_units(fsdp2_units(model))
+    total = 0
+    seen = set()
+    for name, param in model.named_parameters():
+        if id(param) in seen or not isinstance(param, DTensor):
+            continue
+        seen.add(id(param))
+        if trainable_only and not param.requires_grad and not (include and include(name, param)):
+            continue
+        offload = offload_to_cpu(name, param) if callable(offload_to_cpu) else offload_to_cpu
+        if not offload:
+            continue
+        if getattr(param, "quant_state", None) is not None and not offload_4bit:
+            continue
+        total += param.numel() * param.element_size()
+    return total
+
+
+def _cgroup_available_bytes():
+    """Bytes left under this process's cgroup memory limits (v2 memory.max - memory.current over the
+    cgroup and its parents, v1 memory.limit_in_bytes - memory.usage_in_bytes), or None without one.
+    A container (Docker, Kubernetes, Kaggle, Colab) is killed at its limit, not at host RAM."""
+
+    def read(path):
+        try:
+            with open(path, encoding = "utf-8") as f:
+                value = f.read().strip()
+            return None if value == "max" else int(value)
+        except Exception:
+            return None
+
+    left = []
+    try:
+        with open("/proc/self/cgroup", encoding = "utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception:
+        return None
+    for line in lines:
+        hierarchy, controllers, path = (line.split(":", 2) + ["", ""])[:3]
+        if hierarchy == "0" and controllers == "":
+            parts = [p for p in path.split("/") if p]
+            for depth in range(len(parts), -1, -1):
+                base = os.path.join("/sys/fs/cgroup", *parts[:depth])
+                limit, used = (
+                    read(os.path.join(base, "memory.max")),
+                    read(os.path.join(base, "memory.current")),
+                )
+                if limit is not None and used is not None:
+                    left.append(limit - used)
+        elif "memory" in controllers.split(","):
+            # A limit may sit on any ancestor (/job over /job/worker): every level counts, as in v2.
+            parts = [p for p in path.split("/") if p]
+            for depth in range(len(parts), -1, -1):
+                base = os.path.join("/sys/fs/cgroup/memory", *parts[:depth])
+                limit = read(os.path.join(base, "memory.limit_in_bytes"))
+                used = read(os.path.join(base, "memory.usage_in_bytes"))
+                if limit is not None and used is not None and limit < (1 << 60):
+                    left.append(limit - used)
+    return max(0, min(left)) if left else None
+
+
+def _host_available_bytes():
+    """Host RAM this process could still allocate, or None when it cannot be read."""
+    available = None
+    try:
+        import psutil
+        available = int(psutil.virtual_memory().available)
+    except Exception:
+        pass
+    if available is None:
+        try:
+            with open("/proc/meminfo", encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        available = int(line.split()[1]) * 1024
+                        break
+        except Exception:
+            pass
+    cgroup = _cgroup_available_bytes()
+    if cgroup is not None:
+        available = cgroup if available is None else min(available, cgroup)
+    return available
+
+
+def _accelerator_convert_bytes(gathered):
+    # The gathered weights stay alive while the convert allocates their quantized copies (int8 of
+    # 16-bit weights is half their size, int4 a quarter), so both must fit at once.
+    return gathered + gathered // 2
+
+
+def gather_on_accelerator_if_it_fits(model):
+    """`fsdp2_gathered` options for an export that quantizes the weights in place, where they sit
+    (torchao's QAT convert). On one GPU they sit on the GPU, so the writer keeps the gathered weights
+    on its accelerator when they fit there (with 1 GiB or 10% of the card spare), and the checkpoint
+    is the one a single GPU writes. Otherwise they go to the CPU as for any other export."""
+    on_cpu = dict(offload_to_cpu = True, offload_4bit = True, converts_in_place = True)
+    if not isinstance(model, torch.nn.Module):
+        return on_cpu
+    DTensor = _dtensor_class()
+    _reshard_units(fsdp2_units(model))
+    param = next(
+        (p for p in model.parameters() if DTensor is not None and isinstance(p, DTensor)),
+        None,
+    )
+    if param is None:
+        return on_cpu
+    device = param.to_local().device
+    mesh_type = param.device_mesh.device_type
+    if device.type == "cpu" and mesh_type != "cpu":
+        # CPUOffloadPolicy keeps the shards on the host; the model still computes on the mesh device.
+        try:
+            device = torch.device(mesh_type, getattr(torch, mesh_type).current_device())
+        except Exception:
+            return on_cpu
+    if device.type == "cpu":
+        return on_cpu
+    try:
+        free, total = getattr(torch, device.type).mem_get_info(device)
+    except Exception:
+        return on_cpu
+    need = _accelerator_convert_bytes(
+        _gathered_host_bytes(model, offload_to_cpu = True, offload_4bit = True)
+    )
+    if need + max(_GIB, total // 10) > free:
+        if mesh_writer_rank(model) == (_dist().get_rank() if _dist() is not None else 0):
+            print(
+                f"Unsloth: FSDP2 export: the gathered model and its converted copy ({need / _GIB:.1f} GiB) do not fit the "
+                f"{free / _GIB:.1f} GiB free on {device}, so it is gathered to the CPU and converted "
+                f"one module at a time on {device}."
+            )
+        # Not on the CPU: CUDA computes torchao's `scale = max / 7.5` as max * (1 / 7.5), the CPU
+        # divides, and for fp32 weights the two differ in the last bit of most scales.
+        return dict(on_cpu, convert_on = device)
+    return dict(offload_to_cpu = False, offload_4bit = False, converts_in_place = True)
+
+
+def _host_ram_refusal(
+    method,
+    need,
+    what = "gathered weights",
+):
+    """None when `need` gathered bytes fit this host's available RAM, else the refusal message."""
+    if os.environ.get("UNSLOTH_FSDP2_EXPORT_SKIP_RAM_CHECK", "0") == "1":
+        return None
+    available = _host_available_bytes()
+    if available is None:
+        return None
+    headroom = max(2 * _GIB, need // 10)
+    if need + headroom <= available:
+        return None
+    return (
+        f"Unsloth: `{method}` under FSDP2 gathers the whole model into the host RAM of the rank that "
+        f"exports: that needs about {(need + headroom) / _GIB:.1f} GiB ({need / _GIB:.1f} GiB of "
+        f"{what} + {headroom / _GIB:.1f} GiB headroom), but only {available / _GIB:.1f} GiB "
+        "is available. Save the adapter with `model.save_pretrained(save_directory)` (it gathers only "
+        "the LoRA weights), then in a single process load that folder with "
+        f"`FastLanguageModel.from_pretrained` and call `{method}` there. Set "
+        "UNSLOTH_FSDP2_EXPORT_SKIP_RAM_CHECK=1 to export anyway."
+    )
+
+
+def _share_from_writer(
+    dist,
+    writer,
+    writer_rank,
+    tag,
+    payload = None,
+):
+    """The writer's `payload` on every rank, passed through the default store (not a collective,
+    so a rank may wait for it as long as an export takes). Without a store, None off the writer."""
+    from . import _store_codec
+
+    try:
+        store = dist.distributed_c10d._get_default_store()
+    except Exception:
+        store = None
+    if store is None:
+        return payload if writer else None
+    counter = _EXPORT_COUNTER.setdefault(writer_rank, {})
+    counter[tag] = counter.get(tag, 0) + 1
+    key = f"unsloth_fsdp2_export_r{writer_rank}_{tag}_{counter[tag]}"
+    if writer:
+        store.set(key, _store_codec.encode(payload))
+        return payload
+    store.wait([key], _save_timeout())
+    try:
+        return _store_codec.decode(store.get(key))
+    except ValueError:
+        return (
+            ("error", "the writer left an unreadable result in the store")
+            if tag == "result"
+            else None
+        )
+
+
+@contextlib.contextmanager
+def _module_tree_kept(model):
+    """Puts back every submodule an export swapped out in place (torchao's QAT convert replaces
+    each fake-quantized Linear), and the config's quantization_config, so the writer's model stays
+    the sharded model the other ranks hold. The swapped-in modules only carried gathered weights."""
+    saved = [(module, dict(module._modules)) for module in model.modules()]
+    config = getattr(model, "config", None)
+    missing = object()
+    quantization_config = (
+        config.__dict__.get("quantization_config", missing) if config is not None else missing
+    )
+    try:
+        yield
+    finally:
+        for module, children in saved:
+            current = module._modules
+            if current.keys() != children.keys() or any(
+                current[k] is not v for k, v in children.items()
+            ):
+                current.clear()
+                current.update(children)
+        if config is not None:
+            if quantization_config is missing:
+                config.__dict__.pop("quantization_config", None)
+            else:
+                config.__dict__["quantization_config"] = quantization_config
+
+
+@contextlib.contextmanager
+def _torchao_convert_device(device):
+    """While set, unsloth's in-place torchao QAT convert moves each module it converts to `device`,
+    converts it there and moves it back (`_convert_torchao_model`)."""
+    if device is None:
+        yield
+        return
+    from . import _utils
+
+    _utils._TORCHAO_CONVERT_DEVICE.append(device)
+    try:
+        yield
+    finally:
+        _utils._TORCHAO_CONVERT_DEVICE.pop()
+
+
+def fsdp2_export_on_writer(
+    model,
+    run,
+    method,
+    trainable_only = False,
+    include = None,
+    offload_to_cpu = True,
+    offload_4bit = False,
+    convert_on = None,
+    converts_in_place = False,
+):
+    """Every rank must call it. The writer checks gathered weights fit its host RAM (all ranks
+    refuse if not), gathers to CPU, alone runs the single-process export; others wait on the
+    store; all return or raise with the writer."""
+    dist = _dist()
+    rank = dist.get_rank() if dist is not None else 0
+    writer_rank = mesh_writer_rank(model)
+    writer = rank == writer_rank
+    refusal = None
+    if writer:
+        need = _gathered_host_bytes(model, trainable_only, include, offload_to_cpu, offload_4bit)
+        what = "gathered weights"
+        if converts_in_place:
+            need, what = (
+                _accelerator_convert_bytes(need),
+                "gathered weights and their converted copy",
+            )
+        refusal = _host_ram_refusal(method, need, what)
+    if dist is not None:
+        refusal = _share_from_writer(dist, writer, writer_rank, "fit", refusal)
+    if refusal:
+        raise RuntimeError(refusal)
+    if writer:
+        print(
+            f"Unsloth: FSDP2 {method}: gathering the "
+            + ("trainable" if trainable_only else "sharded")
+            + f" weights to rank {writer_rank}, which exports alone; the other ranks wait for it."
+        )
+    outcome = None
+    error = None
+    try:
+        with fsdp2_gathered(
+            model,
+            trainable_only = trainable_only,
+            offload_to_cpu = offload_to_cpu,
+            include = include,
+            offload_4bit = offload_4bit,
+        ) as gathered_writer:
+            if gathered_writer is not False:
+                try:
+                    with _module_tree_kept(model), _torchao_convert_device(convert_on):
+                        outcome = ("ok", run())
+                except BaseException as e:
+                    error = e
+                    outcome = ("error", f"{type(e).__name__}: {e}")
+                if dist is not None:
+                    # Published before the gather's own release, so it is there once the others wake.
+                    _share_from_writer(dist, True, writer_rank, "result", outcome)
+    except BaseException as e:
+        if writer and outcome is None and dist is not None:
+            # The gather itself failed on the writer: do not leave the others waiting for a result.
+            _share_from_writer(
+                dist, True, writer_rank, "result", ("error", f"{type(e).__name__}: {e}")
+            )
+        raise
+    if error is not None:
+        raise error
+    if writer or dist is None:
+        return outcome[1] if outcome else None
+    outcome = _share_from_writer(dist, False, writer_rank, "result")
+    if outcome is None:
+        return None
+    if outcome[0] == "error":
+        raise RuntimeError(
+            f"Unsloth: `{method}` failed on rank {writer_rank}, the FSDP2 rank that exports: "
+            + outcome[1]
+        )
+    return outcome[1]
+
+
 _DCP_DEPTH = [0]
 _ADAPTER_ONLY = [0]
 _DCP_FUNCTIONS = (
@@ -523,9 +924,7 @@ def _has_sharded_4bit(args, kwargs):
 
 
 def _has_native_replicated_4bit(args, kwargs):
-    """A natively sharded model (fsdp2_native, fit layout) whose Linear4bit weights FSDP2 left replicated:
-    they keep bitsandbytes' own `weight.absmax` / `quant_state` entries, which a strict DCP load rejects
-    as unexpected keys although the in-memory QuantState already equals them."""
+    """Replicated Linear4bit weights keep weight.absmax and quant_state keys that strict DCP rejects."""
     model = args[0] if args else kwargs.get("model", None)
     if not isinstance(model, torch.nn.Module) or not getattr(model, "_unsloth_fsdp2_native", False):
         return False
@@ -736,9 +1135,8 @@ def _restore_quant_state(model, state_dict, options):
             loads_weight, saved = payload[0]
         if not saved:
             if loads_weight:
-                # A checkpoint written before QuantState was saved (a frozen QLoRA base): its packed
-                # bytes are the live ones, so the live scales are theirs. Other bytes would be
-                # dequantized with the wrong scales.
+                # Pre-QuantState checkpoints: live scales apply only when the saved packed bytes
+                # match the live ones.
                 same = _same_packed_bytes(
                     module.weight, state_dict.get(head[:-1]), dist if broadcast else None
                 )
@@ -869,6 +1267,8 @@ def _without_quant_state_entries(name, args, kwargs):
 
 
 def _in_backward():
+    if torch.compiler.is_compiling():
+        return False
     try:
         return torch._C._current_graph_task_id() != -1
     except Exception:
@@ -891,10 +1291,7 @@ def model_mesh(model):
 
 
 def mesh_all_reduce(tensor, mesh, dist):
-    """Sum `tensor` in place over every rank of `mesh` (the world when None), one all_reduce per mesh
-    dimension (the groups of each dimension partition the mesh, so an HSDP mesh is summed whole).
-    Returns the number of ranks summed. A sub-mesh (several models or replicas on disjoint ranks)
-    reduces only over its own ranks."""
+    """One all_reduce per mesh dim sums an HSDP mesh whole; a sub-mesh reduces only over its own ranks."""
     if mesh is None:
         dist.all_reduce(tensor)
         return dist.get_world_size()
@@ -908,18 +1305,16 @@ def _sync_replicated_grads(
     dist,
     mesh = None,
     buffers = None,
+    pending = None,
 ):
-    """Average gradients over `mesh` (DDP-style), one all_reduce per (device, reduce dtype), entered
-    by every rank: a missing local gradient counts as zeros, and a "has a gradient" flag keeps grad
-    None for a parameter no rank used. Sums in float32 (fp16 sums overflow). The summed flags are
-    read (a host sync) only when some local gradient is None. `buffers` caches one flat buffer per
-    (device, dtype); gradients never alias it."""
+    """Average in float32; absent ranks contribute zero, globally unused grads stay None."""
     groups = {}
     for p in params:
         dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
         groups.setdefault((str(p.device), dtype), []).append(p)
     for (device, dtype), group in groups.items():
-        sizes = [p.numel() for p in group]
+        # Across dp, an external TP DTensor represents matching local slices.
+        sizes = [_local_tensor(p).numel() for p in group]
         total = sum(sizes)
         key = tuple((id(p), n) for p, n in zip(group, sizes))
         cached = buffers.get((device, dtype)) if buffers is not None else None
@@ -929,19 +1324,25 @@ def _sync_replicated_grads(
             flat = torch.empty(total + len(group), dtype = dtype, device = group[0].device)
             if buffers is not None:
                 buffers[(device, dtype)] = (key, flat)
-        grads = [p.grad for p in group]
-        local_all = all(g is not None for g in grads)
+        grads = [_local_tensor(p.grad) for p in group]
+        extra = [pending.get(id(p)) if pending else None for p in group]
+        local_all = all(g is not None or e is not None for g, e in zip(grads, extra))
         flags = flat[total:]
         if local_all:
             flags.fill_(1)
         else:
             flags.zero_()
         offset = 0
-        for i, (g, n) in enumerate(zip(grads, sizes)):
-            if g is not None:
-                flat[offset : offset + n].copy_(g.detach().reshape(-1))
+        for i, (g, e, n) in enumerate(zip(grads, extra, sizes)):
+            if g is not None or e is not None:
+                if g is None:
+                    flat[offset : offset + n].copy_(e.reshape(-1))
+                else:
+                    flat[offset : offset + n].copy_(g.detach().reshape(-1))
+                    if e is not None:
+                        flat[offset : offset + n].add_(e.reshape(-1))
                 if not local_all:
-                    # Not flags[i] = 1: that is a host sync on CUDA.
+                    # Python scalar assignment would synchronize CUDA.
                     flags[i].fill_(1)
             else:
                 flat[offset : offset + n].zero_()
@@ -950,14 +1351,66 @@ def _sync_replicated_grads(
         flat[:total].div_(world)
         used = None if local_all else flags.tolist()
         offset = 0
-        for i, (p, g, n) in enumerate(zip(group, grads, sizes)):
-            if g is not None or used[i] > 0:
-                value = flat[offset : offset + n].view(p.shape)
-                if p.grad is None:
-                    p.grad = value.to(p.dtype, copy = True)
+        for i, (p, g, e, n) in enumerate(zip(group, grads, extra, sizes)):
+            if g is not None or e is not None or used[i] > 0:
+                value = flat[offset : offset + n].view(_local_tensor(p).shape)
+                if g is None:
+                    p.grad = _like_param(p, value.to(p.dtype, copy = True))
                 else:
-                    p.grad.copy_(value)
+                    g.copy_(value)
             offset += n
+
+
+def _local_tensor(t):
+    """Local shard view of a DTensor (writes reach it); anything else unchanged."""
+    local = getattr(t, "_local_tensor", None)
+    return local if local is not None and getattr(t, "device_mesh", None) is not None else t
+
+
+def _like_param(p, local):
+    if getattr(p, "device_mesh", None) is None or getattr(p, "_local_tensor", None) is None:
+        return local
+    return _dtensor_class().from_local(local, p.device_mesh, p.placements, run_check = False)
+
+
+def _fsdp_managed_param_ids(model):
+    """ids of FSDP2-managed params, or None when no FSDP2 state is readable (treat all DTensors as FSDP2's).
+    A readable state managing no params (every trainable param ignored) gives an empty set."""
+    ids = set()
+    found = False
+    for unit in fsdp2_units(model):
+        try:
+            st = unit._get_fsdp_state()
+        except Exception:
+            continue
+        groups = getattr(st, "_fsdp_param_groups", None)
+        if groups is None:
+            if not hasattr(st, "_fsdp_param_group"):
+                continue
+            group = st._fsdp_param_group
+            groups = [group] if group is not None else []
+        found = True
+        for group in groups:
+            for fp in getattr(group, "fsdp_params", None) or ():
+                for attr in ("sharded_param", "_unsharded_param"):
+                    t = getattr(fp, attr, None)
+                    if t is not None:
+                        ids.add(id(t))
+    return ids if found else None
+
+
+def _tp_shard_outside(param, mesh, dist):
+    """True when param's mesh meets the dp `mesh` only at this rank, so its local shard is replicated
+    over `mesh`; any other overlap would average different shards."""
+    if mesh is None:
+        return False
+    try:
+        mine = dist.get_rank()
+        own = set(param.device_mesh.mesh.flatten().tolist())
+        dp = set(mesh.mesh.flatten().tolist())
+    except Exception:
+        return False
+    return own & dp == {mine}
 
 
 def _fsdp_grad_sync_deferred(model, cache):
@@ -998,11 +1451,7 @@ def _fsdp_grad_sync_deferred(model, cache):
 
 
 def reduce_unsharded_trainable_grads(model):
-    """Average gradients of trainable params FSDP2 does not manage (e.g. `ignored_modules`) over the
-    mesh, else replicas drift. Runs once per backward as an autograd engine callback on every rank;
-    a per-parameter hook would hang when a rank skips the parameter (branch, routed MoE expert).
-    Skipped while FSDP2 grad sync is off (GA); the first synced backward averages the accumulated
-    sum. Returns the names."""
+    """Queue one fixed-order reduction per backward on every rank; per-param hooks can deadlock."""
     dist = _dist()
     DTensor = _dtensor_class()
     if dist is None or DTensor is None:
@@ -1018,19 +1467,26 @@ def reduce_unsharded_trainable_grads(model):
 
     def _sync():
         state["queued"] = False
-        # Every rank enters the same branch: the GA flag is set alike on all ranks.
+
         if _fsdp_grad_sync_deferred(model, state):
+            _stash_fp16_grads(params, state)
             return
-        _sync_replicated_grads(params, dist, mesh, buffers)
+        _sync_replicated_grads(params, dist, mesh, buffers, state.pop("pending", None))
 
     def _queue(*_):
         if not state["queued"]:
             state["queued"] = True
             torch.autograd.Variable._execution_engine.queue_callback(_sync)
 
+    managed = False
     for name, param in model.named_parameters():
-        if id(param) in seen or not param.requires_grad or isinstance(param, DTensor):
+        if id(param) in seen or not param.requires_grad:
             continue
+        if isinstance(param, DTensor):
+            if managed is False:
+                managed = _fsdp_managed_param_ids(model)
+            if managed is None or id(param) in managed or not _tp_shard_outside(param, mesh, dist):
+                continue
         seen.add(id(param))
         if getattr(param, "_unsloth_grad_all_reduce", False):
             continue
@@ -1042,7 +1498,7 @@ def reduce_unsharded_trainable_grads(model):
 
         def _pre_forward(module, args):
             if not _in_backward():
-                state["queued"] = False  # a backward that raised never ran its callback
+                state["queued"] = False  # Failed backwards never ran their queued callback.
 
         def _post_forward(module, args, output):
             if not torch.is_grad_enabled():
@@ -1059,4 +1515,35 @@ def reduce_unsharded_trainable_grads(model):
         model.register_forward_pre_hook(_pre_forward)
         model.register_forward_hook(_post_forward)
         model.__dict__["_unsloth_replicated_grad_hooked"] = True
+    _install_replicated_grad_reset(model)
     return names
+
+
+def _stash_fp16_grads(params, state):
+    pending = state.setdefault("pending", {})
+    for p in params:
+        if p.dtype != torch.float16 or p.grad is None or p.grad.dtype != torch.float16:
+            continue
+        g = _local_tensor(p.grad).detach().float()
+        prev = pending.get(id(p))
+        pending[id(p)] = g if prev is None else prev.add_(g)
+        p.grad = None
+
+
+def _install_replicated_grad_reset(model):
+    reset = getattr(model, "reset_iter_state", None)
+    if reset is None or getattr(reset, "_unsloth_replicated_reset", False):
+        return
+
+    @functools.wraps(reset)
+    def reset_replicas(*args, **kwargs):
+        result = reset(*args, **kwargs)
+        for module in model.modules():
+            state = module.__dict__.get("_unsloth_replicated_grad_state")
+            if state is not None:
+                state.pop("pending", None)
+                state["queued"] = False
+        return result
+
+    reset_replicas._unsloth_replicated_reset = True
+    model.reset_iter_state = reset_replicas

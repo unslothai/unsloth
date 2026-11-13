@@ -203,9 +203,8 @@ def test_float_packed_storage(path, storage):
 
 
 def test_side_streams_never_share_the_scratch(path):
-    """Two streams dequantizing different weights with use_global_buffer at the same time: each
-    must read its own weight back. Only the default stream owns a scratch, so a program making a
-    new stream per step cannot pin a weight-sized buffer per stream."""
+    """Two streams dequantizing with use_global_buffer must each read back their own weight; only
+    the default stream owns a scratch, so a stream per step cannot pin a weight-sized buffer."""
     (q1, s1), (q2, s2) = (
         _quantize((4096, 4096), torch.bfloat16, seed = 1),
         _quantize((4096, 4096), torch.bfloat16, seed = 2),

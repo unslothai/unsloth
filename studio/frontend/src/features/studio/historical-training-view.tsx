@@ -12,12 +12,12 @@ import {
   useTrainingActions,
 } from "@/features/training";
 import { translate, useT } from "@/i18n";
-import { PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
 import { mapRunConfigToOverride } from "./sections/run-config-override";
+import { PlayIcon } from "lucide-react";
 
 type StudioT = ReturnType<typeof useT>;
 
@@ -211,7 +211,7 @@ export function HistoricalTrainingView({
             {resuming ? (
               <Spinner className="size-3.5" />
             ) : (
-              <HugeiconsIcon icon={PlayIcon} className="size-3.5" />
+              <PlayIcon className="size-3.5" />
             )}
             {stopRequested
               ? t("studio.training.stopping")

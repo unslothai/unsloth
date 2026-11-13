@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useNavigate } from "@tanstack/react-router";
+import { ApiIcon, ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+import { ArrowRightIcon } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Dialog,
   DialogContent,
@@ -11,31 +15,48 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useIsAccountOwner } from "@/features/auth";
+import { cn } from "@/lib/utils";
 import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
-import { type ApiKey, fetchApiKeys, revokeApiKey } from "../api/api-keys";
-import type {
-  KeylessApiAccessExposure,
-  KeylessApiAccessScope,
-} from "../api/keyless-api-access";
+import {
+  type ApiKey,
+  createApiKey,
+  fetchApiKeys,
+  revokeApiKey,
+} from "../api/api-keys";
 import { apiKeyActionMessage } from "../components/api-key-action-message";
-import { ApiKeyRow } from "../components/api-key-row";
-import { AudioApiExamples } from "../components/audio-api-examples";
-import { MediaApiExamples } from "../components/media-api-examples";
+import {
+  ApiKeyRow,
+  ApiKeyTableHeader,
+  TOKEN_TABLE,
+} from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
-import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
-import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
-import { McpAccessSection } from "../components/mcp-access-section";
+import { KeylessApiAccessLink } from "../components/keyless-api-access-link";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
+import { ModelMemorySection } from "../components/model-memory-section";
 import { MonitorLink } from "../components/monitor-link";
-import { UsageExamples, useApiTunnelPref } from "../components/usage-examples";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { SettingsSection } from "../components/settings-section";
+import { UnslothStudioMcpRow } from "../components/unsloth-studio-mcp-row";
+import { ApiExamplesPanel } from "../components/api-example-tabs";
+import { useApiTunnelPref } from "../components/usage-examples";
+import { useKeylessExampleAccess } from "../hooks/use-keyless-example-access";
 import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
+import { useFreshApiKeyStore } from "../stores/fresh-api-key-store";
+
+function expiryDays(key: ApiKey): number | null {
+  if (!key.expires_at) return null;
+  const ms =
+    new Date(key.expires_at).getTime() - new Date(key.created_at).getTime();
+  return Math.max(1, Math.round(ms / 86400000));
+}
 
 export function ApiKeysTab() {
   const t = useT();
+  const navigate = useNavigate();
   const isOwner = useIsAccountOwner();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -43,22 +64,24 @@ export function ApiKeysTab() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
+  const [regenerate, setRegenerate] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  // The examples read the store, not `revealed`: that dies with this tab and on Done.
+  const freshKey = useFreshApiKeyStore((s) => s.key);
+  const reveal = (raw: string) => {
+    setRevealed(raw);
+    useFreshApiKeyStore.getState().setKey(raw);
+  };
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
   // Owner-only routes, as the Remote & LAN tab is.
   usePublishAccessUrls(isOwner);
-  const [keyless, setKeyless] = useState<{
-    scope: KeylessApiAccessScope;
-    tools: boolean;
-    exposure: KeylessApiAccessExposure | null;
-  }>({ scope: "off", tools: false, exposure: null });
+  const keyless = useKeylessExampleAccess(isOwner);
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.165, 0.84, 0.44, 1] as const };
 
-  // ../api/api-keys.ts throws generic English errors; use the translated
-  // message so zh-CN users don't see English strings bleed through.
+  // api-keys.ts throws generic English errors; show the translated message.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -99,13 +122,30 @@ export function ApiKeysTab() {
     setRevoking(true);
     setActionError(null);
     try {
+      if (regenerate) {
+        // Created before the old one is revoked, so a failed create loses nothing.
+        const created = await createApiKey(
+          revokeTarget.name,
+          expiryDays(revokeTarget),
+        );
+        reveal(created.key);
+      }
       await revokeApiKey(revokeTarget.id);
+      useFreshApiKeyStore.getState().forgetIfRevoked(revokeTarget.key_prefix);
       await load();
       setRevokeTarget(null);
     } catch (cause) {
       setActionError(
-        apiKeyActionMessage(translate("settings.apiKeys.revokeError"), cause),
+        apiKeyActionMessage(
+          translate(
+            regenerate
+              ? "settings.apiKeys.regenerateError"
+              : "settings.apiKeys.revokeError",
+          ),
+          cause,
+        ),
       );
+      void load();
       setRevokeTarget(null);
     } finally {
       setRevoking(false);
@@ -114,93 +154,130 @@ export function ApiKeysTab() {
 
   return (
     <div className="settings-page">
-      <header className="flex min-w-0 flex-col gap-1">
-        <h1 className="text-xl font-semibold font-heading">
-          {t("settings.apiKeys.title")}
-        </h1>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.apiKeys.description")}{" "}
-          <a
-            href="https://unsloth.ai/docs/basics/api"
-            target="_blank"
-            rel="noreferrer"
-            className="font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
-          >
-            {t("settings.apiKeys.readDocs")}
-          </a>
-          .
-        </p>
+      <header className="flex min-w-0 items-center justify-between gap-4 pr-8">
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <h1 className="text-xl font-semibold font-heading">
+              {t("settings.apiKeys.title")}
+            </h1>
+            <a
+              href="https://unsloth.ai/docs/basics/api"
+              target="_blank"
+              rel="noopener noreferrer"
+              title={t("settings.apiKeys.readDocs")}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {t("settings.agents.docs")}
+              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+            </a>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.apiKeys.description")}
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          onClick={() => {
+            useSettingsDialogStore.getState().closeDialog();
+            void navigate({ to: "/api-monitor" });
+          }}
+        >
+          <HugeiconsIcon icon={ApiIcon} data-icon="inline-start" strokeWidth={1.75} />
+          {t("shell.navigation.apiMonitor")}
+          <ArrowRightIcon data-icon="inline-end" strokeWidth={1.75} />
+        </Button>
       </header>
 
-      <AnimatePresence mode="wait" initial={false}>
-        {revealed !== null ? (
-          <motion.div
-            key="reveal"
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={transition}
-          >
-            <KeyRevealCard rawKey={revealed} onDone={() => setRevealed(null)} />
-          </motion.div>
-        ) : (
-          <motion.div
-            key="form"
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 4 }}
-            transition={transition}
-          >
-            <CreateKeyForm
-              onCreated={(raw) => {
-                setRevealed(raw);
-                void load();
-              }}
-              onError={setActionError}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <section className="flex min-w-0 flex-col">
-        <h2 className="settings-heading mb-2 text-sm font-semibold">
+      <section className="flex min-w-0 flex-col gap-4">
+        <h2 className="settings-heading text-base font-semibold font-heading">
           {t("settings.apiKeys.accessTokens")}
         </h2>
-        {actionError ? (
-          <div className="mb-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
-            {actionError}
-          </div>
-        ) : null}
-        {error ? (
-          <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
-            {error}
-          </div>
-        ) : loading ? (
-          <div className="flex flex-col gap-2 py-2">
-            {[0, 1].map((i) => (
-              <div
-                key={i}
-                className="h-12 animate-pulse rounded-md bg-muted/40"
+        <AnimatePresence mode="wait" initial={false}>
+          {revealed !== null ? (
+            <motion.div
+              key="reveal"
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={transition}
+            >
+              <KeyRevealCard
+                rawKey={revealed}
+                onDone={() => setRevealed(null)}
               />
-            ))}
-          </div>
-        ) : keys.length === 0 ? (
-          <p className="py-6 text-center text-xs text-muted-foreground">
-            {t("settings.apiKeys.noAccess")}
-          </p>
-        ) : (
-          <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-            <div className="overlay-scrollbar-gutter">
-              {keys.map((k) => (
-                <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="form"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={transition}
+            >
+              <CreateKeyForm
+                onCreated={(raw) => {
+                  reveal(raw);
+                  void load();
+                }}
+                onError={setActionError}
+                existingNames={keys.map((k) => k.name)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="flex min-w-0 flex-col">
+          {actionError ? (
+            <div className="mb-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
+              {actionError}
+            </div>
+          ) : null}
+          {error ? (
+            <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
+              {error}
+            </div>
+          ) : loading ? (
+            <div className="flex flex-col gap-2 py-2">
+              {[0, 1].map((i) => (
+                <div
+                  key={i}
+                  className="h-12 animate-pulse rounded-md bg-muted/40"
+                />
               ))}
             </div>
-          </div>
-        )}
+          ) : keys.length === 0 ? (
+            <p className="py-6 text-center text-xs text-muted-foreground">
+              {t("settings.apiKeys.noAccess")}
+            </p>
+          ) : (
+            <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+              <div className={cn("overlay-scrollbar-gutter", TOKEN_TABLE)}>
+                <ApiKeyTableHeader />
+                {keys.map((k) => (
+                  <ApiKeyRow
+                    key={k.id}
+                    apiKey={k}
+                    onRevoke={(key) => {
+                      setRegenerate(false);
+                      setRevokeTarget(key);
+                    }}
+                    onRegenerate={(key) => {
+                      setRegenerate(true);
+                      setRevokeTarget(key);
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </section>
 
-      <UsageExamples
-        apiKey={revealed}
+      <ApiExamplesPanel
+        apiKey={freshKey}
         useTunnel={useTunnel}
         onUseTunnelChange={setUseTunnel}
         keylessScope={keyless.scope}
@@ -208,36 +285,22 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
-      <MonitorLink />
+      {/* Installation-wide, so owner-only routes. */}
+      <SettingsSection title="Access & monitoring">
+        {isOwner ? <UnslothStudioMcpRow /> : null}
+        {isOwner ? <KeylessApiAccessLink /> : null}
+        <MonitorLink hideHeading={true} />
+      </SettingsSection>
 
-      {/* Installation-wide controls: owner-only routes. */}
       {isOwner ? (
         <>
-          <KeylessApiAccessSection onSettingsChange={setKeyless} />
+          <ModelMemorySection variant="api" />
 
           <ModelAutoSwitchSection />
 
           <ModelAliasesSection />
         </>
       ) : null}
-
-      <AudioApiExamples
-        apiKey={revealed}
-        useTunnel={useTunnel}
-        keylessScope={keyless.scope}
-        keylessExposure={keyless.exposure}
-      />
-
-      <MediaApiExamples
-        apiKey={revealed}
-        useTunnel={useTunnel}
-        keylessScope={keyless.scope}
-        keylessExposure={keyless.exposure}
-      />
-
-      {isOwner ? <DecisionApiSection /> : null}
-
-      {isOwner ? <McpAccessSection apiKey={revealed} /> : null}
 
       <Dialog
         open={revokeTarget !== null}
@@ -246,12 +309,19 @@ export function ApiKeysTab() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {t("settings.apiKeys.revokeTitle", {
-                name: revokeTarget?.name ?? "",
-              })}
+              {t(
+                regenerate
+                  ? "settings.apiKeys.regenerateTitle"
+                  : "settings.apiKeys.revokeTitle",
+                { name: revokeTarget?.name ?? "" },
+              )}
             </DialogTitle>
             <DialogDescription>
-              {t("settings.apiKeys.revokeDescription")}
+              {t(
+                regenerate
+                  ? "settings.apiKeys.regenerateDescription"
+                  : "settings.apiKeys.revokeDescription",
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -261,13 +331,19 @@ export function ApiKeysTab() {
             <Button
               onClick={confirmRevoke}
               disabled={revoking}
-              variant="destructive"
+              variant={regenerate ? "dark" : "destructive"}
             >
-              {revoking
-                ? t("settings.apiKeys.revoking")
-                : t("settings.apiKeys.revokeAction", {
-                    name: revokeTarget?.name ?? "",
-                  })}
+              {regenerate
+                ? t(
+                    revoking
+                      ? "settings.apiKeys.regenerating"
+                      : "settings.apiKeys.regenerateAction",
+                  )
+                : revoking
+                  ? t("settings.apiKeys.revoking")
+                  : t("settings.apiKeys.revokeAction", {
+                      name: revokeTarget?.name ?? "",
+                    })}
             </Button>
           </DialogFooter>
         </DialogContent>

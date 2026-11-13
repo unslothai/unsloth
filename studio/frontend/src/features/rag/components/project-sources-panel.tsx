@@ -8,7 +8,8 @@ import { isTauri } from "@/lib/api-base";
 import { MAX_FOLDER_FILES, openFolderPicker } from "@/lib/dropped-folders";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { FolderAddIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useRef } from "react";
 import {
@@ -36,8 +37,6 @@ import {
 } from "./use-rag-documents";
 import { useUploadQueue } from "./use-upload-queue";
 
-/** Project "Sources" tab: documents indexed for retrieval in every chat that
- * belongs to the project. */
 export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lister = useCallback(
@@ -54,10 +53,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     canRetry,
   } = useRagDocuments({ type: "project", projectId }, lister);
 
-  // Invalidate the sources probe before each mutation so a chat sent mid-upload
-  // cannot cache "no sources" for the probe's TTL, and announce after it, which
-  // is the half other instances and other tabs listen for. Announcing before
-  // would refetch and resurrect the row this panel has already dropped.
+  // Invalidate the sources probe before each mutation so a mid-upload chat cannot cache no sources
+  // for its TTL; announce after, since other tabs listen and a refetch before would resurrect a
+  // dropped row.
   const uploadNow = useCallback(
     (items: RagUploadItem[]) => {
       if (items.length === 0) return;
@@ -113,8 +111,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     [handleItems],
   );
 
-  // Desktop drops arrive as paths; the upload mints a lease per file rather
-  // than reading a document through the webview.
   const handleNativeIntents = useCallback(
     (intents: NativeIntent[]) =>
       handleItems(
@@ -144,8 +140,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
 
   const empty = documents.length === 0;
 
-  // Tauri suppresses webview drop events, so the plain `onDrop` this panel
-  // carried never fired on desktop: no border, file ignored (#9036).
+  // Tauri suppresses webview drop events, so a plain onDrop never fires on desktop.
   const {
     ref: dropRef,
     dragging,

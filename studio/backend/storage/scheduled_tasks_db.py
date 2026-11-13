@@ -77,6 +77,9 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "enabled": bool(row["enabled"]),
         "notify": row["notify"],
         "named": bool(row["named"]),
+        "model": row["model"],
+        "reasoningEffort": row["reasoning_effort"],
+        "allowModelLoad": bool(row["allow_model_load"]),
         "archiveSuccessful": bool(row["archive_successful"]),
         "projectId": row["project_id"],
         "nextRunAt": row["next_run_at"],
@@ -99,6 +102,7 @@ def _run_from_row(row: sqlite3.Row) -> dict:
         "model": row["model"],
         "errorCode": row["error_code"],
         "error": row["error"],
+        "allowModelLoad": bool(row["allow_model_load"]),
     }
 
 
@@ -154,6 +158,9 @@ _TASK_COLUMNS = (
     "enabled",
     "notify",
     "named",
+    "model",
+    "reasoning_effort",
+    "allow_model_load",
     "archive_successful",
     "project_id",
     "next_run_at",
@@ -169,6 +176,9 @@ def _task_values(task: dict) -> tuple:
         1 if task["enabled"] else 0,
         task["notify"],
         1 if task["named"] else 0,
+        task.get("model"),
+        task.get("reasoningEffort"),
+        1 if task.get("allowModelLoad") else 0,
         1 if task.get("archiveSuccessful") else 0,
         task.get("projectId"),
         task["nextRunAt"],
@@ -233,7 +243,7 @@ def delete_task(task_id: str) -> bool:
         return cursor.rowcount > 0
 
 
-def request_run(task_id: str) -> Optional[dict]:
+def request_run(task_id: str, allow_model_load: bool = False) -> Optional[dict]:
     """Queue a run now, outside the schedule. None when the task does not exist."""
     with _connect("BEGIN IMMEDIATE") as conn:
         if (
@@ -250,9 +260,9 @@ def request_run(task_id: str) -> Optional[dict]:
         run_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO scheduled_task_runs"
-            " (id, task_id, source, status, created_at)"
-            " VALUES (?, ?, 'manual', 'queued', ?)",
-            (run_id, task_id, now_ms()),
+            " (id, task_id, source, status, created_at, allow_model_load)"
+            " VALUES (?, ?, 'manual', 'queued', ?, ?)",
+            (run_id, task_id, now_ms(), 1 if allow_model_load else 0),
         )
         row = conn.execute("SELECT * FROM scheduled_task_runs WHERE id = ?", (run_id,)).fetchone()
         return _run_from_row(row)
@@ -281,9 +291,7 @@ def poll(
     worker_id: str,
     next_run_after: Callable[[dict, int], Optional[int]],
 ) -> tuple[Optional[tuple[dict, dict]], Optional[int]]:
-    """A scheduler pass on one connection: fail stale runs, claim what is due, and say when the next run is due.
-
-    Reads first, so an idle pass never takes the writer lock."""
+    """Fails stale runs and claims due work; reads first so an idle pass never takes the writer lock."""
     with _connect() as conn:
         stale, due = _state(conn, now, stale_before)
         if stale:
@@ -497,7 +505,7 @@ def activity(since: Optional[int]) -> dict:
         if since is not None:
             rows = conn.execute(
                 """
-                SELECT r.*, t.title AS task_title, t.notify AS task_notify
+                SELECT r.*, t.title AS task_title, t.notify AS task_notify, t.model AS task_model
                 FROM scheduled_task_runs r
                 JOIN scheduled_tasks t ON t.id = r.task_id
                 WHERE r.finished_at IS NOT NULL AND r.finished_at >= ?
@@ -511,6 +519,7 @@ def activity(since: Optional[int]) -> dict:
                     **_run_from_row(row),
                     "taskTitle": row["task_title"],
                     "taskNotify": row["task_notify"],
+                    "taskModel": row["task_model"],
                 }
                 for row in rows[:ACTIVITY_LIMIT]
             ]

@@ -1,22 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 PDD (parallel decoding distillation) checkpoints: the stacked output-head bank.
-
-A PDD ``with_heads`` file stores ``pdd_steps`` (32) video and audio output heads stacked along the rows of
-``final_layer.video_out`` / ``final_layer.audio_out`` (``[32 * 96, 5376]`` and ``[32 * 32, 5376]``): head 0 is a full
-head and every later head is an offset from it. One sampler step from ``sigma`` to ``sigma_next`` covers a contiguous
-run of fine intervals on the unshifted grid, and consumes head 0 plus the dt-weighted mean of the offsets it spans.
-This matches ComfyUI's PDD head selection (``FinalLayer.forward`` / ``_pdd_head``) term for term.
-
-Graph safety: the ``(sigma, sigma_next)`` pair is a device tensor on each bank (``pdd_state``), rewritten in place by
-a forward pre-hook on the denoiser before every call, and the head selection is pure tensor math on it. Nothing about
-the step is a Python constant, so a CUDA graph replays it with new sigmas and torch.compile never specializes on it.
-Without device float64 (Intel Arc A-series) the float64 math stays on the host; only the cast weights go to the device.
-
-A ``without_heads`` bake keeps the plain single heads and needs an external head bank applied by a custom node, which
-Studio does not have, so it is refused rather than run as a plain trunk (that renders wrong output with no error).
-"""
+"""with_heads stacks 32 video/audio heads (head 0 full, rest offsets); step uses head 0 + dt-
+weighted offset mean; sigma pair is a device tensor rewritten in place by a pre-hook, so CUDA
+graph replays and torch.compile never specializes; Intel Arc keeps float64 on host; without_heads
+refused."""
 
 from __future__ import annotations
 
@@ -151,13 +139,8 @@ def device_has_fp64(device: Any) -> bool:
 
 
 def pdd_head_weights(state: Any, heads: int) -> Any:
-    """Per-head blend weights ``(heads,)`` float64 for one step, from ``state = [sigma, sigma_next, select_shift,
-    stream_shift]`` (float64). Head 0 gets 0 here: it is always added whole.
-
-    ComfyUI: ``start, stop = round((1 - unshift(sigma)) * n), round((1 - unshift(sigma_next)) * n)`` with the unshift
-    in float32 (the sampler's sigma dtype), ``start = min(start, n - 1)``, ``stop = max(stop, start + 1)``, then
-    ``dt`` of the stream's shifted ``n``-interval grid over ``[start, stop)`` normalised to sum 1, applied to heads
-    ``max(start, 1) .. stop - 1``. Same here, as masks instead of slices so no index ever reaches the host."""
+    """Per-head blend weights (heads,) float64 for one step as masks, matching ComfyUI round/unshift
+    slicing (unshift in float32); head 0 gets 0, always added whole"""
     import torch
 
     sig = state[0:2].to(torch.float32)
@@ -390,8 +373,7 @@ def pipe_h3_pdd_heads(pipe: Any) -> int:
 def bind_h3_pdd_render(
     pipe: Any, video_shift: Optional[float], audio_shift: Optional[float]
 ) -> int:
-    """Bind every PDD denoiser of an H3 pipeline to its video scheduler for this render; returns the head count
-    (0: no PDD denoiser, nothing changed)."""
+    """Binds PDD denoisers to the scheduler for this render; gives the head count, 0 if none."""
     scheduler = getattr(pipe, "scheduler", None)
     heads = 0
     for module in _components(pipe):

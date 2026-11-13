@@ -62,6 +62,60 @@ def test_match_query_sanitizes_special_chars():
     assert store._match_query('AND OR "quote" (paren) -dash') != ""
 
 
+def test_lexical_finds_words_in_unspaced_cjk_text(rag_conn):
+    _add_doc(rag_conn, "kb_a", "zh", "zh.txt", "h1", ["我们的退款政策：购买后30天内可以退款。"])
+    _add_doc(rag_conn, "kb_a", "ja", "ja.txt", "h2", ["返金ポリシー：30日以内に返金します。"])
+    _add_doc(rag_conn, "kb_a", "ko", "ko.txt", "h3", ["환불 정책은 30일 이내입니다."])
+    _add_doc(rag_conn, "kb_a", "en", "en.txt", "h4", ["Our refund policy: refunds within 30 days."])
+
+    def hits(query):
+        return [cid for cid, _ in store.search_lexical(rag_conn, "kb_a", query, 10)]
+
+    assert hits("退款政策是什么？")[0] == "zh:0"
+    assert hits("退款") == ["zh:0"]
+    assert hits("返金") == ["ja:0"]
+    assert hits("ポリシー") == ["ja:0"]
+    assert hits("환불은 어떻게 되나요") == ["ko:0"]
+    assert hits("refund policy") == ["en:0"]
+    assert hits("退") == ["zh:0"]
+
+
+def test_focused_query_keeps_a_cjk_identifier_whole(rag_conn):
+    _add_doc(rag_conn, "kb_a", "a", "a.txt", "h1", ["案件123的状态"])
+    _add_doc(rag_conn, "kb_a", "b", "b.txt", "h2", ["案件124的状态"])
+    focused = store.conversation_match_queries("current status of 案件123")[0]
+    assert store.lexical_matching_ids(rag_conn, ["a:0", "b:0"], focused) == {"a:0"}
+
+
+def test_repeated_cjk_text_builds_each_phrase_once():
+    terms = store._match_query("订单：苹果手机一台。" * 200).split(" OR ")
+    assert len(terms) == len(set(terms)) == 6
+    assert store._match_query("refund refund policy") == '"refund" OR "refund" OR "policy"'
+
+
+def test_existing_index_is_rebuilt_for_cjk_search(rag_conn):
+    from storage import rag_db
+
+    text = "我们的退款政策：购买后30天内可以退款。"
+    _add_doc(rag_conn, "kb_a", "zh", "zh.txt", "h1", [text])
+    _add_doc(rag_conn, "kb_a", "en", "en.txt", "h2", ["alpha bravo"])
+    rag_conn.execute("UPDATE chunks_fts SET text=? WHERE chunk_id='zh:0'", (text,))
+    rag_conn.execute("PRAGMA user_version = 0")
+    rag_conn.commit()
+    assert store.search_lexical(rag_conn, "kb_a", "退款", 10) == []
+
+    rag_db.reset_schema_state_for_tests()
+    for _ in range(2):
+        conn = rag_db.get_connection()
+        try:
+            assert [cid for cid, _ in store.search_lexical(conn, "kb_a", "退款", 10)] == ["zh:0"]
+            assert [cid for cid, _ in store.search_lexical(conn, "kb_a", "alpha", 10)] == ["en:0"]
+        finally:
+            conn.close()
+        rag_db.reset_schema_state_for_tests()
+    assert store.chunks_by_id(rag_conn, ["zh:0"])["zh:0"]["text"] == text
+
+
 def test_lexical_does_not_crash_on_punctuation(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo"])
     store.search_lexical(rag_conn, "kb_a", 'NEAR("x" AND', 5)
@@ -342,8 +396,7 @@ def test_gate_counts_a_folder_document_that_outlived_its_folder(rag_conn):
 
 
 def _pasted_prose(words: int) -> str:
-    """Pasted prose must be purely alphabetic; mixed letters and digits short-circuit the identifier
-    test."""
+    """Prose words must be purely alphabetic; a letter-digit mix would hit the identifier check."""
     letters = "abcdefghijklmnopqrstuvwxyz"
     return " ".join(
         letters[index % 26]
@@ -593,3 +646,31 @@ def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
     assert oldest and newest
     assert oldest != newest, "both ends of the fetch returned the same rows"
     assert not set(oldest) & set(newest), (oldest, newest)
+
+
+def test_dense_packs_float32_rows_without_struct_and_the_query_once(rag_conn, monkeypatch):
+    np = pytest.importorskip("numpy")
+    # vec0 answers both searches: the first one queues the in-memory cache build (#15961) on a background
+    # thread, and a cache that lands between them scores in numpy, a few ulps away from vec0.
+    monkeypatch.setenv("RAG_VEC_CACHE", "0")
+    texts = ["alpha alpha", "hotel golf", "alpha bravo"]
+    for i, scope in enumerate(("kb_a", "kb_b", "kb_c")):
+        doc = f"d{i}"
+        store.create_document(rag_conn, scope = scope, filename = "f", sha256 = doc, document_id = doc)
+        rows = np.asarray([embed(t) for t in texts], dtype = np.float32)
+        store.add_chunks(rag_conn, scope, doc, [_chunk(t, j) for j, t in enumerate(texts)], rows)
+    stored = rag_conn.execute("SELECT embedding FROM chunks_vec ORDER BY rowid").fetchall()
+    expected = [
+        store.struct.pack(f"{len(VOCAB)}f", *np.asarray(embed(t), dtype = np.float32).tolist())
+        for t in texts
+    ] * 3
+    assert [bytes(r[0]) for r in stored] == expected
+
+    packs = []
+    real_pack = store.struct.pack
+    monkeypatch.setattr(store.struct, "pack", lambda *a: packs.append(a) or real_pack(*a))
+    query = np.asarray(embed("alpha"), dtype = np.float32)
+    ranked = store.search_dense(rag_conn, ["kb_a", "kb_b", "kb_c"], query, 9)
+    as_list = store.search_dense(rag_conn, ["kb_a", "kb_b", "kb_c"], query.tolist(), 9)
+    assert ranked == as_list and ranked[0][1] > 0.99
+    assert len(packs) == 1

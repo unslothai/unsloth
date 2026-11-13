@@ -582,9 +582,7 @@ _PINNED_SNAPSHOT = "/tmp/hf/hub/models--Org--Quant/snapshots/" + "d" * 40
 
 
 def test_unload_finds_a_gguf_loaded_from_a_pinned_snapshot(monkeypatch):
-    """A cached row that pins a snapshot is loaded by that path, while the status the client
-    reads back reports the repo id. An unload naming the id has to reach the same server, or
-    Eject reports success and leaves it resident."""
+    """A GGUF pinned to a snapshot reports its repo id, so unload by that id must reach it."""
     _route_gate()
     import routes.inference as inf_mod
 
@@ -945,8 +943,7 @@ def test_cancelling_an_in_flight_gguf_load_is_not_refused_by_the_chat_gate(monke
 
 
 def _install_responses_stream_mock(monkeypatch, chunks):
-    """Point the direct /v1/responses GGUF pass-through at an in-process
-    llama-server. Mirrors the harness in test_responses_tool_passthrough.py."""
+    """Points /v1/responses GGUF pass-through at an in-process llama-server."""
     import json
     from types import SimpleNamespace
 
@@ -1245,14 +1242,10 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
         return httpx.Response(200, json = {"id": "cmpl-x", "choices": [{"text": "33"}]})
 
     transport = httpx.MockTransport(handler)
-    real_async_client = httpx.AsyncClient
     monkeypatch.setattr(
-        inf_mod.httpx,
-        "AsyncClient",
-        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
-    )
-    monkeypatch.setattr(
-        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+        inf_mod,
+        "_cancelable_nonstreaming_client",
+        lambda: httpx.AsyncClient(transport = transport),
     )
     monkeypatch.setattr(
         inf_mod,
@@ -1316,14 +1309,10 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
         return httpx.Response(200, json = {"data": [{"embedding": [0.1, 0.2]}]})
 
     transport = httpx.MockTransport(handler)
-    real_async_client = httpx.AsyncClient
     monkeypatch.setattr(
-        inf_mod.httpx,
-        "AsyncClient",
-        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
-    )
-    monkeypatch.setattr(
-        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+        inf_mod,
+        "_cancelable_nonstreaming_client",
+        lambda: httpx.AsyncClient(transport = transport),
     )
     monkeypatch.setattr(
         inf_mod,

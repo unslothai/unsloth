@@ -18,10 +18,10 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  CloudUploadIcon,
   FileAttachmentIcon,
   InformationCircleIcon,
   PlusSignIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
@@ -37,7 +37,7 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   return (
     <div className="flex flex-col gap-2">
-      <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         {t("studio.wizard.uploadLocalLabel")}
         <Tooltip>
           <TooltipTrigger asChild={true}>
@@ -173,7 +173,7 @@ export function EvaluationDatasetUpload({
             {uploads.isUploading ? (
               <Spinner className="size-3.5" />
             ) : (
-              <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+              <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
             )}
             {uploads.isUploading
               ? t("studio.dataset.uploading")

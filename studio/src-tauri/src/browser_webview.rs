@@ -33,9 +33,8 @@ const PARK_GAP: f64 = 64.0;
 #[cfg(target_os = "macos")]
 const PAGE_DATA_STORE: [u8; 16] = *b"unsloth-browser1";
 
-/// Mute tab for WebKit, which has no public mute for a view: media plays muted (in the page or not,
-/// as `new Audio()` makes) and Web Audio contexts made after it are suspended. Run in the page's
-/// world, so a page can undo it for itself; installed once per document, then toggled.
+/// WebKit has no public view mute: mute media and suspend later Web Audio contexts. Runs in the
+/// page's world, so a page can undo it for itself; installed once per document, then toggled.
 #[cfg(target_os = "macos")]
 const MUTE_SCRIPT: &str = r#"((muted) => {
   const key = Symbol.for("unsloth.browser.mute");
@@ -93,6 +92,12 @@ const MUTE_SCRIPT: &str = r#"((muted) => {
   window[key](muted);
 })"#;
 
+/// Pages are child webviews too, so they type the same stray key text (mac-stray-key-text.ts).
+#[cfg(target_os = "macos")]
+const STRAY_KEY_TEXT_SCRIPT: &str = r#"window.addEventListener("beforeinput", (event) => {
+  if (event.inputType === "insertText" && /^[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/.test(event.data ?? "")) event.preventDefault();
+}, true);"#;
+
 /// Pages get every plugin's init script too, but their commands are refused there (opener eats `_blank`
 /// clicks, dialog/notification stub `alert`/`confirm`/`Notification`); `PAGE_RESTORE_SCRIPT` undoes them.
 const PAGE_GUARD_SCRIPT: &str = r#"(() => {
@@ -118,6 +123,23 @@ const PAGE_GUARD_SCRIPT: &str = r#"(() => {
 
 const PAGE_RESTORE_SCRIPT: &str = "window.__unslothPageGuard?.();";
 
+/// Studio's scrollbar in pages; first in the document, so a page's own scrollbar styles win.
+const PAGE_SCROLLBAR_SCRIPT: &str = r#"(() => {
+  const css = "::-webkit-scrollbar{width:8px;height:8px;background:transparent}"
+    + "::-webkit-scrollbar-track,::-webkit-scrollbar-track-piece,::-webkit-scrollbar-corner{background:transparent;border:none;box-shadow:none}"
+    + "::-webkit-scrollbar-thumb{background:rgb(99 99 99 / 0.54);border-radius:9999px;border:none;box-shadow:none}"
+    + "::-webkit-scrollbar-button{display:none;width:0;height:0}";
+  const add = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    const style = document.createElement("style");
+    style.textContent = css;
+    root.prepend(style);
+    return true;
+  };
+  if (!add()) new MutationObserver((_, seen) => add() && seen.disconnect()).observe(document, { childList: true });
+})();"#;
+
 /// Registered before the opener, dialog and notification plugins (`PAGE_GUARD_SCRIPT`).
 pub fn page_guard_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("unsloth-page-guard")
@@ -140,7 +162,7 @@ const STATE_SCRIPT: &str = r#"(() => {
 
 pub struct BrowserViews {
     inner: Mutex<ViewsState>,
-    /// Whether the address poll has anything to watch; it sleeps on this rather than a timer.
+    /// The address poll sleeps on this rather than a timer.
     gate: watch::Sender<PollGate>,
 }
 
@@ -153,7 +175,6 @@ impl Default for BrowserViews {
     }
 }
 
-/// A view is shown, and the window it sits in is in use (focused, visible, not minimised).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PollGate {
     shown: bool,
@@ -164,7 +185,6 @@ struct PollGate {
 
 impl Default for PollGate {
     fn default() -> Self {
-        // An unknown window state polls, as it always did.
         Self {
             shown: false,
             window_active: true,
@@ -183,7 +203,7 @@ impl PollGate {
 struct ViewsState {
     shown: Option<String>,
     urls: HashMap<String, String>,
-    /// Download paths by URL, oldest first (macOS doesn't report it back; one URL can download twice).
+    /// Oldest first; macOS does not report the path back and one URL can download twice.
     downloads: HashMap<String, Vec<PathBuf>>,
     /// By URL, finishes that couldn't tell which of several reservations they were (`take_finished`).
     unexplained_finishes: HashMap<String, usize>,
@@ -225,15 +245,14 @@ fn set_shown(views: &BrowserViews, inner: &mut ViewsState, shown: Option<String>
     });
 }
 
-/// Re-read the main window's state after its focus, size or visibility changed.
 pub fn window_changed<R: Runtime>(app: &AppHandle<R>, focused: Option<bool>) {
     let (Some(views), Some(window)) =
         (app.try_state::<BrowserViews>(), app.get_window(MAIN_WINDOW))
     else {
         return;
     };
-    // Windows reports keyboard focus moving into a child webview as the window losing focus, so
-    // there only a minimised or hidden window pauses the poll; macOS and GTK report activation.
+    // Windows reports focus moving into a child webview as the window losing focus, so only
+    // minimised or hidden pauses the poll there.
     let focused = cfg!(windows) || focused == Some(true) || window.is_focused().unwrap_or(true);
     let active =
         focused && window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
@@ -334,7 +353,6 @@ pub struct ViewBounds {
 }
 
 impl ViewBounds {
-    /// `(x, y, width, height, viewport_width)`, in the caller's CSS pixels.
     pub(crate) fn parts(&self) -> (f64, f64, f64, f64, f64) {
         (self.x, self.y, self.width, self.height, self.viewport_width)
     }
@@ -487,7 +505,6 @@ fn ipv6_is_private(ip: Ipv6Addr) -> bool {
         || (first & 0xfff0) == 0x3ff0
 }
 
-/// Cap on page addresses sent to the panel, as the proxied frame caps its messages.
 const MAX_URL_CHARS: usize = 8192;
 
 fn reportable(url: &str) -> bool {
@@ -498,11 +515,15 @@ fn is_external_handoff(url: &Url) -> bool {
     url.scheme() == "mailto"
 }
 
-/// URL prefixes (WebKit content-rule regexes, which have no `|`) a page may not request.
+/// URL prefixes a page may not request (WebKit content-rule regexes, which have no `|`).
 const BLOCKED_HOST_PREFIXES: &[&str] = &[
     r"localhost[:/]",
     r"[^/@]*\.localhost[:/]",
     r"[^/@]*\.local[:/]",
+    // A trailing dot is the same name to the resolver.
+    r"localhost\.[:/]",
+    r"[^/@]*\.localhost\.[:/]",
+    r"[^/@]*\.local\.[:/]",
     r"127\.",
     r"0\.",
     r"10\.",
@@ -854,7 +875,7 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
     });
 }
 
-// A page picks its title, so it can't be large enough to stall the UI; the frame path's cap.
+// A page picks its title, so cap it to avoid stalling the UI.
 const MAX_TITLE_CHARS: usize = 1024;
 
 fn bounded_title(title: String) -> String {
@@ -883,15 +904,14 @@ fn download_allowed(in_flight: usize, starts: &mut VecDeque<Instant>, now: Insta
     true
 }
 
-/// A free name in `dir` for a download, from the name the page suggested; `reserved` holds the
-/// destinations of downloads still in flight, which don't exist on disk yet.
+/// `reserved` holds destinations of in-flight downloads, which don't exist on disk yet.
 fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>) -> PathBuf {
     let name = suggested
         .file_name()
         .and_then(|name| name.to_str())
         .map(crate::native_file_dialogs::safe_download_name)
         .unwrap_or_else(|| "download".into());
-    // Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
+    // Windows and macOS file systems ignore case.
     let same = |a: &Path, b: &Path| {
         if cfg!(any(windows, target_os = "macos")) {
             a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
@@ -1045,7 +1065,10 @@ fn with_page_profile<R: Runtime>(
     #[cfg(not(target_os = "macos"))]
     {
         #[cfg(windows)]
-        let builder = builder.additional_browser_args(&page_browser_args(&proxy.to_string()));
+        let builder = builder.additional_browser_args(&page_browser_args(
+            &proxy.to_string(),
+            crate::gpu_rendering::pages_disable_gpu(),
+        ));
         #[cfg(not(windows))]
         let builder = builder
             .proxy_url(Url::parse(&format!("http://{proxy}")).map_err(|error| error.to_string())?);
@@ -1061,18 +1084,23 @@ fn with_page_profile<R: Runtime>(
     }
 }
 
-/// WebView2 arguments for pages' own environment. They replace wry's defaults, so repeat those
-/// except SmartScreen, which stays on as in Edge since these are open-web pages; Chromium bypasses
-/// the proxy for loopback otherwise.
+/// These replace wry's defaults, so repeat them except SmartScreen (kept on for open-web pages).
+/// Chromium bypasses the proxy for loopback otherwise.
 #[cfg(any(windows, test))]
-fn page_browser_args(proxy: &str) -> String {
-    format!(
+/// `disable_gpu` follows the GPU rendering setting (Off) so pages match the main window.
+fn page_browser_args(proxy: &str, disable_gpu: bool) -> String {
+    let args = format!(
         "--disable-features=msWebOOUI,msPdfOOUI --proxy-server=http://{proxy} \
          --proxy-bypass-list=<-loopback>"
-    )
+    );
+    if disable_gpu {
+        format!("{args} --disable-gpu")
+    } else {
+        args
+    }
 }
 
-/// The page's address. wry's `url()` panics on macOS while WebKit has none (a failed load).
+/// wry's `url()` panics on macOS while WebKit has none (a failed load).
 async fn page_url<R: Runtime>(webview: &Webview<R>) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -1093,8 +1121,7 @@ async fn page_url<R: Runtime>(webview: &Webview<R>) -> Option<String> {
     webview.url().ok().map(|url| url.to_string())
 }
 
-/// Poll the shown tab's address, which pushState changes without a load. Started once; it only
-/// runs while a view is shown in a window in use.
+/// pushState changes the address without a load. Runs only while a view is shown in a window in use.
 fn start_url_poll<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<BrowserViews>();
     {
@@ -1110,8 +1137,7 @@ fn start_url_poll<R: Runtime>(app: &AppHandle<R>) {
     tauri::async_runtime::spawn(run_url_poll(gate, move || poll_url(app.clone())));
 }
 
-/// Read now and every `URL_POLL` while the gate is open; while it is shut, wait on it with no
-/// timer armed. A change while open reads at once (a tab switch or the window coming back).
+/// While the gate is shut, wait on it with no timer armed.
 async fn run_url_poll<F, Fut>(mut gate: watch::Receiver<PollGate>, mut poll: F)
 where
     F: FnMut() -> Fut,
@@ -1464,9 +1490,12 @@ async fn create_view<R: Runtime>(
             _ => false,
         })
         .initialization_script(PAGE_RESTORE_SCRIPT)
+        .initialization_script(PAGE_SCROLLBAR_SCRIPT)
         .zoom_hotkeys_enabled(false)
         .devtools(cfg!(debug_assertions))
         .focused(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder.initialization_script_for_all_frames(STRAY_KEY_TEXT_SCRIPT);
     let builder = with_page_profile(builder, &app, local.as_ref())?;
 
     let (position, size) = logical_rect(caller, bounds);
@@ -1653,8 +1682,7 @@ mod page_proxy {
     type CreateHost = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut AnyObject;
     type CreateConnect = unsafe extern "C" fn(*mut AnyObject, *mut AnyObject) -> *mut AnyObject;
 
-    /// Point the data store at the proxy. Network calls (macOS 14+) are looked up at run time;
-    /// linking them would stop older macOS launching the app.
+    /// Network calls (macOS 14+) are looked up at run time; linking them would break older macOS.
     pub fn route(view: &WKWebView, proxy: SocketAddr) -> bool {
         let (Ok(ip), Ok(port)) = (
             CString::new(proxy.ip().to_string()),
@@ -1837,7 +1865,7 @@ pub async fn browser_view_show<R: Runtime>(
         _ => None,
     };
     let shown = tab_id.filter(|_| target.is_some());
-    // A resize only moves the shown view; showing it and hiding the rest is for a switch.
+    // A resize only moves the shown view.
     if state.inner.lock().unwrap().shown == shown {
         return Ok(());
     }
@@ -2531,8 +2559,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
 
 const CLEAR_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Clear a page's profile, resolving once the engine reports it done: wry's own call starts the
-/// clear and returns before it finishes.
+/// wry's own clear returns before it finishes, so wait for the engine's report.
 async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
@@ -2744,6 +2771,43 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pages_drop_the_stray_key_text_studio_drops() {
+        let frontend = include_str!("../../frontend/src/lib/mac-stray-key-text.ts");
+        let pattern = frontend
+            .lines()
+            .find_map(|line| line.strip_prefix("const STRAY_KEY_TEXT = "))
+            .unwrap()
+            .trim_end_matches(';');
+        assert!(STRAY_KEY_TEXT_SCRIPT.contains(&format!("{pattern}.test(")));
+        assert!(STRAY_KEY_TEXT_SCRIPT.contains(r#"addEventListener("beforeinput""#));
+        assert!(STRAY_KEY_TEXT_SCRIPT.ends_with("}, true);"));
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        let restore = code
+            .find(".initialization_script(PAGE_RESTORE_SCRIPT)")
+            .unwrap();
+        let guard = code
+            .find(".initialization_script_for_all_frames(STRAY_KEY_TEXT_SCRIPT)")
+            .expect("page webviews must drop stray key text in every frame");
+        assert!(
+            guard > restore,
+            "PAGE_RESTORE_SCRIPT would remove the listener"
+        );
+    }
+
+    #[test]
+    fn pages_get_the_studio_scrollbar_first_in_the_document() {
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(code.contains(".initialization_script(PAGE_SCROLLBAR_SCRIPT)"));
+        assert!(PAGE_SCROLLBAR_SCRIPT.contains("root.prepend(style)"));
+        assert!(PAGE_SCROLLBAR_SCRIPT.contains("border-radius:9999px"));
+        let studio = include_str!("../../frontend/src/index.css");
+        assert!(studio.contains("::-webkit-scrollbar {\n\twidth: 8px;"));
+    }
+
     #[test]
     fn the_internet_mark_keeps_where_not_secrets() {
         let source = |url: &str| sanitized_source(&Url::parse(url).unwrap());
@@ -2761,7 +2825,6 @@ mod tests {
 
         const TEN_MINUTES: Duration = Duration::from_secs(600);
 
-        /// Runs the poll for `span` from `start`, returning the reads it made.
         async fn reads(
             start: PollGate,
             span: Duration,
@@ -2828,7 +2891,6 @@ mod tests {
             gate_tx.send_modify(|gate| gate.shown = true);
             drop(gate_tx);
             tokio::time::sleep(TEN_MINUTES).await;
-            // The read made as it opened, then nothing: the poll ended with its gate.
             assert_eq!(count.load(Ordering::SeqCst), 6);
         }
 
@@ -2859,7 +2921,6 @@ mod tests {
             set_shown(&views, &mut inner, Some("b".into()));
             tokio::time::sleep(Duration::from_millis(1)).await;
             assert_eq!(count.load(Ordering::SeqCst), 2);
-            // Showing the same tab again is not a switch.
             set_shown(&views, &mut inner, Some("b".into()));
             tokio::time::sleep(Duration::from_millis(1)).await;
             assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -2879,10 +2940,18 @@ mod tests {
 
     #[test]
     fn windows_pages_keep_smartscreen_and_the_proxy() {
-        let args = page_browser_args("127.0.0.1:9");
+        let args = page_browser_args("127.0.0.1:9", false);
         assert!(!args.contains("SmartScreen"), "{args}");
         assert!(args.contains("--proxy-server=http://127.0.0.1:9"), "{args}");
         assert!(args.contains("--proxy-bypass-list=<-loopback>"), "{args}");
+        assert!(!args.contains("--disable-gpu"), "{args}");
+    }
+
+    #[test]
+    fn windows_pages_drop_the_gpu_only_when_gpu_rendering_is_off() {
+        let on = page_browser_args("127.0.0.1:9", false);
+        let off = page_browser_args("127.0.0.1:9", true);
+        assert_eq!(off, format!("{on} --disable-gpu"));
     }
 
     #[cfg(target_os = "macos")]
@@ -3175,6 +3244,9 @@ mod tests {
             "ws://127.0.0.1:8080/",
             "https://user:pw@127.0.0.1/",
             "http://studio.localhost/",
+            "http://localhost.:8888/api/health",
+            "ws://studio.localhost./",
+            "http://printer.local./",
             "http://172.20.0.1/",
             "http://[::1]:8888/",
             "tauri://localhost/index.html",

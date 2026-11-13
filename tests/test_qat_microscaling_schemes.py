@@ -360,6 +360,184 @@ def test_nvfp4_accepts_rank4_inputs(monkeypatch):
         assert out.shape == (*shape[:-1], 128)
 
 
+def test_nvfp4_qat_forward_compiles_fullgraph(monkeypatch):
+    # fullgraph = True: the patched forward must not be a compiler boundary.
+    linear_cls = _nvfp4_linear()
+    monkeypatch.setattr(linear_cls, "forward", lambda self, x: x @ self.weight.t())
+    _probe_ok(monkeypatch)
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(64, 128, bias = False)
+
+        def forward(self, x):
+            return self.proj(x * 2) + 1
+
+    model = _prepare_model_for_qat(Block().to(torch.bfloat16), "nvfp4")
+    assert isinstance(model.proj, linear_cls)
+    torch._dynamo.reset()
+    explain = torch._dynamo.explain(model)(torch.randn(4, 64, dtype = torch.bfloat16))
+    assert explain.graph_break_count == 0 and explain.graph_count == 1
+    x = torch.randn(2, 3, 64, dtype = torch.bfloat16)
+    torch.testing.assert_close(torch.compile(model, fullgraph = True, backend = "eager")(x), model(x))
+
+
+_needs_fp4_gpu = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() < (10, 0),
+    reason = "needs an FP4 tensor core GPU",
+)
+
+
+@pytest.fixture
+def exact_inductor(monkeypatch):
+    # Inductor otherwise keeps silu(gate) * up in fp32 before the bf16 round, shifting fp4 codes (~2% grads).
+    import torch._inductor.config as inductor_config
+
+    monkeypatch.setattr(inductor_config, "emulate_precision_casts", True)
+    torch._dynamo.reset()
+    yield
+    torch._dynamo.reset()
+
+
+def _nvfp4_mlp(weight_dtype = torch.bfloat16):
+    import torch.nn.functional as F
+
+    class MLP(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_proj = torch.nn.Linear(256, 512, bias = False)
+            self.up_proj = torch.nn.Linear(256, 512, bias = False)
+            self.down_proj = torch.nn.Linear(512, 256, bias = False)
+
+        def forward(self, x):
+            return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+
+    torch.manual_seed(0)
+    model = MLP().to("cuda", weight_dtype)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = _prepare_model_for_qat(model, "nvfp4")
+    assert isinstance(model.gate_proj, _nvfp4_linear())
+    return model
+
+
+def _torchao_reference(model):
+    """torchao's own eager NVFP4 QAT forward (its autograd Function), not the custom op."""
+    import types
+    from torchao.prototype.qat import NVFP4FakeQuantizedLinear
+
+    ref = __import__("copy").deepcopy(model)
+    for module in ref.modules():
+        if isinstance(module, NVFP4FakeQuantizedLinear):
+            module.forward = types.MethodType(NVFP4FakeQuantizedLinear.forward, module)
+    return ref
+
+
+def _grads(model, forward, x):
+    model.zero_grad(set_to_none = True)
+    x = x.detach().requires_grad_(True)
+    out = forward(x)
+    out.float().square().mean().backward()
+    grads = {n: p.grad.float().clone() for n, p in model.named_parameters()}
+    grads["x"] = x.grad.float().clone()
+    return out.detach().float(), grads
+
+
+def _assert_same(
+    got,
+    want,
+    tol = 0.0,
+):
+    (out, grads), (ref_out, ref_grads) = got, want
+    assert float((out - ref_out).norm() / ref_out.norm()) <= tol
+    for name, ref in ref_grads.items():
+        rel = float((grads[name] - ref).norm() / ref.norm())
+        assert rel <= tol, (name, rel)
+
+
+@_needs_fp4_gpu
+def test_nvfp4_qat_custom_op_matches_torchao_eager():
+    model = _nvfp4_mlp()
+    x = torch.randn(2, 64, 256, device = "cuda", dtype = torch.bfloat16)
+    ref = _torchao_reference(model)
+    _assert_same(_grads(model, model, x), _grads(ref, ref, x))
+    op = qat_utils._nvfp4_qat_linear_op()
+    w = model.gate_proj.weight
+    torch.library.opcheck(
+        op,
+        (x.view(-1, 256).detach().requires_grad_(True), w, None, True, True, True, False, None),
+        # test_aot_dispatch_dynamic sums every output, which float8 scales do not support.
+        test_utils = ("test_schema", "test_autograd_registration", "test_faketensor"),
+    )
+
+
+@_needs_fp4_gpu
+@pytest.mark.parametrize("fullgraph", [False, True])
+def test_nvfp4_qat_weight_grads_match_eager_under_compile(exact_inductor, fullgraph):
+    # Inductor used to shrink the gate / up weight grads (~100% relative error against eager).
+    model = _nvfp4_mlp()
+    x = torch.randn(2, 64, 256, device = "cuda", dtype = torch.bfloat16)
+    eager = _grads(model, model, x)
+    compiled = torch.compile(model, fullgraph = fullgraph)
+    _assert_same(_grads(model, compiled, x), eager)
+    _assert_same(_grads(model, compiled, x), eager)  # warm call
+
+
+@_needs_fp4_gpu
+def test_nvfp4_qat_weight_grads_close_to_eager_with_default_inductor():
+    model = _nvfp4_mlp()
+    x = torch.randn(2, 64, 256, device = "cuda", dtype = torch.bfloat16)
+    eager = _grads(model, model, x)
+    torch._dynamo.reset()
+    _assert_same(_grads(model, torch.compile(model, fullgraph = True), x), eager, 0.05)
+
+
+@_needs_fp4_gpu
+def test_nvfp4_qat_dynamic_batch_fullgraph_one_graph(exact_inductor):
+    from torch._dynamo.testing import CompileCounterWithBackend
+
+    model = _nvfp4_mlp()
+    counter = CompileCounterWithBackend("inductor")
+    compiled = torch.compile(model, fullgraph = True, dynamic = True, backend = counter)
+    for batch in (2, 3, 4, 7):
+        x = torch.randn(batch, 32, 256, device = "cuda", dtype = torch.bfloat16)
+        torch._dynamo.mark_dynamic(x, 0)
+        _assert_same(_grads(model, compiled, x), _grads(model, model, x))
+    assert counter.frame_count == 1, counter.frame_count
+
+
+@_needs_fp4_gpu
+def test_nvfp4_qat_one_token_decode_fullgraph(exact_inductor):
+    model = _nvfp4_mlp()
+    model.requires_grad_(False)
+    x = torch.randn(1, 1, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        want = model(x)
+        got = torch.compile(model, fullgraph = True)(x)
+    torch.testing.assert_close(got, want, rtol = 0, atol = 0)
+
+
+@_needs_fp4_gpu
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+def test_nvfp4_qat_autocast_grads_match_torchao(exact_inductor, weight_dtype):
+    model = _nvfp4_mlp(weight_dtype)
+    ref = _torchao_reference(model)
+    x = torch.randn(2, 16, 256, device = "cuda", dtype = torch.bfloat16)
+
+    def under_autocast(module):
+        def run(t):
+            with torch.autocast("cuda", dtype = torch.bfloat16):
+                return module(t)
+
+        return run
+
+    want = _grads(ref, under_autocast(ref), x)
+    _assert_same(_grads(model, under_autocast(model), x), want)
+    compiled = torch.compile(under_autocast(model), fullgraph = True)
+    _assert_same(_grads(model, compiled, x), want)
+
+
 def _torchao_nvfp4_contract_forward(self, x):
     # What torchao's NVFP4 QAT forward accepts: nvfp4_quantize asserts these, then the output follows x.
     assert x.dim() == 2, x.shape

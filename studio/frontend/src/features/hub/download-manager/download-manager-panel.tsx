@@ -18,6 +18,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
+  ArrowReloadHorizontalIcon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Download01Icon,
@@ -33,6 +34,8 @@ import {
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
+import { isRetryableDownload } from "./retry-download";
+import { retryDownload } from "./retry-start";
 import {
   type PendingStart,
   usePendingStarts,
@@ -40,6 +43,8 @@ import {
 } from "./pending-starts";
 import { assetLabel } from "./required-assets";
 import { queuedStagedEntries, useStagedDownloadQueues } from "./staged-download-queue";
+import { isTrainingDownloadVariant } from "./training-downloads";
+import { useTrainingDownloads } from "./use-training-downloads";
 
 type RowSubject = Pick<
   ManagedDownload,
@@ -91,18 +96,15 @@ function canUseDownloadManager(pathname: string): boolean {
   return hasAuthToken() && !mustChangePassword();
 }
 
-/** The repo as a row names it. A package folder of the shared GGUF audio repo is known by its
- *  folder name, as the Hub and the pickers show it; every other id reads as itself. */
 function repoLabel(repoId: string): string {
   return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
 }
 
 function isRequiredAssetJob(job: RowSubject): boolean {
   if (!job.variant?.startsWith("@")) return false;
-  // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
-  // can be a curated single .safetensors and companion repos carry .safetensors too, so the
-  // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
-  // which would otherwise change label mid-download after a restart.
+  // The staging page's checkpoint tag is the only reliable answer, since the extension decides
+  // nothing and companion repos carry .safetensors too; the old guess stays for jobs persisted
+  // before the flag, so labels do not change after a restart.
   const isModelFile =
     job.checkpoint ??
     job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
@@ -114,6 +116,7 @@ const REQUIRED_ASSET_NOTE =
   "Required to run this model. Downloaded once, shared across compatible variants.";
 
 function variantSuffix(job: RowSubject): string {
+  if (isTrainingDownloadVariant(job.variant)) return " · Training model";
   if (job.variant?.startsWith("@")) {
     return ` · ${
       isRequiredAssetJob(job)
@@ -139,6 +142,9 @@ function RowTitle({ job }: { job: RowSubject }) {
 }
 
 function RowDetail({ job }: { job: RowSubject }) {
+  if (isTrainingDownloadVariant(job.variant)) {
+    return <div className="text-ui-10p5 text-muted-foreground">Current files; additional model files may follow.</div>;
+  }
   return job.presentation ? (
     <div className="truncate text-ui-10p5 text-muted-foreground">
       {job.presentation.filename}
@@ -203,6 +209,10 @@ function DownloadRow({
     job.state === "complete" ||
     job.state === "cancelled" ||
     job.state === "error";
+  const canRetry =
+    (job.state === "error" || job.state === "cancelled") &&
+    !starting &&
+    isRetryableDownload(job);
   const progress = presentedProgress(job);
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
@@ -221,6 +231,30 @@ function DownloadRow({
             strokeWidth={2}
             className="size-4 shrink-0 text-destructive"
           />
+        )}
+        {canRetry && (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label="Retry download"
+                onClick={() => void retryDownload(job)}
+                className={cn(
+                  "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
+                  "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={ArrowReloadHorizontalIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={4}>
+              Retry download
+            </TooltipContent>
+          </Tooltip>
         )}
         <Tooltip>
           <TooltipTrigger asChild={true}>
@@ -257,7 +291,7 @@ function DownloadRow({
           bytesPerSec={job.bytesPerSec}
           cancelling={job.state === "cancelling"}
           etaSeconds={job.etaSeconds}
-          activity={job.activity}
+          activity={job.activity ?? (isTrainingDownloadVariant(job.variant) ? "Preparing training model files…" : undefined)}
         />
       ) : null}
       {!starting && job.details?.length ? (
@@ -285,6 +319,7 @@ export function DownloadManagerPanel({
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
   useEngines(enabled, true);
+  useTrainingDownloads(enabled);
   useHubDownloadQueue();
   const [collapsed, setCollapsed] = useState(false);
 
@@ -325,10 +360,7 @@ export function DownloadManagerPanel({
   return (
     <div
       className={cn(
-        // Standalone: anchor bottom-right. In a shared stack (positioned=false)
-        // flow as a right-aligned row so overlays stack instead of overlapping.
-        // min-h-0 there: a flex item's min-height defaults to auto, so the capped
-        // stack would squeeze the update card instead of this list.
+        // min-h-0: a flex item's min-height defaults to auto, so the capped stack would squeeze the card.
         "pointer-events-none",
         positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
       )}

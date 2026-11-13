@@ -75,6 +75,11 @@ def _run(
         "_tokenizer_is_empty": lambda tokenizer: False,
         "ensure_spark_tts_source": lambda root: "<source>",
         "import_sparktts_module": import_module,
+        "resolve_audio_columns": lambda *args: {
+            "audio_col": "audio",
+            "text_col": "text",
+            "speaker_col": None,
+        },
     }
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(_TRAINER), "exec"), ns)
     owner = SimpleNamespace(
@@ -84,11 +89,6 @@ def _run(
         # pre_detect also classifies text-diffusion LMs; a Spark-TTS repo is never one.
         _detect_diffusion_lm = lambda *args: None,
         diffusion_lm_profile = None,
-        _resolve_audio_columns = lambda *args: {
-            "audio_col": "audio",
-            "text_col": "text",
-            "speaker_col": None,
-        },
     )
     owner.resolve_spark_tts_repo = MethodType(ns["resolve_spark_tts_repo"], owner)
     dataset = SimpleNamespace(column_names = ["audio", "text"])

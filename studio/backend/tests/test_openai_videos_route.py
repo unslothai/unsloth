@@ -118,6 +118,8 @@ def backend(monkeypatch, tmp_path):
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.VIDEO, lambda: None)
     monkeypatch.setattr(gallery_module, "gallery_dir", lambda: tmp_path)
     monkeypatch.setattr(video_routes, "_jobs", {})
+    monkeypatch.setattr(video_routes, "_VIDEO_QUEUE", [])
+    monkeypatch.setattr(video_routes, "_ensure_video_drainer", lambda: None)
     return backend
 
 
@@ -285,7 +287,9 @@ def test_json_body_and_the_studio_mount_work_too(client, backend):
 
 
 @pytest.mark.parametrize("path", ["/v1/videos", "/api/inference/videos"])
-def test_new_jobs_rearm_progress_but_busy_requests_preserve_it(client, backend, monkeypatch, path):
+def test_new_jobs_rearm_progress_but_queued_requests_preserve_it(
+    client, backend, monkeypatch, path
+):
     from loggers import media_progress
 
     events = []
@@ -303,12 +307,14 @@ def test_new_jobs_rearm_progress_but_busy_requests_preserve_it(client, backend, 
             assert response.status_code == 200, response.json()
             media_progress.log_media_generation_progress("video", progress)
             assert len(events) == 1
-            busy = client.post(path, json = {"prompt": "another"})
-            assert busy.status_code == 409, busy.json()
+            queued = client.post(path, json = {"prompt": "another"})
+            assert queued.status_code == 200, queued.json()
+            assert queued.json()["status"] == "queued"
             media_progress.log_media_generation_progress("video", progress)
             assert len(events) == 1
             backend.gate.set()
             _wait_terminal(client, response.json()["id"])
+            video_routes._VIDEO_QUEUE.clear()
     finally:
         backend.gate.set()
         media_progress.reset_media_generation_progress("video")
@@ -332,9 +338,12 @@ def test_in_progress_job_reports_progress_and_the_poll_hint(client, backend):
     content = client.get(f"/v1/videos/{job['id']}/content")
     assert content.status_code == 400
     assert content.json()["error"]["code"] == "video_not_ready"
-    busy = _create(client, {"prompt": "another"})
-    assert busy.status_code == 409
-    assert "error" in busy.json()
+    queued = _create(client, {"prompt": "another"})
+    assert queued.status_code == 200
+    assert queued.json()["status"] == "queued"
+    waiting = client.get(f"/v1/videos/{queued.json()['id']}")
+    assert waiting.json()["status"] == "queued"
+    assert waiting.headers["openai-poll-after-ms"] == "2000"
     backend.gate.set()
     done = _wait_terminal(client, job["id"])
     assert done["status"] == "completed"
@@ -381,6 +390,24 @@ def test_a_failed_job_reports_its_error_and_keeps_it_after_the_next_job(client, 
     assert client.delete(f"/v1/videos/{job['id']}").json()["deleted"] is True
     assert gallery_module.get_job(job["id"]) is None
     assert client.get(f"/v1/videos/{job['id']}").status_code == 404
+
+
+def test_a_pipeline_exception_names_its_cause_in_the_job_error(client, backend, monkeypatch):
+    def _mismatch(**kwargs):
+        raise RuntimeError(
+            "Input type (CPUBFloat16Type) and weight type (CUDABFloat16Type) should be the same\n"
+            '  File "/home/u/.venv/diffusers/autoencoder_kl_wan.py", line 597'
+        )
+
+    monkeypatch.setattr(backend, "generate", _mismatch)
+    job = _create(client, {"prompt": "a car"}).json()
+    failed = _wait_terminal(client, job["id"])
+    assert failed["status"] == "failed"
+    assert failed["error"] == {
+        "code": "video_generation_failed",
+        "message": "Video generation failed. RuntimeError: Input type (CPUBFloat16Type) and "
+        "weight type (CUDABFloat16Type) should be the same",
+    }
 
 
 def test_an_unpolled_failure_keeps_its_error_after_the_next_job(client, backend):

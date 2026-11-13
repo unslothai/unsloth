@@ -106,9 +106,13 @@ def _quantize(
     return model
 
 
-def _inputs(seed: int = 1) -> dict:
+def _inputs(
+    seed: int = 1,
+    n_text: int = 5,
+    n_video: int = 8,
+    n_audio: int = 3,
+) -> dict:
     g = torch.Generator().manual_seed(seed)
-    n_text, n_video, n_audio = 5, 8, 3
     seq = n_text + n_video + n_audio
     text_idx = torch.arange(0, n_text)
     video_idx = torch.arange(n_text, n_text + n_video)
@@ -243,6 +247,112 @@ def test_strided_kill_switch(quantized, monkeypatch):
     assert A.strided_attention_count(quantized) == 0
 
 
+def test_unfused_qkv_takes_the_shared_quant_and_matches_stock(quantized, monkeypatch):
+    from core.inference import diffusion_int8_gemm as g8
+
+    quantized.set_attention_backend("_native_math")
+    stock = copy.deepcopy(quantized)
+    seen = []
+
+    def shared(x, linears):
+        seen.append(len(linears))
+        return [m(x) for m in linears]
+
+    monkeypatch.setattr(g8, "shared_rotq_linears", shared)
+    assert A.install_strided_attention(quantized) == 3
+    assert _equal(_run(stock), _run(quantized))
+    assert seen and set(seen) == {3}
+
+
+def test_shared_qkv_kill_switch(quantized, monkeypatch):
+    from core.inference import diffusion_int8_gemm as g8
+
+    monkeypatch.setenv(A.SHARED_QKV_ENV, "0")
+    monkeypatch.setattr(
+        g8, "shared_rotq_linears", lambda x, linears: pytest.fail("shared path used")
+    )
+    A.install_strided_attention(quantized)
+    quantized.set_attention_backend("_native_math")
+    _run(quantized)
+    assert A.shared_qkv_count(quantized) == 0
+
+
+def test_shared_qkv_census_needs_the_int8_swap(quantized):
+    A.install_strided_attention(quantized)
+    assert A.shared_qkv_count(quantized) == 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "int8 GEMM swap needs CUDA")
+def test_shared_qkv_on_the_int8_swap_is_bit_identical_on_cuda(monkeypatch):
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_gemm as g8
+
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "1")
+    index = torch.cuda.current_device()
+    if g8.device_config(index) is None or cq.rotquant_device_config(index) is None:
+        pytest.skip("int8 GEMM / fused rotation probe refused this device")
+    torch.manual_seed(0)
+    model = (
+        h3.MiniMaxH3Transformer3DModel(
+            num_attention_heads = 8,
+            attention_head_dim = 128,
+            hidden_size = 1024,
+            num_layers = 2,
+            num_refiner_layers = 1,
+            ffn_dim = 2048,
+            in_channels = 4,
+            audio_in_channels = 4,
+            patch_size = (1, 2, 2),
+            text_dim = 32,
+            freq_dim = 32,
+            time_embed_hidden_dim = 64,
+            time_embed_dim = 32,
+            rope_freq_dim = 4,
+        )
+        .eval()
+        .to("cuda", torch.bfloat16)
+    )
+    fqns = [
+        name
+        for name, m in model.named_modules()
+        if isinstance(m, torch.nn.Linear)
+        and name.startswith("transformer_blocks.")
+        and ".attn." in name
+    ]
+    rotate_linears_(model, fqns, 256)
+    quantize_(
+        model,
+        Int8DynamicActivationInt8WeightConfig(set_inductor_config = False),
+        filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and fqn in fqns,
+    )
+    model.set_attention_backend("_native_math")
+    assert g8.install(model)
+    stock = copy.deepcopy(model)
+    A.install_strided_attention(stock)
+    for m in stock.modules():
+        if isinstance(m, h3.MiniMaxH3Attention):
+            m.processor._unsloth_shared_qkv = False
+    A.install_strided_attention(model)
+    assert A.shared_qkv_count(model) == 2
+    inputs = _inputs(n_text = 16, n_video = 48, n_audio = 8)
+    inputs = {
+        k: (v.to("cuda", torch.bfloat16) if torch.is_floating_point(v) else v.to("cuda"))
+        if torch.is_tensor(v)
+        else v
+        for k, v in inputs.items()
+    }
+    with torch.no_grad():
+        before = cq.rotquant_call_count()
+        ref = stock(**inputs)
+        mid = cq.rotquant_call_count()
+        out = model(**inputs)
+        after = cq.rotquant_call_count()
+    assert _equal(ref, out)
+    assert after - mid == mid - before - 2 * A.shared_qkv_count(model) > 0
+
+
 def test_install_is_idempotent(quantized):
     assert A.install_strided_attention(quantized) == 3
     assert A.install_strided_attention(quantized) == 0
@@ -263,14 +373,37 @@ def test_install_is_idempotent(quantized):
         (None, (8, 0), None),
     ],
 )
-def test_arch_pick_moves_only_the_automatic_cudnn_pick_on_measured_archs(selected, cap, expected):
+def test_arch_pick_moves_only_the_automatic_cudnn_pick_on_measured_archs(
+    selected, cap, expected, monkeypatch
+):
+    monkeypatch.setattr(A, "_flash_sdpa_ready", lambda target = None: True)
     assert A.h3_attention_backend(selected, cap) == expected
 
 
 @pytest.mark.parametrize("requested", ["cudnn", "flash", "native"])
-def test_arch_pick_keeps_an_explicit_request(requested):
+def test_arch_pick_keeps_an_explicit_request(requested, monkeypatch):
+    monkeypatch.setattr(A, "_flash_sdpa_ready", lambda target = None: True)
     assert A.h3_attention_backend("_native_cudnn", (8, 0), requested = requested) == "_native_cudnn"
     assert A.h3_attention_backend("_native_cudnn", (8, 0), requested = "auto") == "_native_flash"
+
+
+@pytest.mark.parametrize("cap", [(8, 0), (8, 9)])
+def test_arch_pick_keeps_cudnn_when_flash_sdpa_is_missing(cap, monkeypatch):
+    # Windows CUDA wheels often ship without flash; Auto must not exclusive-pin FLASH (#16294).
+    monkeypatch.setattr(A, "_flash_sdpa_ready", lambda target = None: False)
+    assert A.h3_attention_backend("_native_cudnn", cap, requested = "auto") == "_native_cudnn"
+
+
+def test_arch_pick_keeps_cudnn_when_sdpa_probe_is_empty(monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.diffusion_attention.available_sdpa_kernels",
+        lambda target: (),
+    )
+    target = type("T", (), {"device": "cuda", "dtype": "torch.bfloat16"})()
+    assert (
+        A.h3_attention_backend("_native_cudnn", (8, 9), requested = "auto", target = target)
+        == "_native_cudnn"
+    )
 
 
 def test_h3_load_wires_the_request_and_the_speed_gate():
@@ -287,6 +420,7 @@ def test_h3_load_wires_the_request_and_the_speed_gate():
         if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "h3_attention_backend"
     ]
     assert calls and all(any(k.arg == "requested" for k in c.keywords) for c in calls)
+    assert calls and all(any(k.arg == "target" for k in c.keywords) for c in calls)
     gates = [
         n
         for n in ast.walk(tree)
@@ -376,24 +510,20 @@ def test_fused_qk_rope_kill_switch(quantized, monkeypatch):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("strided", [False, True])
 @pytest.mark.parametrize("seq", [1, 777])
-def test_qk_kernel_matches_the_compiled_stock_math(dtype, strided, seq):
-    import torch._inductor.config as ic
+@pytest.mark.parametrize("norm", [True, False])
+def test_qk_kernel_is_bit_identical_to_the_eager_stock_math(dtype, strided, seq, norm):
+    import torch.nn.functional as F
 
+    if norm and not Q.torch_fused_rms_norm_on_cuda():
+        pytest.skip("this torch normalises through the composite path; the rope form covers it")
     x, w, cos, sin = _qk_inputs("cuda", dtype, seq = seq, heads = 56, strided = strided)
-    ours = Q._launch(x, w, cos, sin, 1e-5)
     eager = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5)
-    prev = ic.emulate_precision_casts
-    ic.emulate_precision_casts = True
-    try:
-        compiled = torch.compile(Q.reference_qk_norm_rope, dynamic = False)(x, w, cos, sin, 1e-5)
-    finally:
-        ic.emulate_precision_casts = prev
+    if norm:
+        ours = Q._launch(x, w, cos, sin, 1e-5)
+    else:
+        ours = Q._launch(F.rms_norm(x, (x.shape[-1],), w, 1e-5), w, cos, sin, 1e-5, norm = False)
     assert ours.is_contiguous() and ours.shape == x.shape
-    budget = ours.numel() // (100000 if dtype == torch.bfloat16 else 20000)
-    for ref in (eager, compiled):
-        diff = (ours.float() - ref.float()).abs()
-        assert int((ours != ref).sum()) <= max(2, budget)
-        assert float(diff.max()) <= float((ref.float().abs().max() * 2**-7))
+    assert torch.equal(ours, eager)
     bad = (ours.float() * (1 + 2**-7)).to(dtype)
     assert int((bad != eager).sum()) > ours.numel() // 2
 
@@ -418,3 +548,187 @@ def test_strided_processor_adds_no_graph_break(monkeypatch, qk_rope):
     assert A.install_strided_attention(model) > 0
     assert model.transformer_blocks[0].attn.processor._unsloth_qk_rope is (qk_rope == "1")
     assert _graph_breaks(model) == stock
+
+
+# SageAttention inside the strided processor: a fake guarded backend stands in for the kernel on CPU.
+
+
+def _fake_sage_dispatch(monkeypatch, seen):
+    import torch.nn.functional as F
+    def dispatch(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        backend = None,
+        **kw,
+    ):
+        seen.append((A._backend_value(backend), tuple(query.shape)))
+        out = F.scaled_dot_product_attention(
+            query.permute(0, 2, 1, 3), key.permute(0, 2, 1, 3), value.permute(0, 2, 1, 3)
+        )
+        return out.permute(0, 2, 1, 3)
+
+    monkeypatch.setattr(h3, "dispatch_attention_fn", dispatch)
+
+
+def _stock_calls(monkeypatch):
+    calls = []
+    stock_call = h3.MiniMaxH3AttnProcessor.__call__
+
+    def spy(self, *a, **kw):
+        calls.append(1)
+        return stock_call(self, *a, **kw)
+
+    monkeypatch.setattr(h3.MiniMaxH3AttnProcessor, "__call__", spy)
+    return calls
+
+
+def _set_backend(model, name):
+    from diffusers.models.attention_dispatch import AttentionBackendName
+    for m in model.modules():
+        proc = getattr(m, "processor", None)
+        if proc is not None and hasattr(proc, "_attention_backend"):
+            proc._attention_backend = AttentionBackendName(name)
+
+
+@pytest.mark.parametrize("name", ["sage_hub", "sage"])
+@pytest.mark.parametrize("fuse", [False, True])
+def test_sage_runs_inside_the_strided_processor_and_matches_stock(
+    quantized, monkeypatch, name, fuse
+):
+    if fuse:
+        A.fuse_h3_qkv_(quantized)
+    stock = copy.deepcopy(quantized)
+    assert A.install_strided_attention(quantized) == 3
+    _set_backend(quantized, name)
+    _set_backend(stock, name)
+    assert A.strided_sage_count(quantized) == 3 and A.strided_sage_count(stock) == 0
+    seen = []
+    _fake_sage_dispatch(monkeypatch, seen)
+    want = _run(stock)
+    assert len(seen) == 3 and {s[0] for s in seen} == {name}
+    calls = _stock_calls(monkeypatch)
+    seen.clear()
+    got = _run(quantized)
+    # every attention went to the backend from the strided processor, none through the stock one
+    assert calls == [] and len(seen) == 3
+    assert _equal(want, got)
+
+
+def test_strided_sage_kill_switch_keeps_the_stock_processor(quantized, monkeypatch):
+    monkeypatch.setenv(A.STRIDED_SAGE_ENV, "0")
+    assert A.install_strided_attention(quantized) == 3
+    _set_backend(quantized, "sage_hub")
+    assert A.strided_sage_count(quantized) == 0
+    seen = []
+    _fake_sage_dispatch(monkeypatch, seen)
+    calls = _stock_calls(monkeypatch)
+    _run(quantized)
+    assert len(calls) == 3 and len(seen) == 3
+
+
+def test_strided_processor_still_defers_other_dispatch_backends(quantized, monkeypatch):
+    A.install_strided_attention(quantized)
+    _set_backend(quantized, "flash_hub")
+    seen = []
+    _fake_sage_dispatch(monkeypatch, seen)
+    calls = _stock_calls(monkeypatch)
+    _run(quantized)
+    assert len(calls) == 3 and A.strided_sage_count(quantized) == 0
+
+
+def test_strided_sage_with_a_mask_takes_the_stock_processor(quantized, monkeypatch):
+    A.install_strided_attention(quantized)
+    _set_backend(quantized, "sage_hub")
+    attn = quantized.transformer_blocks[0].attn
+    calls = _stock_calls(monkeypatch)
+    seen = []
+    _fake_sage_dispatch(monkeypatch, seen)
+    x = torch.randn(1, 4, 64)
+    with torch.no_grad():
+        attn.processor(attn, x, None, torch.ones(1, 1, 4, 4, dtype = torch.bool))
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(
+    "backend, env, want",
+    [
+        ("_native_cudnn", None, True),
+        ("_native_flash", None, True),
+        ("sage_hub", None, True),
+        ("sage", None, True),
+        ("sage_hub", "0", False),
+        ("sage", "off", False),
+        ("_native_cudnn", "0", True),
+        ("flash_hub", None, False),
+        ("_native_math", None, False),
+        ("xformers", None, False),
+        (None, None, False),
+    ],
+)
+def test_strided_install_backend_routing(backend, env, want, monkeypatch):
+    if env is None:
+        monkeypatch.delenv(A.STRIDED_SAGE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(A.STRIDED_SAGE_ENV, env)
+    assert A.strided_install_backend(backend) is want
+
+
+def test_video_h3_load_installs_strided_through_the_routing_predicate():
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference.video import VideoBackend
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(VideoBackend._load_h3_modular_pipeline)))
+    gates = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If)
+        and any(
+            getattr(c.func, "id", "") == "install_strided_attention"
+            for c in n.body
+            for c in ast.walk(c)
+            if isinstance(c, ast.Call)
+        )
+    ]
+    assert any("strided_install_backend(attention_engaged)" in ast.unparse(g.test) for g in gates)
+
+
+def _sage_hub_fn():
+    from core.inference.diffusion_sage_hub import load_sageattn
+
+    fn, why = load_sageattn((2, 3))
+    if fn is None:
+        pytest.skip(f"no SageAttention hub build here: {why}")
+    return fn
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "SageAttention needs CUDA")
+@pytest.mark.parametrize("fuse", [False, True])
+def test_strided_sage_on_cuda_is_bit_identical_to_the_stock_sage_route(fuse):
+    from core.inference import diffusion_attention as DA
+
+    target = __import__("types").SimpleNamespace(
+        device = "cuda", dtype = torch.bfloat16, torch_device = "cuda"
+    )
+    _sage_hub_fn()
+    model = _quantize(_tiny_model()).to("cuda", torch.bfloat16)
+    if fuse:
+        A.fuse_h3_qkv_(model)
+    stock = copy.deepcopy(model)
+    assert A.install_strided_attention(model) == 3
+    for m in (model, stock):
+        assert DA.apply_attention_backend(
+            __import__("types").SimpleNamespace(transformer = m), "sage", target = target
+        ) in ("sage", "sage_hub")
+    assert A.strided_sage_count(model) == 3
+    kw = {k: (v.to("cuda") if torch.is_tensor(v) else v) for k, v in _inputs().items()}
+    for k in ("hidden_states", "audio_hidden_states", "encoder_hidden_states"):
+        kw[k] = kw[k].to(torch.bfloat16)
+    with torch.no_grad():
+        assert _equal(stock(**kw), model(**kw))

@@ -16,6 +16,10 @@ import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useEffect, useId, useState } from "react";
 import {
+  loadDownloadSpeedLimitSettings,
+  subscribeDownloadSpeedLimitSettings,
+} from "../api/download-speed-limit";
+import {
   type DownloadTransportSettings,
   loadDownloadTransportSettings,
   subscribeDownloadTransportSettings,
@@ -48,13 +52,12 @@ export function DownloadTransportRow() {
   const t = useT();
   const pillId = useId();
   const [mode, setMode] = useTransportMode();
-  // huggingface_hub 1.18 refetches an interrupted transfer from zero, so promising HTTPS
-  // "resumes where it stopped" there is backwards.
+  // huggingface_hub 1.18 refetches interrupted transfers from zero.
   const partialsResumable = useHttpPartialsResumable();
   const [settings, setSettings] = useState<DownloadTransportSettings | null>(
     null,
   );
-  // Distinct from "settings is null": a FAILED load must not disable Xet for good.
+  // A failed load must not disable Xet for good.
   const [capabilityPending, setCapabilityPending] = useState(true);
 
   useEffect(() => {
@@ -63,8 +66,7 @@ export function DownloadTransportRow() {
       setSettings(next);
       setCapabilityPending(false);
     });
-    // Refreshed on mount: the cache can hold a mode another browser changed, or a stale
-    // Auto verdict.
+    // Refreshed on mount: another browser may have changed the mode.
     loadDownloadTransportSettings({ refresh: true })
       .then(setSettings)
       .catch(() => undefined)
@@ -72,21 +74,40 @@ export function DownloadTransportRow() {
     return unsubscribe;
   }, []);
 
-  // Unknown counts as unavailable while the first load is in flight: clicking Xet there
-  // stored a preference every later download silently ignored.
+  const [speedLimited, setSpeedLimited] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let changed = false;
+    const unsubscribe = subscribeDownloadSpeedLimitSettings((next) => {
+      changed = true;
+      setSpeedLimited(next.mbps !== null);
+    });
+    loadDownloadSpeedLimitSettings()
+      .then((next) => {
+        if (!(cancelled || changed)) {
+          setSpeedLimited(next.mbps !== null);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  // Unknown counts as unavailable while loading, or Xet could be stored and silently ignored.
   const xetUnavailable = capabilityPending || settings?.xetAvailable === false;
-  // The localized string first: the backend's one reason is English prose, and preferring it
-  // showed English to every other locale. An unknown future reason still gets through.
+  // Localized string first; the backend reason is English prose.
   const serverReason = settings?.xetUnavailableReason;
   const xetReason =
     !serverReason || /hf_xet is not installed/i.test(serverReason)
       ? t("settings.general.downloads.xetMissing")
       : serverReason;
 
-  // Xet selected but unable to run here: say so rather than silently using HTTPS. Only once
-  // known, since while pending we have not been told hf_xet is missing.
-  const status =
-    !capabilityPending && xetUnavailable && mode === "xet"
+  const status = speedLimited
+    ? t("settings.general.downloads.speedLimitUsesHttps")
+    : !capabilityPending && xetUnavailable && mode === "xet"
       ? xetReason
       : mode === "auto" && settings
         ? t("settings.general.downloads.autoCurrently", {
@@ -102,7 +123,7 @@ export function DownloadTransportRow() {
   // something to explain (stalls, low RAM, an env switch); on Xet the reason is bookkeeping
   // like "Xet download succeeded" or "no cached verdict; defaulting to Xet".
   const statusReason =
-    mode === "auto" && settings?.autoResolvesTo === "http"
+    !speedLimited && mode === "auto" && settings?.autoResolvesTo === "http"
       ? (settings.autoReason ?? null)
       : null;
 
@@ -149,7 +170,6 @@ export function DownloadTransportRow() {
                 <button
                   type="button"
                   role="radio"
-                  // Indexed for settings search, so the result has somewhere to scroll to.
                   data-settings-label={t(opt.labelKey)}
                   aria-checked={active}
                   aria-disabled={disabled || undefined}

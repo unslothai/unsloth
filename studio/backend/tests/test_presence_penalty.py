@@ -244,9 +244,7 @@ def test_worker_forwards_all_sampling_params_to_backend():
 
 
 def test_orchestrator_cmd_carries_the_tool_protocol_flag():
-    """Unrestricted mode runs with an EMPTY tool list, so the worker cannot infer that the
-    tool protocol is live from ``tools`` alone. Without the flag it stripped the wrappers it
-    was about to parse and the markerless guard then read genuine calls as prose."""
+    """Unrestricted mode has an empty tool list, so the worker needs the flag to parse tool calls."""
     from core.inference.orchestrator import InferenceOrchestrator
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
@@ -288,9 +286,7 @@ def test_the_worker_gates_the_tool_protocol_flag_on_the_backend_signature():
 
 
 def test_the_mlx_backend_declares_the_tool_protocol_flag():
-    """The worker forwards this flag only to backends that declare it, so MLX not declaring
-    it meant the flag was silently dropped and the native token decoder stayed off in
-    unrestricted mode, stripping the wrappers the guard then rejected as prose."""
+    """MLX must declare the flag, since the worker forwards it only to backends that declare it."""
     import inspect
 
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -323,9 +319,8 @@ def test_the_mlx_think_prefill_predicate_matches_the_decoder_it_describes():
 
 
 def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():
-    """mlx-vlm strips native reasoning controls from ``response.text``, so a no-tools request
-    whose delimiters are special ids needs the decoder too or the reasoning is rendered as
-    ordinary answer text."""
+    """mlx-vlm strips reasoning controls from response.text, so a no-tools request with special-id
+    delimiters needs the decoder or reasoning shows as answer text."""
     import inspect
 
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -351,7 +346,7 @@ def test_the_mlx_vlm_prefill_predicate_matches_its_decoder_gate():
 
 
 def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_it():
-    """The clip rides the command like an image; a backend without ``video`` fails the request."""
+    """Clips ride the command like images; a backend without ``videos`` fails the request."""
     from pathlib import Path
 
     from core.inference.orchestrator import InferenceOrchestrator, _mirrored_model_entry
@@ -360,11 +355,11 @@ def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_i
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
     o.models, o.active_model_name = {}, None
     o._stop_ledger = o._pending_teardowns = None
-    assert "video_base64" not in o._build_generate_cmd("r", None, messages = [])
+    assert "videos_base64" not in o._build_generate_cmd("r", None, messages = [])
     cmd = o._build_generate_cmd(
-        "r", None, messages = [{"role": "user", "content": "hi"}], video_b64 = "AAAA"
+        "r", None, messages = [{"role": "user", "content": "hi"}], videos_b64 = ["AAAA", "BBBB"]
     )
-    assert cmd["video_base64"] == "AAAA"
+    assert cmd["videos_base64"] == ["AAAA", "BBBB"]
 
     class _FakeQueue:
         def __init__(self):
@@ -379,10 +374,10 @@ def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_i
 
         def generate_chat_response(
             self,
-            video = None,
+            videos = None,
             **kwargs,
         ):
-            self.received = video
+            self.received = videos
             return iter(())
 
     class _TextBackend:
@@ -395,7 +390,7 @@ def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_i
 
     takes = _VideoBackend()
     _handle_generate(takes, cmd, _FakeQueue(), threading.Event())
-    assert takes.received == "AAAA"
+    assert takes.received == ["AAAA", "BBBB"]
     refuses, queue = _TextBackend(), _FakeQueue()
     _handle_generate(refuses, cmd, queue, threading.Event())
     assert refuses.called is False
@@ -440,10 +435,10 @@ def test_both_orchestrator_entry_points_forward_the_clip_into_the_command():
     o._build_generate_cmd = _build
     turn = [{"role": "user", "content": "hi"}]
     with pytest.raises(_Built):
-        list(o.generate_chat_response(messages = turn, video = "AAAA"))
+        list(o.generate_chat_response(messages = turn, videos = ["AAAA"]))
     with pytest.raises(_Built):
-        list(o.generate_with_adapter_control(use_adapter = True, messages = turn, video = "AAAA"))
-    assert [kw["video_b64"] for kw in built] == ["AAAA", "AAAA"]
+        list(o.generate_with_adapter_control(use_adapter = True, messages = turn, videos = ["AAAA"]))
+    assert [kw["videos_b64"] for kw in built] == [["AAAA"], ["AAAA"]]
 
 
 def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serves_it():
