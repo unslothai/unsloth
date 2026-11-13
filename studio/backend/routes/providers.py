@@ -39,6 +39,7 @@ from core.inference.providers import (
     get_connectable_provider_info,
     get_provider_info,
     list_available_providers,
+    provider_default_models,
     validate_provider_base_url,
 )
 from core.inference.pricing import pricing_snapshot
@@ -48,6 +49,7 @@ from core.inference import openai_codex_auth, openai_codex_client
 from core.inference.provider_model_capabilities import (
     MODEL_CAPABILITY_PROVIDERS,
     MODELS_DEV_URL,
+    models_dev_chat_models,
     provider_model_capabilities,
     trim_models_dev_catalog,
 )
@@ -241,7 +243,7 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "ChatGPT subscriptions do not use API keys.")
     if base_url is not None and (not updating or base_url != info["base_url"]):
         raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
-    if models is None:
+    if models is None or (not updating and not models):
         return
     # Same evidence order as the chat route, so a save cannot persist a model every send refuses.
     if provider_id and openai_codex_client.subscription_catalog_known(provider_id):
@@ -251,7 +253,7 @@ def _validate_provider_auth_contract(
             if openai_codex_client.offered_subscription_model(provider_id, slug) is not None
         }
     else:
-        allowed = set(info["default_models"])
+        allowed = set()
         proven = not provider_id or openai_codex_client.saved_models_proven_for(
             provider_id, validated_account
         )
@@ -307,7 +309,11 @@ async def list_registry(
     it saw before and cannot render them as duplicate dropdown options.
     OAuth rows need ``include_hidden`` or ``include_oauth``.
     """
-    return list_available_providers(include_hidden = include_hidden, include_oauth = include_oauth)
+    return list_available_providers(
+        include_hidden = include_hidden,
+        include_oauth = include_oauth,
+        catalog_models = cached_catalog_models(),
+    )
 
 
 @router.get("/pricing")
@@ -457,11 +463,10 @@ async def update_provider_config(
         ):
             openai_codex_client.forget_subscription_models(provider_id)
             openai_codex_client.mark_subscription_catalog_stale(provider_id)
+        openai_codex_client.restore_subscription_catalog(provider_id, current_bundle)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
         # Only unproven slugs hit the catalog, so saves do not wait on upstream timeouts.
-        unproven = (
-            set(payload.models) - set(existing_info["default_models"]) - set(persisted_models)
-        )
+        unproven = set(payload.models) - set(persisted_models)
         if unproven:
             try:
                 await openai_codex_client.ensure_subscription_models(provider_id)
@@ -1115,6 +1120,13 @@ def _write_model_catalog_file(data: dict) -> None:
         logger.warning("providers.model_catalog_cache_write_failed", error = str(exc))
 
 
+def cached_catalog_models() -> dict[str, list[str]]:
+    global _model_catalog_cache
+    if _model_catalog_cache is None:
+        _model_catalog_cache = _read_model_catalog_file()
+    return (_model_catalog_cache or {}).get("models") or {}
+
+
 def cached_catalog_model_inputs(namespace: str, model: str) -> list[str] | None:
     global _model_catalog_cache
     if _model_catalog_cache is None:
@@ -1130,14 +1142,23 @@ async def _fetch_models_dev_catalog() -> dict:
 
     response = await _client().get(MODELS_DEV_URL, timeout = 20.0)
     response.raise_for_status()
-    return {"fetched_at": time.time(), "providers": trim_models_dev_catalog(response.json())}
+    raw = response.json()
+    return {
+        "fetched_at": time.time(),
+        "providers": trim_models_dev_catalog(raw),
+        "models": models_dev_chat_models(raw),
+    }
 
 
 @router.get("/model-catalog", response_model = ModelCatalogResponse)
 async def get_model_catalog(_current_subject: str = Depends(get_current_subject)):
     global _model_catalog_cache
     cached = _model_catalog_cache or _read_model_catalog_file()
-    if cached is not None and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS:
+    if (
+        cached is not None
+        and "models" in cached
+        and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS
+    ):
         _model_catalog_cache = cached
         return cached
     try:
@@ -1240,6 +1261,31 @@ def _model_capability_names(model: dict) -> Optional[list[str]]:
     if not isinstance(values, list):
         return None
     return [name for name in values if isinstance(name, str) and name]
+
+
+@router.post("/{provider_id}/served-window")
+async def load_served_window(provider_id: str, model: str):
+    row = providers_db.get_provider(provider_id)
+    if row is None or not row["is_enabled"] or model not in (row.get("models") or []):
+        raise HTTPException(status_code = 404, detail = "Connection model not found")
+    try:
+        # The saved key and headers stay with the chat path; a keyed server just reports nothing.
+        client = await asyncio.to_thread(
+            ExternalProviderClient,
+            provider_type = row["provider_type"],
+            base_url = row["base_url"],
+            api_key = "",
+            api_type = row.get("api_type", "chat_completions"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    if row["provider_type"] != "ollama":
+        return {"context_length": await client.served_context_window(model)}
+    try:
+        return {"context_length": await client.load_ollama_window(model)}
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.info("providers.ollama_load_failed", error = repr(exc))
+        return {"context_length": None}
 
 
 @router.post("/models", response_model = list[ProviderModelInfo])
@@ -1358,12 +1404,18 @@ async def list_provider_models(
             denylist = info.get("model_id_denylist")
             if denylist is not None:
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
-        # Optional cap after filtering to keep large catalogs picker-sized. Unsorted, so "first N matches"; pair with
-        # default_models for flagships.
         if shared_models is not None:
             models = [m for m in models if m.get("id", "") in shared_models]
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
+            newest = provider_default_models(payload.provider_type, cached_catalog_models())
+            # The server does not sort: keep saved models (the form drops omitted ones), then catalog ones.
+            saved = set()
+            if payload.provider_id:
+                saved = set(
+                    (providers_db.get_provider(payload.provider_id) or {}).get("models") or []
+                )
+            models.sort(key = lambda m: (m.get("id", "") not in saved, m.get("id", "") not in newest))
             models = models[:limit]
         return [
             ProviderModelInfo(

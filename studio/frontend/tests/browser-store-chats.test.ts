@@ -143,3 +143,48 @@ test("deleting the chat on screen drops its tabs; deleting a comparison drops it
   assert.equal(useBrowserStore.getState().tabs.some((tab) => tab.chat === "compare:pair9"), false);
   assert.equal("compare:pair9" in useBrowserStore.getState().chats, false);
 });
+
+test("passing through chats with the panel open leaves no empty tabs behind, and each still opens on a new tab", () => {
+  const store = useBrowserStore.getState();
+  store.showChat(chatKeyOfThread("start"));
+  store.openUrl("https://start.example/");
+  const before = useBrowserStore.getState().tabs.length;
+  for (const id of ["p1", "p2", "p3"]) {
+    store.showChat(chatKeyOfThread(id));
+    assert.deepEqual(urls(), ["newtab"]);
+  }
+  store.setFullView(true);
+  store.showChat(chatKeyOfThread("p4"));
+  store.renameTab(useBrowserStore.getState().activeTabId ?? "", "Kept");
+  store.showChat(chatKeyOfThread("start"));
+  const state = useBrowserStore.getState();
+  // Only the renamed tab stays: the untouched ones are remade when their chat shows again.
+  assert.equal(state.tabs.length, before + 1);
+  assert.deepEqual(urls(), ["https://start.example/"]);
+  assert.equal(state.fullView, false);
+
+  store.showChat(chatKeyOfThread("p3"));
+  assert.equal(useBrowserStore.getState().open, true);
+  assert.equal(useBrowserStore.getState().fullView, true);
+  assert.deepEqual(urls(), ["newtab"]);
+  assert.equal(useBrowserStore.getState().activeTabId, chatTabs(useBrowserStore.getState())[0]?.id);
+});
+
+test("a chat whose panel was closed on an empty tab stays closed however often it is left and shown", () => {
+  const store = useBrowserStore.getState();
+  const closed = chatKeyOfThread("closed");
+  const other = chatKeyOfThread("other");
+  store.closePanel();
+  store.showChat(closed);
+  store.newTab();
+  assert.deepEqual(urls(), ["newtab"]);
+  store.closePanel();
+  store.showChat(other);
+  store.showChat(closed);
+  assert.equal(useBrowserStore.getState().open, false);
+  store.showChat(other);
+  store.openUrl("https://other.example/");
+  assert.equal(useBrowserStore.getState().open, true);
+  store.showChat(closed);
+  assert.equal(useBrowserStore.getState().open, false);
+});

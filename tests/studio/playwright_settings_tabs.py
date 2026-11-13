@@ -14,6 +14,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _en_catalog import en_string  # noqa: E402
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
@@ -760,6 +761,8 @@ def run(page) -> None:
             log(f"search jump to '{target_label}': flashed, scrollTop {flashed['scrollTop']}")
     report["steps"].append("search-jump")
 
+    run_composer_search(page)
+
     run_keystroke_search(page)
 
     run_shortcut_recorder(page)
@@ -767,6 +770,50 @@ def run(page) -> None:
     run_scroll_resets_on_tab_switch(page)
 
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
+
+
+def run_composer_search(page) -> None:
+    """The moved controls must be reachable through search in Chat's Composer section."""
+    results = []
+    for key in (
+        "settings.appearance.custom.chatWidth.label",
+        "settings.chat.composerPosition",
+        "chatBackground.outline",
+        "settings.appearance.custom.sentAttachments.label",
+    ):
+        label = en_string(key)
+        close_dialog(page)
+        open_dialog(page, "appearance")
+        settle_panel(page)
+        if label in snapshot(page).get("labels", []):
+            fail(f"composer search: '{label}' still renders in Appearance")
+        search = page.locator('div[role="dialog"] aside input').first
+        search.fill(label)
+        entry = page.locator('div[role="dialog"] aside').get_by_role(
+            "button", name = label, exact = True
+        )
+        click_forced(entry, timeout = 15000)
+        until(
+            page,
+            """label => document.querySelector('.settings-search-hit')?.dataset.settingsLabel === label""",
+            arg = label,
+            timeout = 15000,
+        )
+        state = page.evaluate(
+            """() => {
+                const hit = document.querySelector('.settings-search-hit');
+                return {
+                    tab: window.__settingsSmoke.state().activeTab,
+                    label: hit?.dataset.settingsLabel,
+                    section: hit?.closest('section')?.dataset.settingsLabel,
+                };
+            }"""
+        )
+        results.append(state)
+        if state != {"tab": "chat", "label": label, "section": en_string("composerSettings.title")}:
+            fail(f"composer search: '{label}' reached {state}")
+    report["composer_search"] = results
+    report["steps"].append("composer-search")
 
 
 def write_report() -> None:

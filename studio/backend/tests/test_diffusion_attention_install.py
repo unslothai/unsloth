@@ -73,6 +73,9 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False, raising = False)
+    monkeypatch.setattr(
+        att, "_load_sage_hub_direct", lambda: (None, "direct loader stubbed"), raising = False
+    )
     backends = dispatch._AttentionBackendRegistry._backends
     saved = dict(backends)
     hub_cfg = dispatch._HUB_KERNELS_REGISTRY.get(_HUB) if _HUB is not None else None

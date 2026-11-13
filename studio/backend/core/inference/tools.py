@@ -14961,8 +14961,8 @@ _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 _MAX_FETCH_BYTES = 512 * 1024
 # news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
 _MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
-# docs sites put over 1 MB of menus before the page text, so a window without one of these reads on.
-_HTML_CONTENT_START_RE = re.compile(rb"<(?:main|article|h1)[\s>]", re.IGNORECASE)
+# docs sites put large menus before the page text, so the read runs a window past the first of each of these.
+_HTML_CONTENT_START_RE = re.compile(rb"<(main|article|h1)[\s>]", re.IGNORECASE)
 # keep % safe to avoid encoding existing escapes as %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
@@ -16007,10 +16007,17 @@ def _read_capped_body(
             and body_at is not None
             and body_locator._codec == "latin-1"
             and not _has_pdf_magic(so_far := b"".join(chunks))
-            and not _HTML_CONTENT_START_RE.search(so_far, body_at)
         ):
-            window_end = fallback_end = got
-            remaining = max_bytes - got
+            starts = {}
+            for match in _HTML_CONTENT_START_RE.finditer(so_far, body_at):
+                starts.setdefault(match.group(1).lower(), match.start())
+            latest = max(starts.values(), default = None)
+            if latest is None:
+                window_end = fallback_end = got
+                remaining = max_bytes - got
+            elif latest + body_window - got > 65536:
+                fallback_end = got
+                remaining = min(max_bytes, latest + body_window) - got
     budget_error = _fetch_budget_exceeded(
         None if fallback_end is not None else deadline, cancel_event
     )
