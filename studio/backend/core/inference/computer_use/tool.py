@@ -485,6 +485,9 @@ class _Run:
             done.append(describe(action))
             if action["op"] in INPUT_OPS or action["op"] in ("open_app", "wait"):
                 acted = True
+            if action["op"] in INPUT_OPS or action["op"] in ("open_app", "wait", "screenshot"):
+                # An enlarged view from before this is of a screen that has moved on.
+                self.zoomed = None
         self.state.touch(self.key)
         logger.info(
             "computer_use session=%s ran=%s failed=%s",

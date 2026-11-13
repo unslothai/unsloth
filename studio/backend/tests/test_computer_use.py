@@ -432,6 +432,17 @@ def test_zoom_enlarges_without_moving_the_frame(desktop):
     assert state.session(state.session_key(SESSION)).frame is frame
 
 
+def test_an_enlarged_view_is_not_shown_for_a_screen_that_moved_on(desktop):
+    look()
+    zoom = {"action": "zoom", "region": [100, 100, 400, 300]}
+    click = {"action": "click", **at(*FIELD)}
+    for chain in ([click], [click, {"action": "screenshot"}], [{"action": "screenshot"}]):
+        result = run({**zoom, "then": chain})
+        assert "Enlarged view" not in result and "Screenshot attached" in result
+    # Zooming last still shows the enlarged view.
+    assert "Enlarged view" in run({**click, "then": [zoom]})
+
+
 def test_keys_scroll_and_open_app_reach_the_desktop(desktop):
     look()
     run({"action": "scroll", **at(*BUTTON), "direction": "down", "amount": 2})
