@@ -28963,7 +28963,7 @@ def _fit_external_context(
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
-    ``can_reset`` lets a tool loop start a checkpoint epoch, which /compact needs."""
+    ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs."""
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
         estimate_messages_tokens_conservative,
@@ -29016,8 +29016,8 @@ def _fit_external_context(
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
     thread_id = payload.thread_id
-    # A reset strands the evicted turns unless the loop can offer search_conversation afterwards.
-    can_reset = can_reset and tool_loop and _can_reset_epoch(thread_id, True)
+    # The caller vouches the model can receive search_conversation on a later turn, as GGUF does.
+    can_reset = can_reset and _can_reset_epoch(thread_id, True)
     force_reset = can_reset and getattr(payload, "compact_context", None) is True
     sticky = sticky_is_checkpoint = None
     sticky_manual = False
@@ -29051,7 +29051,8 @@ def _fit_external_context(
         max_tokens = max_tokens,
         count_tokens = _count,
         keeps_boundary = _keeps_compaction_boundary(thread_id),
-        recall_offered = False,
+        # A replay recalls nothing inline, so the note must not deny a catalogued search_conversation.
+        recall_offered = can_reset and "search_conversation" in _catalog_names(tools),
         reserve_tokens = _conversation_recall_reserve(thread_id),
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
@@ -29897,7 +29898,7 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
                 # The NPU has no compaction of its own, so /compact resets here as on GGUF.
-                can_reset = managed is not None,
+                can_reset = managed is not None and not _tool_calls_are_disabled(payload),
             )
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
@@ -29927,6 +29928,9 @@ async def _proxy_to_external_provider(
             chat_messages,
             payload,
             tools = _external_fit_tools,
+            # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
+            can_reset = bool(managed is not None and managed.supports_tools)
+            and not _tool_calls_are_disabled(payload),
         )
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
 

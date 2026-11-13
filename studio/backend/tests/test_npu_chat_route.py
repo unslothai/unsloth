@@ -1600,3 +1600,66 @@ def test_compact_now_resets_an_npu_chat_that_fits(
     [truncation] = _truncations(body)
     assert truncation["checkpoint_started"] is True
     assert truncation["manual"] is True
+
+
+def test_compact_now_resets_an_npu_chat_with_tools_switched_off(
+    flm, rag_home, rag_conn, stub_embeddings
+):
+    from storage import studio_db
+
+    thread = "npu-compact-no-tools"
+    short = _long_chat(turns = 4)
+    studio_db.upsert_chat_thread(
+        {"id": thread, "title": "t", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    for index, message in enumerate(m for m in short if m["role"] != "system"):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{thread}-{index}",
+                "threadId": thread,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+    recorded = flm(tools = True)
+    status, body = _call(
+        stream = True,
+        messages = short,
+        thread_id = thread,
+        enable_tools = False,
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    assert len(recorded[-1]["body"]["messages"]) < len(short)
+    [truncation] = _truncations(body)
+    assert truncation["checkpoint_started"] is True
+    assert truncation["manual"] is True
+
+
+@pytest.mark.parametrize("can_reset", [True, False])
+def test_the_checkpoint_fit_is_told_search_conversation_is_offered(monkeypatch, can_reset):
+    import core.inference.llama_cpp as lc
+    import routes.inference as ri
+
+    seen = {}
+
+    def fit(messages, **kwargs):
+        seen.update(kwargs)
+        return messages, None
+
+    monkeypatch.setattr(lc, "_can_reset_epoch", lambda *a, **k: True)
+    monkeypatch.setattr(lc, "_fit_with_instruction_pins", fit)
+    payload = ChatCompletionRequest(
+        messages = _long_chat(),
+        thread_id = "t",
+        context_overflow = "truncate_oldest",
+        context_window = 8192,
+        compaction_threshold = 6144,
+    )
+    catalog = [{"type": "function", "function": {"name": "search_conversation", "parameters": {}}}]
+    ri._fit_external_context(
+        _long_chat(), payload, tools = catalog, tool_loop = True, can_reset = can_reset
+    )
+    assert seen["recall_offered"] is can_reset
