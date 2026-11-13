@@ -647,6 +647,27 @@ def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
     return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
 
 
+# Hosted-checkpoint auto order: int8 from Turing up (``torch._int_mm`` has no capability gate), then fp8, then bf16.
+_HOSTED_AUTO_FLOORS: tuple[tuple[str, tuple[int, int]], ...] = (
+    (TQ_INT8, (7, 5)),
+    (TQ_FP8, (8, 9)),
+)
+
+
+def hosted_auto_scheme_order(
+    family: Optional[str], cap: Optional[tuple[int, int]]
+) -> tuple[str, ...]:
+    """Hosted schemes auto tries for ``family`` at ``cap``, best first; () means bf16. Deny / auto-skip tables apply."""
+    if cap is None:
+        return ()
+    skip = _FAMILY_AUTO_SKIP.get(str(family or "").strip().lower(), frozenset())
+    return tuple(
+        scheme
+        for scheme, floor in _HOSTED_AUTO_FLOORS
+        if tuple(cap) >= floor and scheme not in skip and not _family_denied(family, scheme)
+    )
+
+
 # Schemes denied for TRAINING on top of the inference table (``FamilyProfile.train_scheme_deny``): the inference
 # evidence is rendering evidence, not evidence that a LoRA converges on those frozen linears.
 _FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = _profile_table(
@@ -2377,6 +2398,17 @@ def _quantize_native(
             scale_dtype = scale_dtype,
         ):
             return None
+        if compute_dtype is not None:
+            from .diffusion_manual_cast import undo_same_width_manual_cast_
+
+            # The Linears left dense (bf16 read as stored for a float16 build) become what a float16 load holds.
+            undone = undo_same_width_manual_cast_(transformer)
+            if undone and logger is not None:
+                logger.info(
+                    "diffusion.transformer_quant: %.2f GiB of unquantised stored weights converted to %s",
+                    undone / (1 << 30),
+                    str(compute_dtype).replace("torch.", ""),
+                )
         if scale_dtype is not None:
             from .diffusion_native_quant import probe_mps_int8pack
 

@@ -1700,6 +1700,7 @@ def _load_model_via_http(
     engine_precision: str = "auto",
     engine_parallelism: str = "tensor",
     gpu_ids: Optional[List[int]] = None,
+    engram_precision: Optional[str] = None,
 ) -> dict:
     import json
     import urllib.request
@@ -1714,6 +1715,8 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if engram_precision:
+        payload["engram_precision"] = engram_precision
     if gpu_memory_mode == "manual":
         payload["gpu_memory_mode"] = "manual"
         payload["gpu_layers"] = -1
@@ -2369,6 +2372,16 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = "GGUF quant variant (e.g. UD-Q4_K_XL)",
     ),
+    engram: Optional[str] = typer.Option(
+        None,
+        "--engram",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Engram table precision for a GGUF repo that publishes standalone tables "
+            "(e.g. Q8_0, MXFP8 or BF16), used in place of the quant's own table. It is "
+            "downloaded on first use. Default: the table the quant ships with."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -2756,6 +2769,13 @@ def run(
             err = True,
         )
         raise typer.Exit(2)
+    if engram and (npu_path or engine != "auto" or not gguf_variant):
+        typer.echo(
+            "Error: --engram applies to a GGUF quant of a Hugging Face repo; name one with "
+            "--model repo:QUANT or --gguf-variant.",
+            err = True,
+        )
+        raise typer.Exit(2)
     if engine == "auto" and engine_parallelism != "tensor":
         typer.echo(
             "Error: --engine-parallelism applies only to --engine vllm or --engine sglang.",
@@ -2887,6 +2907,8 @@ def run(
             args.extend(["--gpu-memory-mode", gpu_memory_mode])
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
+        if engram:
+            args.extend(["--engram", engram])
         if speculative_type is not None:
             args.extend(["--speculative-type", speculative_type])
         if spec_draft_n_max is not None:
@@ -3047,6 +3069,7 @@ def run(
                 engine_precision = engine_precision,
                 engine_parallelism = engine_parallelism,
                 gpu_ids = gpu_ids,
+                engram_precision = engram,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)

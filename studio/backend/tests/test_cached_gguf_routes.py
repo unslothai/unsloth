@@ -2519,8 +2519,8 @@ def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(monkeypatch, t
 def test_legacy_gguf_progress_delegates_to_shared_service(monkeypatch):
     calls = []
 
-    async def shared(repo_id, *, variant, expected_bytes, hf_token):
-        calls.append((repo_id, variant, expected_bytes, hf_token))
+    async def shared(repo_id, *, variant, expected_bytes, hf_token, engram_precision):
+        calls.append((repo_id, variant, expected_bytes, hf_token, engram_precision))
         return {"downloaded_bytes": 10, "expected_bytes": 20, "progress": 0.5}
 
     monkeypatch.setattr(
@@ -2533,13 +2533,14 @@ def test_legacy_gguf_progress_delegates_to_shared_service(monkeypatch):
             repo_id = "org/repo",
             variant = "Q4_K_M",
             expected_bytes = 20,
+            engram_precision = "",
             hf_token = "token",
             current_subject = "test-user",
         )
     )
 
     assert result["progress"] == 0.5
-    assert calls == [("org/repo", "Q4_K_M", 20, "token")]
+    assert calls == [("org/repo", "Q4_K_M", 20, "token", "")]
 
 
 @pytest.mark.parametrize("mlx_load", [False, True])

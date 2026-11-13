@@ -36,6 +36,8 @@ import {
   type RowMeta,
   type RowWindow,
   RowHeights,
+  STREAM_QUIET_MS,
+  TailPulse,
   WINDOW_REACH_PX,
   absorbShift,
   followCount,
@@ -71,6 +73,7 @@ const ANCHOR_PRECISION = 1 / 64;
 const FILL_RELEASE_MS = 3000;
 const SETTLE_RETRY_MS = 350;
 const HOLD_RECHECK_MS = 1000;
+const TRANSITION_WATCH_MS = 250;
 const FIND_FLAG = "data-find-bar-open";
 // Not `[data-role]`: a prompt being edited renders as an EditComposer, which has no role.
 const ROW_SELECTOR = "[data-message-id]";
@@ -322,15 +325,21 @@ function rowIndex(child: Element, lookup: Metas): number | undefined {
   return lookup.index.get(child.getAttribute("data-message-id") ?? "");
 }
 
-/** Height = top to the top of what follows, so the margins between rows are counted. */
-function measureRows(viewport: HTMLElement, lookup: Metas, heights: RowHeights): Measured {
+/** Height = top to the top of what follows, so the margins between rows are counted. The
+ *  `writing` row is skipped: each chunk would move the estimate every spacer is sized from. */
+function measureRows(
+  viewport: HTMLElement,
+  lookup: Metas,
+  heights: RowHeights,
+  writing: number | null,
+): Measured {
   const origin = viewport.getBoundingClientRect().top;
   const rows: MountedRow[] = [];
   let threadTop: number | null = null;
   let open: MountedRow | null = null;
   let openRow: Element | null = null;
   const close = (height: number) => {
-    if (!open || !openRow) return;
+    if (!open || !openRow || open.index === writing) return;
     const meta = lookup.metas[open.index];
     // A re-render that changed the row's equations changed its height too.
     if (heights.measure(meta, Math.max(0, height))) {
@@ -514,6 +523,15 @@ function useThreadWindow(
   const stepRef = useRef<() => void>(() => undefined);
   const settleTimerRef = useRef(0);
   const ordinalsRef = useRef(false);
+  const pulseRef = useRef<TailPulse | null>(null);
+  const transitionRef = useRef<{ next: RowWindow | null; changes: number } | null>(null);
+
+  const streamingNow = useCallback(
+    () =>
+      pulseRef.current?.streaming(performance.now()) === true &&
+      aui.thread().getState().isRunning === true,
+    [aui],
+  );
 
   // Re-arm per thread during render. Unexercised while an ancestor key remounts on switch, but
   // needed if that key is removed.
@@ -555,6 +573,7 @@ function useThreadWindow(
         anchorRef.current = element ? holdAnchor(viewport, element) : null;
       }
       pendingRef.current = true;
+      transitionRef.current = sync ? null : { next, changes: pulseRef.current?.changes ?? 0 };
       const apply = () => setWin(next);
       // Keep the commit and its correction inside the same WebKit rendering frame.
       if (sync) flushSync(apply);
@@ -615,6 +634,17 @@ function useThreadWindow(
 
   const step = useCallback(() => {
     const viewport = viewportRef.current;
+    const inFlight = transitionRef.current;
+    if (viewport && pendingRef.current && inFlight) {
+      // Every streamed chunk restarts a transition render, so it would never land: finish it now.
+      if (streamingNow() && (pulseRef.current?.changes ?? 0) - inFlight.changes >= 2) {
+        commit(inFlight.next, true);
+        return;
+      }
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = window.setTimeout(schedule, TRANSITION_WATCH_MS);
+      return;
+    }
     if (!viewport || pendingRef.current) return;
     // Hidden behind another route: every row measures zero (the resize observer steps on show),
     // and a waiter would wait for as long as it hides.
@@ -629,7 +659,8 @@ function useThreadWindow(
     // Opening every trace or card moves every row too.
     const relaid =
       column != null && heights.relayout(`${rowLayout(column)}\n${thinking}\n${tools}`);
-    const measured = measureRows(viewport, lookup, heights);
+    const streaming = streamingNow();
+    const measured = measureRows(viewport, lookup, heights, streaming ? total - 1 : null);
     // Also here: a row can replace its root (an edit opening) without the window committing.
     ordinals(viewport, lookup);
 
@@ -693,6 +724,7 @@ function useThreadWindow(
             chunkRef.current, frontier, FILL_CHUNK, WINDOW_REACH_PX))
         : FILL_CHUNK;
       next = planFill(current, total, chunk, heightOf);
+      if (streaming) next = planFill(current, total, 1, heightOf);
     } else {
       chunkRef.current = 0;
       next = planSlide({
@@ -733,8 +765,23 @@ function useThreadWindow(
       !first ||
       (current.start > 0 && first.top > 0) ||
       (current.end < total && last.bottom < viewport.clientHeight);
+    if (streaming && !(WEBKIT_GTK || trimOnly || exposed)) {
+      if (modeRef.current === "fill") {
+        commit(next, true);
+        return;
+      }
+      // No transition while streaming: every chunk would restart it. Wait for a pause.
+      settle(viewport, current, lookup);
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = window.setTimeout(schedule, STREAM_QUIET_MS);
+      return;
+    }
     commit(next, WEBKIT_GTK || trimOnly || exposed);
-  }, [aui, commit, flushWaiters, heights, ordinals, readMetas, schedule, settle, thinking, tools, viewportRef]);
+    if (pendingRef.current) {
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = window.setTimeout(schedule, TRANSITION_WATCH_MS);
+    }
+  }, [aui, commit, flushWaiters, heights, ordinals, readMetas, schedule, settle, streamingNow, thinking, tools, viewportRef]);
   useLayoutEffect(() => {
     stepRef.current = step;
   }, [step]);
@@ -761,12 +808,24 @@ function useThreadWindow(
     spacer("bottom")?.style.setProperty("height", `${spacers.bottom}px`);
   }, [atFirstRow, spacers, viewportRef]);
 
+  // Role and ordinals before the first style read: written only after the anchor reads, [role]
+  // selectors restyled every newly mounted row twice. The layout effect still publishes them too.
+  useInsertionEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const windowed = win != null;
+    if (!windowed && !ordinalsRef.current) return;
+    publishOrdinals(viewport, readMetas(), windowed);
+    ordinalsRef.current = windowed;
+  }, [win, count, readMetas, viewportRef]);
+
   useLayoutEffect(() => {
     winRef.current = win;
     const captured = anchorRef.current;
     anchorRef.current = null;
     const committed = pendingRef.current;
     pendingRef.current = false;
+    transitionRef.current = null;
     const viewport = viewportRef.current;
     const top = topRef.current;
     const bottom = bottomRef.current;
@@ -1031,6 +1090,16 @@ function useThreadWindow(
       restoreScrollAnchoring(viewport);
     };
   }, [viewportRef, topRef, bottomRef, schedule, commit, complete, readMetas]);
+
+  useEffect(() => {
+    const tailContent = () => {
+      const messages = aui.thread().getState().messages;
+      return messages[messages.length - 1]?.content;
+    };
+    const pulse = new TailPulse(tailContent());
+    pulseRef.current = pulse;
+    return aui.subscribe(() => pulse.note(tailContent(), performance.now()));
+  }, [aui]);
 
   // Settle waiters on unmount, or a DOM capture racing a thread switch waits forever.
   useEffect(() => flushWaiters, [flushWaiters]);

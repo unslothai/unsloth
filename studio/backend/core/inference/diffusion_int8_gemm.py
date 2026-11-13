@@ -5,7 +5,8 @@
 only behind diffusion_triton_prefetch, without which its int8 dot spills), other sm80+ behind a bit-exact probe and a latency check
 (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock (ROCm and CPU never reach it);
 Linear output bit-identical, compiled block not end to end; sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
-UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
+an uncompiled denoiser gets the bit-identical subset (``install_eager``: dense rotation kernel, no SwiGLU fusion;
+UNSLOTH_DIFFUSION_INT8_GEMM_EAGER=0 keeps torchao's eager path); UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
 
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ INT8_SWIGLU_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED"
 INT8_GEMM_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED"
 INT8_GEMM_TMA_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TMA"
 INT8_GEMM_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_RACE"
+INT8_GEMM_EAGER_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_EAGER"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -36,6 +38,8 @@ _MARK = "_unsloth_i8_gemm_prev"
 # The bound ``_linear_forward`` the swap installed: a traced forward checks the instance ``forward`` by identity with
 # it (dynamo resolves ``forward.__func__ is _linear_forward`` to False, so the shared paths never engaged compiled).
 _FWD = "_unsloth_i8_gemm_fwd"
+# Set by install_eager: dense bit-identical rotation kernel only.
+_EXACT = "_unsloth_i8_gemm_exact"
 # on a SwiGLU MLP whose down projection takes its codes from the gate / value halves
 _FF_MARK = "_unsloth_i8_gemm_swiglu_prev"
 # fp16 input runs the sm75 prebuilt kernel
@@ -97,6 +101,11 @@ def int8_gemm_mode() -> str:
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
     return "auto"
+
+
+def eager_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_EAGER_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
 
 
 def convrot_enabled() -> bool:
@@ -1454,7 +1463,9 @@ def _linear_forward(self: Any, x: Any) -> Any:
     q = None
     if rotq:
         from .diffusion_convrot_quant import convrot_act_quant
-        q = convrot_act_quant(x.reshape(-1, x.shape[-1]), group, kind == "v2")
+        q = convrot_act_quant(
+            x.reshape(-1, x.shape[-1]), group, kind == "v2", bool(self.__dict__.get(_EXACT))
+        )
     if q is not None:
         xq, xs = q
     elif not fused:
@@ -1829,20 +1840,22 @@ def install(
     logger: Any = None,
     offload_active: bool = False,
     device: Any = None,
+    exact: bool = False,
 ) -> int:
-    """Idempotent, returns the candidate count; must run before the first compiled forward; block-streamed denoisers need device or keep stock path."""
+    """Idempotent, returns the candidate count; must run before the first compiled forward; block-streamed denoisers need device or keep stock path.
+    ``exact``: only the routes bit-identical to torchao's eager Linear (``install_eager``)."""
     if int8_gemm_mode() == "off" or transformer is None:
         return 0
     if device is not None:
         if not streamed_enabled():
             return 0
-        return _finalize(transformer, logger, device = device)
+        return _finalize(transformer, logger, device = device, exact = exact)
     if offload_active:
         return 0
     from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
 
     if resident_cuda_device(transformer) is not None:
-        return _finalize(transformer, logger)
+        return _finalize(transformer, logger, exact = exact)
     # Weights not on the GPU yet: arch gate now (status never claims a stock arch), probe + swap at the first forward.
     try:
         import torch
@@ -1861,16 +1874,29 @@ def install(
         return 0
     n = candidates(transformer, rotated_only = not gemm)
     if n:
-        run_on_first_call(transformer, "int8_gemm", lambda t: _finalize(t, logger))
+        run_on_first_call(transformer, "int8_gemm", lambda t: _finalize(t, logger, exact = exact))
     return n
+
+
+def install_eager(
+    transformer: Any,
+    logger: Any = None,
+    offload_active: bool = False,
+) -> int:
+    """Uncompiled denoiser: only the routes bit-identical to torchao's eager int8 Linear (~3x a bf16 Linear on sm_120):
+    fused-dequant GEMM + dense rotation kernel, never ``rotq_h16``, no SwiGLU fusion."""
+    if not eager_enabled():
+        return 0
+    return install(transformer, logger, offload_active = offload_active, exact = True)
 
 
 def _finalize(
     transformer: Any,
     logger: Any = None,
     device: Any = None,
+    exact: bool = False,
 ) -> int:
-    count = _swap(transformer, logger, device = device)
+    count = _swap(transformer, logger, device = device, exact = exact)
     try:
         transformer._unsloth_int8_gemm = count  # the deferred install recorded the candidate count
     except Exception:  # noqa: BLE001
@@ -1882,6 +1908,7 @@ def _swap(
     transformer: Any,
     logger: Any = None,
     device: Any = None,
+    exact: bool = False,
 ) -> int:
     from .diffusion_int8_fused import resident_cuda_device
 
@@ -1899,13 +1926,13 @@ def _swap(
         if dev is None:
             cards = _split_cards(transformer)
             if cards:
-                count = sum(_swap_on(transformer, logger, index) for index in cards)
+                count = sum(_swap_on(transformer, logger, index, exact = exact) for index in cards)
                 return count
     if dev is None:
         return 0
 
     index = dev.index if dev.index is not None else torch.cuda.current_device()
-    return _swap_on(transformer, logger, index, streamed = device is not None)
+    return _swap_on(transformer, logger, index, streamed = device is not None, exact = exact)
 
 
 def _split_cards(transformer: Any) -> tuple:
@@ -1936,9 +1963,10 @@ def _swap_on(
     logger: Any,
     index: int,
     streamed: bool = False,
+    exact: bool = False,
 ) -> int:
     """Swap the eligible int8 Linears of ``transformer`` against card ``index``'s probed kernels. On a layer split
-    (several cards) only the Linears whose weight sits on ``index``."""
+    (several cards) only the Linears whose weight sits on ``index``. ``exact``: see ``install_eager``."""
     global _OP_HANDLE
     import torch
 
@@ -2021,6 +2049,10 @@ def _swap_on(
             fused = (triton_gemm or bool(cut_fused.get(id(module)))) and not f16_card
             if f16_card:
                 module.__dict__[_F16] = True
+            if exact:
+                module.__dict__[_EXACT] = True
+            else:
+                module.__dict__.pop(_EXACT, None)
             if _MARK in module.__dict__:
                 if multi:
                     module.__dict__[_REC] = (
@@ -2050,7 +2082,7 @@ def _swap_on(
                 index,
                 streamed = streamed and not multi and swiglu_streamed_enabled(),
             )
-            if rotq
+            if rotq and not exact
             else 0
         )
     if logger is not None and plan:
@@ -2067,7 +2099,7 @@ def _swap_on(
         from .diffusion_convrot_quant import _H16_DEVICE
         timing = _UNLISTED_TIMING.get(index) if gemm else None
         logger.info(
-            "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s%s%s",
+            "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s%s%s%s",
             count,
             (
                 "run the fused-dequant GEMM (bf16 out"
@@ -2092,7 +2124,11 @@ def _swap_on(
             else "",
             (
                 ", ConvRot rotation fused into the act quant ("
-                + ("H16 x H16 kernel" if _H16_DEVICE.get(index) else "dense rotation kernel")
+                + (
+                    "H16 x H16 kernel"
+                    if _H16_DEVICE.get(index) and not exact
+                    else "dense rotation kernel"
+                )
                 + ")"
             )
             if rotq
@@ -2107,6 +2143,7 @@ def _swap_on(
             )
             if ff
             else "",
+            ", eager: bit-identical routes only" if exact else "",
         )
     return count
 
@@ -2163,6 +2200,7 @@ def uninstall(transformer: Any = None) -> None:
                 if getattr(fwd, "__func__", None) is _swiglu_ff_forward:
                     module.__dict__.pop("forward", None)
             module.__dict__.pop(_F16, None)
+            module.__dict__.pop(_EXACT, None)
             prev = module.__dict__.pop(_MARK, None)
             if prev is None:
                 continue

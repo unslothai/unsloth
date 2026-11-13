@@ -79,8 +79,39 @@ def kernels_install_spec(
     return f"kernels>={KERNELS_FLOOR}"
 
 
+def _sidecar_transformers_versions() -> list[str]:
+    """transformers in Studio's sidecars (.venv_t5_*, .venv_t4_*, ...): installed --no-deps over this env, so they
+    import its kernels too."""
+    try:
+        from utils.paths.storage_roots import studio_root
+        dirs = [d for d in studio_root().glob(".venv_*") if d.is_dir()]
+    except Exception:  # noqa: BLE001 - no Studio home: only this env counts
+        return []
+    found = []
+    for d in dirs:
+        if d.name.endswith((".staging", ".old")):
+            continue
+        for info in d.glob("transformers-*.dist-info"):
+            m = re.fullmatch(r"transformers-(.+)\.dist-info", info.name)
+            if m is not None and _release(m.group(1)) is not None:
+                found.append(m.group(1))
+    return found
+
+
+def oldest_transformers_version() -> Optional[str]:
+    """The oldest transformers that will import this env's kernels: this env's own or an older sidecar's."""
+    versions = [
+        v
+        for v in (_dist_version("transformers"), *_sidecar_transformers_versions())
+        if _release(v) is not None
+    ]
+    if not versions:
+        return None
+    return min(versions, key = lambda v: (_release(v), not _is_prerelease(v)))
+
+
 def current_kernels_install_spec() -> str:
-    return kernels_install_spec(_dist_version("transformers"), _dist_version("huggingface_hub"))
+    return kernels_install_spec(oldest_transformers_version(), _dist_version("huggingface_hub"))
 
 
 def predicted_conflict(kernels_version: Optional[str], transformers_version: Optional[str]) -> bool:
