@@ -58,7 +58,6 @@ def test_the_cap_is_read_at_pin_start_after_a_heap_trim(budget):
     budget["mib"] = 6000
     assert cap() == 6000 << 20
     assert budget["trims"] == 1
-    # under the useful minimum, nothing
     budget["mib"] = dm._PARTIAL_PIN_MIN_MIB - 1
     assert cap() == 0
 
@@ -113,7 +112,6 @@ def test_a_pinner_with_the_late_cap_pins_the_prefix_free_at_pin_start(budget, mo
         module, groups, torch.device("cpu"), byte_cap = dm._late_image_encoder_pin_cap(pipe, module)
     )
     setattr(pipe, dm._PENDING_PINS_ATTR, [pinner])
-    # the room appears between the plan and the pin start
     monkeypatch.setattr(dm, "_PARTIAL_PIN_MIN_MIB", 1)
     budget["mib"] = 3
     pinner._run()

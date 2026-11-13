@@ -78,7 +78,6 @@ def test_storage_dtype_float16_kill_switch(monkeypatch):
     for off in ("0", "off", "false", "no"):
         monkeypatch.setenv(f3.HALF_STORAGE_ENV, off)
         assert f3.flux3_storage_dtype(cuda, FP16) is None
-        # the float32 route is a different switch (UNSLOTH_STUDIO_MANUAL_CAST)
         assert f3.flux3_storage_dtype(cuda, FP32) is BF16
     monkeypatch.setenv(f3.HALF_STORAGE_ENV, "1")
     assert f3.flux3_storage_dtype(SimpleNamespace(device = "cpu"), FP16) is None
