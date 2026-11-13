@@ -115,6 +115,7 @@ import {
   refreshModelsDevCatalog,
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
+  withNewlyOfferedCodexModels,
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 
@@ -1321,14 +1322,29 @@ export function ChatProvidersSettings({
       return true;
     }
     setAvailableModels(picker.catalog);
+    const record = providersRef.current.find((provider) => provider.id === providerId);
+    const fresh = record
+      ? withNewlyOfferedCodexModels(record.models, record.availableModels ?? [], listed)
+      : null;
+    const added = fresh?.added ?? [];
     if (refresh) {
       const offered = new Set(picker.catalog);
-      setSelectedModelIds((previous) => previous.filter((id) => offered.has(id)));
+      setSelectedModelIds((previous) => [
+        ...new Set([...previous.filter((id) => offered.has(id)), ...added]),
+      ]);
     } else {
-      setSelectedModelIds(picker.selected);
+      setSelectedModelIds([...new Set([...picker.selected, ...added])]);
     }
     setManualModelIds("");
-    if (!refresh && savedModels.length === 0 && picker.selected.length > 0) {
+    if (fresh) {
+      const { models, availableModels } = fresh;
+      await updateProviderConfig(providerId, { models, availableModels });
+      const saved = providersRef.current.map((provider) =>
+        provider.id === providerId ? { ...provider, models, availableModels } : provider,
+      );
+      providersRef.current = saved;
+      onProvidersChange(saved);
+    } else if (!refresh && savedModels.length === 0 && picker.selected.length > 0) {
       const models = pruneProviderModelIds("openai_codex", picker.selected);
       const availableModels = pruneProviderModelIds("openai_codex", picker.catalog);
       await updateProviderConfig(providerId, { models, availableModels });

@@ -7,8 +7,10 @@ import {
 } from "@/features/credentials/reconciliation";
 
 import {
+  type CodexSubscriptionModels,
   type ModelCatalogResponse,
   type ProviderRegistryEntry,
+  fetchCodexSubscriptionModels,
   fetchModelCatalog,
   listProviderConfigs,
   listProviderModelCapabilities,
@@ -44,6 +46,10 @@ import {
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
 } from "./external-providers";
+import {
+  providerSavesInFlight,
+  useExternalProvidersStore,
+} from "./stores/external-providers-store";
 
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
 // Rejected for every ChatGPT account, so drop it from selections saved earlier.
@@ -333,7 +339,76 @@ export async function syncExternalProvidersFromBackend(
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
   void refreshProviderModelCatalogs(syncedProviders, isCurrent);
+  void tickNewlyOfferedCodexModels(syncedProviders, isCurrent);
   return syncedProviders;
+}
+
+/** Ticks slugs the plan lists now but did not when `previouslyOffered` was saved; null = no change.
+ *  A slug offered before and unticked since stays unticked. */
+export function withNewlyOfferedCodexModels(
+  savedModels: string[],
+  previouslyOffered: string[],
+  listed: CodexSubscriptionModels | null,
+): { models: string[]; availableModels: string[]; added: string[] } | null {
+  // No baseline (never connected, or a row saved before available_models) cannot tell new from unticked.
+  if (listed?.source !== "subscription" || listed.models.length === 0) return null;
+  if (savedModels.length === 0 || previouslyOffered.length === 0) return null;
+  const before = new Set([...previouslyOffered, ...savedModels]);
+  const offered = pruneProviderModelIds(
+    "openai_codex",
+    listed.models.map((model) => model.id),
+  );
+  const added = offered.filter((id) => !before.has(id));
+  if (added.length === 0) return null;
+  const known = new Set((listed.known ?? listed.models).map((model) => model.id));
+  const models = [...savedModels.filter((id) => known.has(id)), ...added];
+  return { models, availableModels: [...new Set([...offered, ...models])], added };
+}
+
+const codexTicksInFlight = new Set<string>();
+
+async function tickNewlyOfferedCodexModels(
+  providers: readonly ExternalProviderConfig[],
+  isCurrent?: () => boolean,
+): Promise<void> {
+  for (const provider of providers) {
+    if (
+      provider.authKind !== "chatgpt_oauth" ||
+      provider.authStatus !== "connected" ||
+      provider.sharedByOwner ||
+      codexTicksInFlight.has(provider.id) ||
+      providerSavesInFlight.has(provider.id)
+    ) {
+      continue;
+    }
+    codexTicksInFlight.add(provider.id);
+    try {
+      // Served from the backend's short catalog cache, so repeated syncs do not each ask ChatGPT.
+      const listed = await fetchCodexSubscriptionModels(provider.id);
+      if (isCurrent && !isCurrent()) return;
+      const update = withNewlyOfferedCodexModels(
+        provider.models,
+        provider.availableModels ?? [],
+        listed,
+      );
+      if (!update || providerSavesInFlight.has(provider.id)) continue;
+      const { models, availableModels } = update;
+      await updateProviderConfig(provider.id, { models, availableModels });
+      if (isCurrent && !isCurrent()) return;
+      const store = useExternalProvidersStore.getState();
+      store.setProviders(
+        store.providers.map((candidate) =>
+          candidate.id === provider.id
+            ? { ...candidate, models, availableModels }
+            : candidate,
+        ),
+      );
+    } catch {
+      // Upstream or save failed: the next sync tries again.
+    } finally {
+      codexTicksInFlight.delete(provider.id);
+    }
+  }
 }
 
 const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
