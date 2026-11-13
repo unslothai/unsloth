@@ -979,17 +979,36 @@ def test_padded_keys_get_no_weight_when_the_score_scale_underflows(tokens):
 
 
 @needs_kernel
-def test_the_output_does_not_drift_with_the_key_count():
+@pytest.mark.parametrize("flush_tail", [0, 1])
+def test_the_output_does_not_drift_with_the_key_count(flush_tail):
     """fp32 in and out, 65536 keys: the kernel against the plain-torch model of itself. With the rounding constant
-    left in the output accumulators until the end, the gap grew with the key count (2e-3 here)."""
+    left in the output accumulators until the end, the gap grew with the key count (1.2e-3 here). Both places the
+    constant can come off (the rebase branch, or a block of its own after P.V) are held to it."""
     q, k, v = I.probe_inputs("cuda", torch.float32, 65536, 2, 128, seed = 7)
     q = q[:, :256].contiguous()
-    config = _cuda_config(128)
+    config = dict(_cuda_config(128), flush_tail = flush_tail)
     p = I.quantise(q, k, v, config)
     out = I.attend(p)
     want = emulate(p)
     rel = float((out - want).abs().mean() / want.abs().mean())
     assert rel < 3e-4, rel
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_the_flush_placement_does_not_change_the_output(head_dim):
+    """Both placements remove the constant at the same point of the accumulation (before tile 3, 7, ... here), so
+    the cards that use one or the other give the same bits."""
+    q, k, v = I.probe_inputs("cuda", torch.float32, 4500, 2, head_dim, seed = 9)
+    config = _cuda_config(head_dim)
+    rebase, tail = (
+        I.int8_attention(q, k, v, config = dict(config, flush = 4, flush_tail = place))
+        for place in (0, 1)
+    )
+    assert torch.equal(rebase, tail)
+    assert torch.equal(
+        I.int8_attention(q, k, v, config = dict(config, flush_tail = 1)), I.int8_attention(q, k, v)
+    )
 
 
 @needs_kernel

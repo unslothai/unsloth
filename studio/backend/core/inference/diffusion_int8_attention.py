@@ -52,10 +52,11 @@ MIN_SHARP_COSINE = 0.99
 LOG2E = 1.4426950408889634
 
 # Per CUDA capability and head dim: keys per tile (bn), warps per block (wpc), 16-row query tiles per warp (nq),
-# shared-memory tile buffers (stages), whether the Q operand fragments stay in registers (qreg) and, where the
-# assembler's own register choice costs a block per SM, a register cap. Measured per card on the full call
-# (quantisers included); a card missing here keeps native attention. Every config of a head dim has the same bn, so
-# the output does not depend on the card.
+# shared-memory tile buffers (stages), whether the Q operand fragments stay in registers (qreg), where the rounding
+# constant comes off the output accumulators (flush_tail) and, where the assembler's own register choice costs a
+# block per SM, a register cap. Measured per card on the full call (quantisers included); a card missing here keeps
+# native attention. Every config of a head dim has the same bn and both flush placements round alike, so the
+# output does not depend on the card.
 KERNEL_CONFIGS: dict = {
     (8, 0): {
         128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 2, "qreg": 1},
@@ -70,7 +71,7 @@ KERNEL_CONFIGS: dict = {
         64: {"bn": 128, "wpc": 8, "nq": 2, "stages": 2, "qreg": 1},
     },
     (12, 0): {
-        128: {"bn": 128, "wpc": 12, "nq": 1, "stages": 2, "max_registers": 168},
+        128: {"bn": 128, "wpc": 12, "nq": 1, "stages": 2, "max_registers": 168, "flush_tail": 1},
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
 }
@@ -125,8 +126,9 @@ def kernel_defines(head_dim: int, config: dict) -> dict:
         "STAGES": int(config["stages"]),
         "QREG": int(config.get("qreg", 0)),
     }
-    if "flush" in config:
-        defines["FLUSH"] = int(config["flush"])
+    for name in ("flush", "flush_tail"):
+        if name in config:
+            defines[name.upper()] = int(config[name])
     return defines
 
 

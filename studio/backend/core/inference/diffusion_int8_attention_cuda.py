@@ -44,7 +44,7 @@ KERNEL_SOURCE = r"""
 //
 // Compile-time: HD (head dim, 64 or 128), BN (keys per tile, 64 or 128), NQ (16-row query tiles per warp),
 // WPC (warps per block), STAGES (1 or 2 shared-memory tile buffers; 2 = the next tile is copied while this one is
-// computed), QREG (1 = the Q operand fragments are read once into registers), FLUSH.
+// computed), QREG (1 = the Q operand fragments are read once into registers), FLUSH, FLUSH_TAIL.
 // Launch: blockDim.x = 32 * WPC, grid.x = n_qpad / (16 * NQ * WPC), grid.y = batch * heads,
 // dynamic shared memory = STAGES * STAGE_BYTES + WPC * 16 * NQ * KROW bytes.
 
@@ -73,6 +73,9 @@ typedef long long i64;
 #endif
 #ifndef FLUSH
 #define FLUSH 16  // tiles between removals of MAGIC_F from the output accumulators (a power of two; 0 = only at the end)
+#endif
+#ifndef FLUSH_TAIL
+#define FLUSH_TAIL 0  // 1 = the removal is a block of its own after P.V instead of sharing the rebase branch
 #endif
 #define NT (32 * WPC)   // threads per block
 #define KK (HD / 32)    // k steps of Q.K^T
@@ -363,11 +366,11 @@ extern "C" __global__ void unsloth_i8attn(
       // The running state stays in the frame of a fixed reference maximum; it is rebased only when a tile maximum
       // rises far above it (rare), so the output accumulators are not rescaled per tile.
       float d0 = mt0 - mref[qt][0], d1 = mt1 - mref[qt][1];
-#if FLUSH > 0
+#if FLUSH > 0 && !FLUSH_TAIL
       // Every FLUSH tiles MAGIC_F times the weights since the last time comes off the output accumulators, so they
       // stay near the size of the P.V sums however many keys there are (left in until the end, the constant grows
       // with the key count and the sums lose their low bits to it). It shares the rare branch of the rebase: as a
-      // block of its own after P.V it cost 3-5% of the call on sm80 / sm89.
+      // block of its own after P.V (FLUSH_TAIL) it cost 3-5% of the call on sm80 / sm89, and saves 1-2% on sm120.
       const bool flush = (j & (FLUSH - 1)) == FLUSH - 1;
       if (__any_sync(0xffffffffu, (d0 > GUARD) | (d1 > GUARD)) || flush) {
         if (flush) {
@@ -467,6 +470,23 @@ extern "C" __global__ void unsloth_i8attn(
         acc[qt][nb][3] = fmaf(__int_as_float(d[qt][3]), w[qt][1], acc[qt][nb][3]);
       }
     }
+#if FLUSH > 0 && FLUSH_TAIL
+    // after tile j = before tile j + 1: the same operations in the same order as the rebase-branch placement, so
+    // the output bits do not depend on the placement
+    if (((j + 1) & (FLUSH - 1)) == FLUSH - 1) {
+#pragma unroll
+      for (int qt = 0; qt < NQ; ++qt) {
+#pragma unroll
+        for (int nb = 0; nb < NBD; ++nb) {
+          acc[qt][nb][0] = fmaf(-MAGIC_F, wsum[qt][0], acc[qt][nb][0]);
+          acc[qt][nb][1] = fmaf(-MAGIC_F, wsum[qt][0], acc[qt][nb][1]);
+          acc[qt][nb][2] = fmaf(-MAGIC_F, wsum[qt][1], acc[qt][nb][2]);
+          acc[qt][nb][3] = fmaf(-MAGIC_F, wsum[qt][1], acc[qt][nb][3]);
+        }
+        wsum[qt][0] = wsum[qt][1] = 0.f;
+      }
+    }
+#endif
   }
 
   const float* gp = vg + bh * HD + 2 * t;
