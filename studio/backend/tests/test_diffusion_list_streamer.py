@@ -393,7 +393,6 @@ def test_the_encoder_routes_through_the_counted_copy_credit(monkeypatch, host, p
     enc = _Encoder()
     h3i._place_text_encoder(pipe, enc, plan, "cpu", per_prompt = per_prompt)
     (streamer,) = pipe._unsloth_h3_streamers
-    # every outcome here falls back to the pageable streamer, which still matches the stack's output
     assert isinstance(streamer, h3i.ModuleListStreamer) and streamer._unsloth_role == "text_encoder"
     if want is None:
         assert seen == []
