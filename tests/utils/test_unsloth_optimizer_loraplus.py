@@ -6,7 +6,7 @@ from types import MethodType, SimpleNamespace
 import pytest
 
 import unsloth  # noqa: F401  (must precede transformers/trl)
-from unsloth.trainer import QGaloreConfig, UnslothTrainer, UnslothTrainingArguments
+from unsloth.trainer import UnslothTrainer, UnslothTrainingArguments
 
 LR = 2e-4
 
@@ -181,43 +181,30 @@ def test_training_arguments_store_and_validate_the_ratio():
             UnslothTrainingArguments(output_dir = "/tmp/unsloth-loraplus-test", loraplus_lr_ratio = bad)
 
 
+def _q_galore_config():
+    import unsloth.trainer
+    if not hasattr(unsloth.trainer, "QGaloreConfig"):
+        pytest.skip("the CPU / MLX trainer shims refuse q_galore_config in their own arguments")
+    return unsloth.trainer.QGaloreConfig()
+
+
 def test_a_ratio_with_q_galore_is_refused():
-    import ast
-    import warnings
-    from pathlib import Path
-    from typing import Optional
-
-    from transformers import TrainingArguments
-
-    # Lifted with ast so the check also runs where the CPU backend replaces UnslothTrainingArguments.
-    source = Path(__file__).resolve().parents[2] / "unsloth" / "trainer.py"
-    cls = next(
-        n
-        for n in ast.parse(source.read_text(encoding = "utf-8")).body
-        if isinstance(n, ast.ClassDef) and n.name == "UnslothTrainingArguments"
-    )
-    ns = {
-        "TrainingArguments": TrainingArguments,
-        "Optional": Optional,
-        "QGaloreConfig": QGaloreConfig,
-        "warnings": warnings,
-    }
-    exec(compile(ast.Module([cls], []), "trainer.py", "exec"), ns)
-    args_cls = ns["UnslothTrainingArguments"]
+    pytest.importorskip("torch")
+    config = _q_galore_config()
     with pytest.raises(ValueError, match = "q_galore_config"):
-        args_cls(
+        UnslothTrainingArguments(
             output_dir = "/tmp/unsloth-loraplus-test",
-            q_galore_config = QGaloreConfig(),
+            q_galore_config = config,
             loraplus_lr_ratio = 16,
         )
-    args = args_cls(output_dir = "/tmp/unsloth-loraplus-test", q_galore_config = QGaloreConfig())
+    args = UnslothTrainingArguments(output_dir = "/tmp/unsloth-loraplus-test", q_galore_config = config)
     assert args.loraplus_lr_ratio is None
 
 
 def test_a_ratio_set_after_construction_with_q_galore_is_refused():
     torch = pytest.importorskip("torch")
     model = torch.nn.Linear(4, 4)
-    trainer = _trainer(model, q_galore_config = QGaloreConfig())
+    trainer = _trainer(model, q_galore_config = _q_galore_config())
     trainer._create_q_galore_optimizer = lambda *a, **k: "q-galore"
     assert UnslothTrainer.create_optimizer(trainer, model) == "q-galore"
     trainer.args.loraplus_lr_ratio = 16
