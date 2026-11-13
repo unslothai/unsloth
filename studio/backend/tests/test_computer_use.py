@@ -6,6 +6,7 @@ about or refused, and whole calls against the drawn desktop (nothing real is tou
 
 import asyncio
 import threading
+import time
 import types
 
 import pytest
@@ -570,6 +571,53 @@ def test_allow_again_in_settings_lifts_a_stop(client):
     assert run({"action": "screenshot"}, full_access = True).startswith("Done:")
     host_policy.set_remote_connector_active(True)
     assert client.post("/api/computer-use/resume").status_code == 403
+
+
+def test_switching_off_holds_for_a_turn_that_still_has_the_tool(client):
+    client.put("/api/computer-use/settings", json = {"enabled": True})
+    assert run({"action": "screenshot"}, full_access = True).startswith("Done:")
+    # The composer's switch goes off mid-turn; the running turn still carries the tool.
+    assert client.post("/api/computer-use/revoke").json() == {"revoked": 1}
+    again = run({"action": "screenshot"}, full_access = True)
+    assert again.startswith("Error:") and "stopped computer use" in again
+    # Not a pointer stop, so Settings has nothing to show for it.
+    assert client.get("/api/computer-use/status").json()["stopped_chats"] == 0
+    # Switching it back on is the user's word.
+    assert client.post("/api/computer-use/resume").status_code == 200
+    assert run({"action": "screenshot"}, full_access = True).startswith("Done:")
+    # The same through the owner's switch in Settings.
+    client.put("/api/computer-use/settings", json = {"enabled": False})
+    client.put("/api/computer-use/settings", json = {"enabled": True})
+    assert run({"action": "screenshot"}, full_access = True).startswith("Done:")
+
+
+def test_a_call_that_waited_through_a_switch_off_does_nothing(desktop):
+    look()
+    key = state.session_key(SESSION)
+    holding, release = threading.Event(), threading.Event()
+
+    def hold():
+        with state.control(("", "other"), take_over = True):
+            holding.set()
+            release.wait(5)
+
+    holder = threading.Thread(target = hold)
+    holder.start()
+    assert holding.wait(5)
+    results = []
+    waiter = threading.Thread(
+        target = lambda: results.append(run({"action": "type", "text": "late"}, approved = True))
+    )
+    waiter.start()
+    # The approved call is queued behind the other chat when the switch goes off.
+    time.sleep(0.3)
+    state.revoke_account(key[0])
+    release.set()
+    holder.join(5)
+    waiter.join(10)
+    assert results and results[0].startswith("Error:") and "switched off" in results[0]
+    assert ("type", "late") not in desktop.events
+    assert not state.is_granted(key)
 
 
 def test_switching_off_ends_the_actions_running_now(desktop):

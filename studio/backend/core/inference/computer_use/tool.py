@@ -171,7 +171,13 @@ class _Halt(Exception):
 
 class _Run:
     def __init__(
-        self, backend: Backend, key: tuple, actions: list[dict], cancel_event: Any, allowed: bool
+        self,
+        backend: Backend,
+        key: tuple,
+        actions: list[dict],
+        cancel_event: Any,
+        allowed: bool,
+        halts: int,
     ) -> None:
         from state import computer_use as state
 
@@ -190,7 +196,8 @@ class _Run:
         self.shown: Any = None
         self.before: Any = self.session.frame
         self.before_pointer = self._cursor()
-        self.halts = state.halts()
+        # Counted before the call was authorised, so a switch-off while it waited ends it too.
+        self.halts = halts
 
     def _stopped(self) -> bool:
         if self.state.halts() != self.halts:
@@ -588,11 +595,13 @@ def execute_computer_tool(
     except ValueError as exc:
         return f"Error: {exc}"
     key = state.session_key(session_id)
+    halts = state.halts()
     if state.is_stopped(key) and not approved:
         # Full access asks nothing, so without this the model could carry on after the stop.
         return (
             "Error: the user stopped computer use in this chat, so nothing was done. Do not try "
-            "again; tell the user they can allow it again in Settings > Computer use."
+            "again; tell the user they can allow it again in Settings > Computer use, or by "
+            "switching computer use back on."
         )
     allowed = bool(approved or full_access)
     if approved:
@@ -606,7 +615,12 @@ def execute_computer_tool(
         state.grant(key)
     try:
         with state.control(key, cancel_event, take_over = approved):
-            return _Run(backend, key, actions, cancel_event, allowed).result()
+            if state.halts() != halts or not policy.settings()["enabled"]:
+                return (
+                    "Error: computer use was switched off while this waited its turn, so "
+                    "nothing was done. Do not try again; tell the user."
+                )
+            return _Run(backend, key, actions, cancel_event, allowed, halts).result()
     except state.ControlBusy as exc:
         return f"Error: {exc}"
     except BackendError as exc:

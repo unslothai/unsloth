@@ -4,7 +4,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { syncAcrossWindows } from "@/lib/sync-across-windows";
-import { type ComputerUseStatus, allowComputerUseApp, loadComputerUseStatus, revokeComputerUse } from "./api";
+import {
+  type ComputerUseStatus,
+  allowComputerUseApp,
+  loadComputerUseStatus,
+  resumeComputerUse,
+  revokeComputerUse,
+} from "./api";
 
 type ComputerUseState = {
   /** The composer's Computer use switch: offer the model the computer tool. */
@@ -22,6 +28,12 @@ export const useComputerUseStore = create<ComputerUseState>()(
       setEnabled: (enabled) => {
         // Switching it off also withdraws the go-ahead every chat was given.
         if (!enabled && get().enabled) void revokeComputerUse().catch(() => undefined);
+        // Switching it back on lifts that, for a chat with Full access that has no card to ask on.
+        if (enabled && !get().enabled) {
+          void resumeComputerUse()
+            .then((status) => set({ status }))
+            .catch(() => undefined);
+        }
         set({ enabled });
       },
       status: null,

@@ -36,9 +36,10 @@ class Session:
     display: Optional[int] = None
     # Where the last action left the pointer, to tell the user's own move to a corner from ours.
     pointer: Optional[tuple[float, float]] = None
-    # The user took back control with the pointer. Only they can lift it (an answered approval,
-    # or Settings), so a chat with Full access can't simply carry on.
-    stopped: bool = False
+    # The user took back control: "pointer" (a screen corner) or "switch" (computer use turned
+    # off). Only they can lift it (an answered approval, Allow again, or switching it back on),
+    # so a chat with Full access can't simply carry on.
+    stopped: str = ""
 
 
 _lock = threading.RLock()
@@ -104,20 +105,20 @@ def stop(key: Key) -> None:
     """The user took back control of this chat: its go-ahead goes, and it stays stopped."""
     with _lock:
         revoke(key)
-        session(key).stopped = True
+        session(key).stopped = "pointer"
 
 
 def is_stopped(key: Key) -> bool:
     with _lock:
         found = _sessions.get(key)
-        return found is not None and found.stopped
+        return found is not None and bool(found.stopped)
 
 
 def resume(key: Key) -> None:
     with _lock:
         found = _sessions.get(key)
         if found is not None:
-            found.stopped = False
+            found.stopped = ""
 
 
 def stopped_count(account_id: str) -> int:
@@ -125,17 +126,18 @@ def stopped_count(account_id: str) -> int:
         return sum(
             1
             for (account, _session), found in _sessions.items()
-            if account == (account_id or "") and found.stopped
+            if account == (account_id or "") and found.stopped == "pointer"
         )
 
 
 def resume_account(account_id: str) -> int:
-    """Settings' "Allow again": stopped chats may ask again. Their go-ahead stays withdrawn."""
+    """Allow again, or computer use switched back on: stopped chats may use the computer again
+    on the terms of their permission mode. Their go-ahead stays withdrawn."""
     with _lock:
         count = 0
         for (account, _session), found in _sessions.items():
             if account == (account_id or "") and found.stopped:
-                found.stopped = False
+                found.stopped = ""
                 count += 1
         return count
 
@@ -153,12 +155,16 @@ def halt_running() -> None:
 
 def revoke_account(account_id: str) -> int:
     """Every chat of this account asks again, and what is running ends; the composer switch and
-    the setting going off call this."""
+    the setting going off call this. A turn that is running keeps the tool it started with, so
+    the chats also stay stopped until computer use is switched back on."""
     halt_running()
     with _lock:
         count = 0
         for (account, _session), found in _sessions.items():
-            if account == (account_id or "") and found.granted:
+            if account != (account_id or ""):
+                continue
+            found.stopped = found.stopped or "switch"
+            if found.granted:
                 found.granted = False
                 found.apps.clear()
                 found.frame = None

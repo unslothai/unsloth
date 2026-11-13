@@ -102,10 +102,13 @@ async def update_computer_use_settings(
         policy.update_settings(enabled = payload.enabled, coordinates = payload.coordinates)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
-    if payload.enabled is False:
+    if payload.enabled is not None:
         from state import computer_use as state
         from utils.account_context import current_account_id
-        state.revoke_account(current_account_id())
+        if payload.enabled:
+            state.resume_account(current_account_id())
+        else:
+            state.revoke_account(current_account_id())
     logger.info(
         "settings.computer_use_updated subject=%s enabled=%s coordinates=%s",
         current_subject,
