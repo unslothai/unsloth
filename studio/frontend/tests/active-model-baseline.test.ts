@@ -155,3 +155,17 @@ test("between stored configs a null mode stays distinct from an explicit one", (
   assert.ok(!offEqual(BASE, { ...BASE, speculativeType: "off" }));
   assert.ok(offEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }));
 });
+
+test("a GPU model loaded after an NPU one does not carry the NPU settings", () => {
+  const stale = { npuPowerMode: "turbo", npuPrefillChunkLen: 1024, npuImgPreResize: 448 };
+  const gpu = useActiveConfigFor(stale);
+  assert.equal(gpu.npuPowerMode, null);
+  assert.equal(gpu.npuPrefillChunkLen, null);
+  assert.equal(gpu.npuImgPreResize, null);
+  const npu = useActiveConfigFor({
+    ...stale,
+    params: { checkpoint: "lemonade:qwen3-0.6b-FLM", maxSeqLength: 8192 },
+  }, false);
+  assert.equal(npu.npuPowerMode, "turbo");
+  assert.equal(npu.npuPrefillChunkLen, 1024);
+});

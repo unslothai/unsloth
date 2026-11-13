@@ -130,9 +130,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       mlxFastVerify: effectiveMlxFastVerify,
       mlxPleOffload: effectiveMlxPleOffload,
       mlxExpertOffload: effectiveMlxExpertOffload,
-      npuPowerMode,
-      npuPrefillChunkLen,
-      npuImgPreResize,
+      // The store keeps the last NPU load's values after a GPU model loads.
+      npuPowerMode: isNpuModelId(checkpoint) ? npuPowerMode : null,
+      npuPrefillChunkLen: isNpuModelId(checkpoint) ? npuPrefillChunkLen : null,
+      npuImgPreResize: isNpuModelId(checkpoint) ? npuImgPreResize : null,
       // FastFlowLM has no speculative decoding; "auto" here reads as an edit right after an NPU load.
       speculativeType: isNpuModelId(checkpoint) ? null : (speculativeType ?? "auto"),
       specDraftNMax: specDraftNMax ?? null,
