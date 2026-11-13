@@ -274,6 +274,87 @@ def test_claude_keeps_the_conversation_and_drops_the_harness(claude_home):
     assert t.messages[0]["createdAt"] == 1785578400000
 
 
+PNG = "iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAIAAADRv8uKAAAAK0lEQVR4nO3NMQ0AAAgDsCmZfynIQgYcTfo3056IWCwWi8VisVgsFov/xgvk2cL9h1Oh3gAAAABJRU5ErkJggg=="
+
+
+def test_claude_keeps_command_requests_and_pasted_images(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "Where is the login retry loop defined?"),
+            c_asst("a1", [{"type": "text", "text": "In auth.py."}], parent = "u1"),
+            c_user(
+                "cmd",
+                "<command-message>explain</command-message>\n<command-name>/explain</command-name>\n"
+                "<command-args>how the login retry loop backs off</command-args>",
+                parent = "a1",
+            ),
+            c_user(
+                "exp",
+                [{"type": "text", "text": "Explain the following in detail: how the login retry"}],
+                parent = "cmd",
+                isMeta = True,
+            ),
+            c_asst("a2", [{"type": "text", "text": "It doubles the wait."}], parent = "exp"),
+            c_user(
+                "cav",
+                "<local-command-caveat>The command below was run directly in Claude Code"
+                "</local-command-caveat>",
+                parent = "a2",
+                isMeta = True,
+            ),
+            c_user(
+                "model",
+                "<command-name>/model</command-name>\n            <command-message>model"
+                "</command-message>\n            <command-args>claude-opus-5-5</command-args>",
+                parent = "cav",
+            ),
+            c_user(
+                "out",
+                "<local-command-stdout>Set model to `claude-opus-5-5`</local-command-stdout>",
+                parent = "model",
+            ),
+            c_user("clear", "<command-name>/clear</command-name>", parent = "out"),
+            c_user(
+                "img",
+                [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": PNG},
+                    },
+                    {"type": "text", "text": "This is the error dialog I get, what does it mean?"},
+                ],
+                parent = "clear",
+            ),
+            c_user(
+                "path",
+                [{"type": "text", "text": "[Image: source: /tmp/images/1.png]"}],
+                parent = "img",
+                isMeta = True,
+            ),
+            c_asst("a3", [{"type": "text", "text": "A timeout."}], parent = "path"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+
+    assert [(m["role"], m["content"]) for m in messages] == [
+        ("user", [{"type": "text", "text": "Where is the login retry loop defined?"}]),
+        ("assistant", [{"type": "text", "text": "In auth.py."}]),
+        ("user", [{"type": "text", "text": "/explain how the login retry loop backs off"}]),
+        ("assistant", [{"type": "text", "text": "It doubles the wait."}]),
+        (
+            "user",
+            [
+                {"type": "image", "image": f"data:image/png;base64,{PNG}"},
+                {"type": "text", "text": "This is the error dialog I get, what does it mean?"},
+            ],
+        ),
+        ("assistant", [{"type": "text", "text": "A timeout."}]),
+    ]
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
+
+
 def test_claude_rewinds_keep_their_branch(claude_home):
     path = _session(
         claude_home,
