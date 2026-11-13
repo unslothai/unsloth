@@ -169,3 +169,22 @@ test("passing through chats with the panel open leaves no empty tabs behind, and
   assert.deepEqual(urls(), ["newtab"]);
   assert.equal(useBrowserStore.getState().activeTabId, chatTabs(useBrowserStore.getState())[0]?.id);
 });
+
+test("a chat whose panel was closed on an empty tab stays closed however often it is left and shown", () => {
+  const store = useBrowserStore.getState();
+  const closed = chatKeyOfThread("closed");
+  const other = chatKeyOfThread("other");
+  store.closePanel();
+  store.showChat(closed);
+  store.newTab();
+  assert.deepEqual(urls(), ["newtab"]);
+  store.closePanel();
+  store.showChat(other);
+  store.showChat(closed);
+  assert.equal(useBrowserStore.getState().open, false);
+  store.showChat(other);
+  store.openUrl("https://other.example/");
+  assert.equal(useBrowserStore.getState().open, true);
+  store.showChat(closed);
+  assert.equal(useBrowserStore.getState().open, false);
+});

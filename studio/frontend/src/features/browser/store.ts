@@ -567,7 +567,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const chats = { ...state.chats };
       const left = state.tabs.filter((tab) => tab.chat === state.chat);
       // An untouched new tab is remade on return (`fresh` below), so it isn't kept for every chat visited.
-      const blank = left.length === 1 && isBlankTab(left[0]) ? left[0] : null;
+      // Only with the panel open: a closed panel makes no `fresh`, and the chat would lose its closed state.
+      const blank = state.open && left.length === 1 && isBlankTab(left[0]) ? left[0] : null;
       const tabs = blank ? state.tabs.filter((tab) => tab !== blank) : state.tabs;
       if (left.length > 0) {
         chats[state.chat] = {
