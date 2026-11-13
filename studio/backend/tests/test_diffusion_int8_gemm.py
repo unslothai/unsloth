@@ -1610,8 +1610,12 @@ def test_the_sm8x_prefetch_fix_is_part_of_the_kernel_cache_key(monkeypatch):
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_launch"
     )
     assert any(isinstance(k, ast.keyword) and k.arg == "PREFETCH_FIX" for k in ast.walk(launch))
-    monkeypatch.setattr(g8, "_PREFETCH_FIX_ON", False)
-    monkeypatch.setattr(tp, "fix_triton_sm8x_8bit_prefetch", lambda: False)
-    assert g8._prefetch_fix_key() is False
-    monkeypatch.setattr(tp, "fix_triton_sm8x_8bit_prefetch", lambda: True)
-    assert g8._prefetch_fix_key() is True
+    for installed in (False, True):
+        calls = []
+        monkeypatch.setattr(g8, "_PREFETCH_FIX_ON", None)
+        monkeypatch.setattr(
+            tp, "fix_triton_sm8x_8bit_prefetch", lambda installed = installed: calls.append(1) or installed
+        )
+        # asked once, not on every launch (Triton 3.7 or the kill switch would pay it per Linear)
+        assert [g8._prefetch_fix_key() for _ in range(3)] == [installed] * 3
+        assert len(calls) == 1

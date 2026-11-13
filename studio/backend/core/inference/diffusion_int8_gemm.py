@@ -423,19 +423,20 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
     return out
 
 
-_PREFETCH_FIX_ON = False
+_PREFETCH_FIX_ON = None
 
 
 def _prefetch_fix_key() -> bool:
     """True once the sm_8x prefetch fix is installed: keeps cubins compiled without it (an older Studio, or the fix
-    switched off) out of the Triton cache entries the fixed route reuses."""
+    switched off) out of the Triton cache entries the fixed route reuses. Settled once: _kernels() already tried the
+    install, and a False answer re-asked on every launch costs microseconds per Linear."""
     global _PREFETCH_FIX_ON
-    if not _PREFETCH_FIX_ON:
+    if _PREFETCH_FIX_ON is None:
         try:
             from .diffusion_triton_prefetch import fix_triton_sm8x_8bit_prefetch
             _PREFETCH_FIX_ON = bool(fix_triton_sm8x_8bit_prefetch())
         except Exception:  # noqa: BLE001 - no fix: the key stays False
-            return False
+            _PREFETCH_FIX_ON = False
     return _PREFETCH_FIX_ON
 
 
