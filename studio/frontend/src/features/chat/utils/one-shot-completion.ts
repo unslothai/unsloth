@@ -29,7 +29,7 @@ export async function streamOneShotCompletion({
   let finishReason: string | null = null;
   for await (const chunk of streamChatCompletions(request, signal)) {
     const choice = chunk.choices?.[0];
-    const delta = extractDeltaText(choice?.delta?.content).text;
+    const delta = extractDeltaText(visibleParts(choice?.delta?.content)).text;
     // A later usage chunk has no finish reason; it must not erase this one.
     finishReason = choice?.finish_reason ?? finishReason;
     if (!delta) continue;
@@ -37,4 +37,13 @@ export async function streamOneShotCompletion({
     onText?.(text);
   }
   return { text, finishReason };
+}
+
+// Structured reasoning parts would come back wrapped in <think> tags, one block per delta.
+function visibleParts(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.filter((part) => {
+    const type = (part as { type?: unknown } | null)?.type;
+    return type !== "thinking" && type !== "reasoning";
+  });
 }
