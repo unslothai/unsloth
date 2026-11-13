@@ -117,7 +117,7 @@ export function buildConversationHtmlBody(
 }
 
 export const CONVERSATION_EXPORT_CSS = `
-body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #1f2328; }
+body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #1f2328; overflow-wrap: break-word; }
 h1 { font-size: 18pt; margin: 0 0 4pt 0; }
 .meta { color: #6e7781; font-size: 9pt; margin: 0 0 16pt 0; }
 .conversation-title { font-size: 14pt; margin: 18pt 0 8pt 0; }
