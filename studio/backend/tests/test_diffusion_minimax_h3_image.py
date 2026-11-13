@@ -1517,8 +1517,8 @@ def test_int8_attention_stays_off_where_it_loses_the_race(h3i, release, monkeypa
 
 
 def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, release, monkeypatch):
-    """Studio's INT8 kernel is raced after SageAttention's own race, against whichever backend that left on the
-    blocks; where it wins every processor keeps its native backend and the kernel is the engaged route."""
+    """Studio's INT8 kernel is raced against whichever backend the blocks would keep (its block race also decides
+    SageAttention); where it wins every processor keeps its native backend and the kernel is the engaged route."""
     from core.inference import diffusion_attention as da
     from core.inference import diffusion_int8_attention as int8
 
@@ -1544,7 +1544,13 @@ def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, releas
 
     def fake_kernel(transformer, block_modules, saved, dev, dtype, sage, forced, log):
         seen.append({"sage": sage, "forced": forced, "blocks": {id(m) for m in block_modules}})
-        return world["kernel"] and len(block_modules)
+        # SageAttention engaged but not yet raced (None): the block race decides it too
+        race = (
+            {"keep": world["keep"], "ms": [1.0, 1.2], "native": "_native_flash"}
+            if sage is None
+            else None
+        )
+        return (world["kernel"] and len(block_modules)), race
 
     monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
     monkeypatch.setattr(
@@ -1564,10 +1570,16 @@ def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, releas
         seen.clear()
         return h3i.install_checkpoint_attention(p, "cuda", scheme = "int8")
 
-    for sage, keep, incumbent_is_sage in ((True, True, True), (True, False, False), (False, True, False)):
+    for sage, keep, incumbent_is_sage in (
+        (True, True, None),
+        (True, False, None),
+        (False, True, False),
+    ):
         world.update(sage = sage, keep = keep, kernel = 1)
         assert install() == int8.BACKEND
-        assert seen == [{"sage": incumbent_is_sage, "forced": False, "blocks": blocks & set(before)}]
+        assert seen == [
+            {"sage": incumbent_is_sage, "forced": False, "blocks": blocks & set(before)}
+        ]
         # the kernel is an overlay on the native backends: no processor is left on SageAttention
         assert backends() == before
         assert install() is None and not seen
@@ -1575,7 +1587,7 @@ def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, releas
         assert backends() == before
     # the kernel loses: SageAttention where it was kept, native attention elsewhere
     world.update(sage = True, keep = True, kernel = 0)
-    assert install() == "sage" and seen[0]["sage"]
+    assert install() == "sage" and seen[0]["sage"] is None
     assert all((m.processor._attention_backend == "sage") == (id(m) in blocks) for m in mods)
     assert h3i.remove_checkpoint_attention(p) == len(mods)
     for sage, keep in ((True, False), (False, True)):
@@ -1585,7 +1597,9 @@ def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, releas
     # SageAttention pinned by its switch: the kernel is told so
     world.update(sage = True, keep = False)
     monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "1")
-    assert install() == "sage" and seen == [{"sage": True, "forced": True, "blocks": blocks & set(before)}]
+    assert install() == "sage" and seen == [
+        {"sage": True, "forced": True, "blocks": blocks & set(before)}
+    ]
     assert h3i.remove_checkpoint_attention(p) == len(mods)
 
 

@@ -2733,13 +2733,23 @@ def install_checkpoint_attention(
         "true",
         "yes",
     )
-    race = race_checkpoint_attention(transformer, saved, dtype) if sage_on and not forced else None
-    sage_kept = sage_on and (race is None or race["keep"])
-    # Studio's own INT8 kernel takes the DiT blocks from whichever backend won so far (SageAttention where it was
-    # kept, the native backend otherwise) only when it is more than 2% faster on the same block; a tie keeps that one
-    kernel_blocks = _race_int8_kernel(
-        transformer, block_modules, saved, dev, dtype, sage_kept, forced, log
+    # Studio's own INT8 kernel takes the DiT blocks from whichever backend wins (SageAttention where it is kept, the
+    # native backend otherwise) only when it is more than 2% faster on the same block; a tie keeps that one. Its block
+    # race also times SageAttention against the native backend, so SageAttention's own race runs only when the kernel
+    # did not take the blocks without one (forced) and did not time them
+    kernel_blocks, race = _race_int8_kernel(
+        transformer,
+        block_modules,
+        saved,
+        dev,
+        dtype,
+        (None if not forced else True) if sage_on else False,
+        forced,
+        log,
     )
+    if race is None and sage_on and not forced and not kernel_blocks:
+        race = race_checkpoint_attention(transformer, saved, dtype)
+    sage_kept = sage_on and (forced or race is None or race["keep"])
     if kernel_blocks:
         from .diffusion_int8_attention import BACKEND as INT8_KERNEL
 
@@ -2893,24 +2903,27 @@ def _race_int8_kernel(
     saved: dict,
     dev: Any,
     dtype: Any,
-    sage: bool,
+    sage: Optional[bool],
     forced: bool,
     log: Any,
-) -> int:
+) -> tuple:
     """Route the DiT blocks to Studio's INT8 attention kernel when it matches fp32 attention on this card and is more
-    than 2% faster than what they would run (``sage``: SageAttention, else their native backend) on a resident block.
-    ``forced`` (the env switch pinned SageAttention) leaves it alone unless the kernel's own switch forces it.
-    Returns the number of blocks routed (0 keeps the incumbent)."""
+    than 2% faster than what they would run (SageAttention or their native backend) on a resident block.
+    ``sage``: True when SageAttention runs them (pinned), False when it does not, None when it is engaged but still
+    has to win its race against the native backend: the block race times it too and decides that as well.
+    ``forced`` (the env switch pinned SageAttention) leaves the kernel alone unless the kernel's own switch forces it.
+    Returns (blocks routed, 0 keeps the incumbent; the block race's result or None when no block race ran)."""
     import torch
 
     from . import diffusion_int8_attention as int8_attention
 
     setting = int8_attention.mode()
     if not block_modules or setting == "off" or (forced and setting != "force"):
-        return 0
+        return 0, None
     started = time.perf_counter()
     record: dict = {"mode": setting, "incumbent": "sage" if sage else "native"}
     setattr(transformer, ATTENTION_RACE_ATTR, record)
+    race = None
     try:
         # the accuracy check on this card (compiles the kernel), no timing yet
         ready = int8_attention.install_int8_attention(
@@ -2919,30 +2932,39 @@ def _race_int8_kernel(
         record["checked_s"] = round(time.perf_counter() - started, 3)
         if not ready or setting == "force":
             record["blocks"] = ready
-            return ready
+            return ready, None
         for m in block_modules:
             m.processor._unsloth_int8 = False
         race = race_checkpoint_attention(transformer, saved, dtype, kernel = True)
         if race is None or "kernel" not in race:
             # no block on the card to time (a streamed DiT): the attention-only race on synthetic q, k, v decides
+            race = None
             routed = int8_attention.install_int8_attention(
                 transformer,
                 device = dev,
                 dtype = dtype,
                 modules = block_modules,
                 incumbent = _sage_incumbent(block_modules[0])
-                if sage
+                if sage is not False
                 else int8_attention._sdpa_incumbent(saved.get(block_modules[0])),
                 logger = log,
             )
             record.update(blocks = routed, timed = "attention")
-            return routed
+            return routed, None
+        if sage is None:
+            sage = bool(race["keep"])
+            record["incumbent"] = "sage" if sage else "native"
         rows = race["kernel"]
+        paired = race.get("paired") or {
+            n: [r[1] / r[0], r[2] / r[0], r[2] / r[1]] for n, r in rows.items()
+        }
         large, small = (rows[n] for n in _KERNEL_RACE_IMAGES)
         margin = int8_attention.RACE_MARGIN
-        wins = large[2] < margin * large[1 if sage else 0]
+        # kernel / incumbent per round (median), and kernel / native on the short canvas
+        wins = paired[_KERNEL_RACE_IMAGES[0]][2 if sage else 1] < margin
+        short = paired[_KERNEL_RACE_IMAGES[1]]
         # short sequences fall back to the native backend, so the kernel must beat it and SageAttention there
-        everywhere = wins and small[2] < margin * min(small[0], small[1] if sage else small[0])
+        everywhere = wins and short[1] < margin and (not sage or short[2] < margin)
         record.update(
             timed = "block",
             ms = {str(n): [round(v, 3) for v in rows[n]] for n in rows},
@@ -2963,12 +2985,12 @@ def _race_int8_kernel(
             "engaged" if wins else "kept off",
         )
         if not wins:
-            return 0
+            return 0, race
         for m in block_modules:
             m.processor._unsloth_int8 = True
             m.processor._unsloth_int8_min_tokens = 0 if everywhere else _KERNEL_LARGE_ROWS
         record["min_tokens"] = 0 if everywhere else _KERNEL_LARGE_ROWS
-        return len(block_modules)
+        return len(block_modules), race
     except Exception as exc:  # noqa: BLE001 - the incumbent stays
         for m in block_modules:
             if hasattr(type(m.processor), "_unsloth_int8"):
@@ -2977,7 +2999,7 @@ def _race_int8_kernel(
             raise
         record.update(blocks = 0, error = repr(exc)[:200])
         log.info("diffusion.minimax_h3_image: INT8 attention kernel skipped (%s)", exc)
-        return 0
+        return 0, race if race is not None and "keep" in race else None
     finally:
         record["seconds"] = round(time.perf_counter() - started, 3)
 

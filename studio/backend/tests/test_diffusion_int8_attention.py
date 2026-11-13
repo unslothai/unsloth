@@ -819,7 +819,7 @@ def test_checkpoint_race_times_the_kernel_on_a_block(monkeypatch, _active_backen
         for m in blocks:
             m.processor._unsloth_int8 = False
             m.processor._unsloth_int8_min_tokens = 0
-        return H._race_int8_kernel(model, mods, saved, "cuda", torch.bfloat16, sage, forced, log)
+        return H._race_int8_kernel(model, mods, saved, "cuda", torch.bfloat16, sage, forced, log)[0]
 
     def routed():
         return [(m.processor._unsloth_int8, m.processor._unsloth_int8_min_tokens) for m in blocks]
@@ -877,6 +877,100 @@ def test_checkpoint_race_times_the_kernel_on_a_block(monkeypatch, _active_backen
     # the kernel's own switch forces it past the race, SageAttention pinned or not
     monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
     assert run(forced = True) == 2 and len(installs) == 1 and routed() == [(True, 0)] * 2
+
+
+def test_checkpoint_attention_races_each_backend_once(monkeypatch, _active_backend):
+    """SageAttention's own race is not timed on DiT blocks the kernel takes without a race (its switch is 1), and the
+    kernel's block race (which times native, SageAttention and the kernel) decides SageAttention as well."""
+    import logging
+
+    from core.inference import diffusion_attention as D
+
+    h3, A = _h3()
+    H = _h3_image()
+    log = logging.getLogger(__name__)
+    races: list = []
+    plan: dict = {}
+
+    def fake_race(
+        transformer,
+        saved,
+        dtype,
+        *,
+        kernel = False,
+    ):
+        races.append(kernel)
+        found = {"keep": plan["sage_keep"], "ms": [10.0, 9.0], "native": "_native_math"}
+        if kernel:
+            found["kernel"] = {4096: [10.0, 9.0, plan["kernel_ms"]], 1024: [3.0, 3.0, 3.0]}
+        return found
+
+    def fake_install(transformer, **kw):
+        if not plan["ready"]:
+            return 0
+        if kw.get("force"):
+            for m in kw["modules"]:
+                m.processor._unsloth_int8 = True
+        return len(kw["modules"])
+
+    def fake_apply(
+        pipe,
+        want,
+        logger = None,
+        target = None,
+    ):
+        for m in H._attention_processors(pipe.transformer):
+            m.processor._attention_backend = "sage_hub"
+        return "sage_hub"
+
+    monkeypatch.setattr(H, "race_checkpoint_attention", fake_race)
+    monkeypatch.setattr(I, "install_int8_attention", fake_install)
+    monkeypatch.setattr(D, "apply_attention_backend", fake_apply)
+
+    def load(
+        kernel_env = None,
+        ready = True,
+        sage_keep = True,
+        kernel_ms = 8.0,
+    ):
+        if kernel_env is None:
+            monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+        else:
+            monkeypatch.setenv(I.INT8_ATTENTION_ENV, kernel_env)
+        plan.update(ready = ready, sage_keep = sage_keep, kernel_ms = kernel_ms)
+        races.clear()
+        model = _tiny_h3(h3)
+        model.set_attention_backend("_native_math")
+        assert A.install_strided_attention(model) == 3
+        pipe = types.SimpleNamespace(transformer = model)
+        engaged = H.install_checkpoint_attention(pipe, "cuda", scheme = "int8", logger = log)
+        blocks = [
+            m.processor
+            for b in model.transformer_blocks
+            for m in b.modules()
+            if hasattr(getattr(m, "processor", None), "_attention_backend")
+        ]
+        return engaged, list(races), blocks
+
+    # the kernel's switch forces it: nothing is timed at all
+    engaged, timed, blocks = load("1")
+    assert engaged == I.BACKEND and timed == []
+    assert all(p._unsloth_int8 for p in blocks)
+    # the race default: one block race, which the kernel wins
+    engaged, timed, blocks = load()
+    assert engaged == I.BACKEND and timed == [True]
+    # the kernel loses: SageAttention is kept or dropped on the same block race, no second race
+    engaged, timed, blocks = load(kernel_ms = 9.9)
+    assert engaged == "sage_hub" and timed == [True]
+    assert all(p._attention_backend == "sage_hub" and not p._unsloth_int8 for p in blocks)
+    engaged, timed, blocks = load(kernel_ms = 9.9, sage_keep = False)
+    assert engaged is None and timed == [True]
+    assert all(p._attention_backend != "sage_hub" for p in blocks)
+    # no kernel on this card, or its kill switch: SageAttention's own race
+    assert load(ready = False)[:2] == ("sage_hub", [False])
+    assert load("1", ready = False)[:2] == ("sage_hub", [False])
+    assert load("0")[:2] == ("sage_hub", [False])
+    assert load("0", sage_keep = False)[:2] == (None, [False])
 
 
 # ---------------------------------------------------------------- the kernel itself (CUDA)
@@ -1274,9 +1368,10 @@ def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     assert "kernel" not in plain and len(plain["ms"]) == 2 and I.STATS["int8"] == before + 14
     import logging
 
-    routed = H._race_int8_kernel(
-        model, blocks, saved, "cuda", torch.bfloat16, False, False, logging.getLogger(__name__)
+    routed, race = H._race_int8_kernel(
+        model, blocks, saved, "cuda", torch.bfloat16, None, False, logging.getLogger(__name__)
     )
+    assert race is not None and "keep" in race
     record = getattr(model, H.ATTENTION_RACE_ATTR)
     assert record["timed"] == "block" and record["blocks"] == routed and routed in (0, 2)
     assert I.int8_attention_count(model) == routed
