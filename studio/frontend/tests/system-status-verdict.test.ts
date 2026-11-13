@@ -144,7 +144,6 @@ test("no tile fabricates a usage percentage for a host it has not read", () => {
       `${label} gates its percentage`,
     );
   }
-  // The NPU tile's percentage is gated where its card is built.
   assert.match(tabSrc, /const npu = hostUnread\s*\?\s*null/);
 });
 

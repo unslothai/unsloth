@@ -22623,8 +22623,7 @@ def _llama_resident() -> "tuple[Optional[int], Optional[bool]]":
 
 
 def _npu_resident_mib() -> "tuple[Optional[int], Optional[bool]]":
-    """The NPU model's footprint in system RAM: the RSS of lemond and the FastFlowLM process under it,
-    floored at the catalog size in case the NPU's buffers miss the working set."""
+    """RSS of lemond's process tree, floored at the catalog size: NPU buffers can miss the working set."""
     try:
         from core.inference.npu_backend import peek_npu_backend
 

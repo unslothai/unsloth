@@ -61,7 +61,6 @@ def test_npu_load_is_its_busiest_engine_summed_over_processes(host):
     assert hw.npu_load_percent() == 42.5
     probe, sample = host["calls"]
     assert "DEV_17F0" in probe
-    # The counter path is narrowed to the NPU's own adapter.
     assert "luid_0x00000000_0x0001a5c9" in sample.lower()
 
 
@@ -120,7 +119,6 @@ def test_polls_inside_the_window_share_one_sample(host):
     assert len(host["calls"]) == spawned
     host["clock"].now += 30.0
     hw.npu_load_percent()
-    # The LUID is resolved once; later windows only re-sample the counters.
     assert len(host["calls"]) == spawned + 1
 
 

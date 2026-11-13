@@ -54,7 +54,6 @@ test("both toggles are off by default and only poll loaded models when one is on
     readSrc("features/settings/tabs/resources-tab.tsx"),
     /useLoadedModels\(\s*wantsModelRows,\s*wantsModelRows,?\s*\)/,
   );
-  // An NPU host polls them too: its card names the resident model.
   assert.match(
     readSrc("features/settings/tabs/resources-tab.tsx"),
     /const wantsModelRows = wantsModels \|\| Boolean\(npuStatus\?\.hardware\.supported\);/,

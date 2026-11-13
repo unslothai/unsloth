@@ -865,7 +865,6 @@ export function ResourcesTab() {
                     : npu.model
                   : t("settings.resources.liveMonitor.noModelLoaded")
               }
-              // Only a counter's reading gets a bar: Linux has none.
               showUsage={npu.loadPercent !== null}
               percent={npu.loadPercent}
             />

@@ -76,7 +76,7 @@ export interface NpuCard {
   loadPercent: number | null;
 }
 
-/** null hides the card. The NPU has no memory of its own: its model's size is system RAM. */
+/** null hides the card. The NPU's model lives in system RAM. */
 export function npuCard(
   status: Pick<NpuStatus, "hardware"> | null,
   entries: readonly LoadedModelEntry[],

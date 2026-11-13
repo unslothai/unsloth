@@ -270,7 +270,6 @@ def test_npu_status_sizes_the_model_from_lemonds_process_tree(monkeypatch):
     status = _npu_status(
         monkeypatch, size_gb = 5.4, rss_by_pid = {10: gib // 4, 11: 6 * gib, 12: gib // 4}
     )
-    # Measured, and in system RAM: the NPU has no memory of its own.
     assert (status.resident_mib, status.resident_on_gpu) == (6656, False)
 
 
