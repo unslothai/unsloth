@@ -12502,30 +12502,27 @@ class LlamaCppBackend:
         except Exception:
             return False
 
-    def _windows_rocm_apu_host_resident_bytes(
+    def _windows_rocm_apu_carve_out_credit(
         self,
         model_size: int,
         *,
+        model_path: Optional[str],
+        caps: Optional[Mapping[str, object]],
         gpu_indices,
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
         gpu_memory_mode: Optional[str] = None,
         gpu_layers: Optional[int] = None,
     ) -> int:
-        """Price a Windows ROCm APU's reserved GPU pool separately from host RAM.
+        """Weight bytes a full-offload Windows ROCm APU load puts in the BIOS carve-out, which
+        Windows does not count as RAM; 0 unless the placement and carve-out are both known.
 
-        Strix Halo systems can reserve a large WDDM/HIP pool (for example 96 GiB) while
-        leaving only the remainder available to Windows.  The generic APU guard treats
-        that pool as host RAM, which is safe for shared UMA but incorrectly rewrites a
-        full, explicit GPU placement to ``mmap``.  Only use the driver-reported pool
-        when the user has disabled the fitter and the launch is proven to offload every
-        layer; partial or unknown placements keep the conservative host-RAM price.
-        """
-        if sys.platform != "win32" or model_size <= 0:
-            return max(1, int(model_size))
+        The carve-out comes from the registry, never the HIP total: PAL adds 50-75% of the WDDM
+        shared heap (Windows RAM) to it. Host-pinned inputs (token_embd, per-layer tables) get no credit."""
+        if sys.platform != "win32" or not model_size or model_size <= 0 or not model_path:
+            return 0
         if not self._amd_apu_wants_unified_memory(gpu_indices):
-            return max(1, int(model_size))
-
+            return 0
         argv = [str(arg) for arg in extra_args or ()]
         if gpu_memory_mode == "manual":
             argv = [
@@ -12536,24 +12533,31 @@ class LlamaCppBackend:
                 *argv,
             ]
         if not self._launch_forces_full_offload(argv, env):
-            return max(1, int(model_size))
+            return 0
         try:
-            pool_mib = self._rocm_selected_pool_mib(gpu_indices)
+            carve_out = self._igpu_dedicated_memory_bytes(gpu_indices, rocm_fallback = False)
+            scan = self._gguf_tensor_scan(model_path)
         except Exception:
-            pool_mib = None
-        if not pool_mib or pool_mib <= 0:
-            return max(1, int(model_size))
-        pool_bytes = int(pool_mib) * 1024 * 1024
-        resident = max(1, int(model_size) - pool_bytes)
-        if resident < model_size:
-            logger.info(
-                "Windows ROCm APU full-offload launch: pricing %.1f GiB of the "
-                "%.1f GiB model against host RAM after reserving the %.1f GiB GPU pool.",
-                resident / (1024**3),
-                model_size / (1024**3),
-                pool_bytes / (1024**3),
+            return 0
+        if not carve_out or carve_out <= 0 or scan is None:
+            return 0
+        lazy_mode = (
+            _effective_lazy_mode(
+                argv, env, flag = str((caps or {}).get("lazy_mode_flag") or "--lazy-mode")
             )
-        return resident
+            if (caps or {}).get("supports_lazy_mode")
+            else "off"
+        )
+        on_device = int(model_size) - _host_pinned_input_bytes(scan, argv, env, lazy_mode = lazy_mode)
+        credit = max(0, min(int(carve_out), on_device))
+        if credit:
+            logger.info(
+                "Windows ROCm APU full offload: %.1f GiB of weights sit in the %.1f GiB "
+                "carve-out, not Windows RAM.",
+                credit / (1024**3),
+                carve_out / (1024**3),
+            )
+        return credit
 
     # PHYSICAL integrated ids, keyed per visibility mask; integratedness cannot change under a fixed mask.
     _INTEGRATED_CUDA_IDS: dict[tuple, set[int]] = {}
@@ -15549,7 +15553,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _igpu_dedicated_memory_bytes(
-        gpu_indices = None, *, ordinals_are_vulkan = False
+        gpu_indices = None,
+        *,
+        ordinals_are_vulkan = False,
+        rocm_fallback = True,
     ) -> Optional[int]:
         """Dedicated iGPU bytes: Windows registry first (cheap), then the ROCm pool; None rather
         than guess."""
@@ -15583,9 +15590,10 @@ class LlamaCppBackend:
             if adapters:
                 # Two adapters need a LUID join to attribute; staying silent beats advising the wrong GPU.
                 return None
-        if ordinals_are_vulkan:
+        if ordinals_are_vulkan or not rocm_fallback:
             # No Linux reading for Vulkan: gpu_indices are Vulkan ordinals, not HIP ids, and probing
-            # would create a HIP context (~800 MiB) in this process.
+            # would create a HIP context (~800 MiB) in this process. rocm_fallback=False: the HIP
+            # total on Windows includes shared RAM, so it is not a carve-out.
             return None
         pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
         return int(pool_mib) * 1024 * 1024 if pool_mib and pool_mib > 0 else None
@@ -28883,6 +28891,16 @@ class LlamaCppBackend:
                     _apu_resident_model_size = max(
                         1,
                         model_size
+                        - self._windows_rocm_apu_carve_out_credit(
+                            model_size,
+                            model_path = model_path,
+                            caps = server_caps,
+                            gpu_indices = _apu_child_order,
+                            extra_args = _apu_lazy_extras,
+                            env = _apu_lazy_env,
+                            gpu_memory_mode = gpu_memory_mode,
+                            gpu_layers = gpu_layers,
+                        )
                         - self._lazy_read_host_bytes(
                             model_path,
                             caps = server_caps,
@@ -28911,14 +28929,6 @@ class LlamaCppBackend:
                                 child_gpu_order = _apu_child_mask,
                             ),
                         ),
-                    )
-                    _apu_resident_model_size = self._windows_rocm_apu_host_resident_bytes(
-                        _apu_resident_model_size,
-                        gpu_indices = _apu_child_order,
-                        extra_args = _apu_lazy_extras,
-                        env = _apu_lazy_env,
-                        gpu_memory_mode = gpu_memory_mode,
-                        gpu_layers = gpu_layers,
                     )
                     _ram_msg = self._apu_ram_shortfall_message(
                         # A pinned projector left model_size but not system RAM, and
@@ -32400,6 +32410,14 @@ class LlamaCppBackend:
                             _apu_resident_model_size = max(
                                 1,
                                 model_size
+                                - self._windows_rocm_apu_carve_out_credit(
+                                    model_size,
+                                    model_path = model_path,
+                                    caps = server_caps,
+                                    gpu_indices = _remaining,
+                                    extra_args = cmd,
+                                    env = env,
+                                )
                                 - self._lazy_read_host_bytes(
                                     model_path,
                                     caps = server_caps,
@@ -32415,12 +32433,6 @@ class LlamaCppBackend:
                                         env = env,
                                     ),
                                 ),
-                            )
-                            _apu_resident_model_size = self._windows_rocm_apu_host_resident_bytes(
-                                _apu_resident_model_size,
-                                gpu_indices = _remaining,
-                                extra_args = cmd,
-                                env = env,
                             )
                             _retry_apu_msg = self._apu_ram_shortfall_message(
                                 _apu_resident_model_size + _mmproj_pinned_bytes,

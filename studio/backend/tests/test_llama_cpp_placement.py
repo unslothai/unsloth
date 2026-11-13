@@ -2633,50 +2633,72 @@ def _apu_backend(tmp_path, *, gguf_gb, avail_mib, monkeypatch):
     return backend, gguf
 
 
-def test_windows_rocm_apu_full_offload_prices_only_host_resident_bytes(monkeypatch):
-    """A reserved Strix Halo GPU pool must not be counted as Windows host RAM."""
-    backend = LlamaCppBackend()
-    backend._n_layers = 48
-    backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: True
+def _windows_apu_backend(tmp_path, monkeypatch, *, carve_gb, pal_pool_gb, model_gb, ple_gb):
+    """Strix Halo on Windows: 21 GB of RAM left to Windows, the rest a BIOS carve-out."""
+    import utils.hardware.hardware as hw
+
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = model_gb, avail_mib = 21 * 1024, monkeypatch = monkeypatch
+    )
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_n_layers", 48)
+    named = {"token_embd.weight": int(0.6 * 1024**3), "output.weight": int(0.6 * 1024**3)}
+    if ple_gb:
+        named["per_layer_token_embd.weight"] = int(ple_gb * 1024**3)
+    named["blk.0.ffn_up_exps.weight"] = int(model_gb * 1024**3) - sum(named.values())
+    backend._gguf_tensor_scan = lambda _path: ("qwen4exp", dict(named), 0)
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(supports_load_mode = True, supports_lazy_mode = True, lazy_mode_flag = "--lazy-mode")
+    monkeypatch.setattr(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps)
     monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
+    # PAL's HIP total adds part of the shared heap, so it must never be read as the carve-out.
     monkeypatch.setattr(
         LlamaCppBackend,
         "_rocm_selected_pool_mib",
-        staticmethod(lambda _gpu_indices: 96 * 1024),
+        staticmethod(lambda _gpu_indices = None: int(pal_pool_gb * 1024)),
     )
-
-    model_size = 62 * 1024**3
-    resident = backend._windows_rocm_apu_host_resident_bytes(
-        model_size,
-        gpu_indices = [0],
-        extra_args = ["--gpu-layers", "49", "--fit", "off"],
-        env = {},
-    )
-
-    assert resident == 1
-
-
-def test_windows_rocm_apu_partial_offload_keeps_conservative_host_price(monkeypatch):
-    """Partial placement cannot assume the reserved pool holds all model weights."""
-    backend = LlamaCppBackend()
-    backend._n_layers = 48
-    backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: True
-    monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
+    record = {
+        "name": "AMD Radeon(TM) 8060S Graphics",
+        "dedicated_memory_bytes": int(carve_gb * 1024**3),
+    }
     monkeypatch.setattr(
-        LlamaCppBackend,
-        "_rocm_selected_pool_mib",
-        staticmethod(lambda _gpu_indices: 96 * 1024),
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda vendor_id = None, distinguish_failure = False: (
+            {1: record} if vendor_id == hw._AMD_PCI_VENDOR_ID else {}
+        ),
     )
+    return backend, gguf
 
-    model_size = 62 * 1024**3
-    resident = backend._windows_rocm_apu_host_resident_bytes(
-        model_size,
-        gpu_indices = [0],
-        extra_args = ["--gpu-layers", "24", "--fit", "off"],
-        env = {},
-    )
 
-    assert resident == model_size
+_W96 = dict(carve_gb = 96, pal_pool_gb = 107.87)
+
+
+@pytest.mark.parametrize(
+    "setup, extra_args, keeps_none",
+    [
+        (dict(_W96, model_gb = 97.12, ple_gb = 36.4), ["-lzm", "on-direct", "-ngl", "49"], True),
+        (dict(_W96, model_gb = 97.12, ple_gb = 36.4), ["-lzm", "on", "-ngl", "49"], True),
+        (dict(_W96, model_gb = 62, ple_gb = 0), ["-ngl", "49"], True),
+        # A resident table stays in Windows RAM however many layers go to the GPU.
+        (dict(_W96, model_gb = 97.12, ple_gb = 36.4), ["-lzm", "off", "-ngl", "49"], False),
+        # A 32 GB carve-out under an 89 GB HIP total: the overflow lands in shared Windows RAM.
+        (dict(carve_gb = 32, pal_pool_gb = 89.465, model_gb = 62, ple_gb = 0), ["-ngl", "49"], False),
+        (dict(_W96, model_gb = 62, ple_gb = 0), ["-ngl", "24"], False),
+    ],
+    ids = ["on_direct", "lazy_on", "dense", "lazy_off", "carve32", "partial"],
+)
+def test_windows_rocm_apu_full_offload_prices_the_carve_out_apart_from_ram(
+    tmp_path, monkeypatch, setup, extra_args, keeps_none
+):
+    """#17605: weights in a Strix Halo carve-out are not Windows RAM, so --load-mode none stays."""
+    backend, gguf = _windows_apu_backend(tmp_path, monkeypatch, **setup)
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none", "--fit", "off", *extra_args])[
+        "cmd"
+    ]
+
+    assert (_unmapped_tokens(cmd) == ["--load-mode", "none"]) is keeps_none, cmd
+    assert ("unified-memory APU" in (backend.last_load_warning or "")) is not keeps_none
 
 
 @pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
