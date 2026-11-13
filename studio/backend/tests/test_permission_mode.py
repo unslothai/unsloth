@@ -1709,6 +1709,21 @@ def test_python_shell_command_terminal_asks_about_is_high_risk(command, template
         ("import cProfile\ndef f(job):\n    cProfile.run(job)", True),
         ("import cProfile\np = cProfile.Profile()\np.runcall(sorted, [3, 1])", False),
         ("profile = load_profile()\nprofile.run(job)", False),
+        ("import os\nos.execlp('truncate', 'worker', '-s', '0', 'notes.txt')", True),
+        ("import os\nos.execlp('git', 'worker', 'status')", False),
+        (
+            "import timeit\ntimeit.timeit(\"rmtree('junk_dir')\", setup='from shutil import rmtree', number=1)",
+            True,
+        ),
+        (
+            "import cProfile\nsource = \"import shutil; shutil.rmtree('d')\"\ncProfile.run(source)\nsource = 'pass'",
+            True,
+        ),
+        (
+            "import timeit\ns = \"import shutil; shutil.rmtree('d')\"\ntimeit.timeit(s)\ns = 'pass'",
+            True,
+        ),
+        ("import timeit\ntimeit.timeit('sorted(x)', setup='x = [3, 1, 2]', number=10)", False),
         ("from timeit import timeit\ntimeit(\"__import__('os').remove('x')\", number=1)", True),
         ("import timeit as t\nt.timeit('sum(range(100))', number=1000)", False),
         ("import timeit\ns = 'sum(range(100))'\ntimeit.timeit(s, number=1000)", False),

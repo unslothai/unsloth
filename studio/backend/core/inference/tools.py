@@ -8659,11 +8659,42 @@ def _python_is_high_risk(code: str) -> bool:
             module = _runner_instance_module(receiver)
         return module if func.attr in _PY_CODE_STRING_RUNNERS.get(module, ()) else None
 
-    def _code_string(arg):
-        value = _folded_path(arg, str_vars)
-        if value is None or "\x00" in value or "\x02" in value:
-            return None
-        return value
+    # Every binding of a name, so a reassigned source cannot hide the value a runner saw.
+    name_bindings: "dict[str, list]" = {}
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    name_bindings.setdefault(target.id, []).append(node.value)
+                elif isinstance(target, (ast.Tuple, ast.List)):
+                    for elt in target.elts:
+                        if isinstance(elt, ast.Name):
+                            name_bindings.setdefault(elt.id, []).append(None)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and isinstance(node.target, ast.Name):
+            name_bindings.setdefault(node.target.id, []).append(node.value)
+        elif isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor)) and isinstance(
+            node.target, ast.Name
+        ):
+            name_bindings.setdefault(node.target.id, []).append(None)
+
+    def _code_strings(arg) -> "tuple[list[str], bool]":
+        """Candidate sources for a runner argument, and whether any binding stayed unresolved."""
+        values = name_bindings.get(arg.id) if isinstance(arg, ast.Name) else None
+        if not values or len(values) == 1:
+            values = [arg]
+        sources, unresolved = [], False
+        for value in values:
+            folded = None if value is None else _folded_path(value, str_vars)
+            if folded is None or "\x00" in folded or "\x02" in folded:
+                unresolved = True
+            else:
+                sources.append(folded)
+        return sources, unresolved
+
+    def _runner_arg(node, index, keywords):
+        if len(node.args) > index:
+            return node.args[index]
+        return next((kw.value for kw in node.keywords if kw.arg in keywords), None)
 
     # Non-literal exec/eval/compile/__import__ runs unseen code: ask. Literal ones are screened.
     for node in _tree_nodes(tree):
@@ -8672,22 +8703,22 @@ def _python_is_high_risk(code: str) -> bool:
         func = node.func
         runner = _code_runner_module(func)
         if runner == "timeit":
-            # timeit also takes callables, so only a resolvable string is screened.
+            # timeit also takes callables: screen resolvable strings, setup + stmt as one program.
+            stmt = _runner_arg(node, 0, ("stmt",))
+            setup = _runner_arg(node, 1, ("setup",))
+            stmts = _code_strings(stmt)[0] if stmt is not None else []
+            setups = _code_strings(setup)[0] if setup is not None else []
             if any(
-                (source := _code_string(arg)) is not None and _python_is_high_risk(source)
-                for arg in [*node.args, *(kw.value for kw in node.keywords)]
+                _python_is_high_risk(f"{before}\n{after}")
+                for before in setups or [""]
+                for after in stmts or [""]
             ):
                 return True
         elif runner is not None:
-            arg = node.args[0] if node.args else None
-            if arg is None:
-                arg = next(
-                    (kw.value for kw in node.keywords if kw.arg in _PY_CODE_RUNNER_SOURCE_KWARGS),
-                    None,
-                )
+            arg = _runner_arg(node, 0, _PY_CODE_RUNNER_SOURCE_KWARGS)
             if arg is not None:
-                source = _code_string(arg)
-                if source is None or _python_is_high_risk(source):
+                sources, unresolved = _code_strings(arg)
+                if unresolved or any(_python_is_high_risk(source) for source in sources):
                     return True
             continue
         name = None
@@ -18533,8 +18564,15 @@ def _check_signal_escape_patterns(code: str):
                     )
                 else:
                     # Operands are argv items, not commands: `-name '*.py'` is search data.
+                    # exec*/spawn* run their path argument; argv[0] is only a label.
                     argv = []
-                    for a in positional[argv_start:]:
+                    tail = positional[argv_start:]
+                    if argv_start:
+                        program = _extract_string_from_node(positional[argv_start - 1])
+                        if program is not None and tail:
+                            argv.append(program)
+                            tail = tail[1:]
+                    for a in tail:
                         if isinstance(a, ast.Starred):
                             argv.extend(_extract_strings_from_list(a.value) or ())
                         elif (s := _extract_string_from_node(a)) is not None:
