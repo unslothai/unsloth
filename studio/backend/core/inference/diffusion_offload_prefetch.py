@@ -1474,6 +1474,14 @@ def stream_module_list(
         )
         budget = _pin_budget_mib()
         replaced = need if replaces_counted and pin_replaces_host_enabled() else 0
+        # only where the credit is what lets the pin fit (that owner streamed pageable before): pinned owners keep
+        # their cache as they did
+        release_after_forward = bool(
+            release_after_forward
+            and replaced
+            and max_pin_bytes is not None
+            and need > int(max_pin_bytes)
+        )
         if max_pin_bytes is not None and need - replaced > int(max_pin_bytes):
             refused = (
                 f"{need / 1e9:.1f} GB to pin exceeds the {max(0, int(max_pin_bytes)) / 1e9:.1f} GB the host plan "

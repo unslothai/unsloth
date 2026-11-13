@@ -457,15 +457,27 @@ def test_a_counted_stream_pins_bit_identically_and_reports_its_bytes(monkeypatch
 
 
 @cuda
-@pytest.mark.parametrize("release", [False, True])
-def test_an_encoder_stream_hands_its_cache_back_after_each_forward(monkeypatch, release):
+@pytest.mark.parametrize(
+    "release, credit, want",
+    [
+        (False, True, False),
+        (True, True, True),
+        (True, False, False),
+    ],  # (True, False): pinned before, keeps its cache
+)
+def test_an_encoder_stream_hands_its_cache_back_after_each_forward(
+    monkeypatch, release, credit, want
+):
     import core.inference.diffusion_memory as dm
 
     monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 1 << 20)
     ref = _Stack().cuda().eval()
     stack = _Stack().eval()
     stack.inp.cuda()
-    streamer = op.stream_module_list(stack, stack.layers, "cuda", 0, release_after_forward = release)
+    kw = {"max_pin_bytes": 0, "replaces_counted": True} if credit else {}
+    streamer = op.stream_module_list(
+        stack, stack.layers, "cuda", 0, release_after_forward = release, **kw
+    )
     assert streamer is not None
     calls = []
     real = torch.cuda.empty_cache
@@ -480,7 +492,7 @@ def test_an_encoder_stream_hands_its_cache_back_after_each_forward(monkeypatch, 
             stack(x)
         stack.stop_after = None
         assert torch.equal(stack(x), want)
-    assert len(calls) == (4 if release else 0)
+    assert len(calls) == (4 if want else 0)
     streamer.remove()
 
 
