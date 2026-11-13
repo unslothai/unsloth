@@ -70,3 +70,10 @@ test("the copy sits on its own pill for every Pinned row kind", () => {
     /<div key=\{adapter\.id\}>\n\s*<div\n\s*className=\{downloadedRowShellClassName\(value === adapter\.id\)\}\n[^\n]*\n\s*data-pinned-row-face=""/,
   );
 });
+
+test("events bubbled from a row's portaled dialogs neither drag nor reorder", () => {
+  // Model info's template viewer is a textarea portaled under a pinned row.
+  assert.match(HOOK, /\(event\.currentTarget as Node\)\.contains\(event\.target as Node\)/);
+  assert.match(HOOK, /onKeyDownCapture: \(event: React\.KeyboardEvent\) => \{\n\s*if \(!isInRow\(event\)\) return;/);
+  assert.match(HOOK, /if \(!\(event\.isPrimary && isInRow\(event\)\)\) return;/);
+});

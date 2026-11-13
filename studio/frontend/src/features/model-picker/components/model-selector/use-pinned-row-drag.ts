@@ -23,6 +23,11 @@ const KEY_ATTR = "data-pinned-drop-key";
 const NO_DRAG_SELECTOR =
   "button:not([data-model-picker-option]), a[href], [role='menuitem']";
 
+// React bubbles portal events (a row menu's dialogs) through the row; only the row's own DOM drags.
+function isInRow(event: React.SyntheticEvent): boolean {
+  return (event.currentTarget as Node).contains(event.target as Node);
+}
+
 const ROW_GHOST_CLASS = "model-picker-row-ghost";
 
 const GHOST_DROPPED_ATTRS = [
@@ -220,6 +225,7 @@ export function usePinnedRowDrag(
       // A native drag of the row's link or text would cancel the pointer stream.
       onDragStart: (event: React.DragEvent) => event.preventDefault(),
       onKeyDownCapture: (event: React.KeyboardEvent) => {
+        if (!isInRow(event)) return;
         if (!event.altKey || event.shiftKey || event.metaKey || event.ctrlKey) {
           return;
         }
@@ -249,7 +255,7 @@ export function usePinnedRowDrag(
       },
       onPointerDown: (event: React.PointerEvent) => {
         if (event.button !== 0 || event.pointerType === "touch") return;
-        if (!event.isPrimary) return;
+        if (!(event.isPrimary && isInRow(event))) return;
         if ((event.target as Element | null)?.closest?.(NO_DRAG_SELECTOR)) {
           return;
         }
