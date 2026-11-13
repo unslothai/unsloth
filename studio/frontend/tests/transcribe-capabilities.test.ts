@@ -28,7 +28,10 @@ const UNSUPPORTED: SttCapabilities = {
 };
 const off = { timestamps: false, speakers: false, speakerAccent: "" };
 const on = { timestamps: true, speakers: true, speakerAccent: "" };
-const switches = (over: Partial<SttCapabilities> | null, prefs = on) =>
+const switches = (
+  over: Partial<SttCapabilities> | null,
+  prefs: Parameters<typeof transcribeSwitches>[1] = on,
+) =>
   transcribeSwitches(over && { ...UNSUPPORTED, ...over }, prefs, {
     loading: false,
     hasModel: true,

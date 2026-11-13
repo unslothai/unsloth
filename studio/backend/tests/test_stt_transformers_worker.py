@@ -1056,3 +1056,25 @@ def test_a_crashed_child_whose_ready_word_was_lost_is_still_not_read_as_a_bad_ho
 
     assert faulted.is_set()
     assert isinstance(caught.value, worker_module.SttWorkerSpawnError) is False
+
+
+def test_a_prompt_is_tokenized_and_kept_out_of_timestamped_segments(monkeypatch):
+    head = [_at(0), 11, _at(5.0)]
+    prompt_ids = _FakeTensor()
+    model = _TimestampedModel(_DeviceRow([50361, 900, 901, 50258, 50259, 50359] + head + [_EOS]))
+    model.generation_config.decoder_start_token_id = 50258
+    processor = _RecordingProcessor()
+    processor.get_prompt_ids = lambda text, return_tensors = None: (
+        prompt_ids if (text, return_tensors) == ("Speaker accent: x.", "pt") else None
+    )
+    _install_fake_transformers(monkeypatch, model = model, processor = processor)
+    pcm = np.zeros(16000, dtype = np.float32).tobytes()
+
+    worker_module.transcribe_window(
+        model, processor, pcm, {"return_timestamps": True, "prompt": "Speaker accent: x."}
+    )
+
+    assert "prompt" not in model.generate_kwargs
+    assert model.generate_kwargs["prompt_ids"] is prompt_ids
+    assert prompt_ids.moved_to == ["cuda"]
+    assert processor.decoded == [head]
