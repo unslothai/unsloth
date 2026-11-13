@@ -1811,6 +1811,19 @@ def test_many_timeit_calls_over_many_bindings_stay_fast():
     assert time.perf_counter() - started < 5
 
 
+def test_runner_alias_bound_to_two_modules_converges():
+    code = "import timeit, cProfile\nbench = timeit.timeit\nbench = cProfile.run\nbench('sum(range(9))')"
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+
+
+def test_many_bindings_over_many_calls_parse_each_program_once():
+    lines = [f"stmt = 'x = {i}'" for i in range(200)] + ["timeit.timeit(stmt, number=1)"] * 200
+    code = "import timeit\n" + "\n".join(lines)
+    started = time.perf_counter()
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+    assert time.perf_counter() - started < 5
+
+
 def test_repeated_timeit_bindings_are_screened_linearly():
     code = (
         "import timeit\n"

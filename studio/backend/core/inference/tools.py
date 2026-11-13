@@ -8617,25 +8617,25 @@ def _python_is_high_risk(code: str) -> bool:
             folded = _folded_path(node, str_vars)
             if folded and _folded_is_sensitive(folded):
                 return True
-    runner_modules: "dict[str, str]" = {}
-    runner_funcs: "dict[str, str]" = {}
+    # name -> possible runner modules; sets only grow, so alias propagation converges.
+    runner_modules: "dict[str, set[str]]" = {}
+    runner_funcs: "dict[str, set[str]]" = {}
     runner_class_names: "dict[str, str]" = {}
     for node in _tree_nodes(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name in _PY_CODE_STRING_RUNNERS:
-                    runner_modules[alias.asname or alias.name] = alias.name
+                    runner_modules.setdefault(alias.asname or alias.name, set()).add(alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module in _PY_CODE_STRING_RUNNERS:
             runner_class = _PY_CODE_RUNNER_CLASSES.get(node.module)
             for alias in node.names:
                 if alias.name == "*":
-                    runner_funcs.update(
-                        dict.fromkeys(_PY_CODE_STRING_RUNNERS[node.module], node.module)
-                    )
+                    for name in _PY_CODE_STRING_RUNNERS[node.module]:
+                        runner_funcs.setdefault(name, set()).add(node.module)
                     if runner_class:
                         runner_class_names[runner_class] = node.module
                 elif alias.name in _PY_CODE_STRING_RUNNERS[node.module]:
-                    runner_funcs[alias.asname or alias.name] = node.module
+                    runner_funcs.setdefault(alias.asname or alias.name, set()).add(node.module)
                 elif alias.name == runner_class:
                     runner_class_names[alias.asname or alias.name] = node.module
 
@@ -8647,12 +8647,12 @@ def _python_is_high_risk(code: str) -> bool:
         if isinstance(ctor, ast.Name):
             return runner_class_names.get(ctor.id)
         if isinstance(ctor, ast.Attribute) and isinstance(ctor.value, ast.Name):
-            module = runner_modules.get(ctor.value.id)
-            if module and ctor.attr == _PY_CODE_RUNNER_CLASSES.get(module):
-                return module
+            for module in runner_modules.get(ctor.value.id, ()):
+                if ctor.attr == _PY_CODE_RUNNER_CLASSES.get(module):
+                    return module
         return None
 
-    runner_instances: "dict[str, str]" = {}
+    runner_instances: "dict[str, set[str]]" = {}
     for node in _tree_nodes(tree):
         if (
             isinstance(node, ast.Assign)
@@ -8660,21 +8660,24 @@ def _python_is_high_risk(code: str) -> bool:
             and isinstance(node.targets[0], ast.Name)
             and (module := _runner_instance_module(node.value))
         ):
-            runner_instances[node.targets[0].id] = module
+            runner_instances.setdefault(node.targets[0].id, set()).add(module)
+
+    def _runner_modules_of(func) -> "set[str]":
+        if isinstance(func, ast.Name):
+            return runner_funcs.get(func.id, set())
+        if not isinstance(func, ast.Attribute):
+            return set()
+        receiver = func.value
+        if isinstance(receiver, ast.Name):
+            candidates = runner_instances.get(receiver.id) or runner_modules.get(receiver.id, ())
+        else:
+            candidates = {_runner_instance_module(receiver)} - {None}
+        return {m for m in candidates if func.attr in _PY_CODE_STRING_RUNNERS[m]}
 
     def _code_runner_module(func):
-        if isinstance(func, ast.Name):
-            return runner_funcs.get(func.id)
-        if not isinstance(func, ast.Attribute):
-            return None
-        receiver = func.value
-        if isinstance(receiver, ast.Name) and receiver.id in runner_instances:
-            module = runner_instances[receiver.id]
-        elif isinstance(receiver, ast.Name):
-            module = runner_modules.get(receiver.id)
-        else:
-            module = _runner_instance_module(receiver)
-        return module if func.attr in _PY_CODE_STRING_RUNNERS.get(module, ()) else None
+        # A name that may be either runner gets the stricter profiler rule.
+        modules = _runner_modules_of(func)
+        return min(modules - {"timeit"}, default = None) or min(modules, default = None)
 
     # bench = timeit.timeit / t = timeit: aliases keep the runner's identity.
     simple_assigns = [
@@ -8688,13 +8691,13 @@ def _python_is_high_risk(code: str) -> bool:
     while changed:
         changed = False
         for target, value in simple_assigns:
-            module = _code_runner_module(value)
-            if module and runner_funcs.get(target) != module:
-                runner_funcs[target] = module
-                changed = True
-            elif isinstance(value, ast.Name) and value.id in runner_modules:
-                if runner_modules.get(target) != runner_modules[value.id]:
-                    runner_modules[target] = runner_modules[value.id]
+            aliased = runner_modules.get(value.id, set()) if isinstance(value, ast.Name) else set()
+            for table, found in (
+                (runner_funcs, _runner_modules_of(value)),
+                (runner_modules, aliased),
+            ):
+                if found - table.get(target, set()):
+                    table.setdefault(target, set()).update(found)
                     changed = True
 
     # Every binding of a name, so a reassigned source cannot hide the value a runner saw.
@@ -8758,12 +8761,21 @@ def _python_is_high_risk(code: str) -> bool:
             return _string_shaped(node.value, seen)
         return False
 
-    runner_verdicts: "dict[str, bool]" = {}
+    runner_verdicts: "dict[object, bool]" = {}
 
     def _cached_runner_verdict(source: str) -> bool:
         if source not in runner_verdicts:
             runner_verdicts[source] = _runner_source_is_high_risk(source)
         return runner_verdicts[source]
+
+    def _cached_timeit_verdict(program: str) -> bool:
+        # An unparsable combination could hide what setup binds for stmt.
+        key = ("timeit", program)
+        if key not in runner_verdicts:
+            runner_verdicts[key] = bool(program.strip()) and (
+                _parse_python(program)[1] is not None or _cached_runner_verdict(program)
+            )
+        return runner_verdicts[key]
 
     def _runner_arg(node, index, keywords):
         if len(node.args) > index:
@@ -8803,12 +8815,8 @@ def _python_is_high_risk(code: str) -> bool:
                 programs = [f"{a}\n{b}" for a in setups for b in stmts]
             else:
                 programs = ["\n".join([*setups, *stmts])]
-            for program in dict.fromkeys([*setups, *stmts, *programs]):
-                # An unparsable combination could hide what setup binds for stmt.
-                if program.strip() and _parse_python(program)[1] is not None:
-                    return True
-                if _cached_runner_verdict(program):
-                    return True
+            if any(map(_cached_timeit_verdict, dict.fromkeys([*setups, *stmts, *programs]))):
+                return True
         elif runner is not None:
             if _opaque_kwargs(node):
                 return True
