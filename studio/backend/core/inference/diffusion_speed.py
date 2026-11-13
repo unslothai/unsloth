@@ -1384,6 +1384,16 @@ def _compile_repeated_blocks(
                 )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
+        # Native W8A8 ConvRot Linears (offloaded int8 DiTs read as native Linears): probe the fused rotation + act quant
+        # on the card the denoiser computes on, before the compile traces them.
+        try:
+            from .diffusion_native_w8a8_cuda import install as install_native_rotq
+            moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
+            transformer._unsloth_native_rotq = install_native_rotq(
+                transformer, logger, device = onload_device if moved else None
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "native int8 rotation + act quant", exc)
         # Patches run after the int8 GEMM swap; ConvRot sharing reads the swap's leftovers.
         _install_compile_patches(
             "pre_compile",
