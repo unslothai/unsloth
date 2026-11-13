@@ -599,6 +599,7 @@ def _ctx_backend(
     unified = False,
 ):
     backend = _resume_backend(tmp_path, n_slots = n_slots)
+    backend._slot_long_rope = False
     backend._requested_n_ctx = n_ctx
     backend._effective_context_length = n_ctx if unified else n_ctx // n_slots
     backend._kv_cache_unified = unified
@@ -612,6 +613,7 @@ def _manifest_from(backend, *, n_saved):
         "gguf": backend._gguf_path,
         "gguf_stat": backend._gguf_file_identity(backend._gguf_path),
         "launch": backend._slot_launch_fingerprint(),
+        "long_rope": backend._slot_long_rope,
         "slots": [
             {"id": slot, "filename": f"resume-x-slot{slot}.bin", "n_saved": n_saved}
             for slot in range(backend.effective_parallel_slots)
@@ -648,22 +650,39 @@ def test_a_launch_that_only_raised_the_context_fits_when_the_slots_hold_the_toke
     ), "unified is a fingerprint field of its own; only the context may differ"
 
 
-def test_a_context_change_across_the_rope_switch_point_refuses(tmp_path):
-    def longrope(n_ctx):
-        backend = _ctx_backend(tmp_path, n_ctx = n_ctx)
-        backend._context_length = 131072
-        backend._rope_original_context_length = 4096
+def test_reload_uses_engine_sequence_length_even_when_props_caps_the_window(tmp_path):
+    def launch(requested, allocated):
+        backend = _ctx_backend(tmp_path, n_ctx = requested)
+        backend._stdout_lines = [
+            "0.00.013.211 I print_info: n_ctx_orig_yarn       = 2048",
+            f"0.00.013.722 I llama_context: n_ctx_seq             = {allocated}",
+        ]
+        backend._query_server_n_ctx = lambda: 2048
+        backend._reconcile_effective_ctx_with_server(requested)
         return backend
 
-    saved = _manifest_from(longrope(4096), n_saved = 2000)
-    assert longrope(8192).slot_resume_fits(saved) is False
-    above = _manifest_from(longrope(8192), n_saved = 2000)
-    assert longrope(16384).slot_resume_fits(above) is True
-    plain = _ctx_backend(tmp_path, n_ctx = 8192)
-    plain._context_length = 8192
-    widened = _ctx_backend(tmp_path, n_ctx = 16384)
-    widened._context_length = 8192
-    assert widened.slot_resume_fits(_manifest_from(plain, n_saved = 100)) is False
+    small, large = launch(2048, 2048), launch(4096, 4096)
+    assert small._slot_context_capacity() == large._slot_context_capacity() == 2048
+    saved = _manifest_from(small, n_saved = 100)
+    assert not large.slot_resume_fits(saved)
+    assert not launch(2048, 4096).slot_resume_fits(saved)
+    assert launch(8192, 8192).slot_resume_fits(_manifest_from(large, n_saved = 100))
+
+
+def test_context_change_requires_unambiguous_engine_values_on_both_launches(tmp_path):
+    threshold = "print_info: n_ctx_orig_yarn = 2048"
+    sequence = "llama_context: n_ctx_seq = 4096"
+    for lines in ([], [threshold], [sequence], [threshold, sequence, "llama_context: n_ctx_seq = 1024"]):
+        assert llama_cpp._slot_rope_regime(lines) is None
+
+    source = _ctx_backend(tmp_path, n_ctx = 1024)
+    target = _ctx_backend(tmp_path, n_ctx = 2048)
+    legacy = _manifest_from(source, n_saved = 100)
+    del legacy["long_rope"]
+    assert source.slot_resume_fits(legacy)
+    assert not target.slot_resume_fits(legacy)
+    target._slot_long_rope = None
+    assert not target.slot_resume_fits(_manifest_from(source, n_saved = 100))
 
 
 def test_a_context_change_with_metadata_or_slot_size_overrides_refuses(tmp_path):
