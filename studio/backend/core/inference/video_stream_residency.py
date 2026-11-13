@@ -74,7 +74,8 @@ def oom_retry_enabled() -> bool:
 
 
 def decode_lend_enabled() -> bool:
-    return not _off(VIDEO_DIT_DECODE_LEND_ENV)
+    # the lend is sized from a measured denoise peak, so estimate-only operation (measured off) never lends
+    return not _off(VIDEO_DIT_DECODE_LEND_ENV) and measured_enabled()
 
 
 def applies(

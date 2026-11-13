@@ -355,3 +355,14 @@ def test_the_denoise_peak_is_stored_on_the_streamed_baseline(monkeypatch, pad, s
     card.fit()
     card.render()
     assert vr.pre_decode_extra_mib(card.module, WORK) == stored
+
+
+def test_measured_off_never_lends(monkeypatch):
+    card = _Card(monkeypatch)
+    card.fit()
+    card.render()
+    monkeypatch.setenv(vr.VIDEO_DIT_RESIDENT_MEASURED_ENV, "0")
+    assert not vr.decode_lend_enabled()
+    card.fit()
+    assert card.module._unsloth_video_lend is None
+    assert vr.begin_denoise(card.pipe) == 0
