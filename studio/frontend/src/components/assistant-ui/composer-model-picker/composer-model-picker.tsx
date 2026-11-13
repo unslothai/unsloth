@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { audioPickSearch } from "@/features/audio/route-search";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -33,7 +34,6 @@ import {
   deleteFineTunedModel,
   revealFineTunedModel,
 } from "@/features/chat";
-import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 import {
   isExternalModelId,
@@ -41,10 +41,7 @@ import {
   parseExternalModelId,
 } from "@/features/chat/external-providers";
 import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
-import {
-  modelCatalogVersion,
-  subscribeModelCatalog,
-} from "@/features/chat/model-catalog";
+import {} from "@/features/chat/model-catalog";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
@@ -94,7 +91,6 @@ import {
   audioPickIsRoutable,
   audioPipelineTagFor,
   chatGgufFit,
-  connectedModelMarks,
   curatedAudioInventoryTask,
   describeVariantListingError,
   estimateQuantBytes,
@@ -163,7 +159,7 @@ import {
   Navigation05Icon,
   RemoveCircleIcon,
   Search01Icon,
-  Settings02Icon,
+  Settings01Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -182,7 +178,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import { useAnimatedListHeight } from "./animated-height";
 import { useComposerModelPickerSource } from "./context";
@@ -190,12 +185,8 @@ import { useCustomFolders } from "./custom-folders";
 import { EffortSlider } from "./effort-slider";
 import { ListScrollbar, StripScrollbar } from "./list-scrollbar";
 import {
-  CONNECTED_MODALITY_LABEL,
-  CONNECTED_SORT_LABEL,
   CONNECTED_TAB,
   DEFAULT_PROVIDERS,
-  type ConnectedModality,
-  type ConnectedSort,
   DEVICE_SORT_DESC,
   DEVICE_SORT_LABEL,
   DEVICE_SORT_ORDER,
@@ -207,6 +198,7 @@ import {
   type FormatTone,
   type ListSection,
   PICKER_EDGE,
+  PICKER_GAP,
   PICKER_WIDTH,
   type PickerRow,
   RECOMMENDED_TAB,
@@ -223,6 +215,7 @@ import {
   matchesFormat,
   orderBySection,
   pickerAlignOffset,
+  pickerDropOffset,
   pickerSide,
   pinCoversId,
   repoSection,
@@ -260,6 +253,8 @@ function cachedMeta(row: Row): ModelSelectorChangeMeta {
 
 const EXT_PREFIX = "ext:";
 const MAKER_PREFIX = "maker:";
+// A maker earns its own tab only once it has this many models here; fewer read fine under On Device.
+const MAKER_TAB_MIN_MODELS = 3;
 const EXPANDED_KEY = "unsloth_composer_picker_expanded";
 const TAB_KEY = "unsloth_composer_picker_tab";
 
@@ -779,6 +774,11 @@ const FAVORITE_DROP_CUE = {
   bottom: `${FAVORITE_DROP_CUE_BASE} before:bottom-0`,
 } as const;
 
+// A step past a hovered row's wash, as Zeron's chosen menu row (light 7% black over hover's 4%,
+// dark 9% white over 5%): darker in light, lighter in dark.
+const CURRENT_ROW_BG =
+  "bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] hover:bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] dark:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)] dark:hover:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)]";
+
 const DIM_CLASS =
   "opacity-55 transition-opacity group-hover/row:opacity-100 dark:opacity-50";
 
@@ -843,7 +843,7 @@ function StatusTag({
   const tag = (
     <span
       className={cn(
-        "inline-flex h-[calc(16px*var(--ui-space-scale,1))] shrink-0 items-center gap-1 rounded-full px-2 font-sans text-ui-10 font-medium leading-none",
+        "inline-flex h-[calc(16px*var(--ui-space-scale,1))] shrink-0 items-center gap-1 rounded-full px-[calc(7px*var(--ui-space-scale,1))] font-sans text-ui-10 font-medium leading-none",
         STATUS_TONE[tone],
       )}
     >
@@ -858,13 +858,26 @@ function QuantStatus({
   variant,
   loaded,
   recommended,
+  onDevice,
 }: {
   variant: GgufVariantDetail;
   loaded: boolean;
   recommended: boolean;
+  /** On Device and its kin say neither Downloaded (every quant there is) nor Loaded (a dot does). */
+  onDevice: boolean;
 }) {
   const tags: ReactNode[] = [];
-  if (loaded) {
+  if (onDevice && loaded) {
+    tags.push(
+      <Hint key="loaded" label="Loaded">
+        <span className="grid size-[calc(14px*var(--ui-space-scale,1))] shrink-0 place-items-center">
+          <span className="size-[calc(6px*var(--ui-space-scale,1))] rounded-full bg-status-success" />
+        </span>
+      </Hint>,
+    );
+  } else if (onDevice && variant.downloaded) {
+    // Said by the tab itself.
+  } else if (loaded) {
     tags.push(
       <StatusTag
         key="loaded"
@@ -876,20 +889,7 @@ function QuantStatus({
       />,
     );
   } else if (variant.downloaded) {
-    tags.push(
-      <StatusTag
-        key="downloaded"
-        tone="green"
-        label="Downloaded"
-        lead={
-          <HugeiconsIcon
-            icon={Tick02Icon}
-            strokeWidth={2.25}
-            className="size-[calc(10px*var(--ui-space-scale,1))]"
-          />
-        }
-      />,
-    );
+    tags.push(<StatusTag key="downloaded" tone="green" label="Downloaded" />);
   } else if (variant.partial === true) {
     tags.push(
       <StatusTag
@@ -939,41 +939,17 @@ function Hint({
   );
 }
 
-function LoadedDot({
-  label,
-  onEject,
-}: { label: string; onEject?: () => void }) {
-  if (!onEject) {
-    return (
-      <Hint label="Loaded">
-        <span
-          role="img"
-          aria-label="Loaded"
-          className="-mx-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 place-items-center"
-        >
-          <span className="size-[calc(6px*var(--ui-space-scale,1))] rounded-full bg-status-success" />
-        </span>
-      </Hint>
-    );
-  }
+// A status mark only: Eject lives in the row's menu and the picker's header.
+function LoadedDot() {
   return (
-    <Hint label="Loaded. Click to eject">
-      <button
-        type="button"
-        aria-label={`Eject ${label}`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onEject();
-        }}
-        className="group/eject -mx-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+    <Hint label="Loaded">
+      <span
+        role="img"
+        aria-label="Loaded"
+        className="-mx-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 place-items-center"
       >
-        <span className="col-start-1 row-start-1 size-[calc(6px*var(--ui-space-scale,1))] rounded-full bg-status-success transition-opacity group-hover/eject:opacity-0 group-focus-visible/eject:opacity-0" />
-        <HugeiconsIcon
-          icon={RemoveCircleIcon}
-          strokeWidth={1.75}
-          className="composer-eject-icon col-start-1 row-start-1 composer-eject-tone opacity-0 transition-opacity group-hover/eject:opacity-100 group-focus-visible/eject:opacity-100"
-        />
-      </button>
+        <span className="size-[calc(6px*var(--ui-space-scale,1))] rounded-full bg-status-success" />
+      </span>
     </Hint>
   );
 }
@@ -1222,10 +1198,10 @@ function SectionHeader({
       data-section={section}
       className={cn(
         "flex shrink-0 flex-col",
-        divider && "mt-[calc(10px*var(--ui-space-scale,1))]",
+        divider && "mt-[calc(11px*var(--ui-space-scale,1))]",
       )}
     >
-      <div className="flex h-[calc(28px*var(--ui-space-scale,1))] items-center gap-1 pr-[calc(6px*var(--ui-space-scale,1))] pl-3">
+      <div className="flex h-[calc(26px*var(--ui-space-scale,1))] items-center gap-1 pr-[calc(6px*var(--ui-space-scale,1))] pl-3">
         <button
           type="button"
           tabIndex={-1}
@@ -2048,15 +2024,22 @@ export function ComposerModelPicker({
   const connectionsOn = source?.connections !== false;
   const isOwner = useIsAccountOwner();
   const makerTabs = useMemo<SourceTab[]>(() => {
-    const out: SourceTab[] = [];
-    const seen = new Set<string>();
+    const byMaker = new Map<string, { maker: Maker; ids: Set<string> }>();
     for (const row of rows) {
       const maker =
         row.groups && row.kind !== "external" ? rowMaker(row) : null;
-      if (!maker || seen.has(maker.id)) {
+      if (!maker) {
         continue;
       }
-      seen.add(maker.id);
+      const entry = byMaker.get(maker.id) ?? { maker, ids: new Set() };
+      entry.ids.add(row.id.toLowerCase());
+      byMaker.set(maker.id, entry);
+    }
+    const out: SourceTab[] = [];
+    for (const { maker, ids } of byMaker.values()) {
+      if (ids.size < MAKER_TAB_MIN_MODELS) {
+        continue;
+      }
       out.push({
         value: `${MAKER_PREFIX}${maker.id}`,
         label: maker.name,
@@ -2191,17 +2174,8 @@ export function ComposerModelPicker({
   const [deviceSort, setDeviceSort] = useState<DeviceSort>("recent");
   const [deviceSortDesc, setDeviceSortDesc] = useState(DEVICE_SORT_DESC.recent);
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
-  const [connectedSort, setConnectedSort] = useState<ConnectedSort>("provider");
-  const [connectedModality, setConnectedModality] =
-    useState<ConnectedModality>("all");
-  // A provider catalogue arrives after first paint and decides most of the marks.
-  const catalogVersion = useSyncExternalStore(
-    subscribeModelCatalog,
-    modelCatalogVersion,
-  );
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `catalogVersion` re-reads marks a provider sync writes later.
   const foundRows = useMemo(() => {
     // Discover rows are the Hub's answer to this very query ("google" finds unsloth/gemma-*).
     const hubAnswered =
@@ -2238,25 +2212,7 @@ export function ComposerModelPicker({
       });
     }
     if (viewed === CONNECTED_TAB) {
-      const shown =
-        connectedModality === "all"
-          ? found
-          : found.filter((row) => {
-              const parsed = parseExternalModelId(row.id);
-              const provider = providers.find(
-                (p) => p.id === parsed?.providerId,
-              );
-              const marks = connectedModelMarks({
-                providerType: row.providerType,
-                modelId: parsed?.modelId ?? row.label,
-                baseUrl: provider?.baseUrl ?? null,
-                apiType: provider?.apiType,
-              });
-              return connectedModality === "vision"
-                ? marks.vision
-                : marks.capabilities[connectedModality];
-            });
-      return sortConnectedRows(shown, connectedSort);
+      return sortConnectedRows(found);
     }
     if (viewed !== DEVICE_TAB) {
       return found;
@@ -2283,10 +2239,6 @@ export function ComposerModelPicker({
     hubCheckpointFits,
     noGpu,
     chosenId,
-    connectedSort,
-    connectedModality,
-    providers,
-    catalogVersion,
   ]);
   const [collapsedSections, setCollapsedSections] = useState<
     ReadonlySet<string>
@@ -2344,7 +2296,7 @@ export function ComposerModelPicker({
           !(row.section && collapsedSections.has(`${viewed}:${row.section}`)),
       );
     }
-    if (viewed === CONNECTED_TAB && connectedSort === "provider") {
+    if (viewed === CONNECTED_TAB) {
       return found.filter(
         (row) => !collapsedSections.has(`${viewed}:${row.tab}`),
       );
@@ -2367,7 +2319,6 @@ export function ComposerModelPicker({
     listSections,
     collapsedSections,
     foundRows,
-    connectedSort,
   ]);
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
@@ -2697,6 +2648,15 @@ export function ComposerModelPicker({
     });
   };
 
+  // On Device only: Discover's own offer already lists a partial quant.
+  const partialsOf = (row: Row) =>
+    row.tab === DEVICE_TAB && !row.partial && viewed !== RECOMMENDED_TAB
+      ? (devicePartials.get(row.key) ?? NO_QUANTS)
+      : NO_QUANTS;
+  // An interrupted quant counts as a variant: beside a whole one, the row folds both under it.
+  const variantCount = (row: Row) =>
+    (deviceQuants.get(row.key)?.length ?? 0) + partialsOf(row).length;
+
   const pick = async (row: Row) => {
     if (!source) {
       return;
@@ -2727,7 +2687,7 @@ export function ComposerModelPicker({
       );
       return;
     }
-    if ((deviceQuants.get(row.key)?.length ?? 0) > 1) {
+    if (variantCount(row) > 1) {
       setFoldedQuants((prev) => {
         const next = new Set(prev);
         if (!next.delete(row.key)) {
@@ -2787,7 +2747,7 @@ export function ComposerModelPicker({
       return;
     }
     const target = row.kind === "gguf" ? quantTarget(row) : null;
-    if (!target) {
+    if (!target || variantCount(row) > 1) {
       togglePinned(row.id);
       return;
     }
@@ -2823,6 +2783,31 @@ export function ComposerModelPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
+  const [panel, setPanel] = useState<HTMLDivElement | null>(null);
+  const [dropOffset, setDropOffset] = useState(PICKER_GAP);
+  const dropsDown = open && openSide === "bottom";
+  useEffect(() => {
+    if (!(dropsDown && panel)) {
+      setDropOffset(PICKER_GAP);
+      return;
+    }
+    const place = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (rect) {
+        setDropOffset(
+          pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
+        );
+      }
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(panel);
+    window.addEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [dropsDown, panel]);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
@@ -3045,12 +3030,6 @@ export function ComposerModelPicker({
       return {
         title: "No favorites yet",
         hint: "Star a model to keep it here.",
-      };
-    }
-    if (viewed === CONNECTED_TAB && connectedModality !== "all") {
-      return {
-        title: "No models found",
-        hint: `No connected model offers ${CONNECTED_MODALITY_LABEL[connectedModality].toLowerCase()}.`,
       };
     }
     if (viewed === DEVICE_TAB) {
@@ -3438,8 +3417,10 @@ export function ComposerModelPicker({
     const paramLabel =
       row.kind === "hub" ? (hubParams.get(row.id.toLowerCase()) ?? null) : null;
     const onDisk = deviceQuants.get(row.key) ?? NO_QUANTS;
-    const soleQuant = onDisk.length === 1 ? onDisk[0].quant : null;
-    const manyQuants = onDisk.length > 1;
+    const partials = partialsOf(row);
+    const manyQuants = onDisk.length + partials.length > 1;
+    const wholeQuant = onDisk.length === 1 ? onDisk[0].quant : null;
+    const soleQuant = manyQuants ? null : wholeQuant;
     // Known without a quant listing, for Reset run settings and the gear's saved state.
     const savedMeta =
       row.kind === "gguf" && onDisk.length === 1
@@ -3455,15 +3436,16 @@ export function ComposerModelPicker({
     // `foldedQuants` holds the rows toggled away from the "Expand quantizations" setting.
     const quantsOpen =
       manyQuants && expandQuantizations !== foldedQuants.has(row.key);
-    // A GGUF is favorited by its quant, never the whole repo.
+    // A Discover GGUF is favorited by its quant; one on device with several, as the whole repo.
     const canStar = !(
       quiet ||
-      manyQuants ||
       (row.kind === "hub" && Boolean(row.hub?.isGguf))
     );
     const actionClass =
-      "opacity-0 transition-opacity group-hover/row:opacity-100 group-data-[active=true]/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100";
+      "opacity-0 transition-opacity group-hover/row:opacity-100 group-data-[active=true]/row:opacity-100 group-data-[current=true]/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100";
     const rowActive = highlight && index === active;
+    // The model in use, or one still loaded, keeps its hover look.
+    const rowCurrent = isChosen || Boolean(row.loaded);
     const rowEl = (
       <MemoRow
         key={row.key}
@@ -3503,6 +3485,7 @@ export function ComposerModelPicker({
             aria-selected={isChosen}
             data-row-index={index}
             data-active={rowActive ? "true" : undefined}
+            data-current={rowCurrent ? "true" : undefined}
             // Shared with the header picker's rows: the Playwright drivers select by these.
             data-model-picker-option=""
             data-model-picker-active-option={rowActive ? "true" : undefined}
@@ -3529,7 +3512,7 @@ export function ComposerModelPicker({
             }}
             className={cn(
               "group/row flex h-[calc(32px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-2 rounded-full pr-[calc(6px*var(--ui-space-scale,1))] pl-3 text-ui-14 transition-colors",
-              rowActive && "bg-sidebar-accent",
+              rowCurrent ? CURRENT_ROW_BG : rowActive && "bg-sidebar-accent",
             )}
           >
             {resolving === row.key || npuProgress ? (
@@ -3553,16 +3536,13 @@ export function ComposerModelPicker({
                   icon={ChevronRightStandardIcon}
                   strokeWidth={1.75}
                   className={cn(
-                    "size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground opacity-0 transition-[transform,opacity] duration-150 group-hover/row:opacity-100 group-data-[active=true]/row:opacity-100",
+                    "size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground transition-transform duration-150",
                     quantsOpen && "rotate-90",
                   )}
                 />
               ) : null}
               {row.loaded ? (
-                <LoadedDot
-                  label={row.label}
-                  onEject={canEject ? () => eject(row) : undefined}
-                />
+                <LoadedDot />
               ) : row.kind === "hub" && row.onDevice ? (
                 <Hint label="On device">
                   <span
@@ -3654,7 +3634,7 @@ export function ComposerModelPicker({
                         />
                       ) : undefined
                     }
-                    update={soleQuant ? updateFor(row, onDisk[0]) : undefined}
+                    update={wholeQuant ? updateFor(row, onDisk[0]) : undefined}
                     pin={
                       canStar
                         ? {
@@ -3688,7 +3668,7 @@ export function ComposerModelPicker({
                         label: "Run settings",
                         icon: (
                           <HugeiconsIcon
-                            icon={Settings02Icon}
+                            icon={Settings01Icon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
@@ -3738,7 +3718,7 @@ export function ComposerModelPicker({
                         label: "Model settings",
                         icon: (
                           <HugeiconsIcon
-                            icon={Settings02Icon}
+                            icon={Settings01Icon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
@@ -3816,7 +3796,7 @@ export function ComposerModelPicker({
       />
     );
     const memoryQuant = isChosen
-      ? (row.loadedQuant ?? activeVariant ?? soleQuant)
+      ? (row.loadedQuant ?? activeVariant ?? wholeQuant)
       : null;
     const memoryVariant = memoryQuant
       ? onDisk.find((v) => v.quant.toLowerCase() === memoryQuant.toLowerCase())
@@ -3835,11 +3815,6 @@ export function ComposerModelPicker({
           className="mt-0.5 mr-3 mb-1.5 ml-[calc(40px*var(--ui-space-scale,1))] w-auto shrink-0"
         />
       ) : null;
-    // On Device only: Discover's own offer already lists a partial quant.
-    const partials =
-      row.tab === DEVICE_TAB && !row.partial && viewed !== RECOMMENDED_TAB
-        ? (devicePartials.get(row.key) ?? NO_QUANTS)
-        : NO_QUANTS;
     const quantList = offerOpen ? (
       renderOffer(row)
     ) : quantsOpen || partials.length > 0 ? (
@@ -3901,7 +3876,7 @@ export function ComposerModelPicker({
     const starred = pinned.includes(key);
     const button = ACTION_ROUND;
     const reveal =
-      "opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100";
+      "opacity-0 transition-opacity group-hover/row:opacity-100 group-data-[current=true]/row:opacity-100 focus-visible:opacity-100";
     const quantConfigTarget = modelConfigTarget(
       row.id,
       ggufMeta(row, variant, onDisk, isGguf, hasVision),
@@ -3955,7 +3930,13 @@ export function ComposerModelPicker({
               />
             </button>
           </Hint>
-        ) : null}
+        ) : (
+          // Holds the star's room, so every quant's size lines up.
+          <span
+            aria-hidden={true}
+            className="w-[calc(20px*var(--ui-space-scale,1))] shrink-0"
+          />
+        )}
       </span>
     );
   };
@@ -3967,18 +3948,24 @@ export function ComposerModelPicker({
       recommended,
       onPick,
       actions,
+      onDevice = false,
     }: {
       loaded: boolean;
       recommended: boolean;
       onPick: () => void;
       actions: ReactNode;
+      onDevice?: boolean;
     },
   ) => {
     const fit = classifyVariantFitOnCard(quantBudget.fitOf, variant, 0);
     return (
       <div
         key={variant.filename || variant.quant}
-        className="group/row flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center rounded-full pr-[calc(6px*var(--ui-space-scale,1))] transition-colors hover:bg-sidebar-accent has-[[data-quant-option]:focus-visible]:bg-sidebar-accent"
+        data-current={loaded ? "true" : undefined}
+        className={cn(
+          "group/row flex h-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center rounded-full pr-[calc(6px*var(--ui-space-scale,1))] transition-colors hover:bg-sidebar-accent has-[[data-quant-option]:focus-visible]:bg-sidebar-accent",
+          loaded && CURRENT_ROW_BG,
+        )}
       >
         <button
           type="button"
@@ -3997,7 +3984,10 @@ export function ComposerModelPicker({
             <span
               className={cn(
                 "truncate font-mono text-xs",
-                fit === "oom" && "!text-gray-500 dark:!text-gray-400",
+                // Only where it is an offer: a quant already here stays legible.
+                !onDevice &&
+                  fit === "oom" &&
+                  "!text-gray-500 dark:!text-gray-400",
               )}
             >
               {ggufVariantPickerLabel(variant)}
@@ -4006,6 +3996,7 @@ export function ComposerModelPicker({
               variant={variant}
               loaded={loaded}
               recommended={recommended}
+              onDevice={onDevice}
             />
           </span>
           <span className="flex shrink-0 items-center gap-1.5">
@@ -4029,6 +4020,7 @@ export function ComposerModelPicker({
           recommended: false,
           onPick: () => pickOfferQuant(row, variant),
           actions: renderQuantActions(row, variant, false),
+          onDevice: true,
         }),
       )}
     </div>
@@ -4063,6 +4055,7 @@ export function ComposerModelPicker({
               resetView();
             },
             actions: renderQuantActions(row, variant, true),
+            onDevice: true,
           }),
         )}
       </div>
@@ -4314,7 +4307,7 @@ export function ComposerModelPicker({
                   className="grid size-[calc(20px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
                 >
                   <HugeiconsIcon
-                    icon={Settings02Icon}
+                    icon={Settings01Icon}
                     strokeWidth={1.75}
                     className="size-3"
                   />
@@ -4333,11 +4326,7 @@ export function ComposerModelPicker({
   };
 
   const renderSections = () => {
-    if (
-      viewed === CONNECTED_TAB &&
-      connectedSort === "provider" &&
-      foundRows.length > 0
-    ) {
+    if (viewed === CONNECTED_TAB && foundRows.length > 0) {
       return renderConnectedGroups();
     }
     if (listSections.length === 0) {
@@ -4568,12 +4557,13 @@ export function ComposerModelPicker({
       )}
       {/* No collision flip: a height change must not move the panel across the composer. */}
       <PopoverContent
+        ref={setPanel}
         side={openSide}
         avoidCollisions={false}
         collisionPadding={PICKER_EDGE}
         align={align}
         alignOffset={alignOffset}
-        sideOffset={8}
+        sideOffset={dropsDown ? dropOffset : PICKER_GAP}
         data-composer-model-picker=""
         data-tour="chat-model-selector-popover"
         data-list-last={
@@ -4585,7 +4575,20 @@ export function ComposerModelPicker({
             ? `Run settings for ${configTarget.displayName}`
             : undefined
         }
-        className="unsloth-plus-menu composer-model-picker relative max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))] w-[calc(404px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2"
+        className={cn(
+          "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
+          // One height open, loaded model or not and on every tab, as Zeron's picker: the list takes
+          // what the model's controls leave, so nothing moves the panel's edge.
+          (isExpanded || configTarget) &&
+            "h-[calc(460px*var(--ui-space-scale,1))]",
+          // Run settings keep that height until Advanced opens, then grow, short of the whole window.
+          configTarget &&
+            "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
+          // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
+          openSide === "bottom"
+            ? "max-h-[min(calc(760px*var(--ui-space-scale,1)),calc(100dvh-16px))]"
+            : "max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
+        )}
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
             requestAnimationFrame(() => searchRef.current?.focus());
@@ -4617,7 +4620,6 @@ export function ComposerModelPicker({
                   configStandalone ? undefined : () => setConfigTarget(null)
                 }
                 focusField={configFocus ?? undefined}
-                dense={true}
                 onRun={(config, isDiffusion) => {
                   supersede();
                   source?.onPick(configTarget.configId ?? configTarget.id, {
@@ -4724,12 +4726,12 @@ export function ComposerModelPicker({
                     aria-label="Collapse the model list"
                     aria-expanded={true}
                     onClick={() => setExpanded(false)}
-                    className="mr-[calc(4px*var(--ui-space-scale,1))] grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                    className="grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
                   >
                     <HugeiconsIcon
                       icon={ChevronDownStandardIcon}
                       strokeWidth={1.5}
-                      className="size-4 translate-x-[0.4px] translate-y-[0.4px]"
+                      className="size-4 translate-x-[-0.4px] translate-y-[-0.4px] rotate-180"
                     />
                   </button>
                 </Hint>
@@ -4848,74 +4850,26 @@ export function ComposerModelPicker({
                   {formatGroup}
                 </NonModalDropdownMenu>
               ) : null}
-              {viewed === CONNECTED_TAB ? (
-                <NonModalDropdownMenu
-                  align="end"
-                  className="composer-filter-menu w-auto min-w-[calc(140px*var(--ui-space-scale,1))]"
-                  trigger={(ref) => (
-                    <button
-                      ref={ref}
-                      type="button"
-                      aria-label={`Sort and filter: ${CONNECTED_SORT_LABEL[connectedSort]}, ${CONNECTED_MODALITY_LABEL[connectedModality]}`}
-                      className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent"
-                    >
-                      <HugeiconsIcon
-                        icon={FilterMailIcon}
-                        strokeWidth={1.75}
-                        className="size-4 -translate-y-[0.5px]"
-                      />
-                      {connectedModality !== "all" ? (
-                        <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
-                      ) : null}
-                    </button>
-                  )}
-                >
-                  <DropdownMenuLabel className={MENU_LABEL}>
-                    Sort
-                  </DropdownMenuLabel>
-                  <DropdownMenuRadioGroup
-                    value={connectedSort}
-                    onValueChange={(next) =>
-                      setConnectedSort(next as ConnectedSort)
-                    }
+              {source && viewed === CONNECTED_TAB ? (
+                <Hint label="Connections">
+                  <button
+                    type="button"
+                    aria-label="Open connection settings"
+                    onClick={() => {
+                      setOpen(false);
+                      useSettingsDialogStore
+                        .getState()
+                        .openDialog("connections");
+                    }}
+                    className="grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
                   >
-                    {(Object.keys(CONNECTED_SORT_LABEL) as ConnectedSort[]).map(
-                      (key) => (
-                        <DropdownMenuRadioItem
-                          key={key}
-                          value={key}
-                          className={MENU_ITEM}
-                        >
-                          {CONNECTED_SORT_LABEL[key]}
-                        </DropdownMenuRadioItem>
-                      ),
-                    )}
-                  </DropdownMenuRadioGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel className={MENU_LABEL}>
-                    Modality
-                  </DropdownMenuLabel>
-                  <DropdownMenuRadioGroup
-                    value={connectedModality}
-                    onValueChange={(next) =>
-                      setConnectedModality(next as ConnectedModality)
-                    }
-                  >
-                    {(
-                      Object.keys(
-                        CONNECTED_MODALITY_LABEL,
-                      ) as ConnectedModality[]
-                    ).map((key) => (
-                      <DropdownMenuRadioItem
-                        key={key}
-                        value={key}
-                        className={MENU_ITEM}
-                      >
-                        {CONNECTED_MODALITY_LABEL[key]}
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </NonModalDropdownMenu>
+                    <HugeiconsIcon
+                      icon={CloudIcon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </button>
+                </Hint>
               ) : null}
               {viewed === RECOMMENDED_TAB ? (
                 <NonModalDropdownMenu
@@ -5032,7 +4986,7 @@ export function ComposerModelPicker({
               role="listbox"
               tabIndex={-1}
               aria-label={viewedTab?.label}
-              className="composer-model-list flex max-h-[min(calc(400px*var(--ui-space-scale,1)),60vh)] min-h-0 flex-col gap-0.5 overflow-y-auto pt-1.5 pb-1.5"
+              className="composer-model-list flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-[calc(9px*var(--ui-space-scale,1))] pb-1.5"
             >
               {renderList()}
               {viewed === RECOMMENDED_TAB && hubSearch.hasMore ? (
@@ -5049,13 +5003,14 @@ export function ComposerModelPicker({
             <ListScrollbar target={listRef} />
           </>
         ) : (
-          <div className="flex h-[calc(34px*var(--ui-space-scale,1))] w-full shrink-0 items-center rounded-full bg-sidebar-accent pr-1">
+          <div className="group/collapsed flex h-[calc(32px*var(--ui-space-scale,1))] w-full shrink-0 items-center">
             <button
               type="button"
               aria-expanded={false}
               aria-label={`${chosenName}: show all models`}
               onClick={expand}
-              className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch rounded-l-full pl-3 text-left text-ui-14"
+              // 1px up: the panel's top then matches the gap above the first control under the line.
+              className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch pb-[calc(2px*var(--ui-space-scale,1))] pl-3 text-left text-ui-14"
             >
               {pending || modelLoading ? (
                 <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
@@ -5094,12 +5049,12 @@ export function ComposerModelPicker({
               tabIndex={-1}
               aria-hidden={true}
               onClick={expand}
-              className="ml-1 grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+              className="ml-1 grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors group-hover/collapsed:text-foreground hover:bg-sidebar-accent"
             >
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
                 strokeWidth={1.5}
-                className="size-4 translate-x-[-0.4px] translate-y-[-0.4px] rotate-180"
+                className="size-4 translate-x-[-0.4px] translate-y-[0.4px]"
               />
             </button>
           </div>
@@ -5110,7 +5065,7 @@ export function ComposerModelPicker({
               "flex shrink-0 flex-col gap-0.5",
               isExpanded
                 ? "border-t border-border pt-[calc(5px*var(--ui-space-scale,1))]"
-                : "pt-[calc(10px*var(--ui-space-scale,1))]",
+                : "mt-[calc(6px*var(--ui-space-scale,1))] border-t border-border pt-[calc(4px*var(--ui-space-scale,1))]",
             )}
           >
             {showQuantRow ? (

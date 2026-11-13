@@ -11,11 +11,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { TrashIcon } from "@/lib/hugeicons-derived";
@@ -59,14 +54,6 @@ interface RunSettingsPickerProps {
   onNamingChange: (naming: RunSettingsNaming | null) => void;
   onNamingSubmit: () => void;
   onDelete: (name: string) => void;
-  /** Set where the page has no room for its own Always load row: the toggle ends the menu. */
-  alwaysLoad?: {
-    checked: boolean;
-    disabled: boolean;
-    onChange: (on: boolean) => void;
-  };
-  /** Likewise the save status: a dot on the trigger while unsaved, the words as its title. */
-  status?: { text: string; dirty: boolean };
 }
 
 const ITEM = "flex min-h-9 items-center gap-2 px-3 py-0 text-ui-13 font-medium";
@@ -107,8 +94,6 @@ export function RunSettingsPicker({
   onNamingChange,
   onNamingSubmit,
   onDelete,
-  alwaysLoad,
-  status,
 }: RunSettingsPickerProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const isNaming = naming !== null;
@@ -213,14 +198,6 @@ export function RunSettingsPicker({
             <span className="min-w-0 truncate">
               {selected ?? customName ?? "Default settings"}
             </span>
-            {status?.dirty ? (
-              <span
-                title={status.text}
-                className="ml-auto size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-amber-500 dark:bg-amber-400"
-              >
-                <span className="sr-only">{status.text}</span>
-              </span>
-            ) : null}
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               strokeWidth={2}
@@ -316,52 +293,6 @@ export function RunSettingsPicker({
               </button>
             </DropdownMenuItem>
           ))}
-          {alwaysLoad ? (
-            <>
-              <DropdownMenuSeparator className={SEPARATOR} />
-              {/* A tooltip, not a title: in this menu the OS drew its own beside Studio's. */}
-              <Tooltip delayDuration={400} disableHoverableContent={true}>
-                <TooltipTrigger asChild={true}>
-              <DropdownMenuItem
-                className={ITEM}
-                role="menuitemcheckbox"
-                aria-checked={alwaysLoad.checked}
-                aria-description="Use these settings on every load"
-                disabled={alwaysLoad.disabled}
-                onSelect={(event) => {
-                  event.preventDefault();
-                  alwaysLoad.onChange(!alwaysLoad.checked);
-                }}
-              >
-                <span
-                  aria-hidden={true}
-                  className={cn(
-                    "grid size-3.5 shrink-0 place-items-center rounded-full border",
-                    alwaysLoad.checked
-                      ? "border-primary bg-primary !text-primary-foreground"
-                      : "border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)]",
-                  )}
-                >
-                  {alwaysLoad.checked ? (
-                    <HugeiconsIcon
-                      icon={Tick02Icon}
-                      strokeWidth={2.5}
-                      // !, on every element: the menu item's hover rule recolours each descendant.
-                      className="size-2.5 !text-primary-foreground [&_*]:!text-primary-foreground"
-                    />
-                  ) : null}
-                </span>
-                <span className="min-w-0 truncate">
-                  Always load with these settings
-                </span>
-              </DropdownMenuItem>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="tooltip-compact">
-                  Use these settings on every load
-                </TooltipContent>
-              </Tooltip>
-            </>
-          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
       {onEditName && (

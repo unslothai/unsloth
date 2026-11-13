@@ -181,29 +181,15 @@ export function sortDeviceRows<T extends PickerRow>(
   return desc === DEVICE_SORT_DESC[key] ? sorted : sorted.reverse();
 }
 
-export type ConnectedSort = "provider" | "name";
-export const CONNECTED_SORT_LABEL: Record<ConnectedSort, string> = {
-  provider: "Connection",
-  name: "Name",
-};
-// No Audio: connected models never take audio attachments.
-export type ConnectedModality = "all" | "vision" | "imageGen";
-export const CONNECTED_MODALITY_LABEL: Record<ConnectedModality, string> = {
-  all: "All",
-  vision: "Vision",
-  imageGen: "Image gen",
-};
-
+/** By connection, then name: the Connected tab folds each connection under its own heading. */
 export function sortConnectedRows<T extends PickerRow>(
   rows: readonly T[],
-  key: ConnectedSort,
 ): T[] {
   return [...rows].sort(
     (a, b) =>
-      (key === "provider"
-        ? (a.providerName ?? "").localeCompare(b.providerName ?? "") ||
-          a.tab.localeCompare(b.tab)
-        : 0) || a.label.localeCompare(b.label),
+      (a.providerName ?? "").localeCompare(b.providerName ?? "") ||
+      a.tab.localeCompare(b.tab) ||
+      a.label.localeCompare(b.label),
   );
 }
 
@@ -397,8 +383,23 @@ export function pickerSide(
   return above < PICKER_MIN_ROOM && below > above ? "bottom" : "top";
 }
 
+/** Gap between the trigger and a panel that fits below it. */
+export const PICKER_GAP = 8;
+/**
+ * Radix `sideOffset` for a panel opening down: short of room below, it rides up over the composer
+ * rather than shrinking, but never past the window's top.
+ */
+export function pickerDropOffset(
+  triggerBottom: number,
+  panelHeight: number,
+  viewportHeight: number,
+): number {
+  const fits = viewportHeight - PICKER_EDGE - panelHeight - triggerBottom;
+  return Math.max(PICKER_EDGE - triggerBottom, Math.min(PICKER_GAP, fits));
+}
+
 /** Slides a fixed-side panel back inside a narrow window, since Radix's own shift is off. */
-export const PICKER_WIDTH = 404;
+export const PICKER_WIDTH = 420;
 export function pickerAlignOffset(
   align: "start" | "end",
   trigger: { left: number; right: number } | null,

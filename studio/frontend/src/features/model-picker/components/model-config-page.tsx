@@ -2533,8 +2533,6 @@ interface ModelConfigPageProps {
   variant?: "page" | "sidebar";
   showHeader?: boolean;
   focusField?: ModelConfigFocus;
-  /** The composer picker: Always load and the save status fold into the settings dropdown. */
-  dense?: boolean;
 }
 
 export function ModelConfigPage({
@@ -2548,7 +2546,6 @@ export function ModelConfigPage({
   variant = "page",
   showHeader = true,
   focusField,
-  dense = false,
 }: ModelConfigPageProps) {
   const saveStatusId = useId();
   const alwaysLoadId = useId();
@@ -4407,33 +4404,8 @@ export function ModelConfigPage({
           onNamingChange={setNaming}
           onNamingSubmit={submitNaming}
           onDelete={setPendingDelete}
-          alwaysLoad={
-            dense
-              ? {
-                  checked: selectedSet !== null && selectedSet === pinnedSet,
-                  disabled:
-                    naming !== null ||
-                    (selectedSet === null && customName === null) ||
-                    sharedVariantUnresolved ||
-                    extraArgsHydrating ||
-                    budgetSettling,
-                  onChange: setAlwaysLoad,
-                }
-              : undefined
-          }
-          status={
-            dense && saveStatus
-              ? { text: saveStatus, dirty: saveStatus === "Unsaved changes" }
-              : undefined
-          }
         />
-        {dense ? (
-          // The status rides on the dropdown; screen readers still hear it change.
-          <p id={saveStatusId} aria-live="polite" className="sr-only">
-            {saveStatus}
-          </p>
-        ) : (
-        /* Always rendered so a status change never moves the buttons; the sidebar's name box already does. */
+        {/* Always rendered so a status change never moves the buttons; the sidebar's name box already does. */}
         <div
           className={cn(
             "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2",
@@ -4443,7 +4415,7 @@ export function ModelConfigPage({
         >
           <Checkbox
             id={alwaysLoadId}
-            className="size-3.5 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
+            className="size-[calc(13px*var(--ui-space-scale,1))] rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
             aria-label="Always load with these settings"
             aria-describedby={saveStatusId}
             checked={selectedSet !== null && selectedSet === pinnedSet}
@@ -4477,7 +4449,6 @@ export function ModelConfigPage({
             {saveStatus}
           </p>
         </div>
-        )}
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="dark"

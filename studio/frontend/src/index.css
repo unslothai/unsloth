@@ -3831,6 +3831,7 @@ html[data-chat-font] .aui-root {
 
 	.unsloth-plus-menu.composer-model-picker[data-slot] {
 		padding-top: calc(6px * var(--ui-space-scale, 1));
+		padding-bottom: calc(6px * var(--ui-space-scale, 1));
 	}
 	.unsloth-plus-menu.composer-model-picker[data-slot][data-list-last] {
 		padding-bottom: 0;
@@ -5211,16 +5212,26 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	--run-settings-pad-y: calc(16px * var(--ui-space-scale, 1));
 	padding-block: var(--run-settings-pad-y);
 }
+/* Short settings leave the footer at the panel's foot, not under the last row. */
+.composer-run-settings {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+}
+.composer-run-settings > * {
+	flex: 1 0 auto;
+}
+.composer-run-settings :has(+ [data-pinned-footer]) {
+	margin-bottom: calc(20px * var(--ui-space-scale, 1));
+}
 .composer-run-settings [data-pinned-footer] {
+	margin-top: auto;
 	bottom: calc(-1 * var(--run-settings-pad-y));
 	margin-bottom: calc(-1 * var(--run-settings-pad-y));
 	padding-bottom: var(--run-settings-pad-y);
 }
 .composer-run-settings [data-pinned-footer] > :first-child {
-	border-top-width: 0;
-	padding-top: 0;
-}
-.composer-run-settings [data-pinned-footer] > :first-child {
+	padding-top: calc(12px * var(--ui-space-scale, 1));
 	row-gap: calc(10px * var(--ui-space-scale, 1));
 }
 .composer-run-settings [data-pinned-footer] :is(
@@ -6053,10 +6064,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	& svg:is(.size-\[22px\], [class~='size-[calc(22px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	/* Must follow size-[NN]. */
 	& svg.composer-row-icon {
-		width: calc(var(--ui-icon-size) * 0.85);
-		height: calc(var(--ui-icon-size) * 0.85);
-	}
-	& svg.composer-eject-icon {
 		width: calc(var(--ui-icon-size) * 0.85);
 		height: calc(var(--ui-icon-size) * 0.85);
 	}

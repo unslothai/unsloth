@@ -22,6 +22,7 @@ import {
   localSection,
   orderBySection,
   pickerAlignOffset,
+  pickerDropOffset,
   pickerSide,
   pinCoversId,
   repoSection,
@@ -213,16 +214,15 @@ test("thinking without effort levels is a switch, as Preserve thinking is", () =
   );
 });
 
-test("a loaded row ejects from its dot, its menu and the collapsed view", () => {
+test("a loaded row ejects from its menu and the collapsed view, never its dot", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  // A Compare pane has nothing to eject, so its dot is only a mark.
+  // A Compare pane has nothing to eject.
   assert.match(picker, /const canEject = !pane \|\| pane\.loaded === true;/);
-  assert.match(
-    picker,
-    /onEject=\{canEject \? \(\) => eject\(row\) : undefined\}/,
-  );
+  // The dot is only a mark: hovering it never turns it into Eject.
+  assert.match(picker, /<LoadedDot \/>/);
+  assert.doesNotMatch(picker, /Loaded\. Click to eject/);
   assert.match(picker, /\.\.\.\(row\.loaded && canEject/);
   assert.match(picker, /key: "eject"/);
   assert.match(picker, /aria-label=\{`Eject \$\{chosenName\}`\}/);
@@ -620,6 +620,35 @@ test("Discover keeps rows the Hub search matched by maker alias", () => {
   );
 });
 
+test("the open picker is one height on every tab, loaded model or not", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /\(isExpanded \|\| configTarget\) &&\s+"h-\[calc\(460px\*var\(--ui-space-scale,1\)\)\]"/,
+  );
+  assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
+  // The model in use keeps a hover look, a hair darker than a hovered row.
+  assert.match(
+    picker,
+    /rowCurrent \? CURRENT_ROW_BG : rowActive && "bg-sidebar-accent"/,
+  );
+});
+
+test("a panel opening down rides up over the composer when the room below is short", () => {
+  // Room below: the usual 8px gap.
+  assert.equal(pickerDropOffset(400, 300, 900), 8);
+  // 100px short: up by that much, over the composer.
+  assert.equal(pickerDropOffset(500, 492, 900), -100);
+  // Taller than the window: pinned 8px from its top.
+  assert.equal(pickerDropOffset(500, 2000, 900), -492);
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /sideOffset=\{dropsDown \? dropOffset : PICKER_GAP\}/);
+});
+
 test("the picker's side is fixed per opening by the trigger, not the panel", () => {
   const vh = 900;
   // New chat (prefers below): a centred composer opens down, one near the foot opens up.
@@ -667,26 +696,22 @@ test("each sort direction has words for its tooltip", async () => {
   assert.deepEqual(DEVICE_SORT_DESC, { recent: true, size: true, name: false });
 });
 
-test("the composer's Run settings folds Always load and the save status into the dropdown", () => {
+test("the composer's Run settings keep Always load and the save status in their own row", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /dense=\{true\}/);
+  assert.doesNotMatch(picker, /dense=\{true\}/);
   const page = readSrc(
     "features/model-picker/components/model-config-page.tsx",
   );
-  // Dense passes both to the dropdown and keeps the status for screen readers only.
-  assert.match(page, /alwaysLoad=\{\s*dense/);
-  assert.match(page, /status=\{\s*dense && saveStatus/);
+  assert.doesNotMatch(page, /alwaysLoad=\{/);
+  assert.match(page, /aria-label="Always load with these settings"/);
+  const css = readSrc("index.css");
+  // The footer sits at the panel's foot when the settings are short.
   assert.match(
-    page,
-    /<p id=\{saveStatusId\} aria-live="polite" className="sr-only">/,
+    css,
+    /\.composer-run-settings \[data-pinned-footer\] \{\s+margin-top: auto;/,
   );
-  const row = readSrc(
-    "features/model-picker/components/saved-run-settings-row.tsx",
-  );
-  assert.match(row, /role="menuitemcheckbox"/);
-  assert.match(row, /Always load with these settings/);
 });
 
 test("a finished Discover search with no eligible results stays empty", async () => {
@@ -880,12 +905,8 @@ test("the Connected tab lists every connection's models, by connection or by nam
   ];
   const connected = filterRows(rows, CONNECTED_TAB, "", none);
   assert.deepEqual(
-    sortConnectedRows(connected, "provider").map((r) => r.key),
+    sortConnectedRows(connected).map((r) => r.key),
     ["claude-haiku", "claude-opus", "gpt-5"],
-  );
-  assert.deepEqual(
-    sortConnectedRows(connected, "name").map((r) => r.key),
-    ["claude-haiku", "claude-opus", "gpt-5"].sort(),
   );
   // Each connection keeps its own tab too.
   assert.deepEqual(
@@ -899,6 +920,25 @@ test("the Connected tab lists every connection's models, by connection or by nam
   // Right after On Device, ahead of the maker tabs.
   assert.match(picker, /value: CONNECTED_TAB,[\s\S]{0,200}?\.\.\.makerTabs,/);
   assert.match(picker, /Only show models that fit/);
+  // A maker gets a tab only with 3+ distinct models.
+  assert.match(picker, /const MAKER_TAB_MIN_MODELS = 3;/);
+  assert.match(
+    picker,
+    /entry\.ids\.add\(row\.id\.toLowerCase\(\)\)[\s\S]{0,200}?if \(ids\.size < MAKER_TAB_MIN_MODELS\)/,
+  );
+});
+
+test("an interrupted quant counts as a variant, so the row names no quant", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const manyQuants = onDisk\.length \+ partials\.length > 1;/,
+  );
+  assert.match(picker, /const soleQuant = manyQuants \? null : wholeQuant;/);
+  // A click folds both open, as for two whole quants.
+  assert.match(picker, /if \(variantCount\(row\) > 1\) \{\s+setFoldedQuants/);
 });
 
 test("an audio pick opens the Audio page instead of loading into Chat", () => {
