@@ -200,15 +200,40 @@ export function LibraryPage() {
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
+  return <LibraryVisit key={visit} search={search} />;
+}
+
+type HoldOpenedAt = (id: string, openedAt: number | null) => void;
+
+// A visit lasts until the Library is left or restarted from Settings, across tab and folder changes.
+// Opening an item counts as activity, which Suggested ranks by: each opened item's earlier openedAt
+// is held for the visit, so the order does not change while the user browses the Library.
+function LibraryVisit({ search }: { search: LibrarySearch }) {
+  const [openedBefore, setOpenedBefore] = useState<ReadonlyMap<string, number | null>>(new Map());
+  const holdOpenedAt = useCallback<HoldOpenedAt>(
+    (id, openedAt) =>
+      setOpenedBefore((held) => (held.has(id) ? held : new Map(held).set(id, openedAt))),
+    [],
+  );
   return (
     <LibraryView
-      key={`${visit}:${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
+      key={`${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
       search={search}
+      openedBefore={openedBefore}
+      holdOpenedAt={holdOpenedAt}
     />
   );
 }
 
-function LibraryView({ search }: { search: LibrarySearch }) {
+function LibraryView({
+  search,
+  openedBefore,
+  holdOpenedAt,
+}: {
+  search: LibrarySearch;
+  openedBefore: ReadonlyMap<string, number | null>;
+  holdOpenedAt: HoldOpenedAt;
+}) {
   const t = useT();
   const navigate = useNavigate();
   const { items: allItems, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder, markOpened } =
@@ -337,8 +362,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   useEffect(() => {
     if (!folderId) setLibrarySettings({ lastTab: tab });
   }, [tab, folderId, setLibrarySettings]);
-  const openedBefore = useLibraryVisitStore((s) => s.openedBefore);
-  const holdOpenedAt = useLibraryVisitStore((s) => s.holdOpenedAt);
   const visibleItems = useMemo(() => {
     let pool = items;
     if (folderId) pool = pool.filter((item) => item.folderId === folderId);
@@ -397,8 +420,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
   const previewId = previewItem?.id ?? null;
-  // Opening an item counts as activity, which Suggested ranks by. Its earlier openedAt is held until
-  // the Library is left, so the grid does not reorder while the user is in it.
+  // Hold the earlier openedAt before markOpened replaces it.
   useEffect(() => {
     if (!previewId) return;
     const opened = useLibraryStore.getState().items.find((item) => item.id === previewId);
