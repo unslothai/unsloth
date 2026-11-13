@@ -245,3 +245,12 @@ test("no selection points at a font the cap dropped while fonts are put back", (
     assert.ok(name === null || names.includes(name), `${field}=${name} not in ${names}`);
   }
 });
+
+test("undo reverts light and dark glass strength on their own", () => {
+  const theme = parseOk(JSON.stringify(file({ glass: { material: "frosted", strength: { light: 70, dark: 60 } } })));
+  const applied = apply(BASE, theme);
+  const now = { ...BASE, palette: applied.palette, customization: applied.customization,
+    glass: { ...applied.glass, strength: { ...applied.glass.strength, dark: 25 } } };
+  const undone = planUndo(BASE, applied, now);
+  assert.deepEqual(undone.glass.strength, { light: 40, dark: 25 });
+});

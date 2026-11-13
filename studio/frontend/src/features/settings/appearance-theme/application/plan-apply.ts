@@ -181,6 +181,10 @@ export function planUndo(
   for (const key of Object.keys(now.glass) as (keyof AppearanceSnapshot["glass"])[]) {
     glass[key] = revert(before.glass[key], applied.glass[key], now.glass[key]);
   }
+  glass.strength = {
+    light: revert(before.glass.strength.light, applied.glass.strength.light, now.glass.strength.light),
+    dark: revert(before.glass.strength.dark, applied.glass.strength.dark, now.glass.strength.dark),
+  };
   const reverted = sanitizeCustomization(customization);
   // Every imported name seen, so a restored selection whose font was since deleted is cleared.
   const knownNames = new Set(
