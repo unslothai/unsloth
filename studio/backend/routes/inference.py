@@ -8553,6 +8553,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
+        npu_context_fit = None,
         speaks = False,
         mlx_kv_quant = None,
         mlx_kv_quant_requested = None,
@@ -18890,7 +18891,9 @@ def _npu_load_response(resident, status: str) -> LoadResponse:
         is_vision = model.vision,
         inference = load_inference_config(model.id),
         context_length = resident.context_length,
-        max_context_length = model.max_context_length,
+        # The free-RAM estimate where one was made, as llama.cpp reports its fit.
+        max_context_length = resident.max_context_length,
+        npu_context_fit = resident.fitted_context_length,
         native_context_length = model.max_context_length,
         context_length_enforced = True,
         context_length_fitted = None,
@@ -22759,7 +22762,8 @@ async def _slot_status(current_subject: str):
                 inference = load_inference_config(_npu_model.id),
                 context_length = _npu_resident.context_length,
                 requested_context_length = _npu_resident.requested_context_length,
-                max_context_length = _npu_model.max_context_length,
+                max_context_length = _npu_resident.max_context_length,
+                npu_context_fit = _npu_resident.fitted_context_length,
                 native_context_length = _npu_model.max_context_length,
                 context_length_enforced = True,
                 context_length_fitted = None,
