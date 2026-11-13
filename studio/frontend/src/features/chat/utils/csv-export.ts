@@ -12,5 +12,4 @@ export function csvDocument(lines: string[]): string {
   return "\ufeff" + lines.join("\n");
 }
 
-// Combined exports of several chats; single-chat CSVs stay "role,content".
 export const COMBINED_CSV_HEADER = "chat,title,role,content";

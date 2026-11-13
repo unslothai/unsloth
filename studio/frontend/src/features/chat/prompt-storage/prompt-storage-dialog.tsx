@@ -805,7 +805,6 @@ function csvMessageRows(messages: MessageRecord[]): string[] {
   return rows;
 }
 
-/** Several chats in one CSV: a leading chat number and title keep them apart on import. */
 async function combinedConversationsCsv(threadIds: string[]): Promise<string | null> {
   const rows: string[] = [];
   let chat = 0;
