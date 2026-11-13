@@ -26,7 +26,11 @@ export const useQ4nxExportStore = create<{
   settings: Q4nxExportSettings | null;
 }>(() => ({ settings: null }));
 
+// Bumped by each save, so a read that started before it cannot overwrite its answer.
+let saves = 0;
+
 export async function loadQ4nxExportSettings(): Promise<Q4nxExportSettings> {
+  const started = saves;
   const res = await authFetch("/api/settings/q4nx-export");
   if (!res.ok) {
     throw new Error(
@@ -34,6 +38,9 @@ export async function loadQ4nxExportSettings(): Promise<Q4nxExportSettings> {
     );
   }
   const settings = fromApi(await res.json());
+  if (started !== saves) {
+    return useQ4nxExportStore.getState().settings ?? settings;
+  }
   useQ4nxExportStore.setState({ settings });
   return settings;
 }
@@ -41,6 +48,7 @@ export async function loadQ4nxExportSettings(): Promise<Q4nxExportSettings> {
 export async function updateQ4nxExportSettings(
   enabled: boolean,
 ): Promise<Q4nxExportSettings> {
+  saves += 1;
   const res = await authFetch("/api/settings/q4nx-export", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
