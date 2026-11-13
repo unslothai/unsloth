@@ -52,7 +52,6 @@ _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 # Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
 # limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
 _FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
-# lemond's console format: "<date> <time> [Error] (Router) <message>".
 _LEMOND_ERROR = re.compile(r"\[(?:Error|Fatal)\]\s*\([^)]*\)\s*(.+)")
 # FastFlowLM failures a user can act on, by what flm or lemond prints. First match wins.
 _FLM_ADVICE = (
@@ -492,7 +491,6 @@ class LemonadeNpuBackend:
             cache_dir = self.root / "cache",
             config_dir = self.root / "config",
             flm_model_dir = self._flm_model_dir,
-            # The studio home's logs dir, where Settings > Logs looks.
             log_dir = self.root.parent / "logs" / "lemonade",
         )
 
@@ -790,6 +788,7 @@ class LemonadeNpuBackend:
             with self._commit_lock:
                 self._load_cancelled.clear()
                 self._loading = model_id
+            window = None
             replaced = False
             loaded = False
             try:
@@ -841,7 +840,8 @@ class LemonadeNpuBackend:
                 return model
             except LemonadeUnavailable as exc:
                 self._raise_if_load_cancelled(model_id)
-                raise NpuError(f"Loading {model_id} failed: {exc}") from exc
+                reason = self.explain_failure(window, str(exc))
+                raise NpuError(f"Loading {model_id} failed: {reason}") from exc
             finally:
                 self._loading = None
                 if replaced and not loaded and self._server is not None:
@@ -906,13 +906,16 @@ class LemonadeNpuBackend:
                     server.stop()
             return loaded.model.model_path
 
-    def output_mark(self) -> Optional[OutputWindow]:
+    def output_mark(self, upstream: ManagedUpstream) -> Optional[OutputWindow]:
         server = self._server
-        return server.open_window() if server is not None else None
+        # Each daemon start gets a fresh key. A restart after routing must not claim this chat.
+        if server is None or server.api_key != upstream.api_key:
+            return None
+        return server.open_window()
 
     def explain_failure(self, window: Optional[OutputWindow], message: str) -> str:
         """An NPU chat error ``message`` with the reason lemond printed in ``window``."""
-        return _explain(self._server, window, message)
+        return _explain(window.server, window, message) if window is not None else message
 
     def upstream(self) -> ManagedUpstream:
         # Lock-free: a chat must not wait behind an enable() or delete() holding the lock.

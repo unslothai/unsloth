@@ -16,7 +16,7 @@ import threading
 import time
 import weakref
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Optional
 
@@ -65,9 +65,8 @@ _PORT_TAKEN = re.compile(
 )
 
 
-# lemond's console format, "<date> <time> [Info] (Router) <message>". It relays a backend's own
-# stdout and stderr under the tag Process.
-# Matched from the start of the line: chat content can carry the same text further in.
+# lemond's "<date> <time> [Info] (Router) <message>"; backend output is tagged Process. Anchored:
+# chat content can carry the same text further in.
 _LEMOND_LINE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \[(\w+)\] \(([^)]*)\) ")
 # lemond's own line once /internal/set has taken effect.
 _BACK_AT_INFO = re.compile(r"Logging configuration updated \(level=info\b")
@@ -87,9 +86,10 @@ def _kill_with_the_parent() -> None:
 
 
 class OutputWindow:
-    __slots__ = ("start", "shared", "__weakref__")
+    __slots__ = ("server", "start", "shared", "__weakref__")
 
-    def __init__(self, start: int) -> None:
+    def __init__(self, server: LemonadeServer, start: int) -> None:
+        self.server = server
         self.start = start
         self.shared = False
 
@@ -105,7 +105,6 @@ class LemonadeServer:
         log_dir: Optional[Path] = None,
     ) -> None:
         self.binary = Path(binary)
-        # One file per lemond start, listed in Settings > Logs; None keeps output in memory only.
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self.log_path: Optional[Path] = None
         self._log_file = None
@@ -154,13 +153,23 @@ class LemonadeServer:
         another request's is ``shared`` and its output can't be pinned on either. Released when
         the caller drops it."""
         with self._tail_lock:
-            window = OutputWindow(self._lines_seen)
+            window = OutputWindow(self, self._lines_seen)
             others = list(self._windows)
             for other in others:
                 other.shared = True
             window.shared = bool(others)
             self._windows.add(window)
         return window
+
+    @contextmanager
+    def _other_operation(self):
+        """Keep overlapping loads and chats from claiming this operation's console output."""
+        window = self.open_window()
+        try:
+            yield
+        finally:
+            with self._tail_lock:
+                self._windows.discard(window)
 
     def output_since(
         self,
@@ -313,6 +322,8 @@ class LemonadeServer:
         port = self._find_free_port()
         api_key = secrets.token_urlsafe(32)
         env = child_env_without_native_path_secret()
+        # Lemonade CI mode forces debug even when config.json specifies info.
+        env.pop("LEMONADE_CI_MODE", None)
         env["LEMONADE_API_KEY"] = api_key
         env["FLM_MODEL_PATH"] = str(self.flm_model_dir)
         env["FLM_DISABLE_UPDATE_CHECK"] = "1"
@@ -361,7 +372,6 @@ class LemonadeServer:
                 self._kill_locked()
                 raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
         except BaseException:
-            # No drain thread will close it.
             self._close_log_file(log_file)
             raise
         self._drain_thread = threading.Thread(
@@ -384,9 +394,12 @@ class LemonadeServer:
         try:
             self.log_dir.mkdir(parents = True, exist_ok = True)
             path = self.log_dir / f"lemonade-{int(time.time())}-port-{port}.log"
-            handle = open(path, "w", encoding = "utf-8", buffering = 1)
+            # Append: a restart in the same second on the same port reuses the name.
+            handle = open(path, "a", encoding = "utf-8", buffering = 1)
         except OSError as exc:
             logger.warning("Could not open a Lemonade log file: %s", exc)
+            with self._log_lock:
+                self.log_path = None
             return None
         # After the open, so the cap counts this file and can never delete it.
         prune_log_dir(self.log_dir, "lemonade-*.log", protect = path)
@@ -475,19 +488,27 @@ class LemonadeServer:
         if not self.is_alive():
             raise LemonadeUnavailable("Lemonade is not running.")
         try:
-            return self._client.request(
-                method,
-                f"{self.base_url}{path}",
-                json = json_body,
-                headers = self.headers(),
-                timeout = timeout,
+            # The load owns its window; of the reads only a catalog listing makes lemond print.
+            other = path != "/v1/load" and (
+                method == "POST" or path.partition("?")[0] == "/v1/models"
             )
+            with self._other_operation() if other else nullcontext():
+                return self._client.request(
+                    method,
+                    f"{self.base_url}{path}",
+                    json = json_body,
+                    headers = self.headers(),
+                    timeout = timeout,
+                )
         except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as exc:
-            detail = (
-                "" if self.is_alive() else f" (process exited). Last output:\n{self.log_tail()}"
-            )
+            detail = ""
+            if not self.is_alive():
+                detail = " (process exited)"
+                if path != "/v1/load":
+                    detail += f". Last output:\n{self.log_tail()}"
             raise LemonadeUnavailable(f"Lemonade request {path} failed: {exc}{detail}") from exc
 
+    @contextmanager
     def stream(
         self,
         method: str,
@@ -499,13 +520,17 @@ class LemonadeServer:
         """``httpx.Client.stream`` against lemond, for server-sent progress."""
         if not self.is_alive():
             raise LemonadeUnavailable("Lemonade is not running.")
-        return self._client.stream(
-            method,
-            f"{self.base_url}{path}",
-            json = json_body,
-            headers = self.headers(),
-            timeout = httpx.Timeout(timeout, connect = 10.0, read = timeout),
-        )
+        with (
+            self._other_operation(),
+            self._client.stream(
+                method,
+                f"{self.base_url}{path}",
+                json = json_body,
+                headers = self.headers(),
+                timeout = httpx.Timeout(timeout, connect = 10.0, read = timeout),
+            ) as response,
+        ):
+            yield response
 
     def stop(self) -> None:
         """Unload, then stop lemond and every process under it. Idempotent."""
@@ -513,12 +538,7 @@ class LemonadeServer:
         with self._lock:
             if self.is_alive():
                 try:
-                    self._client.post(
-                        f"{self.base_url}/v1/unload",
-                        json = {},
-                        headers = self.headers(),
-                        timeout = 10.0,
-                    )
+                    self.request("POST", "/v1/unload", json_body = {}, timeout = 10.0)
                 except Exception:  # noqa: BLE001 -- the kill below still runs
                     pass
             self._kill_locked()

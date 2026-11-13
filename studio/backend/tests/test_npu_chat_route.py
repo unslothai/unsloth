@@ -180,7 +180,7 @@ class _FakeNpu:
     def upstream(self):
         return self._upstream
 
-    def output_mark(self) -> int:
+    def output_mark(self, upstream) -> int:
         self.marks += 1
         return 0
 
@@ -575,6 +575,7 @@ def test_a_failed_npu_chat_names_the_reason_lemonade_printed(flm, monkeypatch, t
         SimpleNamespace(stdout = ["2026-11-11 04:19:00.000 [Info] (Server) started on port 1\n"])
     )
     backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    server.api_key = upstream.api_key
     backend._server = server
     monkeypatch.setattr(backend, "upstream", lambda: upstream)
     monkeypatch.setattr(nb, "get_npu_backend", lambda: backend)
