@@ -995,7 +995,7 @@ def test_the_shim_never_loads_a_chat_planted_stdlib_module(monkeypatch, tmp_path
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_an_approved_host_access_call_imports_the_chats_editable_installs(monkeypatch, tmp_path):
-    """Path-line and setuptools-finder editables in the chat folder load in a host-access call too."""
+    """A path-line editable in the chat folder loads in a host-access call; setuptools finders stay inert there."""
     workdir = tmp_path / "chat"
     site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
     site_dir.mkdir(parents = True)
@@ -1017,15 +1017,17 @@ def test_an_approved_host_access_call_imports_the_chats_editable_installs(monkey
         (site_dir / f"{finder}.py").write_text(f"MAPPING = {mapping!r}\nNAMESPACES = {{}}\n")
         names.append("chat_flat_editable")
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
-    code = "; ".join(f"import {n}; print({n}.__file__)" for n in names)
+    code = "import sys, chat_path_editable; print(chat_path_editable.__file__); print(sys.path)"
+    if len(names) == 2:
+        code += "; import importlib.util as u; print(u.find_spec('chat_flat_editable'))"
     command = f'ls /srv/pr-approved >/dev/null 2>&1; python -c "{code}"'
     out = tools._bash_exec(
         command, None, 60, _SESSION, tool_execution_mode = "auto", host_access_approved = True
     )
     assert "user_approved_host_access" in tools._last_tool_execution_record.limitations
     assert str(tmp_path / "src" / "chat_path_editable.py") in out, out
-    if len(names) == 2:
-        assert str(tmp_path / "flat" / "__init__.py") in out, out
+    # A finder would sit outside the host finder's package boundary and plant a path-hook entry on sys.path.
+    assert str(tmp_path / "flat") not in out, out
 
 
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):

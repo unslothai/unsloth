@@ -521,7 +521,7 @@ def _read_pth_files(entries, on_sys_path = True):
             except Exception:  # noqa: BLE001
                 continue
     installed = []
-    if finders:
+    if finders and on_sys_path:
         # The helpers they import (ast, sysconfig, pathlib, ...) come from the stdlib, never a chat-planted copy.
         saved = sys.path[:]
         sys.path[:] = [e for e in saved if e not in entries]
@@ -655,7 +655,8 @@ _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
 if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.meta_path):
     _folders = [f for f in _host_packages.split(os.pathsep) if f]
     try:
-        # Editable installs there too, still only as a last resort: path lines join the finder's folders.
+        # Path-line editables there too, behind the host finder's own boundaries; setuptools' finders would
+        # register outside them, so those stay unsupported in host-access calls.
         _folders += _read_pth_files(_folders, on_sys_path = False)[0]
     except Exception:  # noqa: BLE001
         pass
