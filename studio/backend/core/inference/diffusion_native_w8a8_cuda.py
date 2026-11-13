@@ -475,7 +475,6 @@ def candidates(transformer: Any) -> int:
         return 0
 
 
-# ---------------------------------------------------------------- fused-dequant GEMM with the native epilogue
 NATIVE_GEMM_ENV = "UNSLOTH_NATIVE_INT8_GEMM"
 _GEMM_OP = "native_cuda_i8mm"
 # (M, N, K, bias): ragged M / N tails, K one / several tiles, the tie operands below
@@ -907,7 +906,6 @@ def share_rotq(graph: Any) -> int:
     return merged
 
 
-# ---------------------------------------------------------------- post-grad folds into the fused kernels
 def _fn(node: Any, *targets: Any) -> bool:
     return getattr(node, "op", None) == "call_function" and node.target in targets
 

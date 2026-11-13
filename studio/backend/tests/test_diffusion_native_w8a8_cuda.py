@@ -131,22 +131,18 @@ def test_gate(cr, monkeypatch):
     cr._STATE["op"] = object()
     cr._STATE["on"] = {0: True}
     assert m._cuda_rotq_on(_fake_x())
-    # card not probed, other card, no op handle
     assert not m._cuda_rotq_on(_fake_x(device = types.SimpleNamespace(index = 1)))
     cr._STATE["op"] = None
     assert not m._cuda_rotq_on(_fake_x())
     cr._STATE["op"] = object()
-    # fp16 / fp32 activations, CPU, an input that needs a gradient
     assert not m._cuda_rotq_on(_fake_x(dtype = torch.float16))
     assert not m._cuda_rotq_on(_fake_x(dtype = torch.float32))
     assert not m._cuda_rotq_on(_fake_x(is_cuda = False))
     with torch.enable_grad():
         assert not m._cuda_rotq_on(_fake_x(requires_grad = True))
-    # too few rows for _int_mm
     small = _fake_x()
     small.numel = lambda: 8 * 512
     assert not m._cuda_rotq_on(small)
-    # eager: never
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: False)
     assert not m._cuda_rotq_on(_fake_x())
 
@@ -413,7 +409,6 @@ def test_gemm_kernel_native_flag(monkeypatch):
     assert seen["NATIVE"] is False
 
 
-# ---------------------------------------------------------------- folds (GELU / residual epilogues, norm prologue)
 def _fold_block(cr):
     """A post-grad-like aten graph (make_fx with Inductor's decompositions) of an LTX-2.5 style sublayer pair: RMSNorm +
     AdaLN into a quant, the fused GEMM, tanh GELU into a quant, the GEMM, gated residual."""
