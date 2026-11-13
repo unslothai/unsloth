@@ -6860,8 +6860,19 @@ function reapplyShownLink(): void {
   if (state.activePreset !== linkShown || !state.settingsHydrated) return;
   const preset = getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
   if (preset?.name !== linkShown) return;
-  state.setParams(linkedParams(state.params, preset), { persist: false });
-  linkValues = getPresetOwnedParams(useChatRuntimeStore.getState().params);
+  // Only what a chat restore displaces: the chat's own keys. Max Tokens and the like keep any edit.
+  const linked = linkedParams(state.params, preset);
+  const chatKeys = Object.fromEntries(
+    THREAD_SCOPED_PARAM_KEYS.map((key) => [key, linked[key]]),
+  ) as Partial<InferenceParams>;
+  state.setParams({ ...state.params, ...chatKeys }, { persist: false });
+  const owned = getPresetOwnedParams(useChatRuntimeStore.getState().params);
+  linkValues = {
+    ...(linkValues ?? owned),
+    ...Object.fromEntries(
+      THREAD_SCOPED_PARAM_KEYS.map((key) => [key, owned[key as keyof typeof owned]]),
+    ),
+  };
 }
 
 /** A chat write still waiting on its debounce reads live values when it fires: take them now,

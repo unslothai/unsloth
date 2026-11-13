@@ -762,6 +762,26 @@ test("a chat's settings landing after the link go under it", async () => {
   }
 });
 
+test("opening another chat on a linked model keeps a Max Tokens edit", async () => {
+  const store = useChatRuntimeStore.getState();
+  await switchTo(QWEN);
+  const s = useChatRuntimeStore.getState();
+  s.setParams({ ...s.params, maxTokens: 4096 });
+  await settled();
+  store.setActiveThreadId("chat-m");
+  store.applyThreadScopedSettings("chat-m", { temperature: 0.4 });
+  try {
+    assert.equal(useChatRuntimeStore.getState().params.maxTokens, 4096);
+    assert.equal(live().temperature, 0.2);
+    loadOrPoll(QWEN);
+    await Promise.resolve();
+    assert.equal(useChatRuntimeStore.getState().params.maxTokens, 4096);
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+  }
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);
