@@ -116,6 +116,19 @@ async function isPasswordChangeRequiredResponse(
   }
 }
 
+// A `?q=` chat whose stored token was stale: its text goes through sign-in as the route guards' does.
+// Slot names are composer-draft.ts's (pinned by chat-query-link.test.ts).
+function pendingQuerySearch(): string {
+  try {
+    const nonce = new URLSearchParams(window.location.search).get("new");
+    if (!nonce?.startsWith("query-")) return "";
+    const text = window.sessionStorage.getItem(`chat-draft:${nonce}`);
+    return text?.trim() ? `?q=${encodeURIComponent(text)}` : "";
+  } catch {
+    return "";
+  }
+}
+
 async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
   if (isRedirecting) return;
   isRedirecting = true;
@@ -146,7 +159,7 @@ async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
     isRedirecting = false;
     return;
   }
-  window.location.href = target;
+  window.location.href = target + pendingQuerySearch();
 }
 
 /** Copy shown when the backend really is unreachable and the launcher agrees. */
