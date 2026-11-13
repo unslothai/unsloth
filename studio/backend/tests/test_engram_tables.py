@@ -72,9 +72,15 @@ def _qwen_listing() -> list[tuple[str, int]]:
     return files
 
 
-def _gguf(tensors: list[tuple[str, list[int], int]], arch: str | None = None) -> bytes:
+def _gguf(
+    tensors: list[tuple[str, list[int], int]],
+    arch: str | None = None,
+    split_tensors: int | None = None,
+) -> bytes:
     kv: list[tuple[str, object]] = [("general.architecture", arch)] if arch else []
     kv += [("split.no", 0)]
+    if split_tensors is not None:
+        kv += [("split.tensors.count", (5, "<i", split_tensors))]
     buf = io.BytesIO()
     buf.write(b"GGUF")
     buf.write(struct.pack("<IQQ", 3, len(tensors), len(kv)))
@@ -84,6 +90,8 @@ def _gguf(tensors: list[tuple[str, list[int], int]], arch: str | None = None) ->
         if isinstance(value, str):
             data = value.encode()
             buf.write(struct.pack("<IQ", 8, len(data)) + data)
+        elif isinstance(value, tuple):
+            buf.write(struct.pack("<I", value[0]) + struct.pack(value[1], value[2]))
         else:
             buf.write(struct.pack("<IH", 2, value))
     offset = 0
@@ -276,9 +284,11 @@ class TestResolveSwap:
             _table_name("Q5_1"),
         ):
             _write(snap / name, b"x")
+        import hub.utils.gguf_sources as gs
         import utils.models.model_config as mc
 
         monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo, *a, **k: [snap])
+        monkeypatch.setattr(gs, "gguf_cache_snapshots", lambda repo: [])
         swap = lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "Q5_1")
         # The one absent shard is the one llama.cpp tolerates missing.
         assert swap.bundled_shard == "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00003-of-00003.gguf"
@@ -658,16 +668,35 @@ class TestManualQaFindings:
             assert "Xet is turned off" in reason and "54.4GB" in reason
 
 
+def _swapped_snapshot(
+    tmp_path: Path,
+    *,
+    absent: int,
+    table: bool = True,
+):
+    """UD-IQ1_S as a --ple download leaves it: shard ``absent`` missing (3 holds the table)."""
+    snap = tmp_path / "models--unsloth--Qwen3.8-Flash-Next-GGUF" / "snapshots" / "abc"
+    names = [n for n, _ in _qwen_listing() if n.startswith("UD-IQ1_S/")]
+    shards = [
+        _gguf([("token_embd.weight", [8, 8], F16)], "qwen4exp", split_tensors = 4),
+        _gguf([("blk.0.attn_q.weight", [8, 8], F16), ("blk.0.attn_k.weight", [8, 8], F16)]),
+        _gguf([(PLE, [160, 1024], IQ4_NL)]),
+    ]
+    for index, (name, data) in enumerate(zip(names, shards), start = 1):
+        if index != absent:
+            _write(snap / name, data)
+    if table:
+        _write(snap / _table_name("Q5_1"), _gguf([(PLE, [160, 1024], Q8_0)]))
+    return snap, names
+
+
 class TestCachedQuantLoads:
     def test_offline_a_quant_missing_its_table_shard_resolves_to_its_split_names(
         self, monkeypatch, tmp_path
     ):
         import huggingface_hub
 
-        snap = tmp_path / "snapshots" / "abc"
-        names = [n for n, _ in _qwen_listing() if n.startswith("UD-IQ1_S/")]
-        for name in (*names[:2], _table_name("Q5_1")):
-            _write(snap / name, b"x")
+        snap, names = _swapped_snapshot(tmp_path, absent = 3)
         import utils.models.model_config as mc
 
         monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo, *a, **k: [snap])
@@ -710,3 +739,61 @@ class TestCachedQuantLoads:
         assert seen["repo"] == REPO
         assert cmd[cmd.index("--ple") + 1] == table
         assert backend._engram_precision == "Q5_1"
+
+    @pytest.mark.parametrize(
+        "absent, table, complete",
+        [(3, True, True), (2, True, False), (3, False, False), (0, False, True)],
+    )
+    def test_the_local_index_serves_a_quant_missing_only_its_table_shard(
+        self, tmp_path, absent, table, complete
+    ):
+        from hub.utils.inventory_scan import _completed_gguf_variants
+        snap, _ = _swapped_snapshot(tmp_path, absent = absent, table = table)
+        assert ("UD-IQ1_S" in _completed_gguf_variants(snap)) is complete
+
+    def test_offline_tables_are_found_in_a_remembered_cache_root(self, monkeypatch, tmp_path):
+        import huggingface_hub
+        import hub.utils.gguf_sources as gs
+        import utils.models.model_config as mc
+
+        snap, names = _swapped_snapshot(tmp_path, absent = 3)
+        monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo, *a, **k: [])
+        monkeypatch.setattr(gs, "gguf_cache_snapshots", lambda repo: [snap])
+
+        def offline(*a, **k):
+            raise OSError("no route to host")
+
+        monkeypatch.setattr(huggingface_hub, "list_repo_files", offline)
+        monkeypatch.setattr(huggingface_hub.HfApi, "model_info", offline)
+        swap = lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "Q5_1")
+        assert swap.table.precision == "Q5_1" and swap.bundled_shard == names[2]
+
+    @pytest.mark.parametrize("requested, resumes", [("Q5_1", True), ("Q8_0", False), (None, False)])
+    def test_without_metadata_the_worker_resumes_only_the_same_table(
+        self, monkeypatch, requested, resumes
+    ):
+        from hub.utils import download_manifest as dm
+        from hub.utils.download_manifest import ExpectedFile
+        from hub.workers import hf_download as w
+
+        def unavailable(*a, **k):
+            raise RuntimeError("Hub unreachable")
+
+        recorded = [n for n, _ in _qwen_listing() if n.startswith("UD-IQ1_S/")][:2]
+        manifest = SimpleNamespace(
+            expected_files = [ExpectedFile(n, 1) for n in (*recorded, _table_name("Q5_1"))],
+            metadata_derived = False,
+            commit_hash = None,
+        )
+        monkeypatch.setattr(w, "_gguf_variant_target_plan", unavailable)
+        monkeypatch.setattr(dm, "read_manifest", lambda *a, **k: manifest)
+
+        class _Resumed(Exception):
+            pass
+
+        def resumed(*a, **k):
+            raise _Resumed()
+
+        monkeypatch.setattr(dm, "write_manifest", resumed)
+        with pytest.raises(_Resumed if resumes else SystemExit):
+            w._download_gguf_variant(REPO, "UD-IQ1_S", None, "http", engram_precision = requested)

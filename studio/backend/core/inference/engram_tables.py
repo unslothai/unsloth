@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -64,6 +65,46 @@ def cached_engram_tables(snapshot: Path) -> list[Path]:
         for entry in entries
         if engram_table_precision(f"{ENGRAM_FOLDER}/{entry.name}") and entry.is_file()
     ]
+
+
+def _gguf_counts(path: Path, *, split_total: bool) -> Optional[int]:
+    """The tensor count of a GGUF header, or with ``split_total`` its split.tensors.count."""
+    from utils.models.gguf_metadata import _FIXED_VTYPE_SIZES, _skip_gguf_value
+
+    ints = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 10: "<Q", 11: "<q"}
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24 or head[:4] != b"GGUF":
+                return None
+            _, n_tensors, n_kv = struct.unpack_from("<IQQ", head, 4)
+            if not split_total:
+                return n_tensors
+            for _ in range(n_kv):
+                (key_len,) = struct.unpack("<Q", f.read(8))
+                key = f.read(key_len)
+                (vtype,) = struct.unpack("<I", f.read(4))
+                if key == b"split.tensors.count" and vtype in ints:
+                    return struct.unpack(ints[vtype], f.read(_FIXED_VTYPE_SIZES[vtype]))[0]
+                if not _skip_gguf_value(f, vtype):
+                    return None
+    except (OSError, struct.error):
+        return None
+    return None
+
+
+def table_shard_skipped(present: Sequence[Path], total: int) -> bool:
+    """Whether a Hub-cache split set with one shard absent loads with a cached standalone table:
+    ``present`` (shard 1 first) is ``total - 1`` shards one tensor short of split.tensors.count,
+    the gap llama.cpp fills from --ple. A shard cut off mid-download leaves more than one."""
+    if total < 2 or len(present) != total - 1:
+        return False
+    root = next((p for p in Path(present[0]).parents if p.parent.name == "snapshots"), None)
+    if root is None or not cached_engram_tables(root):
+        return False
+    expected = _gguf_counts(present[0], split_total = True)
+    counts = [_gguf_counts(path, split_total = False) for path in present]
+    return expected is not None and None not in counts and sum(counts) == expected - 1
 
 
 def find_engram_table(

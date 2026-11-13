@@ -3508,12 +3508,12 @@ def _cached_variant_resolution(repo_id: str, hf_variant: str) -> tuple[Optional[
 def _cached_engram_split_resolution(
     repo_id: str, hf_variant: str
 ) -> tuple[Optional[str], list[str]]:
-    """A split set one non-first shard short beside a cached standalone Engram table: the quant's
-    own table shard, which a --ple download does not fetch. Every shard name, the absent one too."""
+    """A split set short of the quant's own table shard, which a --ple download does not fetch
+    (see table_shard_skipped). Every shard name, the absent one too."""
+    from core.inference.engram_tables import table_shard_skipped
+
     try:
         for snap in _cached_gguf_snapshots(repo_id):
-            if not cached_engram_tables(snap):
-                continue
             matches = _gguf_files_for_variant(_gguf_snapshot_files(snap), hf_variant)
             split = _SHARD_FULL_RE.match(matches[0]) if matches else None
             if split is None:
@@ -3522,7 +3522,8 @@ def _cached_engram_split_resolution(
                 f"{split.group(1)}-{index:05d}-of-{split.group(3)}.gguf"
                 for index in range(1, int(split.group(3)) + 1)
             ]
-            if names[0] == matches[0] and len(set(names) - set(matches)) == 1:
+            present = [snap.joinpath(*name.split("/")) for name in names if name in matches]
+            if names[0] == matches[0] and table_shard_skipped(present, len(names)):
                 return names[0], names[1:]
     except Exception as e:
         logger.debug("Engram split lookup failed for %s: %s", repo_id, e)
@@ -4153,10 +4154,9 @@ def _engram_table_unfetchable_reason(hf_repo: str, table: EngramTable) -> Option
 
 def _cached_engram_listing(hf_repo: str, split: list[str]) -> dict[str, int]:
     """Sizes of the cached split shards and Engram tables, for a load with no Hub listing."""
-    from utils.models.model_config import _iter_hf_cache_snapshots
-
     sizes: dict[str, int] = {}
-    for snapshot in _iter_hf_cache_snapshots(hf_repo):
+    # The same snapshots, remembered cache roots included, that resolved ``split`` offline.
+    for snapshot in _cached_gguf_snapshots(hf_repo):
         names = split + [
             f"{ENGRAM_FOLDER}/{entry.name}" for entry in cached_engram_tables(snapshot)
         ]

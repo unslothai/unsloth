@@ -1127,6 +1127,18 @@ def _download_gguf_variant(
                 file = sys.stderr,
             )
             sys.exit(1)
+        from core.inference.engram_tables import engram_table_precision
+
+        recorded = {engram_table_precision(f.path) for f in manifest.expected_files} - {None}
+        if {p.upper() for p in recorded} != (
+            {engram_precision.upper()} if engram_precision else set()
+        ):
+            print(
+                f"Metadata unavailable and the existing manifest for GGUF variant '{variant}' of "
+                f"{repo_id} fetches a different Engram table; retry when metadata is available.",
+                file = sys.stderr,
+            )
+            sys.exit(1)
         plan = plan_from_expected_files(variant, manifest.expected_files)
         if manifest.metadata_derived:
             commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
