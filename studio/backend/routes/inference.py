@@ -29047,7 +29047,6 @@ def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[d
     ):
         last = {**fitted[-1], "content": kept + new[len(old) :]}
     elif isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old:
-        # A multipart turn gains parts; keep the fitted copy's recall text in front of them.
         parts = kept if isinstance(kept, list) else [{"type": "text", "text": kept or ""}]
         last = {**fitted[-1], "content": parts + new[len(old) :]}
     else:
@@ -29154,7 +29153,6 @@ def _fit_external_context(
         )
     # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
-    # A controller re-prompt is not the user's turn: anchor the branch's own, as the GGUF loop does.
     fitted, truncation = _fit_with_instruction_pins(
         messages,
         anchor_ids = _active_turn_anchors(messages, branch) if can_reset or replays_manual else None,
