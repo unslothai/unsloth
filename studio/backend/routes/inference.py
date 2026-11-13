@@ -33116,6 +33116,7 @@ async def produce_openai_chat_completions(
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
+                    _passes_completion = 0
                     approval_flush_pending = False
 
                     def _release_held_mention():
@@ -33282,6 +33283,19 @@ async def produce_openai_chat_completions(
                             continue
 
                         if event["type"] == "context_usage":
+                            # A run stopped at the next approval wait still settles this pass's usage.
+                            _passes_completion += int(event.get("completion_tokens") or 0)
+                            _pass_prompt = int(event.get("prompt_tokens") or 0)
+                            _monitor_usage(
+                                monitor_id,
+                                {
+                                    "prompt_tokens": _pass_prompt,
+                                    "completion_tokens": _passes_completion,
+                                    "total_tokens": _pass_prompt + _passes_completion,
+                                    "context_tokens": event.get("context_tokens"),
+                                },
+                                _monitor_context_length(),
+                            )
                             # Must not reach the content branch below: its empty text resets prev_text.
                             if _ui_events:
                                 yield f"data: {json.dumps(event)}\n\n"

@@ -119,6 +119,29 @@ def test_rewriting_a_reply_does_not_shrink_its_count():
     assert _pools()["combined"]["used"] == 500
 
 
+def test_a_reported_count_replaces_an_earlier_estimate():
+    now = _now_ms()
+    _thread("t1", now)
+    for metadata in (
+        {"resumeTiming": {"tokenCount": 400}},
+        {"contextUsage": {"promptTokens": 50, "completionTokens": 300, "totalTokens": 350}},
+        {"resumeTiming": {"tokenCount": 900}},
+    ):
+        studio_db.upsert_chat_message(
+            {
+                "id": "a1",
+                "threadId": "t1",
+                "role": "assistant",
+                "createdAt": now + 1,
+                "content": [{"type": "text", "text": "answer"}],
+                "metadata": metadata,
+            }
+        )
+    _enable(limit = 10_000)
+    # The estimate gives way to the report; a later estimate cannot raise it again.
+    assert _pools()["combined"]["used"] == 350
+
+
 def test_settings_reads_stay_fresh_across_keeper_lifetimes():
     import json
 

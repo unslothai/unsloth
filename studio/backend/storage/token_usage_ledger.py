@@ -37,6 +37,8 @@ def _usage_columns(row: str) -> str:
              ELSE {timing_completion} END AS completion_tokens,
         {_count(row, "$.contextUsage.totalTokens")} AS reported_total,
         NULLIF({_count(row, "$.contextUsage.contextTokens")}, 0) AS context_tokens,
+        CASE WHEN {usage_prompt} + {usage_completion} + {server_completion} + {server_prompt} > 0
+             THEN 0 ELSE 1 END AS estimated,
         CASE WHEN COALESCE(json_extract({row}, '$.responseDetails.providerType'),
                            json_extract({row}, '$.tokenUsageProvider'), 'local')
                   IN ('local', '') THEN 'local' ELSE 'external' END AS source
@@ -48,12 +50,13 @@ def _ledger_insert(message: str, rows: str = "") -> str:
     return f"""
         INSERT INTO {LEDGER_TABLE}
             (message_id, thread_id, created_at, source,
-             prompt_tokens, completion_tokens, total_tokens, context_tokens, parent_message_id)
+             prompt_tokens, completion_tokens, total_tokens, context_tokens, parent_message_id,
+             estimated)
         SELECT u.id, u.thread_id, u.created_at, u.source,
                u.prompt_tokens, u.completion_tokens,
                CASE WHEN u.reported_total > 0 THEN u.reported_total
                     ELSE u.prompt_tokens + u.completion_tokens END, u.context_tokens,
-               u.parent_message_id
+               u.parent_message_id, u.estimated
         FROM (
             SELECT {message}.id AS id, {message}.thread_id AS thread_id,
                    {message}.created_at AS created_at,
@@ -71,9 +74,18 @@ def _ledger_insert(message: str, rows: str = "") -> str:
           )
         ON CONFLICT(message_id) DO UPDATE SET
             source = CASE WHEN source IN ('inherited', 'api') THEN source ELSE excluded.source END,
-            prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
-            completion_tokens = MAX(completion_tokens, excluded.completion_tokens),
-            total_tokens = MAX(total_tokens, excluded.total_tokens),
+            -- A reported count replaces a text-length estimate and is never moved by one.
+            prompt_tokens = CASE WHEN estimated > excluded.estimated THEN excluded.prompt_tokens
+                WHEN estimated < excluded.estimated THEN prompt_tokens
+                ELSE MAX(prompt_tokens, excluded.prompt_tokens) END,
+            completion_tokens = CASE WHEN estimated > excluded.estimated
+                THEN excluded.completion_tokens
+                WHEN estimated < excluded.estimated THEN completion_tokens
+                ELSE MAX(completion_tokens, excluded.completion_tokens) END,
+            total_tokens = CASE WHEN estimated > excluded.estimated THEN excluded.total_tokens
+                WHEN estimated < excluded.estimated THEN total_tokens
+                ELSE MAX(total_tokens, excluded.total_tokens) END,
+            estimated = MIN(estimated, excluded.estimated),
             context_tokens = CASE WHEN EXISTS (
                 SELECT 1 FROM {LEDGER_TABLE} later
                 WHERE later.thread_id = {LEDGER_TABLE}.thread_id
@@ -105,14 +117,19 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
             completion_tokens INTEGER NOT NULL,
             total_tokens INTEGER NOT NULL,
             context_tokens INTEGER,
-            parent_message_id TEXT
+            parent_message_id TEXT,
+            estimated INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID
         """
     )
     columns = {row[1] for row in conn.execute(f"PRAGMA table_info({LEDGER_TABLE})")}
     missing = {
         name: kind
-        for name, kind in (("context_tokens", "INTEGER"), ("parent_message_id", "TEXT"))
+        for name, kind in (
+            ("context_tokens", "INTEGER"),
+            ("parent_message_id", "TEXT"),
+            ("estimated", "INTEGER NOT NULL DEFAULT 0"),
+        )
         if name not in columns
     }
     for name, column_type in missing.items():
