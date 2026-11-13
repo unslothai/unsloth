@@ -208,3 +208,98 @@ def test_routing_other_hosts_and_torchao_denoisers_are_unchanged(budget, monkeyp
     assert deferred == []
     _pipe, _applied, deferred, _waits = _route(monkeypatch, small_host = True, torchao = True)
     assert deferred == []
+
+
+def _stream_route(
+    monkeypatch,
+    *,
+    plan = (False, False),
+    leftover = 0,
+    small_host = False,
+    video = False,
+):
+    pytest.importorskip("diffusers")
+    import diffusers.hooks as hooks
+
+    applied, deferred, waits = [], [], []
+
+    def fake_apply(module, **kw):
+        applied.append(kw)
+
+    fake_apply.__signature__ = inspect.signature(hooks.apply_group_offloading)
+    monkeypatch.setattr(hooks, "apply_group_offloading", fake_apply)
+    monkeypatch.setattr(
+        dm,
+        "_apply_group_offloading_packed",
+        lambda apply, module, kw, logger: applied.append((module, kw)),
+    )
+    monkeypatch.setattr(dm, "_encoder_background_pin_wanted", lambda *a, **k: True)
+    monkeypatch.setattr(dm, "_background_pin_enabled", lambda *a, **k: True)
+    monkeypatch.setattr(dm, "_video_exact_pins", lambda *a, **k: False)
+    monkeypatch.setattr(dm, "_streamed_pin_plan", lambda *a, **k: plan)
+    monkeypatch.setattr(dm, "_streamed_pin_leftover_mib", lambda *a, **k: leftover)
+    monkeypatch.setattr(dm, "install_group_pin_wait", lambda: waits.append(1) or True)
+    monkeypatch.setattr(dm, "_pin_vision_embedding_device", lambda module: None)
+    monkeypatch.setattr(dm, "_pin_top_level_group", lambda *a, **k: True)
+    monkeypatch.setattr(dm, "install_group_prefetch", lambda *a, **k: 0)
+    monkeypatch.setattr(dm, "_keep_groups_resident", lambda *a, **k: 0)
+
+    def defer(pipe, module, device, logger, **kw):
+        deferred.append((module, kw))
+        return True
+
+    monkeypatch.setattr(dm, "_defer_pinning", defer)
+    pipe = types.SimpleNamespace()
+    pipe.transformer = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    pipe.text_encoder = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    pipe.vae = _NoMove(4, 4)
+    pipe.components = {
+        "transformer": pipe.transformer,
+        "text_encoder": pipe.text_encoder,
+        "vae": pipe.vae,
+    }
+    if small_host:
+        pipe._unsloth_small_host = {"components": {}}
+    if video:
+        dm.request_background_pins(pipe)
+    dm._apply_streaming_offload(pipe, "cuda", None)
+    # the plan-time reading only: a late cap reads the live budget again
+    monkeypatch.setattr(dm, "_streamed_pin_leftover_mib", _LEFTOVER)
+    return pipe, applied, deferred, waits
+
+
+_LEFTOVER = dm._streamed_pin_leftover_mib
+
+
+def test_streaming_route_a_plan_time_miss_pins_late_denoiser_first(budget, monkeypatch):
+    pipe, _applied, deferred, waits = _stream_route(monkeypatch)
+    assert [m for m, _kw in deferred] == [pipe.transformer, pipe.text_encoder]
+    dit, enc = deferred[0][1], deferred[1][1]
+    assert dit["skip_resident"] and dit["fast"] and callable(dit["byte_cap"])
+    assert callable(enc["byte_cap"]) and enc["fast"]
+    budget["mib"] = 2000
+    assert dit["byte_cap"]() == 2000 << 20
+    assert waits
+
+
+def test_streaming_route_kill_switches(budget, monkeypatch):
+    monkeypatch.setenv(dm.LATE_DENOISER_PIN_ENV, "0")
+    monkeypatch.setenv(dm.LATE_IMAGE_ENCODER_PIN_ENV, "0")
+    # nothing fit at plan time: both stream from their host copies, as before
+    _pipe, applied, deferred, _waits = _stream_route(monkeypatch)
+    assert deferred == []
+    # a plan-time encoder prefix: the fixed cap, as before
+    pipe, _applied, deferred, _waits = _stream_route(monkeypatch, leftover = 5)
+    assert [(m, kw["byte_cap"]) for m, kw in deferred] == [(pipe.text_encoder, 5 << 20)]
+
+
+def test_streaming_route_whole_pins_small_host_and_video_are_unchanged(budget, monkeypatch):
+    # the plan pins both whole: no late caps
+    pipe, _applied, deferred, _waits = _stream_route(monkeypatch, plan = (True, True))
+    assert [(m, kw["byte_cap"]) for m, kw in deferred] == [(pipe.text_encoder, None)]
+    # small host: the encoder keeps its memory-mapped bytes out of host RAM; the denoiser prefix still pins late
+    pipe, _applied, deferred, _waits = _stream_route(monkeypatch, small_host = True)
+    assert [m for m, _kw in deferred] == [pipe.transformer]
+    # video loads defer their own pins (request_background_pins): no late denoiser cap
+    pipe, _applied, deferred, _waits = _stream_route(monkeypatch, video = True)
+    assert all(not callable(kw.get("byte_cap")) for _m, kw in deferred)

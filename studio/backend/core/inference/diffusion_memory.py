@@ -9700,13 +9700,26 @@ def _apply_streaming_offload(
                 "free when the load returns"
             )
         encoder_left_mib = 0
+        small_host = bool(getattr(pipe, "_unsloth_small_host", None))
+        # image loads (no video background pin): a plan-time miss reads the budget again when the pinner starts,
+        # after the load has dropped its host copies; the denoiser's prefix first, then the encoders'
+        late_dits = prefetch and not defer and not pin_dits
+        late_image = False
         if encoders_defer and not pin_encoders:
             encoder_left_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_dits, onload)
-            if encoder_left_mib and logger is not None:
+            late_image = _late_image_encoder_pin_enabled(small_host)
+            if late_image and logger is not None:
+                logger.info(
+                    "diffusion.memory: streamed encoders pin the prefix of their offload groups that fits the host RAM "
+                    "free once the load has placed the denoiser (%d MiB would fit now)",
+                    encoder_left_mib,
+                )
+            elif encoder_left_mib and logger is not None:
                 logger.info(
                     "diffusion.memory: streamed encoders pin a %d MiB prefix of their offload groups in the background",
                     encoder_left_mib,
                 )
+        deferred_dits = 0
         if defer or encoders_defer:
             install_group_pin_wait()
         # pinned encoders count against the budget a torchao denoiser pins within, as on the group tier
@@ -9731,7 +9744,7 @@ def _apply_streaming_offload(
                 kwargs["record_stream"] = prefetch
             pin = pin_dits if offload_type == "block_level" else pin_encoders
             enc_defer = _encoder_defers(comp_name, module, offload_type) and (
-                pin or encoder_left_mib > 0
+                pin or late_image or encoder_left_mib > 0
             )
             if use_stream and "low_cpu_mem_usage" in params:
                 kwargs["low_cpu_mem_usage"] = not (pin and not defer and not enc_defer)
@@ -9757,10 +9770,32 @@ def _apply_streaming_offload(
                     byte_cap = _late_encoder_pin_cap(pipe, module, onload),
                 )
             elif enc_defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
-                cap = None if pin else int(encoder_left_mib) << 20
+                if pin:
+                    cap = None
+                elif late_image:
+                    cap = _late_image_encoder_pin_cap(pipe, module, onload)
+                else:
+                    cap = int(encoder_left_mib) << 20
                 _defer_pinning(pipe, module, onload, logger, fast = True, byte_cap = cap)
                 if not pin:
                     encoder_left_mib = max(0, encoder_left_mib - _module_registered_mib(module))
+            elif (
+                late_dits
+                and offload_type == "block_level"
+                and kwargs.get("use_stream")
+                and kwargs.get("low_cpu_mem_usage")
+                and _late_denoiser_pin_enabled(module, True)
+                and _defer_pinning(
+                    pipe,
+                    module,
+                    onload,
+                    logger,
+                    fast = True,
+                    byte_cap = _late_image_encoder_pin_cap(pipe, module, onload),
+                    skip_resident = True,
+                )
+            ):
+                deferred_dits += 1
             installed += 1
             if (
                 use_stream
@@ -9777,6 +9812,13 @@ def _apply_streaming_offload(
             for module, offload_type in streamed.values():
                 if offload_type == "block_level":
                     room -= _keep_groups_resident(module, room, onload, logger)
+        if deferred_dits:
+            install_group_pin_wait()
+            if logger is not None:
+                logger.info(
+                    "diffusion.memory: streamed denoiser groups pin the prefix that fits the host RAM free once the "
+                    "load returns"
+                )
     except Exception as exc:
         if logger is not None:
             logger.warning(
