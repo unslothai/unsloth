@@ -163,6 +163,31 @@ def test_close_writes_reason_and_exit_code_and_rearms_the_tee_warning(tmp_path, 
     assert not _info_lines(log)
 
 
+def _close_recording(b, tmp_path, monkeypatch, **close_kwargs):
+    recorded = []
+    monkeypatch.setattr(llama_cpp, "record_crash_details", lambda *args: recorded.append(args))
+    b._llama_log_path = tmp_path / "llama.log"
+    b._llama_log_fh = open(b._llama_log_path, "w", encoding = "utf-8")
+    b._close_attempt_log(**close_kwargs)
+    return recorded
+
+
+def test_a_hard_crash_records_details_for_the_crashed_pid(tmp_path, monkeypatch):
+    b = _backend([])
+    recorded = _close_recording(
+        b, tmp_path, monkeypatch, reason = "exited", exit_code = 0xC0000005, pid = 7
+    )
+    assert recorded == [(b._llama_log_path, 7)]
+
+
+def test_a_kill_or_clean_exit_records_no_crash_details(tmp_path, monkeypatch):
+    b = _backend([])
+    assert not _close_recording(
+        b, tmp_path, monkeypatch, reason = "killed", exit_code = 0xC0000005, pid = 7
+    )
+    assert not _close_recording(b, tmp_path, monkeypatch, reason = "exited", exit_code = 0, pid = 7)
+
+
 def test_a_raising_logger_does_not_stop_the_drain():
     class _Raising:
         def __getattr__(self, name):

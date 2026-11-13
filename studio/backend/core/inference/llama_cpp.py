@@ -104,6 +104,7 @@ from core.inference.lookup_tables import (
     lazy_read_bytes as _lookup_lazy_read_bytes,
 )
 from core.inference.stream_errors import is_tool_parse_rejection, stream_error_from_chunk
+from core.inference.windows_crash_log import record_crash_details
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import (
     call_hub_with_anonymous_retry,
@@ -12088,6 +12089,37 @@ class LlamaCppBackend:
         backends = LlamaCppBackend._installed_ggml_backends(binary)
         return "vulkan" in backends and not backends.intersection({"cuda", "hip"})
 
+    _VULKAN_LAYERS_ENV = "VK_LOADER_LAYERS_DISABLE"
+    # AMD's switchable-graphics layer decides how a hybrid system lists its GPUs; dropping it
+    # can move Vulkan0 to a different card than the one Studio planned for.
+    _VULKAN_LAYERS_ALLOW = ("VK_LOADER_LAYERS_ALLOW", "*AMD_switchable_graphics*")
+    # Each manifest's own opt-out, for overlay and capture layers known to crash Vulkan apps.
+    _VULKAN_OVERLAY_LAYER_OPT_OUTS = (
+        "DISABLE_RTSS_LAYER",
+        "DISABLE_VULKAN_OW_OVERLAY_LAYER",
+        "DISABLE_VULKAN_OW_OBS_CAPTURE",
+        "DISABLE_VULKAN_OBS_CAPTURE",
+        "DISABLE_TWITCH_VULKAN_OVERLAY",
+        "DISABLE_FPSMON_LAYER",
+        "DISABLE_PLAYCLAW_LAYER",
+        "DISABLE_VK_LAYER_reshade_1",
+        "VK_LAYER_bandicam_helper_DEBUG_1",
+    )
+    # None until a Windows startup crash has tried a launch without implicit layers.
+    _vulkan_layers_faulted: Optional[bool] = None
+
+    @classmethod
+    def _should_retry_without_vulkan_layers(
+        cls, binary: Optional[str], env: Mapping[str, str], returncode: Optional[int]
+    ) -> bool:
+        return (
+            sys.platform == "win32"
+            and cls._vulkan_layers_faulted is None
+            and cls._is_signal_crash(returncode)
+            and cls._VULKAN_LAYERS_ENV not in env
+            and cls._is_vulkan_backend(binary)
+        )
+
     _SYSMEM_FALLBACK_RISK: dict[Optional[str], bool] = {}
 
     @staticmethod
@@ -17046,6 +17078,8 @@ class LlamaCppBackend:
                 _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
                 if os.path.isdir(_rocblas_lib):
                     env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
+            for _opt_out in LlamaCppBackend._VULKAN_OVERLAY_LAYER_OPT_OUTS:
+                env.setdefault(_opt_out, "1")
         elif sys.platform == "darwin":
             # dyld ignores LD_LIBRARY_PATH. A healthy prebuilt resolves via @loader_path; one with wrong
             # install names dies in dyld without this.
@@ -32504,6 +32538,9 @@ class LlamaCppBackend:
                 # _process is unset until Popen, so mark the load committed for saves; Popen and every exit below clear it, so a failed spawn cannot leave it stuck.
                 self._memory_pending_launch = _mem_settings
                 self._vram_fraction_pending = _budget_priced_placement()
+                if LlamaCppBackend._vulkan_layers_faulted and self._is_vulkan_backend(binary):
+                    env.setdefault(self._VULKAN_LAYERS_ENV, "~implicit~")
+                    env.setdefault(*self._VULKAN_LAYERS_ALLOW)
                 healthy = False
                 try:
                     healthy = _spawn_and_wait(cmd)
@@ -33092,6 +33129,33 @@ class LlamaCppBackend:
                         _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
                         _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(cmd)
                         healthy = _spawn_and_wait(cmd, label = "-single-seq")
+
+                # Overlay tools register implicit Vulkan layers that can fault in vkCreateDevice.
+                if not healthy and not _load_cancelled():
+                    _proc_snap_layers = self._process  # snapshot: re-reading races the teardown
+                    _layers_rc = _proc_snap_layers.poll() if _proc_snap_layers is not None else None
+                    if self._should_retry_without_vulkan_layers(binary, env, _layers_rc):
+                        logger.warning(
+                            "llama-server hard-crashed at startup (exit %s) on Vulkan; retrying "
+                            "once with implicit Vulkan layers disabled.",
+                            _layers_rc,
+                        )
+                        self._kill_process()
+                        env[self._VULKAN_LAYERS_ENV] = "~implicit~"
+                        _allow_added = self._VULKAN_LAYERS_ALLOW[0] not in env
+                        env.setdefault(*self._VULKAN_LAYERS_ALLOW)
+                        healthy = _spawn_and_wait(cmd, label = "-nolayers")
+                        if healthy or not _load_cancelled():
+                            LlamaCppBackend._vulkan_layers_faulted = healthy
+                        if healthy:
+                            logger.warning(
+                                "llama-server started with implicit Vulkan layers disabled; "
+                                "an installed Vulkan layer caused the crash."
+                            )
+                        else:
+                            env.pop(self._VULKAN_LAYERS_ENV, None)
+                            if _allow_added:
+                                env.pop(self._VULKAN_LAYERS_ALLOW[0], None)
 
                 # FA kernels hard-crash on some ROCm builds; retry FA-off before dropping vision or MTP.
                 if not healthy and not _load_cancelled():
@@ -35048,6 +35112,7 @@ class LlamaCppBackend:
         *,
         reason: str = "closed",
         exit_code: "Optional[int]" = None,
+        pid: "Optional[int]" = None,
     ) -> None:
         """Clear shutdown state per lifecycle from run_server before anything can spawn; take _teardown_lock first so an in-progress kill finishes first"""
         self._llama_log_tee_failed = False
@@ -35068,6 +35133,14 @@ class LlamaCppBackend:
         except Exception:
             pass
         self._llama_log_fh = None
+        log_path = getattr(self, "_llama_log_path", None)
+        if (
+            reason == "exited"
+            and pid is not None
+            and log_path is not None
+            and self._is_signal_crash(exit_code)
+        ):
+            record_crash_details(log_path, pid)
         try:
             logger.info(
                 f"attempt log closed reason={reason} exit_code={exit_code} "
@@ -35230,7 +35303,9 @@ class LlamaCppBackend:
                 stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
             self._close_attempt_log(
-                reason = "exited" if _exited_first else "killed", exit_code = _exit_code
+                reason = "exited" if _exited_first else "killed",
+                exit_code = _exit_code,
+                pid = _killed_pid,
             )
 
     def _other_planned_vram_mib(self) -> dict[int, int]:
