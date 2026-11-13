@@ -133,7 +133,7 @@ def layernorm_backward(
 
 
 # MIT 2023-2026 Songlin Yang et al.: dW/dB follow flash-linear-attention's layer_norm_bwd_kernel_row
-@triton.jit
+@triton.jit(do_not_specialize = ("n_rows", "rows_per_program"))
 def layernorm_backward_dw(
     dY,
     dX,
@@ -187,15 +187,15 @@ def layernorm_backward_dw(
         tl.store(dB + pid * n_cols + col_offsets, dB_acc, mask = mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("n_programs",))
 def _layernorm_sum_partials(
     partials,
     out0,
     out1,
     n_programs,
     n_cols,
-    BLOCK_ROWS: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,  # BLOCK_ROWS partial rows per program, BLOCK_COLS columns per program
+    BLOCK_ROWS: tl.constexpr,  # partial rows per program
+    BLOCK_COLS: tl.constexpr,  # columns per program
 ):
     # Not torch.sum: Inductor reorders it, so eager and compiled bytes would differ.
     which = tl.program_id(1)

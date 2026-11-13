@@ -77,6 +77,18 @@ def test_wrapper_injects_kernel_options_above_256():
     assert _call(512)["kernel_options"]["BLOCK_M"] == 32
 
 
+def test_wrapper_injects_kernel_options_inside_a_compiled_block():
+    import torch
+
+    original, seen = _record()
+    wrapped = u._wrap_flex_attention_forward(original)
+    torch._dynamo.reset()
+    torch.compile(lambda q: wrapped(None, q, q, q, None), backend = "eager")(
+        torch.zeros(1, 2, 8, 512)
+    )
+    assert seen["kernel_options"]["BLOCK_M"] == 32
+
+
 def test_wrapper_leaves_256_alone():
     # Must be absent, not an empty dict, so torch keeps its own default.
     assert _call(256).get("kernel_options") is None

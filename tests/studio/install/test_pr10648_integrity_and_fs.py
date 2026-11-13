@@ -339,9 +339,8 @@ def test_the_execute_bit_is_checked_on_every_entrypoint(
 @pytest.mark.parametrize("relative", SIZE_TIER)
 @pytest.mark.parametrize("corruption", ("truncate_half", "truncate_zero", "delete"))
 def test_a_truncated_payload_library_is_rejected(tmp_path, monkeypatch, relative, corruption):
-    """The size tier's whole purpose: _runtime_payload_has globs for EXISTENCE, so before
-    the record a half-written libggml.so -- what a full disk leaves -- passed the payload
-    scan. A stat is enough to catch it."""
+    """_runtime_payload_has only checks existence, so a half-written libggml.so from a full disk
+    passed; a stat against the recorded size catches it."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
     _CORRUPTIONS[corruption](install_dir / relative)
@@ -692,10 +691,8 @@ def test_a_rewritten_marker_is_valid_json_and_keeps_the_keys_the_ui_reads(tmp_pa
 @pytest.mark.parametrize("mode", (0o600, 0o644, 0o664, 0o444))
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
 def test_a_rewritten_marker_keeps_its_mode(tmp_path, writer, mode):
-    """NamedTemporaryFile is 0600 and os.replace keeps the SOURCE file's mode, so without
-    the restore a refresh silently makes a group-shared install's marker private. 0o444
-    is the read-only case the temp-and-replace shape exists to support: a plain write
-    would need the file writable, not the directory."""
+    """NamedTemporaryFile is 0600 and os.replace keeps the source mode, so the mode must be
+    restored; 0o444 works since replace needs the directory writable, not the file."""
     path = _live_marker(tmp_path, writer, mode = mode)
     writer.rewrite(tmp_path, _LIVE_PAYLOAD)
     assert stat.S_IMODE(path.stat().st_mode) == mode
@@ -733,17 +730,9 @@ def test_a_group_shared_marker_keeps_its_group(tmp_path, writer):
 def test_every_marker_writer_asks_for_the_owner_then_falls_back_to_the_group(
     tmp_path, writer, monkeypatch
 ):
-    """All three ask for owner AND group first, then group alone, and that uniformity is
-    the point.
-
-    Neither half is sufficient on its own. Owner+group alone is EPERM for a non-root member
-    of a group-shared install -- chown is all-or-nothing -- so the group is silently lost,
-    which is what e8d128d24 fixed in core and node. Group alone is wrong under root, which
-    is exactly when the owner CAN be restored: it leaves the marker owned by root, and an
-    0600 marker stops being readable by the user who owns the install. The two calls in
-    this order give each caller the best it is permitted. This pins the call shape so the
-    three writers cannot drift apart again.
-    """
+    """All three writers chown owner and group first, then group alone: owner plus group is EPERM
+    for a non-root member and loses the group (fixed in core and node by e8d128d24); group alone
+    under root leaves a root-owned 0600 marker unreadable by its owner."""
     path = _live_marker(tmp_path, writer)
     original = path.stat()
     calls: list = []
@@ -790,15 +779,9 @@ def test_a_permitted_writer_restores_the_owner_and_asks_no_further(tmp_path, wri
 @NOT_ROOT
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
 def test_a_marker_owned_by_another_user_still_keeps_its_group(tmp_path, writer, monkeypatch):
-    """The case uid -1 exists for, on the install it matters for.
-
-    A group-shared install whose marker is owned by the admin who ran setup, refreshed by
-    a member of the group: chown(uid, gid) is EPERM outright there (you may not give a
-    file away) while chown(-1, gid) succeeds, and since the failure is swallowed the
-    difference is not an error but a marker that quietly changes group -- on an 0640
-    marker, the mode restore beside it undone. The kernel rule is simulated, since a test
-    cannot own a file as another user; the simulation refuses exactly what POSIX refuses.
-    """
+    """A group member refreshing a marker owned by another user needs chown(-1, gid): chown(uid,
+    gid) is EPERM and the swallowed failure silently changes the group, undoing the mode restore;
+    the test simulates the kernel rule."""
     path = _live_marker(tmp_path, writer, mode = 0o640)
     other_uid = os.geteuid() + 1
     shared_gid = os.getegid() + 1
@@ -840,9 +823,8 @@ class _StatWithOwner:
 @NEEDS_CHOWN
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
 def test_a_chown_that_is_refused_does_not_abort_the_write(tmp_path, writer, monkeypatch):
-    """Ownership is best effort; the refreshed marker is not. Declining to write because
-    the group could not be restored would leave the field the refresh exists to record
-    (a deliberate --force-cpu, a re-probed version) unrecorded."""
+    """Ownership is best effort but the refreshed marker is not: refusing the write because the
+    group could not be restored would leave --force-cpu or a re-probed version unrecorded."""
     path = _live_marker(tmp_path, writer, mode = 0o640)
 
     def refuse(*_a, **_k):
@@ -941,17 +923,9 @@ def test_the_llama_marker_survives_a_rewrite_and_the_fast_path_still_accepts_it(
 @NOT_ROOT
 @pytest.mark.parametrize("relative", ("llama-server", "llama-quantize"))
 def test_a_damaged_root_entrypoint_is_not_kept_by_the_shortcut(tmp_path, monkeypatch, relative):
-    """The update has to repair what the launch check calls broken, or the two loop.
-
-    installed_runtime_health rejects a root llama-server that lost its execute bit, so the
-    desktop marks the install stale and offers a repair. This shortcut returns before
-    reinstalling anything, and it used to check X_OK under build/bin ONLY -- so the repair
-    ran, changed nothing, and the next launch was stale again. Measured before the fix:
-    launch health llama_runtime_binaries_missing, shortcut True, full re-validation False.
-
-    _damaged_entrypoint owns the question for all three now, which is what its own docstring
-    asks for.
-    """
+    """The update shortcut must reject a root llama-server or llama-quantize that lost its execute
+    bit, as installed_runtime_health does; checking only build/bin left the repair a no-op;
+    _damaged_entrypoint now decides for all three."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True, "the shortcut must accept a healthy install here"
     (install_dir / relative).chmod(0o644)

@@ -93,8 +93,7 @@ class TestTheBudgetIsEnforced:
         assert _run(scenario()) is not None
 
     def test_a_double_release_returns_the_tokens_only_once(self):
-        """A second subtraction would drive the pool negative and let the budget
-        admit callers the cache cannot hold."""
+        """A second subtraction drives the pool negative and admits callers the cache lacks."""
 
         async def scenario():
             queue = LlamaAdmissionQueue("test")
@@ -264,8 +263,7 @@ class TestParkedLeasesStillHoldTheirKV:
 
 class TestTheOutputAllowanceIsCounted:
     def test_max_completion_tokens_is_reserved_like_max_tokens(self):
-        """Generation honours max_completion_tokens through
-        _effective_openai_max_tokens; admission must reserve the same allowance."""
+        """Generation honours max_completion_tokens; admission must reserve the same allowance."""
         from types import SimpleNamespace
         import routes.inference as routes_inference
 
@@ -316,8 +314,7 @@ class TestTheWholeRenderedPromptIsCounted:
         )
 
     def test_an_uncapped_request_reserves_a_bounded_allowance(self):
-        """It reserved the whole window because generation MAY run that long, which cost
-        the default chat the entire cache before it wrote a token."""
+        """Reserving the whole window for uncapped requests starved the default chat's cache."""
         from types import SimpleNamespace
 
         from routes.inference import _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
@@ -332,8 +329,7 @@ class TestTheWholeRenderedPromptIsCounted:
         assert cost <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 64
 
     def test_uncapped_short_prompts_fill_the_slots_and_no_more(self):
-        """Tiny prompts with cache-filling generations must be charged for output, or any number is
-        admitted."""
+        """Uncapped short prompts must be charged for their output, or any number is admitted."""
         from types import SimpleNamespace
 
         async def scenario():

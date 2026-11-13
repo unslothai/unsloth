@@ -12,6 +12,7 @@ from transformers import Qwen3Config, Qwen3ForCausalLM
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
+GC_KWARGS = os.path.join(HERE, "unsloth", "_gc_kwargs.py")  # _skip_aware_flag
 NAMES = (
     "_skip_aware_flag",
     "skip_checkpointing",
@@ -24,7 +25,7 @@ NAMES = (
 
 
 def _load():
-    src = open(UTILS, encoding = "utf-8").read()
+    src = open(UTILS, encoding = "utf-8").read() + "\n" + open(GC_KWARGS, encoding = "utf-8").read()
     ns = {
         "torch": torch,
         "os": os,

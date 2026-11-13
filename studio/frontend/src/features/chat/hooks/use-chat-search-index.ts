@@ -52,6 +52,7 @@ export interface ChatSearchItem {
 
 // Messages are indexed for the newest threads only; older chats match by title.
 const THREAD_LIMIT = 200;
+const THREADS_PER_BATCH = 20;
 const SEARCH_REBUILD_DEBOUNCE_MS = 300;
 // Past the dialog's 180ms exit, so releasing rows never lands mid-animation.
 const ROW_RELEASE_DELAY_MS = 300;
@@ -196,9 +197,23 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
   }
 
   const loadedThreadIds = active.slice(0, THREAD_LIMIT).map((t) => t.id);
-  let messagesByThread = await batchListChatMessages(loadedThreadIds, {
-    view: "search",
-  }).catch(() => new Map<string, MessageRecord[]>());
+  // One response for every thread can pass V8's string cap and then fails whole.
+  const chunks: string[][] = [];
+  for (let i = 0; i < loadedThreadIds.length; i += THREADS_PER_BATCH) {
+    chunks.push(loadedThreadIds.slice(i, i + THREADS_PER_BATCH));
+  }
+  let messagesByThread = new Map<string, MessageRecord[]>();
+  for (const batch of await Promise.all(
+    chunks.map((ids) =>
+      batchListChatMessages(ids, { view: "search" }).catch(
+        () => new Map<string, MessageRecord[]>(),
+      ),
+    ),
+  )) {
+    for (const [threadId, messages] of batch) {
+      messagesByThread.set(threadId, messages);
+    }
+  }
   let complete = true;
 
   // Legacy-only chats may predate server import; fill only missing ids via the legacy path.

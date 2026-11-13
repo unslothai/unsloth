@@ -216,7 +216,11 @@ def test_never_prompts_without_reason(fake_studio, picker, monkeypatch, case):
     [
         ({"yours": False}, "belongs to another account"),
         (TimeoutError("status timed out"), None),
-        (urllib.error.HTTPError("http://localhost/status", 503, "unavailable", None, None), None),
+        pytest.param(
+            urllib.error.HTTPError("http://localhost/status", 503, "unavailable", None, None),
+            None,
+            id = "status-http-503",
+        ),
         ({"error": "API endpoint not found"}, None),
         ({}, None),
         ({"loaded": [], "loading": ["pending"], "load_in_flight": True}, None),

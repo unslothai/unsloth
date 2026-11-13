@@ -16,7 +16,9 @@ export function exportFormatIncludesSiblings(format: string): boolean {
     format !== "jsonl-raw" &&
     format !== "jsonl-messages" &&
     format !== "sharegpt" &&
-    format !== "markdown"
+    format !== "markdown" &&
+    format !== "html" &&
+    format !== "pdf"
   );
 }
 
@@ -26,6 +28,7 @@ const OPENAI_MESSAGE_ROLES = new Set([
   "user",
   "assistant",
   "tool",
+  "function",
 ]);
 
 export function isOpenAIMessageRecord(
@@ -38,7 +41,11 @@ export function isOpenAIMessageRecord(
   return (
     typeof message.role === "string" &&
     OPENAI_MESSAGE_ROLES.has(message.role) &&
-    ("content" in message || Array.isArray(message.tool_calls))
+    !Array.isArray(message.messages) &&
+    !Array.isArray(message.conversations) &&
+    ("content" in message ||
+      Array.isArray(message.tool_calls) ||
+      "function_call" in message)
   );
 }
 

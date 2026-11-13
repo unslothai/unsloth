@@ -371,6 +371,7 @@ from .import_fixes import (
     fix_vllm_pdl_blackwell,
     fix_cudnn_sdpa_d256_masked_backward,
     fix_cudnn_sdpa_backward_grad_layout,
+    fix_cudnn_sdpa_known_bad_shapes,
     fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
@@ -462,6 +463,8 @@ fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_cudnn_sdpa_d256_masked_backward()
 fix_cudnn_sdpa_backward_grad_layout()
+# torch 2.11 - 2.14 cuDNN SDPA bugs fixed by cuDNN 9.26 / torch 2.15 (pytorch#193893, #196678).
+fix_cudnn_sdpa_known_bad_shapes()
 # Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
 fix_rocm_windows_fused_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
@@ -530,6 +533,7 @@ del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
 del fix_cudnn_sdpa_d256_masked_backward
 del fix_cudnn_sdpa_backward_grad_layout
+del fix_cudnn_sdpa_known_bad_shapes
 del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility

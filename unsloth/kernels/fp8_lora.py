@@ -57,6 +57,13 @@ def reset_fp8_lora_stats():
         FP8_LORA_STATS[key] = 0
 
 
+def _count(key):
+    # Counts eager calls only: a traced increment mutates a guarded global and recompiles every call.
+    # The fp8 GEMM ops stay opaque under compile, so their own counts still run.
+    if not _compiling():
+        FP8_LORA_STATS[key] += 1
+
+
 _SCALING = os.environ.get("UNSLOTH_FP8_LORA_SCALING", "auto").strip().lower()
 _SCALING = {"rowwise": "row", "tensorwise": "tensor"}.get(_SCALING, _SCALING)
 if _SCALING not in ("auto", "row", "tensor"):
@@ -141,7 +148,7 @@ _MULTI_GPU = torch.cuda.is_available() and torch.cuda.device_count() > 1
 if triton is not None:
 
     @triton.jit
-    def _cast_fp8_rn(x, IS_E5M2: tl.constexpr):
+    def _cast_fp8_rn(x, IS_E5M2: tl.constexpr):  # fp8 format, per recipe
         # Triton 3.8 rounds through fp16 on sm89; native f32 conversion avoids double rounding.
         if IS_E5M2:
             packed = tl.inline_asm_elementwise(
@@ -171,9 +178,9 @@ if triton is not None:
         amax_ptr,
         inv_ptr,
         numel,
-        FP8_MAX: tl.constexpr,
-        IS_E5M2: tl.constexpr,
-        BLOCK: tl.constexpr,
+        FP8_MAX: tl.constexpr,  # fp8 format max, per recipe
+        IS_E5M2: tl.constexpr,  # fp8 format, per recipe
+        BLOCK: tl.constexpr,  # elements per program, fixed 2048
     ):
         pid = tl.program_id(0).to(tl.int64)
         offs = pid * BLOCK + tl.arange(0, BLOCK)
@@ -226,10 +233,10 @@ if triton is not None:
         inv_ptr,
         K,
         stride_xm,
-        FP8_MAX: tl.constexpr,
-        IS_E5M2: tl.constexpr,
-        BLOCK_K: tl.constexpr,
-        ONE_BLOCK: tl.constexpr,
+        FP8_MAX: tl.constexpr,  # fp8 format max, per recipe
+        IS_E5M2: tl.constexpr,  # fp8 format, per recipe
+        BLOCK_K: tl.constexpr,  # row tile, from in_features
+        ONE_BLOCK: tl.constexpr,  # the row fits one tile, from in_features
     ):
         row = tl.program_id(0).to(tl.int64)
         x_row = x_ptr + row * stride_xm
@@ -303,7 +310,7 @@ def quantize_rowwise(x: torch.Tensor, fp8_dtype = E4M3):
 if triton is not None:
 
     @triton.jit
-    def _transpose_u8_kernel(x_ptr, y_ptr, R, C, BLOCK: tl.constexpr):
+    def _transpose_u8_kernel(x_ptr, y_ptr, R, C, BLOCK: tl.constexpr):  # square tile, fixed 64
         # Square tiles on purpose: non-square 2D fp8 transposed stores write corrupt bytes on sm89 (L4, triton 3.x).
         rows = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         cols = tl.program_id(1).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
@@ -419,7 +426,7 @@ def _fwd_fake(x, w8, w_inv):
 def fp8_lora_fwd(x: torch.Tensor, w8: torch.Tensor, w_inv: torch.Tensor) -> torch.Tensor:
     """x [M, K] (16-bit) @ dequant(w8 [N, K]).T -> [M, N] in x.dtype. w_inv: 0-d (tensorwise activations) or
     [1, N] (rowwise activations: the weight's tensorwise scale per output column)."""
-    FP8_LORA_STATS["fwd"] += 1
+    _count("fwd")
     out = None
     if w_inv.dim() == 2 and _rowwise_ok(x.dtype, x.device):
         x8, x_inv = quantize_rowwise(x, E4M3)
@@ -443,7 +450,7 @@ def fp8_lora_dgrad(
     """dy [M, N] (16-bit) @ dequant(W [N, K]) -> dx [M, K] in dy.dtype. w8 is the cached K-major copy [K, N]
     (w_is_t) or the forward copy [N, K], transposed here by the square-tile kernel inside the op, never by an
     Inductor-generated fp8 transpose (those write corrupt bytes for non-square tile configs on sm89)."""
-    FP8_LORA_STATS["dgrad"] += 1
+    _count("dgrad")
     w8t = w8 if w_is_t else fp8_transpose(w8)
     out = None
     if w_inv.dim() == 2 and _rowwise_ok(dy.dtype, dy.device):
@@ -474,8 +481,8 @@ if triton is not None:
         raw_s1,
         delta_s0,
         delta_s1,
-        ROW_SCALE: tl.constexpr,
-        BLOCK: tl.constexpr,
+        ROW_SCALE: tl.constexpr,  # rowwise weight scales, per recipe
+        BLOCK: tl.constexpr,  # elements per program, fixed 1024
     ):
         offset = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         row, col = offset // N, offset % N
@@ -536,7 +543,7 @@ def fp8_lora_accum(
     backward: bool,
     transpose_weight: bool,
 ) -> torch.Tensor:
-    FP8_LORA_STATS["dgrad" if backward else "fwd"] += 1
+    _count("dgrad" if backward else "fwd")
     if transpose_weight:
         w8 = fp8_transpose(w8)
     if w_inv.dim() == 2:
@@ -643,7 +650,7 @@ class Fp8LoRABaseState:
         self.dtype = weight.dtype
         self._key = key
         self.quantizations += 1
-        FP8_LORA_STATS["quantize"] += 1
+        _count("quantize")
         return self
 
     def _dgrad_weight(self):
@@ -740,7 +747,7 @@ class Fp8LoRABaseState:
         shape = X.shape
         X2 = X.reshape(-1, shape[-1])
         if not self._use_fp8(X2):
-            FP8_LORA_STATS["fwd_16bit"] += 1
+            _count("fwd_16bit")
             result = torch.matmul(X2, self._dense(W).t().to(X2.dtype))
         elif _is_transposed(W):
             result = self.dgrad(X2, W.t())
@@ -788,7 +795,7 @@ class Fp8LoRABaseState:
         shape = dY.shape
         dY2 = dY.reshape(-1, shape[-1])
         if _DGRAD_DTYPE is None or not self._use_fp8(dY2):
-            FP8_LORA_STATS["dgrad_16bit"] += 1
+            _count("dgrad_16bit")
             if W is None and not self.offloaded:
                 raise RuntimeError("Unsloth: 16-bit dgrad needs the base weight")
             result = torch.matmul(dY2, self._dense(W).to(dY2.dtype))
@@ -822,7 +829,7 @@ class _Fp8FrozenLinear(torch.autograd.Function):
         shape = dy.shape
         dy2 = dy.reshape(-1, shape[-1])
         if _DGRAD_DTYPE is None:
-            FP8_LORA_STATS["dgrad_16bit"] += 1
+            _count("dgrad_16bit")
             dx = torch.matmul(dy2, weight.to(dy2.dtype))
         else:
             dx = fp8_lora_dgrad(dy2, w8t, w_inv, ctx.w_is_t)
@@ -833,7 +840,7 @@ def _fp8_base_forward(self, x):
     state = self.__dict__.get("_unsloth_fp8_lora")
     weight = self.weight
     if state is None or weight.requires_grad or not state._use_fp8(x.reshape(-1, x.shape[-1])):
-        FP8_LORA_STATS["fwd_16bit"] += 1
+        _count("fwd_16bit")
         if state is not None and state.offloaded:
             if weight.requires_grad:  # unfrozen: train the exact weight
                 state.restore(self)

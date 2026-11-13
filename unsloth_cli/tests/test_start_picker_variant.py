@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 import asyncio
+import json
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -278,3 +279,87 @@ def test_loose_gguf_files_follow_the_requested_quant(tmp_path, monkeypatch):
     [entry] = catalog.local_folder_entries(gguf_variant = second.name)
     assert entry.model == str(first)
     assert _direct_gguf_for_variant(entry.model, entry.file_variant) == str(first)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("variant", [None, "Q8_0"])
+def test_opencode_picker_with_adapter_and_gguf(
+    cached_gguf_pick, picker, fake_studio, monkeypatch, tmp_path, mode, variant
+):
+    adapter = str(tmp_path / "adapter")
+    row = catalog.ModelEntry("Fine-tunes", "adapter", "lora", adapter)
+    monkeypatch.setattr(catalog, "trained_entries", lambda: [row])
+    _empty_server(fake_studio, monkeypatch)
+    picker["answers"] = [""]
+    args = ["opencode"]
+    if variant:
+        args.extend(["--gguf-variant", variant])
+    if mode == "auto-start":
+        attempts = _autostart(monkeypatch)
+        monkeypatch.setattr(start, "_require_agent_for_launch", lambda *args: "opencode")
+    else:
+        args.append("--no-launch")
+
+    result = CliRunner().invoke(start.start_app, args)
+
+    expected = str(Path(cached_gguf_pick).with_name("tiny-Q8_0.gguf")) if variant else adapter
+    if mode == "auto-start":
+        assert result.exit_code == 7, result.output
+        [(model, load)] = attempts
+        assert (model, load.gguf_variant) == (expected, variant)
+    else:
+        assert result.exit_code == 0, result.output
+        [payload] = _loads(fake_studio)
+        assert (payload["model_path"], payload.get("gguf_variant")) == (expected, variant)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize(
+    ("variant", "mlx", "complete", "offered"),
+    [
+        (None, True, True, True),
+        (None, False, True, False),
+        ("6-bit", True, True, True),
+        ("6-bit", True, False, False),
+        ("6-bit", False, True, False),
+        ("Q8_0", True, True, False),
+    ],
+)
+def test_mlx_picker_uses_target_hardware_and_complete_precision_folder(
+    tmp_path, monkeypatch, picker, mode, variant, mlx, complete, offered
+):
+    ensure_studio_backend_path(seed_cache_env = False)
+    from utils import utils as backend_utils
+
+    repo_id = "mlx-community/Tiny"
+    repo = tmp_path / "models--mlx-community--Tiny"
+    revision = "a" * 40
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(revision)
+    folder = repo / "snapshots" / revision / "6-bit"
+    folder.mkdir(parents = True)
+    (folder / "config.json").write_text("{}")
+    shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    index = {"weight_map": {"layer1": shards[0], "layer2": shards[1]}}
+    (folder / "model.safetensors.index.json").write_text(json.dumps(index))
+    (folder / shards[0]).write_bytes(b"weights")
+    if complete:
+        (folder / shards[1]).write_bytes(b"weights")
+
+    monkeypatch.setattr(backend_utils, "_hf_cache_roots", lambda: [tmp_path])
+    entry = catalog.ModelEntry("Downloaded", repo_id, "", repo_id)
+    monkeypatch.setattr(catalog, "list_chat_models", lambda **kwargs: [entry])
+    idle = mode == "idle-server"
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda *args: mlx if idle else not mlx)
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: not mlx if idle else mlx)
+    picker["answers"] = [""]
+    load = start.LoadOptions(gguf_variant = variant)
+    server = {"base": "http://127.0.0.1:8888", "key": "test"} if idle else {}
+
+    if offered:
+        assert start._ask_for_local_model(True, "Choose a model", load, **server) == (repo_id, load)
+    else:
+        with pytest.raises(typer.Exit) as error:
+            start._ask_for_local_model(True, "Choose a model", load, **server)
+        assert error.value.exit_code == 1
+        assert not picker["prompts"]

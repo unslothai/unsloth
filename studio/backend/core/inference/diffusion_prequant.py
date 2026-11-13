@@ -81,12 +81,10 @@ _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
     ("torchao.quantization.granularity", "PerRow"),
     ("torchao.quantization.granularity", "PerTensor"),
     ("torchao.float8.inference", "Float8MMConfig"),
-    # mxfp8 / nvfp4: local bakes only; torchao registers them only on prototype import.
+    # mxfp8: local bakes only; torchao registers it only on prototype import. nvfp4 is never unpickled.
     ("torchao.prototype.mx_formats.mx_tensor", "MXTensor"),
     ("torchao.prototype.mx_formats.mx_tensor", "QuantizeTensorToMXKwargs"),
     ("torchao.prototype.mx_formats.config", "ScaleCalculationMode"),
-    ("torchao.prototype.mx_formats.nvfp4_tensor", "NVFP4Tensor"),
-    ("torchao.prototype.mx_formats.nvfp4_tensor", "QuantizeTensorToNVFP4Kwargs"),
     # torch.save stamps TorchVersion; without it every torchao checkpoint is refused.
     ("torch.torch_version", "TorchVersion"),
 )
@@ -146,14 +144,27 @@ _SCHEME_REQUIRED_GLOBALS: dict = {
             "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
         }
     ),
-    "nvfp4": frozenset(
-        {
-            "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
-            "torchao.prototype.mx_formats.nvfp4_tensor.QuantizeTensorToNVFP4Kwargs",
-        }
-    )
-    | _FP8_REQUIRED_GLOBALS,
 }
+
+# nvfp4 checkpoints are read from .safetensors only; a .pt / .pth one is never resolved, cached or unpickled.
+NVFP4_SAFETENSORS_ONLY_MESSAGE = (
+    "NVFP4 diffusion checkpoints are loaded from .safetensors only; {what} is a pickle "
+    "(.pt / .pth) and is refused. Use the .safetensors NVFP4 checkpoint instead."
+)
+
+
+def _is_nvfp4_scheme(scheme: Any) -> bool:
+    return str(scheme or "").strip().lower() == "nvfp4"
+
+
+def nvfp4_pickle_name(scheme: Any, name: Optional[str]) -> bool:
+    """True when ``name`` is a pickle container (.pt / .pth) for the nvfp4 scheme, which is never used."""
+    return _is_nvfp4_scheme(scheme) and str(name or "").strip().lower().endswith(_PICKLE_SUFFIXES)
+
+
+def without_nvfp4_pickles(scheme: Any, names: Sequence[str]) -> list:
+    """``names`` minus the pickle containers when ``scheme`` is nvfp4; every other scheme is unchanged."""
+    return [n for n in names if n and not nvfp4_pickle_name(scheme, n)]
 
 
 def _tuple_safe_globals_supported() -> bool:
@@ -213,6 +224,9 @@ def restricted_prequant_load_supported(
 
     if is_safetensors_checkpoint(filename):
         return safetensors_scheme_supported(scheme)
+    if _is_nvfp4_scheme(scheme):
+        # Safetensors only: a pickle is never readable; the scheme-only question is the safetensors one.
+        return filename is None and safetensors_scheme_supported(scheme)
     if not _register_prequant_safe_globals():
         return False
     key = (scheme or "").strip().lower()
@@ -253,14 +267,24 @@ def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
     return rebuild_stray_standins(ckpt)
 
 
-def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
-    """Dispatches on file extension, not content, so a repo hosting both containers is never misparsed."""
+def _load_prequant_checkpoint(
+    path: str,
+    *,
+    scheme: Optional[str] = None,
+    **kwargs: Any,
+) -> Any:
+    """Dispatches on extension, not content; nvfp4 (asked for or recorded) is refused unless safetensors."""
     from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
 
     if is_safetensors_checkpoint(path):
         ckpt = load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
     else:
+        if _is_nvfp4_scheme(scheme):
+            raise ValueError(NVFP4_SAFETENSORS_ONLY_MESSAGE.format(what = repr(str(path))))
         ckpt = _torch_load_prequant(path, **kwargs)
+        meta = ckpt.get("metadata") if isinstance(ckpt, dict) else None
+        if isinstance(meta, dict) and _is_nvfp4_scheme(meta.get("scheme")):
+            raise ValueError(NVFP4_SAFETENSORS_ONLY_MESSAGE.format(what = repr(str(path))))
     _install_fp8_unit_scale_for(ckpt)
     return ckpt
 
@@ -323,11 +347,12 @@ def _read_prequant_for(
     logger: Any = None,
     *,
     host_copy_follows: bool = False,
+    scheme: Optional[str] = None,
 ) -> Any:
     """``_load_prequant_checkpoint`` mapped when enabled; anything the mapping cannot open is re-read in full."""
     if prequant_mmap_enabled(destination, host_copy_follows = host_copy_follows):
         try:
-            return _load_prequant_checkpoint(path, map_location = "cpu", mmap = True)
+            return _load_prequant_checkpoint(path, scheme = scheme, map_location = "cpu", mmap = True)
         except Exception as exc:  # noqa: BLE001 - retried unmapped; the real error resurfaces there
             if logger is not None:
                 logger.info(
@@ -335,7 +360,7 @@ def _read_prequant_for(
                     type(exc).__name__,
                     str(exc).splitlines()[0][:200] if str(exc) else "",
                 )
-    return _load_prequant_checkpoint(path, map_location = "cpu")
+    return _load_prequant_checkpoint(path, scheme = scheme, map_location = "cpu")
 
 
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
@@ -615,7 +640,9 @@ def prefer_cached_pickle_twins(
     log: bool = True,
     roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
-    """Same-stem cached .pt/.pth moves ahead of its uncached safetensors twin; the twin stays behind it as 404 fallback; PREFER_SAFETENSORS_ENV disables."""
+    """Safetensors stays first, except a same-stem cached .pt/.pth whose sha256 matches the Hub's record moves ahead of
+    its uncached safetensors twin (reused, not re-downloaded); the twin stays behind it as 404 fallback. An unverified
+    cached pickle (offline, no LFS record, mismatch) keeps its place behind the twin. PREFER_SAFETENSORS_ENV disables."""
     import os
 
     out = [n for n in names if n]
@@ -634,13 +661,40 @@ def prefer_cached_pickle_twins(
             except Exception:  # noqa: BLE001 - an unanswerable question is a no
                 return False
 
+        def _verified(name: str) -> bool:
+            from .cached_weight_sha import cached_copy_matches_hub
+
+            if _LOCAL_FILES_ONLY.get():
+                return False  # a load that may not reach the Hub cannot ask it for the hash
+            token = _LOAD_HF_TOKEN.get()
+            for root in roots:
+                hit = _hub_name_cached(repo_id, name, root)
+                if hit is not None and cached_copy_matches_hub(repo_id, name, hit, token = token):
+                    return True
+            return False
+
+        prefer_safetensors = (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        def _reusable(name: str) -> bool:
+            if not _ok(name) or not _cached(name):
+                return False
+            # same pickle trust rule as below
+            if name.lower().endswith(_PICKLE_SUFFIXES):
+                return not prefer_safetensors and _verified(name)
+            return True
+
         # A cached container of an artifact beats an uncached one of the SAME artifact: never download a second copy.
         for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
             stem = _artifact_stem(comfy)
             twins = [n for n in out if n != comfy and _artifact_stem(n) == stem]
             if not twins:
                 continue
-            hit = next((t for t in twins if _ok(t) and _cached(t)), None)
+            hit = next((t for t in twins if _reusable(t)), None)
             if _cached(comfy):
                 if hit is None and _ok(comfy) and out.index(comfy) > out.index(twins[0]):
                     out.remove(comfy)
@@ -664,12 +718,7 @@ def prefer_cached_pickle_twins(
                     hit,
                     comfy,
                 )
-        if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
+        if prefer_safetensors:
             return out
 
         for st in [
@@ -686,7 +735,8 @@ def prefer_cached_pickle_twins(
                 ),
                 None,
             )
-            if twin is None or _cached(st):
+            # Only a cached pickle the Hub's sha256 vouches for is reused; unverified, safetensors stays first.
+            if twin is None or _cached(st) or not _verified(twin):
                 continue
             out.remove(twin)
             out.insert(out.index(st), twin)
@@ -698,8 +748,8 @@ def prefer_cached_pickle_twins(
                     import logging
                     sink = logging.getLogger(__name__)
                 sink.info(
-                    "diffusion.prequant_cached_pickle: %s: using the cached %s; the %s twin is not "
-                    "downloaded (set %s=1 to fetch it instead)",
+                    "diffusion.prequant_cached_pickle: %s: using the cached %s (sha256 matches the Hub); the "
+                    "%s twin is not downloaded (set %s=1 to fetch it instead)",
                     repo_id,
                     twin,
                     st,
@@ -714,12 +764,24 @@ def prefer_cached_pickle_twins(
 SAFETENSORS_TWINS_ENV = "UNSLOTH_PREQUANT_SAFETENSORS_TWINS"
 
 
-def with_declared_safetensors_twins(names: Sequence[str], declared: Sequence[str]) -> list:
-    """Put ``<stem>.safetensors`` right before each declared root ``<stem>.pt`` / ``.pth``; the .pt stays as 404 fallback."""
+def with_declared_safetensors_twins(
+    names: Sequence[str],
+    declared: Sequence[str],
+    *,
+    scheme: Optional[str] = None,
+) -> list:
+    """Put ``<stem>.safetensors`` before each declared root .pt / .pth (kept as 404 fallback); nvfp4 ignores the env."""
     import os
 
     out = [n for n in names if n]
-    if (os.environ.get(SAFETENSORS_TWINS_ENV) or "").strip().lower() in ("0", "false", "no", "off"):
+    if not _is_nvfp4_scheme(scheme) and (
+        os.environ.get(SAFETENSORS_TWINS_ENV) or ""
+    ).strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
         return out
     wanted = {n for n in declared if n}
     ordered: list = []
@@ -888,7 +950,9 @@ def derived_prequant_filenames(
     *,
     component: Optional[str] = None,
 ) -> tuple[str, ...]:
-    """Safetensors name first: needs no pickle allowlist and validates from its header; .pt stays behind."""
+    """Safetensors name first, .pt behind; nvfp4 derives the safetensors name only."""
+    if _is_nvfp4_scheme(scheme):
+        return (prequant_repo_filename(repo_id, scheme, ".safetensors", component = component),)
     names = (
         prequant_repo_filename(repo_id, scheme, ".safetensors", component = component),
         prequant_repo_filename(repo_id, scheme, ".pt", component = component),
@@ -927,6 +991,9 @@ def resolve_prequant_source(
         return None
     override = (path_override or "").strip()
     if override:
+        if nvfp4_pickle_name(scheme, override):
+            # A local nvfp4 override is read from safetensors only; a pickle is never a source.
+            return None
         return PrequantSource(kind = "path", location = override, filename = None)
     preferred = None
     agnostic = None
@@ -946,13 +1013,17 @@ def resolve_prequant_source(
         task_specific = preferred is not None and preferred != agnostic
         if task_specific:
             # Only the same artifact's safetensors twin goes ahead of it: same partition, same weights.
-            names = with_declared_safetensors_twins((preferred,), (preferred,))
+            names = without_nvfp4_pickles(
+                scheme, with_declared_safetensors_twins((preferred,), (preferred,), scheme = scheme)
+            )
+            if not names:
+                return None
             return PrequantSource(
                 kind = "repo",
                 location = repo_id,
                 filename = names[0],
                 fallback_filenames = tuple(names[1:]),
-                declared_filenames = (preferred,),
+                declared_filenames = (names[0],) if _is_nvfp4_scheme(scheme) else (preferred,),
             )
         # Declared name first, then derived chain (safetensors ahead); dedup in order. Declared names are default-repo files; variant repos derive their own.
         variant_repo = _is_variant_prequant_repo(fam, repo_id)
@@ -960,6 +1031,9 @@ def resolve_prequant_source(
             declared = (prequant_repo_filename(repo_id, scheme, ".safetensors"),)
         else:
             declared = (preferred,) if preferred else ()
+        if _is_nvfp4_scheme(scheme):
+            # Every hosted nvfp4 repo stores exactly ``<Model>-NVFP4.safetensors``: a real name, not a guess.
+            declared = tuple(without_nvfp4_pickles(scheme, declared)) or derived[:1]
         # rotated artifact (hosted) first, only in its own repo; the plain chain stays behind it (offline, older caches)
         from .diffusion_transformer_quant import (
             convrot_prequant_filename,
@@ -989,16 +1063,28 @@ def resolve_prequant_source(
         for name in declared + derived:
             if name and name not in names:
                 names.append(name)
-        names = with_declared_safetensors_twins(names, declared)
+        from .diffusion_transformer_quant import convrot_drops_plain_hosted
+
+        if rotated and convrot_drops_plain_hosted(scheme, fam_name):
+            # Hosted plain int8 files are unrotated: rotated file or rotate at load.
+            names = (
+                [rotated] if str(repo_id).strip().lower() == str(rotated_repo or "").lower() else []
+            )
+            declared = tuple(names)
+        names = with_declared_safetensors_twins(names, declared, scheme = scheme)
         if comfy_prequant_enabled() and _comfy_prequant_family(fam):
             names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
-        return PrequantSource(
-            kind = "repo",
-            location = repo_id,
-            filename = names[0],
-            fallback_filenames = tuple(names[1:]),
-            declared_filenames = declared,
-        )
+        names = without_nvfp4_pickles(scheme, names)
+        if names:
+            return PrequantSource(
+                kind = "repo",
+                location = repo_id,
+                filename = names[0],
+                fallback_filenames = tuple(names[1:]),
+                declared_filenames = declared,
+            )
+        if not (rotated and convrot_drops_plain_hosted(scheme, fam_name)):
+            return None
     # Nothing hosted: try this machine's cache of an earlier build; task names the component (MoE transformer_2).
     try:
         from .diffusion_prequant_cache import lookup
@@ -1010,7 +1096,7 @@ def resolve_prequant_source(
         )
     except Exception:  # noqa: BLE001 - a cache problem is a miss, never a failed load
         cached = None
-    if cached:
+    if cached and not nvfp4_pickle_name(scheme, cached):
         return PrequantSource(kind = "path", location = cached, filename = None)
     return None
 
@@ -1046,7 +1132,7 @@ _LOCAL_PREQUANT_SCHEME: dict[tuple[str, int, int], Optional[str]] = {}
 
 
 def local_prequant_scheme(path: str) -> Optional[str]:
-    """Reads the recorded scheme under the allowlisted weights_only load, so auto never accepts an override baked for another scheme."""
+    """Recorded scheme via the allowlisted load; a pickle recording nvfp4 reads as unknown."""
     import os
 
     try:
@@ -1069,6 +1155,8 @@ def local_prequant_scheme(path: str) -> Optional[str]:
         if isinstance(obj, dict) and obj.get("format") in PREQUANT_FORMATS:
             recorded = (obj.get("metadata") or {}).get("scheme")
             scheme = str(recorded) if recorded else None
+        if nvfp4_pickle_name(scheme, real):
+            scheme = None
     except Exception:  # noqa: BLE001 -- a checkpoint we cannot parse is "unknown", never a match
         scheme = None
     if scheme is None and is_safetensors_checkpoint(real):
@@ -1112,6 +1200,8 @@ def hosted_nvfp4_repo_ids() -> frozenset:
 
 # Root only: a diffusers pipeline keeps its weights in component folders.
 _PREQUANT_PROBE_SUFFIXES = (".safetensors", ".pt", ".pth")
+# nvfp4 is recorded only in safetensors headers; a pickle is never opened to ask.
+_NVFP4_PROBE_SUFFIXES = (".safetensors",)
 _PREQUANT_PROBE_LIMIT = 16
 
 
@@ -1160,7 +1250,7 @@ def _artifacts_declare_nvfp4(folder: str) -> bool:
         return False
     probed = 0
     for name in names:
-        if not name.lower().endswith(_PREQUANT_PROBE_SUFFIXES):
+        if not name.lower().endswith(_NVFP4_PROBE_SUFFIXES):
             continue
         path = os.path.join(folder, name)
         if not os.path.isfile(path):
@@ -1185,7 +1275,12 @@ def declares_nvfp4_checkpoint(model_path: Optional[str]) -> bool:
         if os.path.isfile(local):
             if not local.lower().endswith(_PREQUANT_PROBE_SUFFIXES):
                 return False
+            if local.lower().endswith(_PICKLE_SUFFIXES):
+                # Never unpickled to ask: the name decides (an nvfp4 pickle is refused at load anyway).
+                stem = os.path.splitext(os.path.basename(local))[0].lower()
+                return stem.endswith(("-nvfp4", "_nvfp4"))
             from .diffusion_nvfp4_flag import is_nvfp4
+
             return is_nvfp4(local_prequant_scheme(local))
         if os.path.isdir(local):
             if _artifacts_declare_nvfp4(local):
@@ -1226,14 +1321,19 @@ _FINGERPRINT_PAYLOAD: dict = {
 }
 
 
-def _packed_bytes(tensor: Any, torch: Any) -> bytes:
-    """``tensor``'s raw bytes via ``view(torch.uint8)``, exact for dtypes numpy cannot represent."""
+def _packed_view(tensor: Any, torch: Any) -> Any:
+    """``tensor``'s raw bytes as a zero-copy buffer (``view(torch.uint8)``), exact for dtypes numpy cannot represent."""
     t = tensor.detach().contiguous()
     if t.dim() == 0:
         t = t.reshape(1)
     if t.dtype is not torch.uint8:
         t = t.view(torch.uint8)
-    return t.cpu().numpy().tobytes()
+    return memoryview(t.cpu().numpy().reshape(-1))
+
+
+def _packed_bytes(tensor: Any, torch: Any) -> bytes:
+    """``tensor``'s raw bytes via ``view(torch.uint8)``, exact for dtypes numpy cannot represent."""
+    return _packed_view(tensor, torch).tobytes()
 
 
 def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
@@ -1252,7 +1352,7 @@ def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
                 return False
             hashed = True
             continue
-        digest.update(_packed_bytes(value, torch))
+        digest.update(_packed_view(value, torch))
         hashed = True
     return hashed
 
@@ -1263,23 +1363,13 @@ def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
 
     import torch
 
-    modules: dict = {}
-    skipped: list = []
-    items = state_dict.items() if hasattr(state_dict, "items") else ()
-    for key, tensor in items:
-        if key != "weight" and not str(key).endswith(".weight"):
-            continue
-        if select is not None and not select(str(key)):
-            continue
+    def _digest(tensor: Any) -> Optional[str]:
         digest = hashlib.md5()
-        try:
-            covered = _hash_packed_payload(tensor, digest, torch)
-        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
-            covered = False
-        if covered:
-            modules[key] = digest.hexdigest()
-        else:
-            skipped.append(key)
+        if not _hash_packed_payload(tensor, digest, torch):
+            return None
+        return digest.hexdigest()
+
+    modules, skipped = _digest_weights(state_dict, select, _digest)
     return {
         "algo": FINGERPRINT_ALGO,
         "count": len(modules),
@@ -1304,7 +1394,26 @@ _CANONICAL_PARTS: dict = {
     "Float8Tensor": (("q", "qdata"), ("scale", "scale")),
     "NVFP4Tensor": (("q", "qdata"), ("scale", "scale"), ("per_tensor_scale", "per_tensor_scale")),
     "MXTensor": (("q", "qdata"), ("scale", "scale")),
+    "HostedInt8Parts": (("q", "qdata"), ("scale", "scale"), ("zero_point", "zero_point")),
 }
+
+
+class HostedInt8Parts:
+    """An Int8Tensor's stored payload read as plain tensors (no torchao), fingerprinted like the Int8Tensor."""
+
+    __slots__ = ("qdata", "scale", "zero_point")
+
+    def __init__(
+        self,
+        qdata: Any,
+        scale: Any,
+        zero_point: Any = None,
+    ):
+        self.qdata = qdata
+        self.scale = scale
+        self.zero_point = zero_point
+
+
 _CANONICAL_ROLE_ORDER = (
     "q",
     "scale",
@@ -1343,19 +1452,25 @@ def _all_zero(value: Any, torch: Any) -> bool:
         return False
 
 
-def _canonical_bytes(role: str, value: Any, torch: Any) -> bytes:
-    """Version-stable bytes: ``q`` as stored; others flattened to float32 (exact for stored scales) / int64 zero point."""
+def _canonical_parts_of(role: str, value: Any, torch: Any) -> tuple:
+    """(head, zero-copy payload) of ``_canonical_bytes``: hashing them in turn gives the same digest without the copies."""
     t = value.detach()
     if role == "q":
         head = f"q:{str(t.dtype).replace('torch.', '')}:{tuple(t.shape)}".encode("utf-8")
-        return head + _packed_bytes(t, torch)
+        return head, _packed_view(t, torch)
     t = t.reshape(-1)
     if role in _ZERO_POINT_ROLES:
         t = t.to(torch.int64)
     elif t.is_floating_point() and t.dtype is not torch.float64:
         t = t.to(torch.float32)
     head = f"{role}:{str(t.dtype).replace('torch.', '')}:{t.numel()}".encode("utf-8")
-    return head + _packed_bytes(t, torch)
+    return head, _packed_view(t, torch)
+
+
+def _canonical_bytes(role: str, value: Any, torch: Any) -> bytes:
+    """Version-stable bytes: ``q`` as stored; others flattened to float32 (exact for stored scales) / int64 zero point."""
+    head, payload = _canonical_parts_of(role, value, torch)
+    return head + payload.tobytes()
 
 
 def canonical_weight_digest(tensor: Any) -> Optional[str]:
@@ -1372,27 +1487,67 @@ def canonical_weight_digest(tensor: Any) -> Optional[str]:
         value = parts.get(role)
         if value is None or (role in _ZERO_POINT_ROLES and _all_zero(value, torch)):
             continue
-        digest.update(_canonical_bytes(role, value, torch))
+        head, payload = _canonical_parts_of(role, value, torch)
+        digest.update(head)
+        digest.update(payload)
     return digest.hexdigest()
 
 
-def canonical_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
+# Weights hashed at once by the fingerprint check: md5 (over 2 KiB) and the torch casts release the GIL, so threads
+# scale until memory bandwidth does. ``UNSLOTH_PREQUANT_FINGERPRINT_THREADS`` overrides (1 = serial).
+FINGERPRINT_THREADS_ENV = "UNSLOTH_PREQUANT_FINGERPRINT_THREADS"
+_FINGERPRINT_THREADS_DEFAULT = 8
+
+
+def _fingerprint_threads() -> int:
+    import os
+
+    raw = str(os.environ.get(FINGERPRINT_THREADS_ENV, "")).strip()
+    try:
+        wanted = int(raw) if raw else _FINGERPRINT_THREADS_DEFAULT
+    except ValueError:
+        wanted = _FINGERPRINT_THREADS_DEFAULT
+    return max(1, min(wanted, os.cpu_count() or 1))
+
+
+def _digest_weights(state_dict: Any, select: Any, digest_of: Any) -> tuple:
+    """({fqn: digest}, [uncovered fqns]) over the ``.weight`` entries ``select`` keeps, in state-dict order.
+
+    ``digest_of`` returns None for an uncovered weight; a raise counts as uncovered. Runs on a thread pool."""
+    items = state_dict.items() if hasattr(state_dict, "items") else ()
+    picked = [
+        (key, tensor)
+        for key, tensor in items
+        if (key == "weight" or str(key).endswith(".weight"))
+        and (select is None or select(str(key)))
+    ]
+
+    def _one(tensor: Any) -> Optional[str]:
+        try:
+            return digest_of(tensor)
+        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
+            return None
+
+    tensors = [tensor for _key, tensor in picked]
+    threads = min(_fingerprint_threads(), len(picked))
+    if threads > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers = threads, thread_name_prefix = "prequant-fp") as pool:
+            values = list(pool.map(_one, tensors))
+    else:
+        values = [_one(tensor) for tensor in tensors]
     modules: dict = {}
     skipped: list = []
-    items = state_dict.items() if hasattr(state_dict, "items") else ()
-    for key, tensor in items:
-        if key != "weight" and not str(key).endswith(".weight"):
-            continue
-        if select is not None and not select(str(key)):
-            continue
-        try:
-            value = canonical_weight_digest(tensor)
-        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
-            value = None
+    for (key, _tensor), value in zip(picked, values):
         if value is None:
             skipped.append(key)
         else:
             modules[key] = value
+    return modules, skipped
+
+
+def canonical_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
+    modules, skipped = _digest_weights(state_dict, select, canonical_weight_digest)
     return {
         "algo": CANONICAL_FINGERPRINT_ALGO,
         "count": len(modules),
@@ -1754,15 +1909,8 @@ def hosted_prequant_refusal(
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """Why hosted ``source`` would be refused, from its header alone (no weight download).
-
-    Only a ``.safetensors`` checkpoint has a header this reads. The candidate names are walked in the
-    resolver's order (safetensors ahead of the pickle), and when the first one that exists is a
-    ``.pt`` the answer is None: a pickle is never opened here, so it is judged by the loader after its
-    download, as before. A parsed header whose typed fields cannot be validated IS a refusal, since
-    the loader would refuse it too.
-
-    None when usable or unreadable: unknown is never a refusal. Never raises."""
+    """Refusal reason for a hosted safetensors source from its header alone; None when usable or
+    unknown, or when the first existing candidate is a .pt (never opened here); never raises."""
     import os
     import time
 
@@ -1949,12 +2097,7 @@ def usable_prequant_source(
     readable = [n for n in candidates if restricted_prequant_load_supported(scheme, n)]
     if not readable:
         return None
-    # A DERIVED safetensors name is a guess: most repos do not host one yet, and a guess must not be
-    # what planning bets the dense shards on. So when the only readable candidates are safetensors
-    # names, require evidence that one is really there -- the family declared it, or it is already
-    # in the cache. Without that, an install that cannot open a pickle would plan a 6 GB artifact
-    # for a .pt-only repo, get a 404 then a refusal, and fall back to dense under a plan that never
-    # budgeted for it, which is the evict-then-OOM this function exists to prevent.
+    # Guessed safetensors names need a declaration or a cache hit, else a .pt-only repo wastes 6 GB.
     from .prequant_safetensors import is_safetensors_checkpoint
 
     if src.kind == "repo" and all(is_safetensors_checkpoint(n) for n in readable):
@@ -2138,10 +2281,7 @@ def _engage_nvfp4_backend(
     base: Optional[str] = None,
     logger: Any = None,
 ) -> int:
-    """Move a loaded NVFP4 transformer onto the backend ``device`` selects; returns the layers moved to flashinfer.
-
-    The flashinfer coverage warning fires here, once layers really run flashinfer's kernels: scheme selection also
-    runs for planning and validation, which load nothing and must not use up the once-only warning."""
+    """Moves the NVFP4 transformer to its backend; the flashinfer warning fires here, not in planning."""
     from .diffusion_nvfp4_linear import convert_nvfp4_backend
     from .diffusion_nvfp4_ops import select_nvfp4_backend
 
@@ -2306,7 +2446,11 @@ def load_prequantized_transformer(
             # Pickles load only under the ALLOWLIST, never free-running: a mutated file must fail,
             # not run.
             ckpt = _read_prequant_for(
-                path, placement_device or device, logger, host_copy_follows = host_copy_follows
+                path,
+                placement_device or device,
+                logger,
+                host_copy_follows = host_copy_follows,
+                scheme = scheme,
             )
             if not _validate_checkpoint(
                 ckpt,
@@ -2327,9 +2471,8 @@ def load_prequantized_transformer(
             _repair_legacy_checkpoint(ckpt, scheme, logger)
             _pin_kernel_preference(state_dict, logger)
 
-            # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
-            # may be gone or read-only, and load_config's raise is swallowed below into a None return, silently dropping a
-            # prequant whose checkpoint is cached and already loaded.
+            # Read from the root that supplied the checkpoint; a pinned root may be gone after a
+            # cache change.
             config = (
                 None
                 if into is not None
@@ -2440,6 +2583,7 @@ def load_prequantized_transformer(
             scheme,
             metadata.get("family") or family,
             min_features = int(metadata.get("min_features") or min_features or 512),
+            device = device,
             logger = logger,
         )
 
@@ -2555,15 +2699,25 @@ def _resolve_checkpoint_path(
     if source.kind == "path":
         import os
 
+        if nvfp4_pickle_name(scheme, source.location):
+            raise ValueError(
+                NVFP4_SAFETENSORS_ONLY_MESSAGE.format(what = "the local pre-quant override")
+            )
         # Expand ~ (the allowlist gate already did), else os.path.isfile sees a literal "~".
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         EntryNotFoundError, LocalEntryNotFoundError = _entry_not_found_errors()
-        names = list(candidate_filenames_of(source))
+        # nvfp4 never falls back to a pickle name, whatever the source carries.
+        names = without_nvfp4_pickles(scheme, candidate_filenames_of(source))
         all_names = list(names)
         if scheme is not None:
             readable = [n for n in names if restricted_prequant_load_supported(scheme, n)]
+            if not readable and _is_nvfp4_scheme(scheme) and names:
+                raise ValueError(
+                    f"the hosted nvfp4 checkpoint ({source.location}) cannot be read here: "
+                    f"{_unreadable_why(scheme)}"
+                )
             # Empty filter means it should never have been offered; returning None would hide the refusal.
             names = readable or names
         if not names:
@@ -3234,8 +3388,10 @@ def stream_prequantized_module(
     *,
     logger: Any = None,
     label: str = "pre-quantized denoiser",
+    defer_pin: bool = False,
 ) -> Optional[str]:
-    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render."""
+    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render.
+    ``defer_pin``: lazy host copies, no up-front pin (the caller pins what does not end up resident)."""
     if not torchao_group_offload_supported():
         return None
     import inspect
@@ -3287,7 +3443,9 @@ def stream_prequantized_module(
                 kwargs["non_blocking"] = True
             if "record_stream" in params:
                 kwargs["record_stream"] = True
-            if "low_cpu_mem_usage" in params:
+            if "low_cpu_mem_usage" in params and defer_pin:
+                kwargs["low_cpu_mem_usage"] = True
+            elif "low_cpu_mem_usage" in params:
                 from itertools import chain
                 payload_mib = sum(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
@@ -3414,6 +3572,12 @@ def _unreadable_why(scheme: str) -> str:
         ao = getattr(torchao, "__version__", "unknown")
     except Exception:  # noqa: BLE001
         return "torch or torchao is unavailable"
+    if _is_nvfp4_scheme(scheme):
+        return (
+            f"torchao {ao} cannot rebuild an NVFP4 safetensors checkpoint (needs torchao >= 0.17 and the "
+            "safetensors package); "
+            "NVFP4 is never read from a .pt pickle"
+        )
     if not _tuple_safe_globals_supported():
         return f"torch {torch.__version__} is older than 2.6"
     try:

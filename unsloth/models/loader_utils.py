@@ -23,6 +23,7 @@ import contextlib
 import contextvars
 import copy
 import threading as _threading
+from time import monotonic as _time_monotonic
 import functools
 import inspect
 from typing import Union
@@ -619,6 +620,30 @@ def _single_device_index(device_map):
     return None
 
 
+def no_placement_matcher(model, names = None):
+    """Predicate: is this tensor name one of `model._no_placement_params`? transformers reads the names relative to a
+    `_no_split_modules` module: a bare name ("weight", DeepSeek-V4.1's engram table) matches only a direct tensor of
+    such a module (a suffix match would take every weight in the model); a dotted one (Qwen4Exp's
+    "ple.ple_embedding.ngram_embedding.weight") keeps the suffix match."""
+    names = list(getattr(model, "_no_placement_params", None) or [] if names is None else names)
+    dotted = [n for n in names if "." in n]
+    bare = {n for n in names if "." not in n}
+    roots = set()
+    if bare:
+        no_split = set(getattr(model, "_no_split_modules", None) or [])
+        roots = {
+            path for path, module in model.named_modules() if type(module).__name__ in no_split
+        }
+
+    def match(name):
+        if any(name == n or name.endswith("." + n) for n in dotted):
+            return True
+        owner, _, leaf = name.rpartition(".")
+        return leaf in bare and owner in roots
+
+    return match
+
+
 def no_placement_tensor_names(model):
     """Every tensor name under a module owning one of the model's `_no_placement_params`."""
     names = getattr(model, "_no_placement_params", None)
@@ -627,11 +652,8 @@ def no_placement_tensor_names(model):
     tensors = list(model.named_parameters(remove_duplicate = False)) + list(
         model.named_buffers(remove_duplicate = False)
     )
-    owners = {
-        name.rsplit(".", 1)[0]
-        for name, _ in tensors
-        if any(name == n or name.endswith("." + n) for n in names)
-    }
+    match = no_placement_matcher(model, names)
+    owners = {name.rsplit(".", 1)[0] for name, _ in tensors if match(name)}
     return {name for name, _ in tensors if any(name.startswith(o + ".") for o in owners)}
 
 
@@ -661,10 +683,11 @@ def exclude_no_placement_params(device_map, model_class, config):
             f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error})."
         )
         return device_map
+    match = no_placement_matcher(meta, names)
     matched = {
         name
         for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
-        if any(name == n or name.endswith("." + n) for n in names)
+        if match(name)
     }
     if not matched:
         return device_map
@@ -1819,11 +1842,27 @@ def _load_probe_memo_scope(fn):
     return _wrapper
 
 
+# Failed fetches retry after a short pause, not per load: a firewall would cost each load the timeout.
+_NEW_MAPPER_TTL_S = 3600.0
+_NEW_MAPPER_RETRY_S = 300.0
+_NEW_MAPPER_CACHE = {"entry": None}  # (tables, fetched_at): one slot, never a torn pair
+
+
 def _new_mapper_tables():
     memo = _LOAD_PROBE_MEMO.get()
     if memo is not None and "new_mapper" in memo:
         return tuple(dict(table) for table in memo["new_mapper"])
-    tables = _get_new_mapper()
+    entry = _NEW_MAPPER_CACHE["entry"]
+    tables = None
+    if entry is not None:
+        cached, at = entry
+        age = _time_monotonic() - at
+        if 0 <= age < (_NEW_MAPPER_TTL_S if any(cached) else _NEW_MAPPER_RETRY_S):
+            tables = tuple(dict(table) for table in cached)
+    if tables is None:
+        # No lock around the fetch: a fork while another thread is fetching must not leave the child waiting.
+        tables = _get_new_mapper()
+        _NEW_MAPPER_CACHE["entry"] = (tuple(dict(table) for table in tables), _time_monotonic())
     if memo is not None and any(tables):
         memo["new_mapper"] = tuple(dict(table) for table in tables)
     return tables
@@ -2375,6 +2414,50 @@ def _fp8_block_size_from_config(model):
     return [int(block[0]), int(block[1])]
 
 
+def backfill_fp8_modules_to_convert(
+    config,
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    subfolder = None,
+    cache_dir = None,
+    variant = None,
+):
+    """List per-tensor fp8 tables (`.weight_scale`) a config leaves out of `modules_to_convert` (Qwen3.8-Flash-Next-FP8)."""
+    quant = getattr(config, "quantization_config", None)
+    if (
+        not isinstance(quant, dict)
+        or quant.get("quant_method") != "fp8"
+        or quant.get("modules_to_convert")
+    ):
+        return None
+    try:
+        weight_map = _load_fp8_weight_map(
+            model_name,
+            local_files_only,
+            token,
+            revision,
+            subfolder,
+            cache_dir,
+            variant = variant,
+            index_only = True,  # runs before the guarded weight download: never fetch the weights here
+        )
+    except Exception:
+        return None
+    skip = set(quant.get("modules_to_not_convert") or [])
+    modules = {k[: -len(".weight_scale")] for k in weight_map or {} if k.endswith(".weight_scale")}
+    # Linear blocks carry weight_scale_inv; only embeddings match, and the quantizer converts nn.Embedding only.
+    # Keep the layer index: the quantizer matches by suffix, so a bare name would also convert another layer's dense table.
+    found = sorted({re.sub(r"^.*\.(?=layers\.\d+\.)", "", m) for m in modules - skip})
+    if found:
+        quant["modules_to_convert"] = found
+        print(
+            f"Unsloth: {model_name} ships fp8 scales for {found} without listing them in modules_to_convert; added."
+        )
+    return found or None
+
+
 def _load_fp8_weight_map(
     model_name,
     local_files_only,
@@ -2383,8 +2466,10 @@ def _load_fp8_weight_map(
     subfolder = None,
     cache_dir = None,
     variant = None,
+    index_only = False,
 ):
-    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`."""
+    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`.
+    `index_only` never downloads a remote single file just to list its keys."""
 
     def _local_path(filename):
         return (
@@ -2429,7 +2514,7 @@ def _load_fp8_weight_map(
     try:
         if is_local and os.path.exists(_local_path(single_file)):
             single_path = _local_path(single_file)
-        elif not is_local:
+        elif not is_local and not index_only:
             single_path = _remote_path(single_file)
         else:
             return None

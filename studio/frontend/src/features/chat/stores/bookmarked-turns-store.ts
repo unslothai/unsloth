@@ -79,3 +79,13 @@ export const useBookmarkedTurnsStore = create<BookmarkedTurnsState>()(
     },
   ),
 );
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    // A null key is localStorage.clear().
+    const key = useBookmarkedTurnsStore.persist.getOptions().name;
+    if (event.key === key || event.key === null) {
+      void useBookmarkedTurnsStore.persist.rehydrate();
+    }
+  });
+}
