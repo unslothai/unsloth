@@ -14,8 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""transformer_quant none on a host too small for the dense float16 copy: the denoiser stays memory-mapped at its
-stored dtype and casts per call (no int8), and status never reports 'off' over an int8 denoiser."""
+"""Small-host transformer_quant none keeps the denoiser memory-mapped; status never reports 'off' over int8."""
 
 from __future__ import annotations
 

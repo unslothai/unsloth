@@ -7640,9 +7640,7 @@ def _video_exact_pins(
     return True
 
 
-# "0": a first video load in a Studio home (still writing its cast cache) pins none of a streamed text encoder that
-# misses the plan-time budget. On a 12.7 GB Colab T4 Wan2.1-T2V-1.3B's 12.5 GiB UMT5 then re-read its memory-mapped
-# weights from disk on every clip (90-115 s of a 342 s clip).
+# "0": a first video load pins no late encoder prefix (Colab T4 Wan2.1 1.3B UMT5 then re-reads disk: 90-115 s per clip).
 VIDEO_FIRST_LOAD_PREFIX_ENV = "UNSLOTH_VIDEO_FIRST_LOAD_ENCODER_PREFIX"
 
 
@@ -7651,8 +7649,7 @@ def _video_late_prefix(
     device: Any = None,
     exact: bool = False,
 ) -> bool:
-    """Whether a video load's streamed encoders that miss the plan-time pin pin the prefix free once the load
-    returns: a returning load (``exact``) always did; a first load does too, the cap read at pin start."""
+    """Whether streamed encoders missing the plan-time pin pin a prefix after the load returns."""
     if exact:
         return True
     return (

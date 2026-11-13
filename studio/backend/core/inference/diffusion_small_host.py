@@ -51,9 +51,7 @@ def host_ram_check_disabled() -> bool:
     return _env(HOST_RAM_CHECK_ENV) in ("0", "off", "false", "no")
 
 
-# "0": an explicit transformer_quant none / off on a host too small for the dense float16 copy stores the denoiser
-# as int8 (the auto route) and reports it as int8. Default: the denoiser keeps its stored bf16 weights memory-mapped
-# and casts each Linear per call, which the streamed text encoders already do, so the request is honoured.
+# "0": explicit transformer_quant none / off on a small host falls back to int8; default keeps it memory-mapped, cast per call.
 DENSE_DENOISER_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_DENSE"
 
 

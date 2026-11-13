@@ -8815,8 +8815,7 @@ class DiffusionBackend:
                     if transformer_quant_auto
                     else normalize_transformer_quant(transformer_quant_requested)
                 )
-                # An explicit none / off: a host too small for the dense float16 copy keeps the denoiser memory-mapped
-                # at its stored dtype (small-host route) rather than storing it as int8 behind an 'off' status.
+                # explicit none / off on a small host: keep the denoiser memory-mapped, not int8 behind 'off'
                 small_host_dense = (
                     not transformer_quant_auto
                     and transformer_quant_pinned is None
@@ -16569,8 +16568,7 @@ SMALL_HOST_INT8_REASON = (
 
 
 def _reported_transformer_quant(state: Any) -> Optional[str]:
-    """The denoiser precision the renders run at: the engaged scheme, or int8 when the small-host route stored the
-    denoiser as int8 weights without a quant engaging (an auto load on a small host), never 'off' for those."""
+    """Engaged scheme, or int8 when the small-host route stored an int8 denoiser with no quant engaged."""
     quant = getattr(state, "transformer_quant", None)
     if quant is None and _small_host_int8(getattr(state, "pipe", None)):
         return "int8"
