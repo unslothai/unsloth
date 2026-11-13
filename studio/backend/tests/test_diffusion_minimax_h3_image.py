@@ -547,32 +547,89 @@ def test_a_quantized_dit_without_the_adaln_table_budgets_the_dense_adaln(h3i):
     )
 
 
-def test_auto_scheme_is_bf16_only_when_it_fits(h3i, monkeypatch):
-    import torch
+# (compute capability, free VRAM GB, host GB): Colab G4 RTX PRO 6000, A100 80 GB, L4, T4.
+_H3_CARDS = {
+    "g4": ((12, 0), 95.0, 160.0),
+    "a100_80": ((8, 0), 79.0, 160.0),
+    "l4": ((8, 9), 22.0, 50.0),
+    "t4": ((7, 5), 14.5, 50.0),
+}
 
+
+def _fake_card(monkeypatch, cap):
+    import torch
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: cap)
+
+
+@pytest.mark.parametrize("card", sorted(_H3_CARDS))
+@pytest.mark.parametrize("width, height", [(1024, 1024), (2048, 2048)])
+def test_auto_takes_int8_on_every_card_even_where_bf16_fits(h3i, monkeypatch, card, width, height):
+    """Auto is int8 first on every tier: the bf16-fits shortcut (G4 / A100 80 GB took bf16) is gone."""
+    pytest.importorskip("torchao")
+    cap, vram, host = _H3_CARDS[card]
+    _fake_card(monkeypatch, cap)
+    te = h3i.te_gb_for("int8")
+    for kwargs in ({}, {"host_gb": host, "te_gb": te}):
+        got, reason = h3i.resolve_dit_scheme(
+            None, device = "cuda", vram_gb = vram, width = width, height = height, **kwargs
+        )
+        assert got == "int8", reason
+        assert "int8" in reason
+    assert h3i.resolve_dit_scheme("auto", device = "cuda", vram_gb = vram)[0] == "int8"
+
+
+@pytest.mark.parametrize("card", sorted(_H3_CARDS))
+def test_explicit_requests_are_untouched_by_the_auto_order(h3i, monkeypatch, card):
+    pytest.importorskip("torchao")
+    cap, vram, _host = _H3_CARDS[card]
+    _fake_card(monkeypatch, cap)
+    for req in ("bf16", "none", "off", "dense"):
+        assert h3i.resolve_dit_scheme(req, device = "cuda", vram_gb = vram)[0] is None
+    assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = vram)[0] == "int8"
+    fp8 = h3i.resolve_dit_scheme("fp8", device = "cuda", vram_gb = vram)[0]
+    assert fp8 == ("fp8" if cap >= (8, 9) else "int8")
+
+
+def test_auto_falls_to_fp8_then_bf16_when_int8_is_ruled_out(h3i, monkeypatch):
+    """A family deny / auto skip on int8 hands auto fp8 where the card has it, else bf16."""
+    pytest.importorskip("torchao")
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setitem(tq._FAMILY_AUTO_SKIP, h3i.H3_IMAGE_FAMILY_NAME, frozenset({"int8"}))
+    _fake_card(monkeypatch, (12, 0))
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] == "fp8"
+    _fake_card(monkeypatch, (8, 0))
+    got, reason = h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 79.0)
+    assert got is None and "bf16" in reason
+    monkeypatch.setitem(tq._FAMILY_AUTO_SKIP, h3i.H3_IMAGE_FAMILY_NAME, frozenset({"int8", "fp8"}))
+    _fake_card(monkeypatch, (12, 0))
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] is None
+    # an explicit int8 is still honoured
+    assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = 95.0)[0] == "int8"
+
+
+def test_auto_off_cuda_stays_bf16(h3i):
     assert h3i.resolve_dit_scheme(None, device = "cpu", vram_gb = None)[0] is None
     assert h3i.resolve_dit_scheme("int8", device = "cpu", vram_gb = None)[0] is None
-    if torch.cuda.is_available():
-        assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 39.5)[0] == "int8"
-        assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] is None
 
 
 @pytest.mark.parametrize(
-    "vram, host, scheme",
+    "cap, family_skip, expected",
     [
-        # 48 GB: bf16 beside the encoder would go sequential (refused under ~74 GB RAM).
-        (48.2, 72.0, "int8"),
-        (48.2, 128.0, "int8"),
-        (80.0, 64.0, None),
-        (190.0, 1500.0, None),
+        ((12, 0), frozenset(), ("int8", "fp8")),
+        ((9, 0), frozenset(), ("int8", "fp8")),
+        ((8, 9), frozenset(), ("int8", "fp8")),
+        ((8, 0), frozenset(), ("int8",)),
+        ((7, 5), frozenset(), ("int8",)),
+        ((7, 0), frozenset(), ()),
+        ((12, 0), frozenset({"int8"}), ("fp8",)),
+        (None, frozenset(), ()),
     ],
 )
-def test_auto_takes_bf16_only_when_it_stays_on_the_card_beside_the_encoder(h3i, vram, host, scheme):
-    pytest.importorskip("torchao")
-    te = h3i.te_gb_for("int8")
-    got, reason = h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram, host_gb = host, te_gb = te)
-    assert got == scheme, reason
-    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram)[0] is None
+def test_hosted_auto_scheme_order(monkeypatch, cap, family_skip, expected):
+    from core.inference import diffusion_transformer_quant as tq
+    monkeypatch.setitem(tq._FAMILY_AUTO_SKIP, "fake-family", family_skip)
+    assert tq.hosted_auto_scheme_order("fake-family", cap) == expected
 
 
 def test_the_plan_sizes_the_encoder_the_request_takes(h3i, monkeypatch):
@@ -594,10 +651,17 @@ def test_the_plan_credits_host_memory_the_unload_frees(h3i, monkeypatch):
     monkeypatch.delenv(h3i.HOST_BUDGET_ENV, raising = False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(h3i, "device_budgets", lambda dev: (80.0, 20.0))
+    seen = []
+    real = h3i.resolve_dit_scheme
+    monkeypatch.setattr(
+        h3i, "resolve_dit_scheme", lambda req, **kw: seen.append(kw["host_gb"]) or real(req, **kw)
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: (8, 0))
     assert h3i.planned_dit_scheme(None, "cuda") == "int8"
-    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) is None
+    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) == "int8"
     monkeypatch.setenv(h3i.HOST_BUDGET_ENV, "20")
     assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) == "int8"
+    assert seen == [pytest.approx(20.0), pytest.approx(64.0), pytest.approx(20.0)]
 
 
 def test_the_backend_plan_passes_the_resident_pipeline_host_memory(h3i, monkeypatch):

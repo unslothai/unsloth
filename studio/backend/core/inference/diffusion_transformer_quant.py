@@ -647,6 +647,30 @@ def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
     return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
 
 
+# AUTO order for a loader that reads a family's HOSTED int8 / fp8 checkpoint (no torchao smoke probe): int8 on every
+# CUDA tier (``torch._int_mm`` is cuBLASLt int8 with no capability gate, Turing included), then fp8 where the card has
+# fp8 tensor cores, then bf16. Taken whether or not bf16 would fit; an explicit request bypasses this order.
+_HOSTED_AUTO_FLOORS: tuple[tuple[str, tuple[int, int]], ...] = (
+    (TQ_INT8, (7, 5)),
+    (TQ_FP8, (8, 9)),
+)
+
+
+def hosted_auto_scheme_order(
+    family: Optional[str], cap: Optional[tuple[int, int]]
+) -> tuple[str, ...]:
+    """Hosted schemes ``auto`` tries for ``family`` on a card of capability ``cap``, best first; () means bf16. The
+    family deny and auto-skip tables still apply, so a family measured to fail a scheme never gets it by default."""
+    if cap is None:
+        return ()
+    skip = _FAMILY_AUTO_SKIP.get(str(family or "").strip().lower(), frozenset())
+    return tuple(
+        scheme
+        for scheme, floor in _HOSTED_AUTO_FLOORS
+        if tuple(cap) >= floor and scheme not in skip and not _family_denied(family, scheme)
+    )
+
+
 # Schemes denied for TRAINING on top of the inference table (``FamilyProfile.train_scheme_deny``): the inference
 # evidence is rendering evidence, not evidence that a LoRA converges on those frozen linears.
 _FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = _profile_table(

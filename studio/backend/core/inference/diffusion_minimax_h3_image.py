@@ -1877,9 +1877,9 @@ def resolve_dit_scheme(
     te_gb: Optional[float] = None,
     inflight: int = 1,
 ) -> tuple[Optional[str], str]:
-    """(scheme or None for bf16, reason). Auto: bf16 when the table-form bf16 DiT fits the card beside its working
-    set, else int8. With ``te_gb``, bf16 must also stay resident beside the encoder (48 GB cards go int8).
-    fp8 needs SM 8.9+ (else int8)."""
+    """(scheme or None for bf16, reason). Auto: int8, then fp8, then bf16 (``hosted_auto_scheme_order``), on every
+    card: int8 was faster than bf16 on cards that hold bf16 (RTX PRO 6000 2048px 2.30 vs 3.52 s/image, LPIPS 0.045).
+    An explicit fp8 needs SM 8.9+ (else int8). The size arguments are kept for callers; auto no longer reads them."""
     import torch
 
     req = (requested or "auto").strip().lower()
@@ -1904,36 +1904,14 @@ def resolve_dit_scheme(
         return "fp8", "fp8 requested"
     if req == "int8":
         return "int8", "int8 requested"
-    need = H3_IMAGE_DIT_TABLE_BF16_GB + activation_gb(width, height) + 1.5
-    if vram_gb is not None and vram_gb >= need:
-        if te_gb is None:
-            return None, f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) fits {vram_gb:.1f} GB"
-        try:
-            placement = plan_placement(
-                vram_gb = vram_gb,
-                host_gb = host_gb,
-                dit_gb = dit_gb_for(None, adaln_table_enabled()),
-                te_gb = te_gb,
-                width = width,
-                height = height,
-                inflight = inflight,
-            ).placement
-        except RuntimeError:  # no bf16 placement fits this host at all
-            placement = None
-        if placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
-            return (
-                None,
-                f"auto: bf16 DiT ({H3_IMAGE_DIT_TABLE_BF16_GB} GB) stays on {vram_gb:.1f} GB",
-            )
-        return (
-            "int8",
-            f"auto: beside the {te_gb:.1f} GB encoder the bf16 DiT would not stay on {vram_gb:.1f} GB "
-            f"({placement or 'no placement fits'}), int8 ConvRot",
-        )
-    return (
-        "int8",
-        f"auto: bf16 DiT would not fit {vram_gb if vram_gb is not None else 0:.1f} GB, int8 ConvRot",
-    )
+    from .diffusion_transformer_quant import hosted_auto_scheme_order
+
+    cap = tuple(torch.cuda.get_device_capability(dev))
+    order = hosted_auto_scheme_order(H3_IMAGE_FAMILY_NAME, cap)
+    if not order:
+        return None, f"auto: no int8 or fp8 rung on compute capability {cap[0]}.{cap[1]}, bf16"
+    label = "int8 ConvRot" if order[0] == "int8" else order[0]
+    return order[0], f"auto: {label} (auto order int8, fp8, bf16)"
 
 
 def device_budgets(device: Any) -> tuple[Optional[float], Optional[float]]:
@@ -2726,7 +2704,7 @@ def load_minimax_h3_image_pipeline(
 ) -> Any:
     """A ready ``MiniMaxH3ImagePipeline`` for ``repo_id`` (Hub id or local folder) placed for ``device``.
 
-    ``transformer_quant``: None/"auto" (bf16 when it fits, else int8), "int8", "fp8", "bf16". ``text_encoder_quant``:
+    ``transformer_quant``: None/"auto" (int8, then fp8, then bf16), "int8", "fp8", "bf16". ``text_encoder_quant``:
     "int8" (Studio's hosted ConvRot conditioner) or None (bf16). ``text_encoder`` / ``transformer`` hand in prebuilt
     components (tests, a hosted prequant DiT)."""
     import torch
