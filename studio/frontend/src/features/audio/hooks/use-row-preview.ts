@@ -23,7 +23,6 @@ export function useRowPreview(
     const onOtherPlay = (event: Event) => {
       if (event.target === audio) return;
       requestRef.current += 1;
-      if (audio.paused) return;
       audio.pause();
       setPlayingId(null);
     };
