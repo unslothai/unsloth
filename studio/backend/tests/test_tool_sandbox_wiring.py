@@ -740,13 +740,20 @@ def test_session_package_commands_stay_on_path(monkeypatch, tmp_path, os_name, s
     assert env["PATH"].split(os.pathsep) == ["/usr/bin", str(packages / scripts)]
 
 
-def _wheel(workdir, name, files):
-    info = f"{name}-1.0.dist-info"
-    wheel = workdir / f"{name}-1.0-py3-none-any.whl"
+def _wheel(
+    workdir,
+    name,
+    files,
+    version = "1.0",
+):
+    info = f"{name}-{version}.dist-info"
+    wheel = workdir / f"{name}-{version}-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as whl:
         for path, text in files.items():
             whl.writestr(path, text)
-        whl.writestr(f"{info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+        whl.writestr(
+            f"{info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+        )
         whl.writestr(
             f"{info}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
         )
@@ -1028,6 +1035,40 @@ def test_an_approved_host_access_call_imports_the_chats_editable_installs(monkey
     assert str(tmp_path / "src" / "chat_path_editable.py") in out, out
     # A finder would sit outside the host finder's package boundary and plant a path-hook entry on sys.path.
     assert str(tmp_path / "flat") not in out, out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_chat_reinstall_retires_the_files_the_old_version_had(monkeypatch, tmp_path):
+    """--ignore-installed never uninstalls: the shim drops what only the replaced chat-local version shipped."""
+    name = "unsloth_chat_retire"
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    old = _wheel(workdir, name, {f"{name}/__init__.py": "", f"{name}/old.py": ""}, "1.0")
+    new = _wheel(workdir, name, {f"{name}/__init__.py": ""}, "2.0")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = (
+        f"{_PIP} {old} && sleep 1 && {_PIP} {new} && "
+        f'python -c \'import importlib.util as u; print("OLD", u.find_spec("{name}.old"))\''
+    )
+    out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
+    assert "OLD None" in out, out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_the_namespace_check_never_loads_ast_from_an_editable_source(monkeypatch, tmp_path):
+    """The ast the session finder imports is the stdlib one, not a copy in a path-line editable's folder."""
+    workdir = tmp_path / "chat"
+    marker = tmp_path / "planted_ran"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    (site_dir / "email").mkdir(parents = True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "ast.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+    (site_dir / "__editable__.planted-1.0.pth").write_text(str(tmp_path / "src") + "\n")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = "python -c 'import email.mime; print(41 + 1)'"
+    out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
+    assert "42" in out, out
+    assert not marker.exists()
 
 
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):

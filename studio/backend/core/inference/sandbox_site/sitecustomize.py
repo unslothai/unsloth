@@ -543,9 +543,15 @@ def _read_pth_files(entries, on_sys_path = True):
 # install lacks the new portion, and an editable fork's concrete module wins over Studio's copy (namespaces are
 # left to the normal aggregation, which the editable finders still join from their usual place).
 class _SessionPackagesFinder:
-    def __init__(self, entries, editable):
+    def __init__(
+        self,
+        entries,
+        editable,
+        chat_paths = (),
+    ):
         self._entries = entries
         self._editable = editable
+        self._chat_paths = set(entries) | set(chat_paths)
 
     def find_spec(
         self,
@@ -578,7 +584,7 @@ class _SessionPackagesFinder:
             if "ast" not in sys.modules:
                 # _extends_path imports ast: the stdlib one, never a chat-planted copy.
                 saved = sys.path[:]
-                sys.path[:] = [e for e in saved if e not in self._entries]
+                sys.path[:] = [e for e in saved if e not in self._chat_paths]
                 try:
                     import ast  # noqa: F401
                 finally:
@@ -593,7 +599,8 @@ class _SessionPackagesFinder:
 _entries = _session_entries()
 if _entries and not any(isinstance(f, _SessionPackagesFinder) for f in sys.meta_path):
     try:
-        _finder = _SessionPackagesFinder(_entries, _read_pth_files(_entries)[1])
+        _added, _editable = _read_pth_files(_entries)
+        _finder = _SessionPackagesFinder(_entries, _editable, _added)
         # Behind the built-in and frozen importers, so an editable mapping can never replace those modules.
         _at = next(
             (i for i, f in enumerate(sys.meta_path) if getattr(f, "__name__", "") == "PathFinder"),
@@ -606,6 +613,20 @@ if _entries and not any(isinstance(f, _SessionPackagesFinder) for f in sys.meta_
 
 # --ignore-installed never uninstalls, so a reinstall leaves stale dist-info importlib.metadata may pick;
 # RECORD is written last, so the newest RECORD per project is the finished install.
+def _recorded_files(entry, dist_info, root):
+    files = set()
+    try:
+        with open(os.path.join(entry, dist_info, "RECORD"), encoding = "utf-8") as f:
+            for line in f:
+                path = line.rstrip("\n").rsplit(",", 2)[0].strip('"')
+                full = os.path.normcase(os.path.abspath(os.path.join(entry, path)))
+                if path and full.startswith(root) and not path.startswith(dist_info + "/"):
+                    files.add(full)
+    except OSError:
+        pass
+    return files
+
+
 def _prune_stale_dist_info():
     try:
         prefix = os.environ.get("PIP_PREFIX")
@@ -639,7 +660,15 @@ def _prune_stale_dist_info():
                         pass
                 import shutil
 
-                for _, name in sorted(stamped)[:-1]:
+                stamped.sort()
+                keep = _recorded_files(entry, stamped[-1][1], root) if stamped else set()
+                for _, name in stamped[:-1]:
+                    # Also the files only the replaced version had, as pip's uninstall would remove.
+                    for path in _recorded_files(entry, name, root) - keep:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
                     shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
     except Exception:  # noqa: BLE001 - a broken shim must never break user code
         pass
