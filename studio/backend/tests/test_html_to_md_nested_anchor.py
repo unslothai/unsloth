@@ -114,3 +114,15 @@ def test_title_only_card_does_not_win_main_content():
     card = f"<article><a href='/o'>Card <div role='heading'>{title}<a href='/i'>Read</a></div></a></article>"
     body = "<article><p>" + "Real article body text. " * 10 + "</p></article>"
     assert "Real article body text." in html_to_markdown(card + body, main_content = True)
+
+
+def test_closed_heading_card_does_not_win_main_content():
+    title = "Related title words " * 16
+    card = f"<article><a href='/o'>Card <h2>{title}</h2><a href='/i'>Read</a></a></article>"
+    body = "<article><p>" + "Real article body text. " * 10 + "</p></article>"
+    assert "Real article body text." in html_to_markdown(card + body, main_content = True)
+
+
+def test_nested_anchor_inside_inline_code_keeps_the_inner_link():
+    html = "<p><a href='/o'><code>git <a href='/i'>clone</a></code></a></p>"
+    assert html_to_markdown(html).startswith("[clone](/i)")

@@ -1275,6 +1275,7 @@ class _MarkdownRenderer(HTMLParser):
             cell,
             len(self._table_stack),
             len(self._sup_starts),
+            self._inline_code_depth,
         )
 
     # Link text helper: normalize whitespace so block content in <a> stays single-line.
@@ -1721,6 +1722,7 @@ class _MarkdownRenderer(HTMLParser):
             tag == "a"
             and self._in_link
             and not self._in_pre
+            and not self._link_had_heading
             and self._link_open_state == self._link_output_state()
         ):
             if self._header_stack:
