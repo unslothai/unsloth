@@ -112,7 +112,6 @@ def test_a_failed_load_logs_lemonades_output_and_names_its_reason(tmp_path, monk
     logged = "\n".join(log.warnings)
     assert "FastFlowLM process has terminated" in logged
     assert "Backend load failed: FastFlowLM failed to start" in logged
-    # Only what lemond printed for this load, not everything since it started.
     assert "started on port" not in logged
 
 
@@ -135,7 +134,6 @@ def test_a_failure_lemonade_only_summarizes_points_at_the_log(tmp_path, monkeypa
         backend.load(_MODEL, 32768)
 
     assert summary in str(raised.value)
-    # No file means nothing on the Logs page to point at.
     assert ("Logs" in str(raised.value)) == has_log
     assert any(f"Failed to load model: {summary}" in warning for warning in log.warnings)
 
