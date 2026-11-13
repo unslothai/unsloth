@@ -124,17 +124,29 @@ def _mlx_adapter():
     nodes = [
         n
         for n in ast.parse(source).body
-        if (isinstance(n, ast.FunctionDef) and n.name == "_adapt_for_mlx_vlm")
-        or (isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "_MLX_VIDEO_UNSUPPORTED")
+        if isinstance(n, ast.FunctionDef) and n.name == "_adapt_for_mlx_vlm"
     ]
     namespace = {"_resize_mlx_vlm_image": lambda image, *a, **k: image}
     exec(compile(ast.Module(nodes, []), "worker.py", "exec"), namespace)
     return namespace["_adapt_for_mlx_vlm"]
 
 
-def test_mlx_refuses_video_rather_than_dropping_it():
-    with pytest.raises(ValueError, match = "video"):
-        _mlx_adapter()(_format(_messages_rows()))
+def test_mlx_adapter_keeps_video_instead_of_dropping_it():
+    out = _mlx_adapter()(_format(_messages_rows()))
+    for row, clip in zip(out, CLIPS):
+        assert row["videos"] == clip
+        assert [
+            part
+            for message in row["messages"]
+            for part in message["content"]
+            if part.get("type") == "video"
+        ] == [{"type": "video"}]
+
+
+def test_mlx_adapter_reads_a_top_level_video_column():
+    out = _mlx_adapter()(_format(_flat_rows()))
+    for row, clip in zip(out, CLIPS):
+        assert row["videos"] == clip
 
 
 @pytest.mark.parametrize("url", ["https://example.com/clip.mp4", "HTTP://example.com/clip.mov?x=1"])
@@ -566,7 +578,9 @@ def test_a_decoded_audio_dict_with_an_mp4_path_is_not_video():
     assert detect_video_columns({"audio": cell, "text": "hi"}) == []
 
 
-def test_mlx_refuses_video_before_formatting_fetches_clips():
+def test_mlx_video_refusal_only_lives_in_the_residual_routing_guard():
+    """Video datasets still fail loudly, but only when they would be silently
+    dropped: non-VLM models, or an unsloth-zoo without video collation."""
     import ast
     from pathlib import Path
 
@@ -578,21 +592,17 @@ def test_mlx_refuses_video_before_formatting_fetches_clips():
         for n in ast.parse(source).body
         if isinstance(n, ast.FunctionDef) and n.name == "_run_mlx_training"
     )
-    calls = [
+    video_probes = [
         node.func.id
         for node in ast.walk(run)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "detect_video_columns"
     ]
-    lines = {
-        name: min(
-            n.lineno
-            for n in ast.walk(run)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
-        )
-        for name in ("detect_video_columns", "format_and_template_dataset")
-        if name in calls
+    assert len(video_probes) == 1
+    assert "_MLX_VIDEO_UNSUPPORTED" not in {
+        node.id for node in ast.walk(run) if isinstance(node, ast.Name)
     }
-    assert lines["detect_video_columns"] < lines["format_and_template_dataset"]
 
 
 @pytest.mark.parametrize("name", ["user_prompt", "problem", "inputs"])

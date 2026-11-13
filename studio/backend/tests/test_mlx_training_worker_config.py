@@ -347,7 +347,8 @@ def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
 
     adapted = _adapt_for_mlx_vlm([item], resize = 128, image_layout = "chw")
 
-    assert adapted[0]["image"].shape == (3, 80, 128)
+    assert adapted[0]["images"].shape == (3, 80, 128)
+    assert "image" not in adapted[0]
     assert adapted[0]["messages"][0]["content"][0] == {"type": "image"}
 
 
