@@ -1965,6 +1965,14 @@ def _swap_on(
     multi = len(_split_cards(transformer)) > 1
     recs = [(m, _eligible(m)) for m in transformer.modules()]
     recs = [(m, r) for m, r in recs if r is not None and (not multi or _weight_card(m) == index)]
+    if streamed:
+        # a Linear carrying its own offload hook (a Linear directly in a top-level ModuleList / Sequential): the
+        # swapped forward would replace the hooked one and skip its onload
+        recs = [
+            (m, r)
+            for m, r in recs
+            if not ("_diffusers_hook" in m.__dict__ or "_hf_hook" in m.__dict__)
+        ]
     if not recs:
         return 0
     from .diffusion_convrot_quant import rotquant_device_config

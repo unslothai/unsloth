@@ -1814,3 +1814,74 @@ def test_streamed_eager_follows_the_onloaded_weight_bit_identically(forced, vers
     assert g8.call_count() == calls + 1 and cq.h16_call_count() == h16
     assert torch.equal(got, want)
     g8.uninstall(holder)
+
+
+@needs_cuda
+def test_streamed_eager_leaves_a_linear_with_its_own_offload_hook_alone(forced):
+    """A Linear directly inside a top-level Sequential / ModuleList carries its own diffusers offload hook; a swap after
+    placement would replace the hooked forward and skip its onload (torchao then sees a host weight)."""
+    from types import SimpleNamespace
+
+    from diffusers.hooks import apply_group_offloading
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference.diffusion_offload_prefetch import install_group_prefetch
+    from core.inference.diffusion_speed import install_streamed_eager_int8_gemm
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.ff = torch.nn.Linear(512, 512)
+
+        def forward(self, x):
+            return x + self.ff(x)
+
+    class DiT(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([Block() for _ in range(3)])
+            self.head = torch.nn.Sequential(torch.nn.Linear(512, 512), torch.nn.SiLU())
+            self.tail = torch.nn.ModuleList([torch.nn.Linear(512, 512)])
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = block(x)
+            return self.tail[0](self.head(x))
+
+    dev = torch.device("cuda", torch.cuda.current_device())
+    x = torch.randn(1, 300, 512, dtype = torch.bfloat16, device = dev)
+    outs = []
+    for install in (False, True):
+        torch.manual_seed(0)
+        model = DiT().to(torch.bfloat16)
+        quantize_(model, Int8DynamicActivationInt8WeightConfig(set_inductor_config = False))
+        apply_group_offloading(
+            model,
+            onload_device = dev,
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
+            use_stream = True,
+            record_stream = True,
+            non_blocking = True,
+        )
+        if not install_group_prefetch(model, dev):
+            pytest.skip("diffusers without stream groups the prefetcher drives")
+        hooked = [
+            m
+            for m in model.modules()
+            if isinstance(m, torch.nn.Linear) and "_diffusers_hook" in m.__dict__
+        ]
+        assert len(hooked) == 2
+        if install:
+            assert install_streamed_eager_int8_gemm(SimpleNamespace(transformer = model), dev)
+            assert all(g8._REC not in m.__dict__ for m in hooked)
+            assert all(g8._REC in b.ff.__dict__ for b in model.blocks)
+        with torch.inference_mode():
+            calls = g8.call_count()
+            outs.append(model(x))
+            torch.cuda.synchronize()
+        assert g8.call_count() - calls == (3 if install else 0)
+        if install:
+            g8.uninstall(model)
+    assert torch.equal(outs[0], outs[1])
