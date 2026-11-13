@@ -2663,6 +2663,14 @@ _PY_DESTRUCTIVE_FS_ATTRS = frozenset({"unlink", "rmtree", "rmdir", "removedirs"}
 # psutil ends a process exactly as os.kill does, which is already gated.
 _PY_PROCESS_KILL_ATTRS = frozenset({"kill", "terminate", "send_signal", "suspend"})
 _PY_PROCESS_MODULES = frozenset({"psutil"})
+_PY_CODE_STRING_RUNNERS = {
+    "timeit": frozenset({"timeit", "repeat", "Timer"}),
+    "cProfile": frozenset({"run", "runctx"}),
+    "profile": frozenset({"run", "runctx"}),
+    "pdb": frozenset({"run", "runeval", "runctx"}),
+}
+_PY_CODE_RUNNER_CLASSES = {"cProfile": "Profile", "profile": "Profile", "pdb": "Pdb"}
+_PY_CODE_RUNNER_SOURCE_KWARGS = frozenset({"cmd", "command", "statement", "expression"})
 # Gated only on the os module or an alias so same-named methods stay out; os.truncate zeroes a file, os.kill and os.killpg terminate processes
 _PY_DESTRUCTIVE_FS_OS_ATTRS = frozenset({"remove", "truncate", "ftruncate", "kill", "killpg"})
 _PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
@@ -8297,12 +8305,35 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     return False
 
 
+_RUNNER_SOURCES_ACTIVE: "contextvars.ContextVar[tuple[str, ...]]" = contextvars.ContextVar(
+    "_RUNNER_SOURCES_ACTIVE", default = ()
+)
+
+
+def _runner_source_is_high_risk(source: str) -> bool:
+    # Folded sources can reproduce their caller (s.format(s)): a cycle or deep nesting asks.
+    active = _RUNNER_SOURCES_ACTIVE.get()
+    if source in active or len(active) >= 8:
+        return True
+    token = _RUNNER_SOURCES_ACTIVE.set((*active, source))
+    try:
+        return _python_is_high_risk(source)
+    except (RecursionError, ValueError):
+        # Too deep, or unencodable (a lone surrogate): unanalyzable source asks.
+        return True
+    finally:
+        _RUNNER_SOURCES_ACTIVE.reset(token)
+
+
 def _python_is_high_risk(code: str) -> bool:
     """Flags code the static checks refuse, credential-path access, or code built to run past them."""
     if not code or not code.strip():
         return False
     # A confirmation beats a silent refusal at execution time.
-    if _check_code_safety(code) is not None:
+    analysis = _check_signal_escape_patterns(code)
+    if _check_code_safety(code, analysis = analysis) is not None:
+        return True
+    if any(_terminal_is_high_risk(command) for command in analysis[1].get("shell_commands", ())):
         return True
     tree, _parse_error = _parse_python(code)
     if _parse_error is not None:
@@ -8589,11 +8620,233 @@ def _python_is_high_risk(code: str) -> bool:
             folded = _folded_path(node, str_vars)
             if folded and _folded_is_sensitive(folded):
                 return True
+    # name -> possible runner modules; sets only grow, so alias propagation converges.
+    runner_modules: "dict[str, set[str]]" = {}
+    runner_funcs: "dict[str, set[str]]" = {}
+    runner_class_names: "dict[str, str]" = {}
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in _PY_CODE_STRING_RUNNERS:
+                    runner_modules.setdefault(alias.asname or alias.name, set()).add(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module in _PY_CODE_STRING_RUNNERS:
+            runner_class = _PY_CODE_RUNNER_CLASSES.get(node.module)
+            for alias in node.names:
+                if alias.name == "*":
+                    for name in _PY_CODE_STRING_RUNNERS[node.module]:
+                        runner_funcs.setdefault(name, set()).add(node.module)
+                    if runner_class:
+                        runner_class_names[runner_class] = node.module
+                elif alias.name in _PY_CODE_STRING_RUNNERS[node.module]:
+                    runner_funcs.setdefault(alias.asname or alias.name, set()).add(node.module)
+                elif alias.name == runner_class:
+                    runner_class_names[alias.asname or alias.name] = node.module
+
+    def _runner_instance_module(value):
+        if not isinstance(value, ast.Call):
+            return None
+        ctor = value.func
+        if isinstance(ctor, ast.Name):
+            return runner_class_names.get(ctor.id)
+        if isinstance(ctor, ast.Attribute) and isinstance(ctor.value, ast.Name):
+            for module in runner_modules.get(ctor.value.id, ()):
+                if ctor.attr == _PY_CODE_RUNNER_CLASSES.get(module):
+                    return module
+        return None
+
+    runner_instances: "dict[str, set[str]]" = {}
+    for node in _tree_nodes(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and (module := _runner_instance_module(node.value))
+        ):
+            runner_instances.setdefault(node.targets[0].id, set()).add(module)
+
+    def _runner_modules_of(func) -> "set[str]":
+        if isinstance(func, ast.Name):
+            return runner_funcs.get(func.id, set())
+        if not isinstance(func, ast.Attribute):
+            return set()
+        receiver = func.value
+        if isinstance(receiver, ast.Name):
+            candidates = runner_instances.get(receiver.id) or runner_modules.get(receiver.id, ())
+        else:
+            candidates = {_runner_instance_module(receiver)} - {None}
+        return {m for m in candidates if func.attr in _PY_CODE_STRING_RUNNERS[m]}
+
+    def _code_runner_module(func):
+        # A name that may be either runner gets the stricter profiler rule.
+        modules = _runner_modules_of(func)
+        return min(modules - {"timeit"}, default = None) or min(modules, default = None)
+
+    simple_assigns = [
+        (node.targets[0].id, node.value)
+        for node in _tree_nodes(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ]
+    readers: "dict[str, list[int]]" = {}
+    for index, (_target, value) in enumerate(simple_assigns):
+        read = value.value if isinstance(value, ast.Attribute) else value
+        if isinstance(read, ast.Name):
+            readers.setdefault(read.id, []).append(index)
+    pending = list(range(len(simple_assigns)))
+    while pending:
+        target, value = simple_assigns[pending.pop()]
+        aliased = runner_modules.get(value.id, set()) if isinstance(value, ast.Name) else set()
+        grew = False
+        for table, found in ((runner_funcs, _runner_modules_of(value)), (runner_modules, aliased)):
+            if found - table.get(target, set()):
+                table.setdefault(target, set()).update(found)
+                grew = True
+        if grew:
+            pending.extend(readers.get(target, ()))
+
+    # Every binding of a name, so a reassigned source cannot hide the value a runner saw.
+    name_bindings: "dict[str, list]" = {}
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    name_bindings.setdefault(target.id, []).append(node.value)
+                elif isinstance(target, (ast.Tuple, ast.List)):
+                    for elt in target.elts:
+                        if isinstance(elt, ast.Name):
+                            name_bindings.setdefault(elt.id, []).append(None)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and isinstance(node.target, ast.Name):
+            name_bindings.setdefault(node.target.id, []).append(node.value)
+        elif isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor)) and isinstance(
+            node.target, ast.Name
+        ):
+            name_bindings.setdefault(node.target.id, []).append(None)
+
+    name_sources: "dict[str, tuple[list[str], bool]]" = {}
+
+    def _code_strings(arg, seen = frozenset()) -> "tuple[list[str], bool]":
+        """Candidate sources for a runner argument, and whether any binding stayed unresolved."""
+        if isinstance(arg, ast.Name) and name_bindings.get(arg.id):
+            if arg.id in seen or len(seen) >= 32:
+                return [], True
+            if arg.id not in name_sources:
+                sources, unresolved = [], False
+                for value in name_bindings[arg.id]:
+                    if value is None:
+                        unresolved = True
+                        continue
+                    found, missing = _code_strings(value, seen | {arg.id})
+                    sources.extend(found)
+                    unresolved |= missing
+                name_sources[arg.id] = (list(dict.fromkeys(sources)), unresolved)
+            return name_sources[arg.id]
+        folded = _folded_path(arg, str_vars)
+        if folded is None or "\x00" in folded or "\x02" in folded:
+            return [], True
+        return [folded], False
+
+    def _string_shaped(node, seen) -> bool:
+        # A str built at runtime ("...".strip(), f-strings): unscreenable, so it asks; callables do not.
+        if isinstance(node, ast.Name):
+            if len(seen) >= 32:
+                return True
+            if node.id in seen:
+                return False
+            seen.add(node.id)
+            bindings = name_bindings.get(node.id, ())
+            return any(v is not None and _string_shaped(v, seen) for v in bindings)
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (str, bytes))
+        if isinstance(node, ast.JoinedStr):
+            return True
+        if isinstance(node, ast.BinOp):
+            return _string_shaped(node.left, seen) or _string_shaped(node.right, seen)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            return _string_shaped(node.func.value, seen)
+        if isinstance(node, ast.Subscript):
+            return _string_shaped(node.value, seen)
+        return False
+
+    runner_verdicts: "dict[object, bool]" = {}
+
+    def _cached_runner_verdict(source: str) -> bool:
+        if source not in runner_verdicts:
+            runner_verdicts[source] = _runner_source_is_high_risk(source)
+        return runner_verdicts[source]
+
+    def _cached_timeit_verdict(program: str) -> bool:
+        # An unparsable combination could hide what setup binds for stmt.
+        key = ("timeit", program)
+        if key not in runner_verdicts:
+            try:
+                unparsable = _parse_python(program)[1] is not None
+            except (RecursionError, ValueError):
+                unparsable = True
+            runner_verdicts[key] = bool(program.strip()) and (
+                unparsable or _cached_runner_verdict(program)
+            )
+        return runner_verdicts[key]
+
+    def _kwarg_items(node):
+        """(name, value) for a call's keywords with literal ** dicts flattened; None name = opaque."""
+        stack = [(kw.arg, kw.value) for kw in reversed(node.keywords)]
+        while stack:
+            name, value = stack.pop()
+            if name is not None:
+                yield name, value
+            elif isinstance(value, ast.Dict):
+                for key, item in reversed(list(zip(value.keys, value.values))):
+                    if key is None:
+                        stack.append((None, item))
+                    elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        stack.append((key.value, item))
+                    else:
+                        yield None, item
+            else:
+                yield None, value
+
+    def _runner_arg(node, index, keywords):
+        if len(node.args) > index:
+            return node.args[index]
+        return next((v for k, v in _kwarg_items(node) if k in keywords), None)
+
+    def _opaque_kwargs(node) -> bool:
+        return any(k is None for k, _ in _kwarg_items(node))
+
     # Non-literal exec/eval/compile/__import__ runs unseen code: ask. Literal ones are screened.
     for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
+        runner = _code_runner_module(func)
+        if runner == "timeit":
+            # timeit also takes callables: screen resolvable strings, setup + stmt as one program.
+            stmt = _runner_arg(node, 0, ("stmt",))
+            setup = _runner_arg(node, 1, ("setup",))
+            if _opaque_kwargs(node):
+                return True
+            candidates = []
+            for arg in (setup, stmt):
+                sources, unresolved = _code_strings(arg) if arg is not None else ([], False)
+                if unresolved and _string_shaped(arg, set()):
+                    return True
+                candidates.append(sources or [""])
+            setups, stmts = candidates
+            if len(setups) * len(stmts) <= 16:
+                programs = [f"{a}\n{b}" for a in setups for b in stmts]
+            else:
+                programs = ["\n".join([*setups, *stmts])]
+            if any(map(_cached_timeit_verdict, dict.fromkeys([*setups, *stmts, *programs]))):
+                return True
+        elif runner is not None:
+            if _opaque_kwargs(node):
+                return True
+            arg = _runner_arg(node, 0, _PY_CODE_RUNNER_SOURCE_KWARGS)
+            if arg is not None:
+                sources, unresolved = _code_strings(arg)
+                if unresolved or any(map(_cached_runner_verdict, dict.fromkeys(sources))):
+                    return True
         name = None
         if isinstance(func, ast.Name):
             name = func.id
@@ -17956,6 +18209,7 @@ def _check_signal_escape_patterns(code: str):
     signal_tampering = []
     exception_catching = []
     shell_escapes = []
+    shell_commands = []
     warnings = []
 
     def _ast_name_matches(node, names):
@@ -18009,6 +18263,9 @@ def _check_signal_escape_patterns(code: str):
             "asyncio.create_subprocess_shell",
             "asyncio.create_subprocess_exec",
             "pty.spawn",
+            "psutil.Popen",
+            "anyio.run_process",
+            "anyio.open_process",
             "loop.subprocess_shell",
             "loop.subprocess_exec",
         }
@@ -18035,6 +18292,20 @@ def _check_signal_escape_patterns(code: str):
     _CMD_KWARGS = frozenset(
         {"args", "command", "executable", "path", "file", "cmd", "program", "argv"}
     )
+    # Variadic argv APIs: index of argv[0] among the positionals (after the path, or mode + path).
+    _VARIADIC_ARGV_START = {
+        "asyncio.create_subprocess_exec": 0,
+        "loop.subprocess_exec": 0,
+        **{f"os.exec{s}": 1 for s in ("l", "le", "lp", "lpe")},
+        **{f"os.spawn{s}": 2 for s in ("l", "le", "lp", "lpe")},
+    }
+    # Vector argv APIs: index of the executable; the argv list follows it, its [0] only a label.
+    _VECTOR_PROGRAM_INDEX = {
+        **{f"os.exec{s}": 0 for s in ("v", "ve", "vp", "vpe")},
+        **{f"os.spawn{s}": 1 for s in ("v", "ve", "vp", "vpe")},
+        "os.posix_spawn": 0,
+        "os.posix_spawnp": 0,
+    }
 
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
@@ -18116,6 +18387,8 @@ def _check_signal_escape_patterns(code: str):
                         "asyncio",
                         "asyncio.subprocess",
                         "pty",
+                        "psutil",
+                        "anyio",
                     ):
                         names = _STAR_EXPORTS
                     else:
@@ -18259,7 +18532,7 @@ def _check_signal_escape_patterns(code: str):
                     name = "asyncio"
                 # __import__("os.path") returns the top-level os package.
                 top = (name or "").split(".")[0]
-                if top in ("os", "subprocess", "asyncio", "pty"):
+                if top in ("os", "subprocess", "asyncio", "pty", "psutil", "anyio"):
                     modules.add(top)
                 elif top in ("posix", "nt") and not isinstance(value, ast.Name):
                     modules.add("os")
@@ -18424,6 +18697,67 @@ def _check_signal_escape_patterns(code: str):
                 positional = node.args[1:] if shell_func.startswith("loop.") else node.args
                 all_call_args = list(positional) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
+                argv_start = _VARIADIC_ARGV_START.get(shell_func)
+                # A name bound to several spawners must not get argv semantics from just one.
+                targets = {
+                    f"{module}.{attr}"
+                    for owner, attr in self._lookups(func)
+                    for module in self._modules_of(owner)
+                }
+                if any(
+                    t in _SHELL_EXEC_FUNCS and t not in _VARIADIC_ARGV_START for t in targets
+                ) or any(isinstance(a, ast.Starred) for a in positional[: (argv_start or 0) + 1]):
+                    argv_start = None
+                if argv_start is None:
+                    shell_commands.extend(
+                        s for s in map(_extract_string_from_node, all_call_args) if s is not None
+                    )
+                else:
+                    # Operands are argv data, not commands; exec*/spawn* run the path, argv[0] is a label.
+                    argv = []
+                    tail = positional[argv_start:]
+                    if argv_start and len(positional) >= argv_start:
+                        program = _extract_string_from_node(positional[argv_start - 1])
+                        if program is not None and tail:
+                            argv.append(program)
+                            tail = tail[1:]
+                    for a in tail:
+                        if isinstance(a, ast.Starred):
+                            argv.extend(_extract_strings_from_list(a.value) or ())
+                        elif (s := _extract_string_from_node(a)) is not None:
+                            argv.append(s)
+                    if argv:
+                        shell_commands.append(shlex.join(argv))
+                shell_kw = expanded_kwargs.get("shell")
+                runs_shell = shell_kw is not None and not (
+                    isinstance(shell_kw, ast.Constant) and not shell_kw.value
+                )
+                program_index = _VECTOR_PROGRAM_INDEX.get(shell_func)
+                vector = None
+                if program_index is not None and len(positional) > program_index + 1:
+                    program = _extract_string_from_node(positional[program_index])
+                    if program is not None:
+                        vector = positional[program_index + 1]
+                executable = expanded_kwargs.get("executable")
+                executable = None if executable is None else _extract_string_from_node(executable)
+                argv_node = positional[0] if positional else expanded_kwargs.get("args")
+                for a in all_call_args:
+                    if isinstance(a, (ast.List, ast.Tuple)):
+                        strings = _extract_strings_from_list(a)
+                        if a is vector and a.elts:
+                            strings = [program, *_extract_strings_from_list(ast.List(a.elts[1:]))]
+                        elif a is argv_node and a.elts and executable and not runs_shell:
+                            # executable= replaces the program; argv[0] is only its name.
+                            strings = [
+                                executable,
+                                *_extract_strings_from_list(ast.List(a.elts[1:])),
+                            ]
+                        shell_commands.append(shlex.join(strings))
+                        # POSIX shell=True runs args[0] as shell source.
+                        if runs_shell and a.elts:
+                            head = _extract_string_from_node(a.elts[0])
+                            if head is not None:
+                                shell_commands.append(head)
 
                 if has_opaque_kwargs:
                     # Can't inspect dynamic **kwargs; flag as unsafe.
@@ -20879,16 +21213,22 @@ def _check_signal_escape_patterns(code: str):
         "signal_tampering": signal_tampering,
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
+        "shell_commands": shell_commands,
         "network_calls": network_calls,
         "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
     }
 
 
-def _check_code_safety(code: str, *, host_approved: bool = False) -> str | None:
+def _check_code_safety(
+    code: str,
+    *,
+    host_approved: bool = False,
+    analysis: "tuple | None" = None,
+) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
-    safe, info = _check_signal_escape_patterns(code)
+    safe, info = analysis or _check_signal_escape_patterns(code)
     if not safe:
         # Let SyntaxError through so the child reports a normal traceback.
         if info.get("error"):
