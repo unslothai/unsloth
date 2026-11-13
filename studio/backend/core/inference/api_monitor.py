@@ -969,6 +969,16 @@ class ApiMonitor:
         self._terminal_callbacks_inflight[callback_owner] = (
             self._terminal_callbacks_inflight.get(callback_owner, 0) + 1
         )
+        prompt_tokens, completion_tokens, total_tokens = (
+            entry.prompt_tokens or 0,
+            entry.completion_tokens or 0,
+            entry.total_tokens or 0,
+        )
+        if entry.temporary_usage and not (prompt_tokens or completion_tokens) and entry.reply:
+            # A temporary reply stopped before its usage chunk has no other record to charge.
+            prompt_tokens = -(-len(entry.prompt) // 4)
+            completion_tokens = -(-len(entry.reply) // 4)
+            total_tokens = prompt_tokens + completion_tokens
         return (
             callback_owner,
             callback,
@@ -978,9 +988,9 @@ class ApiMonitor:
                 endpoint = str(entry.endpoint)[:MAX_ENDPOINT_CHARS],
                 model = canonical_api_model(entry.model),
                 status = str(entry.status)[:MAX_STATUS_CHARS],
-                prompt_tokens = entry.prompt_tokens or 0,
-                completion_tokens = entry.completion_tokens or 0,
-                total_tokens = entry.total_tokens or 0,
+                prompt_tokens = prompt_tokens,
+                completion_tokens = completion_tokens,
+                total_tokens = total_tokens,
                 created_at = int(entry.finished_at * 1000),
                 kind = entry.kind,
                 via_api_key = entry.via_api_key,

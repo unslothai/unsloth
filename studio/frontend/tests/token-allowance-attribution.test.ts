@@ -45,3 +45,12 @@ test("the allowance switch saves the visible draft with it", () => {
   );
   assert.match(SECTION, /disabled=\{busy \|\| needsPassword \|\| \(!enabled && !capsValid\)\}/);
 });
+
+test("saving a temporary chat marks its replies as already charged", () => {
+  const RUNTIME = readSrc("features/chat/runtime-provider.tsx");
+  const save = RUNTIME.slice(RUNTIME.indexOf("export async function persistTemporaryThread("));
+  assert.match(
+    save.slice(0, 3000),
+    /message\.role === "assistant" \? \{ \.\.\.metadata, tokenUsageCharged: true \} : metadata/,
+  );
+});

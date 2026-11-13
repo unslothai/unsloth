@@ -39,7 +39,8 @@ def _usage_columns(row: str) -> str:
         NULLIF({_count(row, "$.contextUsage.contextTokens")}, 0) AS context_tokens,
         CASE WHEN {usage_prompt} + {usage_completion} + {server_completion} + {server_prompt} > 0
              THEN 0 ELSE 1 END AS estimated,
-        CASE WHEN COALESCE(json_extract({row}, '$.responseDetails.providerType'),
+        CASE WHEN json_extract({row}, '$.tokenUsageCharged') = 1 THEN 'inherited'
+             WHEN COALESCE(json_extract({row}, '$.responseDetails.providerType'),
                            json_extract({row}, '$.tokenUsageProvider'), 'local')
                   IN ('local', '') THEN 'local' ELSE 'external' END AS source
     """

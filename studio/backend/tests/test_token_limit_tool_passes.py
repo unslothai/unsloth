@@ -69,3 +69,42 @@ def test_a_tool_run_that_stops_before_its_final_frame_still_reports_every_pass(m
         300,
         1400,
     )
+
+
+def test_a_shared_preview_reply_gets_a_stateless_receipt():
+    from models.inference import ChatCompletionRequest
+    from routes.preview import _sanitize_preview_payload
+
+    payload = ChatCompletionRequest(
+        model = "m",
+        messages = [{"role": "user", "content": "hi"}],
+        thread_id = "visitor-supplied",
+        temporary_message_id = "visitor-supplied",
+    )
+    clean = _sanitize_preview_payload(payload, is_lora = False)
+    assert clean.temporary_chat is True
+    assert (clean.thread_id, clean.temporary_message_id, clean.temporary_parent_id) == (None,) * 3
+
+
+def test_an_interrupted_temporary_reply_settles_an_estimate():
+    from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
+
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    with temporary_usage_scope(TemporaryUsage("thread", "external", "message")):
+        entry = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "m",
+            prompt = "p" * 400,
+            subject = "owner",
+        )
+    monitor.append_reply(entry, "r" * 80)
+    monitor.finish(entry, "cancelled")
+    [receipt] = receipts
+    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (
+        100,
+        20,
+        120,
+    )

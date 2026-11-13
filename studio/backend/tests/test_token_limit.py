@@ -142,6 +142,45 @@ def test_a_reported_count_replaces_an_earlier_estimate():
     assert _pools()["combined"]["used"] == 350
 
 
+def test_saving_a_temporary_chat_does_not_charge_its_reply_again():
+    from types import SimpleNamespace
+
+    from storage.token_usage_ledger import record_temporary_usage
+
+    now = _now_ms()
+    record_temporary_usage(
+        SimpleNamespace(
+            id = "receipt",
+            temporary_message_id = "hashed-message",
+            temporary_thread = "hashed-thread",
+            created_at = now + 1,
+            temporary_source = "local",
+            prompt_tokens = 90,
+            completion_tokens = 10,
+            total_tokens = 100,
+            context_tokens = 100,
+            temporary_parent_id = None,
+        )
+    )
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "a1",
+            "threadId": "t1",
+            "role": "assistant",
+            "createdAt": now + 1,
+            "content": [{"type": "text", "text": "answer"}],
+            "metadata": {
+                "tokenUsageCharged": True,
+                "contextUsage": {"promptTokens": 90, "completionTokens": 10, "totalTokens": 100},
+            },
+        }
+    )
+    for method in ("total", "incremental"):
+        _enable(limit = 10_000, method = method)
+        assert _pools()["combined"]["used"] == 100
+
+
 def test_settings_reads_stay_fresh_across_keeper_lifetimes():
     import json
 

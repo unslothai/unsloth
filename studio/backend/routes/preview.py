@@ -128,6 +128,10 @@ def _sanitize_preview_payload(
             "session_id": None,
             # A streamed body outlives tools_force_disabled(), so no thread archive may be reachable.
             "thread_id": None,
+            # Stateless: its receipt is the only record the token allowance can charge.
+            "temporary_chat": True,
+            "temporary_message_id": None,
+            "temporary_parent_id": None,
             "rag_scope": None,
             "openai_code_exec_container_id": None,
             "anthropic_code_exec_container_id": None,
