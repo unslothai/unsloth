@@ -540,10 +540,8 @@ def prepare_decode(pipe: Any, *, logger: Any = None) -> int:
         if getattr(module, "_unsloth_video_pre_extra", None) is not None:
             return 0  # this request's decode already started (a second decoder)
         pre = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
+        # published by record_request_peak once the window is known not to overlap another render
         module._unsloth_video_pre_extra = max(0, pre)
-        if pre > 0 and getattr(module, "_unsloth_video_graphs_clean", True):
-            table = _pre_decode_table(module)
-            table[work] = max(pre, table.get(work, 0))
         room = getattr(module, "_unsloth_video_decode_room", None)
         module._unsloth_video_decode_room = None
         if room is None:
@@ -606,7 +604,12 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
             # closed after the read: a render arming in between would otherwise reset the peak unseen
             if not close_window(window[0], window[1]):
                 return None  # another render on the card reset the peak meanwhile
-        if extra <= 0 or not getattr(module, "_unsloth_video_graphs_clean", True):
+        if not getattr(module, "_unsloth_video_graphs_clean", True):
+            return None
+        if pre is not None and int(pre) > 0:
+            table = _pre_decode_table(module)
+            table[work] = max(int(pre), table.get(work, 0))
+        if extra <= 0:
             return None
         peaks = getattr(module, "_unsloth_video_peaks", None)
         if not isinstance(peaks, dict):

@@ -333,3 +333,16 @@ def test_lent_groups_are_plain_tensors_inside_the_renders_inference_mode(monkeyp
     with torch.inference_mode():
         vr.begin_denoise(card.pipe)
     assert seen == [False]
+
+
+def test_an_overlapped_request_publishes_no_denoise_peak(monkeypatch):
+    import core.inference.diffusion_measured_peaks as mp
+
+    card = _Card(monkeypatch)
+    card.fit()
+    card.module._unsloth_video_window = ("cuda:0", object())
+    monkeypatch.setattr(mp, "close_window", lambda device, window: False)
+    assert card.render(denoise_peak = 1200) is None
+    assert vr.pre_decode_extra_mib(card.module, WORK) is None
+    card.fit()
+    assert card.module._unsloth_video_lend is None
