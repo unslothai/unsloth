@@ -358,8 +358,9 @@ def _route_pip():
             # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
             argv = list(getattr(sys, "orig_argv", None) or ())
             module = argv[argv.index("-m") + 1] if "-m" in argv[:-1] else ""
+            # Python < 3.10 has no orig_argv: any -m launch counts.
             is_pip = module in ("pip", "pip.__main__") or (
-                not module and os.path.basename(sys.argv[0]).lower().startswith("pip")
+                not module and os.path.basename(sys.argv[0]).lower().startswith(("pip", "-m"))
             )
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             placed = any(
@@ -402,32 +403,58 @@ def _session_entries():
     return [e for e in sys.path if e and os.path.normcase(os.path.abspath(e)).startswith(root)]
 
 
-def _editable_mapping(entry, module):
-    # setuptools' editable finder: read its literal MAPPING (name -> path) and NAMESPACES (name -> paths)
-    # instead of running the module.
+def _literal(path, names):
     import ast
 
-    with open(os.path.join(entry, module + ".py"), "rb") as f:
+    with open(path, "rb") as f:
         tree = ast.parse(f.read())
     found = {}
     for node in tree.body:
         targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
-        names = {t.id for t in targets if isinstance(t, ast.Name)} & {"MAPPING", "NAMESPACES"}
-        if not names or node.value is None:
-            continue
-        for key, value in ast.literal_eval(node.value).items():
-            if isinstance(key, str) and (
-                isinstance(value, str)
-                or (isinstance(value, list) and all(isinstance(v, str) for v in value))
-            ):
-                found.setdefault(key, value)
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id in names and node.value is not None:
+                found[t.id] = ast.literal_eval(node.value)
     return found
 
 
-# PYTHONPATH skips .pth files: take their path lines and setuptools' editable mappings, never run their imports.
+_finder_template = []
+
+
+def _install_editable_finder(entry, module):
+    # setuptools' editable finder, built from Studio's own setuptools template with the chat file's literal
+    # MAPPING / NAMESPACES: the chat-written module itself never runs. Read as text: importing setuptools is slow.
+    if not _finder_template:
+        import importlib.util
+
+        spec = importlib.util.find_spec("setuptools")
+        source = os.path.join(spec.submodule_search_locations[0], "command", "editable_wheel.py")
+        _finder_template.append(_literal(source, {"_FINDER_TEMPLATE"})["_FINDER_TEMPLATE"])
+    data = _literal(os.path.join(entry, module + ".py"), {"MAPPING", "NAMESPACES"})
+    mapping, namespaces = data.get("MAPPING", {}), data.get("NAMESPACES", {})
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
+        return
+    if not all(isinstance(k, str) and isinstance(v, list) for k, v in namespaces.items()):
+        return
+    code = _finder_template[0].format(
+        name = module, mapping = dict(sorted(mapping.items())), namespaces = namespaces
+    )
+    import types
+
+    finder_module = types.ModuleType(module)
+    exec(compile(code, "<" + module + ">", "exec"), finder_module.__dict__)
+    sys.modules[module] = finder_module
+    finder_module.install()
+    # First, so a chat's editable fork wins over Studio's copy like its other installs.
+    finder = finder_module._EditableFinder
+    if finder in sys.meta_path:
+        sys.meta_path.remove(finder)
+        sys.meta_path.insert(0, finder)
+
+
+# PYTHONPATH skips .pth files: take their path lines and setuptools' editable finders, never run their imports.
 # Paths go right after the session dirs, so a chat's editable fork wins over Studio's copy like its other installs.
 def _read_pth_files(entries):
-    added, editable = [], {}
+    added = []
     for entry in entries:
         try:
             names = sorted(n for n in os.listdir(entry) if n.endswith(".pth"))
@@ -442,7 +469,7 @@ def _read_pth_files(entries):
                     if line.startswith(("import ", "import\t")):
                         module = line[len("import ") :].split(";")[0].strip()
                         if module.startswith("__editable___") and module.endswith("_finder"):
-                            editable.update(_editable_mapping(entry, module))
+                            _install_editable_finder(entry, module)
                         continue
                     path = os.path.abspath(os.path.join(entry, line))
                     if (
@@ -457,26 +484,13 @@ def _read_pth_files(entries):
     if added:
         at = max(i for i, e in enumerate(sys.path) if e in entries) + 1
         sys.path[at:at] = added
-    return editable
 
 
-# First on meta_path: a session dir pip creates mid-process is cached as missing, a namespace imported before
-# an install lacks the new portion, and flat-layout editable installs are mapped, not on sys.path.
+# First on meta_path: a session dir pip creates mid-process is cached as missing, and a namespace imported
+# before an install lacks the new portion.
 class _SessionPackagesFinder:
-    # Bound up front: an import inside find_spec would re-enter this finder.
-    from importlib.machinery import (
-        ModuleSpec as _module_spec,
-        PathFinder as _path_finder,
-        all_suffixes,
-    )
-    from importlib.util import spec_from_file_location as _from_file
-
-    _from_file = staticmethod(_from_file)
-    _suffixes = all_suffixes()
-
-    def __init__(self, entries, editable):
+    def __init__(self, entries):
         self._entries = entries
-        self._editable = editable
 
     def find_spec(
         self,
@@ -488,31 +502,6 @@ class _SessionPackagesFinder:
         for entry in self._entries:
             if entry in cache and cache[entry] is None and os.path.isdir(entry):
                 del cache[entry]
-        located = self._editable.get(name)
-        if isinstance(located, str):
-            # As setuptools' finder: the package __init__, else the mapped stem with a module suffix.
-            candidates = (
-                os.path.join(located, "__init__.py"),
-                located,
-                *(located + s for s in self._suffixes),
-            )
-            for candidate in candidates:
-                if os.path.isfile(candidate):
-                    return self._from_file(name, candidate)
-            located = [located] if os.path.isdir(located) else None
-        if located is not None:
-            # A namespace: keep the portions the path finder sees (Studio's), add the mapped ones; a regular
-            # package found there wins, as it does over setuptools' own finder.
-            spec = self._path_finder.find_spec(name, path, target)
-            if spec is None:
-                spec = self._module_spec(name, None, is_package = True)
-                spec.submodule_search_locations = []
-            elif spec.loader is not None and spec.origin not in (None, "namespace"):
-                return None
-            for portion in located:
-                if portion not in spec.submodule_search_locations:
-                    spec.submodule_search_locations.append(portion)
-            return spec
         if path is None:
             return None
         parent = getattr(sys.modules.get(name.rpartition(".")[0]), "__spec__", None)
@@ -530,7 +519,8 @@ class _SessionPackagesFinder:
 _entries = _session_entries()
 if _entries and not any(isinstance(f, _SessionPackagesFinder) for f in sys.meta_path):
     try:
-        sys.meta_path.insert(0, _SessionPackagesFinder(_entries, _read_pth_files(_entries)))
+        _read_pth_files(_entries)
+        sys.meta_path.insert(0, _SessionPackagesFinder(_entries))
     except Exception:  # noqa: BLE001
         pass
 

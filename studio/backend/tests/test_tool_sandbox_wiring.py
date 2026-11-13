@@ -863,7 +863,10 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
             (proj / "implementation" / "part.py").write_text("")
             namespaces = {name: [str(proj / "implementation")]}
             studio_files = {f"{name}/a.py": ""}
-            show = f"import {name}.a, {name}.part; print({name}.part.__file__)"
+            show = (
+                f"import importlib, {name}.a; importlib.invalidate_caches(); "
+                f"import {name}.part; print({name}.part.__file__)"
+            )
             expected = str(proj / "implementation")
         else:
             # Only name.part is mapped; name is a virtual namespace with no folder of its own.
@@ -937,7 +940,7 @@ def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
         result = subprocess.run(argv, env = env, capture_output = True, text = True)
         return result.stdout + result.stderr
 
-    assert f"PIP_PREFIX='{packages}'" in run(sys.executable, "-m", "pip", "config", "debug")
+    assert f"PIP_PREFIX={packages!r}" in run(sys.executable, "-m", "pip", "config", "debug")
     assert run(sys.executable, *probe).strip() == "None"
     assert run(str(venv_python), *probe).strip() == "None"
 
