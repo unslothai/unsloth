@@ -4152,6 +4152,23 @@ def _engram_table_unfetchable_reason(hf_repo: str, table: EngramTable) -> Option
     )
 
 
+def _engram_table_cache_dir(near_path: Optional[str]) -> str:
+    from utils.hf_cache_settings import get_hf_cache_paths
+    return _hub_cache_dir_for_snapshot_path(near_path) or str(get_hf_cache_paths().hub_cache)
+
+
+def _cached_engram_table(
+    hf_repo: str, table: EngramTable, near_path: Optional[str]
+) -> Optional[str]:
+    """A cached copy of ``table``: beside the backbone first, then in any cache root."""
+    return _cached_hf_snapshot_file(
+        hf_repo,
+        table.filename,
+        expected_size = table.size_bytes,
+        cache_dir = _engram_table_cache_dir(near_path),
+    ) or cached_table_path(hf_repo, table)
+
+
 def _resolve_engram_swap(
     hf_repo: str, hf_variant: Optional[str], hf_token: Optional[str], precision: str
 ) -> Optional[EngramSwap]:
@@ -20753,14 +20770,8 @@ class LlamaCppBackend:
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         if cancel_event.is_set():
             raise GgufDownloadCancelled("Cancelled")
-        from utils.hf_cache_settings import get_hf_cache_paths
-
-        cache_dir = _hub_cache_dir_for_snapshot_path(near_path) or str(
-            get_hf_cache_paths().hub_cache
-        )
-        cached = _cached_hf_snapshot_file(
-            hf_repo, table.filename, expected_size = table.size_bytes, cache_dir = cache_dir
-        ) or cached_table_path(hf_repo, table)
+        cache_dir = _engram_table_cache_dir(near_path)
+        cached = _cached_engram_table(hf_repo, table, near_path)
         if cached:
             logger.info("Reusing cached %s Engram table: %s", table.precision, cached)
             return cached
@@ -24459,16 +24470,25 @@ class LlamaCppBackend:
                     if not Path(gguf_path).is_file():
                         raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
                     model_path = gguf_path
+                    from utils.models.model_config import _engram_table_shard_skipped
+
+                    # A path load never downloads (the /v1 switch's download policy runs before it).
                     if engram_swap is not None:
-                        with _hf_offline_if_unreachable():
-                            engram_path = self._download_engram_table(
-                                hf_repo = engram_repo,
-                                table = engram_swap.table,
-                                hf_token = hf_token,
-                                cancel_event = download_cancel_event,
-                                near_path = model_path,
+                        engram_path = _cached_engram_table(
+                            engram_repo, engram_swap.table, model_path
+                        )
+                        if engram_path is None:
+                            raise ValueError(
+                                f"The {engram_swap.table.precision} Engram table of {engram_repo} "
+                                "is not downloaded. Load the model from the chat to fetch it."
                             )
                         self._launch_ple = (model_path, engram_path)
+                    elif engram_repo and _engram_table_shard_skipped(Path(model_path)):
+                        raise ValueError(
+                            f"This {engram_repo} quant was downloaded with a standalone Engram "
+                            "table in place of its own. Choose that table in the model's "
+                            "settings, or load it from the chat to fetch its own."
+                        )
                 else:
                     raise ValueError("Either gguf_path or hf_repo must be provided")
             finally:

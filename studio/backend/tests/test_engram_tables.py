@@ -701,6 +701,10 @@ def _swapped_snapshot(
     return snap, names
 
 
+def _no_download(**kwargs):
+    raise AssertionError("a path load downloaded an Engram table")
+
+
 class TestCachedQuantLoads:
     def test_offline_a_quant_missing_its_table_shard_resolves_to_its_split_names(
         self, monkeypatch, tmp_path
@@ -744,13 +748,40 @@ class TestCachedQuantLoads:
 
         monkeypatch.setattr(lc, "_resolve_engram_swap", resolve)
         monkeypatch.setattr(lc, "_engram_table_unfetchable_reason", lambda *a: None)
-        backend._download_engram_table = lambda **kw: table
+        backend._download_engram_table = _no_download
         probe = backend.probe_server_capabilities
         backend.probe_server_capabilities = lambda b: {**probe(b), "supports_ple": True}
         cmd = _launch(backend, gguf, hf_variant = "UD-IQ1_S", engram_precision = "Q5_1")["cmd"]
         assert seen["repo"] == REPO
         assert cmd[cmd.index("--ple") + 1] == table
         assert backend._engram_precision == "Q5_1"
+
+        # A path load never downloads: an uncached table is refused before the resident model goes.
+        Path(table).unlink()
+        with pytest.raises(ValueError, match = "Q5_1 Engram table .* is not downloaded"):
+            backend.load_model(
+                GgufLoadIntent(
+                    gguf_path = gguf,
+                    model_identifier = "other",
+                    hf_variant = "UD-IQ1_S",
+                    engram_precision = "Q5_1",
+                )
+            )
+
+    def test_a_path_load_of_a_table_skipped_quant_needs_its_table(self, monkeypatch, tmp_path):
+        from test_llama_cpp_placement import _backend
+
+        backend, _ = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+        snap, names = _swapped_snapshot(tmp_path, absent = 3)
+        backend._download_engram_table = _no_download
+        with pytest.raises(ValueError, match = "Choose that table"):
+            backend.load_model(
+                GgufLoadIntent(
+                    gguf_path = str(snap / names[0]),
+                    model_identifier = "m",
+                    hf_variant = "UD-IQ1_S",
+                )
+            )
 
     @pytest.mark.parametrize(
         "absent, table, complete",

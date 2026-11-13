@@ -2320,8 +2320,11 @@ def _engram_table_shard_skipped(path: Path) -> bool:
     """A split set short only of the table shard a --ple download skips loads from its snapshot."""
     from core.inference.engram_tables import table_shard_skipped
 
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return False
     shards, _ = colocated_split_shards(path)
-    total = int(_GGUF_SPLIT_FILE_RE.match(path.name).group("total"))
+    total = int(match.group("total"))
     by_index = sorted(shards, key = lambda p: int(_GGUF_SPLIT_FILE_RE.match(p.name).group("index")))
     return table_shard_skipped(by_index, total)
 
