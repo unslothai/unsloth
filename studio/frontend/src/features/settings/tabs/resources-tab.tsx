@@ -827,7 +827,7 @@ export function ResourcesTab() {
                       ? t("settings.resources.gpu.estimatedAvailable", {
                           value: formatGiB(memoryDisplay.unifiedAvailableGb),
                         })
-                      : metrics.vramUsageKnown
+                      : metrics.vramUsageKnown && metrics.vramFree !== null
                         ? t("settings.resources.liveMonitor.free", {
                             value: formatGiB(metrics.vramFree),
                           })

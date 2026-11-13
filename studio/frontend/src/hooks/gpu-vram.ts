@@ -127,25 +127,23 @@ export function carveOutVramGb(
     ramAvailableGb !== null && Number.isFinite(ramAvailableGb) && ramAvailableGb >= 0
       ? ramAvailableGb
       : Number.POSITIVE_INFINITY;
-  // Beside a discrete card only per-device readings say whose usage spilled past the carve-out.
-  const perDevice = devices.every((device) => Number.isFinite(device.vram_used_gb));
+  const read = (device: VramReportingDevice) => Number.isFinite(device.vram_used_gb);
   const aggregate = usedGb !== null && Number.isFinite(usedGb) ? usedGb : null;
-  let freeGb: number | null = null;
-  let spilled = 0;
-  if (perDevice) {
-    freeGb = 0;
-    for (const device of devices) {
-      const own = gpuMemoryTotalsGb([device]).dedicated;
-      const used = device.vram_used_gb as number;
-      freeGb += Math.max(0, own - used);
-      if (sharesHostMemoryDevice(device)) spilled += Math.max(0, used - own);
-    }
-  } else if (aggregate !== null) {
-    // Free is only known with no discrete card.
-    spilled = Math.max(0, aggregate - totals.dedicated);
-    if (apu.dedicated === totals.dedicated) {
-      freeGb = Math.max(0, totals.dedicated - aggregate);
-    }
+  let freeGb: number | null = devices.every(read) ? 0 : null;
+  // An APU's own reading gives its spill even when another card is unread; an aggregate bounds it from below.
+  let spilled = aggregate === null ? 0 : Math.max(0, aggregate - totals.dedicated);
+  let ownSpill = 0;
+  for (const device of devices) {
+    if (!read(device)) continue;
+    const own = gpuMemoryTotalsGb([device]).dedicated;
+    const used = device.vram_used_gb as number;
+    if (freeGb !== null) freeGb += Math.max(0, own - used);
+    if (sharesHostMemoryDevice(device)) ownSpill += Math.max(0, used - own);
+  }
+  spilled = Math.max(spilled, ownSpill);
+  // With no discrete card an aggregate is the APU's own usage.
+  if (freeGb === null && aggregate !== null && apu.dedicated === totals.dedicated) {
+    freeGb = Math.max(0, totals.dedicated - aggregate);
   }
   return {
     totalGb: totals.dedicated,

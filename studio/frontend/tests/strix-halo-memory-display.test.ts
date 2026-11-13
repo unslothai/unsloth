@@ -138,3 +138,18 @@ test("the GGUF row names the llama.cpp build, not a second system backend", () =
     "llama.cpp VULKAN build",
   );
 });
+
+test("an APU's own reading gives its spill when the discrete card beside it is unread", () => {
+  const apu = { ...strixHalo, vram_used_gb: 100 };
+  const unreadCard = { memory_total_gb: 24, shared_memory: false } as GpuDevice;
+  assert.deepEqual(carveOutVramGb([apu, unreadCard], null, null), {
+    totalGb: 119.82,
+    freeGb: null,
+    borrowableGb: 7.92,
+  });
+});
+
+test("the tile shows free as unknown when a carve-out's free is unknown", () => {
+  const tab = readSrc("features/settings/tabs/resources-tab.tsx");
+  assert.match(tab, /metrics\.vramUsageKnown && metrics\.vramFree !== null\s*\? t\("settings\.resources\.liveMonitor\.free"/);
+});
