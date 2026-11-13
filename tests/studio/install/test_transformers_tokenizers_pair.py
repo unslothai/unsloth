@@ -32,6 +32,7 @@ NON_INSTALLING = {"constraints.txt", "overrides-darwin-arm64.txt", "overrides.tx
 # Keyed by version so a pin bump fails here until the new window is confirmed.
 DECLARED_TOKENIZERS_WINDOW = {
     "5.5.0": ">=0.22.0,<=0.23.0",
+    "5.13.1": ">=0.22.0,<=0.23.0",
     "4.57.6": ">=0.22.0,<=0.23.0",
 }
 
