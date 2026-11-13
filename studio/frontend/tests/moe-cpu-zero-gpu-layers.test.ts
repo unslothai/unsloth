@@ -44,7 +44,6 @@ test("setting GPU Layers to 0 zeroes the MoE CPU count", () => {
 
 test("other GPU Layers values keep the MoE CPU count", () => {
   assert.equal({ ...manual(31, 10), ...gpuLayersPatch(12) }.nCpuMoe, 10);
-  // Auto keeps it hidden but stored, as before; only the positional split resets.
   assert.deepEqual(gpuLayersPatch(GPU_LAYERS_AUTO), {
     gpuLayers: GPU_LAYERS_AUTO,
     tensorSplit: null,
@@ -63,7 +62,6 @@ test("a 0-layer config is never sent or read back with n_cpu_moe", () => {
   const payload = toApiOverride(normalizePerModelConfig(manual(0, 10)));
   assert.equal(payload.gpu_layers, 0);
   assert.equal("n_cpu_moe" in payload, false);
-  // A server override saved by an older client still loads without it.
   const restored = fromApiOverride(
     { gpu_memory_mode: "manual", gpu_layers: 0, n_cpu_moe: 10 },
     DEFAULT_PER_MODEL_CONFIG,
@@ -79,7 +77,6 @@ test("the editor hides the slider at 0 GPU layers and routes edits through the p
     /const showMoeSlider =\s*isManual && moeCpuOffloadApplies\(gpuLayers\) && moeLayersMax > 0;/,
   );
   assert.match(src, /onChange=\{\(v\) => update\(gpuLayersPatch\(v\)\)\}/);
-  // A same-click Load commits the typed layers after the MoE input, so 0 must still zero it.
   assert.match(
     src,
     /pendingPatch\.nCpuMoe = committedMoeLayers;\s*\}\s*if \(committedGpuLayers === 0\) \{[^}]*pendingPatch\.nCpuMoe = 0;/,

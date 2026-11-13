@@ -11,8 +11,7 @@ export function moeCpuOffloadApplies(gpuLayers: number): boolean {
   return gpuLayers > 0;
 }
 
-/** A Manual GPU Layers edit: Auto drops the positional split; 0 zeroes the moot MoE CPU count
- *  (0, not undefined: load paths fall back to the resident count on undefined). */
+/** 0 layers zeroes nCpuMoe, not undefined: load paths fall back to the resident count on undefined. */
 export function gpuLayersPatch(gpuLayers: number): {
   gpuLayers: number;
   tensorSplit?: null;
