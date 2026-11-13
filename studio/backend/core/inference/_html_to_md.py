@@ -891,7 +891,7 @@ class _MarkdownRenderer(HTMLParser):
         self._replaying: bool = False
         # Credited only at </a> or a nested <a>: an <a> left open adopts body prose, which is not furniture.
         self._link_header_chars: int = 0
-        self._link_open_at: int = -1
+        self._link_open_state: tuple = ()
 
         self._list_stack: list[str] = []  # "ul" or "ol"
         self._ol_counter: list[int] = []
@@ -1265,31 +1265,17 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row = []
         self._row_has_th = False
 
-    def _close_link_before_nested_anchor(self) -> None:
-        # headers opened inside the link stay open; its text belongs to the frame holding the <a>
-        frames = self._header_stack
-        owner = len(frames)
-        while owner and frames[owner - 1].outer_link_seq == self._link_seq:
-            owner -= 1
-        inner = frames[owner:]
-        del frames[owner:]
-        # likewise headings opened inside the link, which its </a> would have closed first
-        at = self._link_open_at
-        open_tags = self._open_tags
-        anchor_at = at if 0 <= at < len(open_tags) and open_tags[at] == "a" else len(open_tags)
-        marks = self._heading_marks
-        keep = len(marks)
-        while keep and marks[keep - 1] > anchor_at:
-            keep -= 1
-        inner_marks = marks[keep:]
-        del marks[keep:]
-        try:
-            if frames:
-                frames[-1].link_chars += self._link_header_chars
-            self._finish_link()
-        finally:
-            frames.extend(inner)
-            marks.extend(inner_marks)
+    def _link_output_state(self) -> tuple:
+        frame = self._header_stack[-1] if self._header_stack else None
+        cell = self._cell_seq if self._in_cell else -1
+        return (
+            frame,
+            len(self._heading_marks),
+            len(self._bq_stack),
+            cell,
+            len(self._table_stack),
+            len(self._sup_starts),
+        )
 
     # Link text helper: normalize whitespace so block content in <a> stays single-line.
     def _finish_link(self) -> None:
@@ -1729,9 +1715,17 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag == "form":
             self._form_pointer = True
-        # a nested <a> implicitly closes the open one, even when hidden; <pre> text skips the link
-        if tag == "a" and self._in_link and not self._in_pre:
-            self._close_link_before_nested_anchor()
+        # a nested <a> implicitly closes the open one, even when hidden, when its text still routes where
+        # the link opened; <pre> text skips the link buffer
+        if (
+            tag == "a"
+            and self._in_link
+            and not self._in_pre
+            and self._link_open_state == self._link_output_state()
+        ):
+            if self._header_stack:
+                self._header_stack[-1].link_chars += self._link_header_chars
+            self._finish_link()
         if not self._enter_tag(tag, attr_dict, hidden, aria_heading):
             return
 
@@ -1746,7 +1740,7 @@ class _MarkdownRenderer(HTMLParser):
             self._in_link = True
             self._link_seq += 1
             self._link_header_chars = 0
-            self._link_open_at = len(self._open_tags) - 1
+            self._link_open_state = self._link_output_state()
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])

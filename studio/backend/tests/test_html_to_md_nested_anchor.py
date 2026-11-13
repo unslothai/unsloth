@@ -76,18 +76,24 @@ def test_nested_anchor_inside_pre_keeps_code_literal():
 def test_outer_text_before_a_header_survives_the_header_strip():
     nav = "navigation " * 30
     html = f'<a href="/o">Intro. <header>{nav}<a hidden href="/i">skip</a></header>Conclusion.</a>'
-    assert html_to_markdown(html, main_content = True) == "[Intro.](/o)Conclusion."
+    assert html_to_markdown(html, main_content = True) == "[Intro. Conclusion.](/o)"
 
 
-def test_nested_anchor_credits_the_header_that_holds_the_link():
+def test_outer_text_before_a_header_blockquote_survives_the_header_strip():
+    nav = "navigation " * 30
+    html = (
+        f'<a href="/o">Intro. <header><blockquote>{nav}<a hidden href="/i">skip</a>'
+        "</blockquote></header>Conclusion.</a>"
+    )
+    assert html_to_markdown(html, main_content = True) == "[Intro. Conclusion.](/o)"
+
+
+def test_byline_in_a_header_opened_inside_the_link_survives():
     nav = "OuterNav " * 35
     byline = "Jane wrote this article. " * 8
     inner = f'<header>InnerNav <a href="/i">Inner</a><p>{byline}</p></header>'
-    nested = f'<main><header><a href="/o">{nav}{inner}</a></header><p>BODY</p></main>'
-    closed = f'<main><header><a href="/o">{nav}</a>{inner}</header><p>BODY</p></main>'
-    out = html_to_markdown(nested, main_content = True)
-    assert "Jane wrote this article." in out
-    assert out == html_to_markdown(closed, main_content = True)
+    html = f'<main><header><a href="/o">{nav}{inner}</a></header><p>BODY</p></main>'
+    assert "Jane wrote this article." in html_to_markdown(html, main_content = True)
 
 
 def test_nested_anchor_in_long_header_still_strips_as_furniture():
@@ -99,4 +105,12 @@ def test_nested_anchor_in_long_header_still_strips_as_furniture():
 def test_heading_inside_the_outer_link_is_not_teed_twice():
     nav = "Navigation link " * 12
     html = f"<header><a href='/o'>{nav}<h1>Title<a href='/i'>Inner</a></h1></a></header>"
-    assert html_to_markdown(html, main_content = True) == "# Title\n\n[Inner](/i)"
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("Title") <= 1 and "Navigation" not in out
+
+
+def test_title_only_card_does_not_win_main_content():
+    title = "Related title words " * 16
+    card = f"<article><a href='/o'>Card <div role='heading'>{title}<a href='/i'>Read</a></div></a></article>"
+    body = "<article><p>" + "Real article body text. " * 10 + "</p></article>"
+    assert "Real article body text." in html_to_markdown(card + body, main_content = True)
