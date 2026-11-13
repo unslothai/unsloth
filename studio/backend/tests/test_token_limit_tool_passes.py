@@ -286,3 +286,46 @@ def test_anthropic_thinking_counts_toward_an_interrupted_estimate():
     monitor.finish(entry, "cancelled")
     [receipt] = receipts
     assert (receipt.prompt_tokens, receipt.completion_tokens) == (10, 100)
+
+
+def test_cancelling_a_temporary_stream_cancels_the_stream_it_wraps():
+    import asyncio
+
+    from core.inference.api_monitor import TemporaryUsage
+
+    events = []
+
+    async def inner():
+        try:
+            yield b"one"
+            yield b"two"
+        except asyncio.CancelledError:
+            events.append("inner cancelled")
+            raise
+        except GeneratorExit:
+            events.append("inner closed without cancellation")
+            raise
+
+    async def run():
+        outer = inference_route._scoped_stream(inner(), TemporaryUsage("t", "local"))
+        assert await outer.__anext__() == b"one"
+        try:
+            await outer.athrow(asyncio.CancelledError())
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(run())
+    assert events == ["inner cancelled"]
+
+
+def test_every_gguf_reasoning_branch_counts_its_length():
+    import inspect
+    import re
+
+    source = inspect.getsource(inference_route)
+    branches = re.findall(
+        r"if (reasoning_delta|final_reasoning|fr):\n(?:\s*#.*\n)*\s*api_monitor\.mark_first_token\(([^)]*)\)",
+        source,
+    )
+    assert len(branches) >= 11
+    assert all("output_chars" in args for _, args in branches), branches

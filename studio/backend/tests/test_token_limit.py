@@ -534,6 +534,49 @@ def test_an_interrupted_tool_run_still_debits_its_finished_pass(final_usage):
     assert _pools()["combined"]["used"] == (1250 if final_usage else 900 + 50 + 100)
 
 
+def test_a_run_stopped_before_any_usage_frame_settles_an_estimate():
+    from storage import chat_generation_runs_db as runs
+
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "user",
+            "threadId": "t1",
+            "role": "user",
+            "createdAt": now,
+            "content": [{"type": "text", "text": "hi"}],
+        }
+    )
+    runs.create_run(
+        run_id = "run",
+        owner_subject = "owner",
+        thread_id = "t1",
+        user_message_id = "user",
+        assistant_message_id = "assistant",
+        request_payload = {"model": "local", "messages": [{"role": "user", "content": "x" * 400}]},
+    )
+    token = runs.get_worker_token("run")
+    runs.mark_running("run", token)
+    runs.append_events(
+        "run",
+        token,
+        [
+            ("chunk", {"choices": [{"delta": {"reasoning_content": "t" * 400}}]}),
+            ("chunk", {"choices": [{"delta": {"content": "a" * 400}}]}),
+        ],
+    )
+    runs.finish_run("run", worker_token = token, status = "cancelled")
+    _enable(limit = 10_000)
+    assert _pools()["combined"]["used"] == 100 + 200
+    message = studio_db.get_chat_message("t1", "assistant")
+    metadata = dict(message.get("metadata") or {})
+    metadata["contextUsage"] = {"promptTokens": 90, "completionTokens": 60, "totalTokens": 150}
+    studio_db.upsert_chat_message({**message, "metadata": metadata})
+    # The reported usage replaces the estimate.
+    assert _pools()["combined"]["used"] == 150
+
+
 @pytest.mark.parametrize("via_api_key", [False, True])
 def test_durable_usage_is_counted_before_a_browser_recovers_the_run(via_api_key):
     from storage import chat_generation_runs_db as runs

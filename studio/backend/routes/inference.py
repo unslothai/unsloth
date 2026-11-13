@@ -31536,16 +31536,18 @@ async def openai_chat_completions(
 
 
 async def _scoped_stream(iterator, temporary):
-    # async for does not close its source: forward teardown so the inner stream's cancellation,
-    # slot release and accounting run in the serving task, not at garbage collection.
+    # async for does not close its source: forward teardown, keeping a cancellation one, so the
+    # inner stream's cancel handler (slot release, monitor receipt) runs in the serving task.
+    cancelled = False
     try:
         with temporary_usage_scope(temporary):
             async for chunk in iterator:
                 yield chunk
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
-        aclose = getattr(iterator, "aclose", None)
-        if aclose is not None:
-            await aclose()
+        await _close_openai_admitted_stream_iterator(iterator, cancelled = cancelled)
 
 
 async def produce_openai_chat_completions(
@@ -33175,7 +33177,9 @@ async def produce_openai_chat_completions(
                             return chunks
                         reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                         if reasoning_delta:
-                            api_monitor.mark_first_token(monitor_id)
+                            api_monitor.mark_first_token(
+                                monitor_id, output_chars = len(reasoning_delta)
+                            )
                             chunks.append(
                                 _gguf_chat_delta_line(
                                     ChoiceDelta(reasoning_content = reasoning_delta)
@@ -33191,7 +33195,9 @@ async def produce_openai_chat_completions(
                         chunks = []
                         if final_reasoning:
                             # Held-back markers can make this the FIRST output of all.
-                            api_monitor.mark_first_token(monitor_id)
+                            api_monitor.mark_first_token(
+                                monitor_id, output_chars = len(final_reasoning)
+                            )
                             chunks.append(
                                 _gguf_chat_delta_line(
                                     ChoiceDelta(reasoning_content = final_reasoning)
@@ -33380,7 +33386,9 @@ async def produce_openai_chat_completions(
                             continue
                         reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                         if reasoning_delta:
-                            api_monitor.mark_first_token(monitor_id)
+                            api_monitor.mark_first_token(
+                                monitor_id, output_chars = len(reasoning_delta)
+                            )
                             yield _gguf_chat_delta_line(
                                 ChoiceDelta(reasoning_content = reasoning_delta)
                             )
@@ -33986,7 +33994,9 @@ async def produce_openai_chat_completions(
                             continue
                         reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                         if reasoning_delta:
-                            api_monitor.mark_first_token(monitor_id)
+                            api_monitor.mark_first_token(
+                                monitor_id, output_chars = len(reasoning_delta)
+                            )
                             yield _gguf_chat_delta_line(
                                 ChoiceDelta(reasoning_content = reasoning_delta)
                             )
@@ -33997,7 +34007,7 @@ async def produce_openai_chat_completions(
                     final_reasoning, final_visible = reasoning_extractor.finish()
                     if final_reasoning:
                         # Held-back markers can make this the FIRST output of all.
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(final_reasoning))
                         yield _gguf_chat_delta_line(ChoiceDelta(reasoning_content = final_reasoning))
                     if final_visible:
                         api_monitor.append_reply(monitor_id, final_visible)
@@ -35089,7 +35099,7 @@ async def produce_openai_chat_completions(
                         return out
                     reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                     if reasoning_delta:
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(reasoning_delta))
                         out.append(
                             _chat_reasoning_chunk(
                                 completion_id, created, model_name, reasoning_delta
@@ -35108,7 +35118,7 @@ async def produce_openai_chat_completions(
                     out = []
                     if fr:
                         # Held-back markers can make this the FIRST output of all.
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(fr))
                         out.append(_chat_reasoning_chunk(completion_id, created, model_name, fr))
                     if fv:
                         api_monitor.append_reply(monitor_id, fv)
@@ -35240,7 +35250,7 @@ async def produce_openai_chat_completions(
                     # Split reasoning vs visible; only visible reaches the monitor.
                     reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                     if reasoning_delta:
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(reasoning_delta))
                         yield _chat_reasoning_chunk(
                             completion_id, created, model_name, reasoning_delta
                         )
@@ -35892,7 +35902,7 @@ async def produce_openai_chat_completions(
                     # Split reasoning first so tool markup inside a reasoning block is never healed.
                     reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                     if reasoning_delta:
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(reasoning_delta))
                         yield _chat_reasoning_chunk(
                             completion_id, created, model_name, reasoning_delta
                         )
@@ -35918,7 +35928,7 @@ async def produce_openai_chat_completions(
                 final_reasoning, final_visible = reasoning_extractor.finish()
                 if final_reasoning:
                     # Held-back markers can make this the FIRST output of all.
-                    api_monitor.mark_first_token(monitor_id)
+                    api_monitor.mark_first_token(monitor_id, output_chars = len(final_reasoning))
                     yield _chat_reasoning_chunk(completion_id, created, model_name, final_reasoning)
                 if final_visible:
                     if healer is None:
@@ -40932,7 +40942,7 @@ class _ResponsesStreamTranslator:
         if reasoning_delta:
             # Not on visible text: the client already has this, so waiting would
             # time from the end of the thinking block instead.
-            api_monitor.mark_first_token(monitor_id)
+            api_monitor.mark_first_token(monitor_id, output_chars = len(reasoning_delta))
             yield from self._reasoning_text_events(reasoning_delta)
         # Visible text only, never reasoning. Healer events keep their order so text after a
         # healed call never jumps ahead of its function_call item.
@@ -40977,7 +40987,7 @@ class _ResponsesStreamTranslator:
         final_reasoning, final_visible = self.extractor.finish()
         if final_reasoning:
             # Held-back markers can make this the FIRST output of all.
-            api_monitor.mark_first_token(monitor_id)
+            api_monitor.mark_first_token(monitor_id, output_chars = len(final_reasoning))
             yield from self._reasoning_text_events(final_reasoning)
         # Heal held residue (an unclosed tool block) before the trailing text, keeping healer order.
         healer = self.healer

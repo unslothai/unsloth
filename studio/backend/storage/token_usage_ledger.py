@@ -31,7 +31,9 @@ def _usage_columns(row: str) -> str:
         f" - {_count(row, '$.tokenUsagePriorCount')}, 0)"
     )
     return f"""
-        CASE WHEN {usage_prompt} > 0 THEN {usage_prompt} ELSE {server_prompt} END AS prompt_tokens,
+        CASE WHEN {usage_prompt} > 0 THEN {usage_prompt}
+             WHEN {server_prompt} > 0 THEN {server_prompt}
+             ELSE {_count(row, "$.tokenUsageEstimatedPrompt")} END AS prompt_tokens,
         CASE WHEN {usage_completion} > 0 THEN {usage_completion}
              WHEN {server_completion} > 0 THEN {server_completion}
              ELSE {timing_completion} END AS completion_tokens,
@@ -224,6 +226,66 @@ def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None
             ),
             (json.dumps(metadata), run_id),
         )
+
+
+def _text_chars(content) -> int:
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        return sum(
+            len(part.get("text") or "")
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+    return 0
+
+
+def settle_interrupted_run(conn: sqlite3.Connection, run_id: str) -> None:
+    """A run stopped before any usage frame (e.g. unattended) still debits an estimate of its
+    persisted output; reported usage, if it ever arrives, replaces it."""
+    output = 0
+    for (payload,) in conn.execute(
+        "SELECT payload_json FROM chat_generation_events WHERE run_id = ? AND event_type = 'chunk'",
+        (run_id,),
+    ):
+        try:
+            choices = json.loads(payload).get("choices") or []
+        except (TypeError, ValueError, AttributeError):
+            continue
+        for choice in choices if isinstance(choices, list) else ():
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            if isinstance(delta, dict):
+                output += _text_chars(delta.get("content")) + _text_chars(
+                    delta.get("reasoning_content")
+                )
+    if not output:
+        return
+    row = conn.execute(
+        "SELECT request_json FROM chat_generation_runs WHERE id = ?", (run_id,)
+    ).fetchone()
+    try:
+        messages = json.loads(row[0]).get("messages") or [] if row else []
+    except (TypeError, ValueError, AttributeError):
+        messages = []
+    prompt = sum(_text_chars(m.get("content")) for m in messages if isinstance(m, dict))
+    metadata = {
+        "timing": {"tokenCount": -(-output // 4)},
+        "tokenUsageEstimatedPrompt": -(-prompt // 4),
+    }
+    conn.execute(
+        _ledger_insert(
+            "m",
+            """
+            FROM (
+                SELECT c.id, c.thread_id, c.created_at, c.parent_id,
+                       json_patch(c.metadata_json, ?) AS metadata_json
+                FROM chat_messages c JOIN chat_generation_runs r ON r.assistant_message_id = c.id
+                WHERE r.id = ?
+            ) m
+        """,
+        ),
+        (json.dumps(metadata), run_id),
+    )
 
 
 def record_temporary_usage(receipt) -> bool:
