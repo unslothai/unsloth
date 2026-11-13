@@ -491,12 +491,14 @@ def unsupported_reason(q: Any, k: Any, v: Any) -> Optional[str]:
     return None
 
 
-def _verified(q: Any) -> bool:
-    """Whether the accuracy check passed for this call's card and head dim (the op runs the kernel only then)."""
+def _verified(q: Any, k: Any, v: Any) -> bool:
+    """Whether the accuracy check passed for this call's card, head dim and operand dtypes (the op runs the kernel
+    only then: a check passed in one dtype says nothing about another)."""
     import torch
 
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    return (index, int(q.shape[-1])) in _VERIFIED
+    head_dim = int(q.shape[-1])
+    return all((index, head_dim, str(x.dtype)) in _VERIFIED for x in (q, k, v))
 
 
 def int8_attention(
@@ -535,7 +537,7 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
     """The kernel where it can run, native attention elsewhere and after any failure."""
     import torch
 
-    if unsupported_reason(q, k, v) is None and _verified(q):
+    if unsupported_reason(q, k, v) is None and _verified(q, k, v):
         try:
             out = int8_attention(q, k, v)
             STATS["int8"] += 1
@@ -668,7 +670,11 @@ def _check(
     if out["ok"]:
         dev = torch.device(device)
         _VERIFIED.add(
-            (dev.index if dev.index is not None else torch.cuda.current_device(), int(head_dim))
+            (
+                dev.index if dev.index is not None else torch.cuda.current_device(),
+                int(head_dim),
+                str(dtype),
+            )
         )
     if not out["ok"] or not timed:
         return out

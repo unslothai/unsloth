@@ -446,6 +446,28 @@ def test_the_method_stays_close_to_fp32_attention(shape, bn):
 # ---------------------------------------------------------------- statistics, dtypes, gradients (CPU)
 
 
+def test_the_card_check_counts_for_its_dtype_only(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+
+    def operand(dtype):
+        return types.SimpleNamespace(
+            device = torch.device("cuda:0"), shape = (1, 8, 2, 64), dtype = dtype
+        )
+
+    bf16, fp16 = operand(torch.bfloat16), operand(torch.float16)
+    monkeypatch.setattr(I, "_VERIFIED", {(0, 64, "torch.bfloat16")})
+    assert I._verified(bf16, bf16, bf16)
+    assert not I._verified(fp16, fp16, fp16) and not I._verified(bf16, bf16, fp16)
+    assert not I._verified(operand(torch.bfloat16), bf16, operand(torch.float32))
+    # the check records the dtype it ran in
+    monkeypatch.setattr(
+        I, "int8_attention", lambda q, k, v, scale = None, config = None: I.reference_attention(q, k, v)
+    )
+    monkeypatch.setattr(I, "_VERIFIED", set())
+    assert I._check("cpu", torch.float32, 4, 64, None, timed = False)["ok"]
+    assert I._VERIFIED == {(0, 64, "torch.float32")}
+
+
 def test_flux3_strided_processor_keeps_native_attention_for_calls_that_need_gradients(monkeypatch):
     tf3 = pytest.importorskip("diffusers.models.transformers.transformer_flux3")
     import contextlib
@@ -884,6 +906,16 @@ def test_op_runs_the_kernel_only_where_it_was_verified(monkeypatch):
     got = torch.ops.unsloth_studio.int8_attention_nhd(q, k, v)
     assert I.STATS["int8"] == before["int8"] + 1
     assert I.accuracy(got, I.reference_attention(q, k, v))["cos"] > 0.999
+    # the check passed in bf16: an fp16 call is native attention until the check has run in fp16 too
+    half = tuple(x.half() for x in (q, k, v))
+    native = I.STATS["native"]
+    assert torch.equal(
+        torch.ops.unsloth_studio.int8_attention_nhd(*half), I.native_attention(*half)
+    )
+    assert I.STATS["native"] == native + 1
+    assert I.verdict("cuda", torch.float16, 2, 128, timed = False)["ok"]
+    torch.ops.unsloth_studio.int8_attention_nhd(*half)
+    assert I.STATS["int8"] == before["int8"] + 2
     # a failing launch falls back to native attention and stays there
     monkeypatch.setattr(I, "_BROKEN", set())
     monkeypatch.setattr(I, "attend", lambda p: (_ for _ in ()).throw(RuntimeError("launch failed")))
