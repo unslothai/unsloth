@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from core.inference import npu_memory
 from utils import host_memory
 
 if TYPE_CHECKING:
@@ -51,6 +52,20 @@ def _available_mib() -> Optional[int]:
     # Windows maps at most about half of RAM to the NPU (lemonade-sdk/lemonade#839).
     total = host_memory.host_ram_capacity_mib() if sys.platform == "win32" else None
     return min(available, total // 2) if available is not None and total else available
+
+
+def _npu_window_gb() -> Optional[float]:
+    return npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb())
+
+
+def _npu_window_bytes(weights: int) -> Optional[int]:
+    """What the NPU memory window leaves after the weights and load margin (half of RAM on
+    Windows, as the catalog's fit warning prices it); None when RAM is unknown."""
+    window = _npu_window_gb()
+    needed = npu_memory.npu_memory_needed_gb(weights / _GIB)
+    if window is None or needed is None:
+        return None
+    return int((window - needed) * _GIB)
 
 
 def _positive(config: dict, key: str) -> Optional[int]:
@@ -159,6 +174,9 @@ def plan_context(
     available = _available_mib() if kv and weights else None
     if available is not None:
         budget = (available - HOST_RAM_HEADROOM_MIB) * _MIB - weights
+        window = _npu_window_bytes(weights)
+        if window is not None:
+            budget = min(budget, window)
         ceiling = limit or max(AUTO_CONTEXT_CEILING, requested or 0)
         fits = _largest_fitting(budget, kv, ceiling)
     if requested is not None:
