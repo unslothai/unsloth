@@ -160,3 +160,28 @@ def test_the_load_passes_an_explicit_none_to_the_small_host_decision():
     assert all(i > flag for i in [src.index("dense_denoiser = small_host_dense,")])
     body = src[flag : flag + 400]
     assert "not transformer_quant_auto" in body and "transformer_quant_pinned is None" in body
+
+
+@pytest.mark.parametrize("mapped", [False, True])
+def test_qkv_fusion_skips_a_mapped_denoiser(mapped):
+    import torch
+
+    from core.inference import diffusion_speed as ds
+
+    # the first Linear converts (it sets the model dtype), the second stays mapped with a cast hook
+    transformer = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)).to(
+        torch.bfloat16
+    )
+    if mapped:
+        sh.prepare_streamed_encoder_(transformer, torch.float16)
+    calls = []
+
+    class _Pipe:
+        def __init__(self):
+            self.transformer = transformer
+
+        def fuse_qkv_projections(self):
+            calls.append(1)
+
+    assert ds._fuse_qkv(_Pipe(), None) is not mapped
+    assert calls == ([] if mapped else [1])
