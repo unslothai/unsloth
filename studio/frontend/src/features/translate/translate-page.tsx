@@ -13,14 +13,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  NEW_CHAT_DRAFT_ID,
-  composerDraftKey,
-  latestDraft,
-  publishDraft,
   tryAdoptServerActiveModel,
-  useChatPreferencesStore,
+  useChatArtifactsStore,
   useChatRuntimeStore,
-  writeComposerDraft,
 } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -235,17 +230,12 @@ export function TranslatePage() {
   function chatWithTranslations(entries: readonly TranslationEntry[]) {
     const handoff = buildChatHandoff(entries);
     if (!handoff) return;
-    const shared = useChatPreferencesStore.getState().shareComposerDraft;
-    const key = composerDraftKey(NEW_CHAT_DRAFT_ID, shared);
-    const draft = latestDraft(key);
-    const text = draft.trim() ? `${handoff}${draft}` : handoff;
-    writeComposerDraft(key, text);
-    if (shared) publishDraft(text, TRANSLATE_DRAFT_SOURCE);
-    // As the sidebar's New chat: an incognito composer would hide the seeded draft.
+    // As the sidebar's New chat; the staged prompt reaches a kept-alive composer too.
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(null);
     runtime.setIncognito(false);
+    useChatArtifactsStore.getState().stageFixPrompt(handoff.trimEnd());
     void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
   }
 
@@ -555,8 +545,6 @@ export function TranslatePage() {
     </main>
   );
 }
-
-const TRANSLATE_DRAFT_SOURCE = Symbol("translate");
 
 function PickerField({
   label,
