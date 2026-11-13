@@ -58,7 +58,8 @@ def test_arch_tiles_listed_unlisted_and_off():
         ((8, 6), None, False),
     ],
 )
-def test_spill_rule(cap, version, need):
+def test_spill_rule(cap, version, need, monkeypatch):
+    monkeypatch.setattr(fg, "_triton_version", lambda: None)  # None = no Triton installed
     assert fg.spill_check_needed(cap, version) is need
 
 
