@@ -401,7 +401,14 @@ export function startCpuPaintShadows(
   const observer = new MutationObserver(refresh);
   observer.observe(root, {
     attributes: true,
-    attributeFilter: ["class", "data-palette", "data-contrast-adjust", "style"],
+    attributeFilter: [
+      "class",
+      "data-palette",
+      "data-contrast-adjust",
+      "data-glass",
+      "data-glass-cpu",
+      "style",
+    ],
   });
   let resolution: MediaQueryList | undefined;
   const watchResolution = () => {

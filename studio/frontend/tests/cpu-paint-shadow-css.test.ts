@@ -9,6 +9,8 @@ import { readSrc } from "./helpers/kit.ts";
 const CSS = readSrc("index.css");
 const RUNTIME = readSrc("lib/cpu-paint-shadows.ts");
 const GATE = "html.tauri.render-linux.webkit-cpu-paint";
+const POPUP_GATE = `${GATE}:not([data-glass])`;
+const COMPOSER_GATE = `${GATE}:not([data-glass], [data-composer-outline="on"])`;
 
 /** Every rule as [selector, body], comments dropped, at-rule wrappers kept out of the selector. */
 function rules(): [string, string][] {
@@ -22,7 +24,7 @@ function rules(): [string, string][] {
 
 test("image shadows only apply under the CPU-paint class of the Linux desktop app", () => {
   const touching = rules().filter(([, body]) =>
-    /border-image|--cpu-/.test(body),
+    /--cpu-/.test(body),
   );
   assert.ok(
     touching.length >= 8,
@@ -52,12 +54,12 @@ test("each large shadowed surface switches to its image", () => {
     /border-image:\s*var\(--cpu-popup\);/,
   );
   assert.match(
-    bodies.get(`${GATE} [data-slot="sheet-content"]`) ?? "",
+    bodies.get(`${POPUP_GATE} [data-slot="sheet-content"]`) ?? "",
     /border-image:\s*var\(--cpu-sheet\);/,
   );
   assert.match(
     bodies.get(
-      `${GATE} :is(.chat-composer-surface, .unsloth-composer-surface)`,
+      `${COMPOSER_GATE} :is(.chat-composer-surface, .unsloth-composer-surface):not([data-wallpaper-ready] *)`,
     ) ?? "",
     /--composer-shadow:\s*var\(--cpu-composer-rest\);/,
   );
@@ -125,7 +127,7 @@ test("dialogs that change their corner radius take an image cut for that radius"
   // Tailwind's max-sm is width < 40rem; the phone-width rules sit in that media query.
   assert.match(
     CSS,
-    /@media \(width < 40rem\) \{\s*html\.tauri\.render-linux\.webkit-cpu-paint\s*:is\(\[data-slot="dialog-content"\]/,
+    /@media \(width < 40rem\) \{\s*html\.tauri\.render-linux\.webkit-cpu-paint:not\(\[data-glass\]\)\s*:is\(\[data-slot="dialog-content"\]/,
   );
 
   // Every corner override written on a dialog is one of the handled ones.
@@ -224,7 +226,7 @@ test("the original shadows are unchanged without the class", () => {
   );
   assert.match(CSS, /--popup-shadow: 0 16px 40px -12px rgb\(0 0 0 \/ 0\.7\);/);
   for (const [selector, b] of plain) {
-    assert.doesNotMatch(b, /border-image|--cpu-/, `${selector} is untouched`);
+    assert.doesNotMatch(b, /--cpu-/, `${selector} is untouched`);
   }
 });
 
@@ -288,4 +290,61 @@ test("main.tsx loads and arms the images after the Linux classes and asks the sh
     RUNTIME,
     /classList\.contains\("tauri"\)\s*\|\|\s*!root\.classList\.contains\("render-linux"\)/,
   );
+});
+
+test("surfaces whose shadow glass, a wallpaper or the outline setting replace keep the CSS shadow", () => {
+  const parts = rules()
+    .filter(([, body]) => /--cpu-|border-image/.test(body))
+    .flatMap(([selector]) => selector.split(/,(?![^(]*\))/))
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith(GATE));
+  for (const part of parts) {
+    if (/composer-surface|files-panel/.test(part)) {
+      assert.ok(part.startsWith(COMPOSER_GATE), part);
+      assert.match(part, /\[data-wallpaper-ready\] \*\)/, part);
+    } else {
+      assert.ok(part.startsWith(POPUP_GATE), part);
+    }
+  }
+  // Element-level overrides of these shadows only exist in the states gated out above.
+  for (const [selector, body] of rules()) {
+    if (selector.startsWith(GATE)) continue;
+    for (const part of selector.split(/,(?![^(]*\))/)) {
+      const surface = /composer-surface|files-panel/.test(part)
+        ? "composer"
+        : /dialog-content"\]|sheet-content"\]|sonner-toast/.test(part) &&
+            !/\s\S*(dialog-content|sheet-content|sonner-toast)\S*\s/.test(`${part} `)
+          ? "popup"
+          : null;
+      if (!surface) continue;
+      const sets =
+        surface === "composer"
+          ? /--composer-shadow:/.test(body)
+          : /(^|[;\s])box-shadow:/.test(body);
+      if (!sets) continue;
+      const gated =
+        surface === "composer"
+          ? /data-glass|data-wallpaper-(ready|outline-off)|data-composer-outline|chat-full-view-dock/.test(part)
+          : /data-glass-menus|data-glass-clear/.test(part) ||
+            part === '[data-sonner-toast][data-styled=\'true\']' ||
+            part.startsWith(':is([data-slot="dialog-content"]');
+      assert.ok(gated, `${part} overrides a shadow the images draw`);
+    }
+  }
+});
+
+test("the runtime redraws when an attribute that sets a root shadow token changes", () => {
+  const watched = new Set(
+    [...(/attributeFilter: \[([^\]]*)\]/.exec(RUNTIME)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(
+      (m) => m[1],
+    ),
+  );
+  for (const [selector, body] of rules()) {
+    if (!/--(popup|composer|composer-focus)-shadow:/.test(body)) continue;
+    for (const part of selector.split(/,(?![^(]*\))/)) {
+      if (!/^(:root|html)\S*$/.test(part.trim())) continue;
+      for (const m of part.matchAll(/\[([a-z-]+)/g))
+        assert.ok(watched.has(m[1]), `${part.trim()}: ${m[1]} is observed`);
+    }
+  }
 });
