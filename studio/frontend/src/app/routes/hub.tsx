@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { HUB_CAPABILITY_FILTERS, type HubCapabilityFilter } from "@/features/hub";
+import {
+  HUB_CAPABILITY_FILTERS,
+  type HubCapabilityFilter,
+} from "@/features/hub/lib/model-capabilities";
 import { hubAudioTaskSearch } from "@/lib/hub-audio-task";
 import type { PipelineType } from "@huggingface/hub";
 import { createRoute, lazyRouteComponent } from "@tanstack/react-router";

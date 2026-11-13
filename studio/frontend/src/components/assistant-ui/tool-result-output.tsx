@@ -7,15 +7,10 @@ import { stripAnsi, tailToolOutput } from "@/lib/strip-ansi";
 import { useMemo, useState } from "react";
 
 
-/**
- * Finished-tool output pane: renders the tail (~2000 lines) with a "Show all"
- * toggle so a large output stays scrollable without janking the DOM. Copy
- * buttons still copy the FULL text (owned by the caller), not the tail.
- */
+/** Renders a ~2000-line tail; the caller's copy buttons still copy the full text. */
 export function ToolResultOutput({ text }: { text: string }) {
   const [showAll, setShowAll] = useState(false);
-  // Strip SGR before tailing so colour codes neither inflate the char budget
-  // nor leak into the DOM as literal escape text (#7962).
+  // Strip SGR before tailing so codes neither inflate the budget nor leak into the DOM.
   const cleaned = useMemo(() => stripAnsi(text), [text]);
   const tail = useMemo(() => tailToolOutput(cleaned), [cleaned]);
   const truncated = !showAll && (tail.hiddenLines > 0 || tail.hiddenChars > 0);

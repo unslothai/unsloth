@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Compile a chat React component for the preview frame (Node + oxc-transform, never evaluated).
-
-Always returns a status dict (ok / error / unavailable), never raises, so a missing Node is a
-message in the preview rather than a 500.
-"""
+"""Compiles a chat React preview via Node + oxc-transform and never evaluates it; never raises, so a
+missing Node is a status message"""
 
 from __future__ import annotations
 

@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { apiMonitorTourSteps } from "./tour";
-
-// Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
-// configuration (keys, auto-switch, examples); this page owns observability.
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,11 +30,23 @@ import {
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   loadLanAccess,
+  loadMultiModelEnabled,
   publishLanUrls,
+  useKeylessExampleAccess,
   useSettingsDialogStore,
 } from "@/features/settings";
+// Not through the barrel: these pull in chat, which every barrel importer would then load.
+import {
+  type ApiExampleKind,
+  ApiExampleTabNav,
+} from "@/features/settings/components/api-example-tabs";
+import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
+import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
+import { MediaApiExamples } from "@/features/settings/components/media-api-examples";
+import { useApiTunnelPref } from "@/features/settings/components/usage-examples";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -46,21 +56,19 @@ import {
   ApiIcon,
   ArrowDataTransferVerticalIcon,
   Cancel01Icon,
+  Clock01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
-  Copy01Icon,
-  Delete02Icon,
   FileSearchIcon,
-  FlashIcon,
-  PauseIcon,
   PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
-  Settings02Icon,
-  Timer01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
+import { Settings01Icon, SpeedMeterIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -108,6 +116,7 @@ import {
   useApiMonitor,
 } from "./use-api-monitor";
 import { PlayIcon } from "lucide-react";
+import { useFreshApiKeyStore } from "@/features/settings/stores/fresh-api-key-store";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
@@ -137,21 +146,22 @@ const PANE_HEIGHT =
   "max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(260px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto";
 
 const SURFACE = "elevated-card bg-card";
-const DIVIDER = "border-border/60 dark:border-background";
+// glass-divider / glass-inset: index.css glass hooks.
+const DIVIDER = "glass-divider border-border/60 dark:border-background";
 const INSET =
-  "border border-border/50 bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
+  "glass-inset border border-border/50 bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 const INSET_OPAQUE =
   "bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 
 function formatTime(value: number): string {
-  return new Date(value * 1000).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return new Date(value * 1000).toLocaleTimeString(
+    [],
+    withTimeFormat({ hour: "numeric", minute: "2-digit" }),
+  );
 }
 
 function formatFullTime(value: number): string {
-  return new Date(value * 1000).toLocaleString();
+  return new Date(value * 1000).toLocaleString(undefined, withTimeFormat());
 }
 
 function formatAgo(value: number, now: number): string {
@@ -304,6 +314,55 @@ function openApiSettings(): void {
   useSettingsDialogStore.getState().openDialog("api-keys");
 }
 
+function MultiModelHint({
+  servedCount,
+}: {
+  servedCount: number;
+}): ReactElement | null {
+  const keepLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const isOwner = useIsAccountOwner();
+  // Store defaults to off: without the read the hint flashes for users who have it on.
+  const [known, setKnown] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    loadMultiModelEnabled("Failed to read the multiple models setting").then(
+      (enabled) => {
+        if (cancelled) return;
+        useChatRuntimeStore.getState().setKeepModelsLoaded(enabled);
+        setKnown(true);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!known || keepLoaded || servedCount > 1) return null;
+  return (
+    <>
+      {" · "}
+      {isOwner ? (
+        <>
+          Enable loading multiple models in{" "}
+          <button
+            type="button"
+            className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+            onClick={() =>
+              useSettingsDialogStore.getState().openDialog("resources", {
+                scrollTarget: "resources-model-memory",
+              })
+            }
+          >
+            Settings
+          </button>
+        </>
+      ) : (
+        "One model at a time"
+      )}
+    </>
+  );
+}
+
 function Stat({
   label,
   value,
@@ -411,7 +470,7 @@ function Fact({
           <HugeiconsIcon
             icon={icon}
             strokeWidth={1.75}
-            className="size-3.5 shrink-0 text-muted-foreground"
+            className="size-[1em] shrink-0 text-muted-foreground"
           />
         ) : null}
         {children}
@@ -468,7 +527,6 @@ function ContextUsageBar({ value }: { value?: number | null }): ReactElement {
         <div
           className={cn(
             "h-full rounded-full transition-[width]",
-            // Near-full context is the usual cause of truncated replies.
             pct >= 90
               ? "bg-red-500"
               : pct >= 75
@@ -493,6 +551,7 @@ const RequestRow = memo(function RequestRow({
   onSelect: (id: string) => void;
   now: number;
 }): ReactElement {
+  useTimeFormat();
   const age = (
     <span title={formatFullTime(entry.started_at)}>
       {formatAgo(entry.started_at, now)}
@@ -503,7 +562,6 @@ const RequestRow = memo(function RequestRow({
     entry.reply_preview ||
     entry.prompt_preview ||
     (entry.status === "running" ? "Waiting for output…" : "No preview");
-  // A lifecycle row has no payload, so it reads as a status line.
   if (isLifecycleEntry(entry)) {
     return (
       <div className="flex w-full min-w-0 flex-col gap-0.5 rounded-md px-3 py-2">
@@ -578,7 +636,7 @@ const RequestRow = memo(function RequestRow({
             }
           >
             <HugeiconsIcon
-              icon={Timer01Icon}
+              icon={Clock01Icon}
               strokeWidth={1.75}
               className="size-3"
             />
@@ -587,7 +645,7 @@ const RequestRow = memo(function RequestRow({
           {speed ? (
             <span className="flex items-center gap-1" title="Generation speed">
               <HugeiconsIcon
-                icon={FlashIcon}
+                icon={SpeedMeterIcon}
                 strokeWidth={1.75}
                 className="size-3"
               />
@@ -596,7 +654,6 @@ const RequestRow = memo(function RequestRow({
           ) : null}
         </span>
       </div>
-      {/* A prompt or reply excerpt, same as the expanded payload below it. */}
       <p
         data-reload-snapshot-sensitive
         className={cn(
@@ -747,8 +804,8 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
-  // The detail fetch can describe an older state of a streaming entry, so prefer it
-  // only once it is as fresh as the list row, or the panel rewinds.
+  useTimeFormat();
+  // Prefer the detail only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&
     detail.status === entry.status &&
@@ -861,6 +918,15 @@ function QuickStart({
   model: string | null;
 }): ReactElement {
   const choices = useApiExampleChoices(baseUrl, "curl");
+  const [useTunnel] = useApiTunnelPref();
+  const [kind, setKind] = useState<ApiExampleKind>("chat");
+  const freshKey = useFreshApiKeyStore((s) => s.key);
+  const isOwner = useIsAccountOwner();
+  const keylessAccess = useKeylessExampleAccess(isOwner);
+  const keyless = {
+    keylessScope: keylessAccess.scope,
+    keylessExposure: keylessAccess.exposure,
+  };
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -876,22 +942,52 @@ function QuickStart({
         </h3>
         <p className="text-sm text-muted-foreground">
           {model
-            ? "Send a request to the base URL and it appears here as it streams."
-            : "Load a model, then send a request to the base URL. It appears here as it streams."}
+            ? "Send a request to the base URL to see it here."
+            : "Load a model, then send a request to see it here."}
         </p>
       </div>
-      <div className="w-full max-w-2xl text-left">
-        <ApiExampleBox
-          choices={choices}
-          code={buildApiExample({
-            baseUrl,
-            model: model ?? "MODEL_ID",
-            sampling: {},
-            language: choices.language,
-            os: choices.os,
-          })}
-        />
-      </div>
+      <ApiExampleTabNav kind={kind} onChange={setKind} className="justify-center" />
+      {kind === "chat" ? (
+        <div className="w-full max-w-2xl text-left">
+          <ApiExampleBox
+            choices={choices}
+            hasRealKey={freshKey !== null}
+            code={buildApiExample({
+              baseUrl,
+              model: model ?? "MODEL_ID",
+              sampling: {},
+              apiKey: freshKey ?? undefined,
+              language: choices.language,
+              os: choices.os,
+            })}
+          />
+        </div>
+      ) : (
+        <div className="w-full max-w-3xl text-left">
+          {kind === "media" ? (
+            <MediaApiExamples
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+              {...keyless}
+            />
+          ) : kind === "audio" ? (
+            <AudioApiExamples
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+              {...keyless}
+            />
+          ) : (
+            <DecisionApiSection
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+              {...keyless}
+            />
+          )}
+        </div>
+      )}
       <Button
         type="button"
         variant="outline"
@@ -1000,8 +1096,7 @@ export function ApiMonitorPage(): ReactElement {
           if (!checkpoint) {
             return null;
           }
-          // Both spellings, since status reports the load path while the store may
-          // hold the advertised repo id.
+          // Both spellings: status reports the load path, the store may hold the repo id.
           return {
             checkpoint,
             aliases: [checkpoint, status.active_model].filter(
@@ -1011,9 +1106,7 @@ export function ApiMonitorPage(): ReactElement {
         },
         unload: (checkpoint) => unloadModel({ model_path: checkpoint }),
       });
-      // As in the chat eject flow, but only when the store holds a model just unloaded: chat
-      // can have an external provider selected while a local model stays resident, and
-      // clearCheckpoint would delete a selection this button never touched.
+      // Only clear when the store holds the model just unloaded: an external provider may be selected.
       const store = useChatRuntimeStore.getState();
       const selected = store.params.checkpoint;
       if (
@@ -1092,8 +1185,7 @@ export function ApiMonitorPage(): ReactElement {
     [modelEntries],
   );
 
-  // Refetch the selected entry while it streams. Keyed on identity and revision, never
-  // on `details`: the fetch rewrites it on success, so depending on it loops.
+  // Keyed on identity and revision, never `details`, which the fetch rewrites (loop).
   const selectedId_ = selected?.id ?? null;
   const selectedUpdatedAt = selected?.updated_at ?? null;
   const selectedIsMissing = selectedId_ != null && details[selectedId_] == null;
@@ -1109,14 +1201,11 @@ export function ApiMonitorPage(): ReactElement {
     if (selectedId_ == null || detailInFlight) {
       return;
     }
-    // `updated_at` advances per poll and settles when terminal; a missing payload
-    // always retries, covering a fetch that failed late.
     const revision = `${selectedId_}@${selectedUpdatedAt ?? ""}`;
     if (!selectedIsMissing && lastFetchedRef.current === revision) {
       return;
     }
-    // A terminal row's revision never advances, so a failed fetch had nothing to re-run
-    // this effect. `loadingDetails` settling is the trigger; the count bounds it.
+    // A terminal row's revision never advances; `loadingDetails` settling re-runs this, bounded by count.
     if (attemptsRef.current.revision !== revision) {
       attemptsRef.current = { revision, count: 0 };
     }
@@ -1124,8 +1213,7 @@ export function ApiMonitorPage(): ReactElement {
       return;
     }
     attemptsRef.current.count += 1;
-    // Only when a fetch started: the guard can refuse, and recording it anyway skips
-    // that revision for good.
+    // Only when a fetch started; recording a refused one skips that revision for good.
     if (requestDetail(selectedId_)) {
       lastFetchedRef.current = revision;
       setRetryTick(0);
@@ -1244,7 +1332,7 @@ export function ApiMonitorPage(): ReactElement {
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
-          icon={Settings02Icon}
+          icon={Settings01Icon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -1361,7 +1449,8 @@ export function ApiMonitorPage(): ReactElement {
                 pinOnClick={true}
                 hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
                 padX={2}
-                className="-my-1 -ml-2 h-6 min-w-(--full) [--icon-size:--spacing(3.5)] [&>button]:rounded-full"
+                fitContent={true}
+                className="-mx-2 -my-1 h-6 font-sans text-ui-12 tabular-nums [--icon-size:--spacing(3.5)] [&>button]:rounded-full"
                 used={used}
                 total={windowSize}
                 promptTokens={last?.prompt_tokens ?? undefined}
@@ -1372,7 +1461,7 @@ export function ApiMonitorPage(): ReactElement {
         </dl>
         <dl className={FACT_CELL}>
           {rowStats.tokensPerSecond != null ? (
-            <Fact label="Speed" icon={FlashIcon}>
+            <Fact label="Speed" icon={SpeedMeterIcon}>
               <span className="tabular-nums">
                 {rowStats.tokensPerSecond.toFixed(1)} tok/s
               </span>
@@ -1381,7 +1470,7 @@ export function ApiMonitorPage(): ReactElement {
         </dl>
         <dl className={FACT_CELL}>
           {rowStats.avgDurationMs != null ? (
-            <Fact label="Total time, average per request" icon={Timer01Icon}>
+            <Fact label="Total time, average per request" icon={Clock01Icon}>
               <span className="tabular-nums">
                 {formatDuration(rowStats.avgDurationMs)}
               </span>
@@ -1404,10 +1493,13 @@ export function ApiMonitorPage(): ReactElement {
   };
   return (
     <>
-      {/* Model picker where Chat keeps it; sticky, so the log scrolls under it. */}
+      {/* In the macOS titlebar row like Chat's header; click-through so the row still drags. */}
       <div
+        data-page-model-header=""
         className={cn(
-          "sticky top-0 z-30 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+          "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+          !isMobileShell &&
+            "-mt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-content-top-inset,0px))]",
           isMobileShell
             ? "pl-12"
             : pinned
@@ -1417,7 +1509,7 @@ export function ApiMonitorPage(): ReactElement {
                 : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
         )}
       >
-        <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
+        <div data-tour="api-toolbar" className="pointer-events-auto flex min-w-0 max-w-full">
           <ApiModelLoadControls
             runtime={runtime}
             activeModel={data?.active_model}
@@ -1433,10 +1525,11 @@ export function ApiMonitorPage(): ReactElement {
         </div>
         <div
           aria-hidden={true}
+          data-slot="api-toolbar-fade"
           className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
         />
       </div>
-      <main className="@container/page mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
+      <main className="api-monitor-page @container/page mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
         <GuidedTour {...tour.tourProps} />
         <header className="flex items-start justify-between gap-4 @2xl/page:items-end">
           <div className="flex min-w-0 flex-col gap-1">
@@ -1477,7 +1570,7 @@ export function ApiMonitorPage(): ReactElement {
               className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
             >
               <HugeiconsIcon
-                icon={Settings02Icon}
+                icon={Settings01Icon}
                 strokeWidth={1.75}
                 className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
@@ -1589,6 +1682,7 @@ export function ApiMonitorPage(): ReactElement {
             {served.length === 0 ? (
               <p className="text-ui-12 text-muted-foreground">
                 No models loaded
+                <MultiModelHint servedCount={0} />
               </p>
             ) : (
               <div className="@container/served flex flex-col gap-2">
@@ -1596,13 +1690,15 @@ export function ApiMonitorPage(): ReactElement {
                   {served.length === 1
                     ? "1 model answering requests"
                     : `${served.length} models answering requests`}
+                  <MultiModelHint servedCount={served.length} />
                 </p>
-                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-6 @3xl/served:gap-y-1.5">
+                {/* Not fixed widths: they left a short value's slack before the next column. */}
+                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-10 @3xl/served:gap-y-1.5">
                   {served.map((model) => (
                     // A subgrid, not `contents`: the row needs a box (gaps included) to hover.
                     <div
                       key={model.checkpoint}
-                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-6"
+                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-10"
                     >
                       <span className="order-1 flex min-w-0 flex-1 items-center gap-1 text-ui-12 @max-3xl/served:basis-full @max-3xl/served:items-start @3xl/served:order-none">
                         <span
@@ -1830,7 +1926,7 @@ export function ApiMonitorPage(): ReactElement {
                   className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
                 >
                   <HugeiconsIcon
-                    icon={Delete02Icon}
+                    icon={TrashIcon}
                     strokeWidth={1.75}
                     className="size-4"
                   />

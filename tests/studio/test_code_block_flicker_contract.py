@@ -245,9 +245,8 @@ def test_the_fixture_offers_the_state_the_override_was_added_for() -> None:
 
 
 def test_the_variant_stylesheets_are_checked_to_have_won_the_cascade() -> None:
-    """A variant that loses to the tree measures the tree under another name. That happened: every
-    variant computed identically, all reported zero collapses, and the run read as "nothing to
-    fix"."""
+    """A variant that loses to the tree measures the tree under another name; a past run had every
+    variant compute identically and read as nothing to fix."""
     source = harness_source()
     settled = module_assignment(source, "EXPECTED_COMPUTED")
     running = module_assignment(source, "EXPECTED_COMPUTED_RUNNING")

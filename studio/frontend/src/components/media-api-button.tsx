@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { publicModelId } from "@/features/hub";
 import { useSettingsDialogStore } from "@/features/settings";
+import { HEADER_ICON_BUTTON } from "@/components/media-page-link";
 import { useT } from "@/i18n";
 
 export function MediaApiButton({
@@ -35,12 +36,13 @@ export function MediaApiButton({
               model: model ? publicModelId(model) : null,
             })
           }
-          className="flex h-[calc(34px*var(--ui-space-scale,1))] w-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center justify-center gap-1.5 rounded-full text-ui-13 @[84rem]:w-auto @[84rem]:px-2.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className={HEADER_ICON_BUTTON}
         >
-          <HugeiconsIcon icon={ApiIcon} className="size-4 shrink-0" />
-          <span className="hidden whitespace-nowrap @[84rem]:inline">
-            {label}
-          </span>
+          <HugeiconsIcon
+            icon={ApiIcon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">

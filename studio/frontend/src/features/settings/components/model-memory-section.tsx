@@ -8,7 +8,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   resyncInferenceStatusAfterKeptModelsUnload,
@@ -39,7 +38,6 @@ import { MediaIdleUnloadSetting } from "./model-auto-switch-section";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-// Residency asked for, but the loaded model has no copy in system RAM to lock.
 function MlockNotApplicableNote({
   settings,
 }: { settings: ModelMemorySettings | null }) {
@@ -59,7 +57,7 @@ function MlockNotApplicableNote({
   );
 }
 
-// Forced: the response describes the running model, which may have changed since the last read.
+// Forced: the running model may have changed since the last read.
 async function refreshModelMemory(
   isCancelled: () => boolean,
   setSettings: (settings: ModelMemorySettings) => void,
@@ -95,7 +93,7 @@ export function ModelMemorySection({
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  // Bumped by every refresh and save: a read that resolves after either no longer describes the panel.
+  // A read resolving after a refresh or save no longer describes the panel.
   const latestRef = useRef(0);
   // Seeded from the chat store so the description does not flash before the read.
   const [mode, setMode] = useState<MultiModelMode>(() =>
@@ -203,13 +201,10 @@ export function ModelMemorySection({
     }
   };
 
-  // Both on suppresses --mlock. Say so, rather than looking like a no-op. Keyed on the toggles, not
-  // mlockActive: that now also reads false when the running model simply had nothing in host RAM to
-  // lock, which is a different reason than the one this line gives.
+  // Keyed on the toggles, not mlockActive, which is also false when nothing was in host RAM.
   const mlockVetoed =
     settings?.keepResident === true && settings.noRamReserve === true;
-  // A finite locked-memory cap means llama.cpp logs "failed to mlock" and
-  // carries on, so residency would look enabled but do nothing.
+  // A finite memlock cap makes llama.cpp log "failed to mlock" and carry on.
   const memlockCap =
     settings?.mlockActive === true && settings.memlockLimitBytes !== null
       ? settings.memlockLimitBytes
@@ -221,10 +216,9 @@ export function ModelMemorySection({
       ref={ref}
       action={
         full ? undefined : (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="text-muted-foreground"
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             onClick={() =>
               useSettingsDialogStore
                 .getState()
@@ -232,8 +226,8 @@ export function ModelMemorySection({
             }
           >
             {t("settings.resources.modelMemory.openSystemSettings")}
-            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
-          </Button>
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
+          </button>
         )
       }
     >

@@ -46,12 +46,7 @@ def _gh(args: list[str]) -> tuple[int, str, str]:
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
 
 
-# What GitHub says when the commit is genuinely not there, measured:
-#     gh api repos/unslothai/unsloth/commits/deadbeef00
-#     {"message":"No commit found for SHA: deadbeef00", ..., "status":"422"}
-# Only that message releases the kernel. Status codes do not say it: 404 is
-# also an unreadable repository, 422 an ambiguous abbreviation, and reading
-# either as "gone" would delete the only copy of the result.
+# Only this message releases the kernel: 404 and 422 also mean unreadable or ambiguous.
 MISSING_MARKERS = ("no commit found",)
 
 
@@ -88,11 +83,8 @@ def post_one(repo: str, full_sha: str, status: dict) -> bool:
 
 
 def valid(status: dict) -> str | None:
-    """Why this record must not be posted, or None if it is well formed.
-
-    Checked here because this is the process holding the token: a state outside
-    the API's four, or a context not ours, is a record we must not sign.
-    """
+    """Reason a status must not be posted, or None if well formed; checked here because this process
+    holds the token, so no state outside the API or foreign context gets signed."""
     if status.get("state") not in STATES:
         return f"state {status.get('state')!r} is not one of {STATES}"
     if status.get("context") not in STATUS_CONTEXTS.values():
@@ -103,12 +95,9 @@ def valid(status: dict) -> str | None:
 
 
 def merge_by_commit(resolved: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
-    """One status per (full sha, context), failure winning, every slug named.
-
-    Merged HERE and not in the collector, because only a resolved sha says
-    whether two slugs name one commit: an 8 and a 12 character slug for one
-    commit resolve alike, two commits sharing 8 characters do not.
-    """
+    """One status per (full sha, context), failure winning, every slug named; merging waits for
+    resolved full shas, since an 8 and a 12 character slug of one commit match but two commits
+    can share 8 characters."""
     out: dict[tuple[str, str], dict] = {}
     for full, status in resolved:
         key = (full, status["context"])
@@ -180,8 +169,6 @@ def main() -> int:
     Path(args.out).write_text(json.dumps(outcome, indent = 2), encoding = "utf-8")
     if not statuses:
         print("no statuses to post this pass")
-    # Red when a verdict could not be delivered: the kernel is kept for the
-    # next pass, but a delivery failure must not look like a quiet account.
     return 1 if outcome["failed"] else 0
 
 

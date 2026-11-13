@@ -46,7 +46,7 @@ except Exception:
         _XFormersBidirectionalMask = None
 
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
-_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool], Any] = (
+_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool, bool], Any] = (
     OrderedDict()
 )
 
@@ -92,9 +92,8 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
         ):
             return attn_bias
 
-        # Move the device-bearing metadata instead of the top-level mask: older xFormers versions demote
-        # causal masks in their inherited `to` method, and copies also keep later model shards from
-        # rewriting masks retained for backward.
+        # Move the metadata, not the mask: older xFormers demote causal masks in `to`, and copies keep
+        # later shards from rewriting masks retained for backward.
         moved_bias = copy.copy(attn_bias)
         moved_seqinfos = {}
         for name, seqinfo in seqinfos:
@@ -132,11 +131,15 @@ def _get_cached_block_mask(
 
     device = torch.device(device)
     window_key = _window_cache_key(sliding_window)
-    cache_key = (device, lengths, window_key, is_causal)
-    cached = _XFORMERS_MASK_CACHE.get(cache_key)
-    if cached is not None:
-        _XFORMERS_MASK_CACHE.move_to_end(cache_key)
-        return cached
+    # Outlives the batch: inference_mode-built masks must never reach a training step.
+    inference = _inference_mode()
+    for cache_key in ((device, lengths, window_key, is_causal, False),) + (
+        ((device, lengths, window_key, is_causal, True),) if inference else ()
+    ):
+        cached = _XFORMERS_MASK_CACHE.get(cache_key)
+        if cached is not None:
+            _XFORMERS_MASK_CACHE.move_to_end(cache_key)
+            return cached
 
     mask = mask_class.from_seqlens(list(lengths))
     if window_key and mask is not None and hasattr(mask, "make_local_attention"):
@@ -198,11 +201,56 @@ def configure_padding_free(config):
     setattr(config, "remove_unused_columns", False)
 
 
-def _enable_hf_packed_attention() -> None:
+def _longest_document(model, trainer) -> Optional[int]:
+    args = getattr(trainer, "args", None)
+    for value in (
+        getattr(args, "max_length", None),
+        getattr(args, "max_seq_length", None),
+        getattr(model, "max_seq_length", None),
+    ):
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+def _packed_row_tokens(model, trainer) -> Optional[int]:
+    """Tokens in one flattened row: the padding-free collator joins a whole device batch, the eval
+    batch too when there is an eval dataset (transformers' default eval batch is 8)."""
+    longest = _longest_document(model, trainer)
+    if longest is None:
+        return None
+    args = getattr(trainer, "args", None)
+    names = ["per_device_train_batch_size"]
+    if getattr(trainer, "eval_dataset", None) is not None:
+        names.append("per_device_eval_batch_size")
+    batches = [getattr(args, name, None) for name in names]
+    batches = [b for b in batches if isinstance(b, int) and not isinstance(b, bool) and b > 0]
+    return longest * max(batches, default = 1)
+
+
+def _enable_hf_packed_attention(model = None, trainer = None) -> None:
     # packed rows on the transformers modeling path run varlen instead of SDPA over a dense mask.
     try:
         from .hf_packed_attention import enable_hf_packed_attention
-        enable_hf_packed_attention()
+
+        # A whole-model torch.compile (torch_compile=True, or an already compiled model) inlines the
+        # blocks, where the varlen wrapper falls back to dense-mask SDPA: those keep flex.
+        outer_compile = bool(getattr(getattr(trainer, "args", None), "torch_compile", False)) or (
+            hasattr(model, "_orig_mod")
+        )
+        # A collator padding the flattened row to a multiple leaves a tail the varlen wrapper declines.
+        pad_multiple = getattr(getattr(trainer, "data_collator", None), "pad_to_multiple_of", None)
+        aligned_tail = isinstance(pad_multiple, int) and pad_multiple > 1
+        if (
+            enable_hf_packed_attention()
+            and model is not None
+            and not outer_compile
+            and not aligned_tail
+        ):
+            from ..models._utils import use_sdpa_for_packed_head_dim_flex
+            use_sdpa_for_packed_head_dim_flex(
+                model, _longest_document(model, trainer), _packed_row_tokens(model, trainer)
+            )
     except Exception as exc:
         logging.getLogger(__name__).info(f"Unsloth: packed varlen attention not enabled ({exc})")
 
@@ -244,7 +292,7 @@ def enable_sample_packing(
     collator = getattr(trainer, "data_collator", None)
     if collator is None or not hasattr(collator, "torch_call"):
         return
-    _enable_hf_packed_attention()
+    _enable_hf_packed_attention(model, trainer)
     _scope_flash_attention_impl(model, trainer, sequence_lengths_key)
     if getattr(collator, "_unsloth_packing_wrapped", False):
         return
@@ -291,7 +339,7 @@ def enable_padding_free_metadata(model, trainer):
         return
 
     mark_allow_overlength(model)
-    _enable_hf_packed_attention()
+    _enable_hf_packed_attention(model, trainer)
     if hasattr(collator, "return_position_ids"):
         collator.return_position_ids = True
     if hasattr(trainer, "args") and hasattr(trainer.args, "remove_unused_columns"):
@@ -425,6 +473,38 @@ def _stateful_mixer_kind(module) -> Optional[str]:
     return None
 
 
+# Pool / recur over the whole row (V4 compressed entries numbered row-wide), ignoring position_ids.
+_PACKING_BOUNDARY_BLIND_MODULES = (
+    "DeepseekV4CSACompressor",
+    "DeepseekV4HCACompressor",
+    # DeepSeek-V4.1 port: engram n-grams hash across the whole row; the compressor pools row-wide token counts.
+    "DeepseekV41NgramHashState",
+    "DeepseekV41Compressor",
+    "ZayaCCAProjection",
+    "RecurrentGemmaRglru",
+)
+_PACKING_BOUNDARY_BLIND_MODEL_TYPES = (
+    "deepseek_v4",
+    "deepseek_v41",
+    "deepseek_v41_text",
+    "zaya",
+    "recurrent_gemma",
+)
+
+
+def packing_boundary_blocker(model, model_types = ()) -> Optional[str]:
+    modules = getattr(model, "modules", None)
+    if callable(modules) and not isinstance(model, str):
+        for module in modules():
+            name = type(module).__name__
+            if name in _PACKING_BOUNDARY_BLIND_MODULES:
+                return name
+    for model_type in model_types or ():
+        if model_type in _PACKING_BOUNDARY_BLIND_MODEL_TYPES:
+            return model_type
+    return None
+
+
 def _iter_stateful_mixers(model):
     """(module, kind) for every stateful mixer, outermost first; submodules of a gated-delta
     mixer (its own short convs) are owned by that mixer's shim."""
@@ -438,20 +518,6 @@ def _iter_stateful_mixers(model):
         found.append((module, kind))
         owned.update(id(m) for m in module.modules())
     return found
-
-
-def _iter_gated_delta_modules(model):
-    return [
-        m for m, kind in _iter_stateful_mixers(model) if kind in ("gated_delta", "gated_delta_qkv")
-    ]
-
-
-def _iter_mamba2_modules(model):
-    return [m for m, kind in _iter_stateful_mixers(model) if kind == "ssd"]
-
-
-def _iter_short_conv_modules(model):
-    return [m for m, kind in _iter_stateful_mixers(model) if kind == "short_conv"]
 
 
 def _callable_accepts_named_seq_idx(fn) -> Optional[str]:
@@ -1020,10 +1086,8 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         return out
 
     if _dynamo_folds_is_exporting():
-        # Eager even inside a compiled block: Dynamo folds torch.compiler.is_exporting() to True, so
-        # the hub-kernel wrappers trace their torch reference, which drops seq_idx / cu_seqlens and
-        # runs the packed documents into each other (Qwen3.5-0.8B per-document cosine 0.71). Newer
-        # torch traces the real kernels, and the eager mixer costs 6-20% per step there.
+        # Dynamo folds is_exporting() to True, so this stays eager: the traced reference drops
+        # seq_idx; newer torch traces real kernels, where eager costs 6-20% per step.
         _packed_forward = torch.compiler.disable(_packed_forward)
 
     module.forward = forward
@@ -1698,6 +1762,56 @@ def _is_compiling() -> bool:
         return False
 
 
+def _inference_mode() -> bool:
+    """Traced builds count as normal: torch.is_inference_mode_enabled graph-breaks dynamo."""
+    return not _is_compiling() and torch.is_inference_mode_enabled()
+
+
+def _built_in_inference_mode():
+    """None marks a traced grad-off build whose tensor provenance is not yet known."""
+    if _is_compiling():
+        return None if not torch.is_grad_enabled() else False
+    return torch.is_inference_mode_enabled()
+
+
+@torch.compiler.assume_constant_result
+def _cached_tensor_is_unsafe(tensor) -> bool:
+    # Constant evaluation loses inference context for intermediates created in this trace.
+    if torch.is_inference(tensor):
+        return True
+    for cache in (_PACKED_INFO_CACHE, _PADDED_CU_SEQLENS_CACHE, _SDPA_MASK_CACHE):
+        for entry in cache.values():
+            value = entry.get("result", entry.get("mask"))
+            values = value if isinstance(value, (tuple, list)) else (value,)
+            if any(tensor is item for item in values):
+                return False
+    return True
+
+
+def _holds_inference_tensor(value) -> bool:
+    if isinstance(value, torch.Tensor):
+        return _cached_tensor_is_unsafe(value) if _is_compiling() else torch.is_inference(value)
+    if isinstance(value, (tuple, list)):
+        return any(_holds_inference_tensor(item) for item in value)
+    return not isinstance(value, (int, float, bool, type(None)))
+
+
+def _cache_hit(entry) -> bool:
+    inference = entry["inference"]
+    if inference is None:
+        if _is_compiling():
+            return not torch.is_grad_enabled() or not _holds_inference_tensor(
+                entry.get("result", entry.get("mask"))
+            )
+        if torch.is_inference_mode_enabled():
+            return True
+        if _holds_inference_tensor(entry.get("result", entry.get("mask"))):
+            return False
+        entry["inference"] = False
+        return True
+    return not inference or _inference_mode()
+
+
 def _pinned_to_device(tensor: torch.Tensor, device) -> torch.Tensor:
     """non_blocking copy from pinned memory; a plain (blocking) copy when pinning fails."""
     try:
@@ -1706,6 +1820,38 @@ def _pinned_to_device(tensor: torch.Tensor, device) -> torch.Tensor:
         # No pinnable host memory (pinned limit, WSL, a CUDA-less build): pageable copy, same values.
         return tensor.to(device = device)
     return pinned.to(device = device, non_blocking = True)
+
+
+def _refresh_derived_packed_caches(previous, seq_lengths, result, device):
+    if previous is None or previous["seq_lengths"] is not seq_lengths:
+        return
+    segments = _SEGMENT_LENGTHS_CACHE.get(result[0].device)
+    if segments is not None and segments[0] is previous["result"][0]:
+        _SEGMENT_LENGTHS_CACHE[result[0].device] = (result[0], segments[1], segments[2])
+    padded_device = result[1].device
+    padded = _PADDED_CU_SEQLENS_CACHE.get(padded_device)
+    if padded is not None and padded["cu_seqlens"] is previous["result"][1]:
+        value = padded["result"]
+        if _holds_inference_tensor(value):
+            value = (value[0].clone(), value[1])
+        _PADDED_CU_SEQLENS_CACHE[padded_device] = {
+            "cu_seqlens": result[1],
+            "total": padded["total"],
+            "result": value,
+            "inference": _built_in_inference_mode(),
+        }
+    cached = _SDPA_MASK_CACHE.get(device)
+    if cached is None or cached["seq_lengths"] is not previous["result"][0]:
+        return
+    mask = cached["mask"]
+    if _holds_inference_tensor(mask):
+        mask = mask.clone()
+    _SDPA_MASK_CACHE[device] = {
+        "seq_lengths": result[0],
+        "params": cached["params"],
+        "mask": mask,
+        "inference": _built_in_inference_mode(),
+    }
 
 
 def get_packed_info_from_kwargs(
@@ -1727,7 +1873,7 @@ def get_packed_info_from_kwargs(
         seq_lengths = cu_seqlens[1:] - cu_seqlens[:-1]
 
     entry = _PACKED_INFO_CACHE.get(device)
-    if entry is not None and entry["seq_lengths"] is seq_lengths:
+    if entry is not None and entry["seq_lengths"] is seq_lengths and _cache_hit(entry):
         return entry["result"]
 
     if _is_compiling():
@@ -1738,7 +1884,12 @@ def get_packed_info_from_kwargs(
         torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
         max_seqlen = int(lengths.max().item())
         result = (lengths, cu_seqlens, max_seqlen)
-        _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "result": result}
+        _refresh_derived_packed_caches(entry, seq_lengths, result, device)
+        _PACKED_INFO_CACHE[device] = {
+            "seq_lengths": seq_lengths,
+            "result": result,
+            "inference": _built_in_inference_mode(),
+        }
         return result
 
     if (
@@ -1755,14 +1906,31 @@ def get_packed_info_from_kwargs(
         lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
         cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
         torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
-        # The one D2H read per batch.
-        host = tuple(lengths.tolist())
+        host = _attached_host_lengths(seq_lengths)
+        if host is None:
+            host = tuple(lengths.tolist())
 
     max_seqlen = max(host)
     result = (lengths, cu_seqlens, max_seqlen)
-    _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "result": result}
+    # Meta shapes carry symbolic host scalars without allocating device memory.
+    row_shape = torch.empty((sum(host), max_seqlen), device = "meta")
+    _refresh_derived_packed_caches(entry, seq_lengths, result, device)
+    _PACKED_INFO_CACHE[device] = {
+        "seq_lengths": seq_lengths,
+        "result": result,
+        "inference": _built_in_inference_mode(),
+        "row_shape": row_shape,
+    }
     _PACKED_HOST_LENGTHS_CACHE[lengths.device] = (lengths, cu_seqlens, host)
     return result
+
+
+def _attached_host_lengths(seq_lengths) -> Optional[Tuple[int, ...]]:
+    """Host `_unsloth_lengths_tuple` attached by the producer (unsloth_zoo GRPO), used if the count matches."""
+    host = getattr(seq_lengths, "_unsloth_lengths_tuple", None)
+    if not isinstance(host, tuple) or len(host) != seq_lengths.numel():
+        return None
+    return host
 
 
 def _cached_host_lengths(seq_lengths, cu_seqlens = None) -> Optional[Tuple[int, ...]]:
@@ -1778,14 +1946,15 @@ def _cached_host_lengths(seq_lengths, cu_seqlens = None) -> Optional[Tuple[int, 
 
 def _host_segment_lengths(seq_lengths) -> Tuple[int, ...]:
     host = _cached_host_lengths(seq_lengths)
+    if host is None:
+        host = _attached_host_lengths(seq_lengths)
     if host is not None:
         return host
     return tuple(int(length) for length in seq_lengths.tolist())
 
 
 def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int]) -> Tuple[int, ...]:
-    # TRL pads the flattened padding-free row to pad_to_multiple_of after the lengths are
-    # taken; the tail gets its own block, since a row outside every block softmaxes to NaN.
+    # TRL pads the flattened row to pad_to_multiple_of after lengths are taken; the tail gets its own block or a softmax row goes NaN.
     if total_tokens is None:
         return lengths
     padding = total_tokens - sum(lengths)
@@ -1801,7 +1970,12 @@ def cover_padded_cu_seqlens(
     _, cu_seqlens, max_seqlen = seq_info
     device = cu_seqlens.device
     entry = _PADDED_CU_SEQLENS_CACHE.get(device)
-    if entry is not None and entry["cu_seqlens"] is cu_seqlens and entry["total"] == total_tokens:
+    if (
+        entry is not None
+        and entry["cu_seqlens"] is cu_seqlens
+        and entry["total"] == total_tokens
+        and _cache_hit(entry)
+    ):
         return entry["result"]
 
     host = _cached_host_lengths(seq_info[0], cu_seqlens)
@@ -1818,6 +1992,7 @@ def cover_padded_cu_seqlens(
         "cu_seqlens": cu_seqlens,
         "total": total_tokens,
         "result": result,
+        "inference": _built_in_inference_mode(),
     }
     return result
 
@@ -1839,7 +2014,12 @@ def build_xformers_block_causal_mask(
         device = seq_lengths.device
         params = (sliding_window, total_tokens, is_causal)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
-        if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
+        if (
+            entry is not None
+            and entry["seq_lengths"] is seq_lengths
+            and entry["params"] == params
+            and _cache_hit(entry)
+        ):
             return entry["mask"]
 
         lengths = _cached_host_lengths(seq_lengths)
@@ -1855,6 +2035,7 @@ def build_xformers_block_causal_mask(
             "seq_lengths": seq_lengths,
             "params": params,
             "mask": mask,
+            "inference": _built_in_inference_mode(),
         }
     else:
         mask = base_mask
@@ -1915,7 +2096,12 @@ def build_sdpa_packed_attention_mask(
 
     params = (dtype, sliding_window, total_tokens, is_causal)
     entry = _SDPA_MASK_CACHE.get(device)
-    if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
+    if (
+        entry is not None
+        and entry["seq_lengths"] is seq_lengths
+        and entry["params"] == params
+        and _cache_hit(entry)
+    ):
         return entry["mask"]
 
     lengths = _with_padding_segment(_host_segment_lengths(seq_lengths), total_tokens)
@@ -1944,6 +2130,7 @@ def build_sdpa_packed_attention_mask(
         "seq_lengths": seq_lengths,
         "params": params,
         "mask": result,
+        "inference": _built_in_inference_mode(),
     }
     return result
 
@@ -2052,4 +2239,5 @@ __all__ = [
     "mask_packed_sequence_boundaries",
     "mask_packed_boundary_labels",
     "clear_packed_caches",
+    "packing_boundary_blocker",
 ]

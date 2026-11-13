@@ -33,6 +33,26 @@ function boolDefault(
   return typeof value === "boolean" ? value : fallback;
 }
 
+export interface CloneDescriptionValue {
+  instructions: string;
+}
+
+// Request field, not a spec option, so Advanced keeps every option.
+export const cloneDescriptionLogic: AudioToolPanelLogic<CloneDescriptionValue> =
+  {
+    id: "clone-description",
+    families: [],
+    workflows: ["clone"],
+    title: "Voice or style description",
+    claims: [],
+    appliesTo: (ctx) => ctx.cloneDescription === true,
+    initial: () => ({ instructions: "" }),
+    toRequest: (value) => {
+      const instructions = value.instructions.trim();
+      return instructions ? { instructions } : {};
+    },
+  };
+
 export interface TimbreOnlyValue {
   timbreOnly: boolean;
 }
@@ -63,7 +83,6 @@ export interface EmotionValue {
   vector: number[];
   alpha: number;
   source: AudioSourceSelection | null;
-  /** Why the emotion clip cannot be sent yet (uploading, failed, expired); set by its input. */
   sourceProblem?: string | null;
 }
 
@@ -353,6 +372,7 @@ export const supertonicLanguageLogic: AudioToolPanelLogic<string> = {
 };
 
 export const CLONE_PANEL_LOGIC = [
+  cloneDescriptionLogic,
   qwen3TimbreLogic,
   indexTts2EmotionLogic,
   chatterboxExpressivenessLogic,

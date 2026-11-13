@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Imports Studio chat backups, Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, role/content
- *  CSV, and Studio markdown transcripts. JSON records stream individually so large exports
- *  never become one JS string. */
+/** JSON records stream individually so large exports never become one JS string. */
 
 import {
   ChatThreadWriteError,
@@ -40,24 +38,18 @@ import {
 } from "./studio-backup-import";
 import { parseConversationMarkdownDocument } from "./conversation-markdown-import";
 
-/** CSV and markdown have no record framing to stream on, so they are still read whole. */
 const WHOLE_FILE_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Matches MAX_CHAT_IMPORT_CHUNK_BYTES in src-tauri/src/native_file_dialogs.rs. */
 const NATIVE_CHUNK_BYTES = 8 * 1024 * 1024;
 
-/** Limit concurrent writes for exports that may contain thousands of chats. */
 const WRITE_CONCURRENCY = 6;
 
-/** Report progress at least this often by bytes as well as by conversations. A count-only
- *  cadence leaves the toast reading "0 so far (0%)" for the entire read of an export made of
- *  a few very large chats, which is the case the toast exists for. */
+/** Byte cadence too, so exports with a few huge chats still show progress. */
 const PROGRESS_BYTES = 4 * 1024 * 1024;
 
 export interface ImportProgress {
-  /** Conversations written so far. */
   imported: number;
-  /** Conversations whose write failed; the import continues past them. */
   failed: number;
   bytesRead: number;
   totalBytes?: number;
@@ -65,7 +57,6 @@ export interface ImportProgress {
 
 export interface ImportOptions {
   onProgress?: (progress: ImportProgress) => void;
-  /** Each chat saved, by its row id (a comparison's pair id), so a caller can file it. */
   onSaved?: (rowId: string) => void;
 }
 
@@ -87,12 +78,10 @@ async function* nativeBytes(handle: {
     const bytes = await readNativeChatImportChunk(
       handle.token,
       offset,
-      // Never past the size the picker recorded: bytes appended to a file still being written are not
-      // part of the export that was chosen.
+      // Never past the recorded size: appended bytes are not part of the chosen export.
       Math.min(NATIVE_CHUNK_BYTES, handle.size - offset),
     );
-    // The picker recorded the size, so a short read means the file shrank since then. Stopping
-    // quietly would pass a partial export off as the whole one.
+    // A short read means the file shrank; do not pass a partial export as whole.
     if (bytes.byteLength === 0) {
       throw new Error(
         `${handle.name} ended after ${offset} of ${handle.size} bytes; it changed after it was picked.`,
@@ -103,7 +92,6 @@ async function* nativeBytes(handle: {
   }
 }
 
-/** Desktop: the file stays on disk and is redeemed one range at a time. */
 export function nativeImportSource(handle: {
   name: string;
   size: number;
@@ -112,16 +100,12 @@ export function nativeImportSource(handle: {
   return {
     name: handle.name,
     size: handle.size,
-    // Decoding is fatal here because the native reader it replaced rejected invalid UTF-8 outright
-    // rather than saving a chat full of U+FFFD.
+    // Fatal decoding: invalid UTF-8 is rejected rather than saved as U+FFFD.
     chunks: () => decodeTextChunks(nativeBytes(handle), true),
   };
 }
 
-// Record conversion
-
-// role:"tool" results are absorbed into the preceding assistant tool-call part's `result` field
-// rather than becoming separate records.
+// role:"tool" and role:"function" results fold into a tool-call part's `result`.
 function oaiContentToParts(raw: unknown): unknown[] {
   if (!Array.isArray(raw)) {
     return typeof raw === "string" && raw.trim()
@@ -132,14 +116,25 @@ function oaiContentToParts(raw: unknown): unknown[] {
   return raw.flatMap((value): unknown[] => {
     if (typeof value !== "object" || value === null) return [];
     const part = value as Record<string, unknown>;
-    if (part.type === "text" && typeof part.text === "string") {
+    if (
+      (part.type === "text" ||
+        part.type === "input_text" ||
+        part.type === "output_text") &&
+      typeof part.text === "string"
+    ) {
       return [{ type: "text", text: part.text }];
     }
-    if (part.type === "image_url") {
+    if (part.type === "refusal" && typeof part.refusal === "string") {
+      return [{ type: "text", text: part.refusal }];
+    }
+    if (part.type === "image_url" || part.type === "input_image") {
+      // Chat Completions nests {image_url:{url}}; Responses input_image is a string.
       const imageUrl =
-        typeof part.image_url === "object" && part.image_url !== null
-          ? (part.image_url as Record<string, unknown>).url
-          : undefined;
+        typeof part.image_url === "string"
+          ? part.image_url
+          : typeof part.image_url === "object" && part.image_url !== null
+            ? (part.image_url as Record<string, unknown>).url
+            : undefined;
       return typeof imageUrl === "string" && imageUrl
         ? [{ type: "image", image: imageUrl }]
         : [];
@@ -153,29 +148,73 @@ function oaiMessagesToRecords(
   threadId: string,
   baseTs: number,
 ): MessageRecord[] {
-  const toolResults = new Map<string, string>();
-  const pending: Array<{ turn: number; part: { toolCallId: string; result?: string } }> = [];
+  // Waiting results under id:, name:, bare: (named, no id) and anon keys; cursors keep lookups linear.
+  type Stashed = { result: unknown; used?: boolean };
+  const buckets = new Map<string, { items: Stashed[]; start: number }>();
+  const stash = (result: unknown, id?: string, name?: string) => {
+    const entry: Stashed = { result };
+    const keys =
+      id === undefined && name === undefined
+        ? ["anon"]
+        : [id !== undefined && `id:${id}`, name !== undefined && `name:${name}`, id === undefined && `bare:${name}`];
+    for (const key of keys) {
+      if (!key) continue;
+      const bucket = buckets.get(key);
+      if (bucket) bucket.items.push(entry);
+      else buckets.set(key, { items: [entry], start: 0 });
+    }
+  };
+  const take = (key: string) => {
+    const bucket = buckets.get(key);
+    if (!bucket) return undefined;
+    while (bucket.start < bucket.items.length && bucket.items[bucket.start].used) bucket.start++;
+    const entry = bucket.items[bucket.start];
+    if (entry) entry.used = true;
+    return entry?.result;
+  };
+  const pending: Array<{
+    turn: number;
+    hasExplicitId: boolean;
+    part: { toolCallId: string; toolName: string; result?: unknown };
+  }> = [];
+  const bindResult = (
+    pred: (entry: (typeof pending)[number]) => boolean,
+    result: unknown,
+  ) => {
+    for (let at = pending.length - 1; at >= 0; at--) {
+      if (!pred(pending[at])) continue;
+      const { turn } = pending[at];
+      const first = pending.findIndex((entry) => entry.turn === turn && pred(entry));
+      pending[first].part.result = result;
+      pending.splice(first, 1);
+      return true;
+    }
+    return false;
+  };
 
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
   let idx = 0;
 
   for (const m of oaiMsgs) {
+    if (m === null || typeof m !== "object") continue;
     const msg = m as Record<string, unknown>;
     const role = msg.role as string;
-    if (role === "tool") {
-      if (typeof msg.tool_call_id !== "string") continue;
-      const result = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? "");
-      let at = pending.length - 1;
-      while (at >= 0 && pending[at].part.toolCallId !== msg.tool_call_id) at--;
-      if (at === -1) {
-        toolResults.set(msg.tool_call_id, result);
-      } else {
-        const { turn } = pending[at];
-        at = pending.findIndex((entry) => entry.turn === turn && entry.part.toolCallId === msg.tool_call_id);
-        pending[at].part.result = result;
-        pending.splice(at, 1);
-      }
+    if (role === "tool" || role === "function") {
+      const result =
+        (msg as { [STRUCTURED_RESULT]?: unknown })[STRUCTURED_RESULT] ??
+        (typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
+      const idKey =
+        typeof msg.tool_call_id === "string" ? msg.tool_call_id : undefined;
+      const nameKey = typeof msg.name === "string" ? msg.name : undefined;
+      // An id always wins over a name; unnamed results bind in call order within the newest turn.
+      const bound =
+        idKey !== undefined
+          ? bindResult((entry) => entry.part.toolCallId === idKey, result)
+          : nameKey !== undefined
+            ? bindResult((entry) => entry.part.toolName === nameKey, result)
+            : bindResult(() => true, result);
+      if (!bound) stash(result, idKey, nameKey);
       continue;
     }
 
@@ -185,29 +224,79 @@ function oaiMessagesToRecords(
 
     if (role === "assistant") {
       const parts = oaiContentToParts(msg.content);
-      if (Array.isArray(msg.tool_calls)) {
-        for (const tc of msg.tool_calls) {
+      if (parts.length === 0) parts.push(...oaiContentToParts(msg.refusal));
+      const argumentsText = (fn: Record<string, unknown>) =>
+        typeof fn.arguments === "string"
+          ? fn.arguments
+          : JSON.stringify(fn.arguments ?? {});
+      const parseArgs = (argsStr: string): unknown => {
+        // _raw matches what the stream adapter and backend keep for invalid JSON arguments.
+        try { return JSON.parse(argsStr); } catch { return { _raw: argsStr }; }
+      };
+      const callParts: unknown[] = [];
+      const addCall = (fn: Record<string, unknown>, callId: unknown) => {
+        const argsStr = argumentsText(fn);
+        const part: { type: string; toolCallId: string; toolName: string; args: unknown; argsText: string; result?: unknown } = {
+          type: "tool-call",
+          toolCallId: typeof callId === "string" ? callId : crypto.randomUUID(),
+          toolName: typeof fn.name === "string" ? fn.name : "unknown",
+          args: parseArgs(argsStr),
+          argsText: argsStr,
+        };
+        callParts.push(part);
+        // An earlier result binds now (id, else id-less name, else anonymous), in arrival order.
+        const early =
+          (typeof callId === "string" ? take(`id:${callId}`) : undefined) ??
+          take(`bare:${part.toolName}`) ??
+          take("anon");
+        if (early !== undefined) part.result = early;
+        else pending.push({ turn: idx, part, hasExplicitId: typeof callId === "string" });
+      };
+      // LangChain nests both call shapes under additional_kwargs.
+      const additional =
+        typeof msg.additional_kwargs === "object" && msg.additional_kwargs !== null
+          ? (msg.additional_kwargs as Record<string, unknown>)
+          : undefined;
+      const toolCalls = Array.isArray(msg.tool_calls)
+        ? msg.tool_calls
+        : additional !== undefined && Array.isArray(additional.tool_calls)
+          ? additional.tool_calls
+          : undefined;
+      if (toolCalls !== undefined) {
+        for (const tc of toolCalls) {
+          if (tc === null || typeof tc !== "object") continue;
           const tcObj = tc as Record<string, unknown>;
-          const fn = (tcObj.function as Record<string, unknown>) ?? {};
-          const tcId = typeof tcObj.id === "string" ? tcObj.id : crypto.randomUUID();
-          const name = typeof fn.name === "string" ? fn.name : "unknown";
-          const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
-          let args: unknown = {};
-          // _raw matches what the stream adapter and the backend keep for arguments the model did not
-          // emit as valid JSON.
-          try { args = JSON.parse(argsStr); } catch { args = { _raw: argsStr }; }
-          const part = {
-            type: "tool-call",
-            toolCallId: tcId,
-            toolName: name,
-            args,
-            argsText: argsStr,
-          };
-          parts.push(part);
-          pending.push({ turn: idx, part });
+          const fn = tcObj.function;
+          addCall(
+            (typeof fn === "object" && fn !== null ? fn : tcObj) as Record<string, unknown>,
+            tcObj.id ?? tcObj.call_id,
+          );
         }
       }
-      content = parts;
+      const legacyCall =
+        (typeof msg.function_call === "object" && msg.function_call) ||
+        additional?.function_call;
+      if (typeof legacyCall === "object" && legacyCall !== null) {
+        const fn = legacyCall as Record<string, unknown>;
+        const name = typeof fn.name === "string" ? fn.name : "unknown";
+        const args = JSON.stringify(parseArgs(argumentsText(fn)));
+        // Converters that upgraded the call to tool_calls sometimes leave the copy, maybe reserialized.
+        const alreadyListed = callParts.some((part) => {
+          const p = part as { type?: string; toolName?: string; toolCallId?: string; args?: unknown };
+          return (
+            p.type === "tool-call" &&
+            p.toolName === name &&
+            (typeof fn.id === "string" ? p.toolCallId === fn.id : JSON.stringify(p.args) === args)
+          );
+        });
+        if (!alreadyListed) addCall(fn, fn.id);
+      }
+      const order = (msg as { [ITEM_ORDER]?: unknown[] })[ITEM_ORDER];
+      content = order
+        ? order.flatMap((item) =>
+            typeof item === "number" ? callParts.slice(item, item + 1) : oaiContentToParts([item]),
+          )
+        : [...parts, ...callParts];
     } else {
       content = oaiContentToParts(msg.content);
     }
@@ -221,16 +310,16 @@ function oaiMessagesToRecords(
       role: (role === "developer" ? "system" : role) as MessageRecord["role"],
       content: content as MessageRecord["content"],
       createdAt: baseTs + idx,
-      // Ordering only: these formats do not carry a per-message send time.
       metadata: { createdAtEstimated: true },
     });
     prevId = id;
     idx++;
   }
 
-  for (const { part } of pending) {
-    const result = toolResults.get(part.toolCallId);
-    if (result !== undefined) part.result = result;
+  // A keyed result binds by name only to a call without its own id; keyed leftovers drop.
+  for (const { part, hasExplicitId } of pending) {
+    if (part.result !== undefined) continue;
+    part.result = take(`${hasExplicitId ? "bare" : "name"}:${part.toolName}`);
   }
 
   return records;
@@ -239,8 +328,11 @@ function oaiMessagesToRecords(
 const SHAREGPT_ROLES = new Map<string, MessageRecord["role"]>([
   ["human", "user"],
   ["user", "user"],
+  ["input", "user"],
   ["gpt", "assistant"],
   ["assistant", "assistant"],
+  ["output", "assistant"],
+  ["developer", "system"],
   ["system", "system"],
 ]);
 
@@ -253,11 +345,24 @@ function sharegptToRecords(
   let prevId: string | null = null;
   let idx = 0;
   for (const c of conversations) {
+    if (typeof c !== "object" || c === null) continue;
     const conv = c as Record<string, unknown>;
-    const from = typeof conv.from === "string" ? conv.from : "";
-    const value = typeof conv.value === "string" ? conv.value : "";
+    // role/content beats from/value (backend formatter order); an unmapped role key is skipped, not mislabeled.
+    const roleKey =
+      typeof conv.role === "string" && conv.role.trim() ? conv.role : "";
+    const from =
+      roleKey || (typeof conv.from === "string" ? conv.from : "");
+    const value =
+      typeof conv.content === "string" && conv.content.trim()
+        ? conv.content
+        : typeof conv.value === "string"
+          ? conv.value
+          : "";
     if (!value.trim()) continue;
-    const role = SHAREGPT_ROLES.get(from.trim().toLowerCase()) ?? "assistant";
+    const role =
+      SHAREGPT_ROLES.get(from.trim().toLowerCase()) ??
+      (roleKey ? null : "assistant");
+    if (role === null) continue;
     const id = crypto.randomUUID();
     records.push({
       id,
@@ -266,7 +371,6 @@ function sharegptToRecords(
       role,
       content: [{ type: "text", text: value }] as MessageRecord["content"],
       createdAt: baseTs + idx,
-      // Ordering only: these formats do not carry a per-message send time.
       metadata: { createdAtEstimated: true },
     });
     prevId = id;
@@ -287,11 +391,11 @@ function markdownToRecords(
     if (!content.trim()) continue;
     const normalizedRole = role.trim().toLowerCase();
     const validRole =
-      normalizedRole === "user" ||
-      normalizedRole === "assistant" ||
-      normalizedRole === "system"
-        ? normalizedRole
-        : normalizedRole.length > 0
+      normalizedRole === "developer"
+        ? "system"
+        : normalizedRole === "user" ||
+            normalizedRole === "assistant" ||
+            normalizedRole === "system"
           ? normalizedRole
           : "user";
     const id = crypto.randomUUID();
@@ -311,7 +415,6 @@ function markdownToRecords(
 }
 
 function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  // parseCsv handles quoted newlines, so multi-line message content round-trips from the exporter.
   const rows = parseCsv(csvText).slice(1);
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
@@ -330,7 +433,6 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
       role: validRole as MessageRecord["role"],
       content: [{ type: "text", text: content }] as MessageRecord["content"],
       createdAt: baseTs + idx,
-      // Ordering only: these formats do not carry a per-message send time.
       metadata: { createdAtEstimated: true },
     });
     prevId = id;
@@ -339,7 +441,197 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
   return records;
 }
 
-/** One streamed record -> one conversation, or null when it holds no messages. */
+// Alpaca input follows the instruction, as in the backend's dataset formatter.
+function pairToTurns(obj: Record<string, unknown>): unknown[] {
+  const isAlpaca =
+    typeof obj.instruction === "string" && typeof obj.output === "string";
+  const isPair =
+    typeof obj.prompt === "string" && typeof obj.completion === "string";
+  if (!isAlpaca && !isPair) return [];
+  // Trim only to test emptiness: completion prompts can end in meaningful whitespace.
+  const input = typeof obj.input === "string" && obj.input.trim() ? obj.input : "";
+  const userText = isAlpaca
+    ? input ? `${obj.instruction}\n\n${input}` : (obj.instruction as string)
+    : (obj.prompt as string);
+  const assistantText = (isAlpaca ? obj.output : obj.completion) as string;
+  if (!userText.trim() || !assistantText.trim()) return [];
+  return [
+    ...(typeof obj.system === "string" ? [{ role: "system", content: obj.system }] : []),
+    { role: "user", content: userText },
+    { role: "assistant", content: assistantText },
+  ];
+}
+
+// Live parser's {text, images} tool result; symbol-keyed so imported JSON cannot set it.
+const STRUCTURED_RESULT = Symbol("structuredResult");
+// Item order of a merged Responses assistant run: content parts and tool_calls indices.
+const ITEM_ORDER = Symbol("itemOrder");
+
+function toolTurn(callId: string, output: unknown): Record<string | symbol, unknown> {
+  if (typeof output === "string") return { role: "tool", tool_call_id: callId, content: output };
+  const parts = (Array.isArray(output) ? output : typeof output === "object" && output !== null ? [output] : []) as Array<Record<string, unknown> | null>;
+  const texts: string[] = [];
+  const images: { data: string; mimeType: string }[] = [];
+  const known = parts.length > 0 && parts.every((part) => {
+    const source = part?.image_url ?? part?.url;
+    const url =
+      typeof source === "string" ? source : (source as { url?: unknown } | undefined)?.url;
+    const value = typeof part?.text === "string" ? part.text : part?.logs;
+    if (typeof value === "string") texts.push(value);
+    else if (typeof url !== "string") return false;
+    else {
+      const inline = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+      if (inline) images.push({ mimeType: inline[1], data: inline[2] });
+      else texts.push(url);
+    }
+    return true;
+  });
+  const text = known ? texts.join("\n") : JSON.stringify(output ?? "");
+  return {
+    role: "tool",
+    tool_call_id: callId,
+    content: text,
+    ...(images.length > 0 ? { [STRUCTURED_RESULT]: { text, images } } : {}),
+  };
+}
+
+// Studio's names for provider-run Responses tools (chat-adapter SERVER_SIDE_BUILTIN_TOOL_NAMES).
+const BUILTIN_TOOL_NAMES: Record<string, string> = {
+  web_search_call: "web_search",
+  code_interpreter_call: "code_execution",
+  shell_call: "code_execution",
+};
+// Executed by the client, so neither hosted nor answered on its own.
+const CLIENT_RUN_CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call", "computer_call"]);
+
+// Adjacent assistant items share one turn, as in the backend's _normalise_responses_input.
+function responsesToTurns(obj: Record<string, unknown>): unknown[] {
+  // A lone typed item (a raw function_call_output line) is not a transcript.
+  if (typeof obj.type === "string") return [];
+  const turns: Record<string | symbol, unknown>[] = [];
+  const built = new Set<Record<string | symbol, unknown>>();
+  type Built = { content: unknown[]; tool_calls: unknown[]; [ITEM_ORDER]: unknown[] };
+  const assistantTurn = (): Built => {
+    const last = turns[turns.length - 1];
+    if (last && built.has(last)) return last as unknown as Built;
+    const turn = { role: "assistant", content: [], tool_calls: [], [ITEM_ORDER]: [] };
+    built.add(turn);
+    turns.push(turn);
+    return turn;
+  };
+  const addContent = (...parts: unknown[]) => {
+    const turn = assistantTurn();
+    turn.content.push(...parts);
+    turn[ITEM_ORDER].push(...parts);
+  };
+  // Hosted results flush after the run: mid-run they split it and replay prunes the tool-only half.
+  const hosted = new Set<string>();
+  const deferred: Record<string | symbol, unknown>[] = [];
+  const push = (turn: Record<string | symbol, unknown>) => turns.push(...deferred.splice(0), turn);
+  const text = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value : undefined;
+  const instructions = text(obj.instructions);
+  if (instructions) turns.push({ role: "system", content: instructions });
+  const input = text(obj.input);
+  if (input) turns.push({ role: "user", content: input });
+  const items = [obj.input, obj.output].flatMap((list) =>
+    Array.isArray(list)
+      ? list.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+      : [],
+  );
+  const answered = new Set(
+    items.flatMap((item) =>
+      typeof item.type === "string" && item.type.endsWith("_call_output") ? [item.call_id ?? item.id] : [],
+    ),
+  );
+  for (const entry of items) {
+    const type = typeof entry.type === "string" ? entry.type : "";
+    if (entry.role === "assistant") {
+      addContent(
+        ...(Array.isArray(entry.content)
+          ? entry.content
+          : text(entry.content)
+            ? [{ type: "text", text: entry.content }]
+            : []),
+      );
+    } else if (typeof entry.role === "string") {
+      push(entry);
+    } else if (type === "image_generation_call") {
+      const encoded = text(entry.result) ?? text(entry.b64_json);
+      if (encoded) {
+        addContent({
+          type: "image_url",
+          image_url: /^(?:https?:|data:)/i.test(encoded)
+            ? encoded
+            : `data:image/${text(entry.output_format) ?? "png"};base64,${encoded}`,
+        });
+      }
+    } else if (type.endsWith("_call")) {
+      const id = text(entry.call_id) ?? text(entry.id) ?? crypto.randomUUID();
+      const builtin = !CLIENT_RUN_CALLS.has(type);
+      if (builtin) hosted.add(id);
+      const commands = (entry.action as { commands?: unknown } | undefined)?.commands;
+      const name =
+        BUILTIN_TOOL_NAMES[type] ??
+        text(entry.name) ??
+        (type === "function_call" || type === "custom_tool_call" ? "unknown" : type.replace(/_call$/, ""));
+      // mcp_call names its server in server_label.
+      const namespace = text(entry.namespace) ?? text(entry.server_label);
+      // Hosted tools use the shapes Studio's own cards render (code_execution reads command).
+      const payload =
+        typeof entry.code === "string"
+          ? { command: entry.code }
+          : type === "shell_call" && Array.isArray(commands)
+            ? { kind: "bash", command: commands.join("\n") }
+            : Array.isArray(entry.queries)
+              ? { queries: entry.queries }
+              : entry.input !== undefined
+                ? { input: entry.input }
+                : (entry.arguments ?? entry.action ?? {});
+      const turn = assistantTurn();
+      turn[ITEM_ORDER].push(turn.tool_calls.length);
+      turn.tool_calls.push({
+        id,
+        type: "function",
+        function: {
+          // namespace__name and {input} wrapping match the backend.
+          name: namespace ? `${namespace}__${name}` : name,
+          arguments:
+            typeof entry.arguments === "string"
+              ? entry.arguments
+              : JSON.stringify(
+                  // Marked like Studio's own hosted-tool cards, so replay strips them.
+                  builtin && typeof payload === "object" && payload !== null
+                    ? { ...payload, _server_tool: true }
+                    : payload,
+                ),
+        },
+      });
+      const done =
+        entry.output ??
+        (Array.isArray(entry.outputs) && entry.outputs.length > 0 ? entry.outputs : undefined) ??
+        (Array.isArray(entry.results) && entry.results.length > 0 ? entry.results : undefined) ??
+        entry.error ??
+        (builtin && !answered.has(id) ? (text(entry.status) ?? "completed") : undefined);
+      if (done != null) {
+        if (builtin) deferred.push(toolTurn(id, done));
+        else push(toolTurn(id, done));
+      }
+    } else if (type.endsWith("_call_output")) {
+      // local_shell_call_output names its call in id rather than call_id.
+      const callId = text(entry.call_id) ?? text(entry.id);
+      if (callId === undefined) continue;
+      const turn = toolTurn(callId, entry.output);
+      if (hosted.has(callId)) deferred.push(turn);
+      else push(turn);
+    }
+  }
+  const output = text(obj.output);
+  if (output) addContent({ type: "text", text: output });
+  turns.push(...deferred);
+  return turns;
+}
+
 export function recordToConversation(
   record: unknown,
   fallbackTitle: string,
@@ -351,23 +643,39 @@ export function recordToConversation(
   if (typeof record !== "object" || record === null) return null;
   const obj = record as Record<string, unknown>;
 
-  // Fresh ID: reusing the exported thread_id would clobber an existing thread on import.
+  // Fresh ID: reusing the exported thread_id would clobber an existing thread.
   const threadId = crypto.randomUUID();
   const title = typeof obj.title === "string" ? obj.title : fallbackTitle;
-  const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now();
+  // Saved Response objects stamp created_at in seconds; chats use ms.
+  const createdAt = typeof obj.created_at === "number" ? obj.created_at : NaN;
+  const baseTs = Number.isNaN(createdAt)
+    ? Date.now()
+    : createdAt < 1e12
+      ? createdAt * 1000
+      : createdAt;
 
   let messages: MessageRecord[] = [];
-  if (Array.isArray(obj.messages)) {
+  if (Array.isArray(obj.messages) && obj.messages.length > 0) {
     messages = oaiMessagesToRecords(obj.messages, threadId, baseTs);
-  } else if (Array.isArray(obj.conversations)) {
+  }
+  if (
+    messages.length === 0 &&
+    Array.isArray(obj.conversations) &&
+    obj.conversations.length > 0
+  ) {
     messages = sharegptToRecords(obj.conversations, threadId, baseTs);
+  }
+  if (messages.length === 0) {
+    messages = oaiMessagesToRecords(pairToTurns(obj), threadId, baseTs);
+  }
+  if (messages.length === 0) {
+    messages = oaiMessagesToRecords(responsesToTurns(obj), threadId, baseTs);
   }
 
   if (messages.length === 0) return null;
   return { title, threadId, messages };
 }
 
-/** Kept for the CSV path and for callers that already hold the whole text. */
 export function parseImportText(
   text: string,
   filename: string,
@@ -420,8 +728,6 @@ export function parseImportText(
   return results;
 }
 
-// Persistence
-
 async function writeConversation(
   conversation: ParsedConversation,
   projectId: string | null | undefined,
@@ -434,9 +740,7 @@ async function writeConversation(
     archived: conversation.archived ?? false,
     createdAt: messages[0]?.createdAt ?? conversation.createdAt ?? Date.now(),
     ...conversation.thread,
-    // undefined is "the caller did not choose", which is the only case where the backup's own
-    // grouping decides. null is a choice: the projects page offers Recents as a destination and
-    // says so in its toast, so a backup must not quietly file the chats under projects instead.
+    // undefined lets the backup's grouping decide; null is an explicit Recents choice.
     projectId:
       projectId === undefined
         ? (conversation.thread?.projectId ?? null)
@@ -445,12 +749,8 @@ async function writeConversation(
   try {
     await saveStoredChatThread(thread);
   } catch (error) {
-    // A settings snapshot is the one field a backup can carry that this build may not accept:
-    // the thread endpoint validates it strictly, so one knob added by a newer Studio fails the
-    // whole write. The chat matters more than its settings, so drop them and try once more.
-    // Only for a rejection, though: a timeout or a 5xx is not the snapshot's fault and dropping
-    // it would lose the user's temperature and seed to an unrelated failure, silently, while
-    // reporting the chat imported.
+    // Newer settings can fail strict validation; on a rejection only (not timeout/5xx), retry
+    // without settings.
     const { settings, ...withoutSettings } = thread;
     const rejected =
       error instanceof ChatThreadWriteError && error.status === 422;
@@ -460,8 +760,7 @@ async function writeConversation(
   try {
     await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
   } catch (error) {
-    // The thread row is already in the sidebar. Left behind it is a blank chat the user has to
-    // delete by hand, and a retry adds another one.
+    // Remove the blank thread row, or the user must delete it and a retry adds another.
     await deleteStoredChatThreads([threadId]).catch(() => {});
     throw error;
   }
@@ -535,7 +834,6 @@ export async function importConversationsFromSource(
           report();
         }
       },
-      // Count a malformed record and continue with the rest of the export.
       onMalformed: () => {
         progress.failed++;
       },
@@ -563,7 +861,6 @@ export async function importConversationsFromSource(
             saved(conversation);
           })
           .catch(() => {
-            // Keep importing after one conversation fails to save.
             progress.failed++;
           })
           .finally(() => {
@@ -575,7 +872,6 @@ export async function importConversationsFromSource(
       }
     }
   } catch (error) {
-    // A read that dies partway still leaves earlier chats saved.
     failure = error;
   }
 
@@ -596,8 +892,7 @@ export async function importConversationsFromSource(
   }
 
   await Promise.allSettled(inFlight);
-  // Those chats have to reach the sidebar even when the read failed, or the UI stays empty until
-  // a reload and a retry duplicates every one of them.
+  // Notify even on failure, or saved chats stay hidden and a retry duplicates them.
   if (progress.imported > 0) notifyChatHistoryUpdated();
   report();
 

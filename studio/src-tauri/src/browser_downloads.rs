@@ -757,6 +757,8 @@ mod tests {
             "Install.CMD",
             "run.sh",
             "tool.command",
+            "notes.term",
+            "run.tcsh",
             "x.jar",
             "Foo.app",
             "a.exe. ",

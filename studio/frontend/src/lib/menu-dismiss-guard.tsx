@@ -5,10 +5,7 @@ import type { FC, RefObject } from "react";
 
 import { useDismissingClickGuard } from "@/lib/menu-dismiss";
 
-/**
- * Marker mounted inside non-modal menu content. The lifetime is mount-scoped: exit-animated
- * content can outlive the open state, so animated menus must add explicit open-state gating.
- */
+/** Mount-scoped: exit-animated content can outlive open state, so animated menus need open gating. */
 export const MenuDismissGuard: FC<{
   triggerRef: RefObject<HTMLElement | null>;
 }> = ({ triggerRef }) => {

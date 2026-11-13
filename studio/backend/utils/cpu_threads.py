@@ -200,12 +200,7 @@ def _windows_commit_headroom() -> Optional[int]:
 
 
 def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> None:
-    """Apply ``UNSLOTH_CPU_THREADS`` to native CPU pools when configured, else cap OpenBLAS at a few threads.
-
-    Must run before importing libraries that initialize an OpenMP or BLAS
-    pool. Library-specific vars are left untouched so users can override a
-    single runtime independently.
-    """
+    """Applies UNSLOTH_CPU_THREADS to CPU pools when set, else caps OpenBLAS; must run before OpenMP or BLAS imports."""
     environ = os.environ if env is None else env
     configured = environ.get("UNSLOTH_CPU_THREADS", "").strip()
     if not configured:
@@ -320,12 +315,8 @@ _fitted_affinity: Optional[int] = None
 
 
 def fit_threads_to_affinity() -> None:
-    """Fit torch's pool on this thread, and the ROCm OpenBLAS one, to the CPUs Windows lets this process use.
-
-    Affinity is often narrowed after launch (Task Manager), and neither pool reads it: 16 threads on one
-    allowed CPU spin against each other (#14313). Widening it again restores the launch counts. Cheap
-    enough to call before every CPU batch; a no-op off Windows, before torch loads, or while unrestricted.
-    """
+    """Fits torch and ROCm OpenBLAS thread pools to the Windows affinity mask, since neither reads
+    it after launch (issue 14313); no-op off Windows, before torch loads, or unrestricted."""
     if sys.platform != "win32" or "torch" not in sys.modules:
         return
     global _torch_threads_unfitted, _fitted_affinity

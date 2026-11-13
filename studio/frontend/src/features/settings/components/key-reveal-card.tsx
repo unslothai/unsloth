@@ -6,7 +6,7 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 
@@ -29,7 +29,7 @@ export function KeyRevealCard({
   const [copied, setCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Preselected so Ctrl+C works even where the copy button cannot.
+  // Preselected so Ctrl+C works where the copy button cannot.
   useEffect(() => {
     selectToken(inputRef.current);
   }, []);

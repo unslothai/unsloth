@@ -109,8 +109,7 @@ def spawn(
                 stage = "spawn",
             ) from exc
 
-        # From this point WXC may have created the workload. No caller may replay
-        # the original command on the host.
+        # WXC may have created the workload from here: never replay the command on the host
         proc._mxc_dispatched = True
         proc._mxc_backend_tier = "unknown"
         proc._mxc_policy_hash = request["policyHash"]

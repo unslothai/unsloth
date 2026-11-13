@@ -22,7 +22,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-from huggingface_hub import HfApi, constants as hf_constants
+from huggingface_hub import constants as hf_constants
 
 from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -39,6 +39,20 @@ from utils.account_context import (
     current_account_id,
     is_owner_context,
 )
+
+
+def __getattr__(name):
+    # Lazy (~0.2 s at boot); from the submodule so a patched huggingface_hub.HfApi is never cached.
+    if name == "HfApi":
+        from huggingface_hub.hf_api import HfApi
+        globals()["HfApi"] = HfApi
+        return HfApi
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _hf_api(*args, **kwargs):
+    return (globals().get("HfApi") or __getattr__("HfApi"))(*args, **kwargs)
+
 
 _ACCOUNT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -434,16 +448,7 @@ def hidden_chat_status_response():
 
 
 def hidden_generate_progress_response(response_model):
-    """The generate-progress shape, idle, with nothing of the resident.
-
-    A generate-progress route declares ``active``/``fraction``/..., and a returned
-    ``Response`` bypasses that model, so answering ``hidden_resident_response()``
-    there hands a poller an object with no ``active`` at all. ``progress["active"]``
-    then raises ``KeyError`` instead of reading "nothing is running", which is what
-    the caller is entitled to learn either way. The model's own defaults ARE idle,
-    so they reveal exactly as little as the loaded/yours pair and stay in step with
-    the declared shape on their own.
-    """
+    """Idle model defaults as JSON, not a bare Response; they reveal nothing resident."""
     return JSONResponse(
         content = {**response_model().model_dump(mode = "json"), "loaded": True, "yours": False}
     )
@@ -581,7 +586,7 @@ def _hub_public_answer(
 ) -> bool | None:
     """True when the Hub says public, False for private/gated/missing, None when unaskable."""
     try:
-        info = HfApi(endpoint = endpoint).repo_info(
+        info = _hf_api(endpoint = endpoint).repo_info(
             repo_id, repo_type = repo_type, token = False, timeout = 5.0
         )
     except Exception as exc:  # noqa: BLE001 - classified below, never trusted as public
@@ -595,13 +600,6 @@ def _hub_public_answer(
 def _public_key(repo_id: str, repo_type: str) -> tuple[str, str, str]:
     # A repo public on one Hub may be private, or someone else's, on another.
     return (hf_constants.ENDPOINT.rstrip("/"), repo_type, repo_id.lower())
-
-
-def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
-    key = _public_key(repo_id, repo_type)
-    with _public_lock:
-        cached = _public_repos.get(key)
-    return cached[1] if cached is not None and cached[0] > time.monotonic() else None
 
 
 def _source_speaks_for_the_cache() -> bool:
@@ -838,13 +836,14 @@ def connection_model_allowed(model_id: str) -> bool:
 
 
 def shared_connection_view(row: dict) -> dict | None:
+    from core.inference.providers import get_provider_info, provider_default_models
+
     view = {**row, "shared": True, "shared_by_owner": True}
     models = row.get("models") or []
-    if not models:
-        from core.inference.providers import get_provider_info
-        models = list(
-            (get_provider_info(row.get("provider_type") or "") or {}).get("default_models") or []
-        )
+    provider_type = row.get("provider_type") or ""
+    if not models and get_provider_info(provider_type) is not None:
+        from routes.providers import cached_catalog_models
+        models = list(provider_default_models(provider_type, cached_catalog_models()))
     view["models"] = [model for model in models if connection_model_allowed(model)]
     view["available_models"] = [
         model for model in row.get("available_models") or [] if model in view["models"]
@@ -899,6 +898,29 @@ def _cached_repo(path: Path) -> tuple[str, str] | None:
     return None
 
 
+def _is_own_shared_blob(path: Path, cached: tuple[str, str], resolved: Path) -> bool:
+    """Hub >= 1.32 stores Xet files once per cache: snapshot -> repo blob -> <cache>/blobs/<hash[:2]>/<hash>."""
+    hop, last_in_repo = path, None
+    for _ in range(8):
+        if not hop.is_symlink():
+            break
+        hop = Path(os.path.normpath(hop.parent.resolve() / os.readlink(hop)))
+        if _cached_repo(hop) != cached:
+            break
+        last_in_repo = hop
+    if last_in_repo is None or hop != resolved or not resolved.is_file() or hop.is_symlink():
+        return False
+    repo_blobs = last_in_repo.parent
+    repo_dir = repo_blobs.parent
+    return (
+        repo_blobs.name == "blobs"
+        and repo_dir.name == f"models--{cached[0].replace('/', '--')}"
+        and resolved.parent.parent == repo_dir.parent / "blobs"
+        and re.fullmatch(r"[0-9a-f]{64}", resolved.name) is not None
+        and resolved.parent.name == resolved.name[:2]
+    )
+
+
 def cached_model_repo(reference: str) -> str | None:
     """Recover a resident's Hub identity only from a verified model-cache path."""
     from utils.hf_cache_settings import known_hf_hub_caches
@@ -912,7 +934,7 @@ def cached_model_repo(reference: str) -> str | None:
         if cached is None or cached[1] != "model":
             return None
         resolved = path.resolve()
-        if _cached_repo(resolved) != cached:
+        if _cached_repo(resolved) != cached and not _is_own_shared_blob(path, cached, resolved):
             return None
         if Path(normalize_path(reference)).expanduser().resolve() != resolved:
             return None
@@ -967,9 +989,10 @@ def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> boo
             if cached is not None:
                 # Snapshots point at their own repo's blobs; cross-repo links are refused.
                 actual = _cached_repo(resolved)
-                return actual == cached and repo_visible(
-                    cached[0], cached[1], grants = grants, **access_options
+                own = actual == cached or (
+                    cached[1] == "model" and _is_own_shared_blob(path, cached, resolved)
                 )
+                return own and repo_visible(cached[0], cached[1], grants = grants, **access_options)
         except (OSError, RuntimeError, ValueError):
             return False
         return False
@@ -986,17 +1009,44 @@ def require_model_access(
     repo_type: str = "model",
     *,
     offline: bool = False,
+    hf_token = None,
 ) -> None:
     access_options = {"offline": True} if offline else {}
     if not model_visible(reference, repo_type = repo_type, **access_options):
         from utils.paths.path_utils import is_network_or_device_path
 
         # The allowlist check below resolves the reference on disk: not for a share path.
-        if repo_type == "model" and not (
-            isinstance(reference, str) and is_network_or_device_path(reference)
-        ):
+        if isinstance(reference, str) and is_network_or_device_path(reference):
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        if repo_type == "model":
             require_model_allowed(reference)
+        if not offline and _grant_with_token(reference, repo_type, hf_token):
+            return
         raise HTTPException(status_code = 404, detail = "Model not found")
+
+
+def _grant_with_token(reference, repo_type: str, hf_token) -> bool:
+    token = account_hf_token(hf_token)
+    if not isinstance(reference, str) or not token:
+        return False
+    repo_id = _reference_repo_id(reference.strip())
+    if repo_id is None or not _source_speaks_for_the_cache():
+        return False
+    if repo_type == "model" and not model_allowed(repo_id):
+        return False
+    from hub.utils.hf_tokens import _explicit_token_reaches_repo
+
+    # HfApi.auth_check has no timeout; this probe is bounded.
+    if _explicit_token_reaches_repo(repo_id, token, repo_type) is not True:
+        return False
+    record_model_grant(repo_id, repo_type)
+    return model_visible(reference, repo_type = repo_type)
+
+
+def require_media_model_access(request) -> None:
+    require_model_access(request.model_path, hf_token = request.hf_token)
+    if request.base_repo:
+        require_model_access(request.base_repo, hf_token = request.hf_token)
 
 
 def require_model_allowed(reference) -> None:
@@ -1068,7 +1118,7 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
             detail = "Only the installation owner can download while ModelScope is the model source",
         )
     try:
-        api = HfApi()
+        api = _hf_api()
         token = account_hf_token(hf_token)
         info = api.repo_info(repo_id, repo_type = repo_type, token = token, timeout = 5.0)
         if getattr(info, "gated", False):

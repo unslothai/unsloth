@@ -442,8 +442,7 @@ def test_sticky_boundary_prefers_a_reply_that_matches_the_branch_exactly(monkeyp
 
 
 def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(monkeypatch):
-    """Preferring an exact match must not become a requirement; stored rows are not always byte-
-    identical."""
+    """Exact match may be preferred, not required; stored rows are not always byte-identical."""
     from core.inference import llama_cpp
 
     _fake_studio_db(
@@ -944,7 +943,7 @@ def test_conversation_search_refuses_a_result_the_budget_cannot_hold(archived, m
         {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS * 4},
     )
 
-    assert asked == [4, 2, 1]
+    assert asked == [4, 3, 2, 1]
     assert "no room" in answer.lower()
 
 
@@ -969,6 +968,41 @@ def test_conversation_search_returns_what_the_budget_does_hold(archived, monkeyp
     )
 
     assert "an earlier turn" in answer
+
+
+def test_conversation_search_prices_only_what_the_model_reads(archived, monkeypatch):
+    from core.inference.tool_loop_controller import strip_result_for_model
+    from core.rag import config as rag_config
+    from core.rag import tool as rag_tool
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        sources = [
+            {"filename": "conversation", "text": "y" * 4 * rag_config.CHUNK_TOKENS, "turn": n}
+            for n in range(1, top_k + 1)
+        ]
+        return rag_tool.render_conversation_sources(sources), sources
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    def model_chunks(budget, top_k):
+        answer = tools_mod._search_conversation(
+            {"query": "pelicans", "top_k": top_k},
+            {"thread_id": THREAD, "budget_tokens": budget, "token_counter": lambda t: len(t) // 4},
+        )
+        # The source card still receives the citation data the model does not read.
+        assert tools_mod.RAG_SOURCES_SENTINEL in answer
+        return strip_result_for_model(answer, "search_conversation").count("<chunk ")
+
+    assert model_chunks(rag_config.CHUNK_TOKENS * 5, 4) == 4
+    assert model_chunks(rag_config.CHUNK_TOKENS * 3 // 2, 1) == 1
+    # Markup pushes four full chunks past four chunks of room; three still fit.
+    assert model_chunks(rag_config.CHUNK_TOKENS * 4, 8) == 3
 
 
 def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
@@ -1078,6 +1112,58 @@ def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch
     )
 
     assert seen["query"] == "what was the VULPINE code from earlier"
+
+
+def test_the_forced_recall_skips_notices_a_tool_loop_added_to_its_branch(archived, monkeypatch):
+    """A tool loop's live branch ends on its own user-role notices; query_messages names the
+    user's question so the final pass does not search for the budget nudge (#16187)."""
+    seen = {}
+
+    def fake_recall(thread_id, query, **kwargs):
+        seen["query"] = query
+        seen["branch_messages"] = kwargs.get("branch_messages")
+        return ("earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    request = [{"role": "user", "content": "what was the VULPINE code from earlier"}]
+    live = request + [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "content": "result", "tool_call_id": "c1"},
+        {"role": "user", "content": "You have used all available tool calls. Answer now."},
+    ]
+
+    tools_mod.build_conversation_recall(
+        live, THREAD, style = "inline", branch_messages = live, query_messages = request
+    )
+
+    assert seen["query"] == "what was the VULPINE code from earlier"
+    assert seen["branch_messages"] is live
+
+
+def test_archive_and_recall_hands_query_messages_to_the_recall(archived, monkeypatch):
+    seen = {}
+
+    def build(_conversation, _thread_id, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(tools_mod, "build_conversation_recall", build)
+    request = [{"role": "user", "content": "the question"}]
+    live = request + [{"role": "user", "content": "a loop notice"}]
+
+    llama_cpp._archive_and_recall(
+        live,
+        live,
+        thread_id = THREAD,
+        style = "inline",
+        recall_done = False,
+        recall_budget_tokens = 100_000,
+        branch_messages = live,
+        query_messages = request,
+    )
+
+    assert seen["query_messages"] is request
+    assert seen["branch_messages"] is live
 
 
 def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, monkeypatch):
@@ -1261,8 +1347,7 @@ def test_the_branch_boundary_excludes_the_turn_inline_recall_rewrites():
 
 
 def test_a_conversation_search_charges_token_dense_text_properly(archived, monkeypatch):
-    """Four characters per token is an English rule; CJK text needs charging near one token per
-    character."""
+    """Four chars per token is English-only; CJK text is charged near one token per character."""
     from core.rag import config as rag_config
 
     asked = []
@@ -1472,8 +1557,7 @@ def test_both_recall_styles_state_that_a_later_turn_supersedes_an_earlier_one(ar
 
 
 def test_a_single_recalled_turn_makes_no_ordering_claim(archived):
-    """One passage cannot be in an order, and the backoff's last rung is where room is
-    tightest -- so the header must not be spent there."""
+    """A single passage has no order; the backoff's last rung is tightest, so skip the header."""
     built = tools_mod.build_conversation_recall(_conversation(), THREAD, style = "inline", top_k = 1)
 
     assert built is not None
@@ -1522,8 +1606,7 @@ def test_a_dense_ascii_result_is_priced_by_the_callers_tokenizer(archived, monke
 
 
 def test_the_anchor_survives_a_tool_call_message_with_no_text(monkeypatch):
-    """Tool-call messages have no text; the anchor must fall back to their calls or the rebase is
-    skipped."""
+    """Tool-call messages lack text; anchor falls back to their calls or the rebase is skipped."""
     from core.inference import llama_cpp
 
     call = {

@@ -18,10 +18,10 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
-  Copy01Icon,
   Download01Icon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type Ref, useEffect, useState } from "react";
 import type { AudioGalleryClip } from "../api";
@@ -33,7 +33,7 @@ import {
   type AudioSourceInputHandle,
 } from "../components/audio-source-input";
 import { SendToItems } from "../components/clip-card";
-import { Field } from "../components/field";
+import { Field, FieldLabel } from "../components/field";
 import { TranscriptView } from "../components/transcript-view";
 import {
   TranscriptExportItems,
@@ -55,6 +55,10 @@ import type { TranscriptExportFormat } from "../transcript-export";
 import { formatTimestamp } from "../transcript-model";
 import type { TranscriptProgress } from "../transcript-stream";
 import {
+  AUDIO_ACTION_BUTTON,
+  AUDIO_GO_BUTTON,
+  AUDIO_NOTE_SLOT,
+  AUDIO_STOP_BUTTON,
   BlockerNote,
   GenerateActions,
   type GenerateBlocker,
@@ -80,7 +84,7 @@ function SwitchRow({
   const id = `transcribe-${name}`;
   return (
     <div className="grid gap-1.5">
-      <label
+      <FieldLabel
         htmlFor={id}
         className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
       >
@@ -103,7 +107,7 @@ function SwitchRow({
             aria-describedby={`${id}-hint`}
           />
         )}
-      </label>
+      </FieldLabel>
       <p
         id={`${id}-hint`}
         className="text-ui-11p5 leading-snug text-muted-foreground"
@@ -151,7 +155,7 @@ export function TranscribeRail({
         <AudioSourceInput
           id="transcribe-source"
           label="Audio"
-          hint="Up to 30 minutes. Drop a file, record, or reuse a clip."
+          hint={switches.sourceHint}
           value={source}
           onChange={(next) => useAudioTranscribeStore.setState({ source: next })}
           disabled={disabled}
@@ -204,7 +208,6 @@ export function TranscribeRail({
           label={name === "timestamps" ? "Timestamps" : "Speakers"}
           value={switches[name]}
           disabled={disabled}
-          // One "Use" link when both switches would offer the same model.
           onUseSpeakersModel={
             name === "speakers" && switches.timestamps.suggestSpeakersModel
               ? undefined
@@ -297,7 +300,6 @@ export function TranscribeOutput({
           />
         )}
         {transcript ? (
-          // Focused and announced by the host after a run.
           <section
             id="transcribe-result"
             tabIndex={-1}
@@ -483,10 +485,13 @@ export function TranscribeFooter({
       ) : null}
       <div className="flex flex-wrap items-center justify-center gap-2">
         <Button
-          className="relative z-10 mx-auto text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className={cn(
+            AUDIO_ACTION_BUTTON,
+            running ? AUDIO_STOP_BUTTON : AUDIO_GO_BUTTON,
+          )}
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
-          variant={running ? "destructive" : "dark"}
+          variant={running ? "outline" : "primary"}
           aria-describedby={
             blocker
               ? "transcribe-blocker"
@@ -509,16 +514,18 @@ export function TranscribeFooter({
           )}
         </Button>
       </div>
-      {blocker && !running ? (
-        <BlockerNote id="transcribe-blocker" blocker={blocker} />
-      ) : notice && !running ? (
-        <p
-          id="transcribe-notice"
-          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
-        >
-          {notice}
-        </p>
-      ) : null}
+      <div className={AUDIO_NOTE_SLOT}>
+        {blocker && !running ? (
+          <BlockerNote id="transcribe-blocker" blocker={blocker} />
+        ) : notice && !running ? (
+          <p
+            id="transcribe-notice"
+            className="text-center text-ui-11p5 leading-snug text-muted-foreground"
+          >
+            {notice}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }

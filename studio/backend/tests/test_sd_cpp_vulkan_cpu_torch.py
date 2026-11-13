@@ -28,6 +28,8 @@ _ENVS = (
     "UNSLOTH_DIFFUSION_ENGINE",
     "UNSLOTH_DIFFUSION_SD_CPP",
     "UNSLOTH_DIFFUSION_SD_CPP_DEVICE",
+    "UNSLOTH_FORCE_VULKAN",
+    "UNSLOTH_LLAMA_CPP_BACKEND",
     "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK",
     "ROCR_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -40,6 +42,7 @@ _VEGA = {"vendor": "amd", "index": 0, "name": None, "source": "sysfs-drm"}
 _ARC_LINUX = {"vendor": "intel", "index": 0, "name": None, "xpu_class": True}
 _UHD_LINUX = {"vendor": "intel", "index": 0, "name": None, "xpu_class": False}
 _ARC_WINDOWS = {"vendor": "intel", "index": 0, "name": "Intel(R) Arc(TM) A770 Graphics"}
+_IRIS_WINDOWS = {"vendor": "intel", "index": 0, "name": "Intel(R) Iris(R) Xe Graphics"}
 _UHD_WINDOWS = {"vendor": "intel", "index": 0, "name": "Intel(R) UHD Graphics 770"}
 _RTX = {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060"}
 
@@ -71,6 +74,10 @@ def _pinned_host(monkeypatch):
     monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: True)
     monkeypatch.setattr(r, "_nvidia_adapter_present", lambda: False)
     monkeypatch.setattr(r, "_reachable_intel_arc_render_node", lambda: True, raising = False)
+    # Keeps the CUDA route beside NVIDIA (#16803) off the real llama.cpp install.
+    from core.inference import sd_cpp_engine
+
+    monkeypatch.setattr(sd_cpp_engine, "_llama_server_binary", lambda: None)
 
 
 @pytest.mark.parametrize(
@@ -92,10 +99,37 @@ def test_cpu_torch_vulkan_follows_the_cards(monkeypatch, devices, expected):
     assert r.image_install_accelerator("cpu") == expected
 
 
-@pytest.mark.parametrize("device,expected", [(_ARC_WINDOWS, "vulkan"), (_UHD_WINDOWS, "auto")])
+@pytest.mark.parametrize(
+    "device,expected", [(_ARC_WINDOWS, "vulkan"), (_UHD_WINDOWS, "auto"), (_IRIS_WINDOWS, "auto")]
+)
 def test_windows_intel_is_read_by_name(monkeypatch, device, expected):
     _platform(monkeypatch, "win32", "AMD64")
     monkeypatch.setattr(r, "_physical_inventory", lambda: _host(device))
+    assert r.image_install_accelerator("cpu") == expected
+
+
+@pytest.mark.parametrize(
+    "system,machine,device", [("win32", "AMD64", _IRIS_WINDOWS), ("linux", "x86_64", _UHD_LINUX)]
+)
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({"UNSLOTH_FORCE_VULKAN": "1"}, "vulkan"),
+        ({"UNSLOTH_LLAMA_CPP_BACKEND": "vulkan"}, "vulkan"),
+        ({"UNSLOTH_LLAMA_CPP_BACKEND": "cpu", "UNSLOTH_FORCE_VULKAN": "1"}, "auto"),
+        ({"UNSLOTH_LLAMA_CPP_BACKEND": "auto", "UNSLOTH_FORCE_VULKAN": "1"}, "auto"),
+        ({"UNSLOTH_FORCE_VULKAN": "0"}, "auto"),
+        ({"UNSLOTH_FORCE_VULKAN": "1", "ZE_AFFINITY_MASK": "0"}, "auto"),
+        ({"UNSLOTH_FORCE_VULKAN": "1", "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK": "0"}, "auto"),
+    ],
+)
+def test_vulkan_request_opts_in_a_non_arc_intel_gpu(
+    monkeypatch, system, machine, device, env, expected
+):
+    _platform(monkeypatch, system, machine)
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(device))
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     assert r.image_install_accelerator("cpu") == expected
 
 
@@ -162,8 +196,7 @@ def test_a_uhd_beside_an_arc_needs_the_arcs_own_node(monkeypatch, arc_node_reach
 @pytest.mark.parametrize(
     "arc_node_reachable, drivers, expected",
     [
-        # The Arc node is not mounted and only the Intel driver loads: Intel Vulkan sees the UHD alone and the AMD
-        # card has no driver, so the iGPU would render.
+        # With the Arc unmounted, only Intel's driver loads, so the UHD alone would render.
         (False, {"intel"}, "auto"),
         # The AMD card's own driver loads: it renders, whatever the Arc's node.
         (False, {"amd"}, "vulkan"),
@@ -350,13 +383,14 @@ def test_selection_installs_the_vulkan_build(monkeypatch):
 
 
 _PINNED_RELEASE_ASSETS = [
-    "sd-master-982-0518b34-ud331c66-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
-    "sd-master-982-0518b34-ud331c66-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
-    "sd-master-982-0518b34-ud331c66-bin-Linux-Ubuntu-22.04-x86_64.zip",
-    "sd-master-982-0518b34-ud331c66-bin-Linux-Ubuntu-24.04-aarch64.zip",
-    "sd-master-982-0518b34-ud331c66-bin-win-cpu-x64.zip",
-    "sd-master-982-0518b34-ud331c66-bin-win-cuda12-x64.zip",
-    "sd-master-982-0518b34-ud331c66-bin-win-vulkan-x64.zip",
+    "sd-master-982-0518b34-u67cba2c-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
+    "sd-master-982-0518b34-u67cba2c-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+    "sd-master-982-0518b34-u67cba2c-bin-Linux-Ubuntu-22.04-x86_64.zip",
+    "sd-master-982-0518b34-u67cba2c-bin-Linux-Ubuntu-24.04-aarch64.zip",
+    "sd-master-982-0518b34-u67cba2c-bin-win-cpu-arm64.zip",
+    "sd-master-982-0518b34-u67cba2c-bin-win-cpu-x64.zip",
+    "sd-master-982-0518b34-u67cba2c-bin-win-cuda12-x64.zip",
+    "sd-master-982-0518b34-u67cba2c-bin-win-vulkan-x64.zip",
 ]
 
 
@@ -366,10 +400,11 @@ _PINNED_RELEASE_ASSETS = [
         (
             "Linux",
             "x86_64",
-            "sd-master-982-0518b34-ud331c66-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+            "sd-master-982-0518b34-u67cba2c-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
         ),
-        ("Windows", "AMD64", "sd-master-982-0518b34-ud331c66-bin-win-vulkan-x64.zip"),
+        ("Windows", "AMD64", "sd-master-982-0518b34-u67cba2c-bin-win-vulkan-x64.zip"),
         ("Linux", "aarch64", None),
+        ("Windows", "ARM64", None),
     ],
 )
 def test_the_pinned_release_has_the_vulkan_bundle_it_routes_to(system, machine, expected):

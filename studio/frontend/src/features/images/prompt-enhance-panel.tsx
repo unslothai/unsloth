@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { Cancel01Icon, Copy01Icon, SparklesIcon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, SparklesIcon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 

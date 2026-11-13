@@ -4,11 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-/**
- * Caches are named by key, never by path: the backend owns the mapping from a
- * key to a directory, so nothing the browser sends can widen what a purge
- * reaches.
- */
+/** Caches are named by key, never path, so nothing the browser sends can widen a purge. */
 export const CACHE_KEYS = [
   "uv",
   "pip",
@@ -34,9 +30,12 @@ export type CacheGroup = "packages" | "compile" | "models";
 export type CacheEntry = {
   key: CacheKey;
   group: CacheGroup;
-  /** Clearing this costs a re-download, so it is never part of a bulk purge. */
   optIn: boolean;
   paths: string[];
+  measuredPaths?: string[];
+  clearSizeBytes?: number | null;
+  clearEntryCount?: number | null;
+  systemDiskBytes?: number | null;
   sizeBytes: number;
   entryCount: number;
   present: boolean;
@@ -50,6 +49,7 @@ export type CacheInventory = {
   reclaimableBytes: number;
   freeBytes: number | null;
   totalDiskBytes: number | null;
+  refreshing: boolean;
 };
 
 export type CachePurgeResult = {
@@ -72,6 +72,14 @@ type ApiCacheEntry = {
   opt_in: boolean;
   paths: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
+  measured_paths?: string[];
+  // biome-ignore lint/style/useNamingConvention: API schema
+  clear_size_bytes?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  clear_entry_count?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  system_disk_bytes?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
   size_bytes: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   entry_count: number;
@@ -91,6 +99,7 @@ type ApiCacheInventory = {
   free_bytes: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   total_disk_bytes: number | null;
+  refreshing?: boolean;
 };
 
 type ApiCachePurgeResult = {
@@ -115,6 +124,10 @@ function entryFromApi(value: ApiCacheEntry): CacheEntry {
     group: value.group,
     optIn: value.opt_in,
     paths: value.paths,
+    measuredPaths: value.measured_paths,
+    clearSizeBytes: value.clear_size_bytes,
+    clearEntryCount: value.clear_entry_count,
+    systemDiskBytes: value.system_disk_bytes,
     sizeBytes: value.size_bytes,
     entryCount: value.entry_count,
     present: value.present,
@@ -130,6 +143,7 @@ export function inventoryFromApi(value: ApiCacheInventory): CacheInventory {
     reclaimableBytes: value.reclaimable_bytes,
     freeBytes: value.free_bytes,
     totalDiskBytes: value.total_disk_bytes,
+    refreshing: value.refreshing === true,
   };
 }
 
@@ -151,8 +165,7 @@ export function purgeOutcomeFromApi(
 export async function loadCacheInventory(
   options: { refresh?: boolean } = {},
 ): Promise<CacheInventory> {
-  // refresh re-walks instead of reusing a size measured a moment ago, which is
-  // what Recheck is for. UI sessions only; see the route.
+  // refresh re-walks instead of reusing a recent size; UI sessions only.
   const response = await authFetch(
     options.refresh
       ? "/api/settings/caches?refresh=true"
@@ -164,6 +177,48 @@ export async function loadCacheInventory(
     );
   }
   return inventoryFromApi(await response.json());
+}
+
+export type CacheBreakdownEntry = {
+  name: string;
+  path: string;
+  sizeBytes: number;
+  repoId?: string;
+  repoType?: "model";
+  cachePath?: string;
+  deleteAllowed?: boolean;
+};
+
+export async function loadCacheBreakdown(
+  key: CacheKey,
+): Promise<CacheBreakdownEntry[]> {
+  const response = await authFetch(`/api/settings/caches/${key}/breakdown`);
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Failed to measure cache folders"),
+    );
+  }
+  const result = (await response.json()) as {
+    entries: {
+      name: string;
+      path: string;
+      // biome-ignore lint/style/useNamingConvention: API schema
+      size_bytes: number;
+      repo_id?: string;
+      repo_type?: "model";
+      cache_path?: string;
+      delete_allowed?: boolean;
+    }[];
+  };
+  return result.entries.map((entry) => ({
+    name: entry.name,
+    path: entry.path,
+    sizeBytes: entry.size_bytes,
+    repoId: entry.repo_id,
+    repoType: entry.repo_type,
+    cachePath: entry.cache_path,
+    deleteAllowed: entry.delete_allowed === true,
+  }));
 }
 
 export async function purgeCaches(
@@ -182,11 +237,7 @@ export async function purgeCaches(
   return purgeOutcomeFromApi(await response.json());
 }
 
-/** The caches a bulk clear covers: present, allowed, and free to rebuild.
- *
- * Entries and not bytes: a tree of empty directories measures zero, still
- * costs inodes, and the backend can empty it.
- */
+/** Present, allowed and free to rebuild; counted by entries since empty dirs measure zero. */
 export function bulkPurgeKeys(inventory: CacheInventory): CacheKey[] {
   return inventory.caches
     .filter(
@@ -194,7 +245,7 @@ export function bulkPurgeKeys(inventory: CacheInventory): CacheKey[] {
         entry.present &&
         entry.purgeable &&
         !entry.optIn &&
-        entry.entryCount > 0,
+        (entry.clearEntryCount ?? entry.entryCount) > 0,
     )
     .map((entry) => entry.key);
 }

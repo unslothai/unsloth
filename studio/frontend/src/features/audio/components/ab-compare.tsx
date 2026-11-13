@@ -4,7 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import { cn } from "@/lib/utils";
-import { PauseIcon } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type Ref, useCallback, useEffect, useRef, useState } from "react";
 import { fetchAudioBlob } from "../api";

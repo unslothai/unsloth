@@ -98,7 +98,10 @@ class CreateApiKeyRequest(BaseModel):
 
     name: str = Field(..., description = "Human-readable label for this key")
     expires_in_days: Optional[int] = Field(
-        None, description = "Number of days until the key expires (None = never)"
+        None,
+        ge = 1,
+        le = 36500,
+        description = "Number of days until the key expires (None = never)",
     )
 
 
@@ -162,6 +165,15 @@ class AccountResponse(BaseModel):
     created_at: str
     setup_code_pending: bool
     model_allowlist: Optional[list[str]] = None
+    login_alias: Optional[str] = None
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class OwnerLoginAliasRequest(BaseModel):
+    login_alias: Optional[str] = Field(
+        None, description = 'Owner sign-in name; null, empty or "unsloth" clears it'
+    )
 
 
 class AccountListResponse(BaseModel):

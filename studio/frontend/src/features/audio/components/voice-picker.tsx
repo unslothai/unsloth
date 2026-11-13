@@ -10,12 +10,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   MoreHorizontalIcon,
-  PauseIcon,
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { useEffect, useRef, useState } from "react";
@@ -237,7 +237,7 @@ export function VoicePicker({
                       onClick={() => void handleDelete(voice)}
                     >
                       <HugeiconsIcon
-                        icon={Delete02Icon}
+                        icon={TrashIcon}
                         strokeWidth={1.75}
                         className="size-icon"
                       />

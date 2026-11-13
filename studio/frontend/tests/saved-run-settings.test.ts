@@ -16,9 +16,10 @@ const { store } = installLocalStorageFake();
 const saved = await import(
   "../src/features/model-picker/model-config/saved-run-settings.ts"
 );
-const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig } = await import(
+const perModel = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
+const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig } = perModel;
 
 const MODEL = "unsloth/Repo-GGUF";
 const config = (customContextLength: number | null) => ({
@@ -27,6 +28,58 @@ const config = (customContextLength: number | null) => ({
 });
 
 test.beforeEach(() => store.clear());
+
+test("a one-time load is remembered per quant until a regular load clears it", () => {
+  const sent = { ...config(4096), maxSeqLength: 8192 };
+  saved.noteRunSettingsLoadedOnce(MODEL, "Q4_K_M", { name: "Other", sent });
+  const noted = saved.getRunSettingsLoadedOnce(MODEL, "q4_k_m");
+  assert.equal(noted?.name, "Other");
+  assert.equal(noted?.sent.maxSeqLength, 8192);
+  assert.equal(noted?.sent.customContextLength, 4096);
+  assert.equal(saved.getRunSettingsLoadedOnce(MODEL, "Q8_0"), null);
+  // Stored, so it survives a refresh while the model stays loaded.
+  assert.ok(store.get(saved.LOADED_ONCE_RUN_SETTINGS_STORAGE_KEY));
+  saved.noteRunSettingsLoadedOnce(MODEL, "Q4_K_M", null);
+  assert.equal(saved.getRunSettingsLoadedOnce(MODEL, "Q4_K_M"), null);
+});
+
+test("the editor names a one-time load by what it sent, before matching saved sets", () => {
+  const page = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    page,
+    /noteRunSettingsLoadedOnce\(\s*configId,\s*target\.ggufVariant,\s*onceOnly \? \{ name: loadSet, sent: onceSent \} : null,\s*\);/,
+  );
+  assert.match(
+    page,
+    /perModelConfigsEqual\(forSetStore\(loaded\), forSetStore\(noted\.sent\)\)[\s\S]{0,200}findSavedRunSettings\(savedSets, noted\.name\)/,
+  );
+  // The record wins, a Default (null) one too, before the pin-equality shortcut.
+  assert.match(
+    page,
+    /const notedOnce = inferOnce \? loadedOnceNamed\(loadedConfig\) : undefined;/,
+  );
+  assert.match(
+    page,
+    /notedOnce !== undefined\s*\? notedOnce\s*: inferOnce &&\s*!perModelConfigsEqual\(forSetStore\(loadedConfig\), forSetStore\(pinnedEntry\.config\)\)/,
+  );
+  assert.doesNotMatch(page, /loadedOnceNamed\(loadedConfig\) \?\?/);
+  // Inherited speculative decoding is recorded as the mode the runtime resolves and reports.
+  assert.match(
+    page,
+    /speculativeType:\s*normalizeSpeculativeType\(effectiveLoadConfig\.speculativeType\) \?\?\s*readPersistedSpeculativeType\(\),[\s\S]{0,200}onceOnly \? \{ name: loadSet, sent: onceSent \} : null/,
+  );
+  // Recorded as submitted: the load strips managed arguments, so the record does too.
+  assert.match(
+    page,
+    /if \(cleaned\.length === onceArgs\.length\) return;\s*noteRunSettingsLoadedOnce\(configId, target\.ggufVariant, \{\s*name: loadSet,\s*sent: \{ \.\.\.onceSent, llamaExtraArgs: cleaned \},/,
+  );
+});
 
 test("one model keeps several named settings, listed by name", () => {
   assert.ok(saved.saveRunSettings(MODEL, "Long context", config(32768)));
@@ -212,39 +265,45 @@ test("settings remembered before named sets show up as one, and are not duplicat
   assert.equal(saved.listSavedRunSettings(MODEL).length, 2);
 });
 
-test("sets named by earlier builds take the model's custom settings name", () => {
-  const legacy = "unsloth/Legacy-GGUF";
-  saved.saveRunSettings(legacy, "Saved settings", config(4096));
-  saved.saveRunSettings(legacy, "Custom setting for SmolLM 2", config(2048));
-  saved.saveRunSettings(
-    legacy,
-    "Custom setting for SmolLM tuned",
-    config(1024),
-  );
-  saved.setSelectedRunSettings(legacy, "Q4_K_M", "Saved settings");
-  assert.ok(
-    saved.hasLegacyRunSettings(saved.listSavedRunSettings(legacy), "SmolLM"),
-  );
-  saved.renameLegacyRunSettings(legacy, "SmolLM");
-  // A name the user typed that only starts the same way is theirs, not an old default.
+test("a name the user picks is kept as typed", () => {
+  saved.saveRunSettings(MODEL, "Fast", config(4096));
+  assert.ok(saved.renameSavedRunSettings(MODEL, "Fast", "Saved settings"));
+  saved.saveRunSettings(MODEL, "Custom setting for Repo-GGUF", config(2048));
   assert.deepEqual(
     saved
-      .listSavedRunSettings(legacy)
-      .map((entry: { name: string }) => entry.name)
-      .sort(),
-    [
-      "Custom setting for SmolLM tuned",
-      "SmolLM custom settings",
-      "SmolLM custom settings 2",
-    ],
+      .listSavedRunSettings(MODEL)
+      .map((entry: { name: string }) => entry.name),
+    ["Custom setting for Repo-GGUF", "Saved settings"],
   );
   assert.equal(
-    saved.getSelectedRunSettings(legacy, "Q4_K_M"),
-    "SmolLM custom settings",
+    "renameLegacyRunSettings" in saved || "hasLegacyRunSettings" in saved,
+    false,
   );
-  assert.ok(
-    !saved.hasLegacyRunSettings(saved.listSavedRunSettings(legacy), "SmolLM"),
-  );
+});
+
+test("the per-model limit is reported only for a new name", () => {
+  for (let n = 0; n < saved.SAVED_RUN_SETTINGS_PER_MODEL_MAX; n++) {
+    assert.ok(saved.saveRunSettings(MODEL, `Set ${n}`, config(1024 + n * 128)));
+  }
+  assert.equal(saved.isRunSettingsLimitReached(MODEL, "One more"), true);
+  assert.equal(saved.saveRunSettings(MODEL, "One more", config(4096)), false);
+  assert.equal(saved.isRunSettingsLimitReached(MODEL, "set 3"), false);
+  assert.ok(saved.saveRunSettings(MODEL, "Set 3", config(4096)));
+});
+
+test("forgetting a quant's server settings puts its selection back on Default", () => {
+  const { savePerModelConfig } = perModel;
+  saved.saveRunSettings(MODEL, "Fast", config(4096));
+  assert.ok(savePerModelConfig(MODEL, "Q4_K_M", config(4096)));
+  assert.ok(savePerModelConfig(MODEL, "Q8_0", config(4096)));
+  saved.setSelectedRunSettings(MODEL, "Q4_K_M", "Fast");
+  saved.setSelectedRunSettings(MODEL, "Q8_0", "Fast");
+  assert.ok(saved.forgetPerModelConfigsForOverrideKeys([`${MODEL}:q4_k_m`]));
+  assert.equal(resolveInitialConfig(MODEL, "Q4_K_M").remembered, false);
+  assert.equal(saved.getSelectedRunSettings(MODEL, "Q4_K_M"), null);
+  assert.equal(saved.getSelectedRunSettings(MODEL, "Q8_0"), "Fast");
+  assert.deepEqual(saved.quantsSelectingRunSettings(MODEL, "Fast"), ["Q8_0"]);
+  assert.equal(saved.listSavedRunSettings(MODEL).length, 1);
 });
 
 test("run settings use one dropdown and one Save, with no Remember checkbox", () => {
@@ -292,10 +351,9 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
     /selectedSet === null && !atDefault \? newRunSettingsName\(savedSets, modelName\)/,
   );
   assert.match(page, /\} else \{\s*handleSave\(customName\);/);
-  // Reset goes back to Default settings at once, not just the panel values.
   assert.match(
     page,
-    /disabled=\{\(atDefault && selectedSet === null\) \|\| extraArgsHydrating \|\| budgetSettling\}[\s\S]{0,160}onClick=\{\(\) => pickSet\(null\)\}/,
+    /\(pinnedSet !== null\s*\? selectedSet === pinnedSet && !setUnsaved\s*: atDefault && selectedSet === null\) \|\|\s*extraArgsHydrating \|\|\s*budgetSettling\s*\}\s*onClick=\{\(\) => pickSet\(pinnedSet\)\}/,
   );
   // A number the Save or Load click itself committed is not in customName yet, so both name the
   // new set from the committed config.
@@ -358,4 +416,128 @@ test("row icons never pick their row", () => {
   assert.equal(row.match(/onPointerUp=\{keepRow\}/g)?.length, 2);
   // New settings come from editing Default, so the menu has no create entry.
   assert.doesNotMatch(row, /Save as new/);
+});
+
+test("a set whose record was forgotten is not offered, and deleting one asks first", () => {
+  const page = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    page,
+    /const selectionStale =\s*persistedEntry !== null &&\s*!extraArgsHydrating &&\s*!storedRecord\.remembered &&\s*!savedRemember &&\s*!isDefaultConfig\(forSetStore\(persistedEntry\.config\)\);/,
+  );
+  assert.match(
+    page,
+    /if \(selectionStale\) \{\s*setSelectedRunSettings\(configId, target\.ggufVariant, null\);/,
+  );
+  assert.match(page, /selectionStale\s*\? null\s*: \(persistedSet \?\? null\)/);
+  assert.match(page, /onDelete=\{setPendingDelete\}/);
+  assert.match(
+    page,
+    /if \(pendingDelete !== null\) \{\s*deleteSet\(pendingDelete\);/,
+  );
+  assert.match(page, /isRunSettingsLimitReached\(configId, name\)/);
+  assert.doesNotMatch(page, /persistenceOnly|rememberChanged/);
+});
+
+test("rows can be renamed and deleted from the keyboard", () => {
+  const row = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/saved-run-settings-row.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(row, /aria-keyshortcuts="F2 Delete"/);
+  // Radix dismisses from a document capture listener unless prevented, so the guard is on window capture.
+  assert.match(row, /window\.addEventListener\("keydown", keepPanel, true\)/);
+  assert.match(
+    row,
+    /closest\("\[data-run-settings-name\]"\)[\s\S]{0,40}event\.preventDefault\(\)/,
+  );
+  assert.match(row, /event\.key === "F2"[\s\S]{0,80}rename\(entry\.name\)/);
+  assert.match(row, /event\.key === "Delete"[\s\S]{0,80}remove\(entry\.name\)/);
+});
+
+test("a pinned set follows renames and goes with its set or a forget", () => {
+  saved.saveRunSettings(MODEL, "Mine", config(4096));
+  saved.saveRunSettings(MODEL, "Trial", config(2048));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), null);
+  assert.ok(saved.setPinnedRunSettings(MODEL, "q4_k_m", "Mine"));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Mine");
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q8_0"), null);
+  saved.noteRunSettingsLoadedOnce(MODEL, "Q8_0", {
+    name: "Mine",
+    sent: config(4096),
+  });
+  assert.ok(saved.renameSavedRunSettings(MODEL, "Mine", "Long context"));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Long context");
+  // A one-time load of the set keeps naming it.
+  assert.equal(
+    saved.getRunSettingsLoadedOnce(MODEL, "Q8_0")?.name,
+    "Long context",
+  );
+  assert.ok(saved.deleteSavedRunSettings(MODEL, "Trial"));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), "Long context");
+  assert.ok(saved.deleteSavedRunSettings(MODEL, "Long context"));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), null);
+
+  saved.saveRunSettings(MODEL, "Mine", config(4096));
+  saved.setPinnedRunSettings(MODEL, "Q4_K_M", "Mine");
+  assert.ok(perModel.savePerModelConfig(MODEL, "Q4_K_M", config(4096)));
+  saved.forgetPerModelConfigsForOverrideKeys([`${MODEL}:Q4_K_M`]);
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), null);
+  assert.ok(saved.setPinnedRunSettings(MODEL, "Q4_K_M", "Mine"));
+  assert.ok(saved.setPinnedRunSettings(MODEL, "Q4_K_M", null));
+  assert.equal(saved.getPinnedRunSettings(MODEL, "Q4_K_M"), null);
+});
+
+test("while a set is pinned, picking or loading another uses it once", () => {
+  const page = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    page,
+    /const pickSet = \(name: string \| null, pinned = pinnedSet\) => \{[\s\S]{0,400}if \(pinned !== null && entry\?\.name !== pinned\) \{\s*applyToPanel\(next\);\s*setPickedSet\(entry\?\.name \?\? null\);\s*return;/,
+  );
+  assert.match(
+    page,
+    /const onceOnly = pinnedSet !== null && loadSet !== pinnedSet;\s*const \{ saved \} = onceOnly\s*\? \{ saved: true \}\s*: persistConfig\(effectiveRuntimeConfig, loadSet !== null\);/,
+  );
+  assert.match(page, /if \(!keep && pinned !== null\) \{\s*return false;/);
+  assert.match(
+    page,
+    /if \(pinned !== null && target !== pinned\) \{[\s\S]{0,120}setPickedSet\(target\);/,
+  );
+  assert.match(
+    page,
+    /const setAlwaysLoad = [\s\S]*?const name = selectedSet \?\? customName;[\s\S]*?setPinnedRunSettings\(configId, target\.ggufVariant, name\)[\s\S]*?if \(selectedSet === null \|\| setUnsaved\) \{\s*if \(!handleSave\(name, message, name\)\)[\s\S]*?pickSet\(selectedSet, selectedSet\);/,
+  );
+  assert.match(page, /Always load with these settings/);
+  assert.match(
+    page,
+    /<Checkbox\s+id=\{alwaysLoadId\}[\s\S]{0,1600}<\/label>\s*<p\s+id=\{saveStatusId\}[\s\S]{0,500}\{saveStatus\}\s*<\/p>\s*<\/div>/,
+  );
+  assert.match(
+    page,
+    /if \(!\(loadedConfig && getPinnedRunSettings\(configId, target\.ggufVariant\) !== null\)\) \{\s*setExtraArgsLoadable\(hydratedIsLoadable\);\s*replaceModelConfigDraft\(/,
+  );
+  assert.match(page, /const pickedSet = draftSnapshot\?\.pickedSet;/);
+  assert.match(page, /setModelConfigDraftPickedSet\(draftKey, next\)/);
+  assert.match(
+    page,
+    /useEffect\(\(\) => \{\s*if \(loadedOnce !== undefined\) setPickedSet\(loadedOnce\);\s*\}, \[loadedOnce, setPickedSet\]\);/,
+  );
+  assert.match(
+    page,
+    /if \(name === pinnedSet\) \{[\s\S]{0,120}pickSet\(wasSelected \? null : selectedSet, null\);/,
+  );
 });

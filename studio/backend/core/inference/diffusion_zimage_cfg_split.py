@@ -1,35 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Z-Image guidance branches as two calls at the guidance-off batch, so turning CFG on compiles and records nothing.
-
-``ZImagePipeline`` (and its img2img / inpaint variants) batches a guided step into ONE transformer call of twice the
-samples: the latents repeated, the prompt embeddings followed by the negative ones. A session that rendered guidance 0
-first (Turbo's default) compiled the repeated block at one sample with no attention mask; the doubled call is a new
-batch (dynamo specialises size 1) and, whenever the two captions pad to different 32-token buckets, a mask that was None
-before, so the first guided render recompiled the block three times (one graph per block kind: noise refiner, context
-refiner, main layers) and recorded a new whole-step CUDA graph. Later guided prompts kept recompiling as their caption
-lengths moved between "same bucket as the negative" (no mask) and "other bucket" (mask).
-
-Here a guided call of ``2 * B`` samples runs as the conditional ``B`` then the unconditional ``B`` through the module's
-normal call (every forward layer, hook and graph sees an ordinary guidance-off call), and the two output lists are
-joined in the pipeline's order. Same math: the batched call masks the padding, the split one has none to mask. Not
-bit-exact: a single sample with no mask can pick other attention / GEMM tiles than the masked pair.
-
-Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` samples is a guided call, ``B`` is not),
-only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
-recompile. Group offload counts as resident (checked per call) while every offload group is pinned. Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
-Under a CFG-parallel router the halves go to ``run_pair`` (identity pairing never matches fresh tensors). Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
-
-Studio arms it ``compiled_only``: a render splits only while the denoiser runs compiled code or replays CUDA graphs,
-checked per render since a deferred compile can engage after the load. The eager render that records inputs for a
-pending background compile splits too, so the compile builds the guidance-off batch graph the compiled renders run.
-Any other eager denoiser has no graph to keep, and there the two serial calls cost more than one batched guided call (B200, eager, random weights: ~2x at 256px,
-~1.3-1.5x at 512px, parity at 1024px). An eager guided call that runs out of memory batched retries as the two
-calls (half the activations) for the rest of that render. An active CFG-parallel router keeps the split eager too:
-its replica runs the guidance-off half concurrently, and it cannot pair one batched call. Graphs are read from the
-denoiser too: an img2img / inpaint pipeline built by ``from_pipe`` shares the transformer and its graph wrapper but not the root pipe's handles.
-"""
+"""Z-Image CFG as two guidance-off calls to avoid recompiles; resident denoisers only; Studio splits
+only when compiled or graph-replayed; declined under step cache; CFG-parallel uses run_pair;
+eager OOM retries split; UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0"""
 
 from __future__ import annotations
 

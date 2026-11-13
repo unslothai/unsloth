@@ -57,19 +57,11 @@ export function OwnerAvatar({
   remote = true,
 }: {
   owner: string;
-  /**
-   * Repo name (after `owner/`). For an eligible owner (currently "unsloth"),
-   * renders the matched upstream provider's logo instead of the HF profile pic
-   * (e.g. an Unsloth Qwen2.5 re-upload shows the Qwen logo).
-   */
+  /** Repo name after `owner/`; for eligible owners renders the upstream provider's logo. */
   repoName?: string;
   size?: AvatarSize;
   className?: string;
-  /**
-   * When false, never fetch the owner's HF profile picture; show a local
-   * provider logo or colored-initial tile instantly. Virtualized list rows pass
-   * `false` to avoid a per-row request storm; the inspector keeps `true`.
-   */
+  /** False skips the HF profile fetch; virtualized rows pass false to avoid request storms. */
   remote?: boolean;
 }) {
   const providerLogo = resolveOwnerProviderLogo(owner, repoName);
@@ -158,7 +150,6 @@ function ProviderLogoTile({
     );
   }
 
-  // mono treatments paint a silhouette via CSS mask; host text color drives its color.
   const colorClass =
     provider.treatment === "mono-black" ? "text-black" : "text-foreground";
   return (

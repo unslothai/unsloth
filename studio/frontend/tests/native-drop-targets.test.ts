@@ -35,6 +35,7 @@ const { setAppliedInterfaceZoom } = await import(
 );
 
 const IMAGE_DROPZONE = readSrc("components/image-dropzone.tsx");
+const IMAGE_SLOT_DRAG = readSrc("components/image-slot-drag.ts");
 const USE_NATIVE_DROP = readSrc("features/native-intents/use-native-drop.ts");
 
 const asElement = (value: FakeElement) => value as unknown as HTMLElement;
@@ -195,7 +196,8 @@ test("the shared image picker owns native drops and ignores stale reads", async 
   assert.match(IMAGE_DROPZONE, /readNativeAttachmentFile\(intent\.path\.token\)/);
   // A read outliving the picker would land on whoever holds onChange now.
   assert.match(IMAGE_DROPZONE, /if \(!mounted\.current \|\| claimed !== selection\.current\) return;/);
-  assert.match(IMAGE_DROPZONE, /NATIVE_IMAGE_EXTS\.includes\(/);
+  assert.match(IMAGE_DROPZONE, /classifyNativeImageDrop\(path\)/);
+  assert.match(IMAGE_SLOT_DRAG, /NATIVE_IMAGE_EXTS\.includes\(/);
   // Index-keyed reference slots keep the picker mounted when one is removed.
   assert.match(IMAGE_DROPZONE, /if \(seen\.current === value\) return;\s*seen\.current = value;\s*selection\.current \+= 1;/);
 });
@@ -208,7 +210,7 @@ test("the picker's droppable formats are ones the native path policy admits", as
       .sort();
 
   const admitted = listed(rust, /IMAGE_ATTACHMENT_EXTS:\s*&\[&str\]\s*=\s*&\[([^\]]+)\]/);
-  const droppable = listed(IMAGE_DROPZONE, /NATIVE_IMAGE_EXTS\s*=\s*\[([^\]]+)\]/);
+  const droppable = listed(IMAGE_SLOT_DRAG, /NATIVE_IMAGE_EXTS\s*=\s*\[([^\]]+)\]/);
   assert.ok(droppable.length > 0);
   assert.deepEqual(droppable.filter((ext) => !admitted.includes(ext)), []);
 });

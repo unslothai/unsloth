@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,9 +32,9 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { FileGlyph } from "@/lib/file-icon";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   DashedLineCircleIcon as CircleDashedIcon,
-  Delete02Icon,
   Telescope02Icon,
   LinkSquare02Icon,
   Edit03Icon,
@@ -80,8 +81,7 @@ const terminalStatuses = new Set<ResearchRunStatus>([
 ]);
 const ACTIVITY_FOLLOW_SETTLE_MS = 450;
 const ACTIVITY_BOTTOM_THRESHOLD_PX = 24;
-// 2px, not 1, matching use-intent-aware-autoscroll: HiDPI subpixel rounding leaves a fractional
-// gap that a 1px threshold reads as unpinned, keeping the follow loop running forever.
+// 2px, matching use-intent-aware-autoscroll: HiDPI subpixel gaps break a 1px threshold.
 const ACTIVITY_PINNED_THRESHOLD_PX = 2;
 
 function useResearchActivityScroll(runId: string) {
@@ -101,7 +101,6 @@ function useResearchActivityScroll(runId: string) {
     let animationFrame: number | null = null;
     let settleTimer: number | null = null;
     let settleCheckDue = false;
-    // Layout signal since the last frame. True so the first frame after mount follows.
     let layoutChanged = true;
 
     const distanceFromBottom = () =>
@@ -114,16 +113,13 @@ function useResearchActivityScroll(runId: string) {
     const requestTick = () => {
       if (animationFrame === null) animationFrame = requestAnimationFrame(tick);
     };
-    // A reflow with no DOM mutation (a `font-display: swap` webfont landing, say) reaches neither
-    // observer, so the rest of the window is covered by one deferred check rather than every frame.
+    // Reflows without DOM mutation (webfont swap) reach no observer; one deferred check covers them.
     const scheduleSettleCheck = () => {
       if (settleTimer !== null) return;
       const remaining = followUntil - performance.now();
       if (remaining <= 0) return;
       settleTimer = window.setTimeout(() => {
         settleTimer = null;
-        // The timer lands on the deadline and its tick a frame later, so the window has closed by then;
-        // this grants that tick one last follow pass rather than dropping it to the reconcile.
         settleCheckDue = true;
         requestTick();
       }, remaining);
@@ -136,8 +132,7 @@ function useResearchActivityScroll(runId: string) {
         const pinned = distanceFromBottom() <= ACTIVITY_PINNED_THRESHOLD_PX;
         if (!pinned) element.scrollTop = element.scrollHeight;
         updateAtBottom(true);
-        // Chaining on the window alone forced a layout every frame for the whole run; growth that leaves
-        // the view unpinned is the signal, and a quiet frame defers to the settle check.
+        // Only chain while layout changed or unpinned; chaining every frame forced constant layout.
         if (layoutChanged || !pinned) {
           layoutChanged = false;
           requestTick();
@@ -157,10 +152,7 @@ function useResearchActivityScroll(runId: string) {
     const detach = () => {
       detached = true;
       followUntil = 0;
-      // Cancel every pending follow step, not just the settle check. A frame queued before the detach
-      // still runs, falls through to the reconcile below, and reads a flick shorter than the bottom
-      // threshold as still-at-bottom: "Latest" never appears and nothing corrects it.
-      // followLayout returns early from here on, so nothing corrects it.
+      // Cancel every pending follow step: a queued frame would misread a short flick as at-bottom.
       if (animationFrame !== null) {
         cancelAnimationFrame(animationFrame);
         animationFrame = null;
@@ -347,6 +339,7 @@ const ActivityRow = memo(function ActivityRow({
   const setActivityOpen = useResearchRunStore(
     (state) => state.setActivityOpen,
   );
+  useTimeFormat();
   const open =
     storedOpen ??
     (activity.state === "running" || activity.state === "action");
@@ -511,10 +504,10 @@ const ActivityRow = memo(function ActivityRow({
             {activity.title}
           </span>
           <time className="shrink-0 text-ui-10p5 tabular-nums text-muted-foreground">
-            {new Date(activity.createdAt).toLocaleTimeString([], {
-              hour: "numeric",
-              minute: "2-digit",
-            })}
+            {new Date(activity.createdAt).toLocaleTimeString(
+              [],
+              withTimeFormat({ hour: "numeric", minute: "2-digit" }),
+            )}
           </time>
           {hasDetails ? (
             <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />
@@ -676,7 +669,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                         }}
                         aria-label={`Remove step ${index + 1}`}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+                        <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} />
                       </Button>
                     </div>
                     <Textarea
@@ -891,6 +884,7 @@ export function ResearchActivityPanel({
       className={cn(
         "relative flex min-h-0 flex-col bg-background text-foreground",
         variant === "sheet" && "h-full",
+        variant === "panel" && "side-pane-lock-cover",
       )}
       style={
         variant === "panel"

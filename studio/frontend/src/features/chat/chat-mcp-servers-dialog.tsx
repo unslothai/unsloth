@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
   Upload01Icon,
@@ -136,8 +136,7 @@ function headersToObject(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-// A non-HTTP address is a local stdio command. Case-insensitive to match the backend's is_stdio(),
-// so all layers split http-vs-command identically.
+// Case-insensitive to match the backend's is_stdio().
 function isHttpAddress(value: string): boolean {
   const trimmed = value.trim().toLowerCase();
   return trimmed.startsWith("http://") || trimmed.startsWith("https://");
@@ -210,8 +209,7 @@ function isValidAddress(value: string): boolean {
       return false;
     }
   }
-  // The backend owns stdio parsing and validation. In particular, the browser must not split an
-  // executable or duplicate platform-specific quoting rules.
+  // The backend owns stdio parsing; never split executables or quoting in the browser.
   return true;
 }
 
@@ -268,7 +266,7 @@ function ArgumentsEditor({
                 disabled={disabled}
                 aria-label={`Remove argument ${index + 1}`}
               >
-                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -362,7 +360,7 @@ function HeadersEditor({
                 disabled={disabled}
                 aria-label={copy.remove}
               >
-                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -1090,6 +1088,7 @@ export function ChatMcpServersDialog({
                   </span>
                 </div>
                 <Switch
+                  className="mt-[var(--ui-title-cap-inset)]"
                   id="mcp-oauth"
                   checked={form.useOauth}
                   disabled={formPending}
@@ -1281,7 +1280,7 @@ export function ChatMcpServersDialog({
                         aria-label="Delete server"
                         disabled={importing || busyIds.has(server.id)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                       </Button>
                     </div>
                   </li>

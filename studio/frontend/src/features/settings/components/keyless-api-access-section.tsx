@@ -68,7 +68,6 @@ const CONFIRM_COPY: Record<
 export function KeylessApiAccessSection({
   onSettingsChange,
 }: {
-  /** fires on load and after every save, so the usage examples can follow */
   onSettingsChange?: (settings: {
     scope: KeylessApiAccessScope;
     tools: boolean;
@@ -187,7 +186,7 @@ export function KeylessApiAccessSection({
       data-settings-label="Keyless API access"
       className="overflow-hidden rounded-xl border border-border/70"
     >
-      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+      <div className="flex items-start justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon

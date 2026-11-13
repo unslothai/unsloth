@@ -29,8 +29,7 @@ export {
 
 export type AudioTask = "tts" | "stt";
 
-// Recommended GGUF speech and music load into the main slot like the native PyTorch models, but
-// through the GGUF audio runtime, so they need no remote code and run on every backend it builds for.
+// Recommended GGUF speech and music load through the GGUF audio runtime: no remote code.
 const AUDIO_CPP_GENERATION_IDS = AUDIO_CPP_MODELS.filter(
   (model) => model.task !== "asr",
 ).map((model) => model.id.toLowerCase());
@@ -53,7 +52,6 @@ const REMOTE_CODE_TTS_REPOS = new Set([
   "multimodalart/higgs-audio-v3-tts-4b-transformers",
 ]);
 
-/** Music models that only run on NVIDIA CUDA. */
 const CUDA_MUSIC_GENERATION_REPOS = new Set(["minimaxai/minimax-music3"]);
 const MUSIC_GENERATION_REPOS = new Set([
   ...CUDA_MUSIC_GENERATION_REPOS,

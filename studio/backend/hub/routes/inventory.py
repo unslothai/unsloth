@@ -31,6 +31,7 @@ from hub.schemas.downloads import (
     DownloadStartResponse,
     TransportStatusResponse,
 )
+from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg
 from hub.schemas.inventory import (
     AddScanFolderRequest,
@@ -68,8 +69,7 @@ async def list_local_models(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Inside the try: an exception raised while evaluating an argument never reaches the
-    # function it was being passed to, so its detail goes out unredacted.
+    # Inside the try: errors while evaluating an argument would skip redaction.
     try:
         payload = await local_inventory.list_local_models_response(models_dir)
     except HTTPException as error:
@@ -91,8 +91,7 @@ async def list_unsloth_models(
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
-# Plain def, not async: synchronous SQLite and filesystem work runs in FastAPI's thread pool instead
-# of blocking the event loop.
+# Plain def, not async: sync SQLite and filesystem work runs in the thread pool, not the loop.
 @router.get("/scan-folders", response_model = ScanFoldersResponse)
 def get_scan_folders(
     current_subject: str = Depends(get_current_subject),
@@ -115,9 +114,7 @@ def add_scan_folder_endpoint(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Redacted even though the caller named this path, so a NORMALISED path (symlinks resolved,
-    # a relative one anchored) cannot answer for the host. Inside the try, since an exception
-    # raised while evaluating an argument never reaches the function it was passed to.
+    # Redacted even for a caller-named path: the normalised path leaks host layout. Keep inside the try so argument errors are redacted.
     try:
         payload = local_inventory.add_scan_folder_response(body.path, body.recursive)
     except HTTPException as error:
@@ -141,8 +138,7 @@ def get_models_folder(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Inside the try, not the redactor's argument list: this route RAISES with the cache path
-    # in the detail.
+    # Inside the try: this route raises with the cache path in the detail.
     try:
         payload = local_inventory.get_models_folder_response()
     except HTTPException as error:
@@ -152,6 +148,33 @@ def get_models_folder(
             headers = error.headers,
         ) from error
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
+
+
+@router.get("/sdxl-checkpoint", response_model = bool)
+def is_sdxl_checkpoint(
+    repo_id: str = Query(..., min_length = 1, max_length = 192),
+    filename: str = Query(..., pattern = r"(?i)^[^/\\]+\.safetensors$"),
+    revision: Optional[str] = Query(None, pattern = r"^[0-9a-f]{40}$"),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference.diffusion_hub_evidence import hub_checkpoint_loads_as_sdxl
+    from huggingface_hub.utils import HFValidationError, validate_repo_id
+
+    try:
+        validate_repo_id(repo_id)
+    except HFValidationError:
+        raise HTTPException(status_code = 422, detail = "Invalid repository ID") from None
+    # A managed account must never read through the installation's ambient token.
+    if account_access.managed_account():
+        account_access.require_model_allowed(repo_id)
+    hf_token = account_access.account_hf_token(hf_token)
+    try:
+        return hub_checkpoint_loads_as_sdxl(repo_id, filename, hf_token, revision)
+    except Exception:
+        raise HTTPException(
+            status_code = 502, detail = "Could not read the checkpoint header"
+        ) from None
 
 
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)
@@ -167,11 +190,7 @@ async def get_gguf_variants(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Both identifiers can come back as handles: an API-key caller is handed `ref:` in place of
-    # every host path, and that reference is the only name it has for a custom local GGUF or a
-    # copy in a secondary root. Unresolved, the lookup misses or is answered out of the ACTIVE
-    # cache, a different file. Redacted on the way out because a local listing copies its input
-    # into `repo_id`, which would hand back the path the inventory took trouble to hide.
+    # API-key callers pass ref: handles; resolve them or the lookup hits the active cache. Redact repo_id: a local listing echoes the input.
     return redact_host_paths(
         await gguf_variants.get_gguf_variants_response(
             resolve_host_path_reference(repo_id) or repo_id,
@@ -213,8 +232,7 @@ async def get_download_status(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # `error` is the worker's own stderr, kept after `scrub_secrets` only, so polling a failed
-    # download reads the host layout from a route with no path field at all.
+    # `error` is raw worker stderr and can contain host paths.
     return redact_host_paths(
         await downloads.get_download_status_response(repo_id, gguf_variant),
         via_api_key = via_api_key,
@@ -256,6 +274,9 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    engram_precision: str = Query(
+        "", max_length = 32, description = "Standalone Engram table the load fetches, if any"
+    ),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -266,6 +287,7 @@ async def get_gguf_download_progress(
             variant = variant,
             expected_bytes = expected_bytes,
             hf_token = hf_token,
+            engram_precision = engram_precision.strip(),
         ),
         via_api_key = via_api_key,
     )
@@ -398,8 +420,7 @@ async def delete_cached_model(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    # `cache_ref` is the only identifier an API-key caller HAS for a specific copy; omitting it
-    # silently acts on the active root.
+    # `cache_ref` is an API-key caller's only id for a copy; omitting it hits the active root.
     return await deletion.delete_cached_model_response(
         repo_id,
         variant,

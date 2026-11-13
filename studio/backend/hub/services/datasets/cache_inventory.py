@@ -14,6 +14,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.services import resolve_destructive_repo_ids
 from hub.services.datasets import downloads, local_options
@@ -598,6 +599,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
+@in_scan_memo
 async def list_cached_datasets_response() -> dict:
     try:
         rows = await asyncio.to_thread(_scan_hf_dataset_caches)

@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Empirical quant probe: torchao int8/fp8/fp4 dynamic quant vs GGUF+compile.
-
-Question this answers: GGUF stores the Z-Image DiT at 4-bit but dequantizes to bf16
-per matmul, so it runs at bf16 tensor-core rate. Can a low-precision *tensor-core*
-path (int8dq on any Ampere+, fp8dq on Ada+, NVFP4/MXFP8 on Blackwell), loaded from
-the dense bf16 transformer, beat GGUF+compile on speed while staying inside the
-quality bar -- and how does its quality compare to GGUF's own 4-bit loss?
-
-Reference for all quality numbers is the DENSE bf16 EAGER image (the best this model
-can do). Each config is a fresh pipeline (no compile/quant cross-contamination).
-Reports median latency, PSNR + LPIPS vs reference, and peak VRAM. Run on one CUDA GPU.
-"""
+"""Compares torchao int8/fp8/fp4 dynamic quant with GGUF+compile, scored against dense bf16 eager."""
 
 from __future__ import annotations
 
@@ -39,10 +28,9 @@ _LPIPS = {"fn": None}
 
 
 def _lpips(ref_arr, arr):
-    """Perceptual LPIPS (alexnet) vs reference; lower is closer. None if unavailable.
-
-    Runs on CPU so the scorer never holds CUDA memory: each row resets peak VRAM, so a
-    resident GPU LPIPS module would inflate the reported load/gen VRAM and could even OOM."""
+    """Perceptual LPIPS (alexnet) distance, lower is closer; None if unavailable. Runs on CPU so the
+    scorer never holds CUDA memory: a resident GPU module would inflate per-row peak VRAM and
+    could OOM."""
     try:
         import torch
         import lpips
@@ -119,9 +107,8 @@ def _quant_config(name):
 
 
 def _make_filter_fn(min_features):
-    """Keep only the FLOP-heavy linears: nn.Linear with both in/out >= min_features.
-    The int8 dynamic path uses torch._int_mm (needs activation M>16), and the tiny
-    timestep/pooled projections (in_features=256) run at M=1 and crash it -- skip them."""
+    """Keep only nn.Linear layers with both in and out >= min_features; torch._int_mm needs
+    activation M>16, so tiny M=1 projections crash it and are skipped."""
     import torch.nn as nn
 
     def filter_fn(module, fqn = ""):
@@ -222,9 +209,9 @@ def main(argv = None) -> int:
             _apply_quant(pipe, quant, print_, args.min_feat)
         if compile:
             _compile(pipe, print_)
-            _gen(pipe, steps, seed, res)  # warmup / compilation
+            _gen(pipe, steps, seed, res)
         else:
-            _gen(pipe, steps, seed, res)  # allocator warmup
+            _gen(pipe, steps, seed, res)
         torch.cuda.reset_peak_memory_stats()
         dts, img = [], None
         for _ in range(iters):
@@ -239,7 +226,6 @@ def main(argv = None) -> int:
 
     print_ = lambda s: print(s, flush = True)  # noqa: E731
 
-    # config table: tag -> (source, quant, compile)
     table = {
         "bf16": ("dense", None, False),
         "bf16_c": ("dense", None, True),

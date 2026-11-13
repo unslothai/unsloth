@@ -4,7 +4,8 @@
 import { Badge } from "@/components/assistant-ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { FileEmpty02Icon, Folder02Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
 import type { DocumentStatus } from "../types/rag";
@@ -74,7 +75,6 @@ export function DocumentStatusChip({
         status === "failed" && "border-destructive/40 text-destructive",
       )}
     >
-      {/* file, or folder when the doc is a project-wide source */}
       <HugeiconsIcon
         icon={shared ? Folder02Icon : FileEmpty02Icon}
         strokeWidth={2}

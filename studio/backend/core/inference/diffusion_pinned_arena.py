@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One pinned host copy of a streamed module, packed into power-of-two slabs instead of one pin per tensor.
-
-torch's host allocator rounds each pin up to a power of two (H3's 19.45 GB int8 denoiser held 33.8 GB pinned), and the
-pageable source survived until each group's first onload. The slab copy replaces the parameter's storage on the spot.
-
-Used by every up-front group-offload pin (image streaming / group / resident tiers, streamed encoders, prequant, H3):
-a 23.8 GB bf16 Flux DiT held 37.2 GB pinned per tensor, 24.3 GB packed.
-
-Kill switch: ``UNSLOTH_DIFFUSION_PIN_ARENA=0`` restores per-tensor ``pin_memory()``.
-"""
+"""Streamed weights pinned in packed power-of-two slabs, since torch rounds each per-tensor pin up."""
 
 from __future__ import annotations
 
@@ -33,8 +24,14 @@ def pin_arena_enabled() -> bool:
 
 
 def _alloc_slab(nbytes: int) -> Any:
-    """One pinned slab. A power-of-two request, so torch's host allocator rounds nothing."""
+    """One pinned slab: registered memory, else a power-of-two torch pinned request (no rounding)."""
     import torch
+
+    from .diffusion_memory import registered_pinned_empty
+
+    slab = registered_pinned_empty(nbytes)
+    if slab is not None:
+        return slab
     return torch.empty(nbytes, dtype = torch.uint8, pin_memory = True)
 
 
@@ -193,11 +190,7 @@ def pinned_arena_for_group_offload(
     slab_bytes: int = DEFAULT_SLAB_BYTES,
     expected_bytes: Optional[int] = None,
 ) -> Iterator[Optional[PinnedArena]]:
-    """While active, diffusers' group offloading pins its up-front host copies through one arena.
-
-    Yields the arena (for its byte counts) or None when disabled or when this diffusers has no
-    ``ModuleGroup._to_cpu`` to route through; either way the caller's ``apply_group_offloading``
-    call runs unchanged."""
+    """Routes group-offload pinned copies through one arena while active; yields None when disabled."""
     if enabled is None:
         enabled = pin_arena_enabled()
     if not enabled:
