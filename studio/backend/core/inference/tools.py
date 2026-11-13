@@ -8723,7 +8723,7 @@ def _python_is_high_risk(code: str) -> bool:
     def _code_strings(arg, seen = frozenset()) -> "tuple[list[str], bool]":
         """Candidate sources for a runner argument, and whether any binding stayed unresolved."""
         if isinstance(arg, ast.Name) and name_bindings.get(arg.id):
-            if arg.id in seen:
+            if arg.id in seen or len(seen) >= 32:
                 return [], True
             if arg.id not in name_sources:
                 sources, unresolved = [], False
@@ -8744,6 +8744,8 @@ def _python_is_high_risk(code: str) -> bool:
     def _string_shaped(node, seen) -> bool:
         # A str built at runtime ("...".strip(), f-strings): unscreenable, so it asks; callables do not.
         if isinstance(node, ast.Name):
+            if len(seen) >= 32:
+                return True
             if node.id in seen:
                 return False
             seen.add(node.id)
@@ -8777,20 +8779,31 @@ def _python_is_high_risk(code: str) -> bool:
             )
         return runner_verdicts[key]
 
+    def _kwarg_items(node):
+        """(name, value) for a call's keywords with literal ** dicts flattened; None name = opaque."""
+        stack = [(kw.arg, kw.value) for kw in reversed(node.keywords)]
+        while stack:
+            name, value = stack.pop()
+            if name is not None:
+                yield name, value
+            elif isinstance(value, ast.Dict):
+                for key, item in reversed(list(zip(value.keys, value.values))):
+                    if key is None:
+                        stack.append((None, item))
+                    elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        stack.append((key.value, item))
+                    else:
+                        yield None, item
+            else:
+                yield None, value
+
     def _runner_arg(node, index, keywords):
         if len(node.args) > index:
             return node.args[index]
-        for kw in node.keywords:
-            if kw.arg in keywords:
-                return kw.value
-            if kw.arg is None and isinstance(kw.value, ast.Dict):
-                for key, value in zip(kw.value.keys, kw.value.values):
-                    if isinstance(key, ast.Constant) and key.value in keywords:
-                        return value
-        return None
+        return next((v for k, v in _kwarg_items(node) if k in keywords), None)
 
     def _opaque_kwargs(node) -> bool:
-        return any(kw.arg is None and not isinstance(kw.value, ast.Dict) for kw in node.keywords)
+        return any(k is None for k, _ in _kwarg_items(node))
 
     # Non-literal exec/eval/compile/__import__ runs unseen code: ask. Literal ones are screened.
     for node in _tree_nodes(tree):
@@ -18710,11 +18723,20 @@ def _check_signal_escape_patterns(code: str):
                     program = _extract_string_from_node(positional[program_index])
                     if program is not None:
                         vector = positional[program_index + 1]
+                executable = expanded_kwargs.get("executable")
+                executable = None if executable is None else _extract_string_from_node(executable)
+                argv_node = positional[0] if positional else expanded_kwargs.get("args")
                 for a in all_call_args:
                     if isinstance(a, (ast.List, ast.Tuple)):
                         strings = _extract_strings_from_list(a)
                         if a is vector and a.elts:
                             strings = [program, *_extract_strings_from_list(ast.List(a.elts[1:]))]
+                        elif a is argv_node and a.elts and executable and not runs_shell:
+                            # executable= replaces the program; argv[0] is only its name.
+                            strings = [
+                                executable,
+                                *_extract_strings_from_list(ast.List(a.elts[1:])),
+                            ]
                         shell_commands.append(shlex.join(strings))
                         # POSIX shell=True runs args[0] as shell source.
                         if runs_shell and a.elts:

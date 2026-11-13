@@ -1765,6 +1765,16 @@ def test_python_shell_command_terminal_asks_about_is_high_risk(command, template
             True,
         ),
         ("import timeit\nbench = timeit.timeit\nbench('sorted([3, 1])', number=10)", False),
+        ("import subprocess\nsubprocess.run(['echo', 'reset', '--hard'], executable='git')", True),
+        (
+            "import subprocess\nsubprocess.run(['python', '-V'], executable='/usr/bin/python3')",
+            False,
+        ),
+        (
+            "import cProfile\ncProfile.run(**{**{'statement': \"import shutil; shutil.rmtree('junk_dir')\"}})",
+            True,
+        ),
+        ("import cProfile\nopts = {}\ncProfile.run('sum(range(9))', **{**opts})", True),
         ("from timeit import timeit\ntimeit(\"__import__('os').remove('x')\", number=1)", True),
         ("import timeit as t\nt.timeit('sum(range(100))', number=1000)", False),
         ("import timeit\ns = 'sum(range(100))'\ntimeit.timeit(s, number=1000)", False),
@@ -1822,6 +1832,16 @@ def test_many_bindings_over_many_calls_parse_each_program_once():
     started = time.perf_counter()
     assert is_high_risk_tool_call("python", {"code": code}) is False
     assert time.perf_counter() - started < 5
+
+
+def test_long_source_alias_chain_does_not_exhaust_the_stack():
+    chain = [f"s{i + 1} = s{i}" for i in range(1100)]
+    code = (
+        "import timeit\ns0 = 'sum(range(9))'\n"
+        + "\n".join(chain)
+        + "\ntimeit.timeit(s1100, number=1)"
+    )
+    assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
 
 
 def test_repeated_timeit_bindings_are_screened_linearly():
