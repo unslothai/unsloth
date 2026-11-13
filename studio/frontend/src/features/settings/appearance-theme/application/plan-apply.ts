@@ -9,6 +9,7 @@ import type {
 import {
   type AppearanceCustomization,
   type CustomModeColors,
+  fontFamilyKey,
   type ImportedFont,
   sanitizeCustomization,
 } from "../../lib/appearance-customization.ts";
@@ -39,8 +40,7 @@ export type ThemeApplyPlan = Omit<AppearanceSnapshot, "background"> & {
 
 export const FONT_FIELDS = ["uiFont", "headingFont", "chatFont", "codeFont"] as const;
 
-/** Font families match case-insensitively, as in CSS. */
-const fontKey = (name: string | null | undefined) => name?.toLowerCase() ?? "";
+const fontKey = fontFamilyKey;
 
 /** Families `c` selects that it does not import: installed on this device. */
 function localFamilies(c: AppearanceCustomization): Set<string> {

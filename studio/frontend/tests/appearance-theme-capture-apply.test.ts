@@ -323,3 +323,21 @@ test("undo keeps a local family whose case differs from the theme's font", () =>
   const now = { ...before, palette: applied.palette, glass: applied.glass, customization: applied.customization };
   assert.equal(planUndo(before, applied, now).customization.uiFont, "Brand Sans");
 });
+
+test("export without assets blanks a selection that names an imported font in another case", () => {
+  const current = { ...BASE, customization: sanitizeCustomization({ importedFonts: [font("Brand Sans")], uiFont: "brand sans" }) };
+  const exported = captureTheme(current, { name: "x", includeLayout: false, includeAssets: false }) as Record<string, Record<string, unknown>>;
+  assert.equal(exported.typography.uiFont, null);
+});
+
+test("a theme's case-duplicate font is dropped with a warning, so Undo restores the original", () => {
+  const result = parseThemeFile(JSON.stringify(file({ assets: { fonts: [font("Brand", "QUFB"), font("brand", "QkJC")] } })));
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  assert.deepEqual(result.theme.fonts?.map((f) => f.name), ["Brand"]);
+  assert.ok(result.warnings.some((w) => w.kind === "dropped"));
+  const before = withFonts([font("Brand", "T1JJRw==")]);
+  const applied = apply(before, result.theme);
+  const now = { ...before, palette: applied.palette, glass: applied.glass, customization: applied.customization };
+  assert.deepEqual(planUndo(before, applied, now).customization.importedFonts, before.customization.importedFonts);
+});

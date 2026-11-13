@@ -13,6 +13,8 @@ import {
 } from "../../../chat-background/model.ts";
 import {
   DEFAULT_CUSTOMIZATION,
+  fontFamilyKey,
+  type ImportedFont,
   sanitizeCustomizationWithIssues,
 } from "../../lib/appearance-customization.ts";
 import { type ColorThemeId, isColorThemeId } from "../../lib/color-themes.ts";
@@ -181,6 +183,17 @@ function readBackground(assets: Dict | null, warn: Warn): ThemeBackground | null
   return { dataUrl, adjustments };
 }
 
+/** Two fonts whose names differ only in case are one CSS family; the later one is dropped. */
+function uniqueFonts(fonts: ImportedFont[], warn: Warn): ImportedFont[] {
+  const seen = new Set<string>();
+  return fonts.filter((font, i) => {
+    const key = fontFamilyKey(font.name);
+    if (!seen.has(key)) return seen.add(key), true;
+    warn({ kind: "dropped", path: `assets.fonts[${i}]` });
+    return false;
+  });
+}
+
 /** Never throws on hostile input: anything wrong falls back to a default with a warning. */
 export function parseThemeFile(text: string): ThemeParseResult {
   if (text.length > MAX_THEME_FILE_CHARS) return { ok: false, error: "tooLarge" };
@@ -260,7 +273,7 @@ export function parseThemeFile(text: string): ThemeParseResult {
     look: pickFields(customization.value, LOOK_FIELDS),
     glass,
     layout: layoutPresent ? pickFields(customization.value, LAYOUT_FIELDS) : null,
-    fonts: fontsPresent ? customization.value.importedFonts : null,
+    fonts: fontsPresent ? uniqueFonts(customization.value.importedFonts, warn) : null,
     background,
   };
   return {

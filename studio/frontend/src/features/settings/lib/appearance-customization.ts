@@ -301,6 +301,9 @@ export function sanitizeFontName(value: unknown): string | null {
 }
 
 /** The family a font file registers under, e.g. "Brand_Sans-Bold.woff2" -> "Brand Sans Bold". */
+/** Font families match case-insensitively, as in CSS. */
+export const fontFamilyKey = (name: string | null | undefined) => name?.toLowerCase() ?? "";
+
 export function fontFamilyFromFileName(fileName: string): string {
   const base = fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
   return sanitizeFontName(base) ?? "";

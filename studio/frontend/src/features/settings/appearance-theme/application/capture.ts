@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { fontFamilyKey } from "../../lib/appearance-customization.ts";
 import { sectionFields } from "../domain/classification.ts";
 import {
   CURRENT_THEME_SCHEMA_VERSION,
@@ -38,11 +39,11 @@ export function captureTheme(snapshot: AppearanceSnapshot, opts: CaptureOptions)
     base: { palette: snapshot.palette },
   };
   // Without the font files, a name that points at an imported font would mean nothing elsewhere.
-  const droppedFonts = new Set(opts.includeAssets ? [] : c.importedFonts.map((font) => font.name));
+  const droppedFonts = new Set(opts.includeAssets ? [] : c.importedFonts.map((font) => fontFamilyKey(font.name)));
   const writeSection = (name: string, start: Dict = {}) => {
     for (const [field, key] of sectionFields(name)) {
       const value = c[field];
-      if (key) start[key] = (FONT_FIELDS as readonly string[]).includes(field) && droppedFonts.has(value as string) ? null : value;
+      if (key) start[key] = (FONT_FIELDS as readonly string[]).includes(field) && droppedFonts.has(fontFamilyKey(value as string)) ? null : value;
     }
     file[name] = start;
   };
