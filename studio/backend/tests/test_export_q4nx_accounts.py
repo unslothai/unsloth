@@ -150,5 +150,12 @@ def test_q4nx_export_settings_hide_the_npu_from_a_managed_account(monkeypatch):
 
     monkeypatch.setattr(s, "npu_supported", lambda: True)
     monkeypatch.setattr(s, "get_q4nx_export_setting", lambda: False)
-    assert run_as(OWNER, settings_routes._q4nx_export_response).npu_supported is True
-    assert run_as(ALICE, settings_routes._q4nx_export_response).npu_supported is False
+    # _shared_policy_read rebinds a managed caller to OWNER, which would undo the redaction.
+    [route] = [
+        r
+        for r in settings_routes._account_settings_router.routes
+        if r.path == "/q4nx-export" and "GET" in r.methods
+    ]
+    assert route.endpoint is settings_routes.get_q4nx_export
+    assert run_as(OWNER, settings_routes.get_q4nx_export, "s").npu_supported is True
+    assert run_as(ALICE, settings_routes.get_q4nx_export, "s").npu_supported is False
