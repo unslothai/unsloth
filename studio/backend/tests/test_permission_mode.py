@@ -1844,6 +1844,12 @@ def test_long_source_alias_chain_does_not_exhaust_the_stack():
     assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
 
 
+def test_deep_runner_source_asks_instead_of_raising():
+    source = "x = " + "+".join(["1"] * 550)
+    code = f"import timeit\ntimeit.timeit({source!r}, number=1)"
+    assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
+
+
 def test_repeated_timeit_bindings_are_screened_linearly():
     code = (
         "import timeit\n"

@@ -8318,6 +8318,8 @@ def _runner_source_is_high_risk(source: str) -> bool:
     token = _RUNNER_SOURCES_ACTIVE.set((*active, source))
     try:
         return _python_is_high_risk(source)
+    except RecursionError:
+        return True
     finally:
         _RUNNER_SOURCES_ACTIVE.reset(token)
 
