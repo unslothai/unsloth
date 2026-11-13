@@ -242,7 +242,8 @@ def _failed(response) -> bool:
 
 def _already_said(message: str, reason: str) -> bool:
     # lemond wraps one failure in prefixes ("Backend load failed: FLM pull failed ...").
-    while reason:
+    # A one-word tail ("1" of "exit code: 1") would match digits in a model name.
+    while " " in reason:
         if reason in message or message in reason:
             return True
         reason = reason.partition(": ")[2]
