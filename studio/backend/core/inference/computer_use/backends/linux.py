@@ -99,6 +99,7 @@ class LinuxBackend(Backend):
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._launcher: Optional[tuple[float, list]] = None
         self._x11: Any = None
         self._xtst: Any = None
         self._display: Any = None
@@ -527,17 +528,20 @@ class LinuxBackend(Backend):
             )  # fmt: skip
             bounds = (root_x.value, root_y.value, width.value, height.value)
         return FrontWindow(
-            app = names[-1] if names else "",
+            app = self._shown_name(names) or (names[-1] if names else ""),
             app_id = (names[0] if names else "").lower(),
             title = title.decode("utf-8", "replace"),
             pid = pid,
             bounds = bounds,
         )
 
-    def _desktop_entry(self, name: str) -> Optional[tuple[str, str, str]]:
-        """Path, shown name and Exec line of the application whose name matches best."""
-        wanted = name.casefold()
-        best: Optional[tuple[int, str, str, str]] = None
+    def _entries(self) -> list[tuple[str, str, str, str, str]]:
+        """The launcher's applications: path, file stem, shown name, Exec line and window class.
+        Read again after half a minute, since apps come and go."""
+        now = time.monotonic()
+        if self._launcher is not None and now - self._launcher[0] < 30.0:
+            return self._launcher[1]
+        found: list[tuple[str, str, str, str, str]] = []
         for folder in _APP_DIRS:
             folder = os.path.expanduser(folder)
             try:
@@ -548,7 +552,7 @@ class LinuxBackend(Backend):
                 if not entry.endswith(".desktop"):
                     continue
                 path = os.path.join(folder, entry)
-                shown = command = ""
+                shown = command = klass = ""
                 hidden = False
                 try:
                     with open(path, encoding = "utf-8", errors = "replace") as handle:
@@ -563,23 +567,46 @@ class LinuxBackend(Backend):
                                 shown = line[5:]
                             elif line.startswith("Exec=") and not command:
                                 command = line[5:]
+                            elif line.startswith("StartupWMClass=") and not klass:
+                                klass = line[15:]
                             elif line in ("NoDisplay=true", "Hidden=true"):
                                 hidden = True
                 except OSError:
                     continue
                 if hidden or not shown or not command:
                     continue
-                folded = shown.casefold()
-                stem = entry[: -len(".desktop")].casefold()
-                if folded == wanted or stem == wanted:
-                    rank = 0
-                elif wanted in folded:
-                    rank = 1 + len(folded)
-                else:
-                    continue
-                if best is None or rank < best[0]:
-                    best = (rank, path, shown, command)
+                found.append((path, entry[: -len(".desktop")], shown, command, klass))
+        self._launcher = (now, found)
+        return found
+
+    def _desktop_entry(self, name: str) -> Optional[tuple[str, str, str]]:
+        """Path, shown name and Exec line of the application whose name matches best."""
+        wanted = name.casefold()
+        best: Optional[tuple[int, str, str, str]] = None
+        for path, stem, shown, command, _klass in self._entries():
+            folded = shown.casefold()
+            if folded == wanted or stem.casefold() == wanted:
+                rank = 0
+            elif wanted in folded:
+                rank = 1 + len(folded)
+            else:
+                continue
+            if best is None or rank < best[0]:
+                best = (rank, path, shown, command)
         return best[1:] if best else None
+
+    def _shown_name(self, classes: list[str]) -> str:
+        """The launcher's name for a window's class ("Firefox Web Browser" for firefox), so a
+        name blocked or allowed when an app is opened also covers acting in its windows."""
+        wanted = {name.casefold() for name in classes if name}
+        if not wanted:
+            return ""
+        for _path, stem, shown, _command, klass in self._entries():
+            stem = stem.casefold()
+            # org.gnome.Nautilus.desktop belongs to the class "nautilus" or the full id.
+            if klass.casefold() in wanted or stem in wanted or stem.rsplit(".", 1)[-1] in wanted:
+                return shown
+        return ""
 
     def resolve_app(self, name: str) -> str:
         found = None if "/" in name else self._desktop_entry(name)

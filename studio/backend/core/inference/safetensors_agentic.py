@@ -1451,6 +1451,7 @@ def run_safetensors_tool_loop(
                 arguments = decision.arguments,
                 sandbox_level = sandbox_level,
                 session_id = session_id,
+                thread_id = thread_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirm = needs_confirm or image_share is not None

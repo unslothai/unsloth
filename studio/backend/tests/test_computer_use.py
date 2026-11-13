@@ -812,6 +812,57 @@ def test_an_app_the_chat_has_not_used_asks_first(desktop):
     assert "has not been allowed" in run({"action": "type", "text": "x"}, session_id = "chat-2")
 
 
+def test_chats_of_one_project_each_ask_for_themselves(desktop):
+    # A project's chats share one sandbox session; the conversation is what was allowed.
+    shared = {"session_id": "project-7"}
+    click = {"action": "click", "x": 500, "y": 300}
+    assert tool_policy.needs_tool_confirmation(
+        confirm_tool_calls = True, bypass_permissions = False, permission_mode = "auto",
+        name = "computer", arguments = {"action": "screenshot"}, thread_id = "thread-a", **shared,
+    )  # fmt: skip
+    from core.inference import tools as tools_mod
+
+    first = tools_mod.execute_tool(
+        "computer", {"action": "screenshot"}, thread_id = "thread-a", host_access_approved = True,
+        **shared,
+    )  # fmt: skip
+    assert first.startswith("Done:")
+    assert state.is_granted(state.session_key("thread-a"))
+    assert not state.is_granted(state.session_key("project-7"))
+    for thread, asks in (("thread-a", False), ("thread-b", True)):
+        assert asks is tool_policy.needs_tool_confirmation(
+            confirm_tool_calls = True, bypass_permissions = False, permission_mode = "auto",
+            name = "computer", arguments = {"action": "screenshot"}, thread_id = thread, **shared,
+        )  # fmt: skip
+    other = tools_mod.execute_tool("computer", click, thread_id = "thread-b", **shared)
+    assert "go-ahead" in other
+
+
+def test_an_x11_window_takes_its_launchers_name(tmp_path, monkeypatch):
+    from core.inference.computer_use.backends import linux
+
+    (tmp_path / "firefox.desktop").write_text(
+        "[Desktop Entry]\nName=Firefox Web Browser\nExec=firefox %u\n"
+    )
+    (tmp_path / "org.gnome.Nautilus.desktop").write_text(
+        "[Desktop Entry]\nName=Files\nExec=nautilus\n"
+    )
+    (tmp_path / "code.desktop").write_text(
+        "[Desktop Entry]\nName=Visual Studio Code\nExec=code\nStartupWMClass=Code\n"
+    )
+    monkeypatch.setattr(linux, "_APP_DIRS", (str(tmp_path),))
+    backend = linux.LinuxBackend.__new__(linux.LinuxBackend)
+    backend._launcher = None
+    assert backend._shown_name(["Navigator", "firefox"]) == "Firefox Web Browser"
+    assert backend._shown_name(["org.gnome.Nautilus", "org.gnome.Nautilus"]) == "Files"
+    assert backend._shown_name(["nautilus", "Nautilus"]) == "Files"
+    assert backend._shown_name(["code", "Code"]) == "Visual Studio Code"
+    assert backend._shown_name(["xterm", "XTerm"]) == ""
+    assert backend._desktop_entry("fire")[1] == "Firefox Web Browser"
+    # So the name blocked when the app is opened is the one its windows carry.
+    assert backend.resolve_app("fire") == backend._shown_name(["Navigator", "firefox"])
+
+
 def test_an_always_allowed_app_never_asks(desktop):
     first_look()
     assert policy.allow_app("  notes ")["allowed_apps"] == ["notes"]

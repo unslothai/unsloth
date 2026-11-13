@@ -6186,7 +6186,10 @@ def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
     # The model's family decides how it names a point; the run reads it back from the chat.
     mode = policy.coordinate_mode(getattr(payload, "model", None))
     computer_state.set_coordinates(
-        computer_state.session_key(getattr(payload, "session_id", None)), mode
+        computer_state.session_key(
+            getattr(payload, "thread_id", None) or getattr(payload, "session_id", None)
+        ),
+        mode,
     )
     return computer_tool(mode)
 

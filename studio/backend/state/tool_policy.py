@@ -144,6 +144,7 @@ def needs_tool_confirmation(
     never_needs = None,
     sandbox_level: Optional[str] = None,
     session_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> bool:
     if is_high_risk is None or never_needs is None:
         from core.inference import tools
@@ -153,7 +154,9 @@ def needs_tool_confirmation(
         return False
     if permission_mode in ("off", "auto") and _is_computer_tool(name):
         from core.inference.computer_use import policy as computer_policy
-        return computer_policy.needs_confirmation(arguments, session_id)
+
+        # Per conversation: a project's chats share session_id, and each asks for itself.
+        return computer_policy.needs_confirmation(arguments, thread_id or session_id)
     if permission_mode == "off":
         return off_mode_still_gates(name, sandbox_level, session_id) and _classify(
             is_high_risk, name, arguments, sandbox_level

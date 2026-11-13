@@ -1391,7 +1391,8 @@ class ToolLoopController:
             provenance = provenance,
             status_text = status_for_tool(tool_name, arguments),
             noop_result = noop,
-            session_id = self._session_id or "",
+            # The conversation, not the project its sandbox is shared with.
+            session_id = self._thread_id or self._session_id or "",
         )
 
     def reprepare_call(
