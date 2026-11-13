@@ -2454,6 +2454,103 @@ def test_the_sweep_skips_a_retired_tree_it_cannot_read(monkeypatch, tmp_path):
         stuck.chmod(0o755)
 
 
+# #17638: in the Docker image audio.cpp is a directory of an image layer, which overlayfs will not rename
+
+
+def _refuse_renaming_the_install(monkeypatch, root, err = None):
+    """os.replace as overlayfs answers it for a lower-layer directory: the installed tree cannot be
+    renamed (EXDEV unless ``err`` says otherwise), anything made since can."""
+    real = M.os.replace
+    refused = []
+
+    def replace(src, dst):
+        if Path(src) == root and not refused:
+            refused.append(Path(dst))
+            raise OSError(err or M.errno.EXDEV, os.strerror(err or M.errno.EXDEV), str(src))
+        return real(src, dst)
+
+    monkeypatch.setattr(M.os, "replace", replace)
+    return refused
+
+
+def test_an_install_overlayfs_cannot_rename_is_copied_aside_and_replaced(
+    monkeypatch, tmp_path, capsys
+):
+    old = _release(tmp_path, OLDER_ZIP, tag = OLDER_TAG)
+    _install(monkeypatch, tmp_path, old)
+    root = tmp_path / "audio.cpp"
+    (root / "bin" / "leftover.txt").write_text("from the image")
+    refused = _refuse_renaming_the_install(monkeypatch, root)
+    new = _release(tmp_path, CPU_ZIP)
+    server = _install(monkeypatch, tmp_path, new, release_tag = FORK_TAG)
+    assert refused == [root.with_name(f"audio.cpp.old-{os.getpid()}")]
+    assert server.read_bytes() == b"binary " + CPU_ZIP.encode()
+    assert M.read_install_record(root)["release_tag"] == FORK_TAG
+    # The old tree is gone, not merged into the new one, and no aside copy is left behind.
+    assert not (root / "bin" / "leftover.txt").exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["audio.cpp", "src"]
+    assert "copying" in capsys.readouterr().out
+
+
+def test_a_copied_aside_install_is_put_back_when_the_new_tree_cannot_go_in(monkeypatch, tmp_path):
+    old = _release(tmp_path, OLDER_ZIP, tag = OLDER_TAG)
+    _install(monkeypatch, tmp_path, old)
+    root = tmp_path / "audio.cpp"
+    before = _tree_digest(root)
+    _refuse_renaming_the_install(monkeypatch, root)
+    copied_aside = M.os.replace
+
+    def replace(src, dst):
+        if Path(dst) == root and Path(src).name == "tree":
+            raise OSError(M.errno.EIO, "I/O error", str(src))
+        return copied_aside(src, dst)
+
+    monkeypatch.setattr(M.os, "replace", replace)
+    new = _release(tmp_path, CPU_ZIP)
+    with pytest.raises(OSError, match = "I/O error"):
+        _install(monkeypatch, tmp_path, new, release_tag = FORK_TAG)
+    assert _tree_digest(root) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["audio.cpp", "src"]
+
+
+def test_a_half_removed_install_is_restored_from_its_copy(monkeypatch, tmp_path):
+    old = _release(tmp_path, OLDER_ZIP, tag = OLDER_TAG)
+    _install(monkeypatch, tmp_path, old)
+    root = tmp_path / "audio.cpp"
+    before = _tree_digest(root)
+    _refuse_renaming_the_install(monkeypatch, root)
+    real_rmtree = M.shutil.rmtree
+    failed = []
+
+    def rmtree(path, ignore_errors = False, **kw):
+        if Path(path) == root and not ignore_errors and not failed:
+            failed.append(path)
+            (root / "bin" / "README.txt").unlink()
+            raise PermissionError(M.errno.EACCES, "Permission denied", str(path))
+        return real_rmtree(path, ignore_errors = ignore_errors, **kw)
+
+    monkeypatch.setattr(M.shutil, "rmtree", rmtree)
+    new = _release(tmp_path, CPU_ZIP)
+    with pytest.raises(PermissionError):
+        _install(monkeypatch, tmp_path, new, release_tag = FORK_TAG)
+    assert failed and _tree_digest(root) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["audio.cpp", "src"]
+
+
+def test_a_rename_refused_for_another_reason_is_not_copied(monkeypatch, tmp_path):
+    old = _release(tmp_path, OLDER_ZIP, tag = OLDER_TAG)
+    _install(monkeypatch, tmp_path, old)
+    root = tmp_path / "audio.cpp"
+    before = _tree_digest(root)
+    _refuse_renaming_the_install(monkeypatch, root, err = M.errno.EACCES)
+    monkeypatch.setattr(M.shutil, "copytree", lambda *a, **k: pytest.fail("copied"))
+    new = _release(tmp_path, CPU_ZIP)
+    with pytest.raises(PermissionError):
+        _install(monkeypatch, tmp_path, new, release_tag = FORK_TAG)
+    assert _tree_digest(root) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["audio.cpp", "src"]
+
+
 def test_driver_cuda_version_is_asked_again_after_the_memo_window(monkeypatch, tmp_path):
     # A later install in the same Studio process reads the driver again.
     exe = tmp_path / "nvidia-smi"
