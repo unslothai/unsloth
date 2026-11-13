@@ -3,20 +3,22 @@
 
 """INT8 attention for DiT inference (backend ``unsloth_int8``): Q.K^T and P.V on the int8 tensor cores.
 
-One call is four small Triton passes (per-channel statistics of K and V, then the Q, K and V quantisers) and one CUDA
-kernel (``diffusion_int8_attention_cuda``). It takes the strided ``[B, S, H, D]`` views the strided processors already
-hold and returns ``[B, S, H, D]``; nothing is copied to a heads-first layout.
+One call is four CUDA kernel launches (``diffusion_int8_attention_cuda``): the per-channel statistics of K and V, the
+V quantiser, the Q and K quantiser, and the attention kernel. It takes the strided ``[B, S, H, D]`` views the strided
+processors already hold and returns ``[B, S, H, D]``; nothing is copied to a heads-first layout.
 
 How the values are quantised (ideas from the cited papers, written from scratch here):
 
-* Q and K are rotated by one fixed orthogonal map (signs, then a 16-point Hadamard transform per 16 channels) before
-  rounding, which leaves Q.K^T unchanged and evens out each row's use of the int8 range (QuaRot, arXiv 2404.00456).
+* Q and K are rotated by one fixed orthogonal map (signs, then a Hadamard transform over the head dim, at most 128
+  channels) before rounding, which leaves Q.K^T unchanged and evens out each row's use of the int8 range (QuaRot,
+  arXiv 2404.00456).
 * K is first shifted by a per-channel mean over a sub-sample of the keys: the softmax does not see a shift common to
-  all keys (SageAttention, arXiv 2410.02367). Q has one scale per row; K has one scale per group of keys that share
-  a tensor-core accumulator lane (SageAttention2, arXiv 2411.10958), so scores are rescaled without a per-key load.
+  all keys (SageAttention, arXiv 2410.02367). Q has one scale per row; K has one scale per 32 keys and tensor-core
+  accumulator lane (SageAttention2, arXiv 2411.10958), so scores are rescaled without a per-key load.
 * The probabilities are 8-bit integers too, rescaled per key tile so every tile uses the full range, and the softmax
   denominator is summed over the rounded values (INT-FlashAttention, arXiv 2409.16997).
-* V is centred and divided by a per-channel gain (both undone on the output), with one scale per key tile.
+* V is centred and divided by a per-channel gain taken over every key (both undone on the output), with one scale per
+  key tile.
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -28,11 +30,9 @@ the race, unset races it where INT8 attention is already wanted (an INT8 checkpo
 
 from __future__ import annotations
 
-import ctypes
 import math
 import os
 import threading
-import types
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
@@ -52,33 +52,42 @@ MIN_SHARP_COSINE = 0.99
 LOG2E = 1.4426950408889634
 
 # Per CUDA capability and head dim: keys per tile (bn), warps per block (wpc), 16-row query tiles per warp (nq),
-# shared-memory tile buffers (stages) and, where the assembler's own register choice costs a block per SM, a register
-# cap. Measured per card (see the PR); a card missing here keeps native attention.
+# shared-memory tile buffers (stages), whether the Q operand fragments stay in registers (qreg) and, where the
+# assembler's own register choice costs a block per SM, a register cap. Measured per card on the full call
+# (quantisers included); a card missing here keeps native attention. Every config of a head dim has the same bn, so
+# the output does not depend on the card.
 KERNEL_CONFIGS: dict = {
     (8, 0): {
-        128: {"bn": 64, "wpc": 4, "nq": 1, "stages": 1, "max_registers": 168},
-        64: {"bn": 64, "wpc": 4, "nq": 1, "stages": 2},
+        128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 2, "qreg": 1},
+        64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
     (8, 6): {
-        128: {"bn": 64, "wpc": 4, "nq": 1, "stages": 1, "max_registers": 168},
-        64: {"bn": 64, "wpc": 4, "nq": 1, "stages": 2},
+        128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 2, "qreg": 1},
+        64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
     (8, 9): {
-        128: {"bn": 64, "wpc": 6, "nq": 1, "stages": 1, "max_registers": 168},
-        64: {"bn": 64, "wpc": 4, "nq": 1, "stages": 1},
+        128: {"bn": 128, "wpc": 12, "nq": 1, "stages": 2, "max_registers": 168},
+        64: {"bn": 128, "wpc": 8, "nq": 2, "stages": 2, "qreg": 1},
     },
     (12, 0): {
-        128: {"bn": 64, "wpc": 12, "nq": 1, "stages": 2},
-        64: {"bn": 64, "wpc": 8, "nq": 1, "stages": 2},
+        128: {"bn": 128, "wpc": 12, "nq": 1, "stages": 2, "max_registers": 168},
+        64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
 }
-QUANT_ROWS = 64  # rows per quantiser block
-STATS_STEP = 8  # the K mean and the V range are taken over every 8th key
+QUANT_ROWS = 64  # the padded Q length is a multiple of this
+ROT_GROUP = (
+    128  # channels per Hadamard block of the Q / K rotation (the head dim where that is smaller)
+)
+K_MEAN_STEP = 8  # the K mean is taken over every 8th key ...
+K_MEAN_KEYS = 512  # ... of sequences long enough to leave this many
+V_RANGE_STEP = 1  # the V range is taken over every key
+V_RANGE_CHUNKS = 16  # row chunks per (batch, head) of the V range pass
 
 _LOCK = threading.Lock()
 _VERDICTS: dict = {}
 _BROKEN: set = set()
 _VERIFIED: set = set()
+_LOADED: dict = {}
 STATS = {"int8": 0, "native": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 
@@ -108,13 +117,17 @@ def kernel_config(capability: Any, head_dim: int) -> Optional[dict]:
 
 
 def kernel_defines(head_dim: int, config: dict) -> dict:
-    return {
+    defines = {
         "HD": int(head_dim),
         "BN": int(config["bn"]),
         "NQ": int(config["nq"]),
         "WPC": int(config["wpc"]),
         "STAGES": int(config["stages"]),
+        "QREG": int(config.get("qreg", 0)),
     }
+    if "flush" in config:
+        defines["FLUSH"] = int(config["flush"])
+    return defines
 
 
 def shared_bytes(head_dim: int, config: dict) -> int:
@@ -127,220 +140,75 @@ def _pad(n: int, multiple: int) -> int:
     return (n + multiple - 1) // multiple * multiple
 
 
-@lru_cache(maxsize = None)
-def _quantisers() -> Any:
-    import triton
-    import triton.language as tl
+def stats_plan(n_keys: int) -> tuple:
+    """(kstep, vstep, nvc, vrows): the K mean is taken over every kstep-th key (at least K_MEAN_KEYS of them where
+    there are that many: any mean is a valid shift, it only has to be representative), the V range over every
+    vstep-th key in nvc row chunks of vrows keys. vstep is 1: a channel whose range is underestimated costs every
+    other channel of the tile its resolution (16 text-refiner tokens sampled every 8th key lost a quarter of the
+    output)."""
+    kstep = max(1, min(K_MEAN_STEP, n_keys // K_MEAN_KEYS))
+    vstep = max(1, int(V_RANGE_STEP))
+    nvc = max(1, min(V_RANGE_CHUNKS, -(-n_keys // (256 * vstep))))
+    vrows = -(-(-(-n_keys // nvc)) // vstep) * vstep
+    return kstep, vstep, -(-n_keys // vrows), vrows
 
-    try:
-        from triton.language.extra import libdevice
-    except Exception:  # noqa: BLE001 -- older Triton layout
-        from triton.language.extra.cuda import libdevice
 
-    @triton.jit
-    def _rint(x):
-        return libdevice.float2int_rn(x)
+class Operands(dict):
+    """``quantise``'s output: the int8 operands and their scales as views of two allocations, made when asked for."""
 
-    @triton.jit
-    def _rotate(x, R: tl.constexpr, D: tl.constexpr):
-        # [R, D]: fixed signs, then an unnormalised 16-point Hadamard transform inside every 16 channels (a factor 4
-        # in norm, taken out of the Q scale)
-        cols = tl.arange(0, D)
-        flip = (((cols * 7919 + 13) * (cols + 3)) >> 7) & 1
-        x = x * (1.0 - 2.0 * flip.to(tl.float32))[None, :]
-        for _ in tl.static_range(4):
-            a, b = tl.split(tl.reshape(x, (R, D // 2, 2)))
-            z = tl.reshape(tl.join(a + b, a - b), (R, D // 16, 8, 2))
-            x = tl.reshape(tl.permute(z, (0, 1, 3, 2)), (R, D))
-        return x
+    def __missing__(self, key: str) -> Any:
+        offset, shape = self["layout"][key]
+        base = self["i8"] if key in ("qi", "ki", "vt") else self["f32"]
+        view = base[offset : offset + math.prod(shape)].view(shape)
+        self[key] = view
+        return view
 
-    @triton.jit
-    def stats_kernel(
-        x_ptr,
-        c_ptr,
-        g_ptr,
-        n_rows,
-        n_heads,
-        x_stride_b,
-        x_stride_s,
-        x_stride_h,
-        STEP: tl.constexpr,
-        R: tl.constexpr,
-        D: tl.constexpr,
-        MODE: tl.constexpr,
-    ):
-        # per (batch, head, channel) over every STEP-th token: MODE 0 = mean -> c; MODE 1 = mid-range -> c and half
-        # range (>= 1e-12) -> g
-        bh = tl.program_id(0)
-        b = bh // n_heads
-        h = bh % n_heads
-        cols = tl.arange(0, D)
-        n_sub = (n_rows + STEP - 1) // STEP
-        if MODE == 0:
-            acc = tl.zeros([D], tl.float32)
-        else:
-            lo = tl.full([D], 3.0e38, tl.float32)
-            hi = tl.full([D], -3.0e38, tl.float32)
-        for blk in range(0, tl.cdiv(n_sub, R)):
-            rows = (blk * R + tl.arange(0, R)) * STEP
-            live = rows < n_rows
-            x = tl.load(
-                x_ptr
-                + b * x_stride_b
-                + h * x_stride_h
-                + rows[:, None].to(tl.int64) * x_stride_s
-                + cols[None, :],
-                mask = live[:, None],
-                other = 0.0,
-            ).to(tl.float32)
-            if MODE == 0:
-                acc += tl.sum(x, axis = 0)
-            else:
-                lo = tl.minimum(lo, tl.min(tl.where(live[:, None], x, 3.0e38), axis = 0))
-                hi = tl.maximum(hi, tl.max(tl.where(live[:, None], x, -3.0e38), axis = 0))
-        if MODE == 0:
-            tl.store(c_ptr + bh * D + cols, acc / n_sub)
-        else:
-            tl.store(c_ptr + bh * D + cols, 0.5 * (hi + lo))
-            tl.store(g_ptr + bh * D + cols, tl.maximum(0.5 * (hi - lo), 1e-12))
 
-    @triton.jit
-    def quant_q_kernel(
-        x_ptr,
-        q_ptr,
-        s_ptr,
-        n_rows,
-        n_pad,
-        n_heads,
-        x_stride_b,
-        x_stride_s,
-        x_stride_h,
-        mul,
-        R: tl.constexpr,
-        D: tl.constexpr,
-    ):
-        # R rows of one (batch, head): int8 = rint(rotated x * 127 / amax(row)), scale[row] = amax / 127 * mul;
-        # padded rows are zeros with scale 0
-        bh = tl.program_id(0)
-        blk = tl.program_id(1)
-        b = bh // n_heads
-        h = bh % n_heads
-        rows = blk * R + tl.arange(0, R)
-        cols = tl.arange(0, D)
-        live = rows < n_rows
-        x = tl.load(
-            x_ptr
-            + b * x_stride_b
-            + h * x_stride_h
-            + rows[:, None].to(tl.int64) * x_stride_s
-            + cols[None, :],
-            mask = live[:, None],
-            other = 0.0,
-        ).to(tl.float32)
-        x = _rotate(x, R, D)
-        amax = tl.maximum(tl.max(tl.abs(x), axis = 1), 1e-20)
-        base = bh.to(tl.int64) * n_pad
-        tl.store(s_ptr + base + rows, tl.where(live, amax * (mul / 127.0), 0.0))
-        tl.store(
-            q_ptr + (base + rows[:, None]) * D + cols[None, :],
-            _rint(x * (127.0 / amax)[:, None]).to(tl.int8),
+def _aligned(x: Any) -> Any:
+    """``x`` with last-dim stride 1 and every row 16-byte aligned (what the quantisers' vector loads need)."""
+    if x.stride(3) != 1:
+        return x.contiguous()
+    size = x.element_size()
+    if x.data_ptr() % 16 or any((x.stride(d) * size) % 16 for d in range(3) if x.shape[d] > 1):
+        return x.clone(memory_format = __import__("torch").contiguous_format)
+    return x
+
+
+def _device_index(device: Any) -> int:
+    import torch
+    return device.index if device.index is not None else torch.cuda.current_device()
+
+
+def _functions(index: int, head_dim: int, config: dict) -> tuple:
+    """(attention kernel, quantiser kernels, shared bytes) for a device, head dim and config; compiled on first
+    use."""
+    key = (index, head_dim, tuple(sorted(config.items())), ROT_GROUP)
+    found = _LOADED.get(key)
+    if found is None:
+        import torch
+
+        from . import diffusion_int8_attention_cuda as cuda_kernel
+
+        capability = tuple(torch.cuda.get_device_capability(index))
+        shared = shared_bytes(head_dim, config)
+        group = min(int(ROT_GROUP), head_dim)
+        found = (
+            cuda_kernel.load(
+                index,
+                capability,
+                kernel_defines(head_dim, config),
+                config.get("max_registers"),
+                shared,
+            ),
+            cuda_kernel.load_quantisers(
+                index,
+                capability,
+                {"HD": head_dim, "BN": int(config["bn"]), "RGX": group.bit_length() - 5},
+            ),
+            shared,
         )
-
-    @triton.jit
-    def quant_k_kernel(
-        x_ptr,
-        c_ptr,
-        q_ptr,
-        s_ptr,
-        n_rows,
-        n_pad,
-        n_heads,
-        x_stride_b,
-        x_stride_s,
-        x_stride_h,
-        T: tl.constexpr,
-        D: tl.constexpr,
-    ):
-        # one tile of T keys of one (batch, head), centred and rotated: the keys with the same (key % 8) // 2 share a
-        # scale (the lanes of one tensor-core accumulator register). scale [BH, n_pad / T, 4]
-        bh = tl.program_id(0)
-        blk = tl.program_id(1)
-        b = bh // n_heads
-        h = bh % n_heads
-        rows = blk * T + tl.arange(0, T)
-        cols = tl.arange(0, D)
-        live = rows < n_rows
-        x = tl.load(
-            x_ptr
-            + b * x_stride_b
-            + h * x_stride_h
-            + rows[:, None].to(tl.int64) * x_stride_s
-            + cols[None, :],
-            mask = live[:, None],
-            other = 0.0,
-        ).to(tl.float32)
-        c = tl.load(c_ptr + bh * D + cols)
-        x = _rotate(tl.where(live[:, None], x - c[None, :], 0.0), T, D)
-        amax = tl.max(tl.abs(x), axis = 1)
-        grp = tl.maximum(tl.max(tl.max(tl.reshape(amax, (T // 8, 4, 2)), axis = 2), axis = 0), 1e-20)
-        per_row = tl.reshape(tl.broadcast_to(grp[None, :, None], (T // 8, 4, 2)), (T,))
-        base = bh.to(tl.int64) * n_pad
-        tl.store(s_ptr + (bh.to(tl.int64) * (n_pad // T) + blk) * 4 + tl.arange(0, 4), grp / 127.0)
-        tl.store(
-            q_ptr + (base + rows[:, None]) * D + cols[None, :],
-            _rint(x * (127.0 / per_row)[:, None]).to(tl.int8),
-        )
-
-    @triton.jit
-    def quant_v_kernel(
-        x_ptr,
-        c_ptr,
-        g_ptr,
-        q_ptr,
-        s_ptr,
-        n_rows,
-        n_pad,
-        n_heads,
-        x_stride_b,
-        x_stride_s,
-        x_stride_h,
-        T: tl.constexpr,
-        D: tl.constexpr,
-    ):
-        # one tile of T keys of one (batch, head): (x - centre) / gain per channel, one scale for the tile, stored
-        # channel-major [BH, n_pad / T, D, T] in the key order the kernel's operand registers want: position
-        # 4 * t + c of every 16 keys holds key 8 * (c >> 1) + 2 * t + (c & 1)
-        bh = tl.program_id(0)
-        blk = tl.program_id(1)
-        b = bh // n_heads
-        h = bh % n_heads
-        pos = tl.arange(0, T)
-        rows = blk * T + (pos & -16) + 8 * ((pos & 3) >> 1) + 2 * ((pos >> 2) & 3) + (pos & 1)
-        cols = tl.arange(0, D)
-        live = rows < n_rows
-        x = tl.load(
-            x_ptr
-            + b * x_stride_b
-            + h * x_stride_h
-            + rows[:, None].to(tl.int64) * x_stride_s
-            + cols[None, :],
-            mask = live[:, None],
-            other = 0.0,
-        ).to(tl.float32)
-        c = tl.load(c_ptr + bh * D + cols)
-        g = tl.load(g_ptr + bh * D + cols)
-        x = tl.where(live[:, None], (x - c[None, :]) / g[None, :], 0.0)
-        amax = tl.maximum(tl.max(tl.max(tl.abs(x), axis = 1), axis = 0), 1e-20)
-        tile = bh.to(tl.int64) * (n_pad // T) + blk
-        tl.store(s_ptr + tile, amax / 127.0)
-        tl.store(
-            q_ptr + (tile * D + cols[:, None]) * T + pos[None, :],
-            tl.trans(_rint(x * (127.0 / amax)).to(tl.int8)),
-        )
-
-    return types.SimpleNamespace(
-        stats = stats_kernel, quant_q = quant_q_kernel, quant_k = quant_k_kernel, quant_v = quant_v_kernel
-    )
+        _LOADED[key] = found
+    return found
 
 
 def quantise(
@@ -353,68 +221,153 @@ def quantise(
     """The kernel's inputs from ``[B, S, H, D]`` q / k / v (any strides on the first three dims)."""
     import torch
 
-    kernels = _quantisers()
+    from .diffusion_int8_attention_cuda import float_bits
+
+    q, k, v = _aligned(q), _aligned(k), _aligned(v)
     B, Sq, H, D = q.shape
     Sk = k.shape[1]
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
     dev = q.device
-    # log2(e) turns the kernel's 2^x into e^x; 16 is the norm the rotation adds to Q and to K
-    mul = (1.0 / math.sqrt(D) if scale is None else float(scale)) * LOG2E / 16.0
+    index = _device_index(dev)
+    _, kernels, _ = _functions(index, D, config)
+    # log2(e) turns the kernel's 2^x into e^x; the rotation adds sqrt(group) in norm to Q and to K
+    mul = (1.0 / math.sqrt(D) if scale is None else float(scale)) * LOG2E / min(int(ROT_GROUP), D)
     n_qpad = _pad(Sq, math.lcm(QUANT_ROWS, 16 * nq * wpc))
     n_kpad = _pad(Sk, bn)
     tiles = n_kpad // bn
     BH = B * H
-
-    def strides(x):
-        return x.stride(0), x.stride(1), x.stride(2)
-
-    qi = torch.empty((BH, n_qpad, D), dtype = torch.int8, device = dev)
-    qs = torch.empty((BH, n_qpad), dtype = torch.float32, device = dev)
-    kernels.quant_q[(BH, n_qpad // QUANT_ROWS)](
-        q, qi, qs, Sq, n_qpad, H, *strides(q), mul, R = QUANT_ROWS, D = D
-    )
-    kc = torch.empty((BH, D), dtype = torch.float32, device = dev)
-    kernels.stats[(BH,)](k, kc, kc, Sk, H, *strides(k), STEP = STATS_STEP, R = 32, D = D, MODE = 0)
-    ki = torch.empty((BH, n_kpad, D), dtype = torch.int8, device = dev)
-    ks = torch.empty((BH, tiles, 4), dtype = torch.float32, device = dev)
-    kernels.quant_k[(BH, tiles)](k, kc, ki, ks, Sk, n_kpad, H, *strides(k), T = bn, D = D)
-    vc = torch.empty((BH, D), dtype = torch.float32, device = dev)
-    vg = torch.empty((BH, D), dtype = torch.float32, device = dev)
-    kernels.stats[(BH,)](v, vc, vg, Sk, H, *strides(v), STEP = STATS_STEP, R = 32, D = D, MODE = 1)
-    vt = torch.empty((BH, tiles, D, bn), dtype = torch.int8, device = dev)
-    vs = torch.empty((BH, tiles), dtype = torch.float32, device = dev)
-    kernels.quant_v[(BH, tiles)](v, vc, vg, vt, vs, Sk, n_kpad, H, *strides(v), T = bn, D = D)
-    return {
-        "qi": qi,
-        "qs": qs,
-        "ki": ki,
-        "ks": ks,
-        "kc": kc,
-        "vt": vt,
-        "vs": vs,
-        "vc": vc,
-        "vg": vg,
-        "shape": (B, Sq, Sk, H, D),
-        "dtype": v.dtype,
-        "config": config,
+    kstep, vstep, nvc, vrows = stats_plan(Sk)
+    layout, at = {}, 0
+    for name, shape in (
+        ("qi", (BH, n_qpad, D)),
+        ("ki", (BH, n_kpad, D)),
+        ("vt", (BH, tiles, D, bn)),
+    ):
+        layout[name] = (at, shape)
+        at += math.prod(shape)
+    n_i8, at = at, 0
+    for name, shape in (
+        ("qs", (BH, n_qpad)),
+        ("ks", (BH, n_kpad // 32, 4)),
+        ("kc", (BH, D)),
+        ("vs", (BH, tiles)),
+        ("vc", (BH, D)),
+        ("vg", (BH, D)),
+        ("vpart", (BH, nvc, 2, D)),
+    ):
+        layout[name] = (at, shape)
+        at += math.prod(shape)
+    i8 = torch.empty(n_i8, dtype = torch.int8, device = dev)
+    f32 = torch.empty(at, dtype = torch.float32, device = dev)
+    pi, pf = i8.data_ptr(), f32.data_ptr()
+    at_i = {name: pi + layout[name][0] for name in ("qi", "ki", "vt")}
+    at_f = {
+        name: pf + 4 * layout[name][0] for name in ("qs", "ks", "kc", "vs", "vc", "vg", "vpart")
     }
+    qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
+    q_kind, k_kind, v_kind = (
+        _OUT_KIND[str(q.dtype)],
+        _OUT_KIND[str(k.dtype)],
+        _OUT_KIND[str(v.dtype)],
+    )
+    qst, kst, vst = q.stride(), k.stride(), v.stride()
+    threads = bn * D // 16
+    with torch.cuda.device(dev):
+        stream = torch.cuda.current_stream().cuda_stream
+        kernels["unsloth_i8stats"].launch(
+            (nvc + 1, BH),
+            256,
+            (
+                kp,
+                vp,
+                at_f["kc"],
+                at_f["vpart"],
+                Sk,
+                H,
+                nvc,
+                vrows,
+                vstep,
+                kstep,
+                kst[0],
+                kst[1],
+                kst[2],
+                vst[0],
+                vst[1],
+                vst[2],
+                k_kind,
+                v_kind,
+            ),
+            0,
+            stream,
+        )
+        kernels["unsloth_i8quant_v"].launch(
+            (tiles, BH),
+            bn * D // 64,
+            (
+                vp,
+                at_f["vpart"],
+                at_i["vt"],
+                at_f["vs"],
+                at_f["vc"],
+                at_f["vg"],
+                Sk,
+                n_kpad,
+                H,
+                nvc,
+                vst[0],
+                vst[1],
+                vst[2],
+                v_kind,
+            ),
+            0,
+            stream,
+        )
+        kernels["unsloth_i8quant_qk"].launch(
+            ((n_qpad + bn - 1) // bn + tiles, BH),
+            threads,
+            (
+                qp,
+                kp,
+                at_f["kc"],
+                at_i["qi"],
+                at_f["qs"],
+                at_i["ki"],
+                at_f["ks"],
+                Sq,
+                n_qpad,
+                Sk,
+                n_kpad,
+                H,
+                qst[0],
+                qst[1],
+                qst[2],
+                kst[0],
+                kst[1],
+                kst[2],
+                float_bits(mul),
+                q_kind,
+                k_kind,
+            ),
+            0,
+            stream,
+        )
+    return Operands(
+        i8 = i8,
+        f32 = f32,
+        layout = layout,
+        pointers = (at_i, at_f),
+        shape = (B, Sq, Sk, H, D),
+        pads = (n_qpad, n_kpad),
+        dtype = v.dtype,
+        config = config,
+        inputs = (q, k, v),  # kept alive until the launches that read them are done
+    )
 
 
 def kernel_function(device: Any, head_dim: int, config: dict) -> Any:
     """The loaded CUDA kernel for this device and config (compiled on first use)."""
     import torch
-
-    from . import diffusion_int8_attention_cuda as cuda_kernel
-
-    dev = torch.device(device)
-    index = dev.index if dev.index is not None else torch.cuda.current_device()
-    return cuda_kernel.load(
-        index,
-        tuple(torch.cuda.get_device_capability(index)),
-        kernel_defines(head_dim, config),
-        config.get("max_registers"),
-        shared_bytes(head_dim, config),
-    )
+    return _functions(_device_index(torch.device(device)), head_dim, config)[0]
 
 
 def attend(p: dict) -> Any:
@@ -423,38 +376,37 @@ def attend(p: dict) -> Any:
 
     config = p["config"]
     B, Sq, Sk, H, D = p["shape"]
-    dev = p["qi"].device
+    dev = p["i8"].device
     out = torch.empty((B, Sq, H, D), dtype = p["dtype"], device = dev)
-    fn = kernel_function(dev, D, config)
-    n_qpad, n_kpad = p["qi"].shape[1], p["ki"].shape[1]
+    fn, _, shared = _functions(_device_index(dev), D, config)
+    n_qpad, n_kpad = p["pads"]
+    at_i, at_f = p["pointers"]
     wpc, nq = int(config["wpc"]), int(config["nq"])
-    P, I, L = ctypes.c_void_p, ctypes.c_int, ctypes.c_longlong
-    args = [
-        P(p["qi"].data_ptr()),
-        P(p["ki"].data_ptr()),
-        P(p["vt"].data_ptr()),
-        P(p["qs"].data_ptr()),
-        P(p["ks"].data_ptr()),
-        P(p["vs"].data_ptr()),
-        P(p["vg"].data_ptr()),
-        P(p["vc"].data_ptr()),
-        P(out.data_ptr()),
-        I(Sq),
-        I(n_qpad),
-        I(Sk),
-        I(n_kpad),
-        I(H),
-        L(out.stride(0)),
-        L(out.stride(1)),
-        L(out.stride(2)),
-        I(_OUT_KIND[str(out.dtype)]),
-    ]
     with torch.cuda.device(dev):
-        fn(
+        fn.launch(
             (n_qpad // (16 * nq * wpc), B * H),
             32 * wpc,
-            args,
-            shared_bytes(D, config),
+            (
+                at_i["qi"],
+                at_i["ki"],
+                at_i["vt"],
+                at_f["qs"],
+                at_f["ks"],
+                at_f["vs"],
+                at_f["vg"],
+                at_f["vc"],
+                out.data_ptr(),
+                Sq,
+                n_qpad,
+                Sk,
+                n_kpad,
+                H,
+                out.stride(0),
+                out.stride(1),
+                out.stride(2),
+                _OUT_KIND[str(out.dtype)],
+            ),
+            shared,
             torch.cuda.current_stream().cuda_stream,
         )
     return out
@@ -494,9 +446,7 @@ def unsupported_reason(q: Any, k: Any, v: Any) -> Optional[str]:
 def _verified(q: Any, k: Any, v: Any) -> bool:
     """Whether the accuracy check passed for this call's card, head dim and operand dtypes (the op runs the kernel
     only then: a check passed in one dtype says nothing about another)."""
-    import torch
-
-    index = q.device.index if q.device.index is not None else torch.cuda.current_device()
+    index = _device_index(q.device)
     head_dim = int(q.shape[-1])
     return all((index, head_dim, str(x.dtype)) in _VERIFIED for x in (q, k, v))
 
@@ -517,8 +467,6 @@ def int8_attention(
         raise ValueError(f"INT8 attention cannot take this call: {reason}")
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
     config = config or kernel_config(torch.cuda.get_device_capability(index), q.shape[-1])
-    # the quantisers address the last dim with stride 1
-    q, k, v = (x if x.stride(3) == 1 else x.contiguous() for x in (q, k, v))
     with torch.no_grad():
         return attend(quantise(q, k, v, config, scale))
 
@@ -669,13 +617,7 @@ def _check(
     )
     if out["ok"]:
         dev = torch.device(device)
-        _VERIFIED.add(
-            (
-                dev.index if dev.index is not None else torch.cuda.current_device(),
-                int(head_dim),
-                str(dtype),
-            )
-        )
+        _VERIFIED.add((_device_index(dev), int(head_dim), str(dtype)))
     if not out["ok"] or not timed:
         return out
     wins = {}

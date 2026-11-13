@@ -46,15 +46,17 @@ def _clean(monkeypatch):
 
 
 def rotate_ref(x):
-    """The quantisers' rotation on the last dim: fixed signs, then a 16-point Hadamard transform per 16 channels."""
+    """The quantisers' rotation on the last dim: fixed signs, then a Hadamard transform over every ROT_GROUP
+    channels (the head dim where that is smaller)."""
     D = x.shape[-1]
+    G = min(I.ROT_GROUP, D)
     cols = torch.arange(D, device = x.device)
     flip = (((cols * 7919 + 13) * (cols + 3)) >> 7) & 1
     x = x * (1.0 - 2.0 * flip.to(x.dtype))
-    for _ in range(4):
+    for _ in range(G.bit_length() - 1):
         y = x.reshape(*x.shape[:-1], D // 2, 2)
         z = torch.stack((y[..., 0] + y[..., 1], y[..., 0] - y[..., 1]), dim = -1)
-        x = z.reshape(*x.shape[:-1], D // 16, 8, 2).transpose(-1, -2).reshape(*x.shape[:-1], D)
+        x = z.reshape(*x.shape[:-1], D // G, G // 2, 2).transpose(-1, -2).reshape(*x.shape[:-1], D)
     return x
 
 
@@ -73,29 +75,31 @@ def reference_quantise(
     vc = None,
     vg = None,
 ):
-    """The quantisers' math in fp64. The per-channel K mean and V centre / gain are taken over every STATS_STEP-th
-    key, or passed in (what the kernels computed) to compare the rounding alone."""
+    """The quantisers' math in fp64. The per-channel K mean (over every kstep-th key) and V centre / gain (over
+    every key) are computed here, or passed in (what the kernels computed) to compare the rounding alone."""
     B, Sq, H, D = q.shape
     Sk = k.shape[1]
     bn = config["bn"]
     BH = B * H
-    mul = 1.0 / math.sqrt(D) * I.LOG2E / 16.0
+    mul = 1.0 / math.sqrt(D) * I.LOG2E / min(I.ROT_GROUP, D)
 
     def heads_first(t):
         return t.permute(0, 2, 1, 3).reshape(BH, t.shape[1], D).double()
 
     kh, vh = heads_first(k), heads_first(v)
     if kc is None:
-        kc = kh[:, :: I.STATS_STEP].mean(1)
-        lo, hi = vh[:, :: I.STATS_STEP].amin(1), vh[:, :: I.STATS_STEP].amax(1)
+        kstep, vstep, _, _ = I.stats_plan(Sk)
+        kc = kh[:, ::kstep].mean(1)
+        lo, hi = vh[:, ::vstep].amin(1), vh[:, ::vstep].amax(1)
         vc, vg = 0.5 * (hi + lo), (0.5 * (hi - lo)).clamp_min(1e-12)
     kc, vc, vg = kc.double(), vc.double(), vg.double()
     qr = rotate_ref(heads_first(q))
     qa = qr.abs().amax(-1).clamp_min(1e-20)
     n_kpad = (Sk + bn - 1) // bn * bn
     kr = F.pad(rotate_ref(kh - kc[:, None, :]), (0, 0, 0, n_kpad - Sk))
-    ka = kr.abs().amax(-1).view(BH, n_kpad // bn, bn // 8, 4, 2).amax((2, 4)).clamp_min(1e-20)
-    per_key = ka[:, :, None, :, None].expand(-1, -1, bn // 8, -1, 2).reshape(BH, n_kpad)
+    # one K scale per run of 32 keys and accumulator lane group ((key % 8) // 2)
+    ka = kr.abs().amax(-1).view(BH, n_kpad // 32, 4, 4, 2).amax((2, 4)).clamp_min(1e-20)
+    per_key = ka[:, :, None, :, None].expand(-1, -1, 4, -1, 2).reshape(BH, n_kpad)
     vr = F.pad((vh - vc[:, None, :]) / vg[:, None, :], (0, 0, 0, n_kpad - Sk)).view(
         BH, n_kpad // bn, bn, D
     )
@@ -130,7 +134,7 @@ def emulate(p):
     dev = p["qi"].device
     scores = p["qi"][:, :Sq].double() @ p["ki"].double().transpose(1, 2)  # exact integers
     keys = torch.arange(n_kpad, device = dev)
-    k_scale = p["ks"].reshape(BH, tiles * 4)[:, (keys // bn) * 4 + ((keys % 8) >> 1)]
+    k_scale = p["ks"].reshape(BH, n_kpad // 8)[:, (keys // 32) * 4 + ((keys % 8) >> 1)]
     s = (scores.float() * (p["qs"][:, :Sq, None] * k_scale[:, None, :]).float()).view(
         BH, Sq, tiles, bn
     )
@@ -242,6 +246,16 @@ def test_kernel_compiles_for_every_config():
             assert ptx.count("mma.sync.aligned.m16n8k32") == products
             # the accumulators are read as floats through their bit pattern: no signed int -> float conversion
             assert "cvt.rn.f32.s32" not in ptx
+            quant = K.compile_ptx(
+                K.QUANT_SOURCE,
+                f"sm_{capability[0]}{capability[1]}",
+                {
+                    "HD": head_dim,
+                    "BN": config["bn"],
+                    "RGX": min(I.ROT_GROUP, head_dim).bit_length() - 5,
+                },
+            ).decode(errors = "replace")
+            assert all(f".entry {name}(" in quant for name in K.QUANT_KERNELS)
 
 
 def test_op_off_cuda_is_native_attention():
@@ -438,12 +452,44 @@ def test_the_method_stays_close_to_fp32_attention(shape, bn):
     # the rotation is orthogonal up to its factor 4, so Q.K^T is unchanged
     eye = torch.eye(shape[-1], dtype = torch.float64)
     rot = rotate_ref(eye)
-    assert torch.equal(rot @ rot.T, 16.0 * eye)
+    assert torch.equal(rot @ rot.T, float(min(I.ROT_GROUP, shape[-1])) * eye)
     acc = I.accuracy(emulate(p), I.reference_attention(q, k, v))
     assert acc["cos"] > 0.9995 and acc["rel_l1"] < 0.03, acc
 
 
 # ---------------------------------------------------------------- statistics, dtypes, gradients (CPU)
+
+
+def test_statistics_cover_every_key():
+    for n in (1, 15, 16, 80, 1039, 4112, 10011, 75600, 300000):
+        kstep, vstep, chunks, rows = I.stats_plan(n)
+        # the V range: every key, in row chunks that tile the sequence
+        assert vstep == 1 and rows % vstep == 0 and chunks <= I.V_RANGE_CHUNKS
+        assert (chunks - 1) * rows < n <= chunks * rows
+        # the K mean: sub-sampled only where that still leaves K_MEAN_KEYS keys
+        assert 1 <= kstep <= I.K_MEAN_STEP and -(-n // kstep) >= min(n, I.K_MEAN_KEYS)
+
+
+def test_v_range_over_every_key_keeps_a_short_sequence_accurate(monkeypatch):
+    """16 tokens, one of them with V thirty times the rest (a text refiner call). With the range of V taken over
+    every 8th key (keys 0 and 8 here) the gain of most channels came out far too small and the output lost a
+    quarter of its value; over every key it is as accurate as a long call."""
+    q, k, v = I.probe_inputs("cpu", torch.float32, 16, 2, 128)
+    v = v.clone()
+    v[:, 3] *= 30.0
+    config = {"bn": 64, "wpc": 1, "nq": 1, "stages": 1}
+    ref = I.reference_attention(q, k, v)
+
+    def run():
+        got = emulate(reference_quantise(q, k, v, config))
+        rows = F.cosine_similarity(got.flatten(0, 2), ref.flatten(0, 2), dim = -1)
+        return I.accuracy(got, ref)["rel_l1"], float(rows.min())
+
+    rel, worst = run()
+    assert rel < 0.05 and worst > 0.99, (rel, worst)
+    monkeypatch.setattr(I, "V_RANGE_STEP", 8)
+    sampled, _ = run()
+    assert sampled > 4 * rel, (sampled, rel)
 
 
 def test_the_card_check_counts_for_its_dtype_only(monkeypatch):
@@ -851,16 +897,17 @@ def test_kernel_matches_its_torch_model(shape, dtype, config, strided):
 
 @needs_kernel
 @pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
-def test_shipped_config_is_spill_free_and_fits(head_dim):
+def test_shipped_config_fits(head_dim):
     capability = torch.cuda.get_device_capability()
     config = _cuda_config(head_dim)
     fn = I.kernel_function("cuda", head_dim, config)
-    assert fn.local_bytes == 0, "the kernel spilled registers to the stack"
+    # the configs are picked on measured time: the fastest ones keep a few words on the stack
+    assert fn.local_bytes <= 64, "the kernel spilled more than a few registers to the stack"
     cap = config.get("max_registers")
     assert cap is None or fn.registers <= cap
     # at least one block of this config is resident per SM (registers are granted in multiples of 8 per thread)
     assert 32 * config["wpc"] * ((fn.registers + 7) // 8 * 8) <= SM_REGISTERS
-    assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT[tuple(capability)]
+    assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT.get(tuple(capability), 99 * 1024)
 
 
 @needs_kernel
@@ -891,6 +938,28 @@ def test_peaked_and_flat_rows_stay_accurate():
 
 
 @needs_kernel
+def test_a_short_sequence_and_an_isolated_v_value_stay_accurate():
+    """The V range comes from every key: 16 tokens with one key's V thirty times the rest, and 4096 tokens with one
+    V value forty times its channel's range at a key the old every-8th-key statistics never saw."""
+
+    def worst_row(got, ref):
+        return float(
+            F.cosine_similarity(got.float().flatten(0, 2), ref.flatten(0, 2), dim = -1).min()
+        )
+
+    q, k, v = I.probe_inputs("cuda", torch.bfloat16, 16, 4, 128)
+    v = v.clone()
+    v[:, 3] *= 30.0
+    out, ref = I.int8_attention(q, k, v), I.reference_attention(q, k, v)
+    assert I.accuracy(out, ref)["rel_l1"] < 0.05 and worst_row(out, ref) > 0.99
+    q, k, v = I.probe_inputs("cuda", torch.bfloat16, 4096, 4, 128, seed = 5)
+    v = v.clone()
+    v[:, 13, :, 5] = v[:, :, :, 5].float().abs().amax(1) * 40.0
+    out, ref = I.int8_attention(q, k, v), I.reference_attention(q, k, v)
+    assert I.accuracy(out, ref)["rel_l1"] < 0.03 and worst_row(out, ref) > 0.99
+
+
+@needs_kernel
 @pytest.mark.parametrize("tokens", [65, 1000])
 def test_padded_keys_get_no_weight_when_the_score_scale_underflows(tokens):
     """q = 0 and k = 0: both scales sit on their floor and their product underflows to 0. The padded keys of the last
@@ -904,6 +973,9 @@ def test_padded_keys_get_no_weight_when_the_score_scale_underflows(tokens):
     want = emulate(p)
     rel = float((out - want).abs().mean() / want.abs().mean())
     assert rel < 4e-3, rel
+    # every key has the same weight: the output is the mean of V (lognormal here: this needs its range over every key)
+    acc = I.accuracy(out, v.float().mean(1, keepdim = True).expand_as(out))
+    assert acc["cos"] > 0.999 and acc["rel_l1"] < 0.06, acc
 
 
 @needs_kernel
@@ -918,6 +990,28 @@ def test_the_output_does_not_drift_with_the_key_count():
     want = emulate(p)
     rel = float((out - want).abs().mean() / want.abs().mean())
     assert rel < 3e-4, rel
+
+
+@needs_kernel
+def test_batch_offsets_past_2_31_elements():
+    """Three batches whose stride is 2^30 elements: the third starts 2^31 elements into the buffer, past int32."""
+    stride, S, H, D = 1 << 30, 200, 2, 64
+    need = (2 * stride + 3 * S * H * D) * 2
+    free, _ = torch.cuda.mem_get_info()
+    if free < need + (1 << 30):
+        pytest.skip("needs 5.5 GB of free GPU memory")
+    buf = torch.empty(2 * stride + 3 * S * H * D, device = "cuda", dtype = torch.bfloat16)
+    q, k, v = (buf.as_strided((3, S, H, D), (stride, 3 * H * D, D, 1), i * H * D) for i in range(3))
+    dense = [I.probe_inputs("cuda", torch.bfloat16, S, H, D, seed = 11 + b) for b in range(3)]
+    for b in range(3):
+        for view, value in zip((q, k, v), dense[b]):
+            view[b] = value[0]
+    out = I.int8_attention(q, k, v)
+    for b in range(3):
+        ref = I.reference_attention(*dense[b])
+        assert I.accuracy(out[b : b + 1], ref)["cos"] > 0.999, b
+    del buf, out
+    torch.cuda.empty_cache()
 
 
 @needs_kernel
