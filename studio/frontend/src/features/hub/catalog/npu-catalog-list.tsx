@@ -129,7 +129,6 @@ function NpuCatalogRow({
   );
 }
 
-/** Download, Run and Delete for one NPU model, shared by its row and its detail pane. */
 export function NpuModelActions({
   model,
   catalog,

@@ -35,7 +35,7 @@ export function readmeBaseUrl(
   kind: ReadmeKind,
   branch = "main",
 ): string {
-  return `${getHfEndpoint()}/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
+  return `${getHfEndpoint()}/${readmePrefix(kind)}${repoId}/resolve/${encodeURIComponent(branch)}/`;
 }
 
 async function fetchReadmeOnce(
