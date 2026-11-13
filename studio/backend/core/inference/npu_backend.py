@@ -52,7 +52,6 @@ _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 # Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
 # limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
 _FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
-# lemond's console format: "<date> <time> [Error] (Router) <message>".
 _LEMOND_ERROR = re.compile(r"\[(?:Error|Fatal)\]\s*\([^)]*\)\s*(.+)")
 
 _VALIDATE_PROBLEMS = (
@@ -461,7 +460,6 @@ class LemonadeNpuBackend:
             cache_dir = self.root / "cache",
             config_dir = self.root / "config",
             flm_model_dir = self._flm_model_dir,
-            # The studio home's logs dir, where Settings > Logs looks.
             log_dir = self.root.parent / "logs" / "lemonade",
         )
 

@@ -30493,8 +30493,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
 
     async def _lines():
         body = response.body_iterator
-        # A window marks any load window it overlaps as shared for good, so it opens only once
-        # every refusal (ours and the proxy's preflight) has passed; the first read sends upstream.
+        # Opened after every refusal: a window marks any load it overlaps as shared for good.
         output_mark = npu.output_mark(upstream)
         try:
             async for piece in body:
