@@ -365,7 +365,7 @@ def _route_pip():
             placed = any(
                 a.split("=", 1)[0] in _PIP_LOCATION_FLAGS or (a.startswith("-t") and a != "-t")
                 for a in sys.argv[1:]
-            )
+            ) or any(os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT", "PIP_USER", "PIP_HOME"))
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
@@ -464,7 +464,11 @@ def _read_pth_files(entries):
 # an install lacks the new portion, and flat-layout editable installs are mapped, not on sys.path.
 class _SessionPackagesFinder:
     # Bound up front: an import inside find_spec would re-enter this finder.
-    from importlib.machinery import ModuleSpec as _module_spec, all_suffixes
+    from importlib.machinery import (
+        ModuleSpec as _module_spec,
+        PathFinder as _path_finder,
+        all_suffixes,
+    )
     from importlib.util import spec_from_file_location as _from_file
 
     _from_file = staticmethod(_from_file)
@@ -496,9 +500,18 @@ class _SessionPackagesFinder:
                 if os.path.isfile(candidate):
                     return self._from_file(name, candidate)
             located = [located] if os.path.isdir(located) else None
-        if located:
-            spec = self._module_spec(name, None, is_package = True)
-            spec.submodule_search_locations = list(located)
+        if located is not None:
+            # A namespace: keep the portions the path finder sees (Studio's), add the mapped ones; a regular
+            # package found there wins, as it does over setuptools' own finder.
+            spec = self._path_finder.find_spec(name, path, target)
+            if spec is None:
+                spec = self._module_spec(name, None, is_package = True)
+                spec.submodule_search_locations = []
+            elif spec.loader is not None and spec.origin not in (None, "namespace"):
+                return None
+            for portion in located:
+                if portion not in spec.submodule_search_locations:
+                    spec.submodule_search_locations.append(portion)
             return spec
         if path is None:
             return None

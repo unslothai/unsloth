@@ -755,7 +755,9 @@ def _wheel(workdir, name, files):
 _PIP = "python -m pip install -q --no-index --no-deps"
 
 
-@pytest.mark.parametrize("case", ["chat", "same_process", "editable", "project_venv", "target"])
+@pytest.mark.parametrize(
+    "case", ["chat", "same_process", "editable", "project_venv", "target", "env_target"]
+)
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp_path, case):
     """Studio's interpreter installs into the chat folder; another venv's pip still installs into that venv."""
@@ -774,6 +776,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "chat": f"{_PIP} {wheel} && {show}",
         # An explicit --target keeps its own location.
         "target": f"{_PIP} --target vendor {wheel} && PYTHONPATH=vendor {show}",
+        "env_target": f"PIP_TARGET=vendor {_PIP} {wheel} && PYTHONPATH=vendor {show}",
         "editable": f"{_PIP} {wheel} && {show}",
         # Python caches the session dirs as missing at startup, before pip creates them.
         "same_process": 'python -c "import subprocess, sys; subprocess.check_call(sys.argv[1:]); '
@@ -799,6 +802,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
     expected = {
         "chat": packages,
         "target": str(workdir / "vendor"),
+        "env_target": str(workdir / "vendor"),
         "same_process": packages,
         "editable": str(workdir / "src"),
         "project_venv": str(workdir / "venv"),
@@ -813,6 +817,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "editable_finder",
         "editable_finder_module",
         "editable_finder_namespace",
+        "editable_finder_virtual",
         "upgrade",
         "namespace",
         "pkgutil_namespace",
@@ -852,13 +857,22 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
             # py_modules: MAPPING holds the module path without its suffix.
             (proj / "implementation.py").write_text("")
             expected = str(proj)
-        else:
-            # A PEP 420 namespace root: no __init__.py.
+        elif case == "editable_finder_namespace":
+            # A PEP 420 namespace root, with Studio holding another portion of it.
             (proj / "implementation").mkdir()
             (proj / "implementation" / "part.py").write_text("")
             namespaces = {name: [str(proj / "implementation")]}
-            show = f"import {name}.part; print({name}.part.__file__)"
+            studio_files = {f"{name}/a.py": ""}
+            show = f"import {name}.a, {name}.part; print({name}.part.__file__)"
             expected = str(proj / "implementation")
+        else:
+            # Only name.part is mapped; name is a virtual namespace with no folder of its own.
+            (proj / "part").mkdir()
+            (proj / "part" / "__init__.py").write_text("")
+            mapping, namespaces = {f"{name}.part": str(proj / "part")}, {name: []}
+            studio_files = {f"{name}_unrelated.py": ""}
+            show = f"import {name}.part; print({name}.part.__file__)"
+            expected = str(proj / "part")
         wheel = _wheel(
             workdir,
             name,
