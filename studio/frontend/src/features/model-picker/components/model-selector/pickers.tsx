@@ -9094,7 +9094,7 @@ export function HubModelPicker({
                 {ejectButton}
               </div>
             ) : null}
-            <div className="border-t border-border/60 px-1.5 pt-2 pb-2.5">
+            <div className="border-t border-border/60 px-0.5 pt-2 pb-2.5">
               <button
                 type="button"
                 data-testid="picker-npu-footer"
