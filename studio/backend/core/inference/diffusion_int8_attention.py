@@ -80,6 +80,24 @@ KERNEL_CONFIGS: dict = {
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
 }
+# ROCm runs the Triton form of the kernel (``diffusion_int8_attention_triton``): per gfx arch and head dim, its block
+# shape and how P.V is computed. Measured per arch on the real card (see the PR); an arch missing here keeps native
+# attention.
+ROCM_KERNEL_CONFIGS: dict = {
+    "gfx1151": {
+        128: {
+            "bm": 64,
+            "bn": 32,
+            "warps": 4,
+            "stages": 1,
+            "pv": "f16_t",
+            "kscale": "tile",
+            "long_keys": 8000,
+            "long": {"bm": 128, "warps": 8},
+        },
+        64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "f16_t", "kscale": "tile"},
+    },
+}
 QUANT_ROWS = 64  # the padded Q length is a multiple of this
 ROT_GROUP = (
     128  # channels per Hadamard block of the Q / K rotation (the head dim where that is smaller)
@@ -120,6 +138,34 @@ def kernel_config(capability: Any, head_dim: int) -> Optional[dict]:
         return None
     found = (table or {}).get(int(head_dim))
     return dict(found) if found else None
+
+
+def _is_rocm() -> bool:
+    import torch
+
+    from .rocm_bf16 import is_rocm_torch
+    return bool(is_rocm_torch(torch))
+
+
+def _gfx_arch(index: int) -> str:
+    import torch
+
+    from .rocm_bf16 import normalize_gfx_arch
+    return normalize_gfx_arch(getattr(torch.cuda.get_device_properties(index), "gcnArchName", ""))
+
+
+def rocm_kernel_config(arch: Any, head_dim: int) -> Optional[dict]:
+    found = (ROCM_KERNEL_CONFIGS.get(str(arch)) or {}).get(int(head_dim))
+    return dict(found) if found else None
+
+
+def device_config(index: int, head_dim: int) -> Optional[dict]:
+    """The kernel config for this device and head dim: the CUDA table by capability, the ROCm table by gfx arch."""
+    import torch
+
+    if _is_rocm():
+        return rocm_kernel_config(_gfx_arch(index), head_dim)
+    return kernel_config(torch.cuda.get_device_capability(index), head_dim)
 
 
 def kernel_defines(head_dim: int, config: dict) -> dict:
@@ -450,7 +496,7 @@ def unsupported_reason(q: Any, k: Any, v: Any) -> Optional[str]:
     if torch.is_grad_enabled() and (q.requires_grad or k.requires_grad or v.requires_grad):
         return "needs gradients"
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    if kernel_config(torch.cuda.get_device_capability(index), D) is None:
+    if device_config(index, D) is None:
         return "no kernel config for this card"
     if (index, D) in _BROKEN:
         return "kernel failed on this card"
@@ -480,7 +526,11 @@ def int8_attention(
     if reason is not None:
         raise ValueError(f"INT8 attention cannot take this call: {reason}")
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    config = config or kernel_config(torch.cuda.get_device_capability(index), q.shape[-1])
+    config = config or device_config(index, q.shape[-1])
+    if _is_rocm():
+        from . import diffusion_int8_attention_triton as triton_kernel
+        with torch.no_grad(), torch.cuda.device(q.device):
+            return triton_kernel.int8_attention(q, k, v, config, scale = scale)
     with torch.no_grad():
         return attend(quantise(q, k, v, config, scale))
 
@@ -765,16 +815,13 @@ def _install(
 ) -> int:
     import torch
 
-    from .rocm_bf16 import is_rocm_torch
-
     setting = mode()
     if transformer is None or setting == "off":
         return 0
     dev = torch.device(device)
-    if dev.type != "cuda" or not torch.cuda.is_available() or is_rocm_torch(torch):
+    if dev.type != "cuda" or not torch.cuda.is_available():
         return 0
     index = dev.index if dev.index is not None else torch.cuda.current_device()
-    capability = torch.cuda.get_device_capability(index)
     if str(dtype) not in _OUT_KIND:
         return 0
     candidates = [
@@ -789,7 +836,7 @@ def _install(
     for m in candidates:
         proc = m.processor
         head_dim = _head_dim(m)
-        if head_dim is None or kernel_config(capability, head_dim) is None:
+        if head_dim is None or device_config(index, head_dim) is None:
             continue
         if getattr(proc, "_parallel_config", None) is not None:
             continue
