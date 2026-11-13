@@ -68,8 +68,6 @@ for (const [path, read] of [
       'if (p.phase === "saving_chat_context") {',
       'title: "Saving chat context…",',
       `message: "Saving the chat model's context so it can resume after this load.",`,
-      // Fenced on a cancel or a newer load; update keeps the same toast id and its Cancel, or
-      // updates the inline status when the user closed the toast.
       "if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {\n          loadToast.update(SAVING_PROGRESS);",
     ]) {
       assert.ok(source.includes(pin), `missing: ${pin}`);

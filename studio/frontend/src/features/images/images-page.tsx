@@ -2185,7 +2185,6 @@ export function ImagesPage({
     setStopping(false);
   }, []);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // The load's progress for the inline status once the user closes its toast; null while the toast shows.
   const [closedLoad, setClosedLoad] = useState<DiffusionLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);

@@ -26,8 +26,6 @@ for (const [page, path] of PAGES) {
       /cancel: \{ label: "Cancel", onClick: onCancel \}/,
       "the load toast must carry a cancel action, not just a close button",
     );
-    // createMediaLoadToast raises every load toast, from open and update alike, so each one carries
-    // the Cancel; the page must not build one past it.
     assert.match(SOURCE, /toastOptions: loadToastArgs,/);
     assert.doesNotMatch(SOURCE, /toast\(null, loadToastArgs/);
     assert.match(SOURCE, /loadToast\.setCancel\(\(\) => void handleCancelLoad\(\)\);/);

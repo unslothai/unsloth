@@ -8,9 +8,7 @@ type ToastId = string | number;
 export interface MediaLoadToast<P> {
   /** Raise this load's toast, on a handed-over toast id when given, replacing any earlier one. */
   open: (progress: P, id?: ToastId) => void;
-  /** Show progress on the toast, or on the inline status once the user has closed the toast. */
   update: (progress: P) => void;
-  /** End the toast and the inline status. */
   dismiss: () => void;
   /** What the toast's Cancel runs; set after render, since the handler is built after the toast. */
   setCancel: (onCancel: () => void) => void;

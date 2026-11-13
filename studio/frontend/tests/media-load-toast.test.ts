@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Images / Video load toast. Sonner shows a closed toast again when its id is raised again, so
-// a user close must stop the progress raises and hand progress to the inline status instead.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import { register } from "node:module";
@@ -70,8 +67,7 @@ test("after a user close, progress goes to the inline status and the toast is no
 });
 
 test("closing right after open shows the progress the toast opened with", () => {
-  // Resuming a load already in flight opens on its current progress; a close before the next
-  // poll must not fall back to an idle "Starting".
+  // A resumed load opens on its current progress, so an early close must not show an idle "Starting".
   const { loadToast, closed } = make();
   loadToast.open("downloading 75%", "load-1");
   userClose(raised()[0]);
