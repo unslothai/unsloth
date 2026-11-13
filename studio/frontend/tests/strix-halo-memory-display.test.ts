@@ -34,10 +34,9 @@ test("Strix Halo: VRAM is the 95.8 GiB carve-out, and the shared part is RAM it 
   assert.deepEqual(carveOutVramGb([strixHalo], 1.16, ramAvailableGb), {
     totalGb: 95.82,
     freeGb: 94.66,
-    // Capped by free RAM: the 12.1 GiB shared pool comes out of the RAM tile's 31.8 GiB.
+    // Capped by free RAM.
     borrowableGb: 11.3,
   });
-  // The device row reads the same carve-out.
   assert.equal(
     carveOutVramGb([strixHalo], 1.16, null)?.totalGb,
     95.82,
@@ -70,13 +69,11 @@ test("beside a discrete card, spill and free come from each device's own usage",
     freeGb: 24,
     borrowableGb: 7.92,
   });
-  // An aggregate reading can't say whose usage it is, so free stays unknown.
   const unread = [
     { ...apu, vram_used_gb: undefined },
     { ...card, vram_used_gb: undefined },
   ] as GpuDevice[];
   assert.equal(carveOutVramGb(unread, 100, null)?.freeGb, null);
-  // Past both cards' dedicated memory, the excess has spilled into the APU's shared pool.
   assert.deepEqual(carveOutVramGb(unread, 125, null), {
     totalGb: 119.82,
     freeGb: null,
@@ -110,8 +107,6 @@ test("no carve-out reading for discrete cards, unified pools, or a small UMA sli
 
 test("Strix Halo: the VRAM tile reads used / carve-out, with the borrowable RAM on its own line", () => {
   const tab = readSrc("features/settings/tabs/resources-tab.tsx");
-  // Was "1.16 GiB / 95.8 GiB VRAM + 12.1 GiB shared", truncated in the tile.
-  // Only a carve-out the shared pool outgrows (a UMA slice) keeps the "VRAM + shared" split.
   assert.match(
     tab,
     /const vramCapacityLabel =\s*!metrics\.vramCarveOut && metrics\.vramShared > 0 && !unifiedPool\s*\? t\("settings\.resources\.environment\.vramWithShared"/,

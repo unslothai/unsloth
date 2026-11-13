@@ -645,7 +645,6 @@ export function ResourcesTab() {
     },
   ];
   const unifiedPool = metrics.vramShared > 0 && metrics.vramDedicated === 0;
-  // A carve-out the shared pool outgrows keeps the split, so the pool never reads as dedicated VRAM.
   const vramCapacityLabel =
     !metrics.vramCarveOut && metrics.vramShared > 0 && !unifiedPool
       ? t("settings.resources.environment.vramWithShared", {

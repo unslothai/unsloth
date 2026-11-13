@@ -109,13 +109,11 @@ export function deviceSharedMemorySplitGb(
 export interface CarveOutVramGb {
   totalGb: number;
   freeGb: number | null;
-  /** RAM the GPU can still borrow: what is left of the shared pool, capped by RAM's own free reading. */
+  /** Rest of the shared pool, capped by free RAM. */
   borrowableGb: number;
 }
 
-/** A carve-out APU (Strix Halo with a large VGM) read as VRAM = the carve-out alone, since its shared part is RAM the
- * RAM tile already counts. null unless the carve-out is the larger part: a small UMA slice beside a big shared pool
- * keeps the pool as its GPU memory. */
+/** VRAM as the carve-out alone (Strix Halo VGM): its shared part is RAM the RAM tile counts. null for a small UMA slice. */
 export function carveOutVramGb(
   devices: (MemoryTotalDevice & VramReportingDevice)[],
   usedGb: number | null,
@@ -129,8 +127,7 @@ export function carveOutVramGb(
     ramAvailableGb !== null && Number.isFinite(ramAvailableGb) && ramAvailableGb >= 0
       ? ramAvailableGb
       : Number.POSITIVE_INFINITY;
-  // Usage past a carve-out already sits in shared RAM. With a discrete card beside the APU only per-device readings
-  // say whose usage it is; an aggregate alone leaves free and the spill unknown.
+  // Beside a discrete card only per-device readings say whose usage spilled past the carve-out.
   const perDevice = devices.every((device) => Number.isFinite(device.vram_used_gb));
   const aggregate = usedGb !== null && Number.isFinite(usedGb) ? usedGb : null;
   let freeGb: number | null = null;
@@ -144,7 +141,7 @@ export function carveOutVramGb(
       if (sharesHostMemoryDevice(device)) spilled += Math.max(0, used - own);
     }
   } else if (aggregate !== null) {
-    // Past every card's dedicated memory it has spilled at least that much; free is only known with no discrete card.
+    // Free is only known with no discrete card.
     spilled = Math.max(0, aggregate - totals.dedicated);
     if (apu.dedicated === totals.dedicated) {
       freeGb = Math.max(0, totals.dedicated - aggregate);

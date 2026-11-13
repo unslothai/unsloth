@@ -11,7 +11,6 @@ const resourcesTab = readSrc("features/settings/tabs/resources-tab.tsx");
 test("Resources separates dedicated VRAM from shared GPU memory", () => {
   assert.match(resourcesTab, /gpuMemoryTotalsGb\(usageDevices\)/);
   assert.match(resourcesTab, /metrics\.vramShared > 0/);
-  // The tile divides a carve-out APU's usage by its carve-out; the device row still names both parts.
   assert.match(resourcesTab, /carveOutVramGb\(\s*usageDevices,/);
   assert.match(resourcesTab, /environment\.vramWithShared/);
   assert.match(resourcesTab, /\$\{vramCapacityLabel\}/);
