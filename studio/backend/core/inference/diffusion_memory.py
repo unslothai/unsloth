@@ -7666,10 +7666,12 @@ LATE_IMAGE_ENCODER_PIN_ENV = "UNSLOTH_DIFFUSION_LATE_IMAGE_ENCODER_PIN"
 
 
 def _late_image_encoder_pin_enabled(small_host: bool) -> bool:
+    # a forced GROUP_OFFLOAD_PIN keeps its plan: "0" queues no encoder pinner at all, as before
     return (
         not small_host
         and not _env_off(LATE_IMAGE_ENCODER_PIN_ENV)
         and not _env_off(PARTIAL_ENCODER_PIN_ENV)
+        and not _env_off(GROUP_OFFLOAD_PIN_ENV)
     )
 
 
@@ -8836,7 +8838,10 @@ def _apply_group_offload(
         late_image = False
         if encoders_defer and stream_text_encoders and not pin_streamed[1] and not small_host:
             encoder_cap_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_streamed[0], onload)
-            late_image = _late_image_encoder_pin_enabled(small_host)
+            # only an encoder that can defer takes it (not torchao weights, not a pipe with none)
+            late_image = _late_image_encoder_pin_enabled(small_host) and any(
+                _encoder_defers(m) for m in streamed_encoders.values()
+            )
             if late_image and logger is not None:
                 logger.info(
                     "diffusion.memory: streamed encoders pin the prefix of their offload groups that fits the host RAM "

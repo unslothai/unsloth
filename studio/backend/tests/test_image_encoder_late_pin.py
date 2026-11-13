@@ -197,6 +197,14 @@ def test_routing_the_kill_switch_keeps_the_plan_time_prefix(budget, monkeypatch)
     assert len(deferred) == 1 and deferred[0]["byte_cap"] == 5 << 20
 
 
+def test_routing_a_forced_pin_off_queues_no_encoder_pinner(budget, monkeypatch):
+    # GROUP_OFFLOAD_PIN=0 never pins: the encoder streams from its memory-mapped file with no pinner, as before
+    monkeypatch.setenv(dm.GROUP_OFFLOAD_PIN_ENV, "0")
+    assert not dm._late_image_encoder_pin_enabled(False)
+    applied, deferred = _route(monkeypatch, late = True)
+    assert deferred == [] and [kw.get("low_cpu_mem_usage") for kw in applied] == [True]
+
+
 def test_routing_a_whole_pin_and_the_small_host_route_are_unchanged(budget, monkeypatch):
     _applied, deferred = _route(monkeypatch, late = True, plan = (False, True))
     assert len(deferred) == 1 and deferred[0]["byte_cap"] is None
