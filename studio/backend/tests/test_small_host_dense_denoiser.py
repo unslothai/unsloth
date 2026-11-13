@@ -122,7 +122,6 @@ def test_mapped_denoiser_blocks_lora_and_reports_dense():
     assert sh.mapped_denoiser(pipe)
     assert not _small_host_int8(pipe)
     assert "casts them per layer" in (_lora_load_block_reason(pipe) or "")
-    # an encoder kept memory-mapped is not a mapped denoiser
     enc = types.SimpleNamespace(
         _unsloth_small_host = {
             "components": {"text_encoder": "memory-mapped, layerwise cast (9 MiB)"}
