@@ -1221,6 +1221,41 @@ def test_a_checkout_package_keeps_its_own_submodules_over_a_chat_editable(monkey
     assert str(workdir / "checkout" / name / "child.py") in out, out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_an_editable_child_of_a_namespace_wins_over_studios_copy(monkeypatch, tmp_path):
+    """Studio's portion of an aggregated namespace is no checkout: the chat's editable child still wins."""
+    template = os.path.join(
+        sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
+    )
+    if not os.path.exists(template):
+        pytest.skip("finder-based editable installs need setuptools in Studio's environment")
+    ns = "unsloth_chat_ns_parent"
+    workdir = tmp_path / "chat"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    site_dir.mkdir(parents = True)
+    (tmp_path / "editable" / "pkg").mkdir(parents = True)
+    (tmp_path / "editable" / "pkg" / "__init__.py").write_text("")
+    finder = f"__editable___{ns}_pkg_1_0_finder"
+    (site_dir / f"__editable__.{ns}_pkg-1.0.pth").write_text(
+        f"import {finder}; {finder}.install()\n"
+    )
+    mapping = {f"{ns}.pkg": str(tmp_path / "editable" / "pkg")}
+    (site_dir / f"{finder}.py").write_text(f"MAPPING = {mapping!r}\nNAMESPACES = {{{ns!r}: []}}\n")
+    studio_dir = tmp_path / "studio"
+    studio_dir.mkdir()
+    studio_wheel = studio_dir / _wheel(studio_dir, ns, {f"{ns}/pkg/__init__.py": ""})
+    subprocess.run([sys.executable, *_PIP.split()[1:], str(studio_wheel)], check = True)
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = f"python -c 'import {ns}.pkg as p; print(p.__file__)'"
+    try:
+        out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
+    finally:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "-q", ns], capture_output = True
+        )
+    assert str(tmp_path / "editable" / "pkg" / "__init__.py") in out, out
+
+
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
     """Every OS: Studio's pip installs into the chat folder; nothing else it starts, nor another venv, inherits that."""
     packages = str(tmp_path / os_sandbox.SESSION_PACKAGES_RELPATH)

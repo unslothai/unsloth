@@ -613,11 +613,19 @@ class _SessionPackagesFinder:
             if spec is not None and spec.loader is not None:
                 # The cwd / script dir and anything else ahead of the session dirs, and for a submodule the
                 # chosen parent's own __path__, still come first.
-                if path is None:
-                    first = min(i for i, e in enumerate(sys.path) if e in self._entries)
-                    ahead = sys.path[:first]
-                else:
-                    ahead = list(path)
+                first = min(i for i, e in enumerate(sys.path) if e in self._entries)
+                ahead = sys.path[:first]
+                if path is not None:
+                    parent = name.rpartition(".")[0]
+                    origin = getattr(
+                        getattr(sys.modules.get(parent), "__spec__", None), "origin", None
+                    )
+                    if origin in (None, "namespace"):
+                        # An aggregated namespace also lists Studio's portion: only those ahead count.
+                        own = {os.path.abspath(os.path.join(e, *parent.split("."))) for e in ahead}
+                        ahead = [p for p in path if os.path.abspath(p) in own]
+                    else:
+                        ahead = list(path)
                 if ahead and self._path_finder.find_spec(name, ahead, target):
                     return None
                 return spec
