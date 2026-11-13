@@ -450,6 +450,57 @@ test("an edit over a link keeps the link's untouched values through a replay", a
   assert.equal(live().systemPrompt, "Cite your sources.");
 });
 
+test("an edit in a chat over a link saves only the edit to the chat", async () => {
+  const store = useChatRuntimeStore.getState();
+  await switchTo(LLAMA);
+  store.setActiveThreadId("chat-e");
+  store.applyThreadScopedSettings("chat-e", { temperature: 0.4, systemPrompt: "Mine." });
+  try {
+    await switchTo(QWEN);
+    const s = useChatRuntimeStore.getState();
+    s.setParams({ ...s.params, topK: 33 });
+    await settled();
+    await switchTo(LLAMA);
+    assert.equal(live().temperature, 0.4);
+    assert.equal(live().systemPrompt, "Mine.");
+    assert.equal(useChatRuntimeStore.getState().params.topK, 33);
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+  }
+});
+
+test("a model reached from a link under an edited Default remembers what it showed", async () => {
+  const B = "unsloth/Bee-GGUF";
+  const C = "unsloth/Cee-GGUF";
+  await switchTo(LLAMA);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, temperature: 0.77 });
+  store.setActivePresetSource("modified");
+  await switchTo(QWEN);
+  await switchTo(B);
+  assert.equal(live().temperature, 0.77);
+  await switchTo(C);
+  const s = useChatRuntimeStore.getState();
+  s.setParams({ ...s.params, temperature: 0.9 });
+  await switchTo(B);
+  assert.equal(live().temperature, 0.77);
+});
+
+test("unlinking the model on screen puts the earlier pick back for good", async () => {
+  useChatRuntimeStore.setState({ paramsByModel: { [QWEN]: { temperature: 0.66 } } });
+  await switchTo(QWEN);
+  assert.equal(live().activePreset, "Research");
+  useChatRuntimeStore.getState().setModelPreset(QWEN, null);
+  await Promise.resolve();
+  assert.equal(live().activePreset, "Default");
+  loadOrPoll(QWEN);
+  await Promise.resolve();
+  assert.equal(live().activePreset, "Default");
+  assert.notEqual(live().systemPrompt, "Cite your sources.");
+  useChatRuntimeStore.getState().setModelPreset(QWEN, RESEARCH.name);
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);

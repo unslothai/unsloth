@@ -1381,6 +1381,7 @@ function buildThreadScopedSnapshot(
     settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
   }
   if (threadId === threadScopedSettingsThreadId) {
+    withoutLinkOverlay(settings);
     activeThreadScopedSettings = settings;
   }
   // Spent: this snapshot has taken them into account.
@@ -5145,6 +5146,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const modelPresets = { ...state.modelPresets };
       if (presetName === null) {
         delete modelPresets[modelId];
+        // Unlinking the model on screen puts its earlier pick back, as leaving it would.
+        if (modelId === state.params.checkpoint) {
+          queueMicrotask(() => syncLinkedPreset(modelId, false));
+        }
       } else {
         modelPresets[modelId] = presetName;
       }
@@ -6759,6 +6764,10 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
       : applyPresetForProvider(live.params, fallback, providerTypeFor(modelId)),
     { fromModelDefaults: true },
   );
+  // The link marked this model preset-backed; only a custom pick keeps that.
+  if (useChatRuntimeStore.getState().activePresetSource !== "custom") {
+    modelsShowingPresetPick.delete(modelId);
+  }
 }
 
 /** The source a status merge for `modelId` should honour: arriving at an unlinked model from a
@@ -6793,6 +6802,26 @@ function withLinkOverlay(params: InferenceParams): InferenceParams {
     ),
   );
   return { ...params, ...kept };
+}
+
+/** A chat snapshot takes the open chat's own value, not the link's, for every key the user left
+ *  alone: the link is this tab's view of the model, never the chat's. */
+function withoutLinkOverlay(settings: ThreadScopedSettings): void {
+  if (linkShown === null) return;
+  const state = useChatRuntimeStore.getState();
+  if (state.activePreset !== linkShown) return;
+  const preset = getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
+  if (preset?.name !== linkShown) return;
+  const linked = getPresetOwnedParams(applyPresetForProvider(state.params, preset, null));
+  const own = settings as Record<string, unknown>;
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (explicitlyEditedThreadFields.has(key)) continue;
+    if (JSON.stringify(own[key]) !== JSON.stringify(linked[key as keyof typeof linked])) continue;
+    const underlying =
+      (activeThreadScopedSettings as Record<string, unknown> | null)?.[key] ??
+      pickBeforeLink?.params[key as keyof typeof linked];
+    if (underlying !== undefined) own[key] = underlying;
+  }
 }
 
 /** A pick by hand replaces whatever a link put on, so leaving the model keeps it. */
