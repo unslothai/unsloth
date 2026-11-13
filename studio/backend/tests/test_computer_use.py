@@ -223,6 +223,13 @@ def test_a_first_action_named_by_type_is_kept_ahead_of_its_chain():
     assert [action["op"] for action in parsed] == ["click", "type"]
 
 
+def test_a_windows_line_end_is_one_enter():
+    (crlf,) = actions_mod.parse_actions({"action": "type", "text": "hello\r\n"})
+    assert (crlf["text"], crlf["submit"]) == ("hello", True)
+    (inner,) = actions_mod.parse_actions({"action": "type", "text": "a\r\nb\rc"})
+    assert (inner["text"], inner["submit"]) == ("a\nb\nc", False)
+
+
 def test_a_batch_without_a_first_action_and_its_limit():
     parsed = actions_mod.parse_actions({"actions": [{"type": "screenshot"}, {"type": "wait"}]})
     assert [action["op"] for action in parsed] == ["screenshot", "wait"]

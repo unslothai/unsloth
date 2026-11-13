@@ -276,6 +276,8 @@ def _text(raw: dict) -> dict:
         raise ValueError("type needs text.")
     if len(text) > MAX_TEXT_CHARS:
         raise ValueError(f"text is longer than {MAX_TEXT_CHARS} characters.")
+    # One kind of line end, so a CRLF is one Enter, here and in every backend.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     submit = raw.get("submit") is True or raw.get("press_enter") is True
     # UI-TARS ends the text with a newline to submit it.
     if text.endswith("\n") and "\n" not in text[:-1]:
