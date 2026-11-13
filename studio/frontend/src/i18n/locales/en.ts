@@ -1036,14 +1036,6 @@ export const en = {
       sortPinnedChats: "Sort pinned chats",
       show: "Show",
       newSection: "New section",
-      deleteAllChats: "Delete all chats",
-      deleteAllChatsTitle: "Delete all chats?",
-      deleteAllChatsDescription:
-        "Permanently delete every chat on this device. This cannot be undone.",
-      deleteAllChatsDone: "Deleted {count} chats.",
-      deleteAllChatsNothingCleared: "No chats to delete.",
-      deleteAllChatsFailed: "Failed to delete all chats.",
-      deleteAllChatsPartial: "{deleted} chats deleted, {failed} could not be deleted.",
     },
     sections: {
       createTitle: "New section",

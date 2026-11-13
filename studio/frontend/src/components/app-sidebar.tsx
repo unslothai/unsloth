@@ -257,7 +257,7 @@ import {
   useSectionDrag,
 } from "@/features/chat/hooks/use-section-drag";
 import { prefetchChatPage } from "@/features/chat/load-chat-page";
-import { clearAllChats } from "@/features/chat/utils/clear-all-chats";
+import { clearAllChatsWithToast } from "@/features/chat/utils/clear-all-chats-toast";
 import {
   imeOwnsInputKeydown,
   inputImeHandlers,
@@ -3814,29 +3814,16 @@ export function AppSidebar() {
       return;
     }
     if (target.kind === "clearAll") {
-      try {
-        const result = await clearAllChats({ deleteFiles: shouldDeleteChatFiles });
-        const clearedCount = result.deletedThreadIds.length;
-        const failedCount = result.failedThreadIds.length;
-        clearSelection();
-        notifyChatHistoryUpdated();
-        if (failedCount > 0) {
-          toast.warning(t("shell.organize.deleteAllChatsPartial", { deleted: clearedCount, failed: failedCount }));
-        } else {
-          toast.success(
-            clearedCount === 0
-              ? t("shell.organize.deleteAllChatsNothingCleared")
-              : t("shell.organize.deleteAllChatsDone", { count: clearedCount }),
-          );
-        }
-        // The active chat was among those deleted; navigate to a fresh one.
-        if (activeThreadId && result.deletedThreadIds.includes(activeThreadId)) {
-          navigate({ to: "/chat", search: { new: createNavigationNonce() } });
-        }
-      } catch (err) {
-        toast.error(t("shell.organize.deleteAllChatsFailed"), {
-          description: err instanceof Error ? err.message : undefined,
-        });
+      clearSelection();
+      const { result } = await clearAllChatsWithToast({
+        deleteFiles: shouldDeleteChatFiles,
+      });
+      if (
+        isChatRoute &&
+        activeThreadId &&
+        result?.deletedThreadIds.includes(activeThreadId)
+      ) {
+        navigate({ to: "/chat", search: { new: createNavigationNonce() } });
       }
       return;
     }
@@ -4551,7 +4538,7 @@ export function AppSidebar() {
             onSelect={() => openDeleteDialog({ kind: "clearAll" })}
           >
             <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
-            <span>{t("shell.organize.deleteAllChats")}</span>
+            <span>{t("settings.chat.clearAllChats")}</span>
           </DropdownMenuItem>
         </>
       );
@@ -6974,7 +6961,7 @@ export function AppSidebar() {
                   : confirmingDelete?.kind === "projects"
                     ? t("shell.selection.deleteProjectsTitle")
                     : confirmingDelete?.kind === "clearAll"
-                      ? t("shell.organize.deleteAllChatsTitle")
+                      ? t("settings.chat.clearAllChats")
                       : t("shell.dialog.deleteChat.title")}
           </DialogTitle>
           <DialogDescription>
@@ -6995,7 +6982,7 @@ export function AppSidebar() {
                 count: confirmingDelete.projects.length,
               })
             ) : confirmingDelete?.kind === "clearAll" ? (
-              t("shell.organize.deleteAllChatsDescription")
+              t("settings.chat.clearChatsConfirmDescription")
             ) : confirmingDelete?.kind === "project" ? (
               t("projectsPage.deleteProjectDescription", {
                 name: confirmingDelete.project.name,
@@ -7015,7 +7002,8 @@ export function AppSidebar() {
                     "The project workspace folder will be removed from disk.")
                   : confirmingDelete?.kind === "projects"
                     ? t("shell.selection.deleteProjectsFilesDescription")
-                    : confirmingDelete?.kind === "chats"
+                    : confirmingDelete?.kind === "chats" ||
+                        confirmingDelete?.kind === "clearAll"
                       ? t("shell.selection.deleteFilesDescription")
                     : t("shell.selection.deleteChatFilesDescription")}
               </span>

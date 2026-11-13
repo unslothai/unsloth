@@ -428,6 +428,7 @@ export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
 export { showForkCreatedToast, showForkFailedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { clearAllChatsWithToast } from "./utils/clear-all-chats-toast";
 export { stopRecoveredRun } from "./utils/chat-generation-recovery";
 export { readIncompleteInfo } from "./utils/continuation";
 export { priorPassTiming } from "./utils/continued-timing";

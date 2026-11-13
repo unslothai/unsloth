@@ -1031,13 +1031,6 @@ export const ru = {
       sortPinnedChats: "Сортировать закреплённые чаты",
       show: "Показывать",
       newSection: "Новый раздел",
-      deleteAllChats: "Удалить все чаты",
-      deleteAllChatsTitle: "Удалить все чаты?",
-      deleteAllChatsDescription: "Безвозвратно удалить все чаты на этом устройстве. Это действие нельзя отменить.",
-      deleteAllChatsDone: "Удалено {count} чатов.",
-      deleteAllChatsNothingCleared: "Нет чатов для удаления.",
-      deleteAllChatsFailed: "Не удалось удалить все чаты.",
-      deleteAllChatsPartial: "{deleted} чатов удалено, {failed} не удалось удалить.",
     },
     sections: {
       createTitle: "Новый раздел",

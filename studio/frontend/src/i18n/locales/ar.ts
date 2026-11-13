@@ -1028,13 +1028,6 @@ export const ar = {
       sortPinnedChats: "ترتيب المحادثات المثبتة",
       show: "إظهار",
       newSection: "قسم جديد",
-      deleteAllChats: "حذف جميع الدردشات",
-      deleteAllChatsTitle: "حذف جميع الدردشات؟",
-      deleteAllChatsDescription: "حذف جميع الدردشات على هذا الجهاز نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
-      deleteAllChatsDone: "تم حذف {count} دردشة.",
-      deleteAllChatsNothingCleared: "لا توجد دردشات للحذف.",
-      deleteAllChatsFailed: "فشل في حذف جميع الدردشات.",
-      deleteAllChatsPartial: "تم حذف {deleted} دردشة، تعذر حذف {failed}.",
     },
     sections: {
       createTitle: "قسم جديد",

@@ -1032,13 +1032,6 @@ export const fr = {
       sortPinnedChats: "Trier les discussions épinglées",
       show: "Afficher",
       newSection: "Nouvelle section",
-      deleteAllChats: "Supprimer tous les chats",
-      deleteAllChatsTitle: "Supprimer tous les chats ?",
-      deleteAllChatsDescription: "Supprimez définitivement tous les chats sur cet appareil. Cette action est irréversible.",
-      deleteAllChatsDone: "{count} chats supprimés.",
-      deleteAllChatsNothingCleared: "Aucun chat à supprimer.",
-      deleteAllChatsFailed: "Échec de la suppression de tous les chats.",
-      deleteAllChatsPartial: "{deleted} chats supprimés, {failed} n'ont pas pu être supprimés.",
     },
     sections: {
       createTitle: "Nouvelle section",

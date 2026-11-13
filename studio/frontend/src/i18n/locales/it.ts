@@ -929,13 +929,6 @@ export const it = {
       sortPinnedChats: "Ordina le chat fissate",
       show: "Mostra",
       newSection: "Nuova sezione",
-      deleteAllChats: "Elimina tutte le chat",
-      deleteAllChatsTitle: "Eliminare tutte le chat?",
-      deleteAllChatsDescription: "Elimina definitivamente tutte le chat su questo dispositivo. Non è possibile annullare.",
-      deleteAllChatsDone: "{count} chat eliminate.",
-      deleteAllChatsNothingCleared: "Nessuna chat da eliminare.",
-      deleteAllChatsFailed: "Impossibile eliminare tutte le chat.",
-      deleteAllChatsPartial: "{deleted} chat eliminate, {failed} non è stato possibile eliminare.",
     },
     sections: {
       createTitle: "Nuova sezione",
