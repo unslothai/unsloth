@@ -1588,9 +1588,6 @@ def test_h16_probe_covers_the_one_pass_branch_and_rejects_nan_scales(forced):
         assert cq._swiglu_probe(index) is False
 
 
-# ---- install_eager: the bit-identical subset for uncompiled denoisers ----
-
-
 def test_install_eager_kill_switch_keeps_torchao(monkeypatch):
     called = []
     monkeypatch.setattr(g8, "install", lambda *a, **k: called.append(k) or 7)
