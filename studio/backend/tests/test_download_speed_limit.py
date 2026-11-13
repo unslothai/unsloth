@@ -22,12 +22,14 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 import pytest
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import routes.settings as settings
 import storage.studio_db as studio_db
 import utils.download_speed_limit as speed_limit
 from hub.services import download_lifecycle
+from hub.utils import download_registry
 
 from .test_hf_download_pinned_revision import _OLD, _REPO, _WORKER, _FakeHub, _repo_dir
 from .test_hf_download_reclaim_race import _worker_env
@@ -53,6 +55,114 @@ def test_nothing_stored_means_no_limit(store):
 def test_a_stored_limit_is_returned(store):
     store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] = 8
     assert speed_limit.get_download_speed_limit_mbps() == 8.0
+
+
+def _unreadable_limit(monkeypatch):
+    def read(key, fallback = None):
+        if key == speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY:
+            raise RuntimeError("database is locked: /private/settings.db")
+        return fallback
+
+    monkeypatch.setattr(studio_db, "get_app_setting", read)
+
+
+def test_unreadable_limit_fails_safely_and_recovers(monkeypatch, store):
+    read = studio_db.get_app_setting
+    store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] = 8
+    assert speed_limit.get_download_speed_limit_mbps() == 8.0
+    _unreadable_limit(monkeypatch)
+    with pytest.raises(RuntimeError, match = "Retry") as error:
+        speed_limit.get_download_speed_limit_mbps()
+    assert "/private" not in str(error.value)
+    monkeypatch.setattr(studio_db, "get_app_setting", read)
+    store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] = 4
+    assert speed_limit.get_download_speed_limit_mbps() == 4.0
+    store.clear()
+    assert speed_limit.get_download_speed_limit_mbps() is None
+
+
+@pytest.mark.parametrize("mode", ["http", "xet", "auto", None])
+def test_unreadable_limit_blocks_transport_selection(monkeypatch, mode):
+    _unreadable_limit(monkeypatch)
+    with pytest.raises(HTTPException) as error:
+        download_lifecycle.resolve_requested_use_xet(mode, True)
+    assert error.value.status_code == 503
+    assert "Retry" in error.value.detail
+    assert "/private" not in error.value.detail
+
+
+@pytest.mark.parametrize("use_xet", [False, True])
+def test_unreadable_limit_never_spawns_a_worker(monkeypatch, use_xet):
+    _unreadable_limit(monkeypatch)
+    spawned = []
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", lambda *a, **k: spawned.append(k))
+    with pytest.raises(RuntimeError, match = "Retry"):
+        download_lifecycle.spawn_worker(
+            ["--repo-id", _REPO], None, use_xet = use_xet, allow_ambient_token = False
+        )
+    assert spawned == []
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_unreadable_limit_releases_a_claim_for_recovery(monkeypatch, retry):
+    import logging
+    from hub.utils import hf_tokens
+    from utils import hf_cache_settings
+
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key(_REPO)
+    assert registry.claim(key, download_registry.TRANSPORT_XET, repo_type = "model", repo_id = _REPO)[0]
+    if retry:
+        registry.set_job(key, "error", "worker failed")
+    _unreadable_limit(monkeypatch)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: _types.SimpleNamespace(child_env = lambda: {}),
+    )
+    monkeypatch.setattr(download_lifecycle.account_access, "account_scope", lambda: None)
+    monkeypatch.setattr(download_lifecycle, "_job_bytes_on_disk", lambda *a, **k: 0)
+    monkeypatch.setattr(download_lifecycle, "http_rung_reason", lambda *a, **k: None)
+    monkeypatch.setattr(hf_tokens, "note_repo_fetched_with_a_request_token", lambda *a: None)
+    spawned = []
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", lambda *a, **k: spawned.append(k))
+    kwargs = dict(
+        hf_token = None,
+        label = _REPO,
+        log_prefix = "Download",
+        logger = logging.getLogger(__name__),
+        repo_type = "model",
+        repo_id = _REPO,
+        watch_name = "test-watch",
+        allow_ambient_token = False,
+    )
+    if retry:
+        assert (
+            download_lifecycle._try_transport_retry(
+                registry, key, retry_transport = download_registry.TRANSPORT_XET, **kwargs
+            )
+            is False
+        )
+    else:
+        with pytest.raises(HTTPException) as error:
+            download_lifecycle.launch_worker(
+                registry,
+                key,
+                transport = download_registry.TRANSPORT_XET,
+                spawn = lambda: download_lifecycle.spawn_worker(
+                    ["--repo-id", _REPO], None, use_xet = True, allow_ambient_token = False
+                ),
+                **kwargs,
+            )
+        assert "Retry" in error.value.detail
+    assert spawned == []
+    state = registry.get_job(key)
+    assert state.state == "error"
+    assert "Retry" in state.error
+    assert "/private" not in state.error
+    assert registry.claim(key, download_registry.TRANSPORT_HTTP, repo_type = "model", repo_id = _REPO)[
+        0
+    ]
 
 
 @pytest.mark.parametrize("junk", ["fast", -3, 0, True, None])

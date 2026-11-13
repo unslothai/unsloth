@@ -26,7 +26,11 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import EXIT_CANCELLED
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from hub.utils.state_dir import RepoType
-from utils.download_speed_limit import DOWNLOAD_SPEED_LIMIT_ENV, get_download_speed_limit_mbps
+from utils.download_speed_limit import (
+    DOWNLOAD_SPEED_LIMIT_ENV,
+    DownloadSpeedLimitUnavailableError,
+    get_download_speed_limit_mbps,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +264,11 @@ def resolve_requested_use_xet(
 ) -> tuple[bool, str]:
     """Resolve the current transport mode, falling back to the legacy ``use_xet`` flag."""
     mode = (transport_mode or "").strip().lower()
-    if get_download_speed_limit_mbps():
+    try:
+        speed_limit = get_download_speed_limit_mbps()
+    except DownloadSpeedLimitUnavailableError as exc:
+        raise HTTPException(status_code = 503, detail = str(exc)) from None
+    if speed_limit:
         # Only the HTTP stream can be paced: hf_xet transfers natively.
         if download_registry.http_size_ceiling_reason(largest_file_bytes) is None:
             return (False, "HTTP (download speed limit)")
