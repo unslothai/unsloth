@@ -2792,7 +2792,20 @@ _RACE_ROWS = (4096, 300)
 _KERNEL_RACE_IMAGES = (4096, 1024)
 # sequences shorter than this keep the native backend when the kernel wins only the large canvas
 _KERNEL_LARGE_ROWS = 2560
+# timed rounds per race, every variant once per round, the order reversed every other round
+_RACE_ROUNDS = 7
 ATTENTION_RACE_ATTR = "_unsloth_h3_attention_race"
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def _paired_ratio(times: list, first: int, second: int) -> float:
+    """Median over the rounds of variant ``first``'s time over variant ``second``'s in the same round: a card whose
+    clock moves while it is timed moves both alike, so the decision does not depend on which variant ran first."""
+    return _median([a / b for a, b in zip(times[first], times[second]) if b > 0] or [float("inf")])
 
 
 def race_checkpoint_attention(
@@ -2807,7 +2820,8 @@ def race_checkpoint_attention(
     None when no block's attention is on the card (nothing to time: the caller keeps the INT8 route).
 
     ``kernel`` adds Studio's INT8 attention kernel on the backend the block had: ``kernel`` maps each image row
-    count of ``_KERNEL_RACE_IMAGES`` to the [native, engaged, kernel] medians in ms."""
+    count of ``_KERNEL_RACE_IMAGES`` to the [native, engaged, kernel] medians in ms and ``paired`` to the per-round
+    [engaged / native, kernel / native, kernel / engaged] median ratios the decisions use."""
     import torch
 
     attn = None
@@ -2856,24 +2870,19 @@ def race_checkpoint_attention(
             return a.elapsed_time(b)
 
         times: list = [[] for _ in variants]
-        if kernel:
-            # interleaved rounds: a card that changes speed while it is being timed (an A100 does, about a second
-            # into a load) then slows or speeds every variant alike instead of the one timed last
-            for variant in variants:
-                select(variant)
-                for _ in range(2):
-                    attn(x, rotary, None)
-            for _ in range(5):
-                for i, variant in enumerate(variants):
-                    select(variant)
-                    times[i].append(once())
-        else:
-            for i, variant in enumerate(variants):
-                select(variant)
-                for _ in range(2):
-                    attn(x, rotary, None)
-                times[i] = [once() for _ in range(5)]
-        return [sorted(t)[len(t) // 2] for t in times]
+        for variant in variants:
+            select(variant)
+            for _ in range(2):
+                attn(x, rotary, None)
+        # interleaved rounds, every other one in reverse: a card that changes speed while it is being timed (an
+        # A100 does, about a second into a load; an L4 settles its clock) slows or speeds every variant alike
+        # instead of the one timed first or last
+        order = list(range(len(variants)))
+        for r in range(_RACE_ROUNDS):
+            for i in order if r % 2 == 0 else order[::-1]:
+                select(variants[i])
+                times[i].append(once())
+        return times
 
     variants = ((native, False), (engaged, False)) + (((native, True),) if kernel else ())
     try:
@@ -2890,10 +2899,18 @@ def race_checkpoint_attention(
         proc._attention_backend = engaged
         if kernel:
             proc._unsloth_int8, proc._unsloth_int8_min_tokens = routed
-    ms = rows[_RACE_ROWS[0]][:2]
-    found = {"keep": ms[1] < 0.98 * ms[0], "ms": ms, "native": str(native)}
+    large = rows[_RACE_ROWS[0]]
+    found = {
+        "keep": _paired_ratio(large, 1, 0) < 0.98,
+        "ms": [_median(t) for t in large[:2]],
+        "native": str(native),
+    }
     if kernel:
-        found["kernel"] = rows
+        found["kernel"] = {n: [_median(t) for t in times] for n, times in rows.items()}
+        found["paired"] = {
+            n: [_paired_ratio(times, 1, 0), _paired_ratio(times, 2, 0), _paired_ratio(times, 2, 1)]
+            for n, times in rows.items()
+        }
     return found
 
 

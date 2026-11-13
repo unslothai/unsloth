@@ -6,6 +6,7 @@ fallbacks on CPU; the kernel against a plain-torch model of itself, spills, CUDA
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import math
 import types
@@ -973,6 +974,72 @@ def test_checkpoint_attention_races_each_backend_once(monkeypatch, _active_backe
     assert load("0", sage_keep = False)[:2] == (None, [False])
 
 
+class _ClockedAttention:
+    """An attention module on a card whose clock steps once: every call takes its backend's cost times 1.0 before the
+    ``step``-th call and ``after`` from it on. CUDA events read the same virtual clock."""
+
+    COST = {"native": 10.0, "sage": 9.4, "kernel": 8.8}
+
+    def __init__(self, step: int, after: float, kernel: bool):
+        cls = type("Proc", (), {"_unsloth_int8": False} if kernel else {})
+        self.processor = cls()
+        self.processor._attention_backend = "sage"
+        self.processor._unsloth_int8_min_tokens = 0
+        self.step, self.after = step, after
+        self.calls = 0
+        self.now = 0.0
+
+    def parameters(self):
+        return iter([types.SimpleNamespace(is_cuda = True, device = torch.device("cpu"))])
+
+    def __call__(self, x, rotary, mask):
+        proc = self.processor
+        name = "kernel" if getattr(proc, "_unsloth_int8", False) else proc._attention_backend
+        factor = 1.0 if self.calls < self.step else self.after
+        self.now += self.COST[name] * factor * x.shape[1] / 4396
+        self.calls += 1
+
+
+def _clocked_race(monkeypatch, step: int, after: float, kernel: bool):
+    H = _h3_image()
+    attn = _ClockedAttention(step, after, kernel)
+
+    class Event:
+        def __init__(self, enable_timing = False):
+            self.t = 0.0
+
+        def record(self):
+            self.t = attn.now
+
+        def synchronize(self):
+            pass
+
+        def elapsed_time(self, other):
+            return other.t - self.t
+
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: contextlib.nullcontext())
+    block = types.SimpleNamespace(attn = attn, norm1 = types.SimpleNamespace(normalized_shape = (8,)))
+    transformer = types.SimpleNamespace(transformer_blocks = [block], rope = lambda pos: None)
+    found = H.race_checkpoint_attention(transformer, {attn: "native"}, torch.float32, kernel = kernel)
+    return found, attn.calls
+
+
+@pytest.mark.parametrize("after", [0.85, 1.15])
+@pytest.mark.parametrize("kernel", [False, True])
+def test_checkpoint_race_decision_does_not_follow_a_clock_step(monkeypatch, after, kernel):
+    """SageAttention is 6% faster than native here and the kernel 6% faster than SageAttention: wherever in the race
+    the card's clock steps by 15% either way, the race keeps SageAttention, and the kernel wins against it."""
+    H = _h3_image()
+    _, total = _clocked_race(monkeypatch, 10**6, 1.0, kernel)
+    for step in range(total + 1):
+        found, _ = _clocked_race(monkeypatch, step, after, kernel)
+        assert found["keep"], (step, found)
+        if kernel:
+            large = found["paired"][H._KERNEL_RACE_IMAGES[0]]
+            assert large[2] < I.RACE_MARGIN, (step, found)
+
+
 # ---------------------------------------------------------------- the kernel itself (CUDA)
 
 
@@ -1356,16 +1423,18 @@ def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     I.remove_int8_attention(model)
     before = I.STATS["int8"]
     found = H.race_checkpoint_attention(model, saved, torch.bfloat16, kernel = True)
-    # 2 warm-ups + 5 timed calls of the kernel per canvas, and the processor is left as it was
-    assert I.STATS["int8"] == before + 14
+    # 2 warm-ups + one timed call per round of the kernel per canvas, and the processor is left as it was
+    calls = 2 * (2 + H._RACE_ROUNDS)
+    assert I.STATS["int8"] == before + calls
     assert sorted(found["kernel"]) == [1024, 4096]
     assert all(len(v) == 3 and min(v) > 0 for v in found["kernel"].values())
     assert found["ms"] == found["kernel"][4096][:2]
+    assert all(len(v) == 3 and min(v) > 0 for v in found["paired"].values())
     proc = blocks[0].processor
     assert not proc._unsloth_int8 and proc._attention_backend == saved[blocks[0]]
     # without the kernel the race is the two-way one
     plain = H.race_checkpoint_attention(model, saved, torch.bfloat16)
-    assert "kernel" not in plain and len(plain["ms"]) == 2 and I.STATS["int8"] == before + 14
+    assert "kernel" not in plain and len(plain["ms"]) == 2 and I.STATS["int8"] == before + calls
     import logging
 
     routed, race = H._race_int8_kernel(
