@@ -66,7 +66,7 @@ def require_converter_deps() -> None:
         )
 
 
-# Header scans: gguf.GGUFReader parses every vocab array (~7 s on a 9B).
+# Header scans: gguf.GGUFReader parses every vocab array.
 def _gguf_architecture(gguf_path: str) -> str:
     from utils.models.gguf_metadata import read_gguf_architecture
     return read_gguf_architecture(str(gguf_path)) or ""

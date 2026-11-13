@@ -157,7 +157,6 @@ def _real_gguf(
 
 @pytest.mark.parametrize(
     "architecture, expected",
-    # Only the q4k pin (Qwen3.5) packs Q4_K; elsewhere a selected Q4_0 beats a re-quantized Q4_K_M.
     [("llama", "Q4_0"), ("qwen3", "Q4_0"), ("qwen35", "Q4_K_M"), ("qwen35moe", "Q4_K_M")],
 )
 def test_source_prefers_a_quant_the_converter_packs_directly(
