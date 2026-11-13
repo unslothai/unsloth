@@ -1091,3 +1091,33 @@ def test_the_catalog_never_offers_a_checkpoint_the_loader_vetoes_by_name(monkeyp
     get_diffusion_backend().validate_load_request(
         repo, gguf_filename = "edition.safetensors", family_override = None, model_kind = "single_file"
     )
+
+
+@pytest.mark.parametrize(
+    "keys, offered",
+    [
+        (
+            [
+                "img_in.weight",
+                "single_stream_modulation.lin.weight",
+                "double_stream_modulation_img.lin.weight",
+            ],
+            True,
+        ),
+        (["model.embed_tokens.weight", "model.layers.0.self_attn.q_proj.weight"], False),
+        (["encoder.conv_in.weight", "decoder.conv_in.weight"], False),
+    ],
+)
+def test_a_single_file_repo_offers_only_its_transformer(monkeypatch, keys, offered):
+    from hub.routes.inventory import is_sdxl_checkpoint
+
+    _stub_header(monkeypatch, [keys])
+    repo = "Comfy-Org/Flux-2-Klein-4B"
+    filename = "split_files/diffusion_models/flux-2-klein-4b.safetensors"
+    assert is_sdxl_checkpoint(repo, filename, None, False, "u") is offered
+
+
+def test_a_bare_sdxl_unet_is_not_offered_as_a_checkpoint(monkeypatch):
+    from hub.routes.inventory import is_sdxl_checkpoint
+    _stub_header(monkeypatch, [SDXL_UNET_KEYS[:5]])
+    assert not is_sdxl_checkpoint("example/sdxl-unet", "unet.safetensors", None, False, "u")

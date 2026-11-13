@@ -93,6 +93,15 @@ def read_hub_checkpoint_family(
     revision: Optional[str] = None,
 ) -> Optional[str]:
     """Identify a bundled pipeline by its tensor header, independent of the repo and file names."""
+    return _dit_family(_read_hub_header(repo_id, filename, hf_token, revision))
+
+
+def _read_hub_header(
+    repo_id: str,
+    filename: str,
+    hf_token: Any,
+    revision: Optional[str] = None,
+) -> Any:
     from huggingface_hub import HfApi
 
     from .diffusion_content import classify_tensors
@@ -104,7 +113,7 @@ def read_hub_checkpoint_family(
         repo_id, filename, token = token, revision = revision
     )
     shapes = {name: list(info.shape) for name, info in meta.tensors.items()}
-    return _dit_family(classify_tensors(shapes, meta.metadata))
+    return classify_tensors(shapes, meta.metadata)
 
 
 def prefetch_for_pick(
@@ -154,12 +163,20 @@ def hub_checkpoint_loads_as_sdxl(
     hf_token: Any,
     revision: Optional[str] = None,
 ) -> bool:
-    """A whole-SDXL header AND the loader's own verdict, so name-vetoed variants (inpaint, edit) are not offered."""
+    """A whole-SDXL or single-file image transformer header AND the loader's own verdict, so text
+    encoders, VAEs and name-vetoed variants (inpaint, edit) are not offered."""
+    from .diffusion_content import PAGE_IMAGE, ROLE_DIT, SAME_ARCH_VARIANTS
     from .diffusion_families import detect_family_for_pick
 
-    family = read_hub_checkpoint_family(repo_id, filename, hf_token, revision)
-    if family != "sdxl":
+    info = _read_hub_header(repo_id, filename, hf_token, revision)
+    if info.role != ROLE_DIT or not info.family or info.page != PAGE_IMAGE:
         return False
-    _remember(repo_id, filename, family)
+    whole = _dit_family(info)
+    if whole:
+        _remember(repo_id, filename, whole)
     fam = detect_family_for_pick(repo_id, filename, None)
-    return fam is not None and fam.name == "sdxl"
+    return (
+        fam is not None
+        and fam.single_file_is_pipeline == bool(whole)
+        and fam.name in SAME_ARCH_VARIANTS.get(info.family, frozenset({info.family}))
+    )
