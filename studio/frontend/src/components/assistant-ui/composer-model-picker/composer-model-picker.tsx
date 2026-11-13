@@ -3099,6 +3099,13 @@ export function ComposerModelPicker({
     }
   }, [configRequest, adoptedRequestId, onConfigRequestAdopted]);
 
+  // A new search or tab is a new list, so the highlight starts over as on opening; before the
+  // effect below, which then seats `active` inside it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `query` and `viewed` are the triggers.
+  useEffect(() => {
+    setHighlight(false);
+  }, [query, viewed, setHighlight]);
+
   useEffect(() => {
     if (!isExpanded) {
       return;

@@ -1258,3 +1258,20 @@ test("local audio checkpoints route to the Audio page by path and HF name", () =
     /for \(const m of inventory\.localModels\) \{\s*put\(\[m\.id, m\.model_id\], m\.task, m\.model_id\);/,
   );
 });
+
+test("a new search or tab restarts the keyboard highlight before the active row is seated", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const reset = picker.search(
+    /useEffect\(\(\) => \{\s*setHighlight\(false\);\s*\}, \[query, viewed, setHighlight\]\);/,
+  );
+  const seat = picker.indexOf(
+    "// Rows paging in under the pointer must not move the highlight.",
+  );
+  assert.ok(reset >= 0, "no highlight reset on query / tab change");
+  assert.ok(
+    reset < seat,
+    "the reset must run before the effect that seats `active`",
+  );
+});
