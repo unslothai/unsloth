@@ -385,10 +385,12 @@ def convert_chatml_to_alpaca(
             ) from exc
 
     if stats is not None and not is_iterable:
-        count_column = chat_column or next(
+        # Mirror _convert's fallback: an absent chat_column falls back to the standard names.
+        count_column = next(
             (
                 name
-                for name in ("messages", "conversations", "texts")
+                for name in ([chat_column] if chat_column else [])
+                + ["messages", "conversations", "texts"]
                 if name in (dataset.column_names or [])
             ),
             None,
