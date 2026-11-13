@@ -162,17 +162,6 @@ export function ComputerUseTab() {
             />
           </SettingsRow>
         ) : null}
-        <SettingsRow
-          icon={<HugeiconsIcon icon={CursorInWindowIcon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
-          label={t("computerUse.settings.browser")}
-          description={t("computerUse.settings.browserDescription")}
-        >
-          <Switch
-            aria-label={t("computerUse.settings.browser")}
-            checked={browserUse}
-            onCheckedChange={(next) => useBrowserAgentStore.getState().setEnabled(next)}
-          />
-        </SettingsRow>
         {on
           ? GRANTS.filter((kind) => status.permissions[kind] !== null).map((kind) => (
               <SettingsRow
@@ -295,6 +284,20 @@ export function ComputerUseTab() {
           </AppList>
         </SettingsSection>
       ) : null}
+      {/* Its own section: it works inside Unsloth's browser panel and needs none of the above. */}
+      <SettingsSection title={t("browser.agentSettings.title")}>
+        <SettingsRow
+          icon={<HugeiconsIcon icon={CursorInWindowIcon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
+          label={t("computerUse.settings.browser")}
+          description={t("computerUse.settings.browserDescription")}
+        >
+          <Switch
+            aria-label={t("computerUse.settings.browser")}
+            checked={browserUse}
+            onCheckedChange={(next) => useBrowserAgentStore.getState().setEnabled(next)}
+          />
+        </SettingsRow>
+      </SettingsSection>
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
