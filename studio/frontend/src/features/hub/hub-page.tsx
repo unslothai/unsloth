@@ -1575,20 +1575,21 @@ export function ModelsPage() {
       }
       // Clearing the split view's auto-picked preview only re-picks it: 2 navigations per key (#15221).
       const openedModel = !!urlModel && urlModel !== autoPreviewIdRef.current;
-      if (openedModel || urlSection) {
+      if (openedModel || urlSection || urlNpu) {
         void navigate({
           to: "/hub",
           search: (prev) => ({
             ...prev,
             model: undefined,
             section: undefined,
+            npu: undefined,
           }),
           replace: true,
         });
       }
       setQuery(next);
     },
-    [query, urlSection, urlModel, navigate],
+    [query, urlSection, urlModel, urlNpu, navigate],
   );
 
   useEffect(() => {
