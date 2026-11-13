@@ -14210,6 +14210,11 @@ class VideoBackend:
                     if self._gen.get("phase") == "encode":
                         self._gen.update(phase = "denoise")
 
+                def _on_denoise_entry() -> None:
+                    _enter_denoise()
+                    from .video_stream_residency import begin_denoise
+                    begin_denoise(state.pipe, logger = logger)
+
                 ticker = _CompletedStepTicker(steps)
 
                 def _report(done: int) -> None:
@@ -14262,6 +14267,9 @@ class VideoBackend:
                         time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
                     if not marked:
                         _enter_decode_phase()
+                    from .video_stream_residency import prepare_decode
+
+                    prepare_decode(state.pipe, logger = logger)
                     if carry_by_scheduler:
                         logger.info(
                             "video.h3_stream_carry: %d carried copies read across forwards so far",
@@ -14326,7 +14334,7 @@ class VideoBackend:
                                 )
                             )
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
-                        stack.enter_context(_denoise_phase(pipe, _enter_denoise))
+                        stack.enter_context(_denoise_phase(pipe, _on_denoise_entry))
                         if fam.name == "minimax-h3":
                             from .video_minimax_h3_forward import h3_render_scope
 
