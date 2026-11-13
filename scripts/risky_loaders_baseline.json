@@ -11,14 +11,6 @@
   ],
   "entries": [
     {
-      "file": "unsloth/models/float8_training.py",
-      "rule": "dynamic-import",
-      "sink": "spec_from_file_location",
-      "digest": "78b864cf6acb1555",
-      "count": 1,
-      "reason": "Standalone import fallback loads only unsloth/kernels/fp8_lora.py beside this shipped module, from __file__; no model metadata or caller input selects the module name or path."
-    },
-    {
       "file": "scripts/prequant_probe.py",
       "rule": "unsafe-deserialize",
       "sink": "torch.load",
@@ -97,6 +89,14 @@
       "digest": "8a43c55c018acccf",
       "count": 1,
       "reason": "Imports a name from the constant _TORCHAO_INTMM_MODULES tuple (torchao's safe_int_mm homes); never a model, request or download name."
+    },
+    {
+      "file": "studio/backend/core/inference/diffusion_minimax_h3_image.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
+      "count": 1,
+      "reason": "Loads only the two vendored diffusers model files shipped in studio/backend/vendor/diffusers_minimax_h3_image, by a path built from __file__ and a literal module name; no model metadata or caller input selects the module name or path."
     },
     {
       "file": "studio/backend/core/inference/diffusion_prequant.py",
@@ -667,12 +667,12 @@
       "reason": "Fallback when this file is loaded on its own: loads unsloth/precision/__init__.py from the sibling directory of the shipped package, a fixed path, never a user-supplied one."
     },
     {
-      "file": "unsloth/models/fsdp2_save.py",
-      "rule": "unsafe-deserialize",
-      "sink": "pickle.loads",
-      "digest": "bf2d3c412d57fd50",
+      "file": "unsloth/models/float8_training.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
       "count": 1,
-      "reason": "_share_from_writer: unpickles only what the export's writer rank stored under an unsloth_fsdp2_export_* key in the job's own default c10d store; a party able to write that store already controls the job's collectives."
+      "reason": "Standalone import fallback loads only unsloth/kernels/fp8_lora.py beside this shipped module, from __file__; no model metadata or caller input selects the module name or path."
     },
     {
       "file": "unsloth/models/loader.py",
@@ -737,14 +737,6 @@
       "digest": "9a08f32d1af83ea3",
       "count": 1,
       "reason": "Reached only after the trust_remote_code gate in _resolve_module_class raises for an untrusted non sentence_transformers class."
-    },
-    {
-      "file": "unsloth/models/tp_replica.py",
-      "rule": "unsafe-deserialize",
-      "sink": "pickle.loads",
-      "digest": "bf2d3c412d57fd50",
-      "count": 1,
-      "reason": "Reads the result rank 0 published to this job's own torch.distributed c10d store (the same trust boundary as broadcast_object_list); no file or network payload from outside the process group."
     },
     {
       "file": "unsloth/save.py",

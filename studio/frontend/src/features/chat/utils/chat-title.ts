@@ -200,6 +200,7 @@ export interface ExternalRoutingFields {
   provider_api_type: "chat_completions" | "responses";
   provider_reasoning_config?: CustomReasoningConfig;
   encrypted_api_key?: string;
+  extra_headers?: Record<string, string>;
 }
 
 export type ExternalRoutingUnavailableReason =
@@ -275,6 +276,9 @@ export async function buildExternalRoutingFields(
             apiKey,
             options.forceRefreshPublicKey ?? false,
           ),
+          ...(provider.extraHeaders && Object.keys(provider.extraHeaders).length
+            ? { extra_headers: provider.extraHeaders }
+            : {}),
         }
       : {}),
   };
@@ -352,11 +356,16 @@ function titleReasoningFields(
   };
 }
 
-/** Forced reasoning counts toward the cap (Gemini 2.5 Pro forces 128), so add headroom. */
+/** Forced reasoning counts toward the cap (Gemini 2.5 Pro forces 128), so add headroom; a Custom
+ *  connection without a reasoning dialect cannot turn thinking off (#17332). */
 function titleMaxTokens(connection: ResolvedExternalConnection): number {
-  const floor = getExternalMinOutputTokens(connection.provider.providerType);
+  const { provider } = connection;
+  const floor = getExternalMinOutputTokens(provider.providerType);
   const caps = titleReasoningCaps(connection);
-  const forcedReasoning = caps.supportsReasoning && !caps.supportsReasoningOff;
+  const uncontrolled =
+    toExternalBackendProviderType(provider.providerType) === "custom" &&
+    provider.apiType !== "responses";
+  const forcedReasoning = (caps.supportsReasoning || uncontrolled) && !caps.supportsReasoningOff;
   return Math.max(24, floor, forcedReasoning ? 1024 : 0);
 }
 

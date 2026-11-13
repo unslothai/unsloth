@@ -385,8 +385,7 @@ def test_eight_processes_upgrading_at_once_all_succeed(db):
 
 
 def test_the_migration_is_skipped_once_the_scoped_trigger_is_installed(db):
-    """Every connection would otherwise re-drop and re-create it, taking the writer lock
-    on a hot path for nothing."""
+    """Skipping re-drop and re-create avoids taking the writer lock on every connection."""
     conn = studio_db.get_connection()
     try:
         assert (

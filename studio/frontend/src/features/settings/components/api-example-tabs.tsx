@@ -236,7 +236,12 @@ export function ApiExamplesPanel({
           {...keyless}
         />
       ) : (
-        <DecisionApiSection showHeading={false} />
+        <DecisionApiSection
+          apiKey={apiKey}
+          useTunnel={useTunnel}
+          showHeading={false}
+          {...keyless}
+        />
       )}
     </div>
   );

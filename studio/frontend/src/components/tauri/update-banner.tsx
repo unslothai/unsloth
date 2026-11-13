@@ -23,7 +23,8 @@ interface UpdateBannerProps {
   info: UpdateInfo | null;
   dismissed: boolean;
   lastFailure: RetainedUpdateFailure | null;
-  isExternalServer?: boolean;
+  // Set while attached to a server this app did not start, which blocks the update.
+  externalServerPort?: number | null;
   updatePolicyMode: DesktopUpdatePolicyMode;
   manualReleaseUrl: string | null;
   // Release page for this version, preferred over the generic changelog.
@@ -48,7 +49,7 @@ export function UpdateBanner({
   info,
   dismissed,
   lastFailure,
-  isExternalServer = false,
+  externalServerPort = null,
   updatePolicyMode,
   manualReleaseUrl,
   releasePageUrl = null,
@@ -72,6 +73,7 @@ export function UpdateBanner({
   );
   const show = showFailure || offerOpen;
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
+  const isExternalServer = externalServerPort !== null;
   const installDisabled = isManualLinuxPackage
     ? manualReleaseUrl === null
     : isExternalServer;
@@ -123,7 +125,7 @@ export function UpdateBanner({
           data-testid="tauri-update-banner"
         >
           {/* Paint the full floor even when the notes are short. */}
-          <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+          <div className="toast-surface relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -172,7 +174,9 @@ export function UpdateBanner({
                     : isManualLinuxPackage
                       ? t("desktopUpdate.banner.linuxManual")
                       : isExternalServer
-                        ? t("settings.about.update.desktopExternalServer")
+                        ? t("settings.about.update.desktopExternalServer", {
+                            port: externalServerPort,
+                          })
                         : t("desktopUpdate.banner.available")}
                 </p>
               </div>

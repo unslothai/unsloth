@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
+import { dropVramBudgetRetry, loadVramBudgetSettings, settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
@@ -55,6 +57,7 @@ export interface DiffusionStatus {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   speed_optims?: string[];
   attention_backend?: string | null;
@@ -266,6 +269,17 @@ export interface DiffusionGenerateRequest {
   hires?: HiresRequest;
   // Upscale workflow: a model upscaler id from status.upscale_models; omitted = Lanczos.
   upscale_model?: string | null;
+  // Server-side X/Y grid (API callers; the page's Compare grid builds its cells client-side).
+  xy?: { x: XYAxisSpec; y?: XYAxisSpec };
+}
+
+export interface XYAxisSpec {
+  field:
+    | "seed" | "steps" | "guidance" | "sampler" | "schedule_type" | "shift" | "base_shift" | "max_shift"
+    | "strength" | "clip_skip" | "cfg_rescale" | "variation_seed" | "variation_strength" | "lora_weight"
+    | "prompt_sr";
+  values: Array<number | string>;
+  index?: number;
 }
 
 export interface LoraSpecInput {
@@ -328,6 +342,7 @@ export interface GalleryImage {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   attention_backend?: string | null;
   transformer_cache?: string | null;
@@ -374,6 +389,13 @@ export interface GalleryImage {
   hires_base_width?: number | null;
   hires_base_height?: number | null;
   created_at: number;
+  xy_grid?: {
+    x: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
+    y?: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
+    cells: string[];
+    cell_width?: number;
+    cell_height?: number;
+  } | null;
   pinned?: boolean;
   archived?: boolean;
   order_at?: number | null;
@@ -381,6 +403,7 @@ export interface GalleryImage {
 
 export interface DiffusionGenerateResponse {
   images: GalleryImage[];
+  grid?: GalleryImage | null;
 }
 
 export async function parseJson<T>(response: Response): Promise<T> {
@@ -424,20 +447,48 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
   return parseJson(await authFetch("/api/inference/images/generate-progress"));
 }
 
+/** The budget edit never reached the server, so nothing may load on the old one. */
+export class VramBudgetSaveError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Failed to save VRAM budget");
+    this.name = "VramBudgetSaveError";
+  }
+}
+
+/** Settles a slider edit first: the backend snapshots the budget for a load and its download plan. */
+export async function withSettledVramBudget<T>(run: () => Promise<T>): Promise<T> {
+  const budgetSave = settleVramBudgetSave();
+  if (!budgetSave) return run();
+  setVramBudgetLocked(true);
+  try {
+    await budgetSave.catch((error: unknown) => {
+      // Dropped and repainted together, so the slider never shows a value no load will use.
+      dropVramBudgetRetry();
+      void loadVramBudgetSettings({ force: true });
+      throw new VramBudgetSaveError(error);
+    });
+    return await run();
+  } finally {
+    setVramBudgetLocked(false);
+  }
+}
+
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
   // This POST only starts the load, so the notice settles from load-progress, not the response.
-  return withBackgroundLoadNotice(
-    "image",
-    body.model_path,
-    async () =>
-      parseLoadJson<DiffusionStatus>(
-        await authFetch("/api/inference/images/load", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(withAllowOversizedLoad(body)),
-        }),
-      ),
-    async (signal) => (await getDiffusionLoadProgress(signal)).phase,
+  return withSettledVramBudget(() =>
+    withBackgroundLoadNotice(
+      "image",
+      body.model_path,
+      async () =>
+        parseLoadJson<DiffusionStatus>(
+          await authFetch("/api/inference/images/load", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(withAllowOversizedLoad(body)),
+          }),
+        ),
+      async (signal) => (await getDiffusionLoadProgress(signal)).phase,
+    ),
   );
 }
 
@@ -485,8 +536,11 @@ export class GenerateResponseLostError extends Error {
 const RESPONSE_LOST_STATUSES = new Set([408, 502, 503, 504, 522, 524]);
 
 /** A run past the proxy window throws GenerateResponseLostError; settle it, do not retry. */
+/** `sequence`: this run belongs to a multi-run Generate; while `more` runs follow, the server queue holds its next job
+ *  until this sequence's next request arrives. */
 export async function generateDiffusionImage(
   body: DiffusionGenerateRequest,
+  sequence?: { id: string; more: boolean },
 ): Promise<DiffusionGenerateResponse> {
   let response: Response;
   try {
@@ -495,7 +549,11 @@ export async function generateDiffusionImage(
       "/api/inference/images/generate",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(sequence && { "X-Unsloth-Run-Sequence": sequence.id }),
+          ...(sequence?.more && { "X-Unsloth-More-Runs": "1" }),
+        },
         body: JSON.stringify(body),
       },
       { retryNetworkErrors: false },
@@ -507,9 +565,8 @@ export async function generateDiffusionImage(
   }
   if (!response.ok && RESPONSE_LOST_STATUSES.has(response.status)) {
     const detail = await readFastApiError(response);
-    // A proxy answers with HTML (or nothing); the app answers with JSON. Only the former means the request may still
-    // be running: settling an application error would poll for a generation that never started and hide the reason
-    // the backend gave.
+    // Only a proxy's HTML or empty reply means the generation may still be running; a JSON
+    // application error is thrown with the backend's reason rather than polled for.
     if ((response.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
       throw new Error(detail);
     }
@@ -536,6 +593,75 @@ export async function cancelDiffusionGeneration(
       { retryNetworkErrors: false },
     ),
   );
+}
+
+export type ImageQueueStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+export interface ImageQueueJob {
+  id: string;
+  status: ImageQueueStatus;
+  /** 0-based place among the queued jobs; null once started. */
+  position: number | null;
+  prompt: string;
+  width: number;
+  height: number;
+  /** null follows the loaded model's default. */
+  steps: number | null;
+  seed: number | null;
+  batch_size: number;
+  workflow: string | null;
+  loras: string[];
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  error: string | null;
+  image_ids: string[];
+  seed_used: number | null;
+}
+
+// A server without the queue (older Studio, proxy, test double) answers without a list: no jobs, not a crash.
+function queueJobs(body: unknown): ImageQueueJob[] {
+  const jobs = (body as { jobs?: unknown } | null)?.jobs;
+  return Array.isArray(jobs) ? (jobs as ImageQueueJob[]) : [];
+}
+
+export async function enqueueDiffusionImage(body: DiffusionGenerateRequest): Promise<ImageQueueJob> {
+  // No retry: a re-sent POST queues the run twice.
+  return parseJson(
+    await authFetch(
+      "/api/inference/images/queue",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      { retryNetworkErrors: false },
+    ),
+  );
+}
+
+export async function listDiffusionQueue(): Promise<ImageQueueJob[]> {
+  return queueJobs(await parseJson(await authFetch("/api/inference/images/queue")));
+}
+
+export async function cancelDiffusionQueueJob(id: string): Promise<ImageQueueJob> {
+  return parseJson(
+    await authFetch(`/api/inference/images/queue/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  );
+}
+
+export async function moveDiffusionQueueJob(id: string, index: number): Promise<ImageQueueJob[]> {
+  const res = await authFetch(`/api/inference/images/queue/${encodeURIComponent(id)}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index }),
+  });
+  return queueJobs(await parseJson(res));
+}
+
+export async function clearDiffusionQueue(): Promise<ImageQueueJob[]> {
+  const res = await authFetch("/api/inference/images/queue", { method: "DELETE" });
+  return queueJobs(await parseJson(res));
 }
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {

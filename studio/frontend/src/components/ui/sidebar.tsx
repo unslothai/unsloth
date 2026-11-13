@@ -8,6 +8,12 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import {
+  hasTrackedSurface,
+  MODAL_SURFACE,
+  SIDEBAR_SURFACE,
+  useSurfaceRef,
+} from "@/lib/surface-registry"
 // Deep import: the feature barrel pulls in SettingsDialog and closes an import cycle.
 import { useShortcut } from "@/features/settings/hooks/use-shortcut"
 import { Button } from "@/components/ui/button"
@@ -144,7 +150,7 @@ function SidebarProvider({
   // Not behind an open dialog (Settings leaves the app un-hidden); the mobile drawer is itself one.
   useShortcut("toggleSidebar", toggleSidebar, {
     claims: () =>
-      (isMobile && openMobile) || document.querySelector(OPEN_DIALOG_SELECTOR) === null,
+      (isMobile && openMobile) || !hasTrackedSurface(MODAL_SURFACE, OPEN_DIALOG_SELECTOR),
   })
 
   const pinned = pinnedProp ?? false
@@ -237,6 +243,11 @@ function Sidebar({
   const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking } =
     useSidebar()
   const { width, scale: widthScale } = useSidebarWidth()
+  // Only the "none" sidebar is the element props land on; the others pass them further in.
+  const surfaceRef = useSurfaceRef<HTMLDivElement>(
+    SIDEBAR_SURFACE,
+    collapsible === "none" ? props.ref : undefined,
+  )
   // Only a sidebar that collapses to nothing has an edge to be held out from.
   const holdsOut = hasPinMode && !pinned && collapseToZero
   const heldOut = holdsOut && peeking
@@ -256,6 +267,7 @@ function Sidebar({
           className
         )}
         {...props}
+        ref={surfaceRef}
       >
         {children}
       </div>
@@ -266,6 +278,7 @@ function Sidebar({
     return (
       <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
         <SheetContent
+          ref={surfaceRef}
           dir={dir}
           data-sidebar="sidebar"
           data-slot="sidebar"
@@ -302,6 +315,7 @@ function Sidebar({
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
+      ref={surfaceRef}
       style={scopedWidthStyle}
       // Held out, it is on screen and must answer the pointer again.
       aria-hidden={(holdsOut && !heldOut) || undefined}

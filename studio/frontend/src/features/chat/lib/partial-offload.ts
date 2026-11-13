@@ -16,6 +16,10 @@ export interface OffloadCounts {
   offloadOverridden?: boolean | null;
   cpuFallbackReason?: string | null;
   gpuBackendUnavailable?: boolean | null;
+  overflowLayers?: number | null;
+  expertCacheMib?: number | null;
+  gpuWeightsMib?: number | null;
+  hostWeightsMib?: number | null;
 }
 
 export interface OffloadCountsSource {
@@ -26,6 +30,10 @@ export interface OffloadCountsSource {
   offload_overridden?: boolean | null;
   cpu_fallback_reason?: string | null;
   gpu_backend_unavailable?: boolean | null;
+  overflow_layers?: number | null;
+  expert_cache_mib?: number | null;
+  gpu_weights_mib?: number | null;
+  host_weights_mib?: number | null;
 }
 
 export function offloadCountsFrom(
@@ -39,63 +47,16 @@ export function offloadCountsFrom(
     offloadOverridden: response.offload_overridden,
     cpuFallbackReason: response.cpu_fallback_reason,
     gpuBackendUnavailable: response.gpu_backend_unavailable,
+    overflowLayers: response.overflow_layers,
+    expertCacheMib: response.expert_cache_mib,
+    gpuWeightsMib: response.gpu_weights_mib,
+    hostWeightsMib: response.host_weights_mib,
   };
 }
 
 export interface OffloadWarning {
   titleSuffix: string;
   description: string;
-}
-
-/** Why a loaded model is not fully on the GPU, or `null`. A known cpu_fallback_reason
- * wins over the counts: a Vulkan CPU fallback also logs 0/M, and is not a size problem.
- * Manual pins only count with gpuLayers >= 0 (Manual + Auto layers is llama.cpp's fit). */
-export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
-  const {
-    offloaded,
-    total,
-    gpuMemoryMode,
-    gpuLayers,
-    offloadOverridden,
-    cpuFallbackReason,
-    gpuBackendUnavailable,
-  } = counts;
-  const cpuFallbackDescription = cpuFallbackMessage(cpuFallbackReason);
-  if (cpuFallbackDescription) {
-    return {
-      titleSuffix: " on CPU",
-      description: cpuFallbackDescription,
-    };
-  }
-  if (cpuFallbackReason) return null;
-  if (typeof offloaded !== "number" || typeof total !== "number") return null;
-  if (total <= 0 || offloaded >= total) return null;
-  // Before the pin check: a failed GPU backend is never what was asked for.
-  if (offloaded <= 0 && gpuBackendUnavailable && gpuLayers !== 0) {
-    return {
-      titleSuffix: ", on CPU",
-      description:
-        "The GPU was found but llama.cpp could not use it, so the model runs " +
-        "entirely on CPU and generation will be slow. This is a backend " +
-        "problem rather than a size one, so a smaller quantization will not " +
-        "help. The llama-server log in Settings > Logs has the reason.",
-    };
-  }
-  const manualPin =
-    gpuMemoryMode === "manual" &&
-    typeof gpuLayers === "number" &&
-    gpuLayers >= 0;
-  if (manualPin || offloadOverridden) return null;
-  if (offloaded <= 0) {
-    return {
-      titleSuffix: ", on CPU",
-      description: `None of the ${total} layers fit on the GPU, so the model runs entirely on CPU and generation will be slow. A smaller quantization or a shorter context may leave room on the GPU.`,
-    };
-  }
-  return {
-    titleSuffix: ", partly on CPU",
-    description: `${offloaded} of ${total} layers are on the GPU. The rest run on CPU, so generation will be slower. A smaller quantization or a shorter context may let more of it fit on the GPU.`,
-  };
 }
 
 function count(value: unknown): number | null {
@@ -109,6 +70,95 @@ function weightAmount(mib: number): string {
   return mib < 102.4
     ? `${Math.max(1, Math.round(mib))} MiB`
     : formatGiB(mib / 1024);
+}
+
+/** Manual pins only count with gpuLayers >= 0 (Manual + Auto layers is llama.cpp's fit). */
+function splitChosenByUser(counts: OffloadCounts): boolean {
+  return (
+    (counts.gpuMemoryMode === "manual" &&
+      typeof counts.gpuLayers === "number" &&
+      counts.gpuLayers >= 0) ||
+    counts.offloadOverridden === true
+  );
+}
+
+type ShortfallCause = "fallback" | "backend" | "noneFit" | "partial";
+
+/** Why a load is not fully on the GPU although nothing asked for that, or `null`. A cpu_fallback_reason
+ * wins over the counts: a Vulkan CPU fallback also logs 0/M, and is not a size problem. */
+function shortfallCause(counts: OffloadCounts): ShortfallCause | null {
+  const { offloaded, total, gpuLayers, gpuBackendUnavailable } = counts;
+  if (counts.cpuFallbackReason) return "fallback";
+  if (typeof offloaded !== "number" || typeof total !== "number") return null;
+  if (total <= 0) return null;
+  // A GPU build whose backend failed to start still logs "offloaded N/N"; its buffers are all host ones.
+  const noGpuBuffers =
+    count(counts.gpuWeightsMib) === 0 && (count(counts.hostWeightsMib) ?? 0) > 0;
+  const onGpu = gpuBackendUnavailable && noGpuBuffers ? 0 : offloaded;
+  if (onGpu >= total) return null;
+  // Before the pin check: a failed GPU backend is never what was asked for.
+  if (onGpu <= 0 && gpuBackendUnavailable && gpuLayers !== 0) return "backend";
+  if (splitChosenByUser(counts)) return null;
+  return onGpu <= 0 ? "noneFit" : "partial";
+}
+
+/** Weights only, no KV cache. Names the device, not VRAM/RAM: those are one pool on some machines. */
+function weightsSentence(counts: OffloadCounts): string {
+  const gpu = count(counts.gpuWeightsMib) ?? 0;
+  const host = count(counts.hostWeightsMib) ?? 0;
+  const parts: string[] = [];
+  if (gpu > 0) parts.push(`${weightAmount(gpu)} on the GPU`);
+  if (host > 0) parts.push(`${weightAmount(host)} on the CPU`);
+  return parts.length > 0 ? ` Model weights: ${parts.join(", ")}.` : "";
+}
+
+export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
+  const { offloaded, total } = counts;
+  switch (shortfallCause(counts)) {
+    case "fallback": {
+      // A reason this build does not know is left to the caller's own fallback wording.
+      const description = cpuFallbackMessage(counts.cpuFallbackReason);
+      return description ? { titleSuffix: " on CPU", description } : null;
+    }
+    case "backend":
+      return {
+        titleSuffix: ", on CPU",
+        description:
+          "The GPU was found but llama.cpp could not use it, so the model runs " +
+          "entirely on CPU and generation will be slow. This is a backend " +
+          "problem rather than a size one, so a smaller quantization will not " +
+          "help. The llama-server log in Settings > Logs has the reason.",
+      };
+    case "noneFit":
+      return {
+        titleSuffix: ", on CPU",
+        description: `None of the ${total} layers fit on the GPU, so the model runs entirely on CPU and generation will be slow. A smaller quantization or a shorter context may leave room on the GPU.${weightsSentence(counts)}`,
+      };
+    case "partial":
+      return {
+        titleSuffix: ", partly on CPU",
+        description: `${offloaded} of ${total} layers are on the GPU. The rest run on CPU, so generation will be slower. A smaller quantization or a shorter context may let more of it fit on the GPU.${weightsSentence(counts)}`,
+      };
+    default:
+      return null;
+  }
+}
+
+/** Not a warning: --fit keeping MoE expert weights on the CPU is how a large MoE fits, far cheaper than layers. */
+export function expertSpillNote(counts: OffloadCounts): string | null {
+  const { offloaded, total } = counts;
+  if (typeof offloaded !== "number" || typeof total !== "number") return null;
+  if (total <= 0 || offloaded < total) return null;
+  if (shortfallCause(counts) !== null || splitChosenByUser(counts)) return null;
+  const cache = count(counts.expertCacheMib) ?? 0;
+  const overflow = count(counts.overflowLayers) ?? 0;
+  if (cache > 0) {
+    return `All ${total} layers are on the GPU. Every expert is on the CPU, with a ${weightAmount(cache)} cache of the most used ones on the GPU.${weightsSentence(counts)}`;
+  }
+  if (overflow > 0) {
+    return `All ${total} layers are on the GPU. The expert weights of ${overflow} ${overflow === 1 ? "layer" : "layers"} are on the CPU.${weightsSentence(counts)}`;
+  }
+  return null;
 }
 
 /** --fit reports its own expert spill; a Manual load says it through n_cpu_moe instead. */

@@ -840,8 +840,7 @@ class TestStructuredFindingsForDialog:
         )
 
     def test_scan_route_reports_all_scan_created_repos(self, monkeypatch):
-        """A LoRA scan that pulls both adapter and base into cache reports every created
-        repo, so a decline purges all of them, not just the primary."""
+        """A LoRA scan's created repos include the base, so a decline must purge all of them."""
         adapter, base = "someone/lora-adapter", "someone/base-model"
         payload = self._run_scan_route(
             monkeypatch, adapter = adapter, base = base, in_cache = lambda _n: False
@@ -1146,8 +1145,7 @@ class TestStructuredFindingsForDialog:
         assert payload["scan_created_repos"] == []
 
     def test_scan_route_purges_remote_adapter_downloaded_by_base_resolution(self, monkeypatch):
-        """A remote adapter counts as scan-created, since base resolution caches it, so decline
-        purges it."""
+        """A remote adapter is scan-created when base resolution caches it, so decline purges it."""
         import asyncio
 
         import routes.models as models_route
@@ -1981,16 +1979,21 @@ class TestDiscardRemoteCodeDownload:
         repo = SimpleNamespace(repo_type = "model", repo_id = "evil/repo", revisions = [rev])
         return SimpleNamespace(repos = [repo], delete_revisions = MagicMock())
 
-    def _run(self, model_name, cache_scans):
+    def _run(
+        self,
+        model_name,
+        cache_scans,
+        active_model_name = None,
+    ):
         import asyncio
 
         import routes.models as M
 
-        not_loaded = SimpleNamespace(active_model_name = None)
+        backend = SimpleNamespace(active_model_name = active_model_name)
         with (
             patch.object(M, "is_local_path", return_value = model_name.startswith("/")),
             patch.object(M, "_all_hf_cache_scans", return_value = cache_scans),
-            patch.object(M, "get_inference_backend", return_value = not_loaded),
+            patch("core.inference.orchestrator.peek_inference_backend", return_value = backend),
             patch(
                 "routes.inference.get_llama_cpp_backend",
                 return_value = SimpleNamespace(is_loaded = False, model_identifier = None),
@@ -2003,6 +2006,12 @@ class TestDiscardRemoteCodeDownload:
         res = self._run("evil/repo", [cache])
         assert res["deleted"] is True
         cache.delete_revisions.assert_called_once_with("deadbeef")
+
+    def test_refuses_loaded_model(self):
+        cache = self._fake_cache(["config.json", "modeling_evil.py"])
+        res = self._run("evil/repo", [cache], active_model_name = "evil/repo")
+        assert res == {"deleted": False, "reason": "loaded"}
+        cache.delete_revisions.assert_not_called()
 
     def test_refuses_when_weights_present(self):
         cache = self._fake_cache(["config.json", "model.safetensors"])

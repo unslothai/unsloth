@@ -174,7 +174,7 @@ test("pins are grey with the Recents unpin glyph, and tooltips are the app's own
 });
 
 test("in the composer list the pin shows on row hover only, pinned or not", () => {
-  assert.match(MENU_PICKER, /text-muted-foreground opacity-0 outline-hidden transition-colors group-hover\/row:opacity-100/);
+  assert.match(MENU_PICKER, /text-muted-foreground opacity-\[var\(--row-pin-opacity,0\)\] outline-hidden transition-colors group-hover\/row:opacity-100/);
   assert.doesNotMatch(MENU_PICKER, /!isPinned &&/);
 });
 
@@ -244,12 +244,18 @@ test("composer pins are their own menu items, so the keyboard reaches them", () 
     /<DropdownMenuPrimitive\.CheckboxItem\s+checked=\{isPinned\}[\s\S]*?data-row-action=\{true\}[\s\S]*?togglePin\(model\);/,
   );
   assert.doesNotMatch(MENU_PICKER, /tabIndex=\{-1\}/);
-  assert.match(read("../src/index.css"), /\.menu-row-with-action:has\(\[data-row-action\]:is\(:hover, \[data-highlighted\]\)\)/);
+  // The item's own :has() over its later siblings lights it while the pin is hovered or highlighted.
+  assert.match(
+    read("../src/index.css"),
+    /\.menu-row-with-action > :is\(\[data-slot="dropdown-menu-item"\], \[data-slot="context-menu-item"\]\):has\(~ \[data-row-action\]:is\(:hover, \[data-highlighted\]\), ~ \* \[data-row-action\]:is\(:hover, \[data-highlighted\]\)\)/,
+  );
 });
 
 test("pins show without hover on touch screens", () => {
   assert.match(PICKER, /"opacity-0 group-hover\/row:opacity-100 \[@media\(hover:none\)\]:opacity-100"/);
-  assert.match(MENU_PICKER, /group-has-\[\[data-highlighted\]\]\/row:opacity-100 \[@media\(hover:none\)\]:opacity-100/);
+  // The row lifts the pin while anything in it is highlighted (has-[[data-highlighted]] sets --row-pin-opacity).
+  assert.match(MENU_PICKER, /className="menu-row-with-action group\/row has-\[\[data-highlighted\]\]:\[--row-pin-opacity:1\] relative"/);
+  assert.match(MENU_PICKER, /group-hover\/row:opacity-100 \[@media\(hover:none\)\]:opacity-100/);
 });
 
 test("the embedding controls wrap and fit narrow settings panels", () => {
