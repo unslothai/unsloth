@@ -14,6 +14,8 @@ test("typing a Hub search clears an opened model but not the split view's auto-p
     handler,
     /const openedModel =\s*!!urlModel && urlModel !== autoPreviewIdRef\.current;/,
   );
-  assert.match(handler, /if \(openedModel \|\| urlSection\) \{/);
+  assert.match(handler, /if \(openedModel \|\| urlSection \|\| urlNpu\) \{/);
+  // An opened NPU card would otherwise cover the new results below the lg breakpoint.
+  assert.match(handler, /npu: undefined,/);
   assert.match(src, /autoPreviewIdRef\.current = firstId;/);
 });
