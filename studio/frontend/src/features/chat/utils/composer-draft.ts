@@ -9,6 +9,7 @@ const LEGACY_PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
 // Unsent New chat and Compare ids are minted per navigation; per-id slots would pile up unread.
 export const NEW_CHAT_DRAFT_ID = "__new__";
 export const NEW_COMPARE_DRAFT_ID = "__compare_new__";
+export const BATCH_CHAT_DRAFT_ID = "__batch__";
 
 export function composerDraftKey(threadId: string, shared = false): string {
   return shared ? DRAFT_KEY : `${LEGACY_DRAFT_PREFIX}${threadId}`;

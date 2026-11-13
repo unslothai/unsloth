@@ -8,22 +8,11 @@ import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { openFilePicker } from "@/lib/open-file-picker";
 import { toast } from "@/lib/toast";
 import { wasAttachmentAddCancelled } from "../draft-attachment-adapter";
-import { useChatPreferencesStore } from "../stores/chat-preferences-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import {
-  NEW_CHAT_DRAFT_ID,
-  composerDraftKey,
-  composerPasteDraftKey,
-  latestDraft,
-  latestPasteDraft,
-  writeComposerDraft,
-  writePasteDraft,
-} from "../utils/composer-draft";
 import {
   BATCH_SEND_TIMEOUT_MS,
   type BatchFinish,
   type ThreadListLike,
-  batchNewChatsRunning,
   batchTargetKey,
   batchThreadReader,
   claimBatchStep,
@@ -50,30 +39,6 @@ function chatCount(count: number): string {
   return count === 1 ? "1 chat" : `${count} chats`;
 }
 
-// Every batch chat restores the per-chat New chat draft: park it so each opens blank, then put it back.
-let parkedNewChatDraft: { text: string; pastes: string[] } | null = null;
-
-function parkNewChatDraft(prompt: string): void {
-  if (useChatPreferencesStore.getState().shareComposerDraft) return;
-  const key = composerDraftKey(NEW_CHAT_DRAFT_ID);
-  const pasteKey = composerPasteDraftKey(NEW_CHAT_DRAFT_ID);
-  const text = latestDraft(key);
-  // Typed in a New chat, the draft is the batch prompt itself.
-  parkedNewChatDraft = { text: text.trim() === prompt ? "" : text, pastes: latestPasteDraft(pasteKey) };
-  writeComposerDraft(key, "");
-  writePasteDraft(pasteKey, []);
-}
-
-function restoreNewChatDraft(): void {
-  const parked = parkedNewChatDraft;
-  parkedNewChatDraft = null;
-  if (!parked) return;
-  if (parked.text) writeComposerDraft(composerDraftKey(NEW_CHAT_DRAFT_ID), parked.text);
-  if (parked.pastes.length > 0) {
-    writePasteDraft(composerPasteDraftKey(NEW_CHAT_DRAFT_ID), parked.pastes);
-  }
-}
-
 const notify = {
   progress: (index: number, total: number, fileName: string) => {
     toast.loading(`Sending to new chats: ${index + 1} of ${total}`, {
@@ -91,7 +56,6 @@ const notify = {
     });
   },
   finish: (result: BatchFinish) => {
-    restoreNewChatDraft();
     const base = { id: BATCH_TOAST_ID, duration: 8000, action: undefined, description: undefined };
     if (result.kind === "done") {
       toast.success(`Sent the prompt to ${chatCount(result.total)}`, base);
@@ -110,7 +74,6 @@ if (typeof window !== "undefined") {
   // The next account must not inherit another account's files.
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     resetBatchNewChats();
-    parkedNewChatDraft = null;
     toast.dismiss(BATCH_TOAST_ID);
   });
 }
@@ -131,7 +94,6 @@ export function pickFilesForNewChats(aui: Aui, navigate: Navigate, accept: strin
     return;
   }
   openFilePicker(accept, (files) => {
-    if (files.length > 0 && !batchNewChatsRunning()) parkNewChatDraft(prompt);
     const started = startBatchNewChats(prompt, files, {
       newNonce: newChatNonce,
       openNewChat: (nonce) => {

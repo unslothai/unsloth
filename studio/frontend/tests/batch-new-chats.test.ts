@@ -11,10 +11,12 @@ const {
   BATCH_OPEN_TIMEOUT_MS,
   BATCH_POLL_MS,
   BATCH_SEND_TIMEOUT_MS,
+  BATCH_SETTLE_MS,
   batchStepOutcome,
   batchTargetKey,
   batchThreadReader,
   claimBatchStep,
+  isBatchTargetKey,
   orderBatchFiles,
   startBatchNewChats,
   stopBatchNewChats,
@@ -26,6 +28,11 @@ type BatchThreadSnapshot =
 
 const user = { role: "user", status: null };
 const reply = (type: string, reason?: string) => ({ role: "assistant", status: { type, reason } });
+
+// One poll at a time: a single long tick moves the mocked clock once for every poll it fires.
+function advance(ms: number): void {
+  for (let t = 0; t < ms; t += BATCH_POLL_MS) mock.timers.tick(BATCH_POLL_MS);
+}
 
 function file(name: string): File {
   return new File(["x"], name, { type: "video/mp4" });
@@ -124,6 +131,9 @@ test("each file gets its own new chat, the next opening only after the reply fin
     // A second batch can't start while one runs.
     assert.equal(startBatchNewChats("again", [file("c.mp4")], h.deps), false);
     assert.deepEqual(h.opened, ["n0"]);
+    // Its own draft slot, so the New chat draft stays where the user left it.
+    assert.equal(isBatchTargetKey(batchTargetKey("n0")), true);
+    assert.equal(isBatchTargetKey("single:other"), false);
     // Only the composer of that new chat can claim the step, and only once.
     assert.equal(claimBatchStep("single:other"), null);
     const first = claimBatchStep(batchTargetKey("n0"));
@@ -140,6 +150,12 @@ test("each file gets its own new chat, the next opening only after the reply fin
 
     state = { isRunning: false, messages: [user, reply("complete")] };
     mock.timers.tick(BATCH_POLL_MS);
+    assert.deepEqual(h.opened, ["n0"], "a Max Tokens auto-continue gets time to start");
+    state = { isRunning: true, messages: [user, reply("running")] };
+    advance(BATCH_SETTLE_MS);
+    assert.deepEqual(h.opened, ["n0"]);
+    state = { isRunning: false, messages: [user, reply("complete")] };
+    advance(BATCH_SETTLE_MS + BATCH_POLL_MS);
     assert.deepEqual(h.opened, ["n0", "n1"]);
     assert.deepEqual(h.progress, [0, 1]);
 
@@ -149,7 +165,7 @@ test("each file gets its own new chat, the next opening only after the reply fin
     second.sent({
       read: () => ({ isRunning: false, messages: [user, reply("complete")] }),
     });
-    mock.timers.tick(BATCH_POLL_MS);
+    advance(BATCH_SETTLE_MS + BATCH_POLL_MS);
     assert.deepEqual(h.finished, [{ kind: "done", total: 2 }]);
     assert.equal(useBatchNewChatsStore.getState().run, null);
   } finally {

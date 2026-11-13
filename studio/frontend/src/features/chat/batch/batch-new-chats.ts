@@ -134,12 +134,21 @@ export const BATCH_POLL_MS = 500;
 export const BATCH_OPEN_TIMEOUT_MS = 30_000;
 // Long enough for a send parked behind a model load or a file still being read.
 export const BATCH_SEND_TIMEOUT_MS = 120_000;
+// A reply cut at Max Tokens auto-continues a moment after it ends; wait that out before moving on.
+export const BATCH_SETTLE_MS = 2_000;
 
 interface BatchState {
   run: BatchRun | null;
 }
 
 export const useBatchNewChatsStore = create<BatchState>(() => ({ run: null }));
+
+// Batch chats keep their own draft slot, so they never restore or consume the New chat draft.
+const batchNonces = new Set<string>();
+
+export function isBatchTargetKey(key: string | null | undefined): boolean {
+  return key != null && key.startsWith("single:") && batchNonces.has(key.slice("single:".length));
+}
 
 let runSeq = 0;
 let deps: BatchDeps | null = null;
@@ -170,6 +179,7 @@ function openStep(id: number, index: number): void {
   if (!run || !deps) return;
   clearTimer();
   const nonce = deps.newNonce();
+  batchNonces.add(nonce);
   useBatchNewChatsStore.setState({ run: { ...run, index, nonce, phase: "opening" } });
   deps.notify.progress(index, run.files.length, run.files[index].name);
   const expire = () => {
@@ -201,6 +211,7 @@ function fail(id: number, reason: string): void {
 function watchStep(id: number, index: number, watch: BatchStepWatch): void {
   clearTimer();
   const startedAt = Date.now();
+  let doneSince: number | null = null;
   timer = setInterval(() => {
     const run = currentRun(id);
     if (!run || run.index !== index) {
@@ -209,6 +220,7 @@ function watchStep(id: number, index: number, watch: BatchStepWatch): void {
     }
     const snapshot = watch.read();
     const outcome = batchStepOutcome(snapshot);
+    if (outcome !== "done") doneSince = null;
     if (outcome === "pending") {
       const nothingSent = !snapshot || snapshot.messages.length === 0;
       // A refused send keeps the prompt in the composer, a failed attachment send clears it: either
@@ -226,6 +238,8 @@ function watchStep(id: number, index: number, watch: BatchStepWatch): void {
       finish({ kind: "stopped", sent: index + 1, total: run.files.length });
       return;
     }
+    doneSince ??= Date.now();
+    if (Date.now() - doneSince < BATCH_SETTLE_MS) return;
     if (index + 1 < run.files.length) {
       openStep(id, index + 1);
     } else {

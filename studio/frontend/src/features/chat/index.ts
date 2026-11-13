@@ -338,7 +338,7 @@ export {
   pickFilesForNewChats,
   useBatchNewChatsComposer,
 } from "./batch/use-batch-new-chats";
-export { useBatchNewChatsStore } from "./batch/batch-new-chats";
+export { isBatchTargetKey, useBatchNewChatsStore } from "./batch/batch-new-chats";
 export {
   useChatModelRuntime,
   resyncInferenceStatusAfterKeptModelsUnload,
@@ -539,6 +539,7 @@ export {
   latestDraft,
   latestPasteDraft,
   NEW_CHAT_DRAFT_ID,
+  BATCH_CHAT_DRAFT_ID,
   stageComposerDraft,
   publishDraft,
   subscribeDraft,

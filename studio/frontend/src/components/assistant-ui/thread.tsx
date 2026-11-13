@@ -360,6 +360,7 @@ import {
   flushComposerDraft,
   latestDraft,
   NEW_CHAT_DRAFT_ID,
+  BATCH_CHAT_DRAFT_ID,
   stageComposerDraft,
   latestPasteDraft,
   publishDraft,
@@ -392,6 +393,7 @@ import {
   pickFilesForNewChats,
   useBatchNewChatsComposer,
   useBatchNewChatsStore,
+  isBatchTargetKey,
   writeComposerDraft,
   normalizeChatImage,
 } from "@/features/chat";
@@ -4140,7 +4142,9 @@ const Composer: FC<{
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
   // Route and active IDs can lead the runtime switch; drafts belong to the composer on screen.
-  const draftThreadId = threadListItemRemoteId ?? NEW_CHAT_DRAFT_ID;
+  const draftThreadId =
+    threadListItemRemoteId ??
+    (isBatchTargetKey(nativeAttachmentTargetKey) ? BATCH_CHAT_DRAFT_ID : NEW_CHAT_DRAFT_ID);
   const restoredDraftScopeRef = useRef<string | undefined>(undefined);
   const previousDraftIdentityRef = useRef({
     draftThreadId,
@@ -4185,7 +4189,8 @@ const Composer: FC<{
       !incognito &&
       !previous.incognito &&
       !shareDraft &&
-      previous.draftThreadId === NEW_CHAT_DRAFT_ID &&
+      (previous.draftThreadId === NEW_CHAT_DRAFT_ID ||
+        previous.draftThreadId === BATCH_CHAT_DRAFT_ID) &&
       aui.threadListItem().getState().remoteId === draftThreadId &&
       previous.threadListItemId === threadListItemId &&
       previous.draftThreadId !== draftThreadId
