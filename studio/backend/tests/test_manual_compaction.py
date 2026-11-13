@@ -8,7 +8,7 @@ from __future__ import annotations
 import sys
 import types
 
-from core.inference import checkpoint, llama_cpp
+from core.inference import chat_compaction, checkpoint
 from core.inference.checkpoint import fit_checkpoint_context
 
 
@@ -104,7 +104,7 @@ def test_the_rolling_fit_ignores_compact_now(monkeypatch):
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
     messages = _thread()
 
-    fitted, truncation = llama_cpp._fit_context(
+    fitted, truncation = chat_compaction._fit_context(
         messages,
         context_length = 100_000,
         max_tokens = 512,
@@ -119,9 +119,9 @@ def test_the_rolling_fit_ignores_compact_now(monkeypatch):
 
 def test_fit_context_hands_compact_now_to_the_checkpoint_fit(monkeypatch):
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: False)
 
-    fitted, truncation = llama_cpp._fit_context(
+    fitted, truncation = chat_compaction._fit_context(
         _thread(),
         context_length = 100_000,
         max_tokens = 512,
@@ -172,8 +172,8 @@ def test_the_saved_boundary_says_whether_compact_now_started_it(monkeypatch):
     ]
 
     _stub_studio_db(monkeypatch, _rows(manual = True))
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (6, True)
-    assert llama_cpp._sticky_compaction_manual("t1", branch) is True
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (6, True)
+    assert chat_compaction._sticky_compaction_manual("t1", branch) is True
 
     _stub_studio_db(monkeypatch, _rows())
-    assert llama_cpp._sticky_compaction_manual("t1", branch) is False
+    assert chat_compaction._sticky_compaction_manual("t1", branch) is False

@@ -17,8 +17,9 @@ import pytest
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
-from core.inference import llama_cpp  # noqa: E402
-from core.inference.llama_cpp import LlamaCppBackend, _local_ssl_context  # noqa: E402
+from core.inference import llama_chat, llama_cpp  # noqa: E402
+from core.inference.llama_chat import _local_ssl_context  # noqa: E402
+from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 _ONE_SHOT = {"get", "post", "put", "delete", "request", "stream", "Client"}
 
@@ -42,9 +43,10 @@ def _httpx_calls_without_verify(path: Path) -> list[int]:
     return missing
 
 
-def test_loopback_llama_calls_pass_verify():
-    missing = _httpx_calls_without_verify(Path(llama_cpp.__file__))
-    assert missing == [], f"llama_cpp.py: httpx calls without verify= at lines {missing}"
+@pytest.mark.parametrize("module", (llama_cpp, llama_chat))
+def test_loopback_llama_calls_pass_verify(module):
+    missing = _httpx_calls_without_verify(Path(module.__file__))
+    assert missing == [], f"{module.__name__}: httpx calls without verify= at lines {missing}"
 
 
 def _stub(port: int) -> LlamaCppBackend:
@@ -142,4 +144,5 @@ def test_release_idle_chat_slot_shares_context(server, verify_args):
 
 def test_shared_context_is_one_object():
     assert _local_ssl_context() is _local_ssl_context()
-    assert llama_cpp._local_ssl_context.cache_info().maxsize == 1
+    assert llama_cpp._local_ssl_context is llama_chat._local_ssl_context
+    assert _local_ssl_context.cache_info().maxsize == 1

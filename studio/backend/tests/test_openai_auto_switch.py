@@ -20,8 +20,7 @@ from models.inference import LoadRequest
 from core.inference import local_model_resolver as resolver
 from utils import openai_auto_switch_settings as settings
 from utils.account_context import OWNER, AccountContext, run_as
-from core.inference import llama_cpp as llama_cpp_mod
-from core.inference import llama_keepwarm as kw
+from core.inference import chat_compaction, llama_cpp as llama_cpp_mod, llama_keepwarm as kw
 from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.llama_keepwarm import _is_inference_path
 from models.inference import ChatCompletionRequest
@@ -5145,8 +5144,8 @@ def test_chat_count_tokens_replays_saved_compaction_without_archive_work(monkeyp
     monkeypatch.setattr(conversation_archive, "can_archive", lambda _thread: True)
     monkeypatch.setattr(conversation_archive, "has_archive", lambda _thread: True)
     monkeypatch.setattr(conversation_archive, "archive_turns", unexpected)
-    monkeypatch.setattr(llama_cpp_mod, "_archive_is_degraded", unexpected)
-    monkeypatch.setattr(llama_cpp_mod, "_archive_and_recall", unexpected)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", unexpected)
+    monkeypatch.setattr(chat_compaction, "_archive_and_recall", unexpected)
     messages = []
     for index in range(4):
         messages.extend(
@@ -5309,9 +5308,9 @@ def test_chat_count_tokens_prices_saved_boundary_without_enforcing_reply_budget(
         return sum(len(message["content"]) // 4 for message in candidate)
 
     backend.count_chat_tokens = count
-    monkeypatch.setattr(llama_cpp_mod, "_can_reset_epoch", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(chat_compaction, "_can_reset_epoch", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
-        llama_cpp_mod,
+        chat_compaction,
         "_sticky_compaction_details",
         lambda *_args, **_kwargs: (2, checkpoint_boundary, False),
     )
@@ -5859,7 +5858,7 @@ def test_a_count_admitted_while_idle_stands_down_if_a_run_starts(monkeypatch):
         started.append(handle)
         assert should_abort is not None, "the route must give the tokenizer a way to stand down"
         if should_abort():
-            from core.inference.llama_cpp import CountAborted
+            from core.inference.llama_chat import CountAborted
             raise CountAborted()
         counted.update(messages = messages)
         return 1234
@@ -5909,7 +5908,8 @@ def test_a_count_that_stays_idle_is_not_aborted(monkeypatch):
 )
 def test_count_chat_tokens_stands_down_before_tokenizing(monkeypatch, abort, expect_tokenize):
     """CountAborted must escape the template except-block, or the text fallback tokenizes anyway."""
-    from core.inference.llama_cpp import CountAborted, LlamaCppBackend
+    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_chat import CountAborted
 
     posted: list = []
 

@@ -223,6 +223,20 @@
   "core.inference.gpu_arbiter.owner_snapshot": [
     "tests/test_chat_load_during_training.py"
   ],
+  "core.inference.llama_chat.begin_tool_decision": [
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py"
+  ],
+  "core.inference.llama_chat.new_approval_id": [
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py"
+  ],
+  "core.inference.llama_chat.wait_tool_decision": [
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py"
+  ],
   "core.inference.llama_cpp.LlamaCppBackend._is_vulkan_backend": [
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py",
@@ -249,10 +263,6 @@
     "tests/test_llama_cpp_placement.py",
     "tests/test_llama_cpp_placement.py",
     "tests/test_llama_cpp_placement.py"
-  ],
-  "core.inference.llama_cpp.begin_tool_decision": [
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py"
   ],
   "core.inference.llama_cpp.cached_gguf_for_load": [
     "tests/test_gguf_load_cache_reuse.py",
@@ -299,11 +309,6 @@
     "tests/test_slot_reduction_context_refit.py",
     "tests/test_slot_reduction_context_refit.py"
   ],
-  "core.inference.llama_cpp.new_approval_id": [
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py"
-  ],
   "core.inference.llama_cpp.shutil.disk_usage": [
     "tests/test_gguf_load_cache_reuse.py"
   ],
@@ -337,11 +342,6 @@
     "tests/test_llama_cpp_mtp_detection.py",
     "tests/test_llama_cpp_mtp_detection.py",
     "tests/test_llama_cpp_mtp_detection.py"
-  ],
-  "core.inference.llama_cpp.wait_tool_decision": [
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py",
-    "tests/test_llama_cpp_tool_loop.py"
   ],
   "core.inference.llama_keepwarm.other_inference_request_count": [
     "tests/test_diffusion_training.py",

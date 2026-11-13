@@ -15,11 +15,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.llama_cpp import (
-    _CONTINUE_AFTER_LENGTH_STATUS,
-    _MAX_LENGTH_CONTINUATIONS,
-    LlamaCppBackend,
-)
+from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_chat import _CONTINUE_AFTER_LENGTH_STATUS, _MAX_LENGTH_CONTINUATIONS
 
 _LONG_THOUGHT = "I should write the game. " * 200
 
@@ -778,15 +775,15 @@ def test_a_continuation_is_sized_by_what_is_left_of_the_cap(monkeypatch):
         payloads,
     )
 
-    import core.inference.llama_cpp as _lc  # noqa: PLC0415
+    from core.inference import llama_chat  # noqa: PLC0415
 
-    real_budget = _lc.prompt_budget
+    real_budget = llama_chat.prompt_budget
 
     def recording_budget(context_length, max_tokens):
         targets.append(max_tokens)
         return real_budget(context_length, max_tokens)
 
-    monkeypatch.setattr(_lc, "prompt_budget", recording_budget)
+    monkeypatch.setattr(llama_chat, "prompt_budget", recording_budget)
 
     def fake_count(messages, *_args, **_kwargs):
         return 200 + sum(len(str(m.get("content") or "")) // 4 for m in messages)

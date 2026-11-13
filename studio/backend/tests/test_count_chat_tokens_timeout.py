@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 import core.inference.llama_cpp as llama_cpp
+from core.inference import llama_chat
 from core.inference.checkpoint import fit_checkpoint_context
 from core.inference.context_window import fit_rolling_context
 
@@ -86,7 +87,7 @@ LONG = _transcript(600)
 @pytest.fixture
 def backend(monkeypatch):
     clients: list = []
-    monkeypatch.setattr(llama_cpp.httpx, "Client", _slow_llama_server(clients))
+    monkeypatch.setattr(llama_chat.httpx, "Client", _slow_llama_server(clients))
     instance = _Backend.__new__(_Backend)
     instance.clients = clients
     return instance
@@ -97,13 +98,13 @@ def _strict_count(backend):
 
 
 def test_the_timeout_keeps_the_floor_for_a_short_prompt():
-    assert llama_cpp._count_timeout([{"role": "user", "content": "hi"}], "", None) < 10.1
+    assert llama_chat._count_timeout([{"role": "user", "content": "hi"}], "", None) < 10.1
 
 
 def test_the_timeout_leaves_a_slow_cpu_room_to_count_a_long_transcript():
     chars = sum(len(m["content"]) for m in LONG)
     assert chars / SERVER_CHARS_PER_S > 10
-    assert llama_cpp._count_timeout(LONG, "", None) > 5 * chars / SERVER_CHARS_PER_S
+    assert llama_chat._count_timeout(LONG, "", None) > 5 * chars / SERVER_CHARS_PER_S
 
 
 def test_a_long_transcript_is_counted_rather_than_timing_out(backend):
@@ -166,7 +167,7 @@ def _timing_out_client():
 
 @pytest.mark.parametrize("strict", (True, False))
 def test_a_count_timeout_is_not_reported_as_a_template_refusal(monkeypatch, strict):
-    monkeypatch.setattr(llama_cpp.httpx, "Client", _timing_out_client())
+    monkeypatch.setattr(llama_chat.httpx, "Client", _timing_out_client())
     backend = _Backend.__new__(_Backend)
     messages = [{"role": "user", "content": "hello"}]
     if strict:

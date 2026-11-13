@@ -15,7 +15,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference import tools
-from core.inference.llama_cpp import _is_window_notice, _note_before_envelopes
+from core.inference.llama_chat import _is_window_notice, _note_before_envelopes
 from core.inference.mcp_images import (
     SENTINEL,
     promote_history,

@@ -5,7 +5,7 @@
 
 import pytest
 
-from core.inference import llama_cpp
+from core.inference import chat_compaction
 from routes import inference as inference_routes
 from storage import studio_db
 
@@ -68,7 +68,7 @@ def test_gate_reads_only_threads_with_a_recorded_fit():
 
 def test_no_recorded_fit_skips_the_transcript_read(counted_reads):
     _seed("plain", {"custom": {"generationStatus": "completed"}, "note": "contextTruncatio n"})
-    assert llama_cpp._sticky_compaction_details("plain", BRANCH) == (0, False, False)
+    assert chat_compaction._sticky_compaction_details("plain", BRANCH) == (0, False, False)
     assert inference_routes._thread_has_checkpoint("plain", BRANCH) is False
     assert counted_reads == []
 
@@ -77,6 +77,6 @@ def test_recorded_fit_still_reads_the_transcript(counted_reads):
     _seed(
         "top", {"contextTruncation": {"fits": True, "boundary_messages": 2, "dropped_messages": 2}}
     )
-    llama_cpp._sticky_compaction_details("top", BRANCH)
+    chat_compaction._sticky_compaction_details("top", BRANCH)
     inference_routes._thread_has_checkpoint("top", BRANCH)
     assert counted_reads == ["top", "top"]

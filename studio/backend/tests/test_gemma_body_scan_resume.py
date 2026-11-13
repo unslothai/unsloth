@@ -8,7 +8,7 @@ import random
 import pytest
 
 from core.inference import tool_call_parser as tcp
-from core.inference import llama_cpp
+from core.inference import llama_chat
 from core.inference import safetensors_agentic
 
 
@@ -123,7 +123,7 @@ def test_held_tail_lengths_unchanged_for_an_open_gemma_body():
     for i in range(400):
         text += "{" if i % 50 == 0 else "word "
         expect = len(text) - text.index("call:")
-        assert llama_cpp._held_rehearsal_tail_len(text, tools) == expect
+        assert llama_chat._held_rehearsal_tail_len(text, tools) == expect
         assert safetensors_agentic._held_rehearsal_tail_len(text, tools) == expect
 
 
@@ -133,10 +133,10 @@ def test_rehearsal_prefix_still_skips_unpromotable_names():
         {"type": "function", "function": {"name": "mcp__fs__read"}},
         {"type": "function", "function": {"name": "web_search"}},
     ]
-    assert not llama_cpp._is_rehearsal_prefix("termin", tools)
-    assert not llama_cpp._is_rehearsal_prefix("mcp__fs", tools)
-    assert llama_cpp._is_rehearsal_prefix("web_search[AR", tools)
+    assert not llama_chat._is_rehearsal_prefix("termin", tools)
+    assert not llama_chat._is_rehearsal_prefix("mcp__fs", tools)
+    assert llama_chat._is_rehearsal_prefix("web_search[AR", tools)
     assert not safetensors_agentic._is_rehearsal_prefix("terminal", tools)
     assert safetensors_agentic._is_rehearsal_prefix("web_se", tools)
-    assert llama_cpp._held_rehearsal_tail_len("try web_se", tools) == len("web_se")
-    assert llama_cpp._held_rehearsal_tail_len("try termin", tools) == 0
+    assert llama_chat._held_rehearsal_tail_len("try web_se", tools) == len("web_se")
+    assert llama_chat._held_rehearsal_tail_len("try termin", tools) == 0
