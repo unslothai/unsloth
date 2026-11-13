@@ -553,8 +553,7 @@ class TrainingStartRequest(BaseModel):
     save_steps: int = Field(100, description = "Steps between checkpoints")
     # NaN clears _check_weight_decay's 0..10 range check (every comparison with it is False), so it is refused here.
     weight_decay: float = Field(0.001, allow_inf_nan = False, description = "Weight decay")
-    # Finite as well as non-negative: JSON 1e309 floats to inf, which clears ge=0 but never binds, so
-    # the run would train unclipped while reporting a threshold.
+    # Reject inf too: JSON 1e309 parses to inf, which passes ge=0 but never binds the clip.
     max_grad_norm: Optional[float] = Field(
         None,
         ge = 0,
@@ -669,6 +668,10 @@ class TrainingStartRequest(BaseModel):
     decision_layout: Optional[Literal["laya", "clef", "llm"]] = Field(
         None,
         description = "Set by the server from the checkpoint files; a caller's value is replaced",
+    )
+    decision_head: Optional[Literal["clef", "d1"]] = Field(
+        None,
+        description = "What a language model trains into: a Clef head, or a d1 on MLX for LFM3-VL and LFM3-Omni, the default there",
     )
 
     enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")

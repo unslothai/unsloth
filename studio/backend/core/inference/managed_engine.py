@@ -397,12 +397,9 @@ def _memory_line(output: str) -> list:
 
 
 def _wsl_amd_usable_mib(gpu_ids) -> list[tuple[float, bool]] | None:
-    """(MiB, is an APU) for what each selected AMD GPU can allocate through WSL, or None when
-    Windows cannot say.
-
-    Through DXG the pool HIP reports is the dedicated memory plus a share of the host's RAM, and an
-    allocation past what the host can back hangs instead of failing. So a discrete card keeps its
-    dedicated memory, and an APU adds 80% of the host RAM Windows reports available now."""
+    """Returns (MiB, is an APU) per selected AMD GPU for what it can allocate through WSL, or None
+    when Windows cannot say; a discrete card keeps its dedicated memory, but an APU adds 80% of
+    host RAM available now, since DXG allocations past host capacity hang rather than fail."""
     try:
         import psutil
         import torch
@@ -517,9 +514,7 @@ def _free_port(limit: int | None = _PORT_LIMIT) -> int:
     raise RuntimeError("Could not allocate an inference server port.")
 
 
-# Engine silence, not total startup time: an uncached Hub model downloads inside the engine, and
-# a first load can compile (torch.compile, Triton kernels) for tens of minutes without a line,
-# as a block-FP8 27B did on gfx1151 for over 17 minutes.
+# Measures engine silence, not total startup: a first load can compile unlogged for tens of minutes.
 STARTUP_STALL_S = 3600
 STARTUP_LIMIT_S = 4 * 3600
 
@@ -1133,12 +1128,20 @@ class ManagedEngine:
             for message in messages
         ]
 
-    def _reply_cap_in_window(self, messages, system_prompt, limit, params):
+    def _reply_cap_in_window(
+        self,
+        messages,
+        system_prompt,
+        limit,
+        params,
+        tools = None,
+    ):
         """vLLM and SGLang refuse prompt + max_tokens past the window, where llama-server stops at it."""
         try:
             prompt = self.count_tokens(
                 messages,
                 system_prompt,
+                tools = tools,
                 enable_thinking = params.get("enable_thinking"),
                 reasoning_effort = params.get("reasoning_effort"),
                 preserve_thinking = params.get("preserve_thinking"),
@@ -1148,14 +1151,28 @@ class ManagedEngine:
             return limit
         return max(1, min(limit, self.context - prompt))
 
+    def _completion_cap_in_window(self, prompt, limit):
+        try:
+            return max(1, min(limit, self.context - self._tokenize({"prompt": prompt})))
+        except Exception:
+            return limit
+
+    def _tokenize(self, body):
+        with httpx.Client(trust_env = False, timeout = 30) as client:
+            response = client.post(
+                self.base_url + "/tokenize",
+                headers = self.headers,
+                json = {"model": self.model, **body},
+            )
+            response.raise_for_status()
+            return int(response.json()["count"])
+
     def count_tokens(
         self,
         messages,
         system_prompt = "",
         **kwargs,
     ):
-        if kwargs.get("tools"):
-            raise ValueError("Tools are unavailable for this optional engine profile.")
         if not self.adapter.exact_token_count:
             raise RuntimeError("Exact prompt token counting is unavailable for this engine.")
         if system_prompt:
@@ -1172,19 +1189,14 @@ class ManagedEngine:
             template_kwargs = fields["chat_template_kwargs"]
             template_kwargs["reasoning_effort"] = effort
             template_kwargs.setdefault("enable_thinking", effort != "none")
-        with httpx.Client(trust_env = False, timeout = 30) as client:
-            response = client.post(
-                self.base_url + "/tokenize",
-                headers = self.headers,
-                json = {
-                    "model": self.model,
-                    "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
-                    "add_generation_prompt": True,
-                    **fields,
-                },
-            )
-            response.raise_for_status()
-            return int(response.json()["count"]), self.model
+        body = {
+            "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
+            "add_generation_prompt": True,
+            **fields,
+        }
+        if kwargs.get("tools"):
+            body["tools"] = kwargs["tools"]
+        return self._tokenize(body), self.model
 
     def generate(
         self,

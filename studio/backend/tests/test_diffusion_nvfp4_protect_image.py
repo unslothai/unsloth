@@ -304,15 +304,66 @@ def test_an_unarmed_load_keeps_its_graph_cap(monkeypatch):
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_cuda_graph as cg
 
-    monkeypatch.delenv(pr.PROTECT_STEPS_ENV, raising = False)
+    monkeypatch.setenv(pr.PROTECT_STEPS_ENV, "off")
     pr.reset_protect_controller()
     tree, _layer = _cpu_nvfp4_tree(torch)
+    assert pr.attach_own_controller(tree).armed is False
     block = _BlockHolding(tree).eval()
     handle = cg.GraphedForward(block, max_graphs = 4).install().enable()
     block(hidden_states = torch.zeros(2, 64), return_dict = False)
     assert handle.protect_keyed is False
     assert handle.max_graphs == 4
     cg.uninstall_all([handle])
+
+
+@pytest.mark.parametrize("capability", [(10, 0), (10, 3), (12, 0), (9, 0), None])
+@pytest.mark.parametrize(
+    "env,spec,steps",
+    [
+        (None, "auto", (0, 8)),
+        ("", "auto", (0, 8)),
+        ("off", "", ()),
+        ("0", "0", (0,)),
+        ("all", "all", tuple(range(9))),
+    ],
+)
+def test_a_model_with_nvfp4_layers_defaults_to_auto_on_sm100_only(
+    monkeypatch, env, spec, steps, capability
+):
+    """Unset is auto on sm_100-class cards only (sm_120 measured slower with no LPIPS gain); explicit values hold."""
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: capability is not None)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: capability)
+    if not env and capability is not None and capability[0] != 10 or not env and capability is None:
+        spec, steps = "", ()
+    if env is None:
+        monkeypatch.delenv(pr.PROTECT_STEPS_ENV, raising = False)
+    else:
+        monkeypatch.setenv(pr.PROTECT_STEPS_ENV, env)
+    pr.reset_protect_controller()
+    try:
+        tree, layer = _cpu_nvfp4_tree(torch)
+        ctl = pr.attach_own_controller(tree)
+        assert ctl is not None and layer.protect is ctl
+        assert ctl.spec == spec and ctl.armed is bool(spec)
+        assert ctl.begin(9) == steps
+    finally:
+        monkeypatch.delenv(pr.PROTECT_STEPS_ENV, raising = False)
+        pr.reset_protect_controller()
+
+
+def test_the_default_leaves_models_without_nvfp4_layers_unarmed(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    monkeypatch.delenv(pr.PROTECT_STEPS_ENV, raising = False)
+    ctl = pr.reset_protect_controller()
+    plain = nn.Sequential(nn.Linear(8, 8))
+    assert ctl.armed is False
+    assert pr.attach_own_controller(plain) is None
+    assert pr.module_controller(plain) is ctl
+    assert pr.protect_graph_key(module = plain) == ()
+    assert pr.pipeline_controllers(types.SimpleNamespace(transformer = plain)) == [ctl]
 
 
 def _cuda_or_skip():

@@ -163,13 +163,23 @@ def _engine_available() -> bool:
     return True
 
 
+def _zoo_serves(family: str) -> bool:
+    # An unsloth-zoo older than this catalog lacks d1 / mlx_vlm: such entries fall back to llama.cpp or are unavailable.
+    families = getattr(sys.modules.get("unsloth_zoo.mlx.decision"), "FAMILIES", None)
+    return families is None or family in families
+
+
 def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     """What unsloth-zoo's MLX engine serves in process on Apple Silicon: a merged Clef's own folder, or the source repo of a GGUF entry."""
     if not _engine_available():
         return None
     if _is_mlx(checkpoint):
-        # Only a catalog entry is its own MLX form; a target has none further.
-        return checkpoint if CHECKPOINTS.get(checkpoint.name) == checkpoint else None
+        return (
+            checkpoint
+            if (checkpoint.is_local or CHECKPOINTS.get(checkpoint.name) == checkpoint)
+            and _zoo_serves(_mlx_family(checkpoint))
+            else None
+        )
     if checkpoint.layout == "clef":
         if checkpoint.is_local:
             from utils.models.model_config import clef_folder_kind
@@ -177,7 +187,11 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
                 return None
         return dataclasses.replace(checkpoint, backend = MLX)
     companion = MLX_COMPANIONS.get(checkpoint.name)
-    if companion is None or CHECKPOINTS.get(checkpoint.name) != checkpoint:
+    if (
+        companion is None
+        or CHECKPOINTS.get(checkpoint.name) != checkpoint
+        or not _zoo_serves(companion.family)
+    ):
         return None
     return dataclasses.replace(
         checkpoint,
@@ -190,7 +204,16 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
 
 def _mlx_reads(checkpoint: Checkpoint, media: str) -> bool:
     """Whether the MLX form of an entry reads `media` ("images" or "audio"): a Clef with that tower and its processor, on an unsloth-zoo that reads it."""
-    if checkpoint.layout != "clef" or _mlx_target(checkpoint) is None:
+    if _mlx_target(checkpoint) is None:
+        return False
+    if checkpoint.layout == GGUF:
+        companion = MLX_COMPANIONS.get(checkpoint.name)
+        return (
+            companion is not None
+            and companion.family == "d1"
+            and (media == "images" or checkpoint.audio)
+        )
+    if checkpoint.layout != "clef":
         return False
     try:
         from unsloth_zoo.mlx.decision import ClefModel
@@ -209,12 +232,12 @@ def _mlx_reads(checkpoint: Checkpoint, media: str) -> bool:
         return False
     if not isinstance(config, dict):
         return False
-    # Qwen3-Omni keeps its towers under the thinker, Phi-4-multimodal under `embd_layer`; Nemotron Omni hears through a sound tower.
+    # Qwen3-Omni: towers under thinker; Phi-4-mm: `embd_layer`; Nemotron Omni: sound tower; LFM3-Omni: audio encoder.
     parts = (config, config.get("thinker_config"), config.get("embd_layer"))
     towers = (
         ("vision_config", "image_embd_layer")
         if media == "images"
-        else ("audio_config", "sound_config", "audio_embd_layer")
+        else ("audio_config", "audio_encoder_config", "sound_config", "audio_embd_layer")
     )
     return any(
         isinstance(part, dict) and part.get(tower) is not None for part in parts for tower in towers
@@ -232,7 +255,14 @@ def _mlx_repos(companion) -> tuple:
 
 
 def _mlx_family(checkpoint: Checkpoint) -> str:
-    return "clef" if checkpoint.layout == "clef" else MLX_COMPANIONS[checkpoint.name].family
+    if checkpoint.layout != "clef":
+        return MLX_COMPANIONS[checkpoint.name].family
+    from utils.models.model_config import is_d1_folder
+    return (
+        "d1"
+        if checkpoint.is_local and is_d1_folder(Path(checkpoint.source).expanduser())
+        else "clef"
+    )
 
 
 def _wants_gpu(checkpoint) -> bool:
@@ -327,7 +357,7 @@ def _local_folder(checkpoint: Checkpoint) -> Path:
 def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
     """The llama.cpp form of an entry: ggml-org's GGUF for a stock Clef, a current export for a Clef or Laya folder, a GGUF entry itself."""
     if checkpoint.layout == GGUF:
-        return checkpoint
+        return None if _is_mlx(checkpoint) else checkpoint
     if _is_native(checkpoint):
         return None
     if checkpoint.is_local:
@@ -1051,7 +1081,12 @@ class _EngineAgent:
         # state and questions out its own way, so what the model reads can differ from this count by the layout's overhead.
         text = state if isinstance(state, str) else json.dumps(state, ensure_ascii = False)
         text += json.dumps(questions, ensure_ascii = False)
-        tokenizer = getattr(self.model, "tokenizer", None)
+        processor = getattr(self.model, "processor", None)
+        tokenizer = (
+            getattr(self.model, "tokenizer", None)
+            or getattr(processor, "tokenizer", None)
+            or (processor if hasattr(processor, "encode") else None)
+        )
         if tokenizer is not None:
             ids = tokenizer.encode(text, add_special_tokens = False)
             if len(getattr(ids, "ids", ids)) > _ENGINE_TOKENS:

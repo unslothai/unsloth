@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every backend test file must land in exactly one shard: two letter ranges plus a catch-all shard."""
+"""Every backend test file must land in exactly one shard: three letter ranges plus a catch-all shard."""
 
 import fnmatch
 from pathlib import Path
@@ -152,9 +152,11 @@ class TestEveryTestFileLandsInExactlyOneShard:
         [
             ("tests/test_apple.py", "a-f"),
             ("tests/test_fig.py", "a-f"),
-            ("tests/test_grape.py", "g-r"),
-            ("tests/test_kiwi.py", "g-r"),
-            ("tests/test_raisin.py", "g-r"),
+            ("tests/test_grape.py", "g-l"),
+            ("tests/test_kiwi.py", "g-l"),
+            ("tests/test_lime.py", "g-l"),
+            ("tests/test_mango.py", "m-r"),
+            ("tests/test_raisin.py", "m-r"),
             ("tests/test_squash.py", _CATCH_ALL),
             ("tests/test_yam.py", _CATCH_ALL),
         ],
@@ -166,6 +168,11 @@ class TestEveryTestFileLandsInExactlyOneShard:
         assert claiming == [
             expected
         ], f"{path} must be collected by {expected} and only there; got {claiming}"
+
+    @pytest.mark.parametrize("letter", "abcdefghijklmnopqrstuvwxyz")
+    def test_every_lowercase_first_letter_has_exactly_one_shard(self, letter):
+        claiming = _claiming_shards(f"tests/test_{letter}_new.py", _shards())
+        assert len(claiming) == 1, f"tests/test_{letter}*.py is collected by {claiming}"
 
     @pytest.mark.parametrize(
         "path",
@@ -183,7 +190,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
         by both."""
         claiming = _claiming_shards(path, _shards())
         assert claiming == [_CATCH_ALL], (
-            f"{path} is not described by either range, so it must land in the "
+            f"{path} is not described by any range, so it must land in the "
             f"{_CATCH_ALL!r} shard and only there; got {claiming}"
         )
 
@@ -262,7 +269,7 @@ class TestTheSplitKeepsTheSelectionItInherited:
         assert "timeout --signal=INT --kill-after=60" in run
 
     def test_the_serial_files_are_ignored_by_every_shard(self):
-        """The twelve cannot share a worker, and sharding does not change that: three
+        """The twelve cannot share a worker, and sharding does not change that: four
         runners are still four workers each. They are held out by the shared --ignore list
         on the step, so this asks the question of the shard AND the step together."""
         run = _shared_pytest_step()["run"]
@@ -279,7 +286,7 @@ class TestTheSplitKeepsTheSelectionItInherited:
 
     def test_the_serial_step_runs_in_one_process_in_one_shard(self):
         """Splitting it would put its relative timings back on two machines, and running it
-        on every shard would run it three times."""
+        on every shard would run it four times."""
         for step in _job()["steps"]:
             if step.get("name") != _SERIAL_STEP:
                 continue

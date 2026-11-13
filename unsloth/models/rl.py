@@ -47,6 +47,7 @@ except ImportError:  # unsloth_zoo predates the scope
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
 from . import _decode_graphs
 from .rl_replacements import (
+    _class_source,
     _unsloth_get_model_config,
     _unsloth_text_configs,
     RL_EXTRA_ARGS,
@@ -1497,10 +1498,7 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
-# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs return no router logits and
-# crash (`aux_loss.to`, or Jamba's load_balancing_loss_func indexing an empty tuple). Dense = every expert count
-# 0 (granite-4.0-h-350m) or 1 (AI21-Jamba-Reasoning-3B builds a plain MLP for 1 expert; a 1-expert router's aux
-# loss is a constant with no gradient anyway). Real MoE keeps its aux loss.
+# Dense models (0 or 1 experts) need the aux loss off: TRL >= 1.7 enables it and they crash.
 _DENSE_ROUTER_AUX_LOSS_OFF = (
     "if getattr(self, 'aux_loss_enabled', False) and hasattr(getattr(self, 'model', None), 'config'):\n"
     "    _text_config = self.model.config\n"
@@ -2590,7 +2588,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     _trainer_src_of = RLTrainer
     _config_src_of = RLConfig
     try:
-        _trainer_src = inspect.getsource(RLTrainer)
+        _trainer_src = _class_source(RLTrainer)
         _trainer_module = inspect.getmodule(RLTrainer)
         _trainer_module_src = inspect.getsource(_trainer_module) if _trainer_module else ""
         if not RLTrainer.__module__.startswith("trl.experimental.") and (
@@ -2610,7 +2608,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         pass
 
     try:
-        _config_src = inspect.getsource(RLConfig)
+        _config_src = _class_source(RLConfig)
         _config_module = inspect.getmodule(RLConfig)
         _config_module_src = inspect.getsource(_config_module) if _config_module else ""
         if not RLConfig.__module__.startswith("trl.experimental.") and (
@@ -2630,10 +2628,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     # Reuse the probe reads above unless they failed or the class was swapped for its parent.
     if _trainer_src is None or RLTrainer is not _trainer_src_of:
-        _trainer_src = inspect.getsource(RLTrainer)
+        _trainer_src = _class_source(RLTrainer)
     old_RLTrainer_source = _trainer_src
     if _config_src is None or RLConfig is not _config_src_of:
-        _config_src = inspect.getsource(RLConfig)
+        _config_src = _class_source(RLConfig)
     old_RLConfig_source = _config_src
 
     if _trainer_resolved_module is not None:
@@ -3743,6 +3741,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "            if _gc_kwargs.get('context_fn') is None and not _gc_kwargs.get('debug', False):\n"
         "                _gc_kwargs['use_reentrant'] = True\n"
         "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
+        "                if hasattr(self, 'activation_checkpointing_kwargs'):\n"
+        "                    self.activation_checkpointing_kwargs = _gc_kwargs\n"
     )
 
     if "optim" in call_args:
@@ -4134,8 +4134,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(f"Unsloth: Could not wrap GRPO DDP gradient sync for {RLTrainer_name}: {e}")
     if trainer_file in ("dpo_trainer", "grpo_trainer"):
         try:
-            from ..context_parallel import patch_rl_trainer
-            patch_rl_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"), trainer_file)
+            trainer_cls = getattr(created_module, f"Unsloth{RLTrainer_name}")
+            cp_module = sys.modules.get(__name__.rsplit(".", 2)[0] + ".context_parallel")
+            if cp_module is not None and not hasattr(cp_module, "patch_rl_trainer"):
+                # context_parallel is mid-import (its unsloth.utils import loaded us); it patches these at its end.
+                cp_module.__dict__.setdefault("_DEFERRED_RL_TRAINERS", []).append(
+                    (trainer_cls, trainer_file)
+                )
+            else:
+                from ..context_parallel import patch_rl_trainer
+                patch_rl_trainer(trainer_cls, trainer_file)
         except Exception as e:
             logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
     if trainer_file == "ppo_trainer":
@@ -4374,7 +4382,7 @@ def patch_functions(
 
     functions = dir(RLTrainer)
     if RLTrainer_source is None:
-        RLTrainer_source = inspect.getsource(RLTrainer)
+        RLTrainer_source = _class_source(RLTrainer)
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
     changed = {
@@ -4998,8 +5006,7 @@ def _packing_honored(backbone, position_transform = None):
     if dtype not in (torch.float16, torch.bfloat16):
         dtype = torch.bfloat16 if params.dtype == torch.float32 else params.dtype
     training = [(module, module.training) for module in backbone.modules()]
-    # Training mode, as in the trainer: some models (gpt-oss) take a different attention path when training.
-    # Dropout off so the comparison is deterministic.
+    # Train mode as in the trainer (gpt-oss differs), dropout off for a deterministic compare.
     backbone.train()
     for module in backbone.modules():
         if isinstance(module, torch.nn.modules.dropout._DropoutNd):

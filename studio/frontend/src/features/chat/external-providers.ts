@@ -26,6 +26,7 @@ export interface ExternalProviderConfig {
   /** The type as the backend stores it (may differ from providerType). Absent means unknown. */
   backendProviderType?: string;
   maxOutputTokens?: number;
+  extraHeaders?: Record<string, string>;
 
   hasApiKey?: boolean;
   shared?: boolean;
@@ -345,6 +346,22 @@ export function externalModelSupportsStudioTools(
   );
 }
 
+export function externalModelTakesVideo(
+  checkpoint: string | null | undefined,
+): boolean {
+  const selection = parseExternalModelId(checkpoint);
+  if (!selection) return false;
+  const provider = loadExternalProviders().find(
+    (candidate) => candidate.id === selection.providerId,
+  );
+  if (!provider) return false;
+  const providerType = provider.backendProviderType ?? provider.providerType;
+  return (
+    isCustomProviderType(providerType) &&
+    !(providerType === LEGACY_CUSTOM_PROVIDER_TYPE && provider.apiType === "responses")
+  );
+}
+
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
@@ -362,6 +379,18 @@ export function normalizeProviderMaxOutputTokens(
     return undefined;
   }
   return value;
+}
+
+/** Copy saved headers into chat state. Validation lives in extra-headers.ts, loaded with Connections. */
+export function extraHeadersFromSaved(
+  value: unknown,
+): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const headers: Record<string, string> = {};
+  for (const [name, headerValue] of Object.entries(value as Record<string, unknown>)) {
+    if (name && typeof headerValue === "string") headers[name] = headerValue;
+  }
+  return Object.keys(headers).length ? headers : undefined;
 }
 
 /** All types except ChatGPT subscriptions; both stored and UI types are checked. */
@@ -477,7 +506,7 @@ export function allowsManualModelIdsWithCatalog(
   providerType: string | null | undefined,
 ): boolean {
   if (!providerType) return false;
-  if (providerType === "openrouter") return true;
+  if (providerType === "openrouter" || DECISION_PROVIDER_TYPES.has(providerType)) return true;
   return supportsRemoteModelCatalog(providerType);
 }
 
@@ -614,6 +643,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         ? raw.backendProviderType.trim()
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
+    extraHeaders: extraHeadersFromSaved(raw.extraHeaders),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,

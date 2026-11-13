@@ -112,9 +112,11 @@ import {
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
+  refreshModelsDevCatalog,
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
+import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 
 const PROVIDER_FORM_EASE: [number, number, number, number] = [
   0.165, 0.84, 0.44, 1,
@@ -143,6 +145,12 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
 
 function hasPublicModelCatalog(providerType: string | null | undefined): boolean {
   return providerType === "openrouter";
+}
+
+/** Once a provider has listed its models, the registry's suggestions only order that list. */
+export function liveModelSeeds(seeds: string[], live: string[]): string[] {
+  if (live.length === 0) return seeds;
+  return seeds.filter((id) => live.includes(id));
 }
 
 export function withSavedModelIds(catalog: string[], saved: string[]): string[] {
@@ -257,21 +265,20 @@ export function codexCapabilitiesWithPlanModels(
 
 
 export function resolveCodexPickerModels(
-  curated: string[],
   savedModels: string[],
   listed: CodexSubscriptionModels | null,
 ): { catalog: string[]; selected: string[] } {
-  // Only the plan's own catalog can retire a slug; the curated fallback seed must not drop one.
+  // Only the plan's own catalog can retire a slug; without it the saved models stand.
   const planListed = listed?.source === "subscription" && listed.models.length > 0;
   if (!planListed) {
-    const catalog = [...new Set([...curated, ...savedModels])];
-    const offered = new Set(catalog);
-    return { catalog, selected: savedModels.filter((model) => offered.has(model)) };
+    const catalog = [...new Set(savedModels)];
+    return { catalog, selected: catalog };
   }
   const offeredIds = listed.models.map((model) => model.id);
   // "Hide" retires from the picker, not from use; only slugs the plan no longer returns retire.
   const known = new Set((listed.known ?? listed.models).map((model) => model.id));
-  const selected = savedModels.filter((model) => known.has(model));
+  const selected =
+    savedModels.length > 0 ? savedModels.filter((model) => known.has(model)) : offeredIds;
   const catalog = [...new Set([...offeredIds, ...selected])];
   return { catalog, selected };
 }
@@ -285,6 +292,7 @@ export function ChatProvidersSettings({
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
+  const seededModelsRef = useRef<string[]>([]);
   // One object per automatic load: a reopened form reuses the key, never the request.
   const autoLoadedCatalogRef = useRef<{ key: string } | null>(null);
   // One-shot latch; user navigation sets it too so a slow first sync cannot pull them into the form.
@@ -299,6 +307,7 @@ export function ChatProvidersSettings({
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
+  const [extraHeadersDraft, setExtraHeadersDraft] = useState("");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
   >(null);
@@ -369,6 +378,9 @@ export function ChatProvidersSettings({
 
   const chooseProviderType = (value: string) => {
     if (editingProviderId) return;
+    if (!(isOpenCodeProviderType(providerType) && isOpenCodeProviderType(value))) {
+      setApiKey("");
+    }
     setProviderType(value);
     setReasoningConfig(null);
     setAvailableModels([]);
@@ -525,10 +537,31 @@ export function ChatProvidersSettings({
   }, [autoLoadCatalogKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    let active = true;
+    void refreshModelsDevCatalog()
+      .then(async (refreshed) => {
+        if (!refreshed) return;
+        const registryRows = await listProviderRegistry();
+        if (active) setRegistry(registryRows.filter((entry) => !entry.hidden));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const entry = registryByType.get(providerType);
+    // A refreshed registry replaces only a list still showing its suggestions.
+    if (entry && availableModels === seededModelsRef.current) seedModels(entry);
+  }, [registryByType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
+    setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
     setEditingBackendProviderType(null);
@@ -540,15 +573,8 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed defaults for curated providers and OpenRouter; others stay empty until "Load available models".
-    const seedDefaults =
-      entry.model_list_mode === "curated" || hasPublicModelCatalog(providerType);
-    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
-    setSelectedModelIds(
-      isDecisionConnection({ providerType })
-        ? entry.default_models.slice(0, 1)
-        : [],
-    );
+    seedModels(entry);
+    setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
@@ -633,6 +659,11 @@ export function ChatProvidersSettings({
     };
   }, [onProvidersChange]);
 
+  function seedModels(entry: ProviderRegistryEntry) {
+    seededModelsRef.current = [...entry.default_models];
+    setAvailableModels(seededModelsRef.current);
+  }
+
   function resetForm() {
     // Every form transition retires the in-flight Codex request; its shared spinner blocks the next form.
     codexCatalogRequestRef.current += 1;
@@ -644,6 +675,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
+    setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
     setEditingBackendProviderType(null);
@@ -661,16 +693,7 @@ export function ChatProvidersSettings({
   function openAddProvider() {
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
-    if (
-      entry &&
-      (entry.model_list_mode === "curated" ||
-        hasPublicModelCatalog(providerType))
-    ) {
-      setAvailableModels([...entry.default_models]);
-    }
-    if (entry && isDecisionConnection({ providerType: entry.provider_type })) {
-      setSelectedModelIds(entry.default_models.slice(0, 1));
-    }
+    if (entry) seedModels(entry);
     autoOpenedAddFormRef.current = true;
     setPage("form");
   }
@@ -819,14 +842,17 @@ export function ChatProvidersSettings({
         apiKey: silent ? "" : apiKey.trim(),
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
+        extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
       });
       if (silent && autoLoadedCatalogRef.current !== autoLoad) return;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
-        : (registryByType.get(providerType)?.default_models ?? []);
-      // Defaults first so curated picks show when /models omits them.
+        : liveModelSeeds(
+            registryByType.get(providerType)?.default_models ?? [],
+            models.map((model) => model.id.trim()),
+          );
       const modelIds = pruneProviderModelIds(providerType, [
         ...new Set(
           [
@@ -884,19 +910,10 @@ export function ChatProvidersSettings({
 
     setMutatingProvider(true);
     try {
-      const models = pruneProviderModelIds(
-        providerType,
-        selectedModelIds.length > 0 ? selectedModelIds : entry.default_models,
-      );
-      const available = pruneProviderModelIds(providerType, [
-        ...new Set([...availableModels, ...entry.default_models]),
-      ]);
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName: entry.display_name,
         baseUrl: null,
-        models,
-        availableModels: available,
       });
       const provider: ExternalProviderConfig = {
         id: created.id,
@@ -904,8 +921,8 @@ export function ChatProvidersSettings({
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         ...connectionApiFields(created.api_type),
-        models,
-        availableModels: available,
+        models: [],
+        availableModels: [],
         hasApiKey: created.has_api_key,
         authKind: created.auth_kind,
         authStatus: created.auth_status,
@@ -923,8 +940,6 @@ export function ChatProvidersSettings({
       providersRef.current = nextProviders;
       onProvidersChange(nextProviders);
       void refreshProviderModelCatalogs([provider]);
-      setSelectedModelIds(models);
-      setAvailableModels(available);
       setEditingProviderId(created.id);
       return created.id;
     } finally {
@@ -1001,6 +1016,7 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
+      const extraHeaders = parseExtraHeadersDraft(extraHeadersDraft);
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName,
@@ -1014,6 +1030,7 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        extraHeaders,
         ...(showShareToggle && sharedDraft ? { shared: true } : {}),
         apiKey: apiKey.trim(),
 
@@ -1039,6 +1056,7 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
+        extraHeaders: created.extra_headers ?? extraHeaders,
         reasoningConfig: created.provider_type === "custom"
           ? normalizeCustomReasoningConfig(created.reasoning_config)
           : undefined,
@@ -1180,6 +1198,7 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
+      const extraHeaders = parseExtraHeadersDraft(extraHeadersDraft);
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
           ? customProviderName.trim() ||
@@ -1193,6 +1212,7 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        extraHeaders,
         ...(showShareToggle && sharedDraft !== (existing.shared === true)
           ? { shared: sharedDraft }
           : {}),
@@ -1225,6 +1245,7 @@ export function ChatProvidersSettings({
           ? (updated.available_models?.length ? updated.available_models : existing.availableModels)
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
+        extraHeaders: updated.extra_headers ?? extraHeaders,
         reasoningConfig: updated.provider_type === "custom"
           ? normalizeCustomReasoningConfig(updated.reasoning_config)
           : undefined,
@@ -1267,13 +1288,12 @@ export function ChatProvidersSettings({
     refresh = false,
   ): Promise<boolean> {
     const request = ++codexCatalogRequestRef.current;
-    const curated = registryByType.get("openai_codex")?.default_models ?? [];
     let listed: CodexSubscriptionModels | null = null;
     if (authStatus === "connected") {
       try {
         listed = await fetchCodexSubscriptionModels(providerId, { refresh });
       } catch {
-        // Keep the curated seed: the form must still open when upstream is unreachable.
+        // The form must still open when upstream is unreachable.
       }
     }
     if (request !== codexCatalogRequestRef.current) {
@@ -1294,9 +1314,8 @@ export function ChatProvidersSettings({
         })
         .catch(() => undefined);
     }
-    const picker = resolveCodexPickerModels(curated, savedModels, listed);
+    const picker = resolveCodexPickerModels(savedModels, listed);
     if (refresh && listed?.source !== "subscription") {
-      // A curated fallback is not the account's catalog, so it retires nothing.
       setAvailableModels((previous) => [...new Set([...picker.catalog, ...previous])]);
       setManualModelIds("");
       return true;
@@ -1309,6 +1328,16 @@ export function ChatProvidersSettings({
       setSelectedModelIds(picker.selected);
     }
     setManualModelIds("");
+    if (!refresh && savedModels.length === 0 && picker.selected.length > 0) {
+      const models = pruneProviderModelIds("openai_codex", picker.selected);
+      const availableModels = pruneProviderModelIds("openai_codex", picker.catalog);
+      await updateProviderConfig(providerId, { models, availableModels });
+      const saved = providersRef.current.map((provider) =>
+        provider.id === providerId ? { ...provider, models, availableModels } : provider,
+      );
+      providersRef.current = saved;
+      onProvidersChange(saved);
+    }
     return true;
   }
 
@@ -1359,6 +1388,7 @@ export function ChatProvidersSettings({
             getExternalMinOutputTokens(provider.providerType),
           ).toString(),
     );
+    setExtraHeadersDraft(extraHeadersToDraft(provider.extraHeaders));
     setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
     setIsReasoningModel(
@@ -1375,7 +1405,10 @@ export function ChatProvidersSettings({
       setManualModelIds(provider.models.join("\n"));
       return;
     }
-    if (supportsRemoteModelCatalog(provider.providerType)) {
+    if (
+      supportsRemoteModelCatalog(provider.providerType) ||
+      isDecisionConnection({ providerType: provider.providerType })
+    ) {
       const cachedCatalog = provider.availableModels ?? [];
       const catalogModels = pruneProviderModelIds(provider.providerType, [
         ...new Set(
@@ -1412,8 +1445,11 @@ export function ChatProvidersSettings({
       setSelectedModelIds(inDefaults);
       setManualModelIds(custom.join("\n"));
     } else {
-      const shortlist = entry?.default_models ?? [];
       const cachedCatalog = provider.availableModels ?? [];
+      const shortlist = liveModelSeeds(
+        entry?.default_models ?? [],
+        cachedCatalog,
+      );
       const mergedModels = pruneProviderModelIds(provider.providerType, [
         ...new Set(
           [...shortlist, ...cachedCatalog, ...provider.models]
@@ -1518,6 +1554,7 @@ export function ChatProvidersSettings({
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
         apiType: provider.decisionsOnly ? "systemone" : provider.apiType,
+        extraHeaders: provider.extraHeaders,
         modelId:
           provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE ||
           isDecisionConnection(provider)
@@ -1870,6 +1907,36 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
+              {providerType !== "openai_codex" ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-extra-headers"
+                      className="text-sm font-medium"
+                    >
+                      Extra headers
+                    </Label>
+                    <p
+                      id="provider-extra-headers-help"
+                      className="text-xs leading-snug text-muted-foreground"
+                    >
+                      One header per line, as Name: value. Use {"{{CHAT_SESSION_ID}}"} for
+                      the open chat. Sent on every request to this connection.
+                    </p>
+                  </div>
+                  <Textarea
+                    id="provider-extra-headers"
+                    value={extraHeadersDraft}
+                    onChange={(event) => setExtraHeadersDraft(event.target.value)}
+                    placeholder={
+                      'X-LiteLLM-Session-Id: unsloth-{{CHAT_SESSION_ID}}'
+                    }
+                    aria-describedby="provider-extra-headers-help"
+                    className="min-h-20 font-mono text-sm"
+                  />
+                </div>
+              ) : null}
+
               {providerType === "llama_cpp" ? (
                 <div className="flex items-start justify-between gap-4 px-4 py-3">
                   <div className="space-y-1">
@@ -2038,7 +2105,7 @@ export function ChatProvidersSettings({
                 // the loading flag and re-enable Save mid-sync.
                 const request = ++codexCatalogRequestRef.current;
                 const changedProviderId = editingProviderId;
-                // Save is gated on this, or pre-authorization seed slugs get saved and fail.
+                // Save is gated on this, so nothing is saved before the plan's list is read.
                 setModelsLoading(true);
                 let owned = true;
                 try {
@@ -2145,7 +2212,7 @@ export function ChatProvidersSettings({
                       />
                     </div>
                   </div>
-                ) : isCuratedModelList ? (
+                ) : isCuratedModelList && (availableModels.length > 0 || modelIdsEditable) ? (
                   <div className="space-y-3 px-4 py-4">
                     <p className="text-xs leading-relaxed text-muted-foreground">
                       Select from suggestions below or enter exact model IDs.

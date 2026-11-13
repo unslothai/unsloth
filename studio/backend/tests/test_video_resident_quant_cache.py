@@ -521,8 +521,8 @@ def test_the_load_writes_auto_resident_builds_deferred_and_keeps_explicit_writes
         assert needle in guard, needle
     assert "defer = True" in src[auto_at : auto_at + 400]
     assert "source = _base_local_dir or fetch_base," in src[auto_at : auto_at + 400]
-    assert "_start_resident_quant_write(self, pipe, _load_token)" in src
-    assert src.index("_start_resident_quant_write(") > src.index(
+    assert "_take_resident_quant_write(self, _load_token)" in src
+    assert src.index("_take_resident_quant_write(") > src.index(
         '"video.loaded: %s (%s, %s, offload=%s'
     )
 

@@ -365,10 +365,9 @@ def _find_parts(model) -> _Parts:
         base = getattr(child, "original_module", child)  # PEFT modules_to_save wraps it
         norm_like = "norm" in name.lower() or "Norm" in type(base).__name__
         too_big = bool(hidden) and sum(p.numel() for p in base.parameters()) > 4 * hidden
-        # A learned position / token-type table before the layers (GPT-2 wpe, OPT / BART / Whisper
-        # embed_positions): indexed by positions, not tokens, so later stages (whose pre-layer result is
-        # replaced by the received hidden states anyway) need nothing from it. A token-indexed table could
-        # feed the layers a side input and stays refused.
+        # A learned position or token-type table before the layers (GPT-2 wpe, OPT/BART/Whisper
+        # embed_positions) is indexed by positions, so later stages need nothing from it;
+        # token-indexed tables stay refused.
         positional = (
             isinstance(base, nn.Embedding)
             and isinstance(vocab, int)
@@ -635,6 +634,59 @@ def _moe_aux_plan(parts):
     return _MoEAux(inner, router_class, index, num_experts, routers)
 
 
+def _scaler_called_by(fn, depth = 1):
+    """`unsloth_ga_scale_aux_loss` if `fn`, a function it wraps, or (depth) a module-level *_forward it calls
+    (Unsloth Zoo's compiled `<Class>_forward`) calls it, else None."""
+    seen = 0
+    while fn is not None and seen < 8:
+        seen += 1
+        fn = getattr(fn, "__func__", fn)
+        code = getattr(fn, "__code__", None)
+        names = getattr(code, "co_names", ())
+        scope = getattr(fn, "__globals__", None) or {}
+        if "unsloth_ga_scale_aux_loss" in names:
+            scaler = scope.get("unsloth_ga_scale_aux_loss")
+            if callable(scaler):
+                return scaler
+        elif depth > 0:
+            for name in names:
+                if name.endswith("_forward") and callable(scope.get(name)):
+                    scaler = _scaler_called_by(scope[name], depth - 1)
+                    if scaler is not None:
+                        return scaler
+        fn = getattr(fn, "__wrapped__", None)
+    return None
+
+
+def _forward_aux_scaler(owner):
+    """The scaler the installed forward calls, or None; read from the forward, not a version check."""
+    scaler = _scaler_called_by(owner.__dict__.get("forward"))
+    return (
+        scaler if scaler is not None else _scaler_called_by(getattr(type(owner), "forward", None))
+    )
+
+
+def _forward_aux_weighting(owner, term, kwargs, num_items_in_batch):
+    """Weight `term` by this micro-batch's token share of the window, as the rewritten forward does on one GPU."""
+    scaler = _forward_aux_scaler(owner)
+    labels = kwargs.get("labels")
+    if scaler is None or labels is None:
+        return term
+    loss_kwargs = {
+        k: kwargs[k] for k in ("shift_labels", "packed_seq_lengths") if kwargs.get(k) is not None
+    }
+    if num_items_in_batch is not None:
+        loss_kwargs["num_items_in_batch"] = num_items_in_batch
+    return scaler(
+        term,
+        labels,
+        kwargs.get("attention_mask"),
+        loss_kwargs,
+        num_items_in_batch = num_items_in_batch,
+        model = owner,
+    )
+
+
 def _record_router(ctx, module, args, output):
     if ctx.router_logits is not None:  # inside this stage's forward (not a checkpoint recompute)
         index = ctx.moe.index
@@ -785,7 +837,10 @@ def _layer_call_format(decoder, layers_name):
                 and any(var in ast.unparse(a) for a in node.args)
                 and "checkpoint" in ast.unparse(node.func).lower()
             ):
-                if "GradientCheckpointingLayer" not in text:
+                if (
+                    "GradientCheckpointingLayer" not in text
+                    and "ActivationCheckpointingLayer" not in text
+                ):
                     formats.add("checkpointed")
     if "checkpointed" in formats:
         if getattr(decoder, "gradient_checkpointing", False):
@@ -1005,6 +1060,7 @@ class _StageContext:
         self.moe = None
         self.router_logits = None
         self.aux_losses = []
+        self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
 
     def configure(self, start, end, is_first, is_last):
         """The stage about to run (several stages of one rank share this context, one runs at a time)."""
@@ -1167,7 +1223,14 @@ class _PPStageModule(nn.Module):
                 # transformers' CausalLM forward: loss += router_aux_loss_coef * load_balancing_loss.
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
                 ctx.aux_losses.append(aux.detach())
-                loss = loss + moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                if ctx.trainer_aux is not None:
+                    coef, divisor = ctx.trainer_aux
+                    loss = loss + coef * aux.to(loss.device) / divisor
+                else:
+                    term = moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                    loss = loss + _forward_aux_weighting(
+                        moe.owner, term, kwargs, ctx.num_items_in_batch
+                    )
             elif carry:
                 # Auxiliary loss off: a zero term keeps the received carry in the graph (see the stage return).
                 loss = loss + 0 * carry[0].sum().to(loss.device)
@@ -1430,10 +1493,9 @@ class PipelineParallel:
         dp_mesh,
         mp_policy = None,
     ):
-        """shard_model(model, FSDP2Config(mesh = dp_mesh)) sharded this stage: make the PipelineStage's module
-        the outer FSDP2 root (no parameters of its own), so torch's PipelineStage defers the gradient
-        reduce-scatter to the end of the step (set_requires_gradient_sync(False) per micro-batch backward,
-        one post_backward in perform_reduce_grad), as torchtitan's stage submodule does."""
+        """After shard_model shards this stage, make the PipelineStage module the outer FSDP2 root
+        with no parameters of its own, so the reduce-scatter defers to perform_reduce_grad, as
+        torchtitan does."""
         from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
         if self.stages_per_rank > 1:
@@ -1761,10 +1823,9 @@ class PipelineParallel:
         return self._batch_loss(m, device, None)
 
     def _average_replicated_grads(self):
-        """Trainable parameters FSDP2 keeps replicated (Unsloth averages them over dp like DDP from an
-        autograd callback, deferred while gradient sync is off): the pipeline schedule runs every micro-batch
-        backward with sync off and reduces FSDP2's own groups outside autograd, so average them here once.
-        Averaging equal values is a no-op, so an earlier per-backward average stays correct."""
+        """Averages trainable FSDP2-replicated parameters over dp here, once: the schedule runs
+        micro-batch backwards with gradient sync off and reduces FSDP2 groups outside autograd;
+        re-averaging equal values is a no-op."""
         params = self.model.__dict__.get("_unsloth_replicated_grad_params")
         if not params:
             return

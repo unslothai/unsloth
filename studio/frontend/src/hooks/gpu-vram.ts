@@ -29,7 +29,7 @@ export interface VramReportingGpu {
   vram_used_gb_aggregate?: number | null;
 }
 
-function sharesHostMemoryDevice(device: MemoryTotalDevice): boolean {
+export function sharesHostMemoryDevice(device: MemoryTotalDevice): boolean {
   return sharesHostMemory({
     sharedMemory: device.shared_memory === true,
     unifiedMemory: device.unified_memory === true,

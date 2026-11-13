@@ -22,8 +22,7 @@ import utils.hardware.hardware as hw  # noqa: E402
 def _no_torch(monkeypatch):
     # Force the non-CUDA/XPU path regardless of the test host's real GPUs.
     monkeypatch.setattr(hw, "_has_torch", lambda: False)
-    # The no_torch verdict reads the venv's install manifest; pin it so the answer does
-    # not depend on which venv runs these tests.
+    # no_torch reads the venv's install manifest, so pin it to keep tests venv-independent.
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
     monkeypatch.setattr(hw, "_NO_TORCH_SETTLED_EPOCH", None)
     monkeypatch.setattr(hw, "_CHAT_ONLY_HINT", None)

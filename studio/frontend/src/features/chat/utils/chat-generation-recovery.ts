@@ -9,6 +9,7 @@ import {
 } from "./parse-assistant-content";
 import type { ContextUsageMarkers } from "./saved-context-usage";
 import { isExternalModelId } from "../external-providers";
+import { createWakeDedupe } from "../../../lib/wake-dedupe";
 import { contextUsageReasoningKey, type ContextUsageReasoningFields } from "./context-usage-reasoning";
 
 export type StoredGenerationStatus = ChatGenerationStatus;
@@ -734,15 +735,21 @@ export function subscribeGenerationRecoveryTriggers(
   windowTarget: RecoveryEventTarget,
   documentTarget: RecoveryVisibilityTarget,
   recover: () => void,
+  options: { wakeKey?: () => string | undefined; now?: () => number } = {},
 ): () => void {
+  // Online and pageshow always run; focus and visible of one tab return read once per thread.
+  const isFreshWake = createWakeDedupe(undefined, options.now);
+  const wake = () => {
+    if (isFreshWake(options.wakeKey?.() ?? "")) recover();
+  };
   const onVisible = () => {
     if (documentTarget.visibilityState === "visible") {
-      recover();
+      wake();
     }
   };
   const onFocus = () => {
     if (documentTarget.visibilityState !== "hidden") {
-      recover();
+      wake();
     }
   };
   windowTarget.addEventListener("online", recover);

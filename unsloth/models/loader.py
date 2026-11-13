@@ -1403,7 +1403,7 @@ class FastLanguageModel(FastLlamaModel):
             )
             return _mark_requested_float32(delegated, user_float32), tokenizer
 
-        if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
+        if isinstance(dtype, str) and dtype in ["float16", "bfloat16", "float32"]:
             dtype = getattr(torch, dtype)
         assert (
             dtype is None
@@ -2329,6 +2329,8 @@ class FastModel(FastBaseModel):
         check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
+        if isinstance(dtype, str) and dtype in ["float16", "bfloat16", "float32"]:
+            dtype = getattr(torch, dtype)
         token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
@@ -2751,7 +2753,8 @@ class FastModel(FastBaseModel):
         diffusion_config = model_config
         if diffusion_config is None and peft_config is not None:
             try:
-                diffusion_config = AutoConfig.from_pretrained(
+                diffusion_config = _memo_config_probe(
+                    AutoConfig.from_pretrained,
                     peft_config.base_model_name_or_path,
                     token = token,
                     trust_remote_code = trust_remote_code,
@@ -2866,6 +2869,10 @@ class FastModel(FastBaseModel):
             raise RuntimeError(
                 "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
             )
+        elif "deepseek_v41," in model_types_all or "deepseek_v41_text," in model_types_all:
+            # DeepSeek-V4.1 port: under gradient checkpointing a compiled helper inside a layer (rope, mHC, LoRA
+            # forwards) ran compiled in the forward and not in the recompute, and the saved tensors no longer matched.
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         elif "csm" in model_types_all:
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"  # Inference is too slow
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"  # Sesame fails
@@ -3384,6 +3391,19 @@ class FastModel(FastBaseModel):
                             or _resolve_audio_auto_model(model_config, **_probe_hub_kwargs)
                             or auto_model
                         )
+                        # A vision_config with only a causal-LM class mapped (the DeepSeek-V4.1 port builds no vision
+                        # tower yet): the image-text auto class would raise "Unrecognized configuration class".
+                        if (
+                            auto_model is AutoModelForVision2Seq
+                            and resolve_model_class(auto_model, model_config, **_probe_hub_kwargs)
+                            is None
+                            and resolve_model_class(
+                                AutoModelForCausalLM, model_config, **_probe_hub_kwargs
+                            )
+                            is not None
+                        ):
+                            auto_model = AutoModelForCausalLM
+                            is_vlm = False
             else:
                 auto_model = _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs)
 

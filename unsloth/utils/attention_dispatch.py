@@ -1306,6 +1306,16 @@ def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
     return seg
 
 
+# Marks forwards that apply prefix_seg_info; a bool on a model overrides detection (prefix_seg_info_applied).
+APPLIES_PREFIX_SEG_INFO = "_unsloth_applies_prefix_seg_info"
+
+
+def applies_prefix_seg_info(forward):
+    """Mark an attention forward that passes ``resolve_prefix_seg_info``'s table to ``run_attention``."""
+    setattr(forward, APPLIES_PREFIX_SEG_INFO, True)
+    return forward
+
+
 # One dense window mask per (device, shape, window) shared by all layers: at 32K it is 1 GiB.
 _WINDOW_MASK_CACHE: dict = {}
 
@@ -1331,6 +1341,20 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
         "inference": _built_in_inference_mode(),
     }
     return mask
+
+
+def context_parallel_attention(forward = None, *, rl = False):
+    """Mark a forward that attends via run_attention and sizes RoPE by the global sequence under CP.
+    `rl = True` also opens DPO / GRPO: their decoder hooks need their own parity run per forward."""
+    if forward is None:
+        return lambda f: context_parallel_attention(f, rl = rl)
+    forward._unsloth_context_parallel = {"rl": bool(rl)}
+    return forward
+
+
+def is_context_parallel_attention(forward, rl = False) -> bool:
+    mark = getattr(forward, "_unsloth_context_parallel", None)
+    return isinstance(mark, dict) and (not rl or mark["rl"])
 
 
 def run_attention(
@@ -1796,5 +1820,9 @@ __all__ = [
     "AttentionContext",
     "select_attention_backend",
     "resolve_prefix_seg_info",
+    "APPLIES_PREFIX_SEG_INFO",
+    "applies_prefix_seg_info",
     "run_attention",
+    "context_parallel_attention",
+    "is_context_parallel_attention",
 ]

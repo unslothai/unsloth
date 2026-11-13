@@ -1189,7 +1189,7 @@ def _cache_blob(
 
 
 def test_gguf_entries_are_listed_as_llama_cpp_only(home, client, stub):
-    gguf = {n for n, c in catalog.CHECKPOINTS.items() if c.layout == "gguf"}
+    gguf = {n for n, c in catalog.CHECKPOINTS.items() if c.layout == "gguf" and c.backend != "mlx"}
     assert gguf == {
         "kev-0.8b",
         "kev-4b",
@@ -1199,6 +1199,10 @@ def test_gguf_entries_are_listed_as_llama_cpp_only(home, client, stub):
         "openjev",
         "laya-gguf",
         "julia-1",
+        "d1-omni-600m",
+        "d1-2b",
+        "d1-omni-2b",
+        "d1-3b",
     }
     for name in gguf:
         checkpoint, companion = catalog.CHECKPOINTS[name], catalog.GGUF_COMPANIONS[name]
