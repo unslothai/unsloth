@@ -30,7 +30,15 @@ _GROUP = 256
 _LOCK = threading.Lock()
 # devices: card index -> None once probed good, else why not. on: card index -> True (read by traced forwards).
 # tiles: card index -> (default tile, per-K rules). calls: op launches (engagement census, never read when tracing).
-_STATE: dict = {"devices": {}, "on": {}, "tiles": {}, "op": None, "calls": 0, "logged": set()}
+_STATE: dict = {
+    "devices": {},
+    "on": {},
+    "tiles": {},
+    "op": None,
+    "calls": 0,
+    "logged": set(),
+    "gemm": {},
+}
 # (M, K): ragged rows, the narrow per-K tile (3 / 16 / 8 groups), deep K (64 groups: two rows per tile; 128: one), the
 # arch default (36 groups between the per-K rules), an all-zero row (the 1e-12 floor) and outliers in every shape.
 _PROBE_SHAPES = ((257, 768), (33, 4096), (130, 2048), (17, 16384), (65, 9216), (19, 32768))
@@ -242,6 +250,7 @@ def prepare(device: Any = None) -> bool:
             _STATE["op"] = _op()
             _STATE["on"][index] = True
     if why is None:
+        prepare_gemm(index)
         _log().info(
             "diffusion.native_rotq: int8 W8A8 Linears on cuda:%d rotate + quantise in one kernel when compiled",
             index,
@@ -278,6 +287,169 @@ def candidates(transformer: Any) -> int:
         )
     except Exception:  # noqa: BLE001
         return 0
+
+
+# ---------------------------------------------------------------- fused-dequant GEMM with the native epilogue
+NATIVE_GEMM_ENV = "UNSLOTH_NATIVE_INT8_GEMM"
+_GEMM_OP = "native_cuda_i8mm"
+# (M, N, K, bias): ragged M / N tails, K one / several tiles, the tie operands below
+_GEMM_PROBE_SHAPES = (
+    (257, 384, 512, True),
+    (33, 208, 1024, False),
+    (1040, 528, 4096, True),
+    (300, 4096, 16384, True),
+)
+
+
+def gemm_disabled() -> bool:
+    raw = (os.environ.get(NATIVE_GEMM_ENV) or "").strip().lower()
+    return raw in ("0", "off", "false", "no") or disabled()
+
+
+def gemm_shape_ok(in_features: int, out_features: int) -> bool:
+    from .diffusion_int8_gemm import _K_ALIGN, _N_ALIGN
+    return int(in_features) % _K_ALIGN == 0 and int(out_features) % _N_ALIGN == 0
+
+
+def reference_gemm(xq: Any, wq: Any, xs: Any, ws: Any, bias: Any) -> Any:
+    """``NativeWeightOnlyLinear._int_mm_from_q`` for bf16 activations, op for op (cuBLAS ``_int_mm``, fp32 epilogue)."""
+    import torch
+
+    acc = torch._int_mm(xq, wq.t())
+    out = torch.mul(acc, xs.reshape(-1, 1))
+    w = ws.reshape(-1)
+    out = torch.addcmul(bias.float(), out, w) if bias is not None else out.mul_(w)
+    return out.to(torch.bfloat16)
+
+
+def _gemm_launch(xq: Any, wq: Any, xs: Any, ws: Any, bias: Any) -> Any:
+    from . import diffusion_int8_gemm as g8
+
+    _STATE["gemm_calls"] = _STATE.get("gemm_calls", 0) + 1
+    xq = xq if xq.stride(-1) == 1 else xq.contiguous()
+    xs = xs.reshape(-1)
+    index = xq.device.index
+    cfg = (
+        g8.tile_for(index, xq.shape[0], wq.shape[0], xq.shape[1])
+        if _STATE["gemm"].get(index)
+        else None
+    )
+    if (
+        cfg is not None
+        and wq.stride(-1) == 1
+        and g8._aligned(xq, wq)
+        and xq.shape[0] >= g8._MIN_ROWS
+    ):
+        try:
+            return g8._launch(xq, wq, xs, ws, bias, cfg, native = True)
+        except Exception as exc:  # noqa: BLE001 - this card keeps cuBLAS from here on
+            _STATE["gemm"][index] = False
+            _log().warning(
+                "diffusion.native_rotq: fused-dequant GEMM failed on cuda:%d (%s); cuBLAS",
+                index,
+                exc,
+            )
+    return reference_gemm(xq, wq, xs, ws, bias)
+
+
+def _gemm_op() -> Any:
+    """``unsloth_studio::native_cuda_i8mm`` (opaque to Inductor), or None."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    ns = getattr(torch.ops, _NS, None)
+    if ns is not None and hasattr(ns, _GEMM_OP):
+        return getattr(ns, _GEMM_OP)
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return None
+    try:
+
+        @custom_op(
+            f"{_NS}::{_GEMM_OP}",
+            mutates_args = (),
+            schema = "(Tensor xq, Tensor wq, Tensor xs, Tensor ws, Tensor? bias) -> Tensor",
+        )
+        def _native_cuda_i8mm(xq, wq, xs, ws, bias):
+            return _gemm_launch(xq, wq, xs, ws, bias)
+
+        @_native_cuda_i8mm.register_fake
+        def _(xq, wq, xs, ws, bias):
+            return xq.new_empty((xq.shape[0], wq.shape[0]), dtype = torch.bfloat16)
+    except Exception:  # noqa: BLE001
+        return None
+    return getattr(getattr(torch.ops, _NS), _GEMM_OP)
+
+
+def _gemm_probe(index: int) -> Optional[str]:
+    """None when the native-epilogue tiles this card would run equal ``reference_gemm`` bit for bit, else why not."""
+    import torch
+
+    from . import diffusion_int8_gemm as g8
+
+    if g8.device_config(index) is None:
+        return "no fused-dequant GEMM tile on this card (int8 GEMM gate)"
+    dev = torch.device("cuda", index)
+    g = torch.Generator(device = "cpu").manual_seed(9)
+    cases = []
+    for m, n, k, bias in _GEMM_PROBE_SHAPES:
+        a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8)
+        w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8)
+        b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16) if bias else None
+        cases.append((a, w, b))
+    ta, tw = g8.tie_operands(dev)
+    cases.append((ta.cpu(), tw.cpu(), None))
+    for a, w, b in cases:
+        a, w = a.to(dev), w.to(dev)
+        b = b.to(dev) if b is not None else None
+        xs = (torch.rand(a.shape[0], 1, generator = g) * 0.02 + 1e-4).to(dev)
+        ws = (torch.rand(w.shape[0], generator = g) * 0.002 + 1e-5).to(dev)
+        cfg = g8.tile_for(index, a.shape[0], w.shape[0], a.shape[1])
+        if cfg is None or not g8._aligned(a, w):
+            continue
+        if not torch.equal(
+            g8._launch(a, w, xs.reshape(-1), ws, b, cfg, native = True),
+            reference_gemm(a, w, xs, ws, b),
+        ):
+            return f"native epilogue differs (tile {cfg}, {tuple(a.shape)} x {tuple(w.shape)})"
+    torch.cuda.synchronize(dev)
+    return None
+
+
+def prepare_gemm(index: int) -> bool:
+    """After ``prepare``: arm the native-epilogue GEMM on card ``index`` (eager, once)."""
+    if gemm_disabled():
+        return False
+    with _LOCK:
+        if index in _STATE["gemm"]:
+            return bool(_STATE["gemm"][index])
+        try:
+            why = "no torch.library.custom_op" if _gemm_op() is None else _gemm_probe(index)
+        except Exception as exc:  # noqa: BLE001
+            why = f"{type(exc).__name__}: {str(exc)[:200]}"
+        _STATE["gemm"][index] = why is None
+        if why is None:
+            _STATE["gemm_op"] = _gemm_op()
+    if why is None:
+        _log().info(
+            "diffusion.native_rotq: int8 W8A8 Linears on cuda:%d run the fused-dequant GEMM when compiled",
+            index,
+        )
+    else:
+        _log().info(
+            "diffusion.native_rotq: cuda:%d keeps cuBLAS _int_mm + epilogue (%s)", index, why
+        )
+    return why is None
+
+
+def gemm_enabled_for(index: Any) -> bool:
+    """Traceable lookup of an earlier ``prepare_gemm``."""
+    return bool(_STATE["gemm"].get(index, False)) and _STATE.get("gemm_op") is not None
+
+
+def gemm(xq: Any, wq: Any, xs: Any, ws: Any, bias: Any) -> Any:
+    return _STATE["gemm_op"](xq, wq, xs, ws, bias)
 
 
 def share_enabled() -> bool:

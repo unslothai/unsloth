@@ -756,7 +756,15 @@ def native_linear_class():
         def _forward_cuda_rotq(self, x: Any) -> Any:
             x2 = x.reshape(-1, self.in_features)
             xq, xs = cuda_rotq.rotq(x2, self.rot_group)
-            out = self._int_mm_from_q(xq, xs, x.dtype).to(x.dtype)
+            if cuda_rotq.gemm_enabled_for(x.device.index) and cuda_rotq.gemm_shape_ok(
+                self.in_features, self.out_features
+            ):
+                # dequant + bias inside the GEMM: bf16 out, no int32 [rows, N] round trip
+                out = cuda_rotq.gemm(
+                    xq, self.weight_q, xs, self.weight_scale.view(torch.float32), self.bias
+                )
+            else:
+                out = self._int_mm_from_q(xq, xs, x.dtype).to(x.dtype)
             return out.reshape(*x.shape[:-1], self.out_features)
 
         def _forward_rdna(self, x: Any) -> Any:

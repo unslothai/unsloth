@@ -268,6 +268,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         BLOCK_K: tl.constexpr,  # block size along K (in features)
         GROUP_M: tl.constexpr,  # M tiles per swizzle group
         PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
+        NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear epilogue: fp32 acc * xs * ws (+ bias), one bf16 round
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -303,18 +304,27 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         # torchao epilogue, every rounding kept: (int32 * xs) -> xs dtype, * ws -> ws dtype, -> bf16, + bias.
         xs = tl.load(xs_ptr + rm).to(tl.float32)
         ws = tl.load(ws_ptr + rn).to(tl.float32)
-        if XS_FP32:
-            y = acc.to(tl.float32)
+        if NATIVE:
+            # ``_int_mm_rows``: torch.mul(acc, x_scale), .mul_(w_scale) or addcmul(bias.float(), out, w_scale), -> bf16
+            y = tl.extra.cuda.libdevice.mul_rn(
+                tl.extra.cuda.libdevice.int2float_rn(acc), xs[:, None]
+            )
+            y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
+            if HAS_BIAS:
+                y = tl.extra.cuda.libdevice.add_rn(tl.load(b_ptr + rn).to(tl.float32)[None, :], y)
         else:
-            # int32 -> fp32 -> bf16 rounds twice; Triton folds ``acc.to(fp32).to(bf16)`` into one rounding.
-            y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
-        y = _rbf16(y * xs[:, None])
-        # *_rn: ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
-        y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
-        if not WS_FP32:
-            y = _rbf16(y)
-        if HAS_BIAS:
-            y = tl.extra.cuda.libdevice.add_rn(y, tl.load(b_ptr + rn).to(tl.float32)[None, :])
+            if XS_FP32:
+                y = acc.to(tl.float32)
+            else:
+                # int32 -> fp32 -> bf16 rounds twice; Triton folds ``acc.to(fp32).to(bf16)`` into one rounding.
+                y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
+            y = _rbf16(y * xs[:, None])
+            # *_rn: ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+            y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
+            if not WS_FP32:
+                y = _rbf16(y)
+            if HAS_BIAS:
+                y = tl.extra.cuda.libdevice.add_rn(y, tl.load(b_ptr + rn).to(tl.float32)[None, :])
         c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :]
         mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
         tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
@@ -401,7 +411,15 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     return y.to(torch.bfloat16)
 
 
-def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
+def _launch(
+    a: Any,
+    w: Any,
+    xs: Any,
+    ws: Any,
+    bias: Any,
+    cfg: tuple,
+    native: bool = False,
+) -> Any:
     import torch
 
     k = _kernels()
@@ -433,6 +451,7 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
             BLOCK_K = bk,
             GROUP_M = gm,
             PREFETCH_FIX = _prefetch_fix_key(),
+            NATIVE = bool(native),
             num_warps = warps,
             num_stages = stages,
             enable_fp_fusion = False,

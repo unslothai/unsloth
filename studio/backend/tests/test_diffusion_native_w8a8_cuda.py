@@ -333,3 +333,78 @@ def test_share_pass_pickles():
 
     p = pickle.loads(pickle.dumps(mod.ShareRotqPass()))
     assert p.uuid() == mod.ShareRotqPass().uuid()
+
+
+@pytest.mark.parametrize("bias", [True, False])
+def test_gemm_reference_equals_the_linears_epilogue(cr, bias):
+    import torch
+
+    m = _linear(bias = bias)
+    x = _x()
+    xq, xs = cr.reference(x, 256)
+    ref = cr.reference_gemm(xq, m.weight_q, xs, m.weight_scale.view(torch.float32), m.bias)
+    assert ref.dtype == torch.bfloat16
+    assert torch.equal(ref, m._int_mm_from_q(xq, xs, x.dtype).to(x.dtype))
+
+
+def test_routed_forward_takes_the_fused_gemm_when_armed(cr):
+    import torch
+
+    m = _linear()
+    x = _x()
+    cr._STATE["op"] = lambda a, g: cr.reference(a, g)
+    seen = []
+    cr._STATE["gemm_op"] = lambda *a: seen.append(a[0].shape) or cr.reference_gemm(*a)
+    cr._STATE["gemm"] = {None: True}  # CPU tensors: device index None
+    out = m._forward_cuda_rotq(x)
+    assert seen == [torch.Size([40, 512])]
+    assert torch.equal(out, m._forward_int_mm(m._rotate(x)))
+    cr._STATE["gemm"] = {}
+    seen.clear()
+    assert torch.equal(m._forward_cuda_rotq(x), out) and not seen
+
+
+def test_gemm_switch_and_shape_gate(cr, monkeypatch):
+    assert cr.gemm_shape_ok(4096, 4096) and cr.gemm_shape_ok(16384, 4096)
+    assert not cr.gemm_shape_ok(4096 + 32, 4096) and not cr.gemm_shape_ok(4096, 4096 + 8)
+    monkeypatch.setenv("UNSLOTH_NATIVE_INT8_GEMM", "0")
+    assert cr.gemm_disabled() and cr.prepare_gemm(0) is False
+    monkeypatch.delenv("UNSLOTH_NATIVE_INT8_GEMM")
+    monkeypatch.setenv("UNSLOTH_NATIVE_INT8_ROTQ", "0")
+    assert cr.gemm_disabled()
+
+
+def test_gemm_launch_keeps_cublas_maths_off_card(cr):
+    import torch
+
+    m = _linear()
+    xq, xs = cr.reference(_x(), 256)
+    ws = m.weight_scale.view(torch.float32)
+    assert torch.equal(
+        cr._gemm_launch(xq, m.weight_q, xs, ws, m.bias),
+        cr.reference_gemm(xq, m.weight_q, xs, ws, m.bias),
+    )
+
+
+def test_gemm_kernel_native_flag(monkeypatch):
+    import torch
+
+    from core.inference import diffusion_int8_gemm as g8
+
+    seen = {}
+
+    class _K:
+        def __getitem__(self, grid):
+            return lambda *a, **kw: seen.update(kw)
+
+    monkeypatch.setattr(g8, "_kernels", lambda: types.SimpleNamespace(i8mm_dq = _K()))
+    monkeypatch.setattr(
+        g8, "triton", types.SimpleNamespace(cdiv = lambda a, b: -(-a // b)), raising = False
+    )
+    monkeypatch.setattr(torch.cuda, "device", lambda d: contextlib.nullcontext())
+    a = torch.zeros(32, 64, dtype = torch.int8)
+    w = torch.zeros(16, 64, dtype = torch.int8)
+    g8._launch(a, w, torch.ones(32), torch.ones(16), None, (128, 128, 64, 8, 4, 3), native = True)
+    assert seen["NATIVE"] is True
+    g8._launch(a, w, torch.ones(32), torch.ones(16), None, (128, 128, 64, 8, 4, 3))
+    assert seen["NATIVE"] is False
