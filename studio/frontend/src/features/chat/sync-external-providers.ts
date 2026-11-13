@@ -26,6 +26,7 @@ import {
   setModelsDevCatalog,
   setProviderModelCatalog,
 } from "./model-catalog";
+import { learnModelDisplayNames } from "./model-display-names";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
@@ -488,6 +489,9 @@ async function listForNewModels(
       getProviderModelCapabilities("openai_codex"),
     );
     if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
+    if (listed.source === "subscription") {
+      learnModelDisplayNames("openai_codex", listed.known ?? listed.models);
+    }
     return (row) =>
       withNewlyOfferedCodexModels(
         row.models,
@@ -504,6 +508,7 @@ async function listForNewModels(
     extraHeaders: provider.extraHeaders,
   });
   learnCatalogModelCapabilities(provider.providerType, listed);
+  learnModelDisplayNames(provider.providerType, listed);
   const listedIds = pruneProviderModelIds(provider.providerType, [
     ...new Set(listed.map((model) => model.id.trim()).filter((id) => id.length > 0)),
   ]);
