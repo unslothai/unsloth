@@ -2549,13 +2549,21 @@ def load_h3_image_text_encoder(
 
 
 def pin_room_bytes(plan: H3ImagePlan, pinned: Sequence[Any] = ()) -> Optional[int]:
-    """Host bytes left for pins: host budget less what the plan holds less ``pinned`` streamers' locks. Pins count on
-    top of the pageable copies they replace (those may stay cached). None without a host budget."""
+    """Host bytes left for pins, net of ``pinned`` locks that did not replace counted host copies. None without a budget."""
     if plan.host_gb is None or plan.host_need_gb is None:
         return None
     room = int((float(plan.host_gb) - float(plan.host_need_gb)) * 1e9)
-    room -= sum(int(getattr(s, "pinned_bytes", 0) or 0) for s in pinned if s is not None)
+    room -= sum(
+        max(0, int(getattr(s, "pinned_bytes", 0) or 0) - int(getattr(s, "replaced_bytes", 0) or 0))
+        for s in pinned
+        if s is not None
+    )
     return max(0, room)
+
+
+def pins_replace_counted(plan: H3ImagePlan) -> bool:
+    """Pins may replace counted host copies only where the plan keeps every host copy (the encoder too)."""
+    return bool(plan.host_gb is not None and plan.host_need_gb is not None and plan.te_kept_on_host)
 
 
 def make_list_streamer(
@@ -2568,6 +2576,7 @@ def make_list_streamer(
     pinned: bool = True,
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
+    replaces_counted: bool = False,
 ) -> Any:
     """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``."""
     streamer = None
@@ -2581,6 +2590,8 @@ def make_list_streamer(
             logger = logger,
             reserve_bytes = reserve_bytes,
             max_pin_bytes = max_pin_bytes,
+            replaces_counted = replaces_counted,
+            release_after_forward = role == "text_encoder",
         )
     if streamer is None:
         streamer = ModuleListStreamer(members, device, resident)
@@ -2599,6 +2610,7 @@ def stream_list(
     pinned: bool = True,
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
+    replaces_counted: bool = False,
 ) -> Any:
     """``make_list_streamer``, registered on the pipe by role."""
     streamer = make_list_streamer(
@@ -2610,6 +2622,7 @@ def stream_list(
         pinned = pinned,
         reserve_bytes = reserve_bytes,
         max_pin_bytes = max_pin_bytes,
+        replaces_counted = replaces_counted,
     )
     pipe._unsloth_h3_streamers.append(streamer)
     return streamer
@@ -2635,6 +2648,7 @@ def _place_streamed_dit(
         resident,
         "transformer",
         max_pin_bytes = pin_room_bytes(plan, pinned_already),
+        replaces_counted = pins_replace_counted(plan),
     )
     streamer._unsloth_resident = resident
     return streamer
@@ -2853,6 +2867,7 @@ def _place_text_encoder(
             pinned = not per_prompt,
             reserve_bytes = reserve_bytes,
             max_pin_bytes = pin_room_bytes(plan, pinned_already),
+            replaces_counted = pins_replace_counted(plan),
         )
     return encoder
 
