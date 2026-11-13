@@ -14,9 +14,16 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from models.training import TrainingStartRequest
+from utils.hardware import hardware as _hw
 from utils.datasets.chat_templates import apply_chat_template_to_dataset
 from utils.datasets.format_conversion import convert_chatml_to_alpaca
 from utils.datasets.iterable import is_streaming_dataset
+
+
+@pytest.fixture(autouse = True)
+def _pin_cuda_device(monkeypatch):
+    # The start-route tests assume a GPU host; a GPU-less or Apple Silicon runner would hit a platform refusal first.
+    monkeypatch.setattr(_hw, "DEVICE", _hw.DeviceType.CUDA)
 
 
 def _shared_setup_1(request, training_route):

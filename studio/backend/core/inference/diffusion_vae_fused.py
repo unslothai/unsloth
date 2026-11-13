@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton-fused GroupNorm / channel RMS norm for eagerly decoded image and video VAEs.
-
-CUDA GroupNorm has no channels-last kernel, so every norm copies NHWC <-> NCHW; these kernels read any layout,
-write channels-last with fp32 statistics. ``install(vae)`` patches instances (never classes), each falling back
-to stock on a new exception. NVIDIA CUDA + Triton >= 3.3 only; ``UNSLOTH_VAE_FUSED=0`` disables.
-"""
+"""Triton GroupNorm/RMS norm for eager VAE decode (NVIDIA CUDA, Triton>=3.3); patches instances
+never classes; falls back to stock on new exception; UNSLOTH_VAE_FUSED=0 off"""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import threading
@@ -20,6 +17,7 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 VAE_FUSED_ENV = "UNSLOTH_VAE_FUSED"
+DEVICE_SCOPE_ENV = "UNSLOTH_DIFFUSION_TRITON_DEVICE_SCOPE"
 _FALSE = ("0", "false", "no", "off")
 _MIN_TRITON = (3, 3)
 _MAX_C = 4096
@@ -53,13 +51,17 @@ def _toolchain_ok() -> bool:
         return True
 
 
-# Loop-bound-only args are not specialized (else ~70 JIT variants on a tiled Wan decode); strides and C stay
-# specialized so channel-contiguous loads vectorize.
+# Loop-bound args not specialized (avoids ~70 JIT variants); strides and C stay specialized so channel-contiguous loads vectorize.
 _SHAPE_ARGS = {
     "_rms_act": ("T", "H", "W", "Ho", "Wo", "ph", "pw", "To", "front", "n_cache"),
     "_bias_residual": ("P", "T", "HW", "W"),
     "_dup_up_add": ("T_o", "H_o", "W_o", "t_off"),
     "_up_nearest2x": ("T_o", "H", "W"),
+    "_gn_partials": ("T", "HW", "W", "n_chunks"),
+    "_gn_combine": ("n_chunks",),
+    "_gn_apply": ("T", "HW", "W"),
+    "_softmax_rows": ("S",),
+    "_dcae_up_add": ("F", "H", "W", "Fo"),
 }
 
 
@@ -72,11 +74,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         return None
     globals().update(triton = triton, tl = tl)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_gn_partials"])
     def _gn_partials(
         x_ptr, bias_ptr, pn_ptr, pmean_ptr, pm2_ptr,
         T, HW, W, n_chunks, sb, sc, st, sh, sw,
-        C: tl.constexpr, G: tl.constexpr, CPG: tl.constexpr, BLOCK_P: tl.constexpr, HAS_BIAS: tl.constexpr
+        C: tl.constexpr, G: tl.constexpr, CPG: tl.constexpr, BLOCK_P: tl.constexpr, HAS_BIAS: tl.constexpr  # C channels, G groupnorm groups, CPG channels per group, BLOCK_P pixels per program, HAS_BIAS bias present
     ):  # fmt: skip
         chunk = tl.program_id(0)
         bt = tl.program_id(1)
@@ -109,9 +111,17 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(pm2_ptr + slot * G + g, m2)
         tl.store(pn_ptr + slot, n_pix * CPG)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_gn_combine"])
     def _gn_combine(
-        pn_ptr, pmean_ptr, pm2_ptr, mean_ptr, rstd_ptr, n_chunks, G, eps, BLOCK: tl.constexpr
+        pn_ptr,
+        pmean_ptr,
+        pm2_ptr,
+        mean_ptr,
+        rstd_ptr,
+        n_chunks,
+        G,
+        eps,
+        BLOCK: tl.constexpr,  # block size
     ):
         row = tl.program_id(0)
         g = row % G
@@ -139,11 +149,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(mean_ptr + row, mean)
         tl.store(rstd_ptr + row, 1.0 / tl.sqrt(acc_m2 / acc_n + eps))
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_gn_apply"])
     def _gn_apply(
         x_ptr, out_ptr, mean_ptr, rstd_ptr, w_ptr, b_ptr, ib_ptr,
         C, T, HW, W, G, sb, sc, st, sh, sw,
-        CPG: tl.constexpr, ACT: tl.constexpr, HAS_IN_BIAS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        CPG: tl.constexpr, ACT: tl.constexpr, HAS_IN_BIAS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # CPG channels per group, ACT apply silu, HAS_IN_BIAS input bias present, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -184,8 +194,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         x_ptr, out_ptr, w_ptr, b_ptr, ib_ptr, cache_ptr,
         C, T, H, W, Ho, Wo, ph, pw, To, front, n_cache, scale, eps,
         sb, sc, st, sh, sw, cb, cc, ct, ch, cw,
-        NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,
-        REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,  # NORM apply rms norm, ACT apply silu, HAS_BIAS bias present, HAS_IN_BIAS input bias present
+        REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # REPLICATE replicate temporal padding, MEAN_SQ mean-square rms form, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -257,7 +267,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     @triton.jit(do_not_specialize = _SHAPE_ARGS["_bias_residual"])
     def _bias_residual(
         o_ptr, ob_ptr, r_ptr, rb_ptr, P, C, T, HW, W, sb, sc, st, sh, sw, inv_scale,
-        HAS_OB: tl.constexpr, HAS_RB: tl.constexpr, SCALE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        HAS_OB: tl.constexpr, HAS_RB: tl.constexpr, SCALE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # HAS_OB output bias present, HAS_RB residual bias present, SCALE output scale != 1, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         p = tl.program_id(0) * BLOCK_P + tl.arange(0, BLOCK_P)
         c = tl.program_id(1) * BLOCK_C + tl.arange(0, BLOCK_C)
@@ -285,12 +295,12 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             o = o * inv_scale
         tl.store(o_ptr + o_off, o.to(o_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_dcae_up_add"])
     def _dcae_up_add(
         h_ptr, hb_ptr, x_ptr, out_ptr,
         c, Cin, F, H, W, Fo, rep,
         hsb, hsc, hst, hsh, hsw, xsb, xsc, xst, xsh, xsw,
-        TEMPORAL: tl.constexpr, HAS_HB: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        TEMPORAL: tl.constexpr, HAS_HB: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # TEMPORAL temporal upsample, HAS_HB conv bias present, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bf = tl.program_id(1)
@@ -342,8 +352,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         o_off = (bf.to(tl.int64) * (4 * H * W) + p.to(tl.int64))[:, None] * c + ci[None, :]
         tl.store(out_ptr + o_off, (v + xv).to(out_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
-    def _softmax_rows(s_ptr, p_ptr, S, P_STRIDE, scale, BLOCK: tl.constexpr):
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_softmax_rows"])
+    def _softmax_rows(s_ptr, p_ptr, S, P_STRIDE, scale, BLOCK: tl.constexpr):  # block size
         row = tl.program_id(0).to(tl.int64)
         base = s_ptr + row * P_STRIDE
         m = tl.full([BLOCK], float("-inf"), tl.float32)
@@ -370,7 +380,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     def _dup_up_add(
         o_ptr, x_ptr, C, T_o, H_o, W_o, t_off, repeats,
         osb, osc, ost, osh, osw, xsb, xsc, xst, xsh, xsw,
-        FT: tl.constexpr, FS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        FT: tl.constexpr, FS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # FT temporal upsample factor, FS spatial upsample factor, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -404,7 +414,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     @triton.jit(do_not_specialize = _SHAPE_ARGS["_up_nearest2x"])
     def _up_nearest2x(
         x_ptr, out_ptr, C, T_o, H, W, xsb, xsc, xst, xsh, xsw,
-        INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # INTERLEAVE wan time_conv channel interleave, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         # INTERLEAVE: x is Wan time_conv output (B, 2C, T_o/2, H, W); frame 2t+j takes channels [jC, (j+1)C).
         pid_p = tl.program_id(0)
@@ -507,6 +517,23 @@ def _torch():
     return torch
 
 
+_NO_SCOPE = contextlib.nullcontext()
+
+
+def _on_card(t: Any) -> Any:
+    """Triton launches on the current device: a tensor on another card fails the launch."""
+    torch = _torch()
+    if not t.is_cuda or torch.compiler.is_compiling():
+        return _NO_SCOPE
+    index = t.device.index
+    # same card (every single-card render): no device switch, ~1 us instead of ~4 us per launch
+    if index is None or index == torch.cuda.current_device():
+        return _NO_SCOPE
+    if os.environ.get(DEVICE_SCOPE_ENV, "").strip().lower() in _FALSE:
+        return _NO_SCOPE
+    return torch.cuda.device(index)
+
+
 def _stock_in(t: Any) -> Any:
     """A kernel input as the kernel may read it."""
     cls = globals().get("_FusedActCls")
@@ -515,6 +542,39 @@ def _stock_in(t: Any) -> Any:
     if t.__dict__.get("_unsloth_is_stock", False):
         return _plain(t)
     t._unsloth_abort()
+
+
+def group_norm_stats(
+    x5: Any,
+    norm: Any,
+    in_bias: Any = None,
+) -> tuple:
+    """fp32 ``(mean, rstd)`` per (B*T, group) of ``x5 + in_bias`` (a fusable 5-D B,C,T,H,W view; stats per frame)."""
+    torch = _torch()
+    k = _kernels()
+    b, c, t, h, w = x5.shape
+    g = int(norm.num_groups)
+    hw = h * w
+    sb, sc, st, sh, sw = x5.stride()
+    ib = in_bias if in_bias is not None else x5
+    budget = 4096 if x5.element_size() == 4 else 8192
+    block_p = max(1, min(256, budget // c))
+    n_chunks = (hw + block_p - 1) // block_p
+    rows = b * t
+    pmean, pm2 = torch.empty((2, rows * n_chunks * g), dtype = torch.float32, device = x5.device)
+    pn = torch.empty(rows * n_chunks, dtype = torch.float32, device = x5.device)
+    with _on_card(x5):
+        k.gn_partials[(n_chunks, rows)](
+            x5, ib, pn, pmean, pm2, t, hw, w, n_chunks, sb, sc, st, sh, sw,
+            C = c, G = g, CPG = c // g, BLOCK_P = block_p, HAS_BIAS = in_bias is not None, num_warps = 4,
+        )  # fmt: skip
+    mean = torch.empty(rows * g, dtype = torch.float32, device = x5.device)
+    rstd = torch.empty(rows * g, dtype = torch.float32, device = x5.device)
+    with _on_card(pn):
+        k.gn_combine[(rows * g,)](
+            pn, pmean, pm2, mean, rstd, n_chunks, g, float(norm.eps), BLOCK = 1024, num_warps = 4
+        )
+    return mean, rstd
 
 
 def group_norm_act(
@@ -548,30 +608,18 @@ def group_norm_act(
     hw = h * w
     sb, sc, st, sh, sw = x5.stride()
     ib = in_bias if in_bias is not None else x5
-    budget = 4096 if x5.element_size() == 4 else 8192
-    block_p = max(1, min(256, budget // c))
-    n_chunks = (hw + block_p - 1) // block_p
     rows = b * t
-    pmean, pm2 = torch.empty((2, rows * n_chunks * g), dtype = torch.float32, device = x.device)
-    pn = torch.empty(rows * n_chunks, dtype = torch.float32, device = x.device)
-    k.gn_partials[(n_chunks, rows)](
-        x5, ib, pn, pmean, pm2, t, hw, w, n_chunks, sb, sc, st, sh, sw,
-        C = c, G = g, CPG = cpg, BLOCK_P = block_p, HAS_BIAS = in_bias is not None, num_warps = 4,
-    )  # fmt: skip
-    mean = torch.empty(rows * g, dtype = torch.float32, device = x.device)
-    rstd = torch.empty(rows * g, dtype = torch.float32, device = x.device)
-    k.gn_combine[(rows * g,)](
-        pn, pmean, pm2, mean, rstd, n_chunks, g, float(norm.eps), BLOCK = 1024, num_warps = 4
-    )
+    mean, rstd = group_norm_stats(x5, norm, in_bias)
     out = torch.empty((b, t, h, w, c), dtype = x.dtype, device = x.device)
     block_c = min(128, _next_pow2(c))
     block_p2 = max(1, 4096 // block_c)
     grid = ((hw + block_p2 - 1) // block_p2, rows, (c + block_c - 1) // block_c)
-    k.gn_apply[grid](
-        x5, out, mean, rstd, norm.weight, norm.bias, ib, c, t, hw, w, g, sb, sc, st, sh, sw,
-        CPG = cpg, ACT = bool(act), HAS_IN_BIAS = in_bias is not None, BLOCK_P = block_p2, BLOCK_C = block_c,
-        num_warps = 4,
-    )  # fmt: skip
+    with _on_card(x5):
+        k.gn_apply[grid](
+            x5, out, mean, rstd, norm.weight, norm.bias, ib, c, t, hw, w, g, sb, sc, st, sh, sw,
+            CPG = cpg, ACT = bool(act), HAS_IN_BIAS = in_bias is not None, BLOCK_P = block_p2, BLOCK_C = block_c,
+            num_warps = 4,
+        )  # fmt: skip
     if on_kernel is not None and not torch.compiler.is_compiling():
         on_kernel()  # read by the structural calibration: only a completed Triton launch counts
     out = out.permute(0, 4, 1, 2, 3)  # B, C, T', H', W'
@@ -696,14 +744,15 @@ def rms_norm_act(
     block_c = _next_pow2(c)
     block_p = max(1, min(128, 8192 // block_c))
     grid = ((ho * wo + block_p - 1) // block_p, b * to)
-    k.rms_act[grid](
-        x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t,
-        c, t, h, w, ho, wo, ph, pw, to, front, n_cache, scale, eps,
-        *x.stride(), *cache_t.stride(),
-        NORM = norm is not None, ACT = bool(act), HAS_BIAS = has_bias, HAS_IN_BIAS = in_bias is not None,
-        REPLICATE = replicate_pad is not None, MEAN_SQ = mean_sq, BLOCK_P = block_p, BLOCK_C = block_c,
-        num_warps = 4 if block_c * block_p <= 4096 else 8,
-    )  # fmt: skip
+    with _on_card(x):
+        k.rms_act[grid](
+            x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t,
+            c, t, h, w, ho, wo, ph, pw, to, front, n_cache, scale, eps,
+            *x.stride(), *cache_t.stride(),
+            NORM = norm is not None, ACT = bool(act), HAS_BIAS = has_bias, HAS_IN_BIAS = in_bias is not None,
+            REPLICATE = replicate_pad is not None, MEAN_SQ = mean_sq, BLOCK_P = block_p, BLOCK_C = block_c,
+            num_warps = 4 if block_c * block_p <= 4096 else 8,
+        )  # fmt: skip
     return out.permute(0, 4, 1, 2, 3)
 
 
@@ -814,7 +863,8 @@ def single_head_attention(q: Any, k: Any, v: Any) -> Any:
         scores = torch.bmm(q[:, i : i + rows], kt, out_dtype = torch.float32)
         r = scores.shape[1]
         probs = torch.empty((b, r, s_pad), dtype = v.dtype, device = v.device)
-        kern.softmax_rows[(b * r,)](scores, probs, s_len, s_pad, scale, BLOCK = 2048, num_warps = 8)
+        with _on_card(scores):
+            kern.softmax_rows[(b * r,)](scores, probs, s_len, s_pad, scale, BLOCK = 2048, num_warps = 8)
         del scores
         torch.bmm(probs, v, out = out[:, i : i + rows])
     return out
@@ -903,9 +953,7 @@ def _fast_wan_attention(block: Any) -> Any:
     def fast(x: Any) -> Any:
         identity = x
         b, c, t, h, w = x.shape
-        y = rms_norm_act(
-            x, block.norm, False
-        )  # (b, c, t, h, w) channels-last_3d: (b, t, h, w, c) in memory
+        y = rms_norm_act(x, block.norm, False)
         y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)  # a channels-last view, no copy
         qkv = F.conv2d(y, block.to_qkv.weight, block.to_qkv.bias)
         qkv = qkv.permute(0, 2, 3, 1).reshape(b * t, h * w, 3 * c)
@@ -968,12 +1016,13 @@ def add_bias_residual(
     block_c = min(128, _next_pow2(c))
     block_p = max(1, 4096 // block_c)
     grid = ((pixels + block_p - 1) // block_p, (c + block_c - 1) // block_c)
-    k.bias_residual[grid](
-        out, out_bias if out_bias is not None else out, res, res_bias if res_bias is not None else res,
-        pixels, c, t, h * w, w, *r5.stride(), 1.0 / float(scale),
-        HAS_OB = out_bias is not None, HAS_RB = res_bias is not None, SCALE = float(scale) != 1.0,
-        BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
-    )  # fmt: skip
+    with _on_card(out):
+        k.bias_residual[grid](
+            out, out_bias if out_bias is not None else out, res, res_bias if res_bias is not None else res,
+            pixels, c, t, h * w, w, *r5.stride(), 1.0 / float(scale),
+            HAS_OB = out_bias is not None, HAS_RB = res_bias is not None, SCALE = float(scale) != 1.0,
+            BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+        )  # fmt: skip
     return out
 
 
@@ -994,10 +1043,7 @@ def _guard(
     logger: Any,
     oom_stock: bool = False,
 ) -> None:
-    """``module.forward = fast`` until it raises something ``stock`` does not; then stock for good.
-
-    Causal-cache state is snapshotted and restored before the stock retry so a half-failed fast path cannot desync
-    the decode. ``oom_stock``: an OOM retries stock for that call only."""
+    """Falls back to stock for good once fast raises what stock does not; causal-cache state is restored before the stock retry; OOM retries stock once."""
 
     def forward(*args, **kwargs):
         if getattr(module, "_unsloth_vae_fused_failed", False):
@@ -1079,14 +1125,18 @@ def _fast_norm(norm: Any, act: bool) -> Any:
     return fast
 
 
-def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
+def install_group_norm_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     """Patch every eligible ResnetBlock2D / GroupNorm of a 2-D (AutoencoderKL-family) VAE. Returns patch count."""
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
     fused_act_norms = set()
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -1143,6 +1193,7 @@ def uninstall(vae: Any) -> None:
     vae.__dict__.pop("_unsloth_vae_fused_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
     vae.__dict__.pop("_unsloth_vae_fused_cl_weights", None)
+    vae.__dict__.pop("_unsloth_vae_strips", None)
     for m in vae.modules():
         if isinstance(getattr(m, "processor", None), FusedSingleHeadProcessor):
             m.processor = m.processor.fallback
@@ -1159,11 +1210,11 @@ def uninstall(vae: Any) -> None:
                 pass
             module.__dict__.pop("_unsloth_vae_fused", None)
             module.__dict__.pop("_unsloth_vae_fused_failed", None)
+            module.__dict__.pop("_unsloth_vae_strips_failed", None)
         module.__dict__.pop("prepare_causal_attention_mask", None)
 
 
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
-_CACHE_T = 2
 
 
 def _is_rms(norm: Any) -> bool:
@@ -1266,10 +1317,11 @@ def dup_up_add(out: Any, x: Any, dup: Any, first_chunk: bool) -> Any:
     block_c = min(128, _next_pow2(c))
     block_p = max(1, 4096 // block_c)
     grid = ((h_o * w_o + block_p - 1) // block_p, b * t_o, (c + block_c - 1) // block_c)
-    k.dup_up_add[grid](
-        out, x, c, t_o, h_o, w_o, t_off, rep, *out.stride(), *x.stride(),
-        FT = ft, FS = fs, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
-    )  # fmt: skip
+    with _on_card(out):
+        k.dup_up_add[grid](
+            out, x, c, t_o, h_o, w_o, t_off, rep, *out.stride(), *x.stride(),
+            FT = ft, FS = fs, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+        )  # fmt: skip
     return out
 
 
@@ -1284,19 +1336,20 @@ def up_nearest2x(x: Any, interleave: bool) -> Any:
     block_c = min(128, _next_pow2(c))
     block_p = max(1, 4096 // block_c)
     grid = ((4 * h * w + block_p - 1) // block_p, b * t_o, (c + block_c - 1) // block_c)
-    k.up_nearest2x[grid](
-        x,
-        out,
-        c,
-        t_o,
-        h,
-        w,
-        *x.stride(),
-        INTERLEAVE = interleave,
-        BLOCK_P = block_p,
-        BLOCK_C = block_c,
-        num_warps = 4,
-    )
+    with _on_card(x):
+        k.up_nearest2x[grid](
+            x,
+            out,
+            c,
+            t_o,
+            h,
+            w,
+            *x.stride(),
+            INTERLEAVE = interleave,
+            BLOCK_P = block_p,
+            BLOCK_C = block_c,
+            num_warps = 4,
+        )
     return out.permute(0, 3, 1, 2), t_o
 
 
@@ -1377,13 +1430,17 @@ def _fast_wan_residual_up(block: Any) -> Any:
     return fast
 
 
-def install_wan_vae(vae: Any, logger: Any = None) -> int:
+def install_wan_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     """Patch the residual blocks, causal convs and output heads of a Wan-lineage VAE. Returns patch count."""
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -1622,9 +1679,7 @@ def _wan_batched_tiled_decode(
     if patch is not None:
         from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
         dec = unpatchify(dec, patch_size = patch)
-    if (
-        clamp
-    ):  # as the class's stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
+    if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
         dec = torch.clamp(dec, min = -1.0, max = 1.0)
     if not return_dict:
         return (dec,)
@@ -1790,10 +1845,11 @@ def hv_upsample(up: Any, x: Any) -> Any:
     block_p = max(1, 4096 // block_c)
     grid = ((4 * hh * ww + block_p - 1) // block_p, b * fo, (c + block_c - 1) // block_c)
     bias = conv.conv.bias
-    k.dcae_up_add[grid](
-        h, bias if bias is not None else h, x, out, c, cin, f, hh, ww, fo, rep, *h.stride(), *x.stride(),
-        TEMPORAL = temporal, HAS_HB = bias is not None, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
-    )  # fmt: skip
+    with _on_card(h):
+        k.dcae_up_add[grid](
+            h, bias if bias is not None else h, x, out, c, cin, f, hh, ww, fo, rep, *h.stride(), *x.stride(),
+            TEMPORAL = temporal, HAS_HB = bias is not None, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+        )  # fmt: skip
     return out.permute(0, 4, 1, 2, 3)
 
 
@@ -1815,12 +1871,16 @@ def _hv_causal_mask(
     return mask
 
 
-def install_hv15_vae(vae: Any, logger: Any = None) -> int:
+def install_hv15_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -2119,16 +2179,20 @@ def install(
     vae: Any,
     logger: Any = None,
     level: str = "fused",
+    encoder: bool = True,
 ) -> int:
-    """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules."""
+    """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules.
+
+    ``encoder=False`` patches the decoder only, for a family whose denoising attends to the encoded conditioning clip at
+    every step, which amplifies the fused passes' rounding into a different sample (video_families.vae_fused_encoder)."""
     if vae is None or not will_install(vae):
         return 0
     done = getattr(vae, "_unsloth_vae_fused_installed", 0)
     if done:
         return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
-    n = _install(vae, logger)
+    n = _install(vae, logger, encoder)
     if not n and type(vae).__name__ not in SUPPORTED_VAES:
-        n = install_structural(vae, logger)
+        n = install_structural(vae, logger)  # decoder only, so it honours encoder=False as is
         if n:
             vae._unsloth_vae_fused_structural = True
     # Only where measured faster, and only when a fused pass feeds a conv (relaid weights alone slow LTX-2's decode).
@@ -2147,16 +2211,23 @@ def install(
     return n
 
 
-def _install(vae: Any, logger: Any = None) -> int:
+def _install(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     name = type(vae).__name__
     if name in ("AutoencoderKL", "AutoencoderKLFlux2"):
-        n = install_group_norm_vae(vae, logger)
+        n = install_group_norm_vae(vae, logger, encoder)
+        if n:
+            from . import diffusion_vae_strips  # noqa: PLC0415
+            n += int(diffusion_vae_strips.install(vae, logger))
         return n + (install_vectorised_blend(vae) if n else 0)
     if name in _WAN_VAES:
-        n = install_wan_vae(vae, logger)
+        n = install_wan_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLHunyuanVideo15":
-        n = install_hv15_vae(vae, logger)
+        n = install_hv15_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLLTX2Video":
         if not _ltx2_convs_fusable(vae):
@@ -2170,10 +2241,9 @@ def _install(vae: Any, logger: Any = None) -> int:
 # one tiny decode); the fused decode must match stock within tolerance or the patch is removed.
 # Kill switch ``UNSLOTH_VAE_FUSED_STRUCTURAL=0``.
 STRUCTURAL_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL"
-# The calibration crop. The trace marks only the norm outputs (cheap at any size), so the crop is sized for the
-# kernels instead: 16 latents keeps every spatial extent a multiple of 16, the same Triton specialisations a full
-# decode uses, so calibrating compiles nothing the real decode would not (an 8-latent crop measured +1.5 to 2 s
-# of extra compiles on a cold Triton cache).
+# Calibration crop sized for the kernels: 16 latents keeps every spatial extent a multiple of 16,
+# the same Triton specialisations a full decode uses; an 8-latent crop added Triton compiles that a
+# full decode would not.
 _PROBE_LATENTS = 16
 _PROBE_FRAMES = 2
 # Calibration verdicts are kept on disk per (class, config, decoder layout, torch, triton, device capability), so a

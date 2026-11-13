@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisted "Keep multiple models loaded" mode: off, fit (When they fit) or always.
-
-The setting belongs to the installation, so it is always read and written in the owner's
-database. Each account has its own studio.db, and a managed account reading its own would
-see the default and unload the owner's kept models.
-
-Older builds stored only the ``keep_multiple_models_loaded`` bool. The bool still decides
-on or off, and ``multi_model_mode`` only tells When they fit from Always, so an older build
-that turns the setting off wins after an upgrade.
-"""
+"""Off/fit/always multi-model mode in owner's DB; legacy keep_multiple_models_loaded can force off."""
 
 from __future__ import annotations
 

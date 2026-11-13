@@ -4,11 +4,7 @@
 import { Cancel01Icon, Clock01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-/**
- * Recent-searches suggestion panel beneath the search field. Presentational only
- * (parent owns visibility and store). Suppresses its own mousedown so clicks fire
- * without blurring the focused input and closing the panel.
- */
+/** Suppresses its own mousedown so clicks do not blur the input and close the panel. */
 export function RecentSearches({
   searches,
   onSelect,

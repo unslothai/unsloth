@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CUDA graphs per denoiser block, for denoisers whose weights an offload tier moves.
-
-A whole-forward graph only holds while every weight stays at one address. Here each repeated block records on its
-own, keyed by its inputs AND the device addresses of its weights: moved weights run eagerly once, then record again.
-Streamed blocks get fixed addresses from the prefetcher's slot ring (``GroupPrefetcher.enable_slots``). The offload
-hooks stay eager around the recorded compute. Static inputs are shared per (block class, layout) since replays never
-overlap, and all recordings share one pool per denoiser.
-"""
+"""Per-block CUDA graphs keyed by inputs and weight addresses; moved weights re-record once; offload
+hooks stay eager; static inputs shared since replays never overlap"""
 
 from __future__ import annotations
 
@@ -55,8 +49,7 @@ def block_graphs_requested() -> bool:
     return (os.environ.get(BLOCK_GRAPHS_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
-# Default: only where every block stays on the device. Streamed steps are copy-bound (no gain, extra VRAM); model
-# offload re-uploads the weights every render, so every block would record again.
+# Streamed steps are copy-bound; model offload re-records every render.
 OPT_IN_REASON = (
     "offloaded denoiser streams its blocks: per-block CUDA graphs measured no faster (streamed steps are "
     "copy-bound) and hold extra VRAM; set " + BLOCK_GRAPHS_ENV + "=1 to record per block"
@@ -68,8 +61,7 @@ MODEL_OFFLOAD_REASON = (
 )
 
 
-# Call trees. Like diffusion_cuda_graph's, plus the per-layer prefix K/V caches Qwen-Image-2.1 passes to each block:
-# read-only on a cached step, so their two tensors become static buffers too.
+# Auto engages FBCache only at 20+ steps, since its win scales with step count: "dev" schedules qualify, distilled turbo never does
 
 
 def _kv_layer_cache(obj: Any) -> bool:
@@ -258,15 +250,35 @@ _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 
 
 def pool_bytes(device: Optional[int] = None) -> int:
-    """Device bytes held in every live block-graph pool (on CUDA ``device`` when given): reserved by the allocator yet
-    never free for other work, so the memory guard must not credit them back as reclaimable."""
+    """Unused graph-private bytes; retained outputs already count as allocated."""
     total = 0
+    tracked = 0
+    pools: set = set()
     for shared in tuple(_LIVE):
         index = getattr(shared, "device_index", None)
         if device is not None and index is not None and index != device:
             continue
-        total += int(getattr(shared, "pool_bytes", 0) or 0)
-    return total
+        recorded = int(getattr(shared, "pool_bytes", 0) or 0)
+        handles = getattr(shared, "pools", None)
+        if handles:
+            tracked += recorded
+            pools.update(tuple(h) for h in handles)
+        else:
+            total += recorded
+    if not pools:
+        return total
+    try:
+        free = 0
+        from .diffusion_cuda_graph import _allocator_segments
+
+        for seg in _allocator_segments():
+            if device is not None and seg.get("device", device) != device:
+                continue
+            if tuple(seg.get("segment_pool_id") or ()) in pools:
+                free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
+        return total + max(0, free)
+    except Exception:  # noqa: BLE001
+        return total + tracked
 
 
 class _Shared:
@@ -286,6 +298,7 @@ class _Shared:
         self.static_out: dict = {}
         self.static_refs: dict = {}  # slot -> recordings reading its buffers
         self.warmed: set = set()
+        self.pools: list = []  # Includes retired pools.
         self.pool_bytes = 0
         self.static_bytes = 0
         self.strict_device = False
@@ -301,6 +314,7 @@ class _Shared:
         if self.pool is None:
             torch = _torch()
             self.pool = torch.cuda.graph_pool_handle()
+            self.pools.append(self.pool)
         return self.pool
 
     def statics_for(self, slot: tuple, live: list) -> list:
@@ -345,14 +359,13 @@ class _Shared:
         self.static_refs.clear()
         self.warmed.clear()
         self.pool = None
+        self.pools = []
         self.pool_bytes = 0
         self.static_bytes = 0
 
 
 def _static_like(t: Any) -> Any:
-    """A buffer the compiled block cannot tell from ``t``: same shape, stride, dtype, inference mode AND storage
-    offset (a view such as Qwen-Image-2.1's ``full[:, prefix_len:]`` is guarded on its offset; a fresh tensor at
-    offset 0 recompiles the block)."""
+    """Buffer must match t in shape, stride, dtype, inference mode and offset, or the block recompiles"""
     torch = _torch()
     shape, stride, offset = tuple(t.shape), tuple(t.stride()), int(t.storage_offset())
     extent = 0 if t.numel() == 0 else 1 + sum((n - 1) * st for n, st in zip(shape, stride) if n > 0)
@@ -595,8 +608,6 @@ class BlockGraph:
                 dst.copy_(src)
             static_args, static_kwargs = _unwalk(key, iter(entry.static_in))
             if slot not in self.shared.warmed:
-                # Once per block class and layout, on the compute stream (its cached blocks stay reusable): any guard
-                # the static buffers trip recompiles here, never inside the recording.
                 self.compute(*static_args, **static_kwargs)
                 self.shared.warmed.add(slot)
                 self.stats["warmups"] += 1
@@ -608,7 +619,6 @@ class BlockGraph:
             pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
                 with _capturing():
-                    # read after the entry, which first hands back any retired graph pool
                     before = torch.cuda.memory_reserved()
                     try:
                         # Inside the try: a capture_begin that raised after taking the pool is abandoned too.
@@ -629,9 +639,10 @@ class BlockGraph:
                         if self.shared.pool == pool:
                             self.shared.pool = None
                         raise
+                    after = torch.cuda.memory_reserved()
                 del out, flat
             current.wait_stream(stream)
-            self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+            self.shared.pool_bytes += max(0, after - before)
         except CaptureRefused:
             # Refused before capture_begin: nothing recorded, the pool untouched. Eager now, record on a later call.
             self.seen[full] = (out_spec, metas)
@@ -711,6 +722,20 @@ def segment_graphs_disabled() -> bool:
     return (os.environ.get(SEGMENT_GRAPHS_ENV) or "").strip().lower() in _OFF
 
 
+# 0: a segment whose blocks carry an armed NVFP4 step schedule stays per block for the whole run (the old behaviour).
+SEGMENT_PROTECT_ENV = "UNSLOTH_DIFFUSION_SEGMENT_GRAPHS_PROTECT"
+
+
+def segment_protect_fallback_enabled() -> bool:
+    """Default on: only the protected (W4A16) steps leave the segment; the W4A4 steps keep replaying it."""
+    return (os.environ.get(SEGMENT_PROTECT_ENV) or "").strip().lower() not in _OFF
+
+
+def _protect_live(controller: Any) -> bool:
+    """The layers run W4A16 exactly when ``armed and protected``."""
+    return bool(getattr(controller, "armed", False) and getattr(controller, "protected", False))
+
+
 class _SegRecord:
     """One eager pass over a segment: each block's call layout, where each of its input tensors came from (an earlier
     block's output, or one of the first block's inputs), and its output layout."""
@@ -728,9 +753,7 @@ class _SegEntry:
 
 
 def _root_key_extra(root: Any) -> Any:
-    """The root's per-call branch state (``diffusion_cuda_graph.GRAPH_KEY_EXTRA_ATTR``, e.g. HunyuanVideo-1.5's
-    null-mask flag a pre-hook sets): part of every block and segment key, as of the whole-step graph's, so a recording
-    made on one branch never replays for the other. None without one."""
+    """Branch state (GRAPH_KEY_EXTRA_ATTR) keys block graphs, so branches never replay each other's."""
     from .diffusion_cuda_graph import GRAPH_KEY_EXTRA_ATTR
 
     extra = getattr(root, GRAPH_KEY_EXTRA_ATTR, None) if root is not None else None
@@ -802,6 +825,7 @@ class SegmentGraph:
             "segment_breaks": 0,
             "segment_refusals": 0,
             "segment_fallbacks": 0,
+            "segment_protected_steps": 0,
         }
         for i, g in enumerate(self.graphs):
             g.segment = self
@@ -874,14 +898,29 @@ class SegmentGraph:
             t.device.index != self.shared.device_index for t in live
         ):
             return _NOT_HANDLED
+        controller = None
         for g in self.graphs:
             if g.protect is None:
                 g.protect = g._protect_controller()
-            if g.poisoned or g.churned or g.bypassed or g.protect:
+            if g.poisoned or g.churned or g.bypassed:
                 return _NOT_HANDLED
+            if g.protect:
+                if not segment_protect_fallback_enabled():
+                    return _NOT_HANDLED
+                controller = controller or g.protect
+        if controller is not None and any(
+            _protect_live(g.protect) for g in self.graphs if g.protect
+        ):
+            # W4A16 step: per block for this forward only; it writes no state a W4A4 recording reads.
+            self.stats["segment_protected_steps"] += 1
+            return _NOT_HANDLED
         placement = self._placement()
         if placement is None:
             return _NOT_HANDLED
+        if controller is not None:
+            # Keyed by branch so a recording only replays at the branch it recorded.
+            from .diffusion_cuda_graph import protect_graph_key
+            placement = (placement, protect_graph_key(controller))
         full = (key, placement) if extra is None else (key, placement, extra)
         if full in self.refused:
             return _NOT_HANDLED
@@ -1052,7 +1091,6 @@ class SegmentGraph:
             pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
                 with _capturing():
-                    # read after the entry, which first hands back any retired graph pool
                     before = torch.cuda.memory_reserved()
                     try:
                         graph.capture_begin(pool = pool, capture_error_mode = "thread_local")
@@ -1065,8 +1103,9 @@ class SegmentGraph:
                         if self.shared.pool == pool:
                             self.shared.pool = None
                         raise
+                    after = torch.cuda.memory_reserved()
             current.wait_stream(stream)
-            self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+            self.shared.pool_bytes += max(0, after - before)
         except CaptureRefused:
             self.seen[full] = rec
             self.stats["segment_refusals"] = self.stats.get("segment_refusals", 0) + 1
@@ -1102,8 +1141,7 @@ class SegmentGraph:
 
 
 def _segments(transformer: Any, graphs: list) -> list:
-    """Runs of at least two armed blocks a layer split keeps on one card, back to back in one block list (forward
-    order), as (graphs, shared) pairs."""
+    """Runs of two or more armed blocks on one card, in forward order, as (graphs, shared) pairs."""
     try:
         from .diffusion_layer_split import find_blocks
     except Exception:  # noqa: BLE001
@@ -1146,12 +1184,7 @@ def _is_original_forward(fn: Any, module: Any) -> bool:
 
 
 def _own_forward(fn: Any, module: Any) -> Any:
-    """``module``'s live class ``forward`` (bound) when ``fn`` is the forward a hook captured from it, else None.
-
-    A hook registered before a class-level patch of ``forward`` (the deferred profile's per-arch fusions land on
-    render 3, after group offload hooked every block at load) still holds the class's own definition-time forward.
-    That is the same callable slot, so it is matched too, and the live (patched) forward is what runs below the hook,
-    exactly as when the patch came first."""
+    """Live class forward for a hook that captured the original before a class-level patch, else None."""
     if getattr(fn, "__self__", None) is not module:
         return None
     func = getattr(fn, "__func__", None)
@@ -1647,10 +1680,7 @@ def compile_below_hooks_enabled() -> bool:
 
 
 def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
-    """Compile each offload-hooked block's own ``forward`` so the hooks stay eager outside the compiled region.
-
-    Traced through, the hooks graph-break the block and put residency state into the guards, so every release /
-    re-pin recompiles. Idempotent; returns the blocks moved."""
+    """Compiles each block's own forward, keeping hooks eager; traced hooks recompile on every release."""
     if not compile_below_hooks_enabled():
         return 0
     kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)

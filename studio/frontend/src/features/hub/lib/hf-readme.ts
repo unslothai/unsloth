@@ -16,16 +16,12 @@ export interface FetchedReadme {
 
 interface ReadmeCacheEntry {
   promise: Promise<FetchedReadme | null>;
-  // Epoch ms after which the result is refetched. 404s and transient failures
-  // are cached briefly (transient shorter) so absence/outage can recover;
-  // positive and pending results never expire within the session.
+  // Epoch ms to refetch; 404s and transient failures expire, positives last the session.
   staleAt: number;
 }
 
 const cache = new LruMap<string, ReadmeCacheEntry>(64);
 
-// Bound each request so a stalled HF connection aborts and surfaces as a
-// transient failure, matching the dataset-size and owner-avatar helpers.
 const README_FETCH_TIMEOUT_MS = 10_000;
 const README_NEGATIVE_TTL_MS = 5 * 60_000;
 const README_TRANSIENT_TTL_MS = 30_000;
@@ -53,8 +49,7 @@ async function fetchReadmeOnce(
   let transient = false;
   for (const branch of ["main", "master"] as const) {
     try {
-      // /resolve, not /raw: /raw is a huggingface.co web route a mirror need not
-      // serve, and README.md is never LFS.
+      // /resolve, not /raw: /raw is a web route a mirror need not serve, and README.md is never LFS.
       const url = `${getHfEndpoint()}/${prefix}${repoId}/resolve/${branch}/README.md`;
       const res = await fetchWithTimeout(
         url,
@@ -83,8 +78,7 @@ export function fetchReadme(
   kind: ReadmeKind = "model",
   token: string | null = null,
 ): Promise<FetchedReadme | null> {
-  // Endpoint in the key: a card is cached with no expiry, so one from the default
-  // host would be shown all session without the mirror being asked.
+  // Endpoint in the key: cards never expire, so a default-host entry would hide the mirror.
   const key = `${getHfEndpoint()}::${kind}::${repoId}::${fingerprintToken(token)}`;
   const cached = cache.get(key);
   if (cached && Date.now() < cached.staleAt) return cached.promise;
@@ -138,8 +132,7 @@ function isBlockedReadmeUrl(
   return String(node.tagName ?? "").toLowerCase() !== "img";
 }
 
-// Resolves relative asset URLs against the repo base, then delegates to
-// defaultUrlTransform so unsafe schemes (javascript:, etc.) stay stripped.
+// Delegates to defaultUrlTransform so unsafe schemes stay stripped.
 export function createReadmeUrlTransform(baseUrl: string): UrlTransform {
   return (url, key, node) => {
     const resolved = resolveAgainstBase(url, baseUrl);
@@ -166,11 +159,6 @@ export function stripFrontmatter(markdown: string): {
   return { body: markdown, frontmatter: null };
 }
 
-/**
- * Drop heading lines that duplicate the inspector's chrome (`# Model Card …`,
- * standalone `Details` / `Model Card` / `Dataset Card`, etc.), since the page
- * header already shows the repo name and section context.
- */
 export function stripChromeHeadings(markdown: string): string {
   const RE_HEADING = /^(#{1,6})\s+(.+?)\s*$/;
   const isChromeTitle = (text: string): boolean => {

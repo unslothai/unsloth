@@ -451,8 +451,7 @@ def test_a_message_that_vanished_is_never_excused_by_being_in_flight():
 
 
 def test_a_running_reply_the_probe_could_not_place_refuses_the_pair():
-    """A running reply the probe cannot place refuses the pair, rather than reading as no reply in
-    flight."""
+    """An unplaceable running reply refuses the pair rather than reading as idle."""
     a = streaming_arm(24)
     blind = dict(streaming_arm(24), in_flight = [], in_flight_unplaced = True)
     got = P.compare(a, blind)
@@ -536,9 +535,7 @@ def test_the_blind_scaffold_rule_needs_run_state_evidence_the_composer_cannot_fo
 
 
 def test_the_blind_scaffold_rule_still_withholds_a_corroborated_run_state_difference():
-    """THE CONTROL. When the run state independently says one arm was generating and the other was
-    not, the composer differs BECAUSE of that, and quoting it would manufacture the wall-clock
-    false alarm this file exists to remove. The refusal is right there and must survive."""
+    """Control: a corroborated run-state difference explains the composer, so the refusal must survive."""
     base = dict(_blind_arm(24), composer_control = "Stop generating", streaming = True)
     treat = dict(
         _blind_arm(24),

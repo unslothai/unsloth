@@ -61,8 +61,7 @@ _SYSTEM_READ_ROOTS = (
     "/proc",
     "/sys",
 )
-# Pseudo-devices every tool needs, then the accelerator nodes. The rest of /dev stays out: other
-# sessions' ptys, same-UID shm objects and, for a root-run Studio, every block and character device.
+# Pseudo-devices plus accelerator nodes; the rest of /dev stays out: other session ptys, same-UID shm, and block devices.
 _DEVICE_NODES = ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty")
 _ACCELERATOR_NODES = (
     "/dev/nvidiactl",
@@ -339,9 +338,8 @@ def _handled_mask(abi: int) -> int:
 
 
 def _writable_access(handled: int) -> int:
-    """Rights on a writable root. No symlink creation: the server follows links, so a tool must not
-    plant an escaping one. No device nodes or device ioctls either: a root-run Studio would otherwise
-    let a tool mknod a disk in its workspace; real devices come only from the explicit device rules."""
+    """Writable-root rights minus symlink and device rights: the server follows links, so a tool
+    must not plant one, nor mknod a disk; real devices come only from explicit device rules"""
     return handled & ~(_FS_MAKE_SYM | _FS_MAKE_CHAR | _FS_MAKE_BLOCK | _FS_IOCTL_DEV)
 
 
@@ -378,13 +376,8 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
 
 
 def _drop_capabilities() -> None:
-    """Runs in the forked child: a root-run Studio must not hand a managed tool its capabilities.
-
-    A process without capabilities (any non-root Studio) has nothing to drop and returns at once.
-    Otherwise the bounding set goes first where the server may change it (CAP_SETPCAP), then every
-    set. Clearing the sets is what matters (no_new_privs follows, so exec regains nothing), so a
-    capset failure raises and the tool never starts with the server's privileges.
-    """
+    """Forked child drops every capability (bounding set first, needs CAP_SETPCAP) so a root-run
+    Studio never hands a tool its privileges; a capset failure raises"""
     libc = _libc
     header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)
     data = (_CapData * 2)()
@@ -424,11 +417,8 @@ def _landlock_preexec(
             try:
                 parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
             except FileNotFoundError:
-                # The rules come from a directory walk, and a path can go between that walk and
-                # this open: a cache purge, a model delete, an account delete. Landlock denies by
-                # default, so dropping a grant only ever narrows the child, while raising here
-                # kills the whole tool call as "Exception occurred in preexec_fn", which names
-                # neither the path nor the reason.
+                # A path can vanish after the walk; Landlock denies by default, so skipping only narrows,
+                # while raising kills the call as an opaque preexec_fn error.
                 continue
             try:
                 beneath = _PathBeneathAttr(access & handled, parent_fd)
@@ -553,6 +543,8 @@ def macos_profile(
         # Network, mach, sysctl and shm grants filtered exactly as the owner's profile filters them.
         *_macos_system_rules(writable_roots),
         "(allow file-read-metadata)",
+        # dyld reads the root directory at launch and aborts the child if denied.
+        '(allow file-read-data (literal "/"))',
         # Pseudo-devices only; the rest of /dev (other sessions' ttys, disks) stays denied.
         '(allow file-read* file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random")'
         ' (literal "/dev/urandom") (literal "/dev/tty") (literal "/dev/dtracehelper"))',

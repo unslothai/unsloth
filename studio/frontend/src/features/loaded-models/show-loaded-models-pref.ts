@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Whether the corner indicator may appear. Off by default; only an explicit "true" (Settings ->
-// General -> Notifications) enables it. An older explicit "false" still reads as off, so anyone who
-// already turned it down stays that way. Tri-state on purpose: see setShowLoadedModels.
+// Off by default; only explicit "true" enables it. Tri-state on purpose: see setShowLoadedModels.
 
 import { useSyncExternalStore } from "react";
 
@@ -20,7 +18,6 @@ const DISMISSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.dismissed;
 
 const listeners = new Set<() => void>();
 
-/** Both flags feed the same subscribers, since both decide whether it shows. */
 function notify(): void {
   for (const listener of listeners) {
     listener();
@@ -37,9 +34,7 @@ export function getShowLoadedModels(): boolean {
 
 export function setShowLoadedModels(show: boolean): void {
   try {
-    // Both values written, never removed: "false" is the one an older reader also treats as off, so
-    // a pre-update tab does not flip the card back on through the storage event. Absent still means
-    // off here, so the default is unaffected.
+    // Both values are written, never removed: an older tab reads a stored false as off.
     localStorage.setItem(STORAGE_KEY, show ? "true" : "false");
     // Switching it on asks to see the card, so an earlier X must not keep it hidden.
     if (show) localStorage.removeItem(DISMISSED_KEY);
@@ -51,7 +46,6 @@ export function setShowLoadedModels(show: boolean): void {
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  // Sync toggles made in another tab.
   const onStorage = (event: StorageEvent) => {
     if (event.key === STORAGE_KEY || event.key === DISMISSED_KEY) listener();
   };
@@ -66,14 +60,7 @@ export function useShowLoadedModels(): boolean {
   return useSyncExternalStore(subscribe, getShowLoadedModels);
 }
 
-/**
- * Closed with the card's own X, which is not the same as switched off in
- * Settings. Kept apart on purpose: the next model load reopens a card the user
- * waved away, and must not reopen one they turned off.
- *
- * Stored rather than held in memory so a reload does not bring back a card that
- * was closed, the same as the collapsed state.
- */
+/** Distinct from the Settings toggle: the next load reopens a dismissed card, not a disabled one. */
 export function getLoadedModelsDismissed(): boolean {
   try {
     return localStorage.getItem(DISMISSED_KEY) === "true";
@@ -83,8 +70,7 @@ export function getLoadedModelsDismissed(): boolean {
 }
 
 export function setLoadedModelsDismissed(dismissed: boolean): void {
-  // Nothing to announce when it already reads that way, and the reopen path runs on every load
-  // start, so this would otherwise re-render the app's whole overlay stack for each one.
+  // Load starts run this every time, so skip a no-op write to avoid re-rendering the overlay stack.
   if (getLoadedModelsDismissed() === dismissed) {
     return;
   }

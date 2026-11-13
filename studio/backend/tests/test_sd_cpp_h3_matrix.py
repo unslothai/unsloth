@@ -250,8 +250,7 @@ def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
 def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
     h3_host, platform, hw_label, backend, device, monkeypatch
 ):
-    """A user binary is re-vetted after the download, since a swap mid-fetch would otherwise go
-    unchecked."""
+    """User-supplied binaries are re-vetted after the download, so a mid-fetch swap is caught."""
     from core.inference import sd_cpp_backend
 
     host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
@@ -388,8 +387,7 @@ def test_h3_probes_devices_only_where_the_answer_is_used(
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize("hw_label,backend,device", HARDWARE)
 def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label, backend, device):
-    """The preflight can download and extract the sd-cli prebuilt and takes no cancel_event, so a
-    load cancelled before its worker started must not reach it."""
+    """A preflight download has no cancel_event, so a load cancelled early must not reach it."""
     from core.inference import sd_cpp_backend
 
     host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
@@ -462,3 +460,64 @@ def test_h3_revet_does_not_invent_a_change_for_an_unrecorded_tree(
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
 
     host.run()
+
+
+def _h3_load_with_vae_fetch(monkeypatch, h3_host, error, *, local_files_only):
+    """Run a native H3 load whose video VAE fetch raises ``error``; the other files resolve."""
+    from core.inference.video_minimax_h3 import H3_VIDEO_VAE
+    import utils.hf_xet_fallback as xet
+
+    h3_host(platform = "linux", backend = "cpu", device = "cpu", help_text = _H3_HELP)
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(repo, wanted, *args, **kwargs):
+        if wanted == H3_VIDEO_VAE:
+            raise error
+        return real_download(repo, wanted, *args, **kwargs)
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+    fam = _detect_load_family(H3_REPO, None, "minimax-h3")
+    VideoBackend()._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = H3_REPO,
+        gguf_filename = H3_FILE,
+        local_files_only = local_files_only,
+    )
+
+
+def test_h3_cache_only_load_names_the_missing_vae_and_the_fix(h3_host, monkeypatch):
+    """VAEs cached before the vae/official/ move miss on a cache-only load; say which file and how to fetch it."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    from core.inference.video_minimax_h3 import H3_VIDEO_VAE
+    from hub.utils.hf_errors import modelscope_missing
+    from utils.native_path_leases import redact_native_paths
+
+    with pytest.raises(RuntimeError) as caught:
+        _h3_load_with_vae_fetch(
+            monkeypatch, h3_host, LocalEntryNotFoundError("cannot find"), local_files_only = True
+        )
+    text = str(caught.value)
+    assert f"video VAE ({H3_VIDEO_VAE})" in text
+    assert "Load MiniMax-H3 once while online (or reconnect)" in text
+    assert isinstance(caught.value.__cause__, LocalEntryNotFoundError)
+    # The load worker stores exactly this as the progress error the UI and API read.
+    assert (modelscope_missing(caught.value) or redact_native_paths(text)) == text
+
+
+def test_h3_online_load_miss_is_unchanged(h3_host, monkeypatch):
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    error = LocalEntryNotFoundError("hub unreachable")
+    with pytest.raises(LocalEntryNotFoundError) as caught:
+        _h3_load_with_vae_fetch(monkeypatch, h3_host, error, local_files_only = False)
+    assert caught.value is error
+
+
+def test_h3_cache_only_load_keeps_an_unrelated_error(h3_host, monkeypatch):
+    error = OSError("disk full")
+    with pytest.raises(OSError) as caught:
+        _h3_load_with_vae_fetch(monkeypatch, h3_host, error, local_files_only = True)
+    assert caught.value is error

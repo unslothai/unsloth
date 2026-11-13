@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Standalone GPU benchmark + regression harness for the Unsloth diffusion backend.
-
-Drives ``DiffusionBackend`` directly (no HTTP server) to measure load time, peak VRAM and generation latency for a single GGUF image model, plus an accuracy guard: a fixed-seed image is rendered and compared (PSNR) against a stored reference, so a precision/dtype/guard regression that silently changes output is caught, not just speed and memory.
-
-Two modes: --write-baseline PATH runs once and saves the metrics JSON plus reference.png next to it, and --compare PATH runs again, diffs against the baseline and exits nonzero if a latency, VRAM or PSNR threshold is exceeded.
-
-torch and diffusers are imported lazily (only after argument parsing and only inside functions) so ``--help`` works on a host without them. Not part of CPU CI; this needs a real GPU and a downloadable model.
-
-Example: `python scripts/diffusion_bench.py --write-baseline outputs/diffusion_bench/baseline.json --model unsloth/Z-Image-Turbo-GGUF --gguf z-image-turbo-Q4_K_M.gguf`, then the same command with --compare after making changes.
-"""
+"""GPU benchmark of DiffusionBackend; --compare exits nonzero past latency, VRAM or PSNR thresholds;
+torch and diffusers are imported lazily so --help works without them"""
 
 from __future__ import annotations
 
@@ -26,12 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-# Backend root on sys.path so `core.inference.diffusion` imports as the server does (deferred into main() so --help never triggers torch).
+# Backend root on sys.path; the diffusion import is deferred into main() so --help never imports torch.
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent / "studio" / "backend"
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
-
-
 # ── small helpers ──────────────────────────────────────────────────────────
 
 
@@ -150,7 +140,6 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     with Image.open(cand_png) as im_b:
         b = np.asarray(im_b.convert("RGB"), dtype = np.float64)
     if a.shape != b.shape:
-        # Different geometry means the comparison is meaningless; report worst case.
         return 0.0
     mse = float(((a - b) ** 2).mean())
     if mse == 0.0:
@@ -283,7 +272,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             },
         }
 
-        # The fixed-seed image is the accuracy anchor.
         args._image_out.parent.mkdir(parents = True, exist_ok = True)
         first_image.save(args._image_out)
         print(f"  saved image -> {args._image_out}", flush = True)
@@ -328,8 +316,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 # ── modes ──────────────────────────────────────────────────────────────────
-
-
 def _write_baseline(args: argparse.Namespace) -> int:
     baseline_path = Path(args.write_baseline).resolve()
     ref_png = baseline_path.parent / "reference.png"
@@ -370,7 +356,7 @@ def _compare(args: argparse.Namespace) -> int:
     baseline = json.loads(baseline_path.read_text())
     out_dir = Path(args.out_dir).resolve()
     args._image_out = out_dir / "compare.png"
-    # --write-baseline takes any path, so a baseline can be sitting on a name this run writes. Refuse before the generation is paid for, not after.
+    # Refuse before the generation runs if the baseline path collides with an output.
     for written in (out_dir / "compare.json", args._image_out):
         if baseline_path == written:
             print(
@@ -380,7 +366,6 @@ def _compare(args: argparse.Namespace) -> int:
             )
             return 2
 
-    # Refuse a noisy cross-hardware / cross-dtype comparison unless forced.
     base_env = baseline.get("env", {})
     base_status = base_env.get("status") or {}
     cur_gpu = _gpu_name()
@@ -401,7 +386,6 @@ def _compare(args: argparse.Namespace) -> int:
             print("   refusing noisy comparison (pass --force-compare to override).", flush = True)
             return 2
 
-    # PSNR against the stored reference; reference_png is absolute, so fall back to reference.png beside the baseline.
     ref_png = Path(baseline.get("accuracy", {}).get("reference_png", ""))
     if not ref_png.is_file():
         ref_png = baseline_path.parent / "reference.png"

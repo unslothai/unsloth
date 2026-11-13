@@ -30,11 +30,9 @@
 
 [CmdletBinding()]
 param(
-    # Where to write the JSON result. Required, because a console-attached run has no usable stdout.
+    # Required because a console-attached run has no usable stdout.
     [Parameter(Mandatory = $true)][string]$OutFile,
 
-    # Set when this process already owns a real console, i.e. it was started through conhost.exe.
-    # Only affects the reported label; every measurement below is taken the same way either way.
     [switch]$Attached
 )
 
@@ -45,8 +43,6 @@ $result = [ordered]@{
     hostName            = $Host.Name
     psVersion           = $PSVersionTable.PSVersion.ToString()
     psEdition           = $PSVersionTable.PSEdition
-    # The OS build, because the thing being measured is supplied by the OS. A verdict that does not
-    # say which ConsoleHost produced it cannot be checked later against the host a user reports.
     osCaption           = $null
     osBuild             = $null
     architecture        = $env:PROCESSOR_ARCHITECTURE
@@ -58,7 +54,7 @@ $result = [ordered]@{
     nativeConsoleMode   = $null
 }
 
-# Get-CimInstance rather than Get-ComputerInfo: the latter is slow and absent on 5.1 before 5.1.14393.
+# Get-ComputerInfo is slow and missing on older 5.1 builds.
 try {
     $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
     $result.osCaption = [string]$os.Caption
@@ -67,19 +63,14 @@ try {
 
 try { $result.isOutputRedirected = [Console]::IsOutputRedirected } catch { $result.isOutputRedirected = "THREW: $($_.Exception.GetType().Name)" }
 
-# --- The candidate: one property read. ---------------------------------------------------------
-# try/catch because a host without the property throws under Set-StrictMode, and the installers run
-# under strict mode. $false is the right answer on such a host (the ISE, for one) in any case.
+# Throws under StrictMode on hosts without the property; $false is correct there.
 try {
     $result.supportsVt = [bool]$Host.UI.SupportsVirtualTerminal
 } catch {
     $result.supportsVtError = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
 }
 
-# --- The incumbent: exactly what install.ps1 does today. ---------------------------------------
-# Emitted rather than compiled, for the same reason install.ps1 emits it: Add-Type on Windows
-# PowerShell 5.1 writes C# to %TEMP% and runs csc.exe, and this script must not be the thing that
-# reintroduces a compile into a lane whose whole job is to prove nothing compiles.
+# Emitted rather than compiled: Add-Type on 5.1 runs csc.exe, which this lane must not trigger.
 try {
     if (-not ('ProbeVtNative' -as [type])) {
         $asmName = New-Object System.Reflection.AssemblyName 'ProbeVtNativeAsm'
@@ -123,7 +114,6 @@ try {
         $null = $typeBuilder.CreateType()
     }
 
-    # STD_OUTPUT_HANDLE, then ENABLE_VIRTUAL_TERMINAL_PROCESSING, as install.ps1:2131-2135 does.
     $handle = [ProbeVtNative]::GetStdHandle(-11)
     [uint32]$mode = 0
     if (-not [ProbeVtNative]::GetConsoleMode($handle, [ref]$mode)) {

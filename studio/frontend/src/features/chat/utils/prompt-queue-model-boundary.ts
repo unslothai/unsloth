@@ -57,7 +57,6 @@ export function shouldAbortPendingQueueForModelBoundary({
   capturedGeneration: number;
   usesLocalModel: boolean;
 }): boolean {
-  // Preparation can still clear queues at the final model-switch boundary.
   return (
     usesLocalModel &&
     (!chatModelLifecycleGate.canQueue() ||

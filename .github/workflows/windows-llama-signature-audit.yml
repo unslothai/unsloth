@@ -184,14 +184,12 @@ jobs:
             Write-Host 'Every audited binary is signed.'
             exit 0
           }
-          # Hard failure by default.
           if ($env:ENFORCE -eq 'true') {
             Write-Host "::error::$unsigned unsigned PE file(s) in the published Windows bundles"
             exit 1
           }
           Write-Host "::warning::$unsigned unsigned PE file(s) in the published Windows bundles. See the job summary."
 
-  # The job above reads certificate tables.
   code-integrity:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: App Control audit (signature-only)
@@ -262,14 +260,13 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Continue'
-          # Without this the whole job is unfalsifiable
+          # Positive control: without it the whole job is unfalsifiable.
           $src = 'public class UnsignedControl { public static void Main() { System.Console.WriteLine("control"); } }'
           $exe = Join-Path $PWD 'unsigned-control.exe'
           Add-Type -TypeDefinition $src -OutputAssembly $exe -OutputType ConsoleApplication
           if (-not (Test-Path $exe)) { throw 'could not build the unsigned control binary' }
           & $exe 2>&1 | Write-Host
 
-          # Polled rather than slept once.
           $policyBare = "$env:SAC_POLICY_ID".Trim('{', '}').ToLowerInvariant()
           $fromPolicy = {
             param($e)
@@ -360,7 +357,6 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $since = [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
 
-          # Scope to the extracted runtime.
           $dir = $env:RUNTIME_DIR
           if (-not $dir) {
             # The exercise step sets RUNTIME_DIR once the bundle is extracted and llama-server.exe is found.
@@ -374,7 +370,6 @@ jobs:
               ($dir -replace '^[A-Za-z]:', '').TrimEnd('\')) + '\'
           } else { $null }
 
-          # Polled on the same bounded interval as the positive control, and for the same reason
           $policyBare = "$env:SAC_POLICY_ID".Trim('{', '}').ToLowerInvariant()
           $fromPolicy = {
             param($e)
@@ -411,7 +406,6 @@ jobs:
                 exit 1
               }
             }
-            # The evaluated file, not the whole message
             $ours = @($events | Where-Object {
               $subject = $_.Message
               try {
@@ -476,7 +470,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          # The records the artifact is named for.
           $since = if ($env:AUDIT_START) {
             [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
           } else { (Get-Date).AddHours(-2).ToUniversalTime() }

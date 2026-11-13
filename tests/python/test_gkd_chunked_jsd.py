@@ -365,6 +365,8 @@ def test_generated_items_are_self_contained():
     for name in (
         "_unsloth_gkd_chunked_loss",
         "_unsloth_gkd_dense_head",
+        "_unsloth_gkd_head_hooks",
+        "_unsloth_global_module_hooks",
         "_unsloth_gkd_logit_transforms",
         "_unsloth_gkd_project",
         "_unsloth_gkd_canonical",
@@ -711,3 +713,79 @@ def test_fp16_grad_scaler_reaches_the_chunked_jsd(enabled, accepts_scaler, monke
         assert calls[0]["scaler"] is scaler
     else:
         assert calls[0].get("scaler") is None
+
+
+_GLOBAL_HOOKS = {
+    "forward": "register_module_forward_hook",
+    "forward_pre": "register_module_forward_pre_hook",
+    "full_backward": "register_module_full_backward_hook",
+    "full_backward_pre": "register_module_full_backward_pre_hook",
+}
+
+
+@pytest.mark.parametrize("hook", list(_GLOBAL_HOOKS))
+def test_global_module_hooks_fall_back(hook):
+    """The chunked JSD reads the head weights directly, so a torch global module hook would never see the heads."""
+    from torch.nn.modules import module as module_hooks
+
+    student, teacher = _TinyLM(97, 16, 0.0, 1), _TinyLM(97, 24, 0.0, 2)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    trainer = _trainer(0.5, student, teacher)
+    assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+    handle = getattr(module_hooks, _GLOBAL_HOOKS[hook])(lambda *a: None)
+    try:
+        trainer = _trainer(0.5, student, teacher)
+        assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is None
+    finally:
+        handle.remove()
+    assert any("hooks" in reason for reason in trainer._unsloth_gkd_chunked_fallbacks)
+    trainer = _trainer(0.5, student, teacher)
+    assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+
+
+@pytest.mark.parametrize("which", ["student", "teacher"])
+@pytest.mark.parametrize(
+    "register",
+    [
+        "register_forward_hook",
+        "register_forward_pre_hook",
+        "register_full_backward_hook",
+        "register_full_backward_pre_hook",
+    ],
+)
+def test_hooked_heads_fall_back(which, register):
+    """A forward / backward hook on either head (a probe, a logit filter) only runs when the head is called."""
+    student, teacher = _TinyLM(97, 16, 0.0, 1), _TinyLM(97, 24, 0.0, 2)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    head = (student if which == "student" else teacher).lm_head
+    handle = getattr(head, register)(lambda *a: None)
+    trainer = _trainer(0.5, student, teacher)
+    assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is None
+    assert any("hooks" in reason for reason in trainer._unsloth_gkd_chunked_fallbacks)
+    handle.remove()
+    trainer = _trainer(0.5, student, teacher)
+    assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+
+
+def test_trl_activation_offloading_head_hooks_keep_the_chunked_jsd():
+    """TRL's activation_offloading pair on lm_head only pauses offloading, so it must not force the dense path."""
+    student, teacher = _TinyLM(97, 16, 0.0, 1), _TinyLM(97, 24, 0.0, 2)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    pre, post = (lambda *a: None), (lambda *a: None)
+    for hook in (pre, post):
+        hook.__module__ = "trl.models.activation_offloading"
+    head = student.lm_head
+    handles = [
+        head.register_forward_pre_hook(pre),
+        head.register_forward_hook(post, always_call = True),
+    ]
+    try:
+        trainer = _trainer(0.5, student, teacher)
+        assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+        other = head.register_forward_hook(lambda *a: None)
+        trainer = _trainer(0.5, student, teacher)
+        assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is None
+        other.remove()
+    finally:
+        for handle in handles:
+            handle.remove()

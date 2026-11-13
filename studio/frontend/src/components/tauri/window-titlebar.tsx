@@ -9,7 +9,9 @@ import {
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { setDesktopFullscreen } from "@/lib/desktop-fullscreen";
 import { cn } from "@/lib/utils";
 import { Z_LAYER } from "@/lib/z-layers";
 import { LayoutAlignLeftIcon, PanelLeftIcon } from "@hugeicons/core-free-icons";
@@ -81,6 +83,7 @@ export function shouldUseCustomWindowTitlebar(): boolean {
   return CUSTOM_TITLEBAR_PLATFORMS.some((token) => platform.includes(token));
 }
 
+
 export function shouldUseNativeMacWindowTitlebar(): boolean {
   if (!isTauri) {
     return false;
@@ -145,7 +148,6 @@ function CaptionGlyph({
             rx="2"
           />
         )}
-        {/* Windows puts the front window bottom-left. */}
         {kind === "restore" && (
           <>
             <path
@@ -209,11 +211,11 @@ export function DesktopTitlebarNavigation({
   /** Off in mobile, where Navbar's SidebarTrigger owns the slot; a spacer holds it open. */
   showSidebarToggle?: boolean;
 }): ReactElement {
+  const t = useT();
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
-  // Window chrome: the band around these is a fixed 34px, so they keep their
-  // size while the slot holding them scales.
+  // Fixed size: the titlebar band is a fixed 34px while the slot scales.
   const buttonClass =
     "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
   const customTitlebar = shouldUseCustomWindowTitlebar();
@@ -229,13 +231,13 @@ export function DesktopTitlebarNavigation({
         className,
       )}
       role="toolbar"
-      aria-label="Sidebar and page navigation"
+      aria-label={t("desktopShell.navigation")}
     >
       {showSidebarToggle ? (
         <button
           type="button"
-          title={expanded ? "Collapse sidebar" : "Expand sidebar"}
-          aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+          title={expanded ? t("desktopShell.collapseSidebar") : t("desktopShell.expandSidebar")}
+          aria-label={expanded ? t("desktopShell.collapseSidebar") : t("desktopShell.expandSidebar")}
           onMouseDown={stopTitlebarDrag}
           onDoubleClick={stopTitlebarDrag}
           onClick={(event) => {
@@ -244,7 +246,6 @@ export function DesktopTitlebarNavigation({
           }}
           className={buttonClass}
         >
-          {/* The open sidebar as a panel; closed, Studio's own glyph. */}
           <HugeiconsIcon
             icon={expanded ? PanelLeftIcon : LayoutAlignLeftIcon}
             strokeWidth={1.75}
@@ -252,14 +253,13 @@ export function DesktopTitlebarNavigation({
           />
         </button>
       ) : (
-        // Holds the slot the navbar's own trigger sits in, so it is the
-        // button's fixed size, not a scaled one.
+        // Holds the navbar trigger's slot at the button's fixed, unscaled size.
         <div aria-hidden="true" className="size-[30px] shrink-0" />
       )}
       <button
         type="button"
-        title="Go back"
-        aria-label="Go back"
+        title={t("desktopShell.goBack")}
+        aria-label={t("desktopShell.goBack")}
         onMouseDown={stopTitlebarDrag}
         onDoubleClick={stopTitlebarDrag}
         onClick={(event) => {
@@ -276,8 +276,8 @@ export function DesktopTitlebarNavigation({
       </button>
       <button
         type="button"
-        title="Go forward"
-        aria-label="Go forward"
+        title={t("desktopShell.goForward")}
+        aria-label={t("desktopShell.goForward")}
         onMouseDown={stopTitlebarDrag}
         onDoubleClick={stopTitlebarDrag}
         onClick={(event) => {
@@ -296,14 +296,53 @@ export function DesktopTitlebarNavigation({
   );
 }
 
+// How long the revealed fullscreen titlebar lingers after the pointer leaves it.
+const FULLSCREEN_TITLEBAR_HIDE_DELAY_MS = 400;
+
 export function WindowTitlebar({
   showSidebarSurface = false,
+  fullscreen = false,
 }: {
   showSidebarSurface?: boolean;
+  /** Fullscreen: the bar hides and slides back in over the content from the top edge. */
+  fullscreen?: boolean;
 }): ReactElement | null {
+  const t = useT();
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const [focused, setFocused] = useState(true);
+  const [revealed, setRevealed] = useState(false);
+  // Entering or leaving fullscreen starts with the bar hidden again.
+  const [revealFullscreen, setRevealFullscreen] = useState(fullscreen);
+  if (revealFullscreen !== fullscreen) {
+    setRevealFullscreen(fullscreen);
+    setRevealed(false);
+  }
+  const titlebarRef = useRef<HTMLElement | null>(null);
+  const hideTimer = useRef<number | null>(null);
+  const cancelHide = useCallback(() => {
+    if (hideTimer.current !== null) {
+      window.clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  }, []);
+  const reveal = useCallback(() => {
+    cancelHide();
+    setRevealed(true);
+  }, [cancelHide]);
+  const scheduleHide = useCallback(() => {
+    cancelHide();
+    hideTimer.current = window.setTimeout(() => {
+      hideTimer.current = null;
+      if (titlebarRef.current?.matches(":hover, :focus-within")) return;
+      setRevealed(false);
+    }, FULLSCREEN_TITLEBAR_HIDE_DELAY_MS);
+  }, [cancelHide]);
+  const revealFromEdge = useCallback(() => {
+    setRevealed(true);
+    scheduleHide();
+  }, [scheduleHide]);
+  useEffect(() => cancelHide, [fullscreen, cancelHide]);
   const backdropOpen = useSyncExternalStore(
     enabled ? subscribeViewportBackdrop : subscribeNever,
     enabled ? getViewportBackdropOpen : backdropClosed,
@@ -320,8 +359,7 @@ export function WindowTitlebar({
 
   const maximizeRefreshSequence = useRef(0);
   const maximizeRefreshTimer = useRef<number | null>(null);
-  // The titlebar sits outside the sidebar wrapper, so it cannot inherit
-  // --sidebar-width. Read the resized width from the same store instead.
+  // Outside the sidebar wrapper, so --sidebar-width is not inherited; read the store instead.
   const { width, scale: widthScale } = useSidebarWidth();
   const sidebarWidth = showSidebarSurface
     ? pinned
@@ -330,9 +368,7 @@ export function WindowTitlebar({
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
-  // The buttons in this slot are fixed but their padding and gaps scale, so
-  // the slot grows with them and never shrinks under the three 30px buttons.
-  // The drag region starts where it ends.
+  // The slot's padding and gaps scale while its buttons do not; the drag region starts at its end.
   const titlebarNavigationWidth =
     showSidebarSurface && !pinned
       ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
@@ -426,26 +462,26 @@ export function WindowTitlebar({
 
   const handleDragMouseDown = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
-      if (event.button !== 0 || event.detail > 1) {
+      // A fullscreen window cannot be moved or maximized from its titlebar.
+      if (fullscreen || event.button !== 0 || event.detail > 1) {
         return;
       }
       runWindowAction((appWindow) => appWindow.startDragging());
     },
-    [runWindowAction],
+    [fullscreen, runWindowAction],
   );
 
   const handleDragDoubleClick = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
-      if (event.button !== 0) {
+      if (fullscreen || event.button !== 0) {
         return;
       }
       runWindowAction((appWindow) => appWindow.toggleMaximize());
     },
-    [runWindowAction],
+    [fullscreen, runWindowAction],
   );
 
-  // pointerdown, not mousedown: Radix dismisses modals on pointerdown, which fires first,
-  // so a mousedown handler starts the resize but the dialog closes underneath it.
+  // pointerdown: Radix dismisses modals on pointerdown, which fires before mousedown.
   const handleResizePointerDown = useCallback(
     (direction: WindowResizeDirection) =>
       (event: PointerEvent<HTMLDivElement>) => {
@@ -470,12 +506,21 @@ export function WindowTitlebar({
 
   return (
     <>
-      {showSidebarSurface && (
+      {fullscreen && !revealed && (
+        // Touching the top edge brings the hidden titlebar back, as browsers do in fullscreen.
+        <div
+          aria-hidden="true"
+          data-slot="window-titlebar-reveal-edge"
+          className="modal-pe-live pointer-events-auto fixed inset-x-0 top-0 h-[3px]"
+          style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+          onPointerEnter={revealFromEdge}
+          onPointerMove={revealFromEdge}
+        />
+      )}
+      {showSidebarSurface && !fullscreen && (
         <div
           data-slot="window-titlebar-decoration"
-          // Marks a consumer of --studio-sidebar-live-width. Only this and the header below read
-          // it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes the live width here instead of on the
-          // document element, where it would restyle the whole document once per drag frame.
+          // Marks a consumer of --studio-sidebar-live-width, so scoped writes land here, not on <html>.
           data-titlebar-live-width-scope=""
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"
@@ -505,18 +550,41 @@ export function WindowTitlebar({
         </div>
       )}
       <header
+        ref={titlebarRef}
         className={cn(
-          "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
+          "modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
+          fullscreen &&
+            "pointer-events-auto h-[34px] border-b border-sidebar-edge shadow-sm transition-transform duration-200 ease-out motion-reduce:transition-none",
+          fullscreen && !showSidebarSurface && "bg-background",
+          fullscreen &&
+            !revealed &&
+            "-translate-y-full border-transparent shadow-none",
         )}
+        data-fullscreen={fullscreen || undefined}
+        data-revealed={(fullscreen && revealed) || undefined}
+        onPointerEnter={fullscreen ? reveal : undefined}
+        onPointerLeave={fullscreen ? scheduleHide : undefined}
+        // Tabbing into the hidden bar shows it; it hides again once focus leaves.
+        onFocus={fullscreen ? reveal : undefined}
+        onBlur={
+          fullscreen
+            ? (event) => {
+                const next = event.relatedTarget as Node | null;
+                if (!event.currentTarget.contains(next)) scheduleHide();
+              }
+            : undefined
+        }
         data-titlebar-live-width-scope=""
         data-slot="window-titlebar"
+        data-wallpaper-sidebar-pinned={showSidebarSurface && pinned || undefined}
         data-viewport-backdrop-open={backdropOpen ? "" : undefined}
         data-viewport-backdrop-tone={backdropTone ?? undefined}
-        aria-label="Window titlebar"
+        aria-label={t("desktopShell.titlebar")}
       >
         {showSidebarSurface && (
           <div
+            data-wallpaper-chrome-controls=""
             // Glyph in the sidebar's icon column, over New chat's pencil: 19px in, less 6px padding.
             className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[calc(4.75*var(--spacing)-6px)]"
             style={{ width: titlebarNavigationWidth }}
@@ -546,30 +614,33 @@ export function WindowTitlebar({
             "pointer-events-auto absolute right-0 top-0 z-[100] flex h-full",
             focused ? "text-foreground" : "text-muted-foreground",
           )}
+          data-wallpaper-chrome-controls=""
           role="toolbar"
-          aria-label="Window controls"
+          aria-label={t("desktopShell.windowControls")}
         >
           <WindowControlButton
-            label="Minimize window"
+            label={t("desktopShell.minimize")}
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
             <CaptionGlyph kind="minimize" />
           </WindowControlButton>
           <WindowControlButton
-            label={maximized ? "Restore window" : "Maximize window"}
+            label={
+              fullscreen || maximized
+                ? t("desktopShell.restore")
+                : t("desktopShell.maximize")
+            }
             onClick={() =>
-              runWindowAction((appWindow) => appWindow.toggleMaximize())
+              fullscreen
+                ? setDesktopFullscreen(false).catch(() => undefined)
+                : runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            <CaptionGlyph kind={maximized ? "restore" : "maximize"} />
+            <CaptionGlyph kind={fullscreen || maximized ? "restore" : "maximize"} />
           </WindowControlButton>
           <WindowControlButton
-            label="Close window"
-            // No optimistic overlay here. Rust raises it only once the quit confirmations
-            // have passed, and one of those can be a dialog asking whether to keep
-            // training: painting "Closing Unsloth Desktop..." behind that question would
-            // answer it before the user does. The wait this covers is the reap, and Rust's
-            // app-closing arrives well ahead of that.
+            label={t("desktopShell.close")}
+            // No optimistic overlay: a quit confirmation may still be asking; Rust raises the overlay.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
             className="hover:bg-[#c42b1c] hover:text-white active:bg-[#c42b1c]/90"
           >
@@ -577,43 +648,43 @@ export function WindowTitlebar({
           </WindowControlButton>
         </div>
       </header>
-      {/* Maximized: no edges to resize, and the corner belongs to Close. */}
-      {!maximized && (
+      {/* Maximized or fullscreen: no edges to resize, and the corner belongs to Close. */}
+      {!maximized && !fullscreen && (
         <>
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("North")}
           />
           {/* resize grips stay above dialogs and notifications. */}
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("South")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("West")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("East")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
+            className="modal-pe-live pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("NorthWest")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
+            className="modal-pe-live pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
             style={{
               zIndex: Z_LAYER.WINDOW_RESIZE_EDGE,
               // keep the resize corner outside the close button.
@@ -624,13 +695,13 @@ export function WindowTitlebar({
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
+            className="modal-pe-live pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("SouthWest")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
+            className="modal-pe-live pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("SouthEast")}
           />

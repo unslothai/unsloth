@@ -1,30 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The four llama-server tuning knobs every GGUF load carries: --load-mode, the draft context's
- *  KV cache dtype, --ctx-checkpoints and --cache-ram. One module because they are always sent,
- *  committed and cleared as a group, and every load path would otherwise repeat the same four
- *  lines with three chances to forget one. State still lives in the runtime store. */
+/** llama-server load knobs always sent, committed and cleared as a group. */
 
-/** The subset of a config these read; satisfied by PerModelConfig and the store. */
 export interface ServerTuningValues {
   loadMode?: string | null;
   specDraftCacheDtype?: string | null;
   ctxCheckpoints?: number | null;
   cacheRam?: number | null;
+  /** Standalone Engram table precision; null keeps the quant's own table. */
+  engramPrecision?: string | null;
 }
 
-/** The request fields, in the backend's spelling. */
 export interface ServerTuningPayload {
   load_mode?: string;
   spec_draft_cache_type?: string;
   ctx_checkpoints?: number;
   cache_ram?: number;
+  engram_precision?: string;
 }
 
-/** What to send on /load, blank knobs omitted rather than nulled: the route reads
- *  `model_fields_set` to decide whether the control owns the flag, and a null counts as set,
- *  stripping the flag out of any inherited extra arguments. */
+/** Blank knobs are omitted, not nulled: the route treats a null as set via `model_fields_set`. */
 export function serverTuningLoadPayload(
   values: ServerTuningValues,
 ): ServerTuningPayload {
@@ -37,10 +33,12 @@ export function serverTuningLoadPayload(
       ? { ctx_checkpoints: values.ctxCheckpoints }
       : {}),
     ...(values.cacheRam != null ? { cache_ram: values.cacheRam } : {}),
+    ...(values.engramPrecision != null
+      ? { engram_precision: values.engramPrecision }
+      : {}),
   };
 }
 
-/** The control/baseline pairs the store keeps for these four. */
 export interface ServerTuningState {
   loadMode: string | null;
   loadedLoadMode: string | null;
@@ -50,11 +48,11 @@ export interface ServerTuningState {
   loadedCtxCheckpoints: number | null;
   cacheRam: number | null;
   loadedCacheRam: number | null;
+  engramPrecision: string | null;
+  loadedEngramPrecision: string | null;
 }
 
-/** What a launch committed: click-time values, not a backend echo, like the batch sizes. Diffusion
- *  commits nothing, since it launches no llama-server and a value recorded here would ride a
- *  saved preset onto the next GGUF. */
+/** Diffusion commits nothing, or a saved preset would carry values onto the next GGUF. */
 export function committedServerTuningState(
   values: ServerTuningValues,
   isDiffusion = false,
@@ -66,6 +64,7 @@ export function committedServerTuningState(
   const specDraftCacheDtype = values.specDraftCacheDtype ?? null;
   const ctxCheckpoints = values.ctxCheckpoints ?? null;
   const cacheRam = values.cacheRam ?? null;
+  const engramPrecision = values.engramPrecision ?? null;
   return {
     loadMode,
     loadedLoadMode: loadMode,
@@ -75,11 +74,12 @@ export function committedServerTuningState(
     loadedCtxCheckpoints: ctxCheckpoints,
     cacheRam,
     loadedCacheRam: cacheRam,
+    engramPrecision,
+    loadedEngramPrecision: engramPrecision,
   };
 }
 
-/** The pairs a load that sent none of them leaves behind. Both halves, or a rollback re-sends the
- *  departed model's baseline as if this server ran it. */
+/** Clears both halves, or a rollback re-sends the departed model's baseline. */
 export function clearedServerTuningState(): ServerTuningState {
   return {
     loadMode: null,
@@ -90,5 +90,7 @@ export function clearedServerTuningState(): ServerTuningState {
     loadedCtxCheckpoints: null,
     cacheRam: null,
     loadedCacheRam: null,
+    engramPrecision: null,
+    loadedEngramPrecision: null,
   };
 }

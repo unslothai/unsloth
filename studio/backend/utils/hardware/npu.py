@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Detect AMD NPUs without starting a runtime.
-
-XDNA 2 (1022:17f0) is supported unless ``UNSLOTH_STUDIO_ENABLE_NPU=0`` hides it; XDNA 1
-(1022:1502) is not. Runtime readiness is checked separately by ``flm validate``.
-"""
+"""Detects AMD XDNA 2 NPUs (1022:17f0) without starting a runtime; UNSLOTH_STUDIO_ENABLE_NPU=0 hides."""
 
 from __future__ import annotations
 

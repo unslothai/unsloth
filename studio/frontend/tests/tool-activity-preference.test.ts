@@ -24,7 +24,6 @@ const PREFERENCES_KEY = "unsloth_chat_preferences";
 const LEGACY_STATE = {
   confirmDeleteChats: false,
   alwaysDeleteChatFiles: true,
-  showModelDisclaimer: true,
   showResponseModel: true,
   collapseThinkingByDefault: true,
   pastedTextMinChars: 8000,
@@ -105,7 +104,6 @@ test("hydrating the new keys leaves the older preferences alone", () => {
   const state = useChatPreferencesStore.getState();
   assert.equal(state.confirmDeleteChats, false);
   assert.equal(state.alwaysDeleteChatFiles, true);
-  assert.equal(state.showModelDisclaimer, true);
   assert.equal(state.showResponseModel, true);
   assert.equal(state.pastedTextMinChars, 8000);
   assert.equal(typeof state.setToolVisibility, "function");

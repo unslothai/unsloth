@@ -40,7 +40,6 @@ export function NameDialog({ open, title, onOpenChange, ...form }: NameDialogPro
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
-        {/* Content unmounts on close, so every open starts from initialValue. */}
         <NameForm {...form} busy={busy} setBusy={setBusy} onClose={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
@@ -104,7 +103,7 @@ function NameForm({
         <Button type="button" variant="ghost" onClick={onClose}>
           {t("common.cancel")}
         </Button>
-        <Button type="submit" disabled={!trimmed || busy}>
+        <Button type="submit" variant="dark" disabled={!trimmed || busy}>
           {submitLabel}
         </Button>
       </DialogFooter>

@@ -176,8 +176,7 @@ def compare_with_trace_profile(
     }
 
 
-# Harness adapter (INTERFACES.md section 3)
-# V8 has one CpuProfiler, so this is only meaningful at level 1; at level 2+ it stands down.
+# INTERFACES.md section 3 adapter; V8 has one CpuProfiler, so only level 1 is meaningful.
 
 import time  # noqa: E402
 

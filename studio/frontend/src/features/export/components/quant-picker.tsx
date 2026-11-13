@@ -8,9 +8,9 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  CheckmarkCircle01Icon,
   InformationCircleIcon,
   LayersIcon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { QUANT_OPTIONS } from "../constants";
@@ -18,7 +18,6 @@ import { QUANT_OPTIONS } from "../constants";
 interface QuantPickerProps {
   value: string[];
   onChange: (v: string[]) => void;
-  /** quant value -> "~X GB"; blank/missing when the model size is unknown. */
   sizes?: Record<string, string>;
   /** Choices to offer; defaults to every GGUF quant. */
   options?: { value: string; label: string; recommended?: boolean }[];
@@ -46,7 +45,7 @@ export function QuantPicker({
         <span className="text-xs font-medium text-muted-foreground">
           Quantization Levels
         </span>
-        <Tooltip>
+        <Tooltip disableHoverableContent={false}>
           <TooltipTrigger asChild={true}>
             <button
               type="button"
@@ -91,7 +90,7 @@ export function QuantPicker({
             >
               {active && (
                 <HugeiconsIcon
-                  icon={CheckmarkCircle01Icon}
+                  icon={CheckmarkCircle02Icon}
                   className="size-3 text-primary"
                 />
               )}

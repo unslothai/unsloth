@@ -68,7 +68,7 @@ test("migration preserves tuned values while protecting them from model defaults
     16,
   );
 
-  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 23);
+  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 24);
   assert.equal(migrated.learningRate, 0.000031);
   assert.equal(migrated.loraRank, 48);
   assert.equal(migrated.modelDefaultsAppliedFor, "org/model");
@@ -416,4 +416,34 @@ test("a baseline left over from another model is not used as pre-CPT params", ()
   );
 
   assert.equal(migrated.trainingMethodProvenance.loraRankBeforeCpt, undefined);
+});
+
+
+test("explicit false training toggle choices survive persistence and hydration", () => {
+  const stored = {
+    packing: false, trainOnCompletions: false,
+    trainingToggleChoices: { packing: false, trainOnCompletions: false },
+  };
+  const merged = mergeTrainingConfig(stored, {
+    trainingMethod: "qlora", packing: true, trainOnCompletions: true,
+  } as never);
+  assert.deepEqual(merged.trainingToggleChoices, stored.trainingToggleChoices);
+  assert.equal(merged.packing, false);
+  assert.equal(merged.trainOnCompletions, false);
+  const again = partializeTrainingConfig(merged);
+  assert.deepEqual(again.trainingToggleChoices, stored.trainingToggleChoices);
+});
+
+test("legacy saved false values remain opt-outs when their provenance is unknown", () => {
+  const merged = mergeTrainingConfig({ packing: false, trainOnCompletions: false }, {
+    trainingMethod: "qlora", packing: true, trainOnCompletions: true,
+  } as never);
+  assert.deepEqual(merged.trainingToggleChoices, { packing: false, trainOnCompletions: false });
+});
+
+test("automatic disabled values are not promoted into explicit choices", () => {
+  const merged = mergeTrainingConfig({
+    packing: false, trainOnCompletions: false, trainingToggleChoices: {},
+  }, { trainingMethod: "qlora", packing: true, trainOnCompletions: true } as never);
+  assert.deepEqual(merged.trainingToggleChoices, {});
 });

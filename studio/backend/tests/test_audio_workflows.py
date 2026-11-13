@@ -128,6 +128,12 @@ def test_status_carries_the_clone_fields():
     clone = {"audio_workflows": ["clone"], "audio_reference_text": "required"}
     status = InferenceStatusResponse(is_audio = True, audio_type = "audiocpp_tts", **clone)
     assert status.model_dump().items() >= clone.items()
+    # The Clone page shows the voice description from these rules.
+    rules = {"reference_text": "required", "description": True}
+    fields = dict(is_audio = True, audio_type = "audiocpp_tts", audio_clone = rules)
+    assert InferenceStatusResponse(**fields).model_dump()["audio_clone"] == rules
+    load = LoadResponse(status = "loaded", model = "m", display_name = "m", inference = {}, **fields)
+    assert load.audio_clone == rules
 
 
 def test_status_and_load_carry_the_convert_fields():

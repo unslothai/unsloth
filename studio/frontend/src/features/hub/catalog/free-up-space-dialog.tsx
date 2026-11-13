@@ -22,24 +22,9 @@ import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useState } from "react";
 
-/**
- * Remove companion assets that no installed model needs any more.
- *
- * An image GGUF loads its text encoders, VAE and tokenizer from a separate base repo that every
- * quant of the family shares, and that is usually the larger half of the footprint. Deleting the
- * last quant cannot take those with it, because the delete is scoped to one repo and nothing on
- * screen knows the sharing has ended. Without this dialog the only way to recover the space was
- * to hand-edit the Hugging Face cache.
- *
- * Nothing here runs on its own. The list is recomputed from what is installed each time the
- * dialog opens, every row is opt-in, and removal goes through the ordinary delete endpoint, so
- * the shared-asset guard applies to this path exactly as it does to a delete from a card.
- */
-/**
- * One row per CACHE ROOT, so a repo cached twice appears twice and the repo id alone identifies
- * neither. Keying selection on it made one checkbox toggle both rows and gave the two list items
- * the same React key and the same checkbox id.
- */
+/** Remove companion assets (shared encoders, VAE) no installed model still needs. Every row
+ *  is opt-in and removal uses the normal delete endpoint and its shared-asset guard. */
+/** Keyed per cache root: a repo cached twice must appear as two distinct rows. */
 const companionIdentity = (companion: OrphanCompanion) =>
   `${companion.repo_id}\u0000${companion.cache_path ?? ""}`;
 
@@ -65,9 +50,7 @@ export function FreeUpSpaceDialog({
     try {
       const result = await fetchOrphanCompanions();
       setCompanions(result.companions);
-      // Empty, not everything. This dialog deletes, and its own contract is that every row is
-      // opt-in; pre-checking them let one click remove every listed copy without the user having
-      // chosen any of them.
+      // Empty, not everything: every row in this delete dialog is opt-in.
       setSelected(new Set());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

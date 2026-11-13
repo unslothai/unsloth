@@ -251,10 +251,9 @@ def _bias_router_model(model_type):
 
 @pytest.mark.parametrize("model_type", ["minimax_m2", "hy_v3", "lfm2_moe"])
 def test_sigmoid_correction_bias_routers_route_naturally_with_a_warning(replay, model_type):
-    # MiniMax-M2 / HY-V3: TopKRouter.forward(hidden_states, e_score_correction_bias), the bias a
-    # buffer of the parent MoE block; LFM2-MoE: forward(hidden_states, expert_bias = None). All three
-    # take sigmoid(logits) top-k weights, which no zoo replay formula reproduces: priming must reach
-    # the router (no TypeError), then take the hooks off and say so.
+    # MiniMax-M2 and HY-V3 (TopKRouter.forward takes e_score_correction_bias) and LFM2-MoE
+    # (expert_bias) use sigmoid top-k weights no zoo replay formula reproduces; priming must reach
+    # the router, then hooks come off with a warning.
     model = _bias_router_model(model_type)
     routers = [m for m in model.modules() if "TopKRouter" in type(m).__name__]
     if not routers:
@@ -330,3 +329,77 @@ def test_router_that_cannot_be_primed_loses_its_hook_with_a_warning(replay):
     assert not model.model.layers[0].mlp.gate._forward_hooks
     assert model.model.layers[1].mlp.gate._forward_hooks
     assert getattr(model.model.layers[1].mlp.gate, "_unsloth_replay_formula", None) is not None
+
+
+def _use_adapter(model, adapter_name):
+    try:
+        from trl.trainer.utils import use_adapter
+    except Exception:
+        use_adapter = None
+    if use_adapter is not None:
+        return use_adapter(model, adapter_name)
+    import contextlib
+
+    @contextlib.contextmanager
+    def fallback():
+        previous = model.active_adapter
+        model.set_adapter(adapter_name)
+        try:
+            yield
+        finally:
+            model.set_adapter(previous)
+
+    return fallback()
+
+
+def test_named_reference_adapter_routes_naturally(replay):
+    peft = pytest.importorskip("peft")
+    base = _moe()
+    ids = [5, 6, 7, 30, 31, 32]
+    natural_logits, natural_ids = _natural(base, ids)
+    config = peft.LoraConfig(r = 4, target_modules = ["q_proj", "v_proj"])
+    model = peft.get_peft_model(base, config)
+    model.add_adapter("ref", config)
+    for name, param in model.named_parameters():
+        if ".default." in name:
+            model.get_parameter(name.replace(".default.", ".ref.")).data.copy_(param.data)
+    model.set_adapter("default")
+    model.vllm_engine = None
+    _run_post_init(model)
+    decoder = model.base_model.model.model
+    routers = [layer.mlp.gate for layer in decoder.layers]
+    tables = lambda: [
+        (dict(m._forward_hooks), dict(m._forward_pre_hooks), dict(m._forward_pre_hooks_with_kwargs))
+        for m in [decoder, *decoder.layers, *routers]
+    ]
+    hooks_before = tables()
+    assert all(r._forward_hooks for r in routers)
+
+    forced = ((natural_ids + 3) % EXPERTS).numpy().astype(np.int16)
+    rr.record_routed_experts(
+        [
+            SimpleNamespace(
+                prompt_token_ids = ids[:3],
+                outputs = [SimpleNamespace(token_ids = ids[3:], routed_experts = forced[:-1])],
+            )
+        ],
+        pad_token_id = PAD,
+    )
+    x = torch.tensor([ids])
+    with torch.no_grad():
+        policy = model(input_ids = x).logits
+        assert not torch.allclose(policy, natural_logits, atol = 1e-4)
+        model.set_adapter("default")
+        torch.testing.assert_close(model(input_ids = x).logits, policy, rtol = 0, atol = 0)
+        with _use_adapter(model, "ref"):
+            reference = model(input_ids = x).logits
+            assert all(not r._forward_hooks for r in routers)
+            with model.disable_adapter():
+                disabled = model(input_ids = x).logits
+            assert all(not r._forward_hooks for r in routers)
+        # "ref" is a copy of "default" (LoRA B at zero): its own routing is the natural one.
+        torch.testing.assert_close(reference, natural_logits, rtol = 1e-5, atol = 1e-6)
+        torch.testing.assert_close(disabled, natural_logits, rtol = 1e-5, atol = 1e-6)
+        again = model(input_ids = x).logits
+    torch.testing.assert_close(again, policy, rtol = 0, atol = 0)
+    assert tables() == hooks_before

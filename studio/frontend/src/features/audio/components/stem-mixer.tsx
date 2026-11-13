@@ -17,12 +17,10 @@ import { cn } from "@/lib/utils";
 import {
   Download01Icon,
   HeadphonesIcon,
-  PauseIcon,
-  PlayIcon,
-  SentIcon,
   VolumeHighIcon,
-  VolumeOffIcon,
+  VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -41,6 +39,7 @@ import {
 import type { StemMixerProps } from "./stem-mixer-types";
 import { WaveformBars } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
+import { ArrowUpIcon, PlayIcon } from "lucide-react";
 
 const SEEK_STEP_SECONDS = 5;
 
@@ -149,10 +148,11 @@ export function StemMixer({
           disabled={!ready}
           onClick={toggle}
         >
-          <HugeiconsIcon
-            icon={playing ? PauseIcon : PlayIcon}
-            className="size-3.5"
-          />
+          {playing ? (
+            <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
+          ) : (
+            <PlayIcon className="size-3.5" />
+          )}
         </Button>
         <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
           {formatSeconds(position)} / {formatSeconds(duration)}
@@ -175,8 +175,7 @@ export function StemMixer({
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
               <Button type="button" variant="outline" size="sm">
-                <HugeiconsIcon
-                  icon={SentIcon}
+                <ArrowUpIcon
                   strokeWidth={1.75}
                   data-icon="inline-start"
                 />
@@ -275,7 +274,7 @@ export function StemMixer({
                   }
                 >
                   <HugeiconsIcon
-                    icon={level.muted ? VolumeOffIcon : VolumeHighIcon}
+                    icon={level.muted ? VolumeMute02Icon : VolumeHighIcon}
                     strokeWidth={1.75}
                   />
                 </Button>

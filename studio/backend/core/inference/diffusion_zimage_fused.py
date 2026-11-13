@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Z-Image-Turbo attention inside the regional compile: RoPE as ``addcmul`` in the card's probed fma form
-(bit-identical to the complex multiply Inductor cannot lower) and one fused QKV GEMM (exact for int8:
-per-row scales). ``to_q/to_k/to_v`` weights become views of the fused one; the fused Linear is used only
-while they are still the modules it was built from, so LoRA / later wrappers fall back to stock.
-
-int8 projections (fused QKV, ``to_out``) run through ``diffusion_int8_fused.int8_linear``: torchao's own math without
-torchao 0.17's always-on zero-point correction, which re-sums the weight rows on every call.
-
-ConvRot (int8 with a block-Hadamard input rotation): q, k and v rotate the SAME input, and the rotation acts on the
-shared input axis, so the three rotated weights concatenate along the output axis like plain ones. The fused Linear is
-then itself a ConvRotLinear at the parts' group: one rotation and one activation quant feed the fused GEMM instead of
-three of each. Same ops on the same input, so the fused output equals the three separate rotated projections.
-Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0``.
-"""
+"""Z-Image-Turbo fused QKV GEMM (LoRA wrappers fall back to stock); UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0"""
 
 from __future__ import annotations
 
