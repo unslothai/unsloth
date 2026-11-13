@@ -41,6 +41,8 @@ _ROTQ_K_TILES: dict = {
 _ROTQ_QPARAMS = {
     "v1": (-127.0, 127.0, 127.0, 1e-5),
     "v2": (-128.0, 127.0, 127.5, 1.1920928955078125e-07),
+    # diffusion_native_quant ``_int_mm_rows`` (NativeWeightOnlyLinear W8A8): EPS is the clamp floor before the divide
+    "native": (-127.0, 127.0, 127.0, 1e-12),
 }
 # device index -> probed rotq tile (None = stock), and the per-K rules whose tile passed the probe there.
 _ROTQ_DEVICE: dict = {}
@@ -183,6 +185,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         DIV: tl.constexpr,  # amax divisor (127)
         EPS: tl.constexpr,  # norm epsilon, per model
         FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear's quant: fp32 s = max(amax, EPS) / DIV, fp32 1 / s
     ):
         # one program = ROWS whole activation rows, so the per-row amax closes inside the tile
         pid = tl.program_id(0)
@@ -207,13 +210,18 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         j = tl.arange(0, ROWS_P2)
         sel = lr[:, None] == j[None, :]
         amax = tl.max(tl.where(sel, tl.max(tl.abs(z), axis = 1)[:, None], 0.0), axis = 0)
-        s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
-        inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
-        if not FP32_SCALE:
-            inv = _rbf16(inv)
+        if NATIVE:
+            # ``_int_mm_rows``: clamp_(min = EPS).div_(127), reciprocal(), x * recip, all fp32 IEEE
+            s = libdevice.div_rn(tl.maximum(amax, EPS), DIV)
+            inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
+        else:
+            s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
+            inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
+            if not FP32_SCALE:
+                inv = _rbf16(inv)
         inv_t = tl.max(tl.where(sel, inv[None, :], 0.0), axis = 1)
         p = z * inv_t[:, None]
-        if not FP32_SCALE:
+        if not FP32_SCALE and not NATIVE:
             p = _rbf16(p)
         p = libdevice.rint(p)
         p = tl.minimum(tl.maximum(p, QMIN), QMAX)
@@ -919,7 +927,8 @@ def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
     qmin, qmax, div, eps = _ROTQ_QPARAMS[kind]
     h = build_convrot_hadamard(group, device = x2d.device, dtype = torch.bfloat16)
     q = torch.empty((m, k), device = x2d.device, dtype = torch.int8)
-    fp32_scale = _rotq_scale_fp32(kind)
+    native = kind == "native"
+    fp32_scale = native or _rotq_scale_fp32(kind)
     s = torch.empty((m,), device = x2d.device, dtype = torch.float32 if fp32_scale else torch.bfloat16)
     if m == 0:
         return q, s
@@ -941,6 +950,7 @@ def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
             DIV = div,
             EPS = eps,
             FP32_SCALE = fp32_scale,
+            NATIVE = native,
             num_warps = warps,
             num_stages = stages,
             enable_fp_fusion = False,
