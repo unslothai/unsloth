@@ -191,7 +191,6 @@ export async function deleteNpuModel(id: string): Promise<void> {
   }
 }
 
-/** Stops the pull at its next chunk; its partial files stay, so Download resumes. */
 export async function cancelNpuModelDownload(id: string): Promise<void> {
   const response = await authFetch(
     `/api/npu/models/${encodeURIComponent(id)}/download/cancel`,
