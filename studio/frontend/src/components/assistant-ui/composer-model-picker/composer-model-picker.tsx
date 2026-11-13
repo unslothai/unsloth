@@ -206,6 +206,7 @@ import {
   chooseQuant,
   dedupeRows,
   discoverUsesFallback,
+  ejectTargetId,
   downloadedQuants,
   filterRows,
   findChosenRow,
@@ -218,6 +219,7 @@ import {
   pickerDropOffset,
   pickerSide,
   pinCoversId,
+  readBounded,
   repoSection,
   sectionsHaveRows,
   sortConnectedRows,
@@ -252,6 +254,8 @@ function cachedMeta(row: Row): ModelSelectorChangeMeta {
 }
 
 const EXT_PREFIX = "ext:";
+const QUANT_READ_WORKERS = 6;
+const QUANT_FLUSH_MS = 100;
 const MAKER_PREFIX = "maker:";
 const MAKER_TAB_MIN_MODELS = 3;
 const EXPANDED_KEY = "unsloth_composer_picker_expanded";
@@ -1688,20 +1692,37 @@ export function ComposerModelPicker({
   // The inventory often reports an audio GGUF as text-generation; the audio catalog's task wins.
   const mediaTaskById = useMemo(() => {
     const byId = new Map<string, string>();
-    for (const repo of [...inventory.cachedGguf, ...inventory.cachedModels]) {
-      const artifact = artifactForRepoId(repo.repo_id, AUDIO_CATALOG);
+    const put = (
+      ids: readonly (string | null | undefined)[],
+      inventoryTask: string | null | undefined,
+      artifactId: string | null | undefined,
+    ) => {
+      const artifact = artifactId
+        ? artifactForRepoId(artifactId, AUDIO_CATALOG)
+        : null;
       const task = curatedAudioInventoryTask({
-        inventoryTask: repo.task,
+        inventoryTask,
         isExactCatalogArtifact: Boolean(artifact),
         catalogScope: artifact?.group.scope,
         catalogTask: artifact?.group.task,
       });
       if (task) {
-        byId.set(repo.repo_id.toLowerCase(), task);
+        for (const id of ids) {
+          if (id) {
+            byId.set(id.toLowerCase(), task);
+          }
+        }
       }
+    };
+    for (const repo of [...inventory.cachedGguf, ...inventory.cachedModels]) {
+      put([repo.repo_id], repo.task, repo.repo_id);
+    }
+    // A local row's id is its path; model_id is its HF-style name.
+    for (const m of inventory.localModels) {
+      put([m.id, m.model_id], m.task, m.model_id);
     }
     return byId;
-  }, [inventory.cachedGguf, inventory.cachedModels]);
+  }, [inventory.cachedGguf, inventory.cachedModels, inventory.localModels]);
   // Compare and the API page load what they pick, so they list no audio models.
   const listsAudio = !pane;
 
@@ -1773,10 +1794,11 @@ export function ComposerModelPicker({
       });
     }
     for (const lora of loraModels ?? []) {
-      // Native-audio checkpoints load only as merged exports.
+      // Trained native-audio checkpoints load only as merged exports; on-disk full ones always load.
       if (
         (lora.audioType && !listsAudio) ||
-        !nativeAudioCheckpointIsLoadable(lora.audioType, lora.exportType)
+        (lora.source !== "local" &&
+          !nativeAudioCheckpointIsLoadable(lora.audioType, lora.exportType))
       ) {
         continue;
       }
@@ -1988,39 +2010,50 @@ export function ComposerModelPicker({
     [open, inventory.cachedGguf, loraModels],
   );
   const quantsReadAt = useRef(new Map<string, object>());
+  const quantsEpochRef = useRef(quantsEpoch);
+  quantsEpochRef.current = quantsEpoch;
   useEffect(() => {
     if (!open) {
       return;
     }
-    const wanted = rows.filter(
+    const queue = rows.filter(
       (row) =>
         (row.kind === "gguf" || row.kind === "localGguf") &&
         !row.partial &&
         quantsReadAt.current.get(row.key) !== quantsEpoch,
     );
-    if (wanted.length === 0) {
+    if (queue.length === 0) {
       return;
     }
     let live = true;
-    void Promise.all(
-      wanted.map(async (row) => {
-        const target = quantTarget(row);
-        if (!target) {
-          return [row.key, [] as GgufVariantDetail[], NO_QUANTS] as const;
-        }
-        try {
-          const { quants: list, partials } = await rowQuants(target);
-          return [row.key, list, partials] as const;
-        } catch {
-          return [row.key, null, null] as const;
-        }
-      }),
-    ).then((found) => {
-      if (!live) {
+    const epoch = quantsEpoch;
+    const pending: (readonly [
+      string,
+      GgufVariantDetail[] | null,
+      GgufVariantDetail[] | null,
+    ])[] = [];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const read = async (row: Row) => {
+      const target = quantTarget(row);
+      if (!target) {
+        return [row.key, [] as GgufVariantDetail[], NO_QUANTS] as const;
+      }
+      try {
+        const { quants: list, partials } = await rowQuants(target);
+        return [row.key, list, partials] as const;
+      } catch {
+        return [row.key, null, null] as const;
+      }
+    };
+    // Reads that finish after a rows change still land: only a new inventory makes them stale.
+    const flush = () => {
+      timer = null;
+      const found = pending.splice(0);
+      if (found.length === 0 || quantsEpochRef.current !== epoch) {
         return;
       }
       for (const [key] of found) {
-        quantsReadAt.current.set(key, quantsEpoch);
+        quantsReadAt.current.set(key, epoch);
       }
       setDeviceQuants((prev) => {
         const next = new Map(prev);
@@ -2044,6 +2077,22 @@ export function ComposerModelPicker({
         }
         return next;
       });
+    };
+    // Bounded, as the header picker's reader is: hundreds of repos at once queue up the backend.
+    void readBounded(
+      queue,
+      QUANT_READ_WORKERS,
+      read,
+      (found) => {
+        pending.push(found);
+        timer ??= setTimeout(flush, QUANT_FLUSH_MS);
+      },
+      () => live,
+    ).then(() => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      flush();
     });
     return () => {
       live = false;
@@ -2529,7 +2578,7 @@ export function ComposerModelPicker({
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
-    source?.eject(row.loadedId ?? row.id);
+    source?.eject(ejectTargetId(row, chosen?.id));
   };
 
   const handOff = (row: Row) => {
@@ -4573,7 +4622,7 @@ export function ComposerModelPicker({
                         if (chosen) {
                           eject(chosen);
                         } else if (checkpoint) {
-                          source?.eject(checkpoint);
+                          source?.eject();
                         }
                       }}
                       className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
@@ -4641,7 +4690,7 @@ export function ComposerModelPicker({
                     if (chosen) {
                       eject(chosen);
                     } else if (checkpoint) {
-                      source?.eject(checkpoint);
+                      source?.eject();
                     }
                   }}
                   className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
@@ -4826,7 +4875,7 @@ export function ComposerModelPicker({
                     } else if (chosen) {
                       eject(chosen);
                     } else {
-                      source?.eject(checkpoint ?? undefined);
+                      source?.eject();
                     }
                   }}
                   className="ml-auto h-[calc(26px*var(--ui-space-scale,1))]"
@@ -5149,11 +5198,7 @@ export function ComposerModelPicker({
                 variant="destructive"
                 size="xs"
                 aria-label={`Eject ${chosenName}`}
-                onClick={() =>
-                  chosen
-                    ? eject(chosen)
-                    : source?.eject(checkpoint ?? undefined)
-                }
+                onClick={() => (chosen ? eject(chosen) : source?.eject())}
                 className="h-[calc(26px*var(--ui-space-scale,1))]"
               >
                 <HugeiconsIcon
