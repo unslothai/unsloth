@@ -61,6 +61,7 @@ import {
   q4nxBaseModel,
   q4nxIsExpanded,
   q4nxConvertibleFiles,
+  q4nxHasSplitFiles,
   q4nxMemoryWarning,
   q4nxNpuMemory,
   q4nxPacking,
@@ -127,6 +128,26 @@ function isGgufRow(row: LocalModelInfo): boolean {
   return (
     row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")
   );
+}
+
+async function hubRepoFiles(
+  repoId: string,
+  accessToken: string | undefined,
+): Promise<Set<string> | undefined> {
+  try {
+    const info = await modelInfo({
+      name: repoId,
+      accessToken,
+      hubUrl: getHfEndpoint(),
+      fetch: hubFetch,
+      // Forwarded to expand= as is, like Q4NX_INFO_FIELDS.
+      additionalFields: ["siblings"] as unknown as "tags"[],
+    });
+    const { siblings } = info as { siblings?: { rfilename: string }[] };
+    return new Set((siblings ?? []).map((s) => s.rfilename));
+  } catch {
+    return undefined;
+  }
 }
 
 function fileName(path: string): string {
@@ -403,9 +424,16 @@ export function Q4nxConvertCard({
         }));
       };
       request
-        .then((response) =>
-          settle({ list: q4nxConvertibleFiles(response.variants), error: null }),
-        )
+        .then(async (response) => {
+          const repoFiles =
+            !row.folder && q4nxHasSplitFiles(response.variants)
+              ? await hubRepoFiles(row.id, accessToken)
+              : undefined;
+          settle({
+            list: q4nxConvertibleFiles(response.variants, repoFiles),
+            error: null,
+          });
+        })
         .catch((error: unknown) =>
           settle({
             list: [],

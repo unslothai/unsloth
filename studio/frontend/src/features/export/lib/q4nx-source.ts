@@ -78,11 +78,22 @@ const PACKING_ORDER: Q4nxPacking[] = ["direct", "by-architecture", "requantized"
 // A split GGUF is listed as one variant named by its first shard; the converter reads one file.
 const SPLIT_SHARD = /-\d{3,}-of-\d{3,}\.gguf$/i;
 
-/** Drops what cannot be converted: empty leftover quant folders (no file) and split GGUFs. */
+export function q4nxHasSplitFiles(variants: readonly { filename: string }[]): boolean {
+  return variants.some((v) => SPLIT_SHARD.test(v.filename));
+}
+
+/** Drops empty leftover quant folders and split GGUFs. The listing collapses a quant shipped both
+ *  whole and split to its shards, so a split row becomes its whole file when `repoFiles` has it. */
 export function q4nxConvertibleFiles<T extends { filename: string; cleanable?: boolean }>(
   variants: T[],
+  repoFiles?: ReadonlySet<string>,
 ): T[] {
-  return variants.filter((v) => !v.cleanable && !SPLIT_SHARD.test(v.filename));
+  return variants.flatMap((v) => {
+    if (v.cleanable) return [];
+    if (!SPLIT_SHARD.test(v.filename)) return [v];
+    const whole = v.filename.replace(SPLIT_SHARD, ".gguf");
+    return repoFiles?.has(whole) ? [{ ...v, filename: whole }] : [];
+  });
 }
 
 /** Directly packed quants first (backend order), then the rest; the first one is the default pick. */

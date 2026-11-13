@@ -23,6 +23,7 @@ import {
   q4nxVariantLookup,
   q4nxWeights,
   q4nxConvertibleFiles,
+  q4nxHasSplitFiles,
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
 
@@ -416,4 +417,21 @@ test("an empty leftover quant folder and a split GGUF are not offered as a file 
     q4nxConvertibleFiles(files).map((v) => v.quant),
     ["Q4_0", "Q4_1"],
   );
+});
+
+test("a quant shipped whole and split converts from its whole file; split-only is left out", () => {
+  // Qwen/Qwen2.5-Coder-7B-Instruct-GGUF: the listing keeps only the shard family for Q4_K_M.
+  const shard = "qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf";
+  const whole = "qwen2.5-coder-7b-instruct-q4_k_m.gguf";
+  const files = [{ filename: shard, quant: "Q4_K_M", size_bytes: 4 }];
+  assert.equal(q4nxHasSplitFiles(files), true);
+  assert.deepEqual(
+    q4nxConvertibleFiles(files, new Set([shard, whole])).map((v) => [
+      v.filename,
+      v.size_bytes,
+    ]),
+    [[whole, 4]],
+  );
+  assert.deepEqual(q4nxConvertibleFiles(files, new Set([shard])), []);
+  assert.deepEqual(q4nxConvertibleFiles(files), []);
 });
