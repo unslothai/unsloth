@@ -77,6 +77,17 @@ export function restoreBackground(prev: AppearanceSnapshot["background"]): Promi
   return finishBackgroundUpload(beginBackgroundUpload(), { ...prev.adjustments, blob: prev.blob });
 }
 
+/** Undo's background step: puts `prev` back only while the theme's own background is still shown. */
+export function undoBackground(
+  prev: AppearanceSnapshot["background"],
+  applied: AppearanceSnapshot["background"],
+): Promise<boolean> {
+  // A pending upload started after Apply would be cancelled by restoring over it.
+  if (useBackgroundStore.getState().busy) return Promise.resolve(true);
+  if (!sameBackground(readAppearanceSnapshot().background, applied)) return Promise.resolve(true);
+  return restoreBackground(prev);
+}
+
 /** Stores a theme's background through the normal upload checks. Resolves false when it can't. */
 export async function applyThemeBackground(background: ThemeBackground): Promise<boolean> {
   // The parser only lets through data:image/(png|jpeg|webp);base64,<payload>.

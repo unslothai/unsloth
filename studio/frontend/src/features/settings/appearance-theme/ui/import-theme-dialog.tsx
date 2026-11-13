@@ -26,8 +26,7 @@ import {
   portableGlass,
   readAppearanceSnapshot,
   readLoadedAppearanceSnapshot,
-  restoreBackground,
-  sameBackground,
+  undoBackground,
 } from "../snapshot";
 
 export type ParsedThemeFile = Extract<ThemeParseResult, { ok: true }>;
@@ -154,12 +153,8 @@ function ImportThemeForm({
           action: {
             label: t("settings.appearance.themeFile.undo"),
             onClick: () => {
-              const now = readAppearanceSnapshot();
-              applyAppearanceSnapshot(planUndo(prev, next, now));
-              const restoring = sameBackground(now.background, appliedBackground)
-                ? restoreBackground(prev.background)
-                : Promise.resolve(true);
-              void restoring.then((restored) =>
+              applyAppearanceSnapshot(planUndo(prev, next, readAppearanceSnapshot()));
+              void undoBackground(prev.background, appliedBackground).then((restored) =>
                 restored
                   ? toast(t("settings.appearance.themeFile.undone"))
                   : toast.warning(t("settings.appearance.themeFile.undoneWithoutBackground")),

@@ -20,6 +20,7 @@ function createHost() {
     customization: DEFAULT_CUSTOMIZATION as AppearanceCustomization,
     material: { material: "solid", style: "frosted", strength: { light: 40, dark: 15 }, lens: "off", menus: true, nativeFailed: false } as Record<string, unknown>,
     background: null as null | { adjustments: unknown; blob: Blob },
+    busy: false,
   };
   const upload = { result: true }; let ticket = 0;
   const native = { available: false };
@@ -49,7 +50,7 @@ function createHost() {
     "@/features/chat-background": {
       sanitizeAdjustments,
       nativeMaterialAvailable: () => native.available,
-      useBackgroundStore: { getState: () => ({ value: state.background }) },
+      useBackgroundStore: { getState: () => ({ value: state.background, busy: state.busy }) },
       useMaterialStore: {
         getState: () => ({ ...state.material }),
         setState: (partial: Record<string, unknown>) => {
@@ -178,4 +179,22 @@ test("off macOS a theme's native-only glass becomes Liquid 3D, and Undo then res
   const mac = createHost();
   mac.native.available = true;
   assert.equal(load(mac).portableGlass(macos), macos);
+});
+
+test("undo leaves the background alone while a newer upload is pending or another image is shown", async () => {
+  const host = createHost();
+  const snapshot = load(host);
+  const prev = { adjustments: sanitizeAdjustments({}), blob: new Blob(["old"]) };
+  const applied = { adjustments: sanitizeAdjustments({}), blob: new Blob(["theme"]) };
+  host.state.background = { ...applied };
+  host.state.busy = true;
+  assert.equal(await snapshot.undoBackground(prev, applied), true);
+  assert.deepEqual(host.calls.filter((c) => c[0] === "begin" || c[0] === "reset"), []);
+  host.state.busy = false;
+  host.state.background = { adjustments: applied.adjustments, blob: new Blob(["mine"]) };
+  assert.equal(await snapshot.undoBackground(prev, applied), true);
+  assert.deepEqual(host.calls.filter((c) => c[0] === "begin" || c[0] === "reset"), []);
+  host.state.background = { ...applied };
+  assert.equal(await snapshot.undoBackground(prev, applied), true);
+  assert.equal(host.calls.filter((c) => c[0] === "begin").length, 1);
 });
