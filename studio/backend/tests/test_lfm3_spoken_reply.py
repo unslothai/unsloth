@@ -555,3 +555,50 @@ def test_a_character_split_over_tokens_streams_whole_and_keeps_the_rest_of_the_r
     text = [x for x in _spoken_iter(b) if isinstance(x, str)]
     assert "".join(text) == _ByteModel.reply.decode()
     assert not any("\ufffd" in t for t in text)
+
+
+class _Lora:
+    disabled = False
+
+    def disable_adapter_layers(self):
+        self.disabled = True
+
+    def enable_adapter_layers(self):
+        self.disabled = False
+
+
+class _LoraStreamingModel(_StreamingModel):
+    def __init__(self):
+        super().__init__(frames = 2)
+        self.base_model = _Lora()
+        self.release.set()
+        self.seen = []
+
+    def generate(self, **kwargs):
+        self.seen.append(self.base_model.disabled)
+        return super().generate(**kwargs)
+
+
+def test_a_base_model_spoken_reply_turns_the_lora_back_on(monkeypatch):
+    model = _LoraStreamingModel()
+    monkeypatch.setattr(inf, "PeftModel", _LoraStreamingModel)
+    monkeypatch.setattr(inf, "PeftModelForCausalLM", _LoraStreamingModel)
+    b = _streaming_backend(model)
+    del b._apply_adapter_state
+    list(
+        inf.InferenceBackend.generate_audio_input_response(
+            b,
+            messages = [{"role": "user", "content": "Answer this."}],
+            system_prompt = None,
+            audio_array = np.zeros(1600, dtype = np.float32),
+            temperature = 0.7,
+            top_p = 0.9,
+            top_k = 40,
+            min_p = 0.0,
+            max_new_tokens = 256,
+            repetition_penalty = 1.0,
+            use_adapter = False,
+            speak = True,
+        )
+    )
+    assert model.seen == [True] and model.base_model.disabled is False

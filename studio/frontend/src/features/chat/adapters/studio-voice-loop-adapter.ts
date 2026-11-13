@@ -745,7 +745,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         // Decided before keeping this speech, so an emptied draft's audio is dropped first.
         const editing = !heldEdit.autoSend();
         const rt = useChatRuntimeStore.getState();
-        if (transcript && voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)) {
+        // A clear during STT already emptied the buffer; this turn's speech must not refill it.
+        if (
+          transcript &&
+          epoch === heldEpoch &&
+          voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)
+        ) {
           turnAudio.add(merged, sampleRate);
         }
         if (transcript && heldTurn) {

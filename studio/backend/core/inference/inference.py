@@ -3042,10 +3042,9 @@ class InferenceBackend:
         def cancelled():
             return stopped.is_set() or (cancel_event is not None and cancel_event.is_set())
 
-        with self._generation_lock:
+        with self._generation_lock, self._adapter_scope(use_adapter):
             if cancel_event is not None and cancel_event.is_set():
                 return
-            self._apply_adapter_state(use_adapter)
             decoder = _SpeechChunker(codec, model)
             timer.start()
             worker = threading.Thread(target = run, name = "lfm3-spoken-reply", daemon = True)

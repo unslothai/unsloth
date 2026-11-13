@@ -86,10 +86,10 @@ test("speech comes back from the model only where it speaks and is the picked vo
 
 test("the loop keeps and sends the turn's speech through the hearing gate, not the speaking one", () => {
   const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
-  assert.match(loop, /if \(transcript && voiceHearsAudio\(rt, useVoiceSettingsStore\.getState\(\)\.micTarget\)\) \{\s*turnAudio\.add/);
+  assert.match(loop, /transcript &&\s*epoch === heldEpoch &&\s*voiceHearsAudio\(rt, useVoiceSettingsStore\.getState\(\)\.micTarget\)\s*\) \{\s*turnAudio\.add/);
   // An emptied edit drops its speech before this turn's is kept.
   assert.match(loop, /onCleared: \(\) => turnAudio\.clear\(\)/);
-  assert.match(loop, /const editing = !heldEdit\.autoSend\(\);[\s\S]{0,200}turnAudio\.add\(merged, sampleRate\)/);
+  assert.match(loop, /const editing = !heldEdit\.autoSend\(\);[\s\S]{0,400}turnAudio\.add\(merged, sampleRate\)/);
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(engine, /const turnAudio = voiceHearsAudio\(/);
   assert.doesNotMatch(engine, /const turnAudio = speaksWithChatModel\(\)/);
@@ -109,4 +109,11 @@ test("the gates name no model family", () => {
     const body = models.slice(models.indexOf(fn), models.indexOf("\n}\n", models.indexOf(fn)));
     assert.doesNotMatch(body, /lfm|gemma|qwen|omni|liquid/i, fn);
   }
+});
+
+test("speech of a turn cleared while STT ran never reaches the next turn", () => {
+  const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
+  const add = loop.indexOf("turnAudio.add(merged, sampleRate)");
+  const guard = loop.lastIndexOf("if (", add);
+  assert.match(loop.slice(guard, add), /epoch === heldEpoch/);
 });
