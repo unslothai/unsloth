@@ -26,6 +26,7 @@ import {
 import {
   isOpenWebUIRecord,
   openWebUIRecordToConversation,
+  reasoningText,
 } from "./openwebui-import";
 import {
   isOpenAIMessageRecord,
@@ -126,6 +127,9 @@ function oaiContentToParts(raw: unknown): unknown[] {
     }
     if (part.type === "refusal" && typeof part.refusal === "string") {
       return [{ type: "text", text: part.refusal }];
+    }
+    if (part.type === "reasoning" && typeof part.text === "string" && part.text.trim()) {
+      return [{ type: "reasoning", text: part.text }];
     }
     if (part.type === "image_url" || part.type === "input_image") {
       // Chat Completions nests {image_url:{url}}; Responses input_image is a string.
@@ -415,7 +419,10 @@ function markdownToRecords(
 }
 
 function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  const rows = parseCsv(csvText).slice(1);
+  const parsed = parseCsv(csvText);
+  const first = parsed[0]?.[0]?.trim().toLowerCase();
+  // Skip row 0 only when it is a header; a headerless file's first row is data.
+  const rows = first === "role" || first === "speaker" || first === "from" ? parsed.slice(1) : parsed;
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
   let idx = 0;
@@ -556,6 +563,9 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
       );
     } else if (typeof entry.role === "string") {
       push(entry);
+    } else if (type === "reasoning") {
+      const reasoning = reasoningText(entry.summary) || reasoningText(entry.content);
+      if (reasoning) addContent({ type: "reasoning", text: reasoning });
     } else if (type === "image_generation_call") {
       const encoded = text(entry.result) ?? text(entry.b64_json);
       if (encoded) {

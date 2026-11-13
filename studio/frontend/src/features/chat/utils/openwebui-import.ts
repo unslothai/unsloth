@@ -217,7 +217,7 @@ const PORTABLE_IMAGE = /^(?:https?:|data:)/i;
 
 const TEXT_PART_TYPES = new Set(["input_text", "output_text", "text"]);
 
-function reasoningText(source: unknown): string {
+export function reasoningText(source: unknown): string {
   if (!Array.isArray(source)) return "";
   return source
     .map((part) => (isDict(part) && typeof part.text === "string" ? part.text : ""))
