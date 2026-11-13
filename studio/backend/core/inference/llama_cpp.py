@@ -94,6 +94,7 @@ from core.inference.engram_tables import (
     engram_tables,
     find_engram_table,
 )
+from core.inference.model_ids import hf_cache_repo_id
 from core.inference.lookup_tables import (
     HOST_FORCED_TABLE_ARCHS as _HOST_FORCED_TABLE_ARCHS,
     HOST_FORCED_TABLE_MARKER as _HOST_FORCED_TABLE_MARKER,
@@ -3499,9 +3500,33 @@ def _cached_variant_resolution(repo_id: str, hf_variant: str) -> tuple[Optional[
     """Find a cached main GGUF and its shards for a variant."""
     candidate = next(_cached_variant_candidates(repo_id, hf_variant), None)
     if candidate is None:
-        return None, []
+        return _cached_engram_split_resolution(repo_id, hf_variant)
     _, main, shards, _ = candidate
     return main, shards
+
+
+def _cached_engram_split_resolution(
+    repo_id: str, hf_variant: str
+) -> tuple[Optional[str], list[str]]:
+    """A split set one non-first shard short beside a cached standalone Engram table: the quant's
+    own table shard, which a --ple download does not fetch. Every shard name, the absent one too."""
+    try:
+        for snap in _cached_gguf_snapshots(repo_id):
+            if not cached_engram_tables(snap):
+                continue
+            matches = _gguf_files_for_variant(_gguf_snapshot_files(snap), hf_variant)
+            split = _SHARD_FULL_RE.match(matches[0]) if matches else None
+            if split is None:
+                continue
+            names = [
+                f"{split.group(1)}-{index:05d}-of-{split.group(3)}.gguf"
+                for index in range(1, int(split.group(3)) + 1)
+            ]
+            if names[0] == matches[0] and len(set(names) - set(matches)) == 1:
+                return names[0], names[1:]
+    except Exception as e:
+        logger.debug("Engram split lookup failed for %s: %s", repo_id, e)
+    return None, []
 
 
 def _cached_variant_candidates(
@@ -23926,20 +23951,24 @@ class LlamaCppBackend:
         hf_token = intent.hf_token
         engram_precision = intent.engram_precision
         engram_swap: Optional[EngramSwap] = None
+        # A cached Hub quant loaded by its path (the /v1 auto-switch) keeps its repo's tables.
+        engram_repo = hf_repo or hf_cache_repo_id(intent.gguf_path)
         if engram_precision:
-            if not hf_repo:
+            if not engram_repo:
                 raise ValueError(
                     "An Engram table precision applies only to a GGUF quant loaded from "
                     "a Hugging Face repo."
                 )
             with _hf_offline_if_unreachable():
-                engram_swap = _resolve_engram_swap(hf_repo, hf_variant, hf_token, engram_precision)
+                engram_swap = _resolve_engram_swap(
+                    engram_repo, hf_variant, hf_token, engram_precision
+                )
             if engram_swap is None:
                 # The quant's own table: the same load as naming none, so it dedupes like one.
                 engram_precision = None
                 intent = replace(intent, engram_precision = None)
             else:
-                unfetchable = _engram_table_unfetchable_reason(hf_repo, engram_swap.table)
+                unfetchable = _engram_table_unfetchable_reason(engram_repo, engram_swap.table)
                 if unfetchable:
                     raise ValueError(unfetchable)
         model_identifier = intent.model_identifier
@@ -24448,6 +24477,16 @@ class LlamaCppBackend:
                     if not Path(gguf_path).is_file():
                         raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
                     model_path = gguf_path
+                    if engram_swap is not None:
+                        with _hf_offline_if_unreachable():
+                            engram_path = self._download_engram_table(
+                                hf_repo = engram_repo,
+                                table = engram_swap.table,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                                near_path = model_path,
+                            )
+                        self._launch_ple = (model_path, engram_path)
                 else:
                     raise ValueError("Either gguf_path or hf_repo must be provided")
             finally:

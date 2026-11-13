@@ -656,3 +656,57 @@ class TestManualQaFindings:
         assert (reason is not None) is refused
         if refused:
             assert "Xet is turned off" in reason and "54.4GB" in reason
+
+
+class TestCachedQuantLoads:
+    def test_offline_a_quant_missing_its_table_shard_resolves_to_its_split_names(
+        self, monkeypatch, tmp_path
+    ):
+        import huggingface_hub
+
+        snap = tmp_path / "snapshots" / "abc"
+        names = [n for n, _ in _qwen_listing() if n.startswith("UD-IQ1_S/")]
+        for name in (*names[:2], _table_name("Q5_1")):
+            _write(snap / name, b"x")
+        import utils.models.model_config as mc
+
+        monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo, *a, **k: [snap])
+        monkeypatch.setattr(lc, "_cached_gguf_snapshots", lambda repo: [snap])
+
+        def offline(*a, **k):
+            raise OSError("no route to host")
+
+        monkeypatch.setattr(huggingface_hub, "list_repo_files", offline)
+        monkeypatch.setattr(huggingface_hub.HfApi, "model_info", offline)
+        assert lc._resolve_variant_gguf_files(REPO, "UD-IQ1_S") == (names[0], names[1:])
+        swap = lc._resolve_engram_swap(REPO, "UD-IQ1_S", None, "Q5_1")
+        assert swap.bundled_shard == names[2]
+        # Without a cached standalone table, a missing shard is an incomplete download.
+        (snap / _table_name("Q5_1")).unlink()
+        assert lc._resolve_variant_gguf_files(REPO, "UD-IQ1_S")[1] == []
+
+    def test_a_hub_quant_loaded_by_its_cache_path_takes_the_saved_table(
+        self, monkeypatch, tmp_path
+    ):
+        from core.inference.engram_tables import EngramTable
+        from test_llama_cpp_placement import _backend, _launch
+
+        backend, _ = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+        snap = tmp_path / "models--unsloth--Qwen3.8-Flash-Next-GGUF" / "snapshots" / "abc"
+        gguf = _write(snap / "M-UD-IQ1_S.gguf", (tmp_path / "model.gguf").read_bytes())
+        table = _write(snap / _table_name("Q5_1"), b"x")
+        seen = {}
+
+        def resolve(repo, variant, token, precision):
+            seen["repo"] = repo
+            return lc.EngramSwap(EngramTable(precision, _table_name(precision), 1), None)
+
+        monkeypatch.setattr(lc, "_resolve_engram_swap", resolve)
+        monkeypatch.setattr(lc, "_engram_table_unfetchable_reason", lambda *a: None)
+        backend._download_engram_table = lambda **kw: table
+        probe = backend.probe_server_capabilities
+        backend.probe_server_capabilities = lambda b: {**probe(b), "supports_ple": True}
+        cmd = _launch(backend, gguf, hf_variant = "UD-IQ1_S", engram_precision = "Q5_1")["cmd"]
+        assert seen["repo"] == REPO
+        assert cmd[cmd.index("--ple") + 1] == table
+        assert backend._engram_precision == "Q5_1"
