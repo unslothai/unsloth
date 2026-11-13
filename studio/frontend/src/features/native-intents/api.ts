@@ -19,9 +19,10 @@ async function invokeNative<T>(
 }
 
 export interface NativeDocumentFolderSelection {
-  /** Opaque directory lease. This is deliberately not a filesystem path. */
+  /** Opaque directory lease, deliberately not a filesystem path. */
   token: string;
   displayName: string;
+  expiresAtMs?: number;
 }
 
 export async function pickNativeDocumentFolder(): Promise<NativeDocumentFolderSelection | null> {
@@ -43,6 +44,19 @@ export async function drainNativeIntents(): Promise<NativeIntent[]> {
 export async function pickHuggingFaceCacheDir(): Promise<string | null> {
   if (!isTauri) return null;
   return invokeNative<string | null>("pick_hugging_face_cache_dir");
+}
+
+/** Desktop owner's OS folder dialog. `undefined` = use the in-app browser (web app,
+ * managed account confined to its workspace, or the dialog failed to open). */
+export async function pickNativeModelFolder(
+  isOwner: boolean,
+): Promise<string | null | undefined> {
+  if (!isTauri || !isOwner) return undefined;
+  try {
+    return await invokeNative<string | null>("pick_native_model_folder");
+  } catch {
+    return undefined;
+  }
 }
 
 export async function registerNativeModelPath(
@@ -92,7 +106,7 @@ export async function openPathToken(token: string): Promise<void> {
   return invokeNative<void>("open_path_token", { token });
 }
 
-// Open a backend-resolved directory in the OS file manager; Tauri validates it is a real directory.
+// Tauri validates that the path is a real directory.
 export async function openModelsDir(path: string): Promise<void> {
   return invokeNative<void>("open_models_dir", { path });
 }

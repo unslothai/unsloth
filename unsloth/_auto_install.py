@@ -38,12 +38,18 @@ elif v  < V('2.11.1'): x = 'cu{}{}-torch2110'
 elif v  < V('2.12.0'): raise RuntimeError(f"Torch = {v} not supported!")
 elif v  < V('2.12.1'): x = 'cu{}{}-torch2120'
 elif v  < V('2.12.2'): x = 'cu{}{}-torch2121'
+elif v  < V('2.13.0'): raise RuntimeError(f"Torch = {v} not supported!")
+# torch2130 / torch2140 pin the stable release, so a pre-release, source or custom build would be replaced.
+elif re.fullmatch(r"[0-9\.]{3,}(?:\+cu[0-9]+)?", torch.__version__) is None: raise RuntimeError(f"Torch = {torch.__version__} is a pre-release or custom build; install a stable torch!")
+elif v  < V('2.13.1'): x = 'cu{}{}-torch2130'
+elif v  < V('2.14.0'): raise RuntimeError(f"Torch = {v} not supported!")
+elif v  < V('2.14.1'): x = 'cu{}{}-torch2140'
 else: raise RuntimeError(f"Torch = {v} too new!")
 if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
-# torch 2.12 ships on cu126/cu130 only, and cu126 builds stop at sm_90, so Blackwell needs CUDA 13.
+# torch 2.12+ ships on cu126/cu130 only, and cu126 builds stop at sm_90, so Blackwell needs CUDA 13.
 if v >= V('2.12.0') and cuda not in ("12.6", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6 or 13.0! Got CUDA = {cuda}")
 x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
 # torch2110+ extras pin +cuNNN builds, which resolve only from the matching index.
-extra_index = f' --extra-index-url https://download.pytorch.org/whl/cu{cuda.replace(".", "")}' if (x.endswith(('-torch2110', '-torch2120', '-torch2121')) and cuda in ("12.6", "12.8", "13.0")) else ''
+extra_index = f' --extra-index-url https://download.pytorch.org/whl/cu{cuda.replace(".", "")}' if (x.endswith(('-torch2110', '-torch2120', '-torch2121', '-torch2130', '-torch2140')) and cuda in ("12.6", "12.8", "13.0")) else ''
 print(f'pip install --upgrade pip setuptools wheel && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation{extra_index}')

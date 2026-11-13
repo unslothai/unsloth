@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { setLayoutScale } from "@/lib/layout-scale";
 import { create } from "zustand";
 import {
   type StateStorage,
@@ -10,16 +11,16 @@ import {
 } from "zustand/middleware";
 import {
   getAppliedInterfaceZoom,
+  holdSkippedContent,
+  releaseSkippedContent,
+  remeasureSkippedContent,
   setAppliedInterfaceZoom,
 } from "../lib/interface-scale-runtime.ts";
 
 export { getAppliedInterfaceZoom };
 
 export const INTERFACE_SCALE_STORAGE_KEY = "unsloth_interface_scale";
-// The floor is 50, not the 25 Chrome and VS Code allow, because both of those ship
-// Cmd/Ctrl+0 and this does not yet. At 25% the Settings row you would use to undo it
-// renders around 3.5px, and the value is device-local in localStorage, so recovery means
-// clearing app data. Drop it back to 25 once a reset accelerator exists.
+// Floor is 50: browser Cmd/Ctrl+0 resets the browser zoom, and at 25% the undo row is ~3.5px.
 export const INTERFACE_SCALE_RANGE = {
   min: 50,
   max: 200,
@@ -64,6 +65,16 @@ export function interfaceScaleToZoom(scale: number): number {
   return sanitizeInterfaceScale(scale) / 100;
 }
 
+export const INTERFACE_ZOOM_STEPS = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200] as const;
+
+export function stepInterfaceScale(scale: number, direction: 1 | -1): number {
+  const next =
+    direction > 0
+      ? INTERFACE_ZOOM_STEPS.find((step) => step > scale)
+      : [...INTERFACE_ZOOM_STEPS].reverse().find((step) => step < scale);
+  return next ?? scale;
+}
+
 interface InterfaceScaleState {
   scale: number;
   setScale: (scale: number) => void;
@@ -94,8 +105,47 @@ let appliedInterfaceScale: number | null = null;
 let requestedInterfaceScale: number = INTERFACE_SCALE_RANGE.default;
 let interfaceScaleApplicationQueue = Promise.resolve();
 
+export const INTERFACE_SCALE_VAR = "--ui-interface-scale";
+
+let appliedWebZoom: number | null = null;
+
+/**
+ * The browser scales through the UI tokens, not CSS `zoom`: root zoom inflates
+ * viewport units (a 100dvh shell overflows at 125%).
+ */
+function applyWebInterfaceScale(scale: number): void {
+  if (typeof document === "undefined") return;
+  const zoom = interfaceScaleToZoom(scale);
+  setLayoutScale(zoom);
+  if (appliedWebZoom !== null && appliedWebZoom !== zoom) {
+    remeasureSkippedContent();
+  }
+  appliedWebZoom = zoom;
+  const style = document.documentElement.style;
+  if (zoom === 1) style.removeProperty(INTERFACE_SCALE_VAR);
+  else style.setProperty(INTERFACE_SCALE_VAR, String(zoom));
+}
+
+/** 1 on desktop, which uses webview zoom. */
+export function webInterfaceScaleFactor(scale: number): number {
+  return isTauri ? 1 : interfaceScaleToZoom(scale);
+}
+
+const holdsContainmentAcrossZoom = !(
+  typeof navigator !== "undefined" && navigator.userAgent.includes("Windows")
+);
+
+function holdContainmentAcrossZoom(): void {
+  if (holdsContainmentAcrossZoom) holdSkippedContent();
+}
+
+function releaseContainmentAfterZoom(): void {
+  if (holdsContainmentAcrossZoom) releaseSkippedContent();
+}
+
 export function applyInterfaceScale(scale: number): Promise<void> {
   if (!isTauri) {
+    applyWebInterfaceScale(scale);
     return Promise.resolve();
   }
   requestedInterfaceScale = sanitizeInterfaceScale(scale);
@@ -106,7 +156,12 @@ export function applyInterfaceScale(scale: number): Promise<void> {
     }
     const { getCurrentWebview } = await import("@tauri-apps/api/webview");
     const zoom = interfaceScaleToZoom(nextScale);
-    await getCurrentWebview().setZoom(zoom);
+    holdContainmentAcrossZoom();
+    try {
+      await getCurrentWebview().setZoom(zoom);
+    } finally {
+      releaseContainmentAfterZoom();
+    }
     if (nextScale !== requestedInterfaceScale) {
       // a timed-out command can overwrite a newer native zoom when it finishes.
       appliedInterfaceScale = null;
@@ -120,15 +175,8 @@ export function applyInterfaceScale(scale: number): Promise<void> {
   return application;
 }
 
-/**
- * Applying the scale before the first render is what stops a 100% frame painting and
- * then relaying out. Worth waiting for, not worth waiting forever: this is the only
- * thing gating first paint on the Tauri IPC bridge, and a rejection is caught while a
- * hang is not, so without a deadline a wedged bridge is a permanently blank window.
- *
- * Past the deadline the app renders at 100% and the effect in `provider.tsx` applies the
- * real scale whenever the bridge does answer.
- */
+/** Applying before first render avoids a 100% frame, but a hung Tauri IPC would blank the window,
+ * so render at 100% past this deadline and let `provider.tsx` apply it later. */
 export const INTERFACE_SCALE_FIRST_PAINT_TIMEOUT_MS = 1000;
 
 export function applyInterfaceScaleBeforeFirstPaint(
@@ -138,10 +186,9 @@ export function applyInterfaceScaleBeforeFirstPaint(
   const applied = applyInterfaceScale(scale).catch(() => undefined);
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
-      // Rendering is unblocked, but the queue is still chained to a call that may never
-      // settle, and everything after it waits behind that. Cut it loose or the retry in
-      // `provider.tsx` and every later scale change are dead until restart.
+      // Cut the queue loose from the hung call, or every later scale change is dead until restart.
       interfaceScaleApplicationQueue = Promise.resolve();
+      releaseContainmentAfterZoom();
       resolve();
     }, timeoutMs);
     void applied.finally(() => {

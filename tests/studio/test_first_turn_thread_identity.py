@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A first turn must reach the model adapter with its real thread id.
-
-assistant-ui binds `unstable_threadId` before the thread is persisted, so a first
-turn used to file every run handle under the shared "__default" key. Two of them
-overlapping there is unresolvable after the fact: nothing links a run under that
-key to the id its thread later receives, so the sidebar showed no spinner and Stop
-could not reach either generation.
-
-The link exists earlier. `append()` tracks `threadListItem.initialize()` by the
-user message id, and `createPersistedRunAdapter` already awaits that promise before
-invoking the adapter, so the id is known by the time the run starts. These tests pin
-that the resolved id is carried through rather than discarded.
-"""
+"""First turn must carry its real thread id; otherwise runs file under the shared "__default" key."""
 
 from __future__ import annotations
 
@@ -28,7 +16,6 @@ PROVIDER = (WORKSPACE / "studio/frontend/src/features/chat/runtime-provider.tsx"
 
 
 def test_the_tracked_promise_carries_the_assigned_thread_id():
-    # Resolving to void threw the id away, which is what forced the "__default" detour.
     assert "Promise<string | undefined>\n>();" in PROVIDER
     assert re.search(
         r"trackRunStartReady\(\s*message\.id,\s*initializeThread\.then\(\(\{ remoteId \}\) => remoteId\),",
@@ -46,8 +33,6 @@ def test_wait_for_run_start_returns_the_id():
 
 
 def test_the_run_is_given_its_real_thread_id():
-    # The whole point: the adapter must not start under the unresolved key when the id is already known by the
-    # time the await above resolves.
     block = re.search(
         r"async \*run\(options\) \{.*?const result = adapter\.run\(.*?\);",
         PROVIDER,
@@ -67,8 +52,7 @@ def test_the_run_is_given_its_real_thread_id():
 
 
 def test_an_existing_thread_id_is_never_overwritten():
-    # A resolved thread already streams under its own id; replacing it would move a running chat's handles out from
-    # under the sidebar row watching them.
+    # Replacing a resolved id would move a running chat's handles out from under the sidebar.
     block = re.search(
         r"const result = adapter\.run\((.*?)\);",
         PROVIDER,

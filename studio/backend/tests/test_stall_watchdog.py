@@ -1,0 +1,348 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Stack dumps come from faulthandler's C thread, which fires even while a loop holds the GIL."""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from utils.stall_watchdog import (
+    StallWatchdog,
+    stand_down_for_the_warm,
+    start_stall_watchdog,
+    stop_stall_watchdog,
+)
+
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture()
+def loop_in_thread():
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target = loop.run_forever, daemon = True, name = "test-loop")
+    thread.start()
+    yield loop
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout = 5)
+    # Drain queued probes, else never-awaited coroutine warnings.
+    loop.run_until_complete(asyncio.sleep(0.1))
+    loop.close()
+
+
+def _wait_for(predicate, timeout_s: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_a_blocked_loop_dumps_after_consecutive_slow_probes(loop_in_thread, tmp_path):
+    """A GIL-free block still lets slow probes reach the threshold; the dump must name the blocking
+    frame."""
+    dump_path = tmp_path / "dump.txt"
+
+    def blocked_in_a_syscall():
+        time.sleep(1.2)
+
+    with dump_path.open("w") as dump_file:
+        watchdog = StallWatchdog(
+            loop_in_thread,
+            dump_file = dump_file,
+            beat_interval_s = 0.05,
+            probe_slow_s = 0.05,
+            slow_probes_before_dump = 3,
+            dead_man_timeout_s = 30.0,
+            dump_cooldown_s = 0.0,
+        )
+        watchdog.start()
+        try:
+            loop_in_thread.call_soon_threadsafe(blocked_in_a_syscall)
+            assert _wait_for(
+                lambda: "stall watchdog:" in dump_path.read_text(errors = "replace")
+            ), "no dump was written while the loop was blocked"
+        finally:
+            watchdog.stop()
+
+    text = dump_path.read_text(errors = "replace")
+    assert "consecutive slow probes" in text
+    assert (
+        "blocked_in_a_syscall" in text
+    ), "the dump does not show the frame the loop is stuck in; it cannot answer what #9712 asks"
+
+
+def test_a_gil_holding_stall_is_dumped_mid_stall(loop_in_thread, tmp_path):
+    """The #9712 shape holds the GIL, so the watchdog thread is frozen; only the dead man's switch
+    can fire from C."""
+    dump_path = tmp_path / "dump.txt"
+    released = threading.Event()
+
+    def holds_the_gil():
+        old = sys.getswitchinterval()
+        sys.setswitchinterval(10.0)
+        try:
+            deadline = time.monotonic() + 1.2
+            while time.monotonic() < deadline:
+                pass
+        finally:
+            sys.setswitchinterval(old)
+            released.set()
+
+    with dump_path.open("w") as dump_file:
+        watchdog = StallWatchdog(
+            loop_in_thread,
+            dump_file = dump_file,
+            beat_interval_s = 0.05,
+            probe_slow_s = 0.05,
+            slow_probes_before_dump = 1000,  # the Python path must not be the one firing
+            dead_man_timeout_s = 0.4,
+            dump_cooldown_s = 0.0,
+        )
+        watchdog.start()
+        try:
+            assert _wait_for(lambda: watchdog._dead_man_armed, timeout_s = 5.0)
+            loop_in_thread.call_soon_threadsafe(holds_the_gil)
+            assert released.wait(timeout = 30.0)
+            assert _wait_for(lambda: "Timeout" in dump_path.read_text(errors = "replace"))
+        finally:
+            watchdog.stop()
+
+    text = dump_path.read_text(errors = "replace")
+    assert "holds_the_gil" in text, (
+        "the mid-stall dump does not show the GIL holder's frame; identifying it is "
+        "the point of the dead man's switch"
+    )
+
+
+def test_repeated_gil_stalls_dump_once_per_cooldown(loop_in_thread, tmp_path):
+    """The switch fires on its own once armed, so the cooldown must gate arming: a chronically
+    stalling host gets one dump, then silence until the window passes."""
+    dump_path = tmp_path / "dump.txt"
+
+    def hold_gil_for(seconds: float):
+        released = threading.Event()
+
+        def holder():
+            old = sys.getswitchinterval()
+            sys.setswitchinterval(10.0)
+            try:
+                deadline = time.monotonic() + seconds
+                while time.monotonic() < deadline:
+                    pass
+            finally:
+                sys.setswitchinterval(old)
+                released.set()
+
+        loop_in_thread.call_soon_threadsafe(holder)
+        assert released.wait(timeout = 30.0)
+
+    with dump_path.open("w") as dump_file:
+        watchdog = StallWatchdog(
+            loop_in_thread,
+            dump_file = dump_file,
+            beat_interval_s = 0.05,
+            probe_slow_s = 0.05,
+            slow_probes_before_dump = 1000,
+            dead_man_timeout_s = 0.3,
+            dump_cooldown_s = 60.0,
+        )
+        watchdog.start()
+        try:
+            assert _wait_for(lambda: watchdog._dead_man_armed, timeout_s = 5.0)
+            hold_gil_for(0.8)
+            assert _wait_for(lambda: "Timeout" in dump_path.read_text(errors = "replace"))
+            assert _wait_for(lambda: watchdog._last_dump is not None, timeout_s = 5.0)
+            hold_gil_for(0.8)
+            time.sleep(0.3)
+        finally:
+            watchdog.stop()
+
+    text = dump_path.read_text(errors = "replace")
+    assert text.count("Timeout") == 1, (
+        "a second stall inside the cooldown window dumped again; a chronically "
+        "stalling host would fill its log with stacks"
+    )
+
+
+def test_a_python_dump_disarms_the_switch_for_the_cooldown(loop_in_thread, tmp_path):
+    """The two dump paths share one cooldown: a slow-probe dump must disarm the switch, or a GIL
+    freeze right after would dump again inside the window."""
+    dump_path = tmp_path / "dump.txt"
+
+    def blocks_the_loop():
+        time.sleep(0.5)
+
+    def holds_the_gil():
+        old = sys.getswitchinterval()
+        sys.setswitchinterval(10.0)
+        try:
+            deadline = time.monotonic() + 0.8
+            while time.monotonic() < deadline:
+                pass
+        finally:
+            sys.setswitchinterval(old)
+
+    with dump_path.open("w") as dump_file:
+        watchdog = StallWatchdog(
+            loop_in_thread,
+            dump_file = dump_file,
+            beat_interval_s = 0.05,
+            probe_slow_s = 0.05,
+            slow_probes_before_dump = 2,
+            dead_man_timeout_s = 0.3,
+            dump_cooldown_s = 60.0,
+        )
+        watchdog.start()
+        try:
+            loop_in_thread.call_soon_threadsafe(blocks_the_loop)
+            assert _wait_for(lambda: "stall watchdog:" in dump_path.read_text(errors = "replace"))
+            loop_in_thread.call_soon_threadsafe(holds_the_gil)
+            time.sleep(1.4)
+        finally:
+            watchdog.stop()
+
+    text = dump_path.read_text(errors = "replace")
+    assert "Timeout" not in text, (
+        "the dead man's switch fired inside the cooldown a slow-probe dump started; "
+        "one stall episode left two dumps"
+    )
+
+
+def test_stands_down_until_the_warm_is_over(monkeypatch):
+    """The watchdog gate must close before the warm starts: a GIL-holding warm cannot be disarmed."""
+    import utils.stall_watchdog as sw
+    import utils.torch_warmup as tw
+
+    def status(started: bool, finished: bool, alive: bool):
+        monkeypatch.setattr(
+            tw,
+            "warm_status",
+            lambda: {"started": started, "finished": finished, "alive": alive, "stages": {}},
+        )
+
+    monkeypatch.delenv(tw.DISABLE_ENV_VAR, raising = False)
+    status(started = False, finished = False, alive = False)
+    assert sw.stand_down_for_the_warm() is True, (
+        "not standing down before the warm starts is the arming race: the switch "
+        "armed in that window dumps over `import torch` on every cold start"
+    )
+    status(started = True, finished = False, alive = True)
+    assert sw.stand_down_for_the_warm() is True
+    status(started = True, finished = True, alive = False)
+    assert sw.stand_down_for_the_warm() is False
+    status(started = True, finished = False, alive = False)
+    assert sw.stand_down_for_the_warm() is False
+
+    monkeypatch.setenv(tw.DISABLE_ENV_VAR, "1")
+    status(started = False, finished = False, alive = False)
+    assert sw.stand_down_for_the_warm() is False, (
+        "with the warm switched off no warm is coming; standing down anyway keeps "
+        "the watchdog disarmed for the whole session"
+    )
+
+
+def test_no_dump_while_suppressed(loop_in_thread, tmp_path):
+    """While suppressed, the warm's import torch GIL hold must not trip either capture path."""
+    dump_path = tmp_path / "dump.txt"
+
+    with dump_path.open("w") as dump_file:
+        watchdog = StallWatchdog(
+            loop_in_thread,
+            suppress = lambda: True,
+            dump_file = dump_file,
+            beat_interval_s = 0.05,
+            probe_slow_s = 0.05,
+            slow_probes_before_dump = 1,
+            dead_man_timeout_s = 0.2,
+            dump_cooldown_s = 0.0,
+        )
+        watchdog.start()
+        try:
+            loop_in_thread.call_soon_threadsafe(time.sleep, 0.8)
+            time.sleep(1.2)
+        finally:
+            watchdog.stop()
+
+    assert dump_path.read_text(errors = "replace") == "", (
+        "the watchdog dumped during a suppressed window; every warm import would "
+        "land a spurious dump in the log"
+    )
+
+
+def test_off_unless_the_env_opts_in(loop_in_thread, monkeypatch):
+    """Watchdog and faulthandler timer stay off unless UNSLOTH_STUDIO_STALL_WATCHDOG opts in."""
+    monkeypatch.delenv("UNSLOTH_STUDIO_STALL_WATCHDOG", raising = False)
+    assert start_stall_watchdog(loop_in_thread) is None
+    assert not any(t.name == "stall-watchdog" for t in threading.enumerate())
+
+
+def test_start_and_stop_manage_one_process_wide_instance(loop_in_thread, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_STALL_WATCHDOG", "1")
+    first = start_stall_watchdog(loop_in_thread)
+    try:
+        assert first is not None
+        second = start_stall_watchdog(loop_in_thread)
+        assert second is not None
+        assert _wait_for(
+            lambda: not (first._thread and first._thread.is_alive()), timeout_s = 5.0
+        ), "starting a second watchdog left the first one's thread running"
+    finally:
+        stop_stall_watchdog()
+    assert _wait_for(
+        lambda: not any(t.name == "stall-watchdog" for t in threading.enumerate()),
+        timeout_s = 5.0,
+    )
+
+
+def test_the_lifespan_wires_it_in():
+    """Cross-file guard: the module only does anything because main.py starts it at
+    startup and retires it at shutdown entry, and either side can be edited alone."""
+    source = (_BACKEND_DIR / "main.py").read_text(encoding = "utf-8")
+    assert (
+        "start_stall_watchdog(" in source and "asyncio.get_running_loop()" in source
+    ), "main.py no longer starts the stall watchdog; the next #9712 stall leaves no dump behind"
+    assert "stand_down_for_the_warm(warm_expected = _startup_warm_expected)" in source, (
+        "the watchdog no longer stands down for the warm; every cold start would "
+        "dump over the torch import"
+    )
+    assert "stop_stall_watchdog()" in source, (
+        "main.py never retires the watchdog, so shutdown's deliberate blocking "
+        "reads as a stall and dumps into the exit log"
+    )
+
+    workflow = _BACKEND_DIR.parent.parent / ".github" / "workflows" / "studio-mac-ui-smoke.yml"
+    assert workflow.is_file(), f"{workflow} moved; update this guard"
+    assert "UNSLOTH_STUDIO_STALL_WATCHDOG" in workflow.read_text(encoding = "utf-8"), (
+        "the watchdog is opt-in and the mac smoke workflow no longer opts in; the "
+        "one place #9712 stalls have been seen runs without it"
+    )
+
+
+@pytest.mark.parametrize("warm_expected", [False, True])
+def test_watchdog_uses_lifespan_warm_expectation_before_a_worker_starts(monkeypatch, warm_expected):
+    import utils.stall_watchdog as sw
+    import utils.torch_warmup as tw
+
+    monkeypatch.delenv(tw.DISABLE_ENV_VAR, raising = False)
+    monkeypatch.setattr(
+        tw, "warm_status", lambda: {"started": False, "finished": False, "alive": False}
+    )
+    assert sw.stand_down_for_the_warm(warm_expected = warm_expected) is warm_expected
+
+
+def test_an_active_warm_still_suppresses_the_watchdog_without_a_planned_warm(monkeypatch):
+    import utils.stall_watchdog as sw
+    import utils.torch_warmup as tw
+
+    monkeypatch.setattr(
+        tw, "warm_status", lambda: {"started": True, "finished": False, "alive": True}
+    )
+    assert sw.stand_down_for_the_warm(warm_expected = False)

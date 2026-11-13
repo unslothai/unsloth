@@ -23,8 +23,7 @@ export function TransportConflictDialog({
 }: {
   conflict: TransportConflictInfo | null;
   onCancel: () => void;
-  // Continue on the partial download's existing transport (resumes if possible);
-  // distinct from switching transport, which always restarts from scratch.
+  // Keep the partial's transport (may resume); switching transport always restarts.
   onKeepTransport: () => void;
   onSwitchTransport: () => void;
 }) {
@@ -60,7 +59,7 @@ export function TransportConflictDialog({
         if (!o) onCancel();
       }}
     >
-      <AlertDialogContent className="sm:!max-w-[22rem]">
+      <AlertDialogContent className="sm:!max-w-[calc(22rem*var(--ui-space-scale,1))]">
         <AlertDialogHeader>
           <AlertDialogTitle>Different transport mode</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>

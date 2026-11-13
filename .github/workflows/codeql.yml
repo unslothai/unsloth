@@ -1,0 +1,97 @@
+# CodeQL advanced setup (replaces default setup) with the same four languages, query suite and
+# threat model; weekly and manual runs only, since each PR push queued twice and each main merge
+# cached a new overlay base.
+name: CodeQL
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+# One group per ref. A dispatch while the weekly run is going waits for it rather than
+# cancelling it: each analysis scans the whole tree, so the later run covers the same commits.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, python, rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  # Keeps one overlay-base database per language on main (per-push saves of about 1.3 GB pushed the
+  # repo to its 50 GiB ceiling); restores take the newest per prefix; the save lands inside analyze,
+  # so the entry exists before this job runs; a separate job keeps actions: write off the CodeQL
+  # action.
+  prune-overlay-bases:
+    name: Prune superseded CodeQL overlay bases
+    needs: analyze
+    # Only main saves overlay bases; a dispatch on another branch has nothing to prune.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.analyze.result != 'skipped' }}
+    # A rarely requested hosted label, so this API-only job starts in minutes while the
+    # ubuntu-latest queue is hours deep. It needs only gh and coreutils, both on the image.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Keep the newest overlay base per prefix
+        continue-on-error: true  # housekeeping must never fail the analysis
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          list="$RUNNER_TEMP/overlay.tsv"
+          if ! gh api --paginate -X GET "repos/$REPO/actions/caches" \
+                 -f per_page=100 -f ref=refs/heads/main -f key=codeql-overlay-base-database- \
+                 -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .version, .key] | @tsv' \
+                 > "$list"; then
+            echo "::warning::could not list overlay-base caches; nothing pruned"
+            exit 0
+          fi
+          # Same prefix rule as cache-janitor.yml: strip -<40-hex sha>-<run id>-<attempt>.
+          # Group per (version, prefix); newest first; delete everything after the first.
+          freed=0; deleted=0; prev=""
+          while IFS=$'\t' read -r group created id size; do
+            [ -z "${id:-}" ] && continue
+            if [ "$group" != "$prev" ]; then prev="$group"; continue; fi
+            # </dev/null or gh eats the loop's stdin and the loop stops after one.
+            if gh api -X DELETE "repos/$REPO/actions/caches/$id" --silent < /dev/null 2>/dev/null; then
+              freed=$(( freed + size )); deleted=$(( deleted + 1 ))
+            fi
+          done < <(
+            while IFS=$'\t' read -r id created size ver key; do
+              [ -z "${id:-}" ] && continue
+              pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}-[0-9]+-[0-9]+$//')
+              # An unshortened key means the suffix did not match; skip rather than guess.
+              [ "$pre" = "$key" ] && continue
+              printf '%s\t%s\t%s\t%s\n' "$ver|$pre" "$created" "$id" "$size"
+            done < "$list" | sort -t"$(printf '\t')" -k1,1 -k2,2r
+          )
+          echo "deleted $deleted superseded overlay bases, $(awk -v b="$freed" 'BEGIN { printf "%.2f", b / 1073741824 }') GiB"
+          echo "Pruned $deleted superseded CodeQL overlay bases ($(awk -v b="$freed" 'BEGIN { printf "%.2f", b / 1073741824 }') GiB)" >> "$GITHUB_STEP_SUMMARY"

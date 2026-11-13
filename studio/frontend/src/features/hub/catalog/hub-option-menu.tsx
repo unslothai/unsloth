@@ -39,6 +39,7 @@ export function HubOptionMenu<T extends string>({
   title,
   triggerContent,
   footer,
+  composer = true,
 }: {
   value: T;
   options: readonly HubOption<T>[];
@@ -50,11 +51,11 @@ export function HubOptionMenu<T extends string>({
   showChevron?: boolean;
   title?: string;
   triggerContent?: ReactNode;
-  /** Rendered under the options behind a separator; clicks keep the menu open. */
   footer?: ReactNode;
+  /** The chat composer menu's shape and dark surface (the Hub's menus); off keeps the plain one. */
+  composer?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  // -1 = nothing highlighted (no hover, no keyboard nav yet).
   const [activeIndex, setActiveIndex] = useState(-1);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const listboxRef = useRef<HTMLDivElement | null>(null);
@@ -98,8 +99,6 @@ export function HubOptionMenu<T extends string>({
     (nextOpen: boolean) => {
       setOpen(nextOpen);
       if (nextOpen) {
-        // Nothing highlighted until the user hovers or uses the keyboard;
-        // keyboard nav anchors on the selected option (handleContentKeyDown).
         activateIndex(-1);
         requestAnimationFrame(() => listboxRef.current?.focus());
       }
@@ -120,7 +119,6 @@ export function HubOptionMenu<T extends string>({
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        // First arrow press highlights the selected option, then steps.
         setActiveIndex(
           resolvedActiveIndex < 0
             ? selectedIndex
@@ -193,7 +191,7 @@ export function HubOptionMenu<T extends string>({
           {showChevron && (
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
-              className="size-3.5 shrink-0 text-muted-foreground"
+              className="size-3.5 shrink-0 text-foreground"
             />
           )}
         </button>
@@ -205,7 +203,8 @@ export function HubOptionMenu<T extends string>({
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
-          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[14px] p-1 ring-0",
+          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] ring-0",
+          composer ? "hub-composer-menu gap-0" : "rounded-lg p-1",
           contentClassName,
         )}
       >
@@ -235,16 +234,23 @@ export function HubOptionMenu<T extends string>({
                 }}
                 onPointerEnter={() => activateIndex(index)}
                 className={cn(
-                  // 14px menu radius minus the 4px padding, so the hover nests
-                  // cleanly into the dropdown's corners.
-                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-[10px] py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
+                  "relative flex w-full min-w-0 cursor-pointer select-none items-center py-2 pl-3 text-left text-sm outline-none transition-colors",
+                  composer
+                    ? "hub-menu-row pr-9"
+                    : // 12px rows in a 16px menu with a 4px gutter, so the hover nests in its corners.
+                      "rounded-md pr-8 leading-snug",
                 )}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">
                   {option.label}
                 </span>
                 {selectedOption && (
-                  <span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute flex size-4 items-center justify-center",
+                      composer ? "right-3" : "right-2",
+                    )}
+                  >
                     <HugeiconsIcon
                       icon={Tick02Icon}
                       strokeWidth={2}
@@ -256,12 +262,16 @@ export function HubOptionMenu<T extends string>({
             );
           })}
         </div>
-        {footer && (
-          // -mt-3 cancels the surface's 16px flex gap down to 4px. No side
-          // padding: the footer label carries the same padding as the options
-          // so its checkbox lines up with the option text.
-          <div className="-mt-3 border-t border-border/60 pt-1">{footer}</div>
-        )}
+        {footer &&
+          (composer ? (
+            <div>
+              <div aria-hidden={true} className="mx-1 my-1 h-px bg-border/50" />
+              {footer}
+            </div>
+          ) : (
+            // -mt-3 trims the 16px flex gap to 4px; no side padding, so the checkbox lines up with the options.
+            <div className="-mt-3 border-t border-border/60 pt-1">{footer}</div>
+          ))}
       </PopoverContent>
     </Popover>
   );

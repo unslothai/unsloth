@@ -5,6 +5,7 @@ use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 static DESKTOP_AUTH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -18,6 +19,10 @@ pub enum DesktopAuthResponse {
     Tokens {
         access_token: String,
         refresh_token: String,
+    },
+    // Built here, never parsed from the backend.
+    SignedOut {
+        signed_out: LoginRequired,
     },
 }
 
@@ -85,8 +90,7 @@ impl AuthError {
 }
 
 fn auth_secret_path(home: &Path, filename: &str) -> PathBuf {
-    home.join(".unsloth")
-        .join("studio")
+    crate::studio_home::studio_root_for_home(home)
         .join("auth")
         .join(filename)
 }
@@ -101,6 +105,44 @@ fn home_dir() -> Result<PathBuf, String> {
 
 fn desktop_secret_path() -> Result<PathBuf, String> {
     Ok(auth_secret_path(&home_dir()?, ".desktop_secret"))
+}
+
+// A file, not webview storage: WebView2 commits localStorage lazily, so a quit soon after Log out lost it.
+fn signed_out_marker_path() -> Result<PathBuf, String> {
+    Ok(auth_secret_path(&home_dir()?, ".desktop_signed_out"))
+}
+
+fn set_signed_out(path: &Path, signed_out: bool) -> Result<(), String> {
+    let result = if signed_out {
+        path.parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(path, b"1"))
+    } else {
+        match std::fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    };
+    result.map_err(|e| format!("Could not record the desktop sign-out: {}", e))
+}
+
+fn signed_out_response(marker: &Path) -> Option<DesktopAuthResponse> {
+    marker.exists().then_some(DesktopAuthResponse::SignedOut {
+        signed_out: LoginRequired,
+    })
+}
+
+#[tauri::command]
+pub async fn desktop_mark_signed_out() -> Result<(), String> {
+    // Under the auth lock, so no exchange already past the marker check can land after this returns.
+    let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
+    set_signed_out(&signed_out_marker_path()?, true)
+}
+
+#[tauri::command]
+pub async fn desktop_clear_signed_out() -> Result<(), String> {
+    let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
+    set_signed_out(&signed_out_marker_path()?, false)
 }
 
 fn read_secret_if_exists(path: &Path) -> Result<Option<String>, String> {
@@ -195,6 +237,11 @@ fn classify_auth_send_error(error: reqwest::Error) -> AuthError {
     }
 }
 
+// Long enough for a backend still importing its ML stack at startup.
+fn desktop_auth_client() -> Result<Client, reqwest::Error> {
+    crate::loopback_http::client(Duration::from_secs(30))
+}
+
 fn should_retry_with_discovered_port(source: PortSource, error: &AuthError) -> bool {
     matches!(
         (source, error),
@@ -263,10 +310,13 @@ async fn provision_desktop_auth() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
-    // Scrub so provisioning writes match what the Rust auth code reads.
+    // Inherited roots are dropped and the desktop's own root passed, so provisioning writes
+    // match what the Rust auth code reads.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -327,10 +377,7 @@ async fn authenticate_with_stale_port_retry(
     match exchange_desktop_secret(client, backend.port, secret).await {
         Ok(Some(tokens)) => Ok((Some(tokens), backend)),
         Ok(None) => {
-            // 401 means the backend is reachable but the cached secret is stale.
-            // Keep using the same backend so the next desktop_auth_inner attempt
-            // provisions a new secret for the server we are retrying instead of
-            // switching to an unrelated discovered/attached backend.
+            // 401: the secret is stale. Keep this backend so the retry provisions a secret for it.
             Ok((None, backend))
         }
         Err(error) if should_retry_with_discovered_port(backend.source, &error) => {
@@ -361,12 +408,14 @@ async fn desktop_auth_inner(
     diagnostics: &DiagnosticsState,
 ) -> Result<DesktopAuthResponse, String> {
     let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
+    if let Some(signed_out) = signed_out_response(&signed_out_marker_path()?) {
+        return Ok(signed_out);
+    }
     let mut backend = current_backend_port(state).await?;
     if backend.source == PortSource::Discovered {
         diagnostics::record_attached_external_backend(diagnostics, backend.port);
     }
-    let client = crate::loopback_http::client(std::time::Duration::from_secs(5))
-        .map_err(|e| format!("Desktop auth failed: {}", e))?;
+    let client = desktop_auth_client().map_err(|e| format!("Desktop auth failed: {}", e))?;
 
     for attempt in 0..2 {
         if attempt == 1 {
@@ -408,6 +457,10 @@ mod tests {
     }
 
     async fn login_server_with_body(status: &str, body: &str) -> u16 {
+        delayed_login_server(status, body, Duration::ZERO).await
+    }
+
+    async fn delayed_login_server(status: &str, body: &str, delay: Duration) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let status = status.to_string();
@@ -417,6 +470,7 @@ mod tests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buffer = [0; 1024];
             let _ = stream.read(&mut buffer).await.unwrap();
+            tokio::time::sleep(delay).await;
             let response = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -425,6 +479,17 @@ mod tests {
         });
 
         port
+    }
+
+    #[tokio::test]
+    async fn desktop_login_waits_for_a_slow_response() {
+        let body = r#"{"access_token":"access","refresh_token":"refresh"}"#;
+        let port = delayed_login_server("200 OK", body, Duration::from_secs(6)).await;
+        let response =
+            exchange_desktop_secret(&desktop_auth_client().unwrap(), port, "desktop-secret")
+                .await
+                .unwrap();
+        assert!(matches!(response, Some(DesktopAuthResponse::Tokens { .. })));
     }
 
     #[tokio::test]
@@ -542,5 +607,21 @@ mod tests {
             error,
             "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
         );
+    }
+
+    #[test]
+    fn signed_out_marker_holds_desktop_auth_until_a_sign_in_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("auth").join(".desktop_signed_out");
+        assert!(signed_out_response(&marker).is_none());
+        set_signed_out(&marker, true).unwrap();
+        let response = signed_out_response(&marker).unwrap();
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"signed_out":true}"#
+        );
+        set_signed_out(&marker, false).unwrap();
+        set_signed_out(&marker, false).unwrap();
+        assert!(signed_out_response(&marker).is_none());
     }
 }

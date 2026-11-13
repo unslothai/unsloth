@@ -67,7 +67,12 @@ def test_start_gives_the_model_preflight_only_the_callers_token(
     backend = _Backend()
     probed = []
 
-    def _probe(model_name, hf_token):
+    def _probe(
+        model_name,
+        hf_token,
+        load_in_4bit = True,
+        is_embedding = False,
+    ):
         probed.append(hf_token)
         return None
 
@@ -166,7 +171,7 @@ def test_snapshot_cached_during_the_metadata_probe_is_authorized(
     monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
     monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
 
-    def denied(*args):
+    def denied(*args, **kwargs):
         raise tr._hf_preflight_error(422, "hf_model_access_denied", "Denied")
 
     monkeypatch.setattr(tr, "_remote_untrainable_model_format", denied)
@@ -416,8 +421,7 @@ def test_private_cached_model_requires_caller_authorization(
 
     (tmp_path / "config.json").write_text('{"model_type":"llama"}')
     (tmp_path / "model.safetensors").write_bytes(b"cached weights")
-    # Also as a real cache repo lays it out. has_cached_model asks for a snapshot the load could
-    # consume rather than for the repo directory alone, so a bare directory is not evidence.
+    # has_cached_model needs a consumable snapshot, not just the repo directory.
     _revision = tmp_path / "snapshots" / "abc"
     _revision.mkdir(parents = True, exist_ok = True)
     (_revision / "config.json").write_text('{"model_type":"llama"}')
@@ -433,7 +437,7 @@ def test_private_cached_model_requires_caller_authorization(
     monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
     monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
 
-    def denied(*args):
+    def denied(*args, **kwargs):
         raise tr._hf_preflight_error(422, "hf_model_access_denied", "Denied")
 
     monkeypatch.setattr(
@@ -461,8 +465,7 @@ def test_authorized_cached_models_remain_available(monkeypatch, tmp_path, token,
 
     (tmp_path / "config.json").write_text('{"model_type":"llama"}')
     (tmp_path / "model.safetensors").write_bytes(b"cached weights")
-    # Also as a real cache repo lays it out. has_cached_model asks for a snapshot the load could
-    # consume rather than for the repo directory alone, so a bare directory is not evidence.
+    # has_cached_model needs a consumable snapshot, not just the repo directory.
     _revision = tmp_path / "snapshots" / "abc"
     _revision.mkdir(parents = True, exist_ok = True)
     (_revision / "config.json").write_text('{"model_type":"llama"}')

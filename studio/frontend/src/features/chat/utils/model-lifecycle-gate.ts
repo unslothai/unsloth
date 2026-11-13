@@ -1,9 +1,7 @@
 export type ModelLifecycleLease = number;
 export type ModelLifecyclePhase = "preparing" | "loading" | "unloading";
 
-/** Exclusive ownership for the singleton local-model lifecycle. The store mirrors this gate into
- *  `modelLoading` for UI consumers, while the lease prevents one async caller from clearing
- *  another caller's loading state. */
+/** The lease stops one async caller clearing another's loading state. */
 export class ModelLifecycleGate {
   private activeLease: ModelLifecycleLease | null = null;
   private phase: ModelLifecyclePhase | null = null;
@@ -19,6 +17,10 @@ export class ModelLifecycleGate {
     this.activeLease = lease;
     this.phase = phase;
     return lease;
+  }
+
+  currentPhase(): ModelLifecyclePhase | null {
+    return this.phase;
   }
 
   canQueue(): boolean {

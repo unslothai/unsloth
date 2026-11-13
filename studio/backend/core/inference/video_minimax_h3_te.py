@@ -1,106 +1,65 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load MiniMax-H3's Qwen3-VL conditioner from a hosted QUANTIZED checkpoint.
-
-The H3 Diffusers path runs every component under ``ComponentsManager.enable_auto_cpu_offload``,
-so its VRAM floor is the LARGEST SINGLE RESIDENT COMPONENT, not their sum. The released bfloat16
-conditioner is 66.7 GB and the released denoiser is 66.3 GB, which is why seeding a 20 GB
-pre-quantized denoiser moved that floor by nothing at all: the encoder simply became the largest
-component instead. The encoder is the only remaining lever.
-
-``diffusion_te_prequant`` cannot serve this one. Its artifacts are layerwise-fp8 STORAGE casts of
-a dense encoder saved as ``torch.load``-able state dicts, which halve the bytes but keep every
-released tensor. The hosted H3 conditioner is a different artifact in two independent ways, and
-both savings stack:
-
-  1. It carries 50 of the released 64 decoder layers, and no ``lm_head`` and no final ``norm``
-     (47.97 GiB against 62.14 GiB for ``MiniMaxAI/MiniMax-H3`` ``text_encoder/``).
-  2. Those 50 layers' four attention and three MLP projections are ConvRot INT8
-     (25.28 GiB, i.e. 27.14 GB resident).
-
-Dropping the tail is LOSSLESS here, not an approximation. MiniMax-H3 conditions the transformer on
-``hidden_states[50]`` of the conditioner and never touches the language-model head -- see
-``diffusers/modular_pipelines/minimax_h3/modular_pipeline.py`` (``text_encoder_layer`` returns 50,
-"MiniMax-H3 reads `hidden_states[50]`, not the final one") and ``.../encoders.py``
-``get_qwen3vl_prompt_embeds``, which calls ``text_encoder.model(..., output_hidden_states=True)``
-and returns ``outputs.hidden_states[text_encoder_layer]``. Decoder layers 51-64 and ``lm_head``
-therefore cannot influence the conditioning by construction. Comparing the hosted file's tensor
-names against ``MiniMaxAI/MiniMax-H3``'s own shard index confirms the artifact drops EXACTLY that
-set and nothing else: 902 names that map 1:1 onto the released ones, the remainder being decoder
-layers 50-63 (0-based), ``model.language_model.norm.weight`` and ``lm_head.weight``.
-
-There is one mechanical catch, and it is the reason this module builds 51 layers rather than 50.
-``output_hidden_states`` yields ``[embeddings, layer_0_out, ..., layer_{N-1}_out]`` where the LAST
-entry is post-``norm``. A stack truncated to exactly 50 layers therefore returns a NORMALIZED
-``hidden_states[50]``, which is not the conditioning the released weights were trained against;
-diffusers refuses that case outright (``encoders.py``: "The last hidden state of a stack truncated
-to exactly 50 layers is post-norm"). Building a 51st slot that passes its input through unchanged
-puts ``hidden_states[50]`` back where it belongs -- the raw output after 50 real layers, bit-identical
-to what the full 64-layer conditioner produces there -- for no weights and no compute, and keeps
-``len(layers) == config.num_hidden_layers`` honest so the diffusers guard passes on a true statement.
-
-Best-effort throughout, exactly like ``diffusion_prequant``: any missing / unreadable / mismatched
-artifact returns None and the caller loads the released bfloat16 encoder instead. Inert with
-nothing configured.
-"""
+"""Qwen3-VL conditioner (50 of 64 layers, no lm_head/norm, ConvRot INT8); lossless as H3 reads
+hidden_states[50]; 51st pass-through slot avoids post-norm and keeps
+len(layers)==config.num_hidden_layers (diffusers guard); inert unless configured; bad artifacts
+fall back to released bf16 encoder."""
 
 from __future__ import annotations
 
+import functools
 from functools import lru_cache
 from typing import Any, Optional
 
-# The ConvRot primitives, shared with the denoiser's hosted INT8 checkpoint. Re-exported below under the names this
-# module has always used.
+# ConvRot primitives shared with the denoiser's hosted INT8 checkpoint; re-exported here.
 from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests name them here)
     build_convrot_hadamard,
     rotate_convrot_activation,
 )
 
-# The repo the prequantized denoisers already come from, so this adds no new dependency. It is no longer
-# H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror and the conditioner did not, so the two are now separate repos
-# and aliasing them would send this file to the wrong one.
+# Not H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror, the conditioner did not.
 H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
-# The community repack these quants were mirrored from, for an install whose cache predates the move. Same reasoning as
-# H3_LEGACY_COMPONENT_REPO, and the same owner: the pairing itself lives in diffusion_families' _SD_CPP_LEGACY_SOURCES
-# and is read through h3_te_quant_source below.
-H3_LEGACY_TE_QUANT_REPO = "Comfy-Org/MiniMax-H3"
-
-# Hosted quantized conditioners, by ``text_encoder_quant`` scheme. nvfp4
-# (``qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors``, 14.61 GiB) is deliberately absent: it is an AWQ NVFP4 layout with
-# two levels of scale and a per-tensor global scale, a different loader and a different kernel, and shipping it needs
-# its own numerical verification. The table is the one place to add it.
+H3_TE_INT8 = "int8"
+# Hosted Q4_K_M GGUF: 18.2 GB vs 27.2, but 5.8% hidden_states[50] error vs bf16 against int8's 1.6%.
+H3_TE_Q4_K_M = "q4_k_m"
 H3_TE_QUANT_FILES: dict[str, str] = {
-    "int8": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    # Built from MiniMaxAI text_encoder/ with quantize_convrot_int8_weight; reads the official path
+    # only.
+    H3_TE_INT8: "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    H3_TE_Q4_K_M: "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
 }
+H3_TE_QUANT_SOURCES: dict[str, str] = {
+    H3_TE_INT8: H3_TE_QUANT_REPO,
+    H3_TE_Q4_K_M: "unsloth/MiniMax-H3-GGUF",
+}
+# Never a request value: an explicit "nvfp4" keeps meaning the W4A4 runtime cast (refused for H3).
+H3_TE_AUTO_ONLY_SCHEMES = frozenset({H3_TE_Q4_K_M})
 
-# The scheme an UNSET ``text_encoder_quant`` resolves to on a device that supports it. The released conditioner is a
-# 66.7 GB dense bfloat16 Qwen3-VL of 64 decoder layers and H3 reads ``hidden_states[50]``; transformers has no early
-# exit, so the default runs all 64 layers and streams 66.7 GB across the CPU-offload boundary every generation. The
-# hosted artifact is 27.1 GB over 50 layers with the same read, which is why it is the default rather than an opt-in.
-# NOT an INT8 GEMM: the ConvRot forward dequantizes to the compute dtype and runs an ordinary ``F.linear``, so the win
-# is bytes moved and layers executed, not faster math.
-H3_TE_QUANT_DEFAULT = "int8"
+# Default int8: 27 GB over 50 layers vs 66.7 GB dense 64-layer; transformers has no early exit.
+# Not an INT8 GEMM: ConvRot dequantizes then F.linear; the win is bytes moved, not math.
+H3_TE_QUANT_DEFAULT = H3_TE_INT8
 
-# Resident bytes of each conditioner, decimal GB, measured from the safetensors headers on the Hub (2026-08-09) as the
-# end of the last tensor's data: bf16 51.51 GB, int8_convrot 27.14 GB. The quantized load is storage-faithful -- INT8
-# stays INT8, the per-output-channel scales stay float32, the vision tower and the embedding table stay bfloat16 -- so
-# the file size IS the resident size, unlike a cast-on-load path whose peak is the dense encoder. The bfloat16 number
-# here is the HOSTED 50-layer file; the budget default elsewhere is the RELEASED 64-layer encoder (66.7 GB).
 H3_TE_QUANT_RESIDENT_GB: dict[str, float] = {
-    "int8": 27.2,
+    H3_TE_INT8: 27.2,
+    H3_TE_Q4_K_M: 18.3,
 }
 
-# Which Qwen3-VL hidden state conditions the transformer. Must stay equal to
-# ``MiniMaxH3ModularPipeline.text_encoder_layer``; ``h3_te_layer_budget`` below is the only reader.
+H3_TE_QUANT_AUTO_ENV = "UNSLOTH_H3_TE_QUANT_AUTO"
+# Conditioner + denoiser + VAEs + headroom; below it int8 is re-read every prompt (L4: 47-53 s vs 19.7 s).
+H3_TE_INT8_HOST_SET_GB = 27.2 + 20.3 + 11.1 + 5.9
+H3_TE_LOW_RAM_SCHEME = H3_TE_Q4_K_M
+# Off until the q4_k_m accuracy trade (LPIPS 0.08-0.30 vs int8) is accepted.
+H3_TE_LOW_RAM_AUTO = False
+
+
+# Must equal MiniMaxH3ModularPipeline.text_encoder_layer.
 H3_TE_READ_LAYER = 50
 
-# ConvRot group size baked into the hosted checkpoint's per-tensor ``comfy_quant`` blob. Validated per tensor at load
-# rather than assumed, so a re-upload under a different group is refused instead of silently decoding to noise.
+# Validated per tensor at load so a re-upload with another group is refused, not decoded to noise.
 H3_TE_CONVROT_GROUP = 256
 
-# The quantization format the loader below implements. Any other value in a tensor's ``comfy_quant`` blob is a format
-# this code has not been verified against, and is refused.
+# Any other comfy_quant format is unverified and refused.
 _H3_TE_EXPECTED_QUANT = {"format": "int8_tensorwise", "convrot": True}
 
 # Tensor-name suffixes that make up one quantized linear in the hosted layout.
@@ -109,14 +68,45 @@ _QUANT_SUFFIX = ".comfy_quant"
 
 
 def h3_te_quant_scheme(mode: Optional[str]) -> Optional[str]:
-    """The hosted-conditioner scheme for a requested ``text_encoder_quant``, or None.
-
-    Pure and non-raising: the request has already been validated by ``normalize_te_quant`` at the
-    route, and a scheme with no hosted artifact simply keeps the released bfloat16 encoder."""
+    """Pure and non-raising; the request was validated at the route, unknown schemes give None."""
     if mode is None:
         return None
     normalized = str(mode).strip().lower().replace("-", "_")
     return normalized if normalized in H3_TE_QUANT_FILES else None
+
+
+def h3_te_auto_scheme(
+    *, host_capacity_gb: Optional[float] = None, denoiser_gb: Optional[float] = None
+) -> str:
+    """Scheme for an unset request. Uses total (cgroup-capped) RAM, not free RAM, so plan, staging and assembly agree."""
+    import os
+
+    forced = h3_te_quant_scheme(os.environ.get(H3_TE_QUANT_AUTO_ENV))
+    if forced is not None:
+        return forced
+    if not H3_TE_LOW_RAM_AUTO:
+        return H3_TE_INT8
+    try:
+        if host_capacity_gb is None:
+            from utils.host_memory import host_ram_capacity_mib
+
+            mib = host_ram_capacity_mib()
+            if mib is None:
+                return H3_TE_INT8
+            host_capacity_gb = mib * (1 << 20) / 1e9
+        need = H3_TE_INT8_HOST_SET_GB
+        if denoiser_gb is not None:
+            need = need - 20.3 + float(denoiser_gb)
+        if float(host_capacity_gb) >= need:
+            return H3_TE_INT8
+        # Without gguf the 4-bit load falls back to the 66.7 GB dense encoder.
+        import importlib.util
+
+        if H3_TE_LOW_RAM_SCHEME == H3_TE_Q4_K_M and importlib.util.find_spec("gguf") is None:
+            return H3_TE_INT8
+        return H3_TE_LOW_RAM_SCHEME
+    except Exception:  # noqa: BLE001 -- no reading, no change
+        return H3_TE_INT8
 
 
 def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:
@@ -125,27 +115,8 @@ def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:
 
 
 def h3_te_quant_source(scheme: Optional[str]) -> str:
-    """The repo to fetch the hosted quantized conditioner for ``scheme`` from: our mirror, or the
-    repack it was mirrored from when this install already holds that exact artifact under the old
-    id.
-
-    The conditioner's half of ``h3_component_source``, and it matters more than the VAEs do: the
-    artifact is ~27 GB, and the load that wants it has already dropped the dense encoder shards
-    from its pull. So on an upgraded install a live re-download is not merely slow -- offline it
-    leaves the pipeline with no encoder at all, because the base snapshot it would fall back to
-    was never staged either.
-
-    PURE, and the same shared owner (``prefer_cached_legacy_source``, both cache roots) the VAEs
-    use, so planning, prefetching and loading cannot name different repos.
-    """
-    filename = h3_te_quant_filename(scheme)
-    if filename is None:
-        return H3_TE_QUANT_REPO
-    try:
-        from .diffusion_families import prefer_cached_legacy_source
-        return prefer_cached_legacy_source(H3_TE_QUANT_REPO, (filename,))
-    except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
-        return H3_TE_QUANT_REPO
+    """Unsloth repo for ``scheme``; never a third-party repack, even one an older install cached."""
+    return H3_TE_QUANT_SOURCES.get(h3_te_quant_scheme(scheme) or "", H3_TE_QUANT_REPO)
 
 
 def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
@@ -155,28 +126,10 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
     return H3_TE_QUANT_RESIDENT_GB[resolved] if resolved else bf16_gb
 
 
-# W_rot = W @ H_block^T offline, x_rot = x @ H_block online, with H a NORMALIZED REGULAR Hadamard (symmetric and
-# orthogonal, so H @ H == I exactly).
-
-
-# ConvRot INT8. W_rot = W @ H_block^T offline, x_rot = x @ H_block online, and H is a NORMALIZED REGULAR Hadamard,
-# which is symmetric and orthogonal, so H @ H == I exactly and x_rot @ W_rot^T == x @ W^T. The rotation is what lets
-# INT8 survive Qwen3-VL's per-channel activation outliers; dequantizing WITHOUT it is not an approximation, it is
-# noise (measured against the hosted bfloat16 file for one projection: 0.9% relative error with the rotation, 137%
-# without). This mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight`` exactly
-# rather than taking a dependency on a wheel Unsloth does not ship. ``build_convrot_hadamard`` and
-# ``rotate_convrot_activation`` live in ``diffusion_convrot`` and are imported at the top of this module: the DENOISER
-# runs the same ConvRot on its own hosted INT8 checkpoint, and two copies of a matrix nobody re-derives at review time
-# is exactly how they would stop agreeing. Both stay importable from here.
+# H is a normalized regular Hadamard (H @ H == I); dequantizing without the rotation gives noise.
 @lru_cache(maxsize = None)
 def _int8_convrot_linear_class() -> Any:
-    """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports
-    torch, and built exactly ONCE.
-
-    One load already shares a single class across every projection, so the cache is about the
-    SECOND load in a process: a fresh class there is a fresh ``___check_type_id`` guard, which
-    retraces every compiled block that survived the first one. Same reason the denoiser's
-    ``convrot_linear_class`` is cached."""
+    """Built lazily so importing the module never imports torch, and once: a fresh class on a second load would retrace every compiled block."""
     import torch
     from torch import nn
 
@@ -195,9 +148,7 @@ def _int8_convrot_linear_class() -> Any:
         tiny tensor instead of approximate in bfloat16 over a huge one. INT8 values are integers
         below 256, so the ``.to(compute dtype)`` is exact in bfloat16.
 
-        Weight-only, unlike comfy-kitchen's W8A8 kernel, which also quantizes the activation
-        per row. Same weights and the same rotation, strictly less error, and the conditioner runs
-        once per generation so the dequantize is not on any hot path.
+        Weight-only (not W8A8): less error, and the conditioner runs once per generation.
         """
 
         def __init__(
@@ -225,10 +176,18 @@ def _int8_convrot_linear_class() -> Any:
                 )
             else:
                 self.bias = None
+            # float16: scale the weight before the matmul; the unscaled int8 sum overflows 65504.
+            self.scale_weight_first = False
 
         def forward(self, x: Any) -> Any:  # noqa: D102
             h = build_convrot_hadamard(self.group_size, device = x.device, dtype = x.dtype)
             rotated = rotate_convrot_activation(x, h, self.group_size)
+            if getattr(self, "scale_weight_first", False):
+                weight = (self.weight.to(torch.float32) * self.weight_scale).to(x.dtype)
+                out = torch.nn.functional.linear(rotated, weight)
+                if self.bias is not None:
+                    out = out + self.bias.to(out.dtype)
+                return out
             out = torch.nn.functional.linear(rotated, self.weight.to(x.dtype))
             out = out * self.weight_scale.reshape(1, -1).to(dtype = out.dtype, device = out.device)
             if self.bias is not None:
@@ -262,9 +221,7 @@ def _terminator_layer_class() -> Any:
     return H3TextEncoderTerminatorLayer
 
 
-# Name mapping. The hosted checkpoint uses the ComfyUI flattening of the Qwen3-VL tree; transformers nests the
-# language model and the vision tower under ``model.``. Verified exhaustive on 2026-08-09: all 902 hosted names map
-# into ``MiniMaxAI/MiniMax-H3`` ``text_encoder/model.safetensors.index.json``, with nothing left over on this side.
+# Hosted keys use ComfyUI's flattened Qwen3-VL names; transformers nests them under ``model.``.
 def h3_te_remap_key(key: str) -> str:
     """A hosted checkpoint tensor name in transformers' ``Qwen3VLForConditionalGeneration`` naming."""
     if key.startswith("visual."):
@@ -303,29 +260,7 @@ def load_h3_quantized_text_encoder(
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[Any]:
-    """The hosted quantized Qwen3-VL conditioner for ``scheme``, on CPU, ready to seed into the
-    modular pipeline; None on any problem so the caller loads the released bfloat16 encoder.
-
-    ``base`` supplies the component CONFIG only (``<base>/text_encoder/config.json``); every weight
-    comes from the hosted artifact, so the 62 GB dense encoder is never fetched. ``local_base`` is
-    the already-staged snapshot of ``base`` when there is one, and it is preferred: the scoped
-    pre-download keeps every component config precisely so the meta-init loaders can read them
-    locally, and reading the config back out of the snapshot cannot go to the network at all.
-    ``cache_dir`` pins the config resolution to the live cache root for the hub-id case, exactly as
-    the artifact download above and every other loader call in this backend do -- unset, it
-    resolves through huggingface_hub's import-time constant instead and can re-download into a root
-    Unsloth no longer reads (or fail outright on an offline host that has already staged it).
-
-    ``local_files_only`` is a load nobody asked for, which may not fetch anything. The artifact is
-    ~27 GB, and the caller's staging phase (``_fetch_h3_te_quant``) has already accepted it -- so
-    without the flag this is where that promise is broken, after the resident pipeline was evicted.
-    It rides with the same other-root reuse the stager uses: the stager accepts a copy living only
-    under huggingface_hub's import-time root, so a lookup pinned to ``cache_dir`` alone would refuse
-    an artifact the load was cleared on and drop to the dense encoder the base pull already left
-    behind. A genuine miss still returns None through the handler below.
-
-    CPU on purpose: ``enable_auto_cpu_offload`` owns placement for every component, and a
-    pre-placed encoder would only be moved again."""
+    """Loads with local_files_only so a reload after eviction never re-downloads; stays on CPU since enable_auto_cpu_offload owns placement; None on any problem."""
     try:
         filename = h3_te_quant_filename(scheme)
         if filename is None:
@@ -338,125 +273,114 @@ def load_h3_quantized_text_encoder(
 
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-        # The repack when this install pulled the artifact before the move, else the mirror. The stager resolved the
-        # same way, so a load that was cleared on a cached copy reads it from the id it is actually cached under rather
-        # than 401ing or re-pulling 27 GB.
+        # Resolve as the stager did, so a cached legacy copy is read, not 401ed or re-pulled (27 GB).
         source_repo = h3_te_quant_source(scheme)
         path = hf_hub_download_with_xet_fallback(
             source_repo,
             filename,
             hf_token,
             cache_dir = cache_dir,
-            # Resolve the artifact through whichever root holds it, exactly as the stager that cleared this load did;
-            # pinned to cache_dir alone a moved cache folder re-pulls 27 GB.
+            # Pinned to cache_dir alone, a moved cache folder would re-pull 27 GB.
             reuse_other_cache_root = True,
             local_files_only = local_files_only,
+            gguf_header_delta = True,
         )
+
+        from .diffusion_families import pinned_revision_kwargs
 
         config = transformers.AutoConfig.from_pretrained(
             local_base or base,
+            **pinned_revision_kwargs(local_base or base),
             subfolder = "text_encoder",
             token = hf_token,
             cache_dir = cache_dir,
-            # `local_base` is None on an offline load, so this reads the hub id and would go out for the config without
-            # the flag
+            # local_base is None offline, so the hub id is read: the flag must be forwarded.
             local_files_only = local_files_only,
         )
         text_config = getattr(config, "text_config", config)
         released_layers = int(getattr(text_config, "num_hidden_layers", 0))
         if released_layers <= H3_TE_READ_LAYER:
-            # A base repo whose conditioner is already at or below the read layer is not the model this artifact was cut
-            # from; refuse rather than build something that reads a post-norm state. Cannot happen for
-            # MiniMaxAI/MiniMax-H3 (64), but the pairing is not enforced anywhere else.
+            # Refuse a conditioner not deeper than the read layer; nothing else enforces the pairing.
             raise ValueError(
                 f"{base} text_encoder has {released_layers} layers; MiniMax-H3 reads "
                 f"hidden_states[{H3_TE_READ_LAYER}] and needs more than that"
             )
-        # See the module docstring: one slot past the read layer, so the read lands on the raw state rather than the
-        # post-norm one.
+        # One slot past the read layer, so the read lands on the raw state, not the post-norm one.
         text_config.num_hidden_layers = H3_TE_READ_LAYER + 1
 
-        # include_buffers=False (it is also accelerate's default, but the whole load turns on it): PARAMETERS go to
-        # meta and are replaced wholesale by ``assign=True`` below, while BUFFERS -- the rotary inverse frequencies,
-        # which no state dict carries because they are non-persistent -- are built for real on CPU. They are a few KB.
-        # Putting them on meta instead would leave the encoder with meta tensors after the load and force a dense CPU
-        # rebuild, i.e. the 51 GB allocation this path exists to avoid.
+        # Params to meta (replaced by assign=True); non-persistent rotary buffers must be real on CPU,
+        # else a dense 51 GB CPU rebuild.
         with init_empty_weights(include_buffers = False):
             encoder = transformers.Qwen3VLForConditionalGeneration(config)
 
         language_model = encoder.model.language_model
         language_model.layers[H3_TE_READ_LAYER] = _terminator_layer_class()()
-        # Neither is in the artifact and neither can reach the conditioning: ``norm`` is only ever applied to the
-        # terminator's output, and the head is never called (the pipeline invokes ``text_encoder.model``, not
-        # ``text_encoder``). Dropping the head alone saves 1.56 GB.
+        # norm only follows the read layer and the head is never called; dropping it saves 1.56 GB.
         language_model.norm = torch.nn.Identity()
         encoder.lm_head = torch.nn.Identity()
 
-        int8_linear_cls = _int8_convrot_linear_class()
-        with safe_open(path, framework = "pt", device = "cpu") as handle:
-            names = set(handle.keys())
-            quantized = {
-                name[: -len(_SCALE_SUFFIX)] for name in names if name.endswith(_SCALE_SUFFIX)
-            }
-            # Swap every quantized projection for the INT8 module BEFORE loading, so the state dict lands on buffers of
-            # the right dtype instead of being cast into bfloat16 Linears.
-            for prefix in sorted(quantized):
-                quant_key = prefix + _QUANT_SUFFIX
-                if quant_key not in names:
-                    raise ValueError(f"{prefix}: quantized weight with no {_QUANT_SUFFIX} metadata")
-                _validate_comfy_quant(handle.get_tensor(quant_key), prefix)
-                target = h3_te_remap_key(prefix)
-                parent_path, _, leaf = target.rpartition(".")
-                parent = encoder.get_submodule(parent_path)
-                existing = getattr(parent, leaf)
-                slice_ = handle.get_slice(prefix + ".weight")
-                out_features, in_features = slice_.get_shape()
-                if (existing.out_features, existing.in_features) != (out_features, in_features):
-                    raise ValueError(
-                        f"{target}: checkpoint shape {(out_features, in_features)} != model "
-                        f"{(existing.out_features, existing.in_features)}"
+        gguf_weights: set = set()
+        if filename.endswith(".gguf"):
+            state_dict, quantized, gguf_weights = _h3_gguf_state(encoder, path, dtype)
+        else:
+            int8_linear_cls = _int8_convrot_linear_class()
+            with safe_open(path, framework = "pt", device = "cpu") as handle:
+                names = set(handle.keys())
+                quantized = {
+                    name[: -len(_SCALE_SUFFIX)] for name in names if name.endswith(_SCALE_SUFFIX)
+                }
+                # Swap before loading so the state dict lands on int8 buffers, not bf16 Linears.
+                for prefix in sorted(quantized):
+                    quant_key = prefix + _QUANT_SUFFIX
+                    if quant_key not in names:
+                        raise ValueError(
+                            f"{prefix}: quantized weight with no {_QUANT_SUFFIX} metadata"
+                        )
+                    _validate_comfy_quant(handle.get_tensor(quant_key), prefix)
+                    target = h3_te_remap_key(prefix)
+                    parent_path, _, leaf = target.rpartition(".")
+                    parent = encoder.get_submodule(parent_path)
+                    existing = getattr(parent, leaf)
+                    slice_ = handle.get_slice(prefix + ".weight")
+                    out_features, in_features = slice_.get_shape()
+                    if (existing.out_features, existing.in_features) != (out_features, in_features):
+                        raise ValueError(
+                            f"{target}: checkpoint shape {(out_features, in_features)} != model "
+                            f"{(existing.out_features, existing.in_features)}"
+                        )
+                    setattr(
+                        parent,
+                        leaf,
+                        int8_linear_cls(
+                            in_features,
+                            out_features,
+                            bias = (prefix + ".bias") in names,
+                            group_size = H3_TE_CONVROT_GROUP,
+                        ),
                     )
-                setattr(
-                    parent,
-                    leaf,
-                    int8_linear_cls(
-                        in_features,
-                        out_features,
-                        bias = (prefix + ".bias") in names,
-                        group_size = H3_TE_CONVROT_GROUP,
-                    ),
-                )
 
-            # The INT8 payload and its float32 scales are STORAGE and keep their dtypes; everything still dense (the
-            # vision tower, the embedding table, the norms) follows the pipeline's compute dtype, exactly as
-            # ``load_components(dtype=...)`` would have set it had this component been loaded the ordinary way. A no-op
-            # for the bfloat16 H3 runs.
-            state_dict = {}
-            for name in names:
-                if name.endswith(_QUANT_SUFFIX):
-                    continue
-                tensor = handle.get_tensor(name)
-                if (
-                    not name.endswith(_SCALE_SUFFIX)
-                    and tensor.is_floating_point()
-                    and dtype is not None
-                ):
-                    tensor = tensor.to(dtype)
-                state_dict[h3_te_remap_key(name)] = tensor
+                # INT8 payload and fp32 scales keep their dtypes; dense parts follow the compute dtype.
+                state_dict = {}
+                for name in names:
+                    if name.endswith(_QUANT_SUFFIX):
+                        continue
+                    tensor = handle.get_tensor(name)
+                    if (
+                        not name.endswith(_SCALE_SUFFIX)
+                        and tensor.is_floating_point()
+                        and dtype is not None
+                    ):
+                        tensor = tensor.to(dtype)
+                    state_dict[h3_te_remap_key(name)] = tensor
 
-        # Strict=True proves the artifact and the meta-initialised skeleton describe the same 902 tensors, so a
-        # re-upload that renames, adds or drops one fails the load instead of silently conditioning on partly random
-        # weights. It does NOT prove they are quantized: a projection re-uploaded as a plain dense ``weight`` with its
-        # scale and metadata removed drops out of the set above, leaves the original bfloat16 Linear in place, and loads
-        # cleanly under strict. The load would then be recorded as engaged int8 while the resident encoder crept back
-        # toward the dense 51 GB, and the VRAM preflight -- which sizes the floor from the ENGAGED scheme -- would clear
-        # a generation that cannot fit. Checked structurally rather than against a count, so it stays true if the layer
-        # or projection set ever changes: no ordinary Linear may survive inside the decoder stack. The vision tower
-        # keeps its own dense Linears and is not in scope.
+        # strict=True does not prove quantization: a dense re-upload loads as bf16 Linear and breaks
+        # the VRAM preflight, so no plain Linear may survive in the decoder stack.
+        from .diffusion_weight_only_quant import is_dense_linear
+
         dense = [
             name
             for name, module in language_model.layers.named_modules()
-            if isinstance(module, torch.nn.Linear)
+            if is_dense_linear(module)
         ]
         if dense:
             raise ValueError(
@@ -464,10 +388,14 @@ def load_h3_quantized_text_encoder(
                 f"e.g. {', '.join(sorted(dense)[:3])}; it is not the {scheme} checkpoint this "
                 f"path budgets for"
             )
-        encoder.load_state_dict(state_dict, strict = True, assign = True)
-        # Nothing may be left on meta. A dense CPU rebuild is NOT an acceptable repair here (it is the 51 GB
-        # allocation this path exists to avoid), so a leftover is a refusal and the caller falls back to the released
-        # encoder, which at least loads correctly.
+        # GGUF projections were swapped in whole, so only their weights may be missing.
+        missing, unexpected = encoder.load_state_dict(state_dict, strict = False, assign = True)
+        if unexpected or set(missing) - gguf_weights:
+            raise ValueError(
+                f"the {scheme} checkpoint does not match the conditioner: missing "
+                f"{sorted(set(missing) - gguf_weights)[:3]}, unexpected {sorted(unexpected)[:3]}"
+            )
+        # A dense CPU rebuild is the 51 GB allocation this path avoids, so leftover meta is a refusal.
         stranded = _meta_tensor_names(encoder)
         if stranded:
             raise ValueError(
@@ -478,7 +406,7 @@ def load_h3_quantized_text_encoder(
         if logger is not None:
             logger.info(
                 "video.h3_te_quant: loaded the hosted %s conditioner (%s, %s), "
-                "%d ConvRot INT8 projections over %d decoder layers",
+                "%d quantized layers over %d decoder layers",
                 scheme,
                 source_repo,
                 filename,
@@ -497,6 +425,69 @@ def load_h3_quantized_text_encoder(
         return None
 
 
+def _model_shape(module: Any, name: str) -> Optional[tuple]:
+    owner_path, _, leaf = name.rpartition(".")
+    try:
+        owner = module.get_submodule(owner_path) if owner_path else module
+    except AttributeError:
+        return None
+    tensor = owner._parameters.get(leaf)
+    if tensor is None:
+        tensor = owner._buffers.get(leaf)
+    return None if tensor is None else tuple(tensor.shape)
+
+
+def _h3_gguf_state(encoder: Any, path: str, dtype: Any) -> tuple[dict, set, set]:
+    """``(dense state dict, quantized layer names, swapped weight keys)``; quantized projections become ``GGUFLinear``."""
+    import math
+
+    import gguf
+    import torch
+
+    from .diffusion_weight_only_quant import gguf_tensor, gguf_weight_only_linear
+
+    reader = gguf.GGUFReader(path)
+    state: dict = {}
+    quantized: set = set()
+    swapped: set = set()
+    for t in reader.tensors:
+        target = h3_te_remap_key(t.name)
+        tensor, qtype = gguf_tensor(t)
+        if qtype is None:
+            if tensor.is_floating_point() and dtype is not None:
+                tensor = tensor.to(dtype)
+            # GGUF caps tensors at 4-D: the 5-D patch conv is stored with its first two dims merged.
+            want = _model_shape(encoder, target)
+            if want is not None and tuple(tensor.shape) != want:
+                if tensor.numel() != math.prod(want) or len(tensor.shape) > len(want):
+                    raise ValueError(
+                        f"{t.name}: shape {tuple(tensor.shape)} cannot hold the model's {want}"
+                    )
+                tensor = tensor.reshape(want)
+            state[target] = tensor
+            continue
+        if not target.endswith(".weight"):
+            raise ValueError(f"{t.name}: a block-quantized tensor that is not a weight")
+        parent_path, _, leaf = target[: -len(".weight")].rpartition(".")
+        existing = getattr(encoder.get_submodule(parent_path), leaf)
+        if type(existing) is not torch.nn.Linear or existing.bias is not None:
+            raise ValueError(f"{target}: a quantized weight on a {type(existing).__name__}")
+        setattr(
+            encoder.get_submodule(parent_path),
+            leaf,
+            gguf_weight_only_linear(
+                tensor,
+                qtype,
+                in_features = existing.in_features,
+                out_features = existing.out_features,
+                compute_dtype = dtype or torch.bfloat16,
+            ),
+        )
+        quantized.add(target[: -len(".weight")])
+        swapped.add(target)
+    return state, quantized, swapped
+
+
 def _meta_tensor_names(module: Any) -> list[str]:
     """Names of every parameter and buffer still on the meta device."""
     from itertools import chain
@@ -505,3 +496,1046 @@ def _meta_tensor_names(module: Any) -> list[str]:
         for name, tensor in chain(module.named_parameters(), module.named_buffers())
         if getattr(tensor, "is_meta", False)
     ]
+
+
+# Group offloading pages the int8 conditioner in leaf by leaf instead of moving 27 GB whole.
+H3_TE_STREAM_ENV = "UNSLOTH_H3_TE_STREAM"
+# Encode footprint: the 1.56 GB embedding table + the prefetched leaf + activations (B200, 12 / 16 / 24 GB caps).
+H3_TE_STREAMED_GB = 3.0
+# Power-of-two arenas: torch's pinned allocator rounds each allocation up (13% extra pinned one by one).
+_PIN_ARENA_BYTES = 1 << 31
+_PIN_ALIGN = 512
+# Arena fills (copies plus zeroed tails) run on a pool, so they are parallel from any calling thread.
+_PIN_COPY_THREADS = 8
+_PIN_ZERO_CHUNK = 64 << 20
+
+
+def h3_te_stream_enabled() -> bool:
+    """``UNSLOTH_H3_TE_STREAM=0`` keeps the conditioner in the CPU-offload rotation."""
+    import os
+    return str(os.environ.get(H3_TE_STREAM_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def h3_te_pin_allowed(payload_bytes: int = 0, device: Any = None) -> bool:
+    """Whether a payload may be pinned in full (not one arena), under the group switch and the ~1
+    GiB Windows/WSL cap; never raises"""
+    try:
+        import os
+
+        from .diffusion_memory import GROUP_OFFLOAD_PIN_ENV, _pin_budget_mib, _pinned_memory_capped
+
+        from .host_pinning import host_pinning_allowed
+
+        forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
+        if forced in ("0", "off", "false", "no") or not host_pinning_allowed(device):
+            return False
+        if forced in ("1", "on", "true", "yes"):
+            return True
+        if _pinned_memory_capped():
+            return False
+        budget = _pin_budget_mib()
+        return budget is not None and budget >= max(_PIN_ARENA_BYTES, int(payload_bytes)) >> 20
+    except Exception:  # noqa: BLE001 -- unanswerable: stream unpinned
+        return False
+
+
+H3_TE_PIN_YIELD_ENV = "UNSLOTH_H3_TE_PIN_YIELD"
+
+
+def h3_te_pin_yields(
+    text_encoder: Any,
+    streamed_denoiser: Any,
+    device: Any = None,
+    logger: Any = None,
+) -> Optional[bool]:
+    """False when the conditioner alone fits the pin budget but not beside the denoiser that will stream: the
+    denoiser's blocks are read every step, the conditioner once per prompt, so the denoiser keeps the budget. None
+    leaves the decision to ``stream_h3_text_encoder``. ``UNSLOTH_H3_TE_PIN_YIELD=0`` turns it off. Never raises."""
+    try:
+        import os
+
+        if str(os.environ.get(H3_TE_PIN_YIELD_ENV, "")).strip().lower() in (
+            "0",
+            "off",
+            "false",
+            "no",
+        ):
+            return None
+        if text_encoder is None or streamed_denoiser is None:
+            return None
+        te_bytes = _module_payload_bytes(text_encoder)
+        dit_bytes = _host_payload_bytes(streamed_denoiser)
+        if dit_bytes <= 0 or not h3_te_pin_allowed(te_bytes, device):
+            return None
+        if h3_te_pin_allowed(te_bytes + dit_bytes, device):
+            return None
+        if logger is not None:
+            from .diffusion_memory import _pin_budget_mib
+            logger.info(
+                "video.h3_te_stream: the conditioner (%.1f GB) streams from pageable memory so the streamed "
+                "denoiser (%.1f GB) can pin first (%s MiB pinnable)",
+                te_bytes / 1e9,
+                dit_bytes / 1e9,
+                _pin_budget_mib(),
+            )
+        return False
+    except Exception:  # noqa: BLE001 -- keep the stock decision
+        return None
+
+
+def _host_payload_bytes(module: Any) -> int:
+    """Host bytes of ``module``'s CPU tensors, torchao subclasses at their inner (int8) size, not their bf16 shape."""
+    from .diffusion_prequant import tensor_payload_bytes
+
+    seen: set = set()
+    total = 0
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        if id(tensor) not in seen and tensor.device.type == "cpu":
+            seen.add(id(tensor))
+            total += tensor_payload_bytes(tensor)
+    return total
+
+
+def _module_payload_bytes(module: Any) -> int:
+    seen: set = set()
+    total = 0
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        if id(tensor) not in seen and tensor.device.type == "cpu":
+            seen.add(id(tensor))
+            total += tensor.numel() * tensor.element_size()
+    return total
+
+
+def _round_up(value: int, multiple: int) -> int:
+    return (value + multiple - 1) // multiple * multiple
+
+
+def _pinned_arena(size: int, fill: Any) -> Any:
+    """A pinned uint8 arena of ``size`` bytes, every byte written by ``fill`` (before registering, where registered)."""
+    import torch
+
+    from .diffusion_memory import registered_pinned_empty
+
+    arena = registered_pinned_empty(size, fill = fill)
+    if arena is not None:
+        return arena
+    arena = torch.empty(size, dtype = torch.uint8, pin_memory = True)
+    fill(arena)
+    return arena
+
+
+# Arenas sized to their payload (0.61 GB audio VAE pinned 2.15 GB); the host-looked-up vocab table stays mapped. =0 reverts.
+H3_HOST_PIN_TRIM_ENV = "UNSLOTH_H3_HOST_PIN_TRIM"
+_PIN_PAGE = 4096
+
+
+def h3_host_pin_trim_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_HOST_PIN_TRIM_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def pin_module_in_place(
+    module: Any,
+    *,
+    arena_bytes: int = _PIN_ARENA_BYTES,
+    _arena_factory: Any = None,
+    repoint: bool = False,
+    skip: tuple = (),
+) -> int:
+    """Replaces tensors in _parameters/_buffers rather than .data, which would keep the mmap alive."""
+    import torch
+
+    skipped = {id(t) for t in skip if t is not None}
+    slots: dict[int, list] = {}  # id(tensor) -> [tensor, [(owner dict, name, is_param)]]
+    for sub in module.modules():
+        for table, is_param in ((sub._parameters, True), (sub._buffers, False)):
+            for name, tensor in list(table.items()):
+                if tensor is None or id(tensor) in skipped:
+                    continue
+                entry = slots.setdefault(id(tensor), [tensor, []])
+                entry[1].append((table, name, is_param))
+    todo = []
+    for tensor, owners in slots.values():
+        if tensor.device.type != "cpu" or type(tensor.data) is not torch.Tensor:
+            continue
+        if tensor.numel() == 0 or (_arena_factory is None and tensor.is_pinned()):
+            continue
+        todo.append((tensor, owners))
+    # Largest first, first fit. Placed up front, so each arena is filled before it is registered.
+    todo.sort(key = lambda item: item[0].numel() * item[0].element_size(), reverse = True)
+    arenas: list[list] = []  # [arena bytes, used bytes, [(tensor, owners, offset)]]
+    pinned = 0
+    for tensor, owners in todo:
+        nbytes = tensor.numel() * tensor.element_size()
+        need = _round_up(nbytes, _PIN_ALIGN)
+        slot = next((a for a in arenas if a[0] - a[1] >= need), None)
+        if slot is None:
+            slot = [max(int(arena_bytes), 1 << (need - 1).bit_length()), 0, []]
+            arenas.append(slot)
+        slot[2].append((tensor, owners, slot[1]))
+        slot[1] += need
+        pinned += nbytes
+    if h3_host_pin_trim_enabled():
+        # placement is final: an arena's unused tail would only be zeroed and locked
+        for arena in arenas:
+            arena[0] = min(arena[0], _round_up(arena[1], _PIN_PAGE))
+    placed = []  # (tensor, owners, pinned view)
+    for size, _used, entries in arenas:
+        fill = functools.partial(_fill_arena, entries = entries)
+        if _arena_factory is not None:
+            arena = _arena_factory(size)
+            fill(arena)
+        else:
+            arena = _pinned_arena(size, fill)
+        placed.extend(
+            (tensor, owners, _arena_view(arena, tensor, offset))
+            for tensor, owners, offset in entries
+        )
+    for tensor, owners, view in placed:
+        if repoint:
+            # Only when the old storage is not an mmap view (weights the loader already copied or cast).
+            tensor.data = view
+        else:
+            replacement = (
+                torch.nn.Parameter(view, requires_grad = tensor.requires_grad)
+                if isinstance(tensor, torch.nn.Parameter)
+                else view
+            )
+            for table, name, _is_param in owners:
+                table[name] = replacement
+    return pinned
+
+
+def _arena_view(arena: Any, tensor: Any, offset: int) -> Any:
+    nbytes = tensor.numel() * tensor.element_size()
+    return arena[offset : offset + nbytes].view(tensor.dtype).view(tensor.shape)
+
+
+def _fill_arena(arena: Any, *, entries: list) -> None:
+    """Copies each tensor to its offset and zeroes the rest, on a thread pool (copy_, zero_ and their page faults
+    release the GIL). Writing every byte faults the arena's pages in the copy itself, with no separate zero pass."""
+    jobs = []  # (destination, source tensor or None to zero)
+    end = 0
+    for tensor, _owners, offset in entries:
+        if offset > end:
+            jobs.append((arena[end:offset], None))
+        jobs.append((_arena_view(arena, tensor, offset), tensor))
+        end = offset + tensor.numel() * tensor.element_size()
+    jobs.extend(
+        (arena[start : start + _PIN_ZERO_CHUNK], None)
+        for start in range(end, arena.numel(), _PIN_ZERO_CHUNK)
+    )
+
+    def run(job: tuple) -> None:
+        dst, src = job
+        if src is None:
+            dst.zero_()
+        else:
+            dst.copy_(src.detach())
+
+    workers = min(_PIN_COPY_THREADS, len(jobs))
+    if workers <= 1:
+        for job in jobs:
+            run(job)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "unsloth-h3-te-pin") as pool:
+        # list() re-raises the first failed copy, before any owner is replaced.
+        list(pool.map(run, jobs))
+
+
+# The streamed conditioner's vocabulary table (151936 x 5120 bf16, 1.56 GB) stays on the host: the prompt's rows are
+# gathered there and only they are uploaded, not the whole table per encode. ``UNSLOTH_H3_HOST_EMBED_ROWS=0`` streams
+# the table like every other leaf.
+H3_HOST_EMBED_ROWS_ENV = "UNSLOTH_H3_HOST_EMBED_ROWS"
+_HOST_ROWS_ATTR = "_unsloth_host_rows_device"
+
+
+def h3_host_embed_rows_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_HOST_EMBED_ROWS_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _host_rows_forward(self: Any, input: Any) -> Any:
+    """``nn.Embedding.forward`` on the host table (a gather: bit-identical), the rows sent to the onload device."""
+    import torch.nn.functional as F
+
+    weight = self.weight
+    ids = input if input.device == weight.device else input.to(weight.device)
+    rows = F.embedding(
+        ids,
+        weight,
+        self.padding_idx,
+        self.max_norm,
+        self.norm_type,
+        self.scale_grad_by_freq,
+        self.sparse,
+    )
+    return rows.to(self.__dict__[_HOST_ROWS_ATTR])
+
+
+def _host_rows_table(target: Any) -> Any:
+    """The table ``keep_h3_embedding_on_host`` will take out of the stream (same static checks), or None."""
+    try:
+        import torch
+
+        if target is None or not h3_host_embed_rows_enabled():
+            return None
+        getter = getattr(target, "get_input_embeddings", None)
+        emb = getter() if callable(getter) else None
+        if type(emb) is not torch.nn.Embedding or _HOST_ROWS_ATTR in emb.__dict__:
+            return None
+        weight = emb.weight
+        if (
+            type(weight.data) is not torch.Tensor
+            or weight.device.type != "cpu"
+            or emb.max_norm is not None
+            or emb.sparse
+            or weight.dtype not in (torch.bfloat16, torch.float16, torch.float32)
+        ):
+            return None
+        return weight
+    except Exception:  # noqa: BLE001 -- pin it with the rest
+        return None
+
+
+def _pin_streamed_table(target: Any, weight: Any) -> None:
+    """The table stayed in the stream after all: pin it as the whole-module pin would have."""
+    from .diffusion_memory import _offload_groups
+
+    owner = next(m for m in target.modules() if m._parameters.get("weight") is weight)
+    pin_module_in_place(owner, repoint = True)
+    for group in _offload_groups(target):
+        cpu = getattr(group, "cpu_param_dict", None)
+        if isinstance(cpu, dict) and weight in cpu:
+            cpu[weight] = weight.data
+
+
+def keep_h3_embedding_on_host(target: Any, logger: Any = None) -> bool:
+    """Take the group-offloaded language embedding out of the stream, its lookup done on the host. Run right after
+    ``apply_group_offloading``; True when installed. Plain frozen bf16/fp16/fp32 tables only. Never raises."""
+    try:
+        if not h3_host_embed_rows_enabled():
+            return False
+        import types
+
+        import torch
+
+        getter = getattr(target, "get_input_embeddings", None)
+        emb = getter() if callable(getter) else None
+        if type(emb) is not torch.nn.Embedding or _HOST_ROWS_ATTR in emb.__dict__:
+            return False
+        weight = emb.weight
+        if (
+            type(weight.data) is not torch.Tensor
+            or weight.device.type != "cpu"
+            or weight.requires_grad
+            or emb.max_norm is not None
+            or emb.sparse
+            or weight.dtype not in (torch.bfloat16, torch.float16, torch.float32)
+        ):
+            return False
+        registry = getattr(emb, "_diffusers_hook", None)
+        hooks = getattr(registry, "hooks", None) or {}
+        # a streamed (lazy prefetch) setup also tracks the leaf's first execution; anything else keeps the stock leaf
+        if "group_offloading" not in hooks or not set(hooks) <= {
+            "group_offloading",
+            "layer_execution_tracker",
+        }:
+            return False
+        group = getattr(hooks["group_offloading"], "group", None)
+        if group is None or list(getattr(group, "modules", None) or ()) != [emb]:
+            return False
+        onload = getattr(group, "onload_device", None)
+        if onload is None:
+            return False
+        name = next((n for n, m in target.named_modules() if m is emb), None)
+        lazy = (getattr(getattr(target, "_diffusers_hook", None), "hooks", None) or {}).get(
+            "lazy_prefetch_group_offloading"
+        )
+        emb.__dict__[_HOST_ROWS_ATTR] = torch.device(onload)
+        try:
+            if "layer_execution_tracker" in hooks:
+                registry.remove_hook("layer_execution_tracker", recurse = False)
+            registry.remove_hook("group_offloading", recurse = False)
+        finally:
+            # set even if a removal failed half way: the table is on the host, so the lookup must be too
+            emb.forward = types.MethodType(_host_rows_forward, emb)
+        names = getattr(lazy, "_layer_execution_tracker_module_names", None)
+        if isinstance(names, set) and name is not None:
+            names.discard(name)  # no longer streamed: the first forward must not expect it
+        # diffusers may hold the table's pinned twin; the lookup reads what the parameter points at now
+        host = getattr(group, "cpu_param_dict", None) or {}
+        pinned = host.get(weight)
+        if (
+            pinned is not None
+            and pinned.device.type == "cpu"
+            and weight.data_ptr() != pinned.data_ptr()
+        ):
+            weight.data = pinned
+    except Exception as exc:  # noqa: BLE001 -- the streamed leaf still works
+        if logger is not None:
+            logger.warning("video.h3_te_stream: embedding stays streamed: %s", exc)
+        return False
+    if logger is not None:
+        logger.info(
+            "video.h3_te_stream: vocabulary table (%.2f GB) stays on the host, prompt rows uploaded",
+            weight.numel() * weight.element_size() / 1e9,
+        )
+    return True
+
+
+def stream_h3_text_encoder(
+    manager: Any,
+    text_encoder: Any,
+    device: Any,
+    *,
+    pin: Optional[bool] = None,
+    logger: Any = None,
+) -> Optional[str]:
+    """Stream MiniMax-H3's conditioner leaf by leaf via group offloading, outside the ComponentsManager rotation.
+
+    Hooks go on ``text_encoder.model``, which the H3 encode step calls directly. ``pin=None`` decides from
+    ``h3_te_pin_allowed``. Returns ``"stream"`` (pinned) / ``"stream_lazy"`` / ``"sync"`` (integrated GPU: no stream,
+    nothing pinned), or None with nothing changed."""
+    import torch
+
+    onload = torch.device(device)
+    target = getattr(text_encoder, "model", None)
+    if onload.type != "cuda" or target is None or not h3_te_stream_enabled():
+        return None
+    try:
+        import inspect
+
+        from diffusers.hooks import apply_group_offloading
+    except Exception:  # noqa: BLE001 -- no group offloading in this diffusers
+        return None
+    from .diffusion_memory import (
+        _pin_vision_embedding_device,
+        _remove_group_offload_hooks,
+        install_group_offload_buffer_restore,
+        install_group_offload_hooks_eager,
+    )
+    from .diffusion_prequant import _evict_rotation_hook, _unhook_from_manager
+
+    from .host_pinning import host_pinning_allowed
+
+    params = inspect.signature(apply_group_offloading).parameters
+    # A stream makes diffusers pin each leaf; an integrated GPU streams synchronously from pageable memory instead.
+    stream = host_pinning_allowed(onload)
+    if not stream:
+        pin = False
+    elif pin is None:
+        pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder), onload)
+    # Looked up on the host, so a pinned copy buys nothing; needs diffusers to take the pinned rest as it is.
+    table = (
+        _host_rows_table(target)
+        if pin and h3_host_pin_trim_enabled() and "low_cpu_mem_usage" in params
+        else None
+    )
+    if pin:
+        try:
+            pinned_bytes = pin_module_in_place(text_encoder, skip = (table,))
+        except Exception as exc:  # noqa: BLE001 -- pinned host RAM refused: stream unpinned
+            if logger is not None:
+                logger.warning("video.h3_te_stream: pinning failed, streaming unpinned: %s", exc)
+            pin = False
+            table = None
+    kwargs: dict[str, Any] = {
+        "onload_device": onload,
+        "offload_device": torch.device("cpu"),
+        "offload_type": "leaf_level",
+        "use_stream": stream,
+    }
+    if stream:
+        if "non_blocking" in params:
+            kwargs["non_blocking"] = True
+        if "record_stream" in params:
+            kwargs["record_stream"] = True
+        if "low_cpu_mem_usage" in params:
+            # Already pinned in place, so diffusers' pin_memory() returns the same tensor: no second host copy.
+            # With the table left mapped, the onload pins only what is not pinned yet: nothing once the table is out.
+            kwargs["low_cpu_mem_usage"] = not pin or table is not None
+        elif not pin:
+            return None
+    try:
+        text_encoder.requires_grad_(False)
+        # The int8 weights are buffers, which stock diffusers leaves on the device after offload.
+        install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
+        apply_group_offloading(target, **kwargs)
+        on_host = keep_h3_embedding_on_host(target, logger = logger)
+        if table is not None:
+            if on_host:
+                if logger is not None:
+                    logger.info(
+                        "video.h3_host_pin_trim: conditioner pins %.2f GB in arenas sized to their weights, its "
+                        "vocabulary table (%.2f GB) stays on its mapping",
+                        pinned_bytes / 1e9,
+                        table.numel() * table.element_size() / 1e9,
+                    )
+            else:
+                try:
+                    _pin_streamed_table(target, table)
+                except Exception as exc:  # noqa: BLE001 -- streams pageable: correct, slower
+                    if logger is not None:
+                        logger.warning("video.h3_host_pin_trim: table not pinned: %s", exc)
+        # Image prompts: Qwen3-VL's position interpolation reads the offloaded embedding's CPU device (transformers 5.5).
+        _pin_vision_embedding_device(target)
+    except Exception as exc:  # noqa: BLE001 -- keep the rotation
+        _remove_group_offload_hooks(target)
+        if logger is not None:
+            logger.warning(
+                "video.h3_te_stream: group offloading refused, keeping the rotation: %s", exc
+            )
+        return None
+    if not _unhook_from_manager(manager, text_encoder, logger = logger, what = "te_stream:hook"):
+        # Still in the rotation: its pre_forward would move the whole module under the group hooks.
+        _remove_group_offload_hooks(target)
+        return None
+    # The manager only evicts inside a managed pre_forward; else the last decode's VAE sits beside the encode.
+    target.register_forward_pre_hook(_evict_rotation_hook(manager, onload))
+    mode = ("stream" if pin else "stream_lazy") if stream else "sync"
+    if logger is not None:
+        logger.info(
+            "video.h3_te_stream: conditioner streamed leaf by leaf on %s (%s host copy)",
+            device,
+            "pinned" if pin else "pageable",
+        )
+    return mode
+
+
+# A mapped conditioner larger than the page cache is re-read from disk every prompt (L4: +78-84 s); anon pages are not.
+H3_TE_RESIDENT_ENV = "UNSLOTH_H3_TE_RESIDENT"
+_H3_TE_RESIDENT_MIN_MIB = 1024
+_H3_TE_COPY_THREADS = 4
+
+
+def h3_te_resident_enabled() -> bool:
+    """``UNSLOTH_H3_TE_RESIDENT=0`` leaves the streamed conditioner on its memory mapping."""
+    import os
+    return str(os.environ.get(H3_TE_RESIDENT_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _streamed_host_tensors(target: Any, groups: Optional[list] = None) -> list:
+    """(group, tensor, host) pageable CPU tensors, language model first: vision is only read for image prompts."""
+    import torch
+
+    if groups is None:
+        from .diffusion_memory import _offload_groups
+        groups = _offload_groups(target)
+    names = {id(m): n for n, m in target.named_modules()}
+
+    def _late(group: Any) -> bool:
+        mods = list(getattr(group, "modules", None) or ())
+        leader = getattr(group, "onload_leader", None)
+        name = names.get(id(mods[0] if mods else leader), "")
+        return "visual" in name.split(".")
+
+    out: list = []
+    seen: set = set()
+    for group in sorted(groups, key = _late):
+        cpu = getattr(group, "cpu_param_dict", None) or {}
+        tensors = (
+            [t for m in getattr(group, "modules", None) or () for t in m.parameters()]
+            + [t for m in getattr(group, "modules", None) or () for t in m.buffers()]
+            + list(getattr(group, "parameters", None) or ())
+            + list(getattr(group, "buffers", None) or ())
+        )
+        for tensor in tensors:
+            host = cpu.get(tensor, tensor)
+            if id(tensor) in seen or host is None or host.device.type != "cpu":
+                continue
+            seen.add(id(tensor))
+            if type(host) is not torch.Tensor and type(host) is not torch.nn.Parameter:
+                continue  # tensor subclasses keep their own storage layout
+            if host.numel() == 0 or host.is_pinned():
+                continue
+            out.append((group, tensor, host))
+    return out
+
+
+def keep_h3_te_resident(
+    text_encoder: Any,
+    *,
+    logger: Any = None,
+    groups: Optional[list] = None,
+    host_ram: Any = None,
+) -> int:
+    """Copy the share of the streamed conditioner that fits beside the reserve into anonymous RAM; run after every
+    load-time host allocation. ``host_ram``: ``(total, available, commit)`` MiB. Returns MiB copied. Never raises."""
+    try:
+        target = getattr(text_encoder, "model", None)
+        if target is None or not h3_te_resident_enabled():
+            return 0
+        undo = _undo_list(target)  # marks the share as managed: later calls top it up
+        copied_ids = {id(e[3]) for e in undo}
+        entries = [e for e in _streamed_host_tensors(target, groups) if id(e[2]) not in copied_ids]
+        need = -(-sum(h.numel() * h.element_size() for _g, _t, h in entries) // (1 << 20))
+        if need <= 0:
+            return 0
+        from .diffusion_small_host import (
+            encoder_resident_share_mib,
+            host_commit_mib,
+            host_ram_mib,
+        )
+
+        if host_ram is None:
+            total, available = host_ram_mib()
+            commit = host_commit_mib()
+        else:
+            total, available, commit = host_ram
+        share, why = encoder_resident_share_mib(
+            need,
+            host_total_mib = total,
+            host_available_mib = available,
+            host_commit_mib = commit,
+            min_share_mib = min(need, _H3_TE_RESIDENT_MIN_MIB),
+        )
+        if share <= 0:
+            if logger is not None:
+                logger.info("video.h3_te_resident: the conditioner stays memory-mapped (%s)", why)
+            return 0
+        budget = share << 20
+        chosen = []
+        for entry in entries:
+            nbytes = entry[2].numel() * entry[2].element_size()
+            if nbytes <= budget:
+                chosen.append(entry)
+                budget -= nbytes
+        copied = _copy_host_tensors_(chosen, undo = undo)
+        mib = copied >> 20
+        if logger is not None:
+            logger.info(
+                "video.h3_te_resident: %d of %d MiB of the streamed conditioner copied into host RAM (%s)",
+                mib,
+                need,
+                why,
+            )
+        return mib
+    except Exception as exc:  # noqa: BLE001 -- the mapping still works
+        if logger is not None:
+            logger.warning("video.h3_te_resident: kept the mapping: %s", exc)
+        return 0
+
+
+_TE_RESIDENT_UNDO_ATTR = "_unsloth_te_resident_undo"
+
+
+def _undo_list(target: Any) -> list:
+    undo = getattr(target, _TE_RESIDENT_UNDO_ATTR, None)
+    if undo is None:
+        undo = []
+        try:
+            setattr(target, _TE_RESIDENT_UNDO_ATTR, undo)
+        except Exception:  # noqa: BLE001 -- no undo: the share cannot yield
+            return []
+    return undo
+
+
+def top_up_h3_te_resident(text_encoder: Any, *, logger: Any = None) -> int:
+    """``keep_h3_te_resident`` again after the load (a re-fit released resident denoiser host copies): copies the
+    next share of the still-mapped conditioner. Only for a share the load already manages. Returns MiB copied."""
+    target = getattr(text_encoder, "model", None)
+    if target is None or getattr(target, _TE_RESIDENT_UNDO_ATTR, None) is None:
+        return 0
+    return keep_h3_te_resident(text_encoder, logger = logger)
+
+
+def yield_h3_te_resident(
+    text_encoder: Any,
+    nbytes: int,
+    *,
+    logger: Any = None,
+) -> int:
+    """Return up to ``nbytes`` of the conditioner's resident share to its memory mapping (last copied first: vision,
+    then the deepest language layers), so the anonymous copies are freed. Returns bytes given back. Never raises."""
+    try:
+        target = getattr(text_encoder, "model", None)
+        undo = getattr(target, _TE_RESIDENT_UNDO_ATTR, None) if target is not None else None
+        if not undo or nbytes <= 0:
+            return 0
+        import torch
+
+        freed = 0
+        with torch.no_grad():
+            while undo and freed < nbytes:
+                group, tensor, mapped, copy = undo.pop()
+                cpu = getattr(group, "cpu_param_dict", None)
+                if cpu is not None and cpu.get(tensor) is copy:
+                    cpu[tensor] = mapped
+                if tensor.device.type == "cpu" and tensor.data_ptr() == copy.data_ptr():
+                    tensor.data = mapped
+                freed += copy.numel() * copy.element_size()
+                del copy
+        if logger is not None:
+            logger.info(
+                "video.h3_te_resident: %d MiB of the conditioner's resident share returned to its mapping "
+                "(host RAM for a demoted denoiser block)",
+                freed >> 20,
+            )
+        return freed
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.warning("video.h3_te_resident: could not yield the resident share: %s", exc)
+        return 0
+
+
+def _copy_host_tensors_(entries: list, undo: Optional[list] = None) -> int:
+    import torch
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fresh(host: Any) -> Any:
+        out = torch.empty_like(host, memory_format = torch.contiguous_format)
+        out.copy_(host)  # releases the GIL: parallel page faults keep the disk queue full
+        return out
+
+    with torch.no_grad(), ThreadPoolExecutor(_H3_TE_COPY_THREADS) as pool:
+        fresh = list(pool.map(lambda e: _fresh(e[2]), entries))
+    copied = 0
+    with torch.no_grad():
+        for (group, tensor, host), new in zip(entries, fresh):
+            cpu = getattr(group, "cpu_param_dict", None)
+            if cpu is not None and tensor in cpu:
+                cpu[tensor] = new
+            if tensor.device.type == "cpu" and tensor.data_ptr() == host.data_ptr():
+                tensor.data = new
+            if undo is not None:
+                undo.append((group, tensor, host, new))
+            copied += new.numel() * new.element_size()
+    return copied
+
+
+# Once every denoiser block is resident, leftover budget keeps conditioner leaf groups on device in read order (48 GB:
+# ~0.8 s per render saved); requests needing more take it back first. Vision tower keeps streaming. =0 disables.
+H3_TE_DEVICE_RESIDENT_ENV = "UNSLOTH_H3_TE_DEVICE_RESIDENT"
+_TE_DEVICE_ATTR = "_unsloth_te_device"
+_TE_SAVED_IO_ATTR = "_unsloth_te_saved_io"
+# Planned device bytes per tensor: the allocator's 512-byte rounding plus an unsplit remainder (at most 1 MiB).
+_ALLOC_ROUND = 512
+_ALLOC_SPLIT_SLACK = 1 << 20
+
+
+def h3_te_device_resident_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_TE_DEVICE_RESIDENT_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _planned_device_bytes(group: Any) -> int:
+    from .video_minimax_h3_residency import _group_tensors, _tensor_bytes
+
+    total = 0
+    for t in _group_tensors(group):
+        n = _tensor_bytes(t)
+        total += _round_up(n, _ALLOC_ROUND) + (_ALLOC_SPLIT_SLACK if n > _ALLOC_SPLIT_SLACK else 0)
+    return total
+
+
+def _allocated_bytes(device: Any) -> Optional[int]:
+    try:
+        import torch
+
+        dev = torch.device(device)
+        if dev.type != "cuda" or not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.memory_allocated(dev))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _te_resident_onload(group: Any) -> Any:
+    """Keep the side-stream sync: the next group may still be arriving via the previous group's prefetch."""
+    stream = getattr(group, "stream", None)
+
+    def onload_(*_a: Any, **_k: Any) -> None:
+        if stream is not None:
+            stream.synchronize()
+
+    try:
+        import torch
+        return torch.compiler.disable(onload_)
+    except Exception:  # noqa: BLE001
+        return onload_
+
+
+def _te_noop(*_a: Any, **_k: Any) -> None:
+    return None
+
+
+class H3TeDeviceShare:
+    """The streamed conditioner's leaf groups resident on the device: a prefix in read order (language layers first)."""
+
+    def __init__(
+        self,
+        text_encoder: Any,
+        device: Any,
+        *,
+        logger: Any = None,
+    ) -> None:
+        from .diffusion_memory import _offload_groups
+        from .video_minimax_h3_residency import _group_tensors
+
+        target = getattr(text_encoder, "model", None)
+        self.device = device
+        self.logger = logger
+        self.groups: list = []
+        self.layer_of: list = []
+        names = {id(m): n for n, m in target.named_modules()} if target is not None else {}
+        for group in _offload_groups(target) if target is not None else []:
+            mods = list(getattr(group, "modules", None) or ())
+            leader = mods[0] if mods else getattr(group, "onload_leader", None)
+            parts = names.get(id(leader), "").split(".")
+            if (
+                "visual" in parts
+                or getattr(group, "stream", None) is None
+                or not isinstance(getattr(group, "cpu_param_dict", None), dict)
+                or not _group_tensors(group)
+            ):
+                continue
+            layer = None
+            if "layers" in parts and parts.index("layers") + 1 < len(parts):
+                index = parts[parts.index("layers") + 1]
+                layer = int(index) if index.isdigit() else None
+            self.groups.append(group)
+            self.layer_of.append(layer)
+        self.planned = [_planned_device_bytes(g) for g in self.groups]
+        self.layers = len({x for x in self.layer_of if x is not None})
+        self._logged: Optional[int] = None
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.groups)
+
+    def resident_count(self) -> int:
+        n = 0
+        for group in self.groups:
+            if not group.__dict__.get(_TE_DEVICE_ATTR):
+                break
+            n += 1
+        return n
+
+    def resident_bytes(self) -> int:
+        """Measured at onload; planned bytes off CUDA."""
+        return sum(
+            int(group.__dict__.get(_TE_DEVICE_ATTR) or 0)
+            for group in self.groups
+            if group.__dict__.get(_TE_DEVICE_ATTR)
+        )
+
+    def plan(self, budget_bytes: int) -> int:
+        n = 0
+        left = int(budget_bytes)
+        while n < len(self.groups) and self.planned[n] <= left:
+            left -= self.planned[n]
+            n += 1
+        return n
+
+    def shrink(self, n: int) -> None:
+        import torch
+        demoted = False
+        for group in reversed(self.groups[n:]):
+            if not group.__dict__.get(_TE_DEVICE_ATTR):
+                continue
+            if not demoted and torch.cuda.is_available():
+                torch.cuda.current_stream().synchronize()
+            saved_on, saved_off = group.__dict__.get(_TE_SAVED_IO_ATTR, (None, None))
+            for name, saved in (("onload_", saved_on), ("offload_", saved_off)):
+                if saved is not None:
+                    setattr(group, name, saved)
+                else:
+                    group.__dict__.pop(name, None)
+            group.__dict__.pop(_TE_DEVICE_ATTR, None)
+            group.offload_()  # back to its host copy, which was never dropped
+            demoted = True
+
+    def grow(self, n: int) -> None:
+        import torch
+        for group in self.groups[:n]:
+            if group.__dict__.get(_TE_DEVICE_ATTR):
+                continue
+            before = _allocated_bytes(self.device)
+            stream = getattr(group, "stream", None)
+            try:
+                group.onload_()
+                if stream is not None:
+                    stream.synchronize()
+                if torch.cuda.is_available():
+                    torch.cuda.current_stream().synchronize()
+            except Exception:
+                group.offload_()  # a half-onloaded group back on its host copy
+                raise
+            after = _allocated_bytes(self.device)
+            held = after - before if before is not None and after is not None else None
+            if held is None or held <= 0:
+                held = _planned_device_bytes(group)
+            group.__dict__[_TE_SAVED_IO_ATTR] = (
+                group.__dict__.get("onload_"),
+                group.__dict__.get("offload_"),
+            )
+            group.onload_ = _te_resident_onload(group)
+            group.offload_ = _te_noop
+            group.__dict__[_TE_DEVICE_ATTR] = max(1, int(held))
+
+    def report(
+        self,
+        budget_bytes: int,
+        *,
+        force: bool = False,
+    ) -> None:
+        n = self.resident_count()
+        if self.logger is None or (n == self._logged and not force):
+            return
+        self._logged = n
+        full = sum(
+            1
+            for layer in {x for x in self.layer_of if x is not None}
+            if all(
+                self.groups[i].__dict__.get(_TE_DEVICE_ATTR)
+                for i, x in enumerate(self.layer_of)
+                if x == layer
+            )
+        )
+        self.logger.info(
+            "video.h3_te_resident_device: %d of %d TE layers resident on %s (%.2f GB, %d of %d leaf groups, "
+            "%.2f GB left beside the resident denoiser)",
+            full,
+            self.layers,
+            self.device,
+            self.resident_bytes() / 1e9,
+            n,
+            len(self.groups),
+            max(0, budget_bytes) / 1e9,
+        )
+
+
+def h3_te_device_share(
+    text_encoder: Any,
+    device: Any,
+    mode: Any,
+    *,
+    logger: Any = None,
+) -> Optional[H3TeDeviceShare]:
+    """None unless the conditioner streams with a side stream. Never raises."""
+    try:
+        if mode not in ("stream", "stream_lazy") or not h3_te_device_resident_enabled():
+            return None
+        share = H3TeDeviceShare(text_encoder, device, logger = logger)
+        return share if share.usable else None
+    except Exception as exc:  # noqa: BLE001 -- the conditioner streams as before
+        if logger is not None:
+            logger.warning("video.h3_te_resident_device: staying streamed: %s", exc)
+        return None
+
+
+# "0": the H3 conditioner records every hidden state again.
+H3_TE_READ_CAPTURE_ENV = "UNSLOTH_H3_TE_READ_CAPTURE"
+
+
+def h3_te_read_capture_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_TE_READ_CAPTURE_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _is_compiling() -> bool:
+    try:
+        import torch
+        return bool(torch.compiler.is_compiling())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def install_h3_te_read_capture(
+    text_encoder: Any,
+    *,
+    layer: int = H3_TE_READ_LAYER,
+    logger: Any = None,
+) -> bool:
+    """H3 reads only ``hidden_states[layer]``: run without recording and keep layer ``layer``'s input via a pre-hook.
+    Past the DeepStack layers that input equals ``hidden_states[layer]`` in transformers 4.x and 5.x (5.x records
+    those layers before the visual merge), so DeepStack layers are refused. Idempotent; never raises."""
+    try:
+        model = getattr(text_encoder, "model", None)
+        layers = getattr(getattr(model, "language_model", None), "layers", None)
+        if model is None or layers is None or not isinstance(layer, int):
+            return False
+        if getattr(model, "_unsloth_h3_read_capture", None) is not None:
+            return True
+        config = getattr(text_encoder, "config", None)
+        deepstack = getattr(
+            getattr(config, "vision_config", None), "deepstack_visual_indexes", None
+        )
+        deepstack_layers = len(deepstack) if deepstack is not None else None
+        if deepstack_layers is None or not (deepstack_layers < layer < len(layers)):
+            return False
+        stock = model.forward
+        target = layers[layer]
+    except Exception:  # noqa: BLE001 - optimisation only
+        return False
+
+    @functools.wraps(stock)
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        # Hook registration is untraceable: a compiled caller takes the stock forward (same states, no graph break).
+        if (
+            not kwargs.get("output_hidden_states")
+            or _is_compiling()
+            or not h3_te_read_capture_enabled()
+        ):
+            return stock(*args, **kwargs)
+        captured: list = []
+
+        def _keep(_module: Any, hook_args: tuple, hook_kwargs: dict) -> None:
+            captured.append(hook_args[0] if hook_args else hook_kwargs.get("hidden_states"))
+
+        handle = target.register_forward_pre_hook(_keep, with_kwargs = True)
+        try:
+            out = stock(*args, **{**kwargs, "output_hidden_states": False})
+        finally:
+            handle.remove()
+        if len(captured) != 1 or captured[0] is None:
+            del out, captured
+            return stock(*args, **kwargs)
+        states = [None] * (len(layers) + 1)
+        states[layer] = captured[0]
+        out.hidden_states = tuple(states)
+        return out
+
+    forward.__wrapped__ = stock
+    try:
+        model.forward = forward
+        model._unsloth_h3_read_capture = layer
+    except Exception:  # noqa: BLE001
+        return False
+    if logger is not None:
+        logger.info("video.h3_te_read_capture: on (keeps hidden_states[%d] only)", layer)
+    return True

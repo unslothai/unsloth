@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A row may only offer Resume for a partial that can actually be reopened.
-
-The installed huggingface_hub cannot answer this alone. A cache shared with a newer
-environment holds ``<etag>.<nonce>.incomplete`` files that even a resuming writer will not
-reopen, and this repo's own pins produce exactly that mix: Python 3.10+ takes hub >= 1.23,
-older takes 0.36.2, one cache between them. Deriving the answer from transport plus installed
-version promised a resume there and then purged the bytes.
-"""
+"""Offer Resume only for partials that can be reopened; the installed hub version alone cannot tell."""
 
 from __future__ import annotations
 
@@ -33,8 +26,7 @@ NONCE_PARTIAL = f"{BLOB}.deadbeef{hf_cache_state.INCOMPLETE_SUFFIX}"
 
 @pytest.fixture
 def cache(monkeypatch, tmp_path):
-    """A repo cache with a legacy huggingface_hub installed, so only the per-file check can
-    reject a partial."""
+    """A legacy huggingface_hub is installed, so only the per-file check can reject a partial."""
     root = tmp_path / "hub"
     entry = root / "models--Org--Model"
     (entry / "blobs").mkdir(parents = True)
@@ -48,8 +40,7 @@ def cache(monkeypatch, tmp_path):
 
 
 def _record(transport: str, entry: Path):
-    """What a worker leaves behind: the manifest the row reads, and the marker naming the
-    writer that produced the partial."""
+    """A worker leaves a manifest and a marker naming the writer of its partial."""
     download_manifest.write_manifest(
         "model",
         "Org/Model",
@@ -90,8 +81,7 @@ def test_a_row_with_no_partial_left_has_nothing_to_resume(cache):
 
 
 def test_a_writer_that_cannot_reopen_anything_never_promises_a_resume(cache, monkeypatch):
-    """The ordinary install: hub >= 1.18 refetches from zero, so even a legacy-named
-    survivor is litter."""
+    """With hub >= 1.18 the refetch starts from zero, so even a legacy-named partial is litter."""
     monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: False)
     _record("http", cache)
     _partial(cache, LEGACY_PARTIAL)
@@ -166,27 +156,19 @@ def test_an_unmarked_companion_partial_is_not_a_resume(cache):
 
 
 def test_the_variants_own_partial_still_decides_for_the_variant(cache):
-    """A companion marker disagreeing says nothing about the main shard, which this
-    variant's own marker vouches for."""
+    """A disagreeing companion says nothing of the main shard; the variant's marker decides."""
     _record_with_companion("http", cache)
     download_registry._write_companion_marker(cache, "xet")
     _partial(cache, LEGACY_PARTIAL)
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
 
 
-# --------------------------------------------------------------------------------------------
-# One repo can own several active cache directories at once: a case-sensitive filesystem holds
-# models--Org--Model beside models--org--model, and every one of them matches. The blob scan
-# unions them while a marker read answers from whichever comes first, so a verdict built from
-# the two separately can pair a partial in one directory with a marker from another.
-# prepare_cache_for_transport judges each directory on its own, so the pairing has to as well.
-# --------------------------------------------------------------------------------------------
+# Case-sensitive FSs hold models--Org--Model beside models--org--model; judge each dir alone.
 
 
 @pytest.fixture
 def split_cache(monkeypatch, tmp_path):
-    """Two active entries for one repo. The names are stand-ins so the test also runs on a
-    case-insensitive filesystem, where the real pair cannot coexist."""
+    """Stand-in names for a pair that cannot coexist on case-insensitive filesystems."""
     root = tmp_path / "hub"
     first = root / "models--Org--Model"
     second = root / "models--Org--Model.case-variant"
@@ -205,7 +187,6 @@ def test_a_marker_does_not_vouch_for_another_directorys_companion(split_cache):
     first, second = split_cache
     _record_with_companion("http", first)
     download_registry._write_companion_marker(first, "http")
-    # The partial lives next door, under a Xet companion marker that will purge it.
     download_registry._write_marker(second, "http", "Q4_K_M")
     download_registry._write_companion_marker(second, "xet")
     _partial(second, f"{COMPANION}{hf_cache_state.INCOMPLETE_SUFFIX}")
@@ -216,7 +197,6 @@ def test_a_marker_does_not_vouch_for_another_directorys_companion(split_cache):
 def test_a_marker_does_not_vouch_for_another_directorys_main_partial(split_cache):
     first, second = split_cache
     _record("http", first)
-    # Same repo, other directory, written by Xet: its own marker is what decides.
     download_registry._write_marker(second, "xet", "Q4_K_M")
     _partial(second, LEGACY_PARTIAL)
 
@@ -232,12 +212,7 @@ def test_a_partial_and_its_own_directorys_marker_still_resume(split_cache):
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
 
 
-# --------------------------------------------------------------------------------------------
-# A row is not always displayed from the active cache. local_inventory enumerates remembered
-# ("previous HF cache") and custom roots too, and hands each row's own directory down. That
-# root holds its own partials and its own manifest scope (state_dir keys manifests by a
-# per-cache digest), so the resume verdict has to be asked of it and not of the active root.
-# --------------------------------------------------------------------------------------------
+# Rows can come from remembered/custom roots; ask that root, not the active one.
 
 
 @pytest.fixture

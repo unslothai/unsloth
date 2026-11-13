@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The AMSI probe must keep its positive control, and must never actually run what it submits.
-
-The probe answers the question #10805 is about: will a live AMSI provider let install.ps1 compile?
-Its entire value rests on the control. A runner where no provider is live returns "not blocked" for
-every input, including Microsoft's own test sample, and that outcome is byte-identical to a clean
-verdict. release-desktop.yml's comments record three releases that shipped unscanned while their scan
-step was green, for exactly this reason.
-
-The second property is that the probe compiles and never invokes. It is handed the real installer, so
-an `Invoke-Expression` or a `.Invoke()` creeping in would run a full install inside a measurement
-step -- on the base side, from a commit nobody reviewed for that purpose.
-"""
+"""The AMSI probe must keep its positive control and must compile the installer, never invoke it."""
 
 from __future__ import annotations
 
@@ -28,9 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-# The shared runner, not a direct subprocess call: a direct one shares a single
-# $XDG_CACHE_HOME/powershell startup cache with every other xdist worker, and an interpreter that
-# dies at startup then renders as this test failing rather than as the crash it was.
+# Use the shared runner: direct pwsh calls share one startup cache across xdist workers.
 # tests/studio/test_pwsh_calls_use_the_shared_runner.py enforces this.
 from unsloth_pwsh_runner import run_pwsh
 
@@ -99,12 +86,7 @@ def test_the_probe_compiles_but_never_invokes() -> None:
 
 
 def test_the_positive_control_is_present_and_split() -> None:
-    """Split so this repository is not itself a sample carrying the signature.
-
-    A single literal here would mean every clone, every source tarball and every scan of this repo
-    contains the AMSI test signature, which is the same self-inflicted detection class as the two
-    fixture archives that made Panda flag the GitHub zip.
-    """
+    """Split the AMSI test sample so this repository does not itself carry the detection signature."""
     text = _probe_text()
     assert "$Control" in text, "the probe lost its -Control switch"
     assert "7e72c3ce" in text, (
@@ -138,11 +120,6 @@ def test_the_probe_never_exits_non_zero_on_a_detection() -> None:
         "the probe decides a verdict. It must report and let the workflow decide, because the "
         "workflow is the only place that knows whether the control fired."
     )
-
-
-# ---------------------------------------------------------------------------
-# The workflow around it
-# ---------------------------------------------------------------------------
 
 
 def test_the_workflow_exists_and_is_valid_yaml() -> None:
@@ -192,12 +169,7 @@ def test_the_probe_runs_under_windows_powershell_five_one() -> None:
 
 
 def test_the_probe_reports_on_a_host_without_amsi_rather_than_crashing() -> None:
-    """Run for real, here, where no AMSI provider exists.
-
-    This is the whole unmeasured path: the control does not fire, nothing is blocked, and the probe
-    still has to produce well-formed JSON saying so. If it crashed instead, the workflow would read
-    "the probe wrote no result" and a genuinely absent scanner would be reported as a broken lane.
-    """
+    """On a host with no AMSI provider the probe must still write well-formed JSON, not crash."""
     pwsh = shutil.which("pwsh")
     if pwsh is None:
         pytest.skip("pwsh is unavailable")
@@ -236,18 +208,7 @@ def test_the_probe_reports_on_a_host_without_amsi_rather_than_crashing() -> None
 
 
 def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
-    """The lane scans the bytes users get, or its verdict does not transfer to them.
-
-    The copies used to be reconstructed rather than copied: `git show` was captured into a
-    PowerShell variable, which decodes the blob into lines, and the write back re-encoded them. That
-    round trip converts CRLF to LF, collapses every trailing blank line into one, invents a final
-    newline where the blob had none, and cannot represent a byte that is not valid UTF-8. The
-    scanner was then judging a file this project never serves.
-
-    Driven through the workflow's own extraction snippet against a real blob built to carry all
-    three of those properties, rather than by asserting on the text of the snippet, so a future
-    rewrite is judged on the bytes it produces.
-    """
+    """Scanned copies must keep the shipped bytes; a PowerShell text round trip alters line endings."""
     pwsh = shutil.which("pwsh")
     if pwsh is None:
         pytest.skip("pwsh is unavailable")
@@ -272,8 +233,7 @@ def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
     }
     for argv in (
         ["git", "init", "-q"],
-        # -text so the checkout cannot be what normalises the line endings: the question here is
-        # only what the extraction does with the blob.
+        # autocrlf off so checkout cannot normalise line endings; only the extraction is tested.
         ["git", "config", "core.autocrlf", "false"],
         ["git", "add", "install.ps1"],
         ["git", "commit", "-qm", "b"],
@@ -302,11 +262,7 @@ def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
         "never serves"
     )
 
-    # The COMMITTED blob, not the working tree. A Windows checkout with the default
-    # core.autocrlf=true rewrites install.ps1 to CRLF on disk -- .gitattributes carries no *.ps1
-    # rule -- so reading the file here failed on Windows runners while the bytes this project
-    # actually serves were unchanged. The lane copies blobs out of git for exactly this reason, so
-    # the assertion has to look where the lane looks.
+    # Read the COMMITTED blob: Windows autocrlf rewrites install.ps1 to CRLF on disk.
     shipped = subprocess.run(
         ["git", "show", "HEAD:install.ps1"],
         cwd = REPO,
@@ -322,25 +278,13 @@ def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
 
 
 def test_the_mark_of_the_web_is_written_the_documented_way() -> None:
-    """`-Stream`, not a stream suffix appended to `-LiteralPath`.
-
-    PowerShell documents exactly one way to address an alternate data stream, and
-    `release-desktop.yml:1470` already uses it. The suffix form relies on the path being taken
-    "exactly as typed" -- and if it does not bind, the `-ErrorAction SilentlyContinue` next to it
-    swallows the error, the mark is never applied, block-at-first-sight never consults the cloud,
-    and the step still prints "clean". That is a silent downgrade of the exact condition this lane
-    exists to create, which is the worst failure shape available here.
-    """
+    """Use -Stream Zone.Identifier; a suffix on -LiteralPath can fail silently under SilentlyContinue."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     assert "-Stream Zone.Identifier" in body, (
         "the mark-of-the-web stamp no longer uses -Stream, which is the only documented way to "
         "address an alternate data stream"
     )
-    # Comment lines stripped before the ban is applied. The comment right above the fixed code
-    # explains what the broken form looked like, and naming it is the point of that comment -- a
-    # substring search over the raw file matches the explanation and fails. That has now happened
-    # three times while writing these guards, which is a good argument for never grepping a file
-    # for a string its own prose is obliged to contain.
+    # Strip comment lines first, so prose that names the banned form does not trip the ban.
     code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
     assert (
         ':Zone.Identifier"' not in code
@@ -432,13 +376,7 @@ _UNREADABLE = "@{ label = 'f.ps1'; blocked = $false; errorId = ''; unreadable = 
 def test_the_head_verdict_is_never_clean_unless_head_was_really_measured(
     tmp_path: Path, label: str, head: str, head_control: bool, expect_code: int, expect_text: str
 ) -> None:
-    """Every way a head measurement can fail must stop short of publishing "clean".
-
-    A lane that reports clean when it did not measure is worse than no lane: it converts an absent
-    scanner, an unreadable candidate or a candidate that never compiled into a green check, and this
-    repository has already shipped three releases whose scan step was green because nothing scanned.
-    The base side is held healthy in every case so that the head side is the only variable.
-    """
+    """A head measurement that fails for any reason must never publish a clean verdict."""
     rows = (
         f"@({_row('base', 'install.ps1', control = True, result = _COMPILED)}, "
         + _row("head", "install.ps1", control = head_control, result = head)
@@ -467,13 +405,7 @@ def test_a_probe_that_wrote_no_result_is_not_silently_dropped(tmp_path: Path) ->
 
 
 def test_a_control_firing_elsewhere_does_not_vouch_for_this_process(tmp_path: Path) -> None:
-    """The exact borrowing the per-row control exists to stop.
-
-    AMSI initialises per process. A live base invocation followed by a head invocation where no
-    provider loaded used to set one job-wide flag to true, and every row was then trusted, so the
-    head answer -- taken in a process that would have said "not blocked" to anything at all --
-    was published as clean.
-    """
+    """AMSI is per process, so a control fired by the base run must not vouch for the head process."""
     rows = (
         f"@({_row('base', 'install.ps1', control = True, result = _BLOCKED)}, "
         + _row("head", "install.ps1", control = False, result = _COMPILED)
@@ -502,13 +434,7 @@ def test_a_control_firing_elsewhere_does_not_vouch_for_this_process(tmp_path: Pa
 def test_causality_is_decided_per_script_and_only_against_a_valid_base(
     tmp_path: Path, label: str, base_result: str, base_control: bool, expect: str
 ) -> None:
-    """Whether a block is introduced or pre-existing is a statement about ONE script.
-
-    Comparing counts across sides said "pre-existing" whenever the base had any block at all, even
-    on a different file, and said "introduced" whenever it had none -- including when the base row
-    for that script was never validly measured, where the only honest answer is that this run
-    cannot tell. Both mistakes point a reader at the wrong commit.
-    """
+    """Introduced-vs-pre-existing is decided per script, and only against a validly measured base row."""
     rows = (
         "@("
         + _row("base", "install.ps1", control = base_control, result = base_result)
@@ -540,12 +466,7 @@ def test_a_block_on_a_different_base_script_is_not_called_pre_existing(tmp_path:
 
 
 def test_a_real_block_is_reported_even_when_another_row_is_unmeasured(tmp_path: Path) -> None:
-    """Incomplete coverage must not swallow a detection that was actually made.
-
-    Returning early on any unmeasured head row meant a script a live provider genuinely REFUSED
-    went unreported whenever some other invocation happened to write no result, and the job stayed
-    green. A gap in coverage is a warning; a refusal is the finding this lane exists for.
-    """
+    """An unmeasured row is a warning, but a real block elsewhere must still be reported."""
     rows = (
         "@("
         + _row("base", "install.ps1", control = True, result = _COMPILED)
@@ -563,12 +484,7 @@ def test_a_real_block_is_reported_even_when_another_row_is_unmeasured(tmp_path: 
 
 
 def test_a_parse_error_is_classified_even_when_the_control_is_silent(tmp_path: Path) -> None:
-    """A syntax error is a property of the script, not of the scanner.
-
-    The compiler rejects it whether or not an AMSI provider is listening, so gating the
-    classification on the per-row control filed a broken candidate as merely unmeasured and exited
-    zero. Only the BLOCKED verdict genuinely depends on a live provider.
-    """
+    """A parse error is a property of the script, so it is reported even when no AMSI control fired."""
     rows = (
         "@("
         + _row("base", "install.ps1", control = True, result = _COMPILED)
@@ -597,13 +513,7 @@ def test_a_block_claimed_without_a_live_control_is_not_trusted(tmp_path: Path) -
 
 
 def test_a_parse_error_is_reported_even_when_no_control_fired_anywhere(tmp_path: Path) -> None:
-    """The per-row ordering was fixed and the global one was not, which left the same hole.
-
-    Whether a script compiles does not depend on AMSI, so the compile verdict has to be decided
-    before the gate that reports a scanner-less runner as unmeasured. With the gate first, a
-    candidate with a syntax error on a runner where no control fired at all, which is the usual
-    state of a hosted image, exited zero and said the probe had not completed.
-    """
+    """Compile verdicts come before the no-control gate: a parse error does not depend on AMSI."""
     rows = (
         "@("
         + _row("base", "install.ps1", control = False, result = _COMPILED)
@@ -617,16 +527,7 @@ def test_a_parse_error_is_reported_even_when_no_control_fired_anywhere(tmp_path:
 
 
 def test_cloud_readiness_is_decided_by_maps_and_reports_bafs_separately() -> None:
-    """What the on-demand scan needs is MAPS, and block-at-first-sight is a different path.
-
-    This gate used to refuse readiness whenever `DisableBlockAtFirstSeen` was set. That was right
-    while the step told the reader block-at-first-sight had acted on the mark of the web; it stopped
-    being right once the step was corrected to say what it actually does, which is an explicit
-    on-demand scan. BAFS only consults the cloud on an on-access OPEN
-    (release-desktop.yml:1301-1305) and this lane never opens the copies, so gating on it labelled a
-    runner whose cloud the scan CAN reach as local-signatures-only. The preference is still read and
-    still printed, because a reader has to know which configuration produced the verdict.
-    """
+    """Cloud readiness is decided by MAPS, since block-at-first-sight needs an on-access open."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     start = body.index("$cloudReady = $false")
     end = body.index("if ($cloudReady) {", start)
@@ -644,18 +545,11 @@ def test_cloud_readiness_is_decided_by_maps_and_reports_bafs_separately() -> Non
         "block-at-first-sight is gating readiness again, which mislabels a MAPS-reachable runner as "
         "local signatures only"
     )
-    # And it must still be printed, not merely computed.
     assert "$bafsNote" in gate and "$cloudNote = " in gate
 
 
 def test_a_real_block_is_still_reported_when_another_script_fails_to_parse(tmp_path: Path) -> None:
-    """The compile-failure exit was taken before the blocks were even derived.
-
-    Moving the compile verdict ahead of the control gate was right, but it then ran before
-    `$headBlocked` existed, so a run with one unparseable candidate and one candidate genuinely
-    refused by a live provider printed only the parse failure. The refusal is the finding this lane
-    exists to surface, and it went unmentioned in the log and in the verdict.
-    """
+    """A parse failure must not exit before real AMSI blocks are derived and reported."""
     rows = (
         "@("
         + _row("base", "install.ps1", control = True, result = _COMPILED)
@@ -674,13 +568,7 @@ def test_a_real_block_is_still_reported_when_another_script_fails_to_parse(tmp_p
 
 
 def test_an_unparseable_probe_result_is_not_silently_dropped() -> None:
-    """A row with a null payload is neither a block nor an unmeasured candidate.
-
-    The step runs under `$ErrorActionPreference = 'Continue'`, so an existing but truncated JSON
-    file made `ConvertFrom-Json` emit a non-terminating error and return nothing, and the row was
-    appended with `data = $null`. That row iterates no results at all, so the file quietly left the
-    measured set while any other process whose control fired carried the job to a clean verdict.
-    """
+    """An unparseable probe result must not become a null row that drops out of the measured set."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     start = body.index("$json = Join-Path $out")
     end = body.index("if ($rows.Count -eq 0)", start)
@@ -698,14 +586,7 @@ def test_an_unparseable_probe_result_is_not_silently_dropped() -> None:
 
 
 def test_the_defender_control_is_scanned_the_way_the_candidates_are() -> None:
-    """A control that runs a different command than the measurement does not vouch for it.
-
-    `-DisableRemediation` is not only about remediation: this repository's release scanner records
-    that it makes the explicit scan ignore file exclusions
-    (`.github/workflows/release-desktop.yml:1295` and `:1440-1442`), and the hosted images this lane
-    describes ship with both drive roots excluded. The control scan therefore could be skipped
-    while the candidate scans worked, leaving the step to exit without measuring anything.
-    """
+    """The Defender control must be scanned with the candidates' command, or it vouches for nothing."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     scans = [line for line in body.splitlines() if "-Scan -ScanType 3" in line]
     assert scans, "nothing scans any more"
@@ -717,14 +598,7 @@ def test_the_defender_control_is_scanned_the_way_the_candidates_are() -> None:
 
 
 def test_the_laid_out_copies_are_exempt_before_they_are_written() -> None:
-    """Excluding the directory only before the SCAN leaves both earlier steps exposed.
-
-    Real-time protection acts on open and on write, and `-DisableRemediation` governs only the
-    explicit MpCmdRun scan, so a live provider can take a copy away while the layout step writes it
-    or while the AMSI step reads it. The later `Get-ChildItem` loops then simply do not see that
-    file, and another valid row can carry both halves to a clean verdict. release-desktop.yml
-    establishes its exclusions before copying its inputs for exactly this reason.
-    """
+    """Exempt the copies from real-time scanning before writing them, not just before the scan."""
     import yaml as _yaml
 
     workflow = _yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
@@ -743,31 +617,21 @@ def test_the_laid_out_copies_are_exempt_before_they_are_written() -> None:
         "quarantine one before it is ever measured"
     )
     assert exclude_at < amsi_at, "the exclusion is added after the copies are opened"
-    # A non-terminating Add-MpPreference that was refused looks identical to one that worked.
     assert (
         "Get-MpPreference" in runs[exclude_at]
     ), "the exclusion is never read back, so a refusal is silent"
 
 
 def test_both_loops_measure_the_expected_set_not_the_survivors() -> None:
-    """Enumerating the directory makes a quarantined copy disappear from the results entirely.
-
-    Both the AMSI and the Defender loop derived their input set from `Get-ChildItem` over the
-    laid-out directory. If real-time protection takes a flagged copy away first, which can happen
-    whenever `Add-MpPreference` was refused, that candidate enters neither the unmeasured list nor
-    the detection list, and a surviving sibling can carry the job to a clean verdict. The layout
-    step knows what it wrote, so the loops read that instead and report anything absent.
-    """
+    """Measure the layout manifest's set, not the survivors, so a quarantined copy cannot vanish."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     assert "manifest.json" in body, "the layout step no longer records what it laid out"
     assert (
         body.count("Get-UnslothExpected") >= 3
     ), "not every measurement loop reads the expected set"
-    # The bare enumeration must be gone from the measurement loops.
     assert (
         "foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side)" not in body
     ), "a measurement loop still enumerates whatever survived on disk"
-    # And a vanished file has to reach both verdicts, not just be printed.
     assert '$noResult += "$v' in body, "a vanished copy never reaches the AMSI verdict"
     assert '$unscanned += "$v' in body, "a vanished copy never reaches the Defender verdict"
     assert '$noResult += "$v' in body, "a vanished copy never reaches the AMSI verdict"
@@ -775,21 +639,13 @@ def test_both_loops_measure_the_expected_set_not_the_survivors() -> None:
 
 
 def test_the_probe_decodes_the_installer_as_utf8(tmp_path: Path) -> None:
-    """Windows PowerShell 5.1 reads a BOM-less file as ANSI, and the installers are BOM-less UTF-8.
-
-    That is the host this probe exists to reproduce, so `Get-Content` without an encoding handed
-    AMSI a mojibake version of any non-ASCII text in the script. The provider would then be judging
-    a string no user ever runs, and it does not match `irm ... | iex` either, where the response is
-    decoded as Unicode.
-    """
+    """Decode the installer as UTF-8: Windows PowerShell 5.1 reads BOM-less files as ANSI."""
     body = PROBE.read_text(encoding = "utf-8")
     assert (
         "Get-Content -Raw -LiteralPath $file" not in body
     ), "the probe still reads the candidate with Get-Content's default encoding"
     assert "UTF8Encoding" in body, "the probe does not decode the candidate as UTF-8"
 
-    # And the decode really is lossless for the bytes we ship: driven through pwsh rather than
-    # asserted about, so a future rewrite is judged on what it produces.
     pwsh = shutil.which("pwsh")
     if pwsh is None:
         pytest.skip("pwsh is unavailable")
@@ -813,14 +669,7 @@ def test_the_probe_decodes_the_installer_as_utf8(tmp_path: Path) -> None:
 
 
 def test_the_defender_lane_does_not_claim_block_at_first_sight() -> None:
-    """The exclusion that protects the evidence also removes the on-access path BAFS needs.
-
-    `release-desktop.yml:1301-1305` records that block-at-first-sight only consults the cloud on an
-    on-access open. This lane never opens the copies and now exempts them from on-access scanning
-    so a detection cannot quarantine the evidence before it is measured, so it cannot exercise that
-    path at all. What it does get, and what the low-prevalence verdicts it is aimed at still reach,
-    is an on-demand cloud scan through MAPS. The output has to say that and not more.
-    """
+    """Exempting the copies from on-access scanning rules out block-at-first-sight; only MAPS applies."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     printed = [
         line
@@ -837,19 +686,7 @@ def test_the_defender_lane_does_not_claim_block_at_first_sight() -> None:
 
 
 def test_the_probe_reports_the_inner_parse_error_id(tmp_path: Path) -> None:
-    """The outer record carries only the generic `ParseException`.
-
-    Calling a .NET static method from PowerShell wraps whatever it threw in a
-    `MethodInvocationException`, so `$_.FullyQualifiedErrorId` on the outer record is
-    `ParseException` no matter why the parse failed. The id that distinguishes a scanner refusal
-    (`ScriptContainedMaliciousContent`) from an ordinary syntax error lives on the inner
-    `ParseException`'s `Errors` collection. Matching only the outer id meant nothing was ever
-    recognised as blocked, including the positive control, so the lane could only report that it
-    had not measured.
-
-    Driven through the shipped probe against a real syntax error, because that is the one inner id
-    this host can produce without an AMSI provider.
-    """
+    """Read ScriptContainedMaliciousContent from the inner ParseException, not the outer record."""
     pwsh = shutil.which("pwsh")
     if pwsh is None:
         pytest.skip("pwsh is unavailable")
@@ -884,14 +721,7 @@ def test_the_probe_reports_the_inner_parse_error_id(tmp_path: Path) -> None:
 
 
 def test_the_defender_verdict_assigns_causality_per_script() -> None:
-    """A differential lane that reports only the head side is not differential.
-
-    The AMSI half builds per-script base state and says whether a block is introduced or
-    pre-existing. The Defender half collected base results and then filtered them out of the
-    verdict, so a signature that already flags the merge base was reported exactly like a
-    regression this change caused, and a base-only detection -- the result this work is trying to
-    produce -- was reported as a plain clean head.
-    """
+    """Defender must assign causality per script and compare against base, not drop base results."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     defender = body[body.index("Ask Defender's file scanner") :]
     defender = defender[: defender.index("Upload the measurements")]
@@ -910,20 +740,12 @@ def test_the_defender_verdict_assigns_causality_per_script() -> None:
 
 
 def test_the_defender_control_never_infers_a_block_from_an_exception() -> None:
-    """A control that any failure can satisfy is not a control.
-
-    The catch around the EICAR write and scan used to set `$fired = $true` and print that real-time
-    protection blocked the file. A permission or I/O failure under `$RUNNER_TEMP`, or MpCmdRun
-    failing to launch, took that path too, and every candidate result after it was then trusted --
-    so an unavailable scanner reporting no hit, which is the exact condition this control exists to
-    catch, could report clean.
-    """
+    """Exceptions around the EICAR write and scan must never be read as a detected block."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     defender = body[body.index("Ask Defender's file scanner") :]
     defender = defender[: defender.index("Upload the measurements")]
     control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
-    # Every place the control is declared live has to be immediately preceded by an observation,
-    # which here means a Test-Path on the control file rather than the fact that something threw.
+    # Every live-declaration must be preceded by a Test-Path on the control file.
     lines = control.splitlines()
     for i, line in enumerate(lines):
         if "$fired = $true" not in line:
@@ -944,13 +766,7 @@ def test_the_defender_control_never_infers_a_block_from_an_exception() -> None:
 
 
 def test_the_defender_control_writes_a_benign_canary_first() -> None:
-    """An absent EICAR file only means Defender if an identical benign write succeeds.
-
-    On its own, absence is equally explained by an ACL, a full disk or a transient I/O error, and
-    `$ErrorActionPreference` is `Continue` in this step, so a non-terminating `Set-Content` failure
-    does not even raise. The control therefore writes a benign file of the same size the same way
-    into the same directory first, and gives up rather than concluding anything if that fails.
-    """
+    """An absent EICAR file proves nothing unless a benign same-size canary writes successfully first."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     defender = body[body.index("Ask Defender's file scanner") :]
     control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
@@ -962,7 +778,7 @@ def test_the_defender_control_writes_a_benign_canary_first() -> None:
     assert (
         "no positive control" in control
     ), "an unwritable control directory no longer reports that there is no positive control"
-    # Both writes must be terminating, or Continue carries a failure straight past the check.
+    # Both writes must be terminating, or Continue carries a failure past the check.
     writes = [line for line in control.splitlines() if "Set-Content -LiteralPath $c" in line]
     assert len(writes) == 2, writes
     for line in writes:
@@ -971,15 +787,7 @@ def test_the_defender_control_writes_a_benign_canary_first() -> None:
 
 
 def test_the_control_fires_only_through_the_command_the_candidates_are_read_with() -> None:
-    """A live real-time provider does not vouch for the on-demand scan.
-
-    The candidates sit in a directory exempted from on-access scanning and are measured only by the
-    explicit `MpCmdRun -Scan ... -DisableRemediation`. A control that fired by being quarantined on
-    write therefore proved a provider was live and proved nothing about the command the measurement
-    uses, so an on-demand scanner that silently skipped files would still have been trusted. The
-    control now lives inside the same exempt root, survives its write, and has to be found by that
-    same command.
-    """
+    """The control must sit in the exempt root and be found by the candidates' MpCmdRun scan."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     defender = body[body.index("Ask Defender's file scanner") :]
     control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
@@ -987,7 +795,6 @@ def test_the_control_fires_only_through_the_command_the_candidates_are_read_with
         "the control is not inside the on-access exclusion, so real-time protection can take it "
         "away before the on-demand scan reads it"
     )
-    # Exactly one place may set the control live, and it is the branch that read the scan output.
     lines = control.splitlines()
     fired = [
         i for i, line in enumerate(lines) if "$fired = [bool]" in line or "$fired = $true" in line
@@ -1005,12 +812,7 @@ def test_the_control_fires_only_through_the_command_the_candidates_are_read_with
 
 
 def test_a_missing_layout_manifest_cannot_produce_a_clean_verdict() -> None:
-    """Enumerating survivors cannot notice that an expected candidate is absent.
-
-    With `manifest.json` gone the fallback lists what is still on disk, so a quarantined copy left
-    its siblings to carry the run to `verdict=clean`. The expected set being unknown is itself an
-    unmeasured condition and has to reach the verdict, not only the log.
-    """
+    """A missing manifest.json means the expected set is unknown, which must itself reach the verdict."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     assert (
         body.count("$script:UnslothUnknownExpected") >= 6

@@ -49,7 +49,6 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send_reset(self, partial: bytes) -> None:
         """Write a partial body and drop the connection (simulates a crashed server)."""
-        # Don't call send_response -- write a half-finished response.
         try:
             self.wfile.write(
                 b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 9999\r\n\r\n"
@@ -59,7 +58,6 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         try:
-            # Socket-level shutdown so the next read sees a reset.
             sock = self.connection
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\1\0\0\0\0\0\0\0")
             sock.close()
@@ -100,8 +98,6 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_raw(srv.config.tok_status, srv.config.tok_body)
                 return
             content = str(body.get("content", ""))
-            # tok_response_map injects a token count per input text (e.g. the one-token cases for csm / bicodec / dac
-            # detection branches).
             if content in srv.config.tok_response_map:
                 tokens = list(srv.config.tok_response_map[content])
             else:
@@ -190,7 +186,6 @@ class FakeLlamaServer:
         detok_body: Optional[bytes] = None,
         detok_map: Optional[dict] = None,
         completion_delay: float = 0.0,
-        # Cosmetic: only appears in the stdout template; not parsed.
         model_path: str = "<test-fixture>/gemma-4.gguf",
     ) -> None:
         self.host = host
@@ -214,7 +209,6 @@ class FakeLlamaServer:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> "FakeLlamaServer":
-        # port=0 lets the server pick a free port atomically (no find-then-bind race).
         self._server = FakeLlamaServer._Server((self.host, self._requested_port), _Handler)
         self._server.config = self.config
         bound_port = self._server.server_address[1]

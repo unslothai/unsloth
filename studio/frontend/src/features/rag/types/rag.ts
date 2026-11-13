@@ -9,7 +9,6 @@ export interface KnowledgeBase {
   documentCount?: number;
 }
 
-/** Index status: pending -> running -> completed | failed. */
 export type DocumentStatus = "pending" | "running" | "completed" | "failed";
 
 export interface RagDocument {
@@ -30,7 +29,6 @@ export function isLinkedFolderManaged(document: RagDocument): boolean {
   return Boolean(document.managed || document.linkedFolderId);
 }
 
-/** RagDocument enriched for the global uploaded-files list (settings Data tab). */
 export interface UploadedDocument extends RagDocument {
   sizeBytes?: number | null;
   kbName?: string | null;
@@ -71,7 +69,6 @@ export interface IndexJob {
   numChunks?: number | null;
 }
 
-/** One SSE frame from /jobs/{jobId}/events. */
 export interface JobEvent {
   type: "progress" | "complete" | "error";
   stage?: string | null;
@@ -89,7 +86,6 @@ export interface LinkedFolderScope {
 
 export type LinkedFolderStatus = "idle" | "syncing" | "error";
 
-/** A local directory whose durable access grant is held by the desktop backend. */
 export interface LinkedFolder {
   id: string;
   displayName: string;
@@ -99,10 +95,20 @@ export interface LinkedFolder {
   status: LinkedFolderStatus;
   documentCount?: number;
   lastSyncedAt?: string | null;
+  lastChangedAt?: string | null;
   error?: string | null;
   activeJobId?: string | null;
   createdAt?: string | null;
+  skipped?: Partial<Record<LinkedFolderSkipReason, number>>;
+  failures?: { path: string; error: string }[];
+  failureCount?: number;
 }
+
+export type LinkedFolderSkipReason =
+  | "gitignored"
+  | "build_dirs"
+  | "too_large"
+  | "over_limit";
 
 export function linkedFolderSourcesChanged(
   previous: LinkedFolder[] | null,
@@ -121,14 +127,15 @@ export function linkedFolderSourcesChanged(
     return (
       prior !== undefined &&
       (prior.documentCount !== folder.documentCount ||
-        prior.lastSyncedAt !== folder.lastSyncedAt)
+        // lastSyncedAt moves every pass; older backends without lastChangedAt fall back to it.
+        (prior.lastChangedAt ?? prior.lastSyncedAt) !==
+          (folder.lastChangedAt ?? folder.lastSyncedAt))
     );
   });
 }
 
 export type FolderSyncMode = "sync" | "rebuild";
 
-/** Aggregate job for discovering and indexing all changes in a linked folder. */
 export interface FolderSyncJob {
   id: string;
   linkedFolderId: string;
@@ -140,8 +147,41 @@ export interface FolderSyncJob {
   processedFiles?: number;
   indexedFiles?: number;
   removedFiles?: number;
+  renamedFiles?: number;
   failedFiles?: number;
   error?: string | null;
+}
+
+export interface ReembedJob {
+  id: string;
+  status: Exclude<JobStatus, "pending">;
+  done: number;
+  failed: number;
+  remaining: number;
+  clippedChunks: number;
+  progress: number;
+  error: string | null;
+}
+
+export interface ReembedStatus {
+  staleDocuments: number;
+  staleArchived: number;
+  job: ReembedJob | null;
+}
+
+/** Missing counts (older backends) count as a change. */
+export function jobChangedSources(job: FolderSyncJob): boolean {
+  if (
+    job.indexedFiles === undefined &&
+    job.removedFiles === undefined &&
+    job.renamedFiles === undefined
+  ) {
+    return true;
+  }
+  return (
+    (job.indexedFiles ?? 0) + (job.removedFiles ?? 0) + (job.renamedFiles ?? 0) >
+    0
+  );
 }
 
 /** One SSE frame from /linked-folder-jobs/{jobId}/events. */
@@ -162,34 +202,8 @@ export function retainActiveFolderJobs(
 }
 
 /** Coords 0..1, top-left origin. */
-export interface PdfRegion {
-  pageIndex: number;
-  pageNumber: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export interface PreviewTarget {
-  documentId: string;
-  filename: string;
-  mediaKind: "pdf" | "text";
-  targetPage?: number | null;
-  pdfRegions: PdfRegion[];
-  text?: string | null;
-}
-
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
 
-const ACCEPTED_UPLOAD_EXTS = new Set(
-  RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
-);
-
-// `accept` only filters the picker, so a drop can carry anything, including an
-// extension-less folder entry the backend would reject.
-export function isSupportedSourceName(name: string): boolean {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return false;
-  return ACCEPTED_UPLOAD_EXTS.has(name.slice(dot).toLowerCase());
-}
+/** Mirrors backend `DOCUMENT_UPLOAD_EXTS`. */
+export const RAG_DOCUMENT_UPLOAD_ACCEPT =
+  ".doc,.docm,.dotx,.dotm,.xls,.xlt,.xlsx,.xlsm,.xltx,.xltm,.ppt,.pps,.pptx,.pptm,.potx,.potm,.ppsx,.ppsm,.odt,.ods,.odp,.ott,.ots,.otp,.msg,.eml,.mht,.mhtml,.rtf,.epub,.xhtml,.xht";

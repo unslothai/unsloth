@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Give the desktop app the ROCm environment a terminal launch already has.
-
-unsloth#9926: ``fix_path_env::fix()`` is ``fix_vars(&["PATH"])``, so src-tauri
-reads the login shell and keeps PATH out of it, dropping every ROCm variable
-beside it. Parity, not policy: only a desktop launch, only an AMD host, only
-allowlisted names that are absent here. Every other launch reads no shell.
-"""
+"""Only desktop launches on AMD hosts copy allowlisted ROCm vars that are absent here from the login
+shell; every other launch reads no shell"""
 
 from __future__ import annotations
 
@@ -27,8 +22,7 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_SHELL_ENV_IMPORT"
 # Set by src-tauri on every CLI child it owns (process.rs, DESKTOP_MANAGED_ENV).
 DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
-# From the CLI's #7331 guard, which ran against a GUI environment that never had
-# the override: the arbiter travels, its verdict would say nothing here.
+# The CLI's guard ran in a different environment, so its verdict is not reused here.
 ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
 HSA_OVERRIDE_ENV = "HSA_OVERRIDE_GFX_VERSION"
 
@@ -48,6 +42,8 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "MIOPEN_USER_DB_PATH",
     "MIOPEN_CUSTOM_CACHE_DIR",
     "MIOPEN_FIND_MODE",
+    # Preserve shell overrides, including an explicit opt-out (0).
+    "MIOPEN_SEARCH_CUTOFF",
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
     "GPU_DEVICE_ORDINAL",
@@ -59,17 +55,30 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "AMD_SERIALIZE_KERNEL",
     "GPU_MAX_HW_QUEUES",
 )
-# Not HSA_TOOLS_LIB: HSA dlopens it, which loads a library rather than tuning one.
+# Not HSA_TOOLS_LIB: HSA dlopens it, so it loads a library rather than tuning one.
+
+# Exception list, so a renamed bash/zsh still gets the unsloth#12678 probe.
+_NON_POSIX_SHELLS = frozenset(
+    {"fish", "nu", "nushell", "csh", "tcsh", "xonsh", "elvish", "pwsh", "ion", "murex"}
+)
+
+
+def probe_command(shell: str, command: str) -> str:
+    """Unsets RCS to skip the exit-time history save; dash exits on a readonly unset, hence the subshell."""
+    if os.path.basename(shell) in _NON_POSIX_SHELLS:
+        return command
+    return (
+        "if [ -n \"${ZSH_VERSION-}\" ]; then eval 'unsetopt RCS' 2>/dev/null || :; fi; "
+        f"(unset HISTFILE) 2>/dev/null && unset HISTFILE; exec {command}"
+    )
+
 
 # NVIDIA's open kernel module registers KFD nodes too (4318), hence the check.
 _AMD_VENDOR_ID = "4098"
 
 
 def host_has_amd_gpu() -> bool:
-    """Whether the amdgpu driver is presenting a GPU here.
-
-    The KFD topology, not torch: this runs before torch is imported.
-    """
+    """Reads the KFD topology rather than torch, because this runs before torch is imported."""
     if not sys.platform.startswith("linux"):
         return False
     try:
@@ -105,40 +114,16 @@ def _node_is_an_amd_gpu(properties: str) -> bool:
 
 
 def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> dict:
-    """The environment an interactive login shell would have handed us, or ``{}``.
-
-    ``-i`` runs ``~/.zshrc`` and ``-l`` the profile chain; bash reaches
-    ``~/.bashrc`` only because the stock ``~/.profile`` sources it. ``env -0``
-    into a FILE: a newline in a value corrupts a line parse, and an rc that
-    backgrounds a job leaves that child holding a capture pipe.
-    """
+    """Env goes to a file: newlines in values break line parsing; background rc jobs can hold pipes."""
     shell = shell or os.environ.get("SHELL") or "/bin/sh"
     with tempfile.TemporaryDirectory(prefix = "unsloth-shell-env-") as work:
         target = os.path.join(work, "env")
-        try:
-            process = subprocess.Popen(
-                [shell, "-ilc", f"env -0 > {shlex.quote(target)}"],
-                stdin = subprocess.DEVNULL,
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                # Oh My Zsh's auto-update prompt can block the shell forever.
-                env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
-                # Its own group, so the cleanup below takes the whole shell.
-                start_new_session = True,
-            )
-        except Exception as error:
-            logger.debug("login shell environment unavailable: %s", error)
-            return {}
-        # pgid == pid, read before the wait reaps it: getpgid then raises.
-        group = process.pid
-        try:
-            returncode = process.wait(timeout = timeout)
-        except Exception as error:
-            logger.debug("login shell did not finish: %s", error)
-            returncode = None
-        finally:
-            # Every path: a clean exit still leaves an rc's agent running.
-            _terminate_group(group, process)
+        command = f"env -0 > {shlex.quote(target)}"
+        probe = probe_command(shell, command)
+        returncode = _run_login_shell(shell, probe, timeout)
+        # A non-POSIX shell missing from the list rejects the probe; never after a timeout.
+        if returncode not in (0, None) and probe != command:
+            returncode = _run_login_shell(shell, command, timeout)
         if returncode != 0:
             logger.debug("login shell exited %s", returncode)
             return {}
@@ -158,6 +143,34 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
     return out
 
 
+def _run_login_shell(shell: str, command: str, timeout: float) -> "int | None":
+    """``shell -ilc command``'s exit status; ``None`` if it could not start or timed out."""
+    try:
+        process = subprocess.Popen(
+            [shell, "-ilc", command],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            # Oh My Zsh's auto-update prompt can block the shell forever.
+            env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
+            # Its own group, so the cleanup below takes the whole shell.
+            start_new_session = True,
+        )
+    except Exception as error:
+        logger.debug("login shell environment unavailable: %s", error)
+        return None
+    # pgid == pid, read before the wait reaps it: getpgid then raises.
+    group = process.pid
+    try:
+        return process.wait(timeout = timeout)
+    except Exception as error:
+        logger.debug("login shell did not finish: %s", error)
+        return None
+    finally:
+        # Every path: a clean exit still leaves an rc's agent running.
+        _terminate_group(group, process)
+
+
 def _terminate_group(group: int, process) -> None:
     """Kill the shell's session and anything left in it. Never raises."""
     try:
@@ -175,11 +188,7 @@ def select_missing_vars(
     shell_env,
     allowlist = ROCM_SHELL_ENV_ALLOWLIST,
 ) -> dict:
-    """The allowlisted names the shell has and this process does not.
-
-    Membership on both sides, never truthiness: exported empty is a statement, and
-    ``ROCR_VISIBLE_DEVICES=`` hides every agent.
-    """
+    """Test membership, not truthiness: an exported empty ROCR_VISIBLE_DEVICES= hides every agent."""
     out: dict = {}
     for name in allowlist:
         if name in environ:
@@ -232,11 +241,7 @@ def import_rocm_env_from_login_shell(
 
 
 def override_gfx_arch(value):
-    """The gfx arch an ``HSA_OVERRIDE_GFX_VERSION`` value names, or None.
-
-    In step with ``_hsa_override_gfx_arch`` in unsloth_cli/commands/studio.py,
-    install_python_stack.py and install.sh; the parity is tested.
-    """
+    """Kept in step with _hsa_override_gfx_arch in unsloth_cli and install.sh; a test checks parity."""
     if not isinstance(value, str) or not value:
         return None
     # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
@@ -250,11 +255,7 @@ def override_gfx_arch(value):
 
 
 def override_contradicts_install(value, installed_arch) -> bool:
-    """Whether this override names an arch the installed ROCm wheels cannot serve.
-
-    False for a value that does not parse, matching the CLI guard, which leaves an
-    override it cannot read alone.
-    """
+    """False for an unparsable value, matching the CLI guard that leaves such an override alone."""
     if not installed_arch:
         return False
     named = override_gfx_arch(value)

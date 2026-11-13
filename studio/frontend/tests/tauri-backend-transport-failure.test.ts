@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #10520: a firewall filter delayed the loopback handshake and Desktop said "Unsloth isn't running" about a healthy backend.
+// A filtered loopback handshake must not report a healthy backend as not running.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -24,6 +24,8 @@ function loadAuthApi(options: {
   port: number | null;
   getPort?: () => number | null;
   checkHealth?: (port: number) => boolean | Promise<boolean>;
+  checkGone?: (port: number) => boolean | Promise<boolean>;
+  isTauri?: boolean;
   onInvoke?: (command: string, args: Record<string, unknown>) => void;
 }): AuthApi {
   const currentPort = options.getPort ?? (() => options.port);
@@ -38,7 +40,7 @@ function loadAuthApi(options: {
             : `http://127.0.0.1:${port}${path}`;
         },
         getApiPort: () => currentPort(),
-        isTauri: true,
+        isTauri: options.isTauri ?? true,
       },
       "@/lib/account-transition": { accountTransitionPending: () => false },
       "./session": {
@@ -52,6 +54,9 @@ function loadAuthApi(options: {
       "@tauri-apps/api/core": {
         invoke: async (command: string, args: Record<string, unknown>) => {
           options.onInvoke?.(command, args);
+          if (command === "check_backend_is_gone") {
+            return options.checkGone?.(args.port as number) ?? false;
+          }
           if (command !== "check_backend_present") {
             throw new Error(`unexpected command ${command}`);
           }
@@ -85,7 +90,7 @@ function listenAfter(server: Server, port: number, delayMs: number): void {
   }, delayMs).unref();
 }
 
-// The host below starts accepting at 3s: inside the new ladder, outside the old 250 + 750 + 1500ms one.
+// The old ladder was 250 + 750 + 1500ms: 4 attempts. The unowned-port case below starts its host at 3s.
 const SLOW_LOOPBACK_ACCEPT_DELAY_MS = 3_000;
 const OLD_LADDER_ATTEMPTS = 4;
 
@@ -97,14 +102,25 @@ test("a backend that accepts late is reached instead of declared not running", a
   });
   const originalFetch = globalThis.fetch;
   let attempts = 0;
+  // Start accepting once the old ladder's last attempt has been refused, not at a fixed
+  // time: a refused loopback connect takes about a second on Windows, so a timer at 3s
+  // let attempt 4 succeed there and the count could not tell the two ladders apart.
   globalThis.fetch = async (input, init) => {
     attempts += 1;
-    return await originalFetch(input, init);
+    try {
+      return await originalFetch(input, init);
+    } finally {
+      if (attempts === OLD_LADDER_ATTEMPTS && !server.listening) {
+        await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+      }
+    }
   };
 
   try {
-    listenAfter(server, port, SLOW_LOOPBACK_ACCEPT_DELAY_MS);
-    const authApi = loadAuthApi({ port });
+    // The connects here are genuinely refused until the old ladder is spent. `check_backend_is_gone` answers
+    // false anyway, because a backend this app is bringing up owns the port before it binds
+    // it -- which is why the fast path asks for absence rather than for presence.
+    const authApi = loadAuthApi({ port, checkGone: () => false });
     const response = await authApi.authFetch("/api/models");
 
     assert.equal(response.status, 200);
@@ -222,7 +238,6 @@ test("no validated port yet means nothing is asked and nothing is claimed", asyn
   };
 
   try {
-    // The placeholder base before server-port arrives is port 0, which never connects.
     const authApi = loadAuthApi({
       port: null,
       checkHealth: () => true,
@@ -244,7 +259,6 @@ test("no validated port yet means nothing is asked and nothing is claimed", asyn
 });
 
 test("panels that all lose the backend at once share one native probe", async () => {
-  // The whole hub loses its connection in the same tick and each probe waits out the launcher's budget.
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new TypeError("fetch failed");
@@ -298,7 +312,6 @@ test("panels that all lose the backend at once share one native probe", async ()
 });
 
 test("updating an existing install does not go through the changed path", async () => {
-  // The update deliberately stops the backend, so pin that this flow uses commands and events, not HTTP.
   const update = await readFile(
     new URL("../src/hooks/use-tauri-update.ts", import.meta.url),
     "utf8",
@@ -313,7 +326,6 @@ test("updating an existing install does not go through the changed path", async 
     "the update flow now issues its own fetch, which the transport path wraps",
   );
 
-  // A webview newer than its shell asks for nothing new; the rejected invoke is covered above.
   const backend = await readFile(
     new URL("../src/hooks/use-tauri-backend.ts", import.meta.url),
     "utf8",
@@ -324,8 +336,8 @@ test("updating an existing install does not go through the changed path", async 
     "utf8",
   );
   assert.ok(main.includes("commands::check_health,"));
-  // check_health collapses a stalled probe onto false, the verdict this file exists to stop showing.
   assert.ok(main.includes("commands::check_backend_present,"));
+  assert.ok(main.includes("commands::check_backend_is_gone,"));
   const authApiSrc = await readFile(
     new URL("../src/features/auth/api.ts", import.meta.url),
     "utf8",
@@ -337,7 +349,6 @@ test("updating an existing install does not go through the changed path", async 
 });
 
 test("the background chat storage filter accepts every transport verdict", async () => {
-  // Read as source: the module pulls in the Dexie database only a browser build can load.
   const source = await readFile(
     new URL(
       "../src/features/chat/utils/chat-history-storage.ts",
@@ -363,7 +374,7 @@ test("the background chat storage filter accepts every transport verdict", async
 });
 
 test("a POST is not retried on the long ladder", async () => {
-  // A network error is not an answer: the backend may have committed the request, so a retry can duplicate it.
+  // A network error is not an answer: the request may have committed, so a retry can duplicate it.
   const port = 61797;
   const originalFetch = globalThis.fetch;
   let attempts = 0;
@@ -391,7 +402,7 @@ test("a POST is not retried on the long ladder", async () => {
 });
 
 test("a probe pending against the old port is not the answer about the new one", async () => {
-  // setApiBase can move the port inside a probe's 10s budget, so a shared pending promise reports the PREVIOUS backend.
+  // setApiBase can move the port mid-probe, so a shared pending promise reports the old backend.
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new TypeError("fetch failed");
@@ -439,5 +450,246 @@ test("a probe pending against the old port is not the answer about the new one",
     assert.equal(firstError.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+const LONG_LADDER_MS = 250 + 750 + 1500 + 3000 + 5000;
+const LONG_LADDER_ATTEMPTS = 6;
+
+test("a backend that is provably gone is reported without sleeping out the ladder", async () => {
+  const port = 61820;
+  const asked: string[] = [];
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const authApi = loadAuthApi({
+      port,
+      checkGone: () => true,
+      checkHealth: () => false,
+      onInvoke: (command) => asked.push(command),
+    });
+    const started = performance.now();
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+    const elapsed = performance.now() - started;
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    assert.equal(
+      attempts,
+      1,
+      `the request was sent ${attempts} times after the backend was proven gone`,
+    );
+    assert.ok(
+      elapsed < LONG_LADDER_MS / 4,
+      `reporting a dead backend took ${Math.round(elapsed)}ms of a ${LONG_LADDER_MS}ms ladder`,
+    );
+    assert.deepEqual(asked, ["check_backend_is_gone", "check_backend_present"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a backend that is merely slow still gets every rung and the busy message", async () => {
+  const port = 61821;
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  let goneProbes = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const authApi = loadAuthApi({
+      port,
+      checkGone: () => {
+        goneProbes += 1;
+        return false;
+      },
+      checkHealth: () => true,
+    });
+    const started = performance.now();
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+    const elapsed = performance.now() - started;
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_ANSWERING_MESSAGE);
+    assert.equal(
+      attempts,
+      LONG_LADDER_ATTEMPTS,
+      `a backend that may still be starting was given ${attempts} attempts`,
+    );
+    assert.ok(
+      elapsed >= LONG_LADDER_MS,
+      `the ladder finished in ${Math.round(elapsed)}ms, short of ${LONG_LADDER_MS}ms`,
+    );
+    assert.equal(
+      goneProbes,
+      1,
+      "the fast path probed on more than the first failure",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a shell too old for the command keeps the ladder it has today", async () => {
+  // The webview ships ahead of its shell; a rejected invoke is not an answer.
+  const port = 61822;
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const authApi = loadAuthApi({
+      port,
+      checkGone: () => {
+        throw new Error("command not registered on this build");
+      },
+      checkHealth: () => false,
+    });
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    assert.equal(attempts, LONG_LADDER_ATTEMPTS);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("the browser build asks nothing and behaves exactly as it did", async () => {
+  // Browser fetch reports refused and timed-out connections as the same opaque TypeError.
+  const invoked: string[] = [];
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const authApi = loadAuthApi({
+      port: 61823,
+      isTauri: false,
+      checkGone: () => true,
+      checkHealth: () => true,
+      onInvoke: (command) => invoked.push(command),
+    });
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    assert.equal(attempts, 1, "the browser build started retrying");
+    assert.deepEqual(
+      invoked,
+      [],
+      "the browser build reached for the native side",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("panels that all lose the backend at once share one absence probe", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError("fetch failed");
+  };
+
+  let probes = 0;
+  let releaseProbe: (() => void) | null = null;
+  const probeStarted = new Promise<void>((resolve) => {
+    releaseProbe = resolve;
+  });
+
+  try {
+    const authApi = loadAuthApi({
+      port: 61824,
+      checkGone: async () => {
+        probes += 1;
+        releaseProbe?.();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return true;
+      },
+      checkHealth: () => false,
+    });
+    const call = () =>
+      authApi.authFetch("/api/models").then(
+        () => null,
+        (rejection: unknown) => rejection,
+      );
+
+    const first = call();
+    await Promise.race([
+      probeStarted,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 5_000).unref();
+      }),
+    ]);
+    const errors = await Promise.all([first, call(), call()]);
+
+    assert.equal(probes, 1, "each lost panel opened its own absence probe");
+    for (const error of errors) {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a port nobody here owns that binds late is given up on, and that is the trade", async () => {
+  // A refusal proves nothing listens NOW; an unowned backend is reported gone, not waited for.
+  const port = await reserveLoopbackPort();
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+  });
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async (input, init) => {
+    attempts += 1;
+    return await originalFetch(input, init);
+  };
+
+  try {
+    listenAfter(server, port, SLOW_LOOPBACK_ACCEPT_DELAY_MS);
+    const authApi = loadAuthApi({ port, checkGone: () => true, checkHealth: () => false });
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    assert.equal(
+      attempts,
+      1,
+      `the ladder kept climbing for a port reported gone (${attempts} attempts)`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

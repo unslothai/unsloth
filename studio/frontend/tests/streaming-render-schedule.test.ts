@@ -3,18 +3,85 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown, parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
   IncrementalMarkdownCache,
+  hasIncompleteLinkRepair,
   markdownRenderKey,
   markdownRenderScope,
   parseMarkdownIntoRenderableBlocks,
+  repairStreamingMarkdown,
   withoutStreamdownAnimationPlugin,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
+
+test("an unfinished link stays literal instead of showing Streamdown's blocked placeholder", () => {
+  const cache = new IncrementalMarkdownCache();
+  for (const source of [
+    "See [example",
+    "See [example](",
+    "See [example](https://exa",
+  ]) {
+    const render = cache.update(source);
+    assert.equal(render.markdown, source);
+    assert.equal(hasIncompleteLinkRepair(source), true);
+    const html = renderToStaticMarkup(
+      createElement(
+        Streamdown,
+        {
+          mode: "streaming",
+          parseIncompleteMarkdown: false,
+          parseMarkdownIntoBlocksFn: render.parseMarkdownIntoBlocks,
+        },
+        render.markdown,
+      ),
+    );
+    assert.doesNotMatch(html, /\[blocked\]|streamdown:incomplete-link/);
+    assert.match(html, /See \[example/);
+  }
+
+  const list = new IncrementalMarkdownCache().update("- >= 16 GB\n\nSee [foo");
+  assert.equal(list.markdown, "- \\>= 16 GB\n\nSee [foo");
+
+  const scoped = new IncrementalMarkdownCache();
+  const body = Array.from({ length: 8 }, (_, i) => `Paragraph ${i}.`).join(
+    "\n\n",
+  );
+  const head = `Read [docs][r] first.\n\n${body}\n\n`;
+  scoped.update(head);
+  const both = `${head}[r]: https://example.com\n\nSee [foo`;
+  const scopedRender = scoped.update(both);
+  assert.equal(
+    (scoped as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
+  assert.deepEqual(
+    scopedRender.parseMarkdownIntoBlocks(scopedRender.markdown),
+    parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(both)),
+  );
+
+  const complete = "See [example](https://example.com)";
+  assert.equal(cache.update(complete).markdown, complete);
+  assert.equal(hasIncompleteLinkRepair(complete), false);
+  assert.equal(
+    hasIncompleteLinkRepair("literal streamdown:incomplete-link"),
+    false,
+  );
+  const unsafe = "See [example](javascript:alert)";
+  const html = renderToStaticMarkup(
+    createElement(
+      Streamdown,
+      { mode: "streaming", parseIncompleteMarkdown: false },
+      unsafe,
+    ),
+  );
+  assert.match(html, /\[blocked\]/);
+});
 
 test("only Streamdown's animation transformer is removed", () => {
   const first = () => undefined;
@@ -41,9 +108,9 @@ test("only Streamdown's animation transformer is removed", () => {
 
 const paragraphs = (count: number, label = "part") =>
   Array.from({ length: count }, (_, index) => `${label} ${index}\n\n`).join("");
+// Just past the rollback window, since the block list interleaves separators.
 const retainedCase = (fragment: string) =>
   `${paragraphs(12, "before")} ${fragment}\n\n${paragraphs(12, "after")}`;
-// Just past the rollback window, since the block list interleaves separators.
 const SHORT_GAP = "\n\np0\n\np1\n\np2\n\np3\n\n";
 
 const MARKDOWN_CASES = [
@@ -79,16 +146,10 @@ const MARKDOWN_CASES = [
   `\`\`\`text\n$$\n\`\`\`\n\n${paragraphs(12)}$$\nx`,
   `takes 5~10 minutes\n\n${paragraphs(20)}`,
   `- >= 16 GB of RAM\n\n${paragraphs(20)}`,
-  // Remend completes a dangling link, or truncates at a dangling image, using
-  // the end of the whole document.
   `Pick x in the interval [0, 1) for the ratio.\n\n${paragraphs(14)}done`,
   `see ![alt text\n\n${paragraphs(12)}later y](`,
-  // A backtick that ends a retained block still closes inline code for remend.
   `Escape a backtick as \\\`\n\n${paragraphs(10)}$$\nE=mc^2\n$$`,
-  // Remend orders its closers from a raw "**" search, fenced code included.
   `\`\`\`c\nchar **argv;\n\`\`\`\n\n${paragraphs(12)}set _flag to **on`,
-  // Reduced shapes, one per whole-document rule the retained prefix has to
-  // reproduce. Reported by @mahiatlinux on the PR.
   `\`\`\`x\`\`\`\`${SHORT_GAP}~~ y`,
   `see [note${SHORT_GAP}tail`,
   `\\\`${SHORT_GAP}$$`,
@@ -98,11 +159,15 @@ const MARKDOWN_CASES = [
   `a \`\`\` b\n\nc \\\`\`\` d${SHORT_GAP}- >= 4 GB`,
   `[x]: https://e.test\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
-  // A label may contain an escaped bracket, and Marked registers it.
+  `See [a][ref].\n\n1. item\n   \`\`\`python\n   def f() -> list[str]:\n       return []\n   \`\`\`\n\n${paragraphs(12)}end`,
   `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
-  // Retained-prefix contexts that nothing else reaches: a balanced single
-  // underscore, one first seen inside inline code, and an underscore that
-  // precedes the first bold marker.
+  `[${"x".repeat(250)}]: /url\n\n${paragraphs(12)}[${"x".repeat(250)}]: /url\n\nq\n\n`,
+  `[${"x".repeat(999)}]: /url\n\n${paragraphs(12)}[${"x".repeat(999)}]: /url\n\nq\n\n`,
+  `[foo\nbar]: /url\n\n${paragraphs(12)}[foo\nbar]: /url\n\nq\n\n`,
+  `[foo\n${"y".repeat(300)}]: /url\n\n${paragraphs(12)}[foo\n${"y".repeat(300)}]: /url\n\nq\n\n`,
+  // 1040 UTF-16 units, 520 code points: the bound must count code points.
+  `[${"😀".repeat(520)}]: /url\n\n${paragraphs(12)}[${"😀".repeat(520)}]: /url\n\nq\n\n`,
+  `[foo\\\nbar]: /url\n\n${paragraphs(12)}[foo\\\nbar]: /url\n\nq\n\n`,
   `Use _snake_ case.${SHORT_GAP}see _italic`,
   `use \`a _b_ c\` here${SHORT_GAP}see _italic`,
   `Set _flag_ and **mode** now.${SHORT_GAP}see _italic and **bold`,
@@ -119,7 +184,7 @@ test("incremental blocks match a full Streamdown split at every prefix", () => {
       const render = cache.update(input);
       assert.deepEqual(
         render.parseMarkdownIntoBlocks(render.markdown),
-        parseMarkdownIntoRenderableBlocks(remend(input)),
+        parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(input)),
         `block mismatch at prefix ${length} of ${JSON.stringify(source)}`,
       );
     }
@@ -266,6 +331,9 @@ test("a definition inside a block quote or a list is still document-wide", () =>
     "- [g]: /guide",
     "1. [g]: /guide",
     "> > [g]: /guide",
+    "- - [g]: /guide",
+    "- > [g]: /guide",
+    "> - [g]: /guide",
   ]) {
     assert.equal(
       markdownRenderScope(`See [guide][g].\n\n${container}\n`),
@@ -276,8 +344,6 @@ test("a definition inside a block quote or a list is still document-wide", () =>
 });
 
 test("only spaces and tabs may follow a closing fence marker", () => {
-  // U+00A0 after the marker is code content to marked, so the fence is still open and
-  // the marker on the next line is the one that closes it.
   const reply =
     "See [guide][g].\n\n```ts\nconst x = 1;\n```\u00a0\n```\n\n[g]: /guide\n";
 
@@ -302,11 +368,10 @@ test("a fence marker inside a raw HTML block is literal content", () => {
 });
 
 test("the block split is shared per reply without leaking between replies", () => {
-  // `blocksOf` keeps one slot at module scope. Two messages streaming at once interleave
-  // their calls through it, so the only thing keeping that honest is that the slot is keyed
-  // on the exact reply text: a miss recomputes, it never answers for the wrong reply.
+  // blocksOf keeps one module-level slot keyed on the exact reply text; a miss recomputes.
   const plain = "Message A.\n\n```ts\nconst a = grid[r][c];\n```\n";
-  const withReference = "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
+  const withReference =
+    "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
   const other = "Message C.\n\n```js\nconst c = 1;\n```\n";
 
   for (const reply of [plain, withReference, other, withReference, plain]) {
@@ -361,6 +426,231 @@ test("link references and definitions stay in one rendered document", () => {
   );
 });
 
+// The key reads un-normalised text, so every line ending must be covered.
+test("a definition that spans lines still moves the render key", () => {
+  const labels = ["foo", "x".repeat(250), "foo\nbar", "foo\\\nbar"];
+
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    const eol = (text: string) => text.replaceAll("\n", newline);
+    const usage = eol(`Before [reference][foo bar].\n\n${paragraphs(20)}`);
+
+    for (const label of labels) {
+      for (const [container, indent] of [
+        ["", "  "],
+        ["> ", "> "],
+        ["- ", "  "],
+      ] as const) {
+        for (const separator of [" ", `\n${indent}`]) {
+          const opened = `${usage}${eol(`${container}[${label}]:${separator}`)}`;
+          const destined = `${opened}https://example.com/reference`;
+          const titled = `${destined}${eol(`\n${indent}"reference"`)}`;
+          const shape = JSON.stringify(
+            eol(`${container}[${label}]:${separator}`),
+          );
+
+          assert.equal(markdownRenderScope(destined), "document", shape);
+          assert.notEqual(
+            markdownRenderKey(opened),
+            markdownRenderKey(destined),
+            `render key did not move for the destination of ${shape}`,
+          );
+          assert.notEqual(
+            markdownRenderKey(destined),
+            markdownRenderKey(titled),
+            `render key did not move for the title of ${shape}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test("prose after a definition does not move the render key", () => {
+  const tails = [
+    "ordinary prose that follows on the next line",
+    '"a quoted sentence that keeps going',
+    "'a quoted sentence that keeps going",
+    "(a parenthetical that keeps going",
+  ];
+
+  for (const [container, indent] of [
+    ["", ""],
+    ["> ", "> "],
+    ["- ", "  "],
+    ["1. ", "   "],
+  ] as const) {
+    for (const definition of [
+      `${container}[g]: /guide`,
+      `${container}[g]: /guide "settled"`,
+      `${container}[g]:\n${indent}/guide`,
+    ]) {
+      for (const tail of tails) {
+        const settled = `See [g][g].\n\n${definition}`;
+        const key = markdownRenderKey(settled);
+        const shape = JSON.stringify(`${definition}⏎${tail}`);
+
+        for (let index = 1; index <= tail.length; index += 1) {
+          const separator = definition.includes("\n") ? " " : `\n${indent}`;
+          assert.equal(
+            markdownRenderKey(`${settled}${separator}${tail.slice(0, index)}`),
+            key,
+            `render key moved for prose after ${shape} at prefix ${index}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+// marked stores spaces in angle destinations, so the key must follow to `>`.
+test("an angle-bracketed destination keeps moving the render key", () => {
+  const usage = "See [guide][g].\n\n";
+  const streamed = [
+    "[g]: <https://x.test/a",
+    "[g]: <https://x.test/a ",
+    "[g]: <https://x.test/a b",
+    "[g]: <https://x.test/a b>",
+    '[g]: <https://x.test/a b> "settled"',
+  ];
+
+  let previous = markdownRenderKey(`${usage}[g]: `);
+  for (const step of streamed) {
+    const key = markdownRenderKey(usage + step);
+    assert.notEqual(key, previous, `render key did not move for ${step}`);
+    previous = key;
+  }
+
+  let bareStep = markdownRenderKey(`${usage}[g]: `);
+  for (const step of ["https://x.test/a", "https://x.test/a>", "https://x.test/a>b"]) {
+    const key = markdownRenderKey(`${usage}[g]: ${step}`);
+    assert.notEqual(key, bareStep, `render key did not move for ${step}`);
+    bareStep = key;
+  }
+
+  for (const [container, indent] of [
+    ["", "  "],
+    ["> ", "> "],
+  ] as const) {
+    const destined = `${usage}${container}[g]: /url  `;
+    assert.notEqual(
+      markdownRenderKey(destined),
+      markdownRenderKey(`${destined}\n${indent}"title"`),
+      `render key did not move for a padded title behind ${JSON.stringify(container)}`,
+    );
+  }
+
+  const bare = markdownRenderKey(`${usage}[g]: https://x.test/ab`);
+  assert.equal(
+    markdownRenderKey(`${usage}[g]: https://x.test/ab\nordinary prose follows`),
+    bare,
+  );
+});
+
+test("the widest label is still found far into a reply", () => {
+  const padding = "ordinary prose. ".repeat(400);
+  for (const filler of ["z", "\u{1F600}", "\\z", "\\\u{1F600}"]) {
+    const reply = `See [guide][g].\n\n${padding}\n\n[${filler.repeat(999)}]: /url`;
+    assert.equal(
+      markdownRenderScope(reply),
+      "document",
+      `a 999-repetition label of ${JSON.stringify(filler)} was not found`,
+    );
+  }
+});
+
+test("a bracket-dense reply does not stall the scan", () => {
+  const reply = `See [guide][g].\n\n${"[".repeat(100_000)}\n\n[g]: /guide`;
+  for (let run = 0; run < 3; run += 1) markdownRenderScope(reply);
+  const samples = [];
+  for (let run = 0; run < 5; run += 1) {
+    const started = performance.now();
+    markdownRenderScope(reply);
+    samples.push(performance.now() - started);
+  }
+  const median = samples.sort((a, b) => a - b)[2];
+  assert.ok(median < 150, `scope took ${median.toFixed(1)}ms on a 100k bracket-dense reply`);
+});
+
+test("malformed inline-link titles do not rescan the remaining reply", () => {
+  const reply = `${"[x](/url (".repeat(20_000)}\` [1] \`\n\n[1]: /one\n`;
+  const started = performance.now();
+  markdownRenderScope(reply);
+  const elapsed = performance.now() - started;
+  assert.ok(
+    elapsed < 500,
+    `20k malformed inline links took ${elapsed.toFixed(1)}ms`,
+  );
+});
+
+test("unterminated HTML delimiters do not rescan the remaining reply", () => {
+  const reply = `${"<!--".repeat(20_000)}\` [1]\n\n[1]: /one\n`;
+  const started = performance.now();
+  assert.equal(markdownRenderScope(reply), "document");
+  const elapsed = performance.now() - started;
+  assert.ok(
+    elapsed < 500,
+    `20k unterminated HTML comments took ${elapsed.toFixed(1)}ms`,
+  );
+});
+
+// Scope decides what is committed, so it cannot follow the reply's line ending.
+// This label is 999 normalised, 1000 raw under CRLF.
+test("the render scope does not depend on the reply's line ending", () => {
+  const label = `foo${" ".repeat(995)}`;
+  const usage = `Before [reference][foo].\n\n${paragraphs(20)}`;
+
+  const source = `${usage}[${label}\n]: https://example.com/reference`;
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    assert.equal(
+      markdownRenderScope(source.replaceAll("\n", newline)),
+      "document",
+      JSON.stringify(newline),
+    );
+  }
+});
+
+test("extended definitions keep their scope and key outside code blocks", () => {
+  const labels = [
+    "x".repeat(250),
+    "x".repeat(999),
+    "foo\nbar",
+    "foo\\\nbar",
+    "😀".repeat(520),
+  ];
+  const usage = "See [guide][g].\n\n";
+
+  for (const label of labels) {
+    for (const prefix of ["", "> ", "- ", "1. ", "- > "]) {
+      for (const newline of ["\n", "\r\n", "\r"]) {
+        const eol = (text: string) => text.replaceAll("\n", newline);
+        const definition = `${prefix}[${label}]: /guide`;
+        const reply = eol(`${usage}${definition}`);
+        assert.equal(markdownRenderScope(reply), "document", reply);
+        assert.notEqual(
+          markdownRenderKey(reply),
+          markdownRenderKey(`${reply}-changed`),
+        );
+        assert.deepEqual(parseMarkdownIntoRenderableBlocks(reply), [reply]);
+      }
+    }
+
+    const fenced = `\`\`\`md\n[${label}]: /code\n\`\`\``;
+    const indented = `[${label}]: /code`
+      .split("\n")
+      .map((line) => `    ${line}`)
+      .join("\n");
+    for (const code of [fenced, indented]) {
+      assert.equal(markdownRenderScope(`${usage}${code}`), "blocks", code);
+      const real = `${usage}[g]: /guide`;
+      assert.equal(
+        markdownRenderKey(`${real}\n\n${code}`),
+        markdownRenderKey(real),
+        code,
+      );
+    }
+  }
+});
+
 test("a transient marker imbalance can recover incremental parsing", () => {
   const cache = new IncrementalMarkdownCache();
   const unbalanced = `Match *.py files here.\n\n${paragraphs(20)}`;
@@ -406,14 +696,10 @@ test("single-dollar parity affects the retained tail repair", () => {
 });
 
 test("a code character class matches Streamdown's own footnote short-circuit", () => {
-  // `\s` is outside `[\w-]`, so this never looks like a footnote and retains.
   const escaped = `\`\`\`js\nconst token = /[^\\s]+/;\n\`\`\`\n\n${paragraphs(100)}`;
   const render = new IncrementalMarkdownCache().update(escaped);
   assert.ok(render.markdown.length < escaped.length / 4);
 
-  // `[^a-z]` does match, and Streamdown's splitter short-circuits on the same
-  // pair of raw regexes and returns the whole reply as one block, so the
-  // full-document path is the answer that agrees with it.
   const matching = `\`\`\`js\nconst re = /[^a-z]/;\n\`\`\`\n\n${paragraphs(100)}`;
   assert.equal(parseMarkdownIntoBlocks(remend(matching)).length, 1);
   const fallback = new IncrementalMarkdownCache().update(matching);
@@ -425,8 +711,7 @@ test("a code character class matches Streamdown's own footnote short-circuit", (
 });
 
 test("a marker the reply never closes gives up on the retained prefix", () => {
-  // Without this the boundary scan is paid on every update on top of the full
-  // repair it exists to replace, which is slower than not being there at all.
+  // Otherwise the boundary scan is paid on top of the full repair it replaces.
   const source = `\`\`\`sh\necho $HOME\n\`\`\`\n\n${paragraphs(4000)}`;
   const cache = new IncrementalMarkdownCache();
   const render = cache.update(source);
@@ -440,8 +725,6 @@ test("a marker the reply never closes gives up on the retained prefix", () => {
     parseMarkdownIntoBlocks(remend(source)),
   );
 
-  // A short-lived imbalance still recovers, so the budget has to be well above
-  // an ordinary unclosed marker.
   const transient = `Match *.py files here.\n\n${paragraphs(20)}`;
   const transientCache = new IncrementalMarkdownCache();
   transientCache.update(transient);
@@ -453,8 +736,6 @@ test("a marker the reply never closes gives up on the retained prefix", () => {
 });
 
 test("an edit that drops retained blocks moves the render identity", () => {
-  // Deleting exactly the retained prefix leaves the live tail, and with it the
-  // only thing Streamdown compares, unchanged.
   const source = paragraphs(30);
   const cache = new IncrementalMarkdownCache();
   const streamed = cache.update(source);
@@ -469,8 +750,6 @@ test("an edit that drops retained blocks moves the render identity", () => {
     parseMarkdownIntoBlocks(remend(streamed.markdown)),
   );
 
-  // A reply that only grows never remounts, including while the stabilizer
-  // withholds an ambiguous trailing line.
   const streaming = new IncrementalMarkdownCache();
   for (let length = 1; length <= source.length; length += 5) {
     streaming.update(source.slice(0, length));
@@ -480,8 +759,6 @@ test("an edit that drops retained blocks moves the render identity", () => {
 });
 
 test("a definition shown inside a fenced example still retains", () => {
-  // Marked reads that line as code, so treating it as a definition would stall
-  // retention for the rest of the reply.
   const shown = `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(30)}end`;
   const shownCache = new IncrementalMarkdownCache();
   let render = shownCache.update("");
@@ -490,9 +767,14 @@ test("a definition shown inside a fenced example still retains", () => {
   }
   assert.ok(render.markdown.length < shown.length / 3);
 
-  // A real definition is never retained, whatever block it sits in, so Marked
-  // always lexes it together with a later twin and absorbs the duplicate.
-  for (const first of ["[x]: https://e.test", "> [x]: https://e.test"]) {
+  for (const first of [
+    "[x]: https://e.test",
+    "[x\ny]: https://e.test",
+    "> [x]: https://e.test",
+    "- [x]: https://e.test",
+    "- - [x]: https://e.test",
+    "> - [x]: https://e.test",
+  ]) {
     const repeated = `${first}\n\n${paragraphs(30)}[x]: https://e.test\n\nend`;
     const cache = new IncrementalMarkdownCache();
     let repeatedRender = cache.update("");
@@ -505,13 +787,11 @@ test("a definition shown inside a fenced example still retains", () => {
       repeatedRender.parseMarkdownIntoBlocks(repeatedRender.markdown),
       parseMarkdownIntoBlocks(remend(processStreamingText(repeated))),
     );
+    assert.ok(repeatedRender.markdown.length > repeated.length / 2, first);
   }
 });
 
 test("an update with unchanged text repeats no work", () => {
-  // Tokens arrive faster than frames, so the coalescer hands the same text to
-  // several renders. Redoing the repair there is the whole reply again once the
-  // full-document path is in use.
   const source = `A claim[^note]\n\n${"a paragraph of reply text\n\n".repeat(6000)}`;
   const cache = new IncrementalMarkdownCache();
   const first = cache.update(source);
@@ -524,9 +804,7 @@ test("an update with unchanged text repeats no work", () => {
 });
 
 test("Streamdown re-renders only when the Markdown string changes", () => {
-  // Its memo comparator is what decides whether the parser callback runs again,
-  // and it does not compare that callback. Retaining a block therefore has to
-  // change the Markdown too, or the retained block never reaches the DOM.
+  // Streamdown's memo comparator ignores the parser callback, so retaining must change the Markdown.
   const { compare } = Streamdown as unknown as {
     compare: (previous: object, next: object) => boolean;
   };
@@ -543,9 +821,6 @@ test("Streamdown re-renders only when the Markdown string changes", () => {
 });
 
 test("a repeating reply keeps displaying every retained block", () => {
-  // A reply that repeats a line leaves the tail unchanged when an update
-  // retains exactly what it appended, so the cache must not hand Streamdown a
-  // Markdown string it already holds.
   const line = "I cannot provide that information.\n\n";
   const step = line.length;
   const source = `Here is the answer.\n\n${line.repeat(60)}`;
@@ -561,16 +836,10 @@ test("a repeating reply keeps displaying every retained block", () => {
       displayed = render.parseMarkdownIntoBlocks(render.markdown);
     }
     assert.deepEqual(displayed, parseMarkdownIntoBlocks(remend(input)));
-    // Retaining one update later must not let the live tail track the reply.
     assert.ok(render.markdown.length < step * 6);
   }
 });
 
-// The stalled-tail budget is only reachable once the live tail holds more than
-// ROLLBACK_BLOCKS blocks, so a single long fenced block never reaches it: while
-// the fence is open the tail lexes to a handful of blocks and stays retainable.
-// What reaches it is an inline marker with many paragraphs before its closer,
-// and since the budget is spent before giving up, that shape sizes the budget.
 test("an emphasis marker that closes far later stays near the full-repair cost", () => {
   const source = `An *opening\n\n${paragraphs(3_600)}closing* marker.\n\n${paragraphs(200)}`;
   const cache = new IncrementalMarkdownCache();
@@ -586,16 +855,12 @@ test("an emphasis marker that closes far later stays near the full-repair cost",
     render.parseMarkdownIntoBlocks(render.markdown),
     parseMarkdownIntoBlocks(remend(input)),
   );
-  // Retaining nothing is the correct answer here; retaining the attempt is not.
   assert.equal(
     (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
     true,
   );
 });
 
-// A long fenced block is the shape most likely to be mistaken for the budget's
-// trigger. It is not one: it keeps retaining, so a code-heavy answer does not
-// quietly lose the optimisation.
 test("a fenced block larger than the budget keeps retaining", () => {
   const body = "const value = compute(argument, options, fallback);\n".repeat(
     1_700,
@@ -618,4 +883,185 @@ test("a fenced block larger than the budget keeps retaining", () => {
     render.parseMarkdownIntoBlocks(render.markdown),
     parseMarkdownIntoBlocks(remend(input)),
   );
+});
+
+test("a `]:` whose window holds no `[` is skipped without changing the answer", () => {
+  assert.equal(markdownRenderScope(`See [x][a[].\n\n${paragraphs(12)}[a[]: /url\n`), "document");
+  assert.equal(markdownRenderScope(`See [x][y].\n\n${"]: ".repeat(2000)}`), "blocks");
+});
+
+test("a reply dense with `]:` and no definition does not pay per occurrence", () => {
+  // The skip shrinks the constant (~80x), not the order; the bound is loose for slow runners.
+  const dense = `See [guide][g].\n\n${"]: ".repeat(166666)}`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(dense + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(dense + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 100,
+    `500k of \`]:\` cost ${median.toFixed(1)}ms; the per-occurrence window scan is back`);
+
+  const invalid = `See [guide][g].\n\n${"[]: ".repeat(125000)}`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(invalid + " ");
+  const invalidRuns: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(invalid + " ".repeat(i));
+    invalidRuns.push(performance.now() - t0);
+  }
+  const invalidMedian = invalidRuns.sort((a, b) => a - b)[2]!;
+  assert.ok(invalidMedian < 100,
+    `500k of \`[]:\` cost ${invalidMedian.toFixed(1)}ms; invalid candidates are being rescanned`);
+});
+
+test("unclosed backtick runs of many widths do not rescan the paragraph", () => {
+  // widths 1..800 expose lazy-regex tail rescans; 100ms is well below the ~900ms regression.
+  let runs = "";
+  for (let width = 1; width <= 800; width += 1) {
+    runs += `${"`".repeat(width)}a`;
+  }
+  const reply = `See [1]. ${runs}\n\n[1]: https://x.test\n`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(reply + " ");
+  const samples: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    assert.equal(markdownRenderScope(reply + " ".repeat(i)), "document");
+    samples.push(performance.now() - t0);
+  }
+  const median = samples.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 100, `321k of backtick runs cost ${median.toFixed(1)}ms`);
+});
+
+test("a reference label past the old cap still resolves against its definition", () => {
+  // A label resolves only when BOTH probes admit it, so their caps must match (999).
+  for (const length of [200, 201, 400, 999]) {
+    const label = "L".repeat(length);
+    const reply = `See [guide][${label}].\n\n[${label}]: https://x.test/a\n`;
+    assert.equal(markdownRenderScope(reply), "document",
+      `a ${length}-character label did not reach the document path`);
+    assert.equal(markdownRenderKey(reply), `document:[${label}]: https://x.test/a`);
+  }
+  // 999 is CommonMark's cap; remark renders 0 links past it, so the blocks path loses nothing.
+  const tooLong = "L".repeat(1000);
+  assert.equal(markdownRenderScope(`See [guide][${tooLong}].\n\n[${tooLong}]: /u\n`), "blocks");
+});
+
+test("a run of `[` before a reference does not walk the widened label budget", () => {
+  const run = `${"[".repeat(500000)}][x]`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(run + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(run + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 150,
+    `500k of \`[\` cost ${median.toFixed(1)}ms; the reference probe is walking every start position`);
+});
+
+test("a reply whose every `]` is escaped does not rescan the tail per seam", () => {
+  // `\][` leaves no unescaped `]`, so a cached -1 would rescan the tail per seam.
+  const escaped = "\\][".repeat(166_666);
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(escaped + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(escaped + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 150,
+    `500k of \`\\][\` cost ${median.toFixed(1)}ms; an exhausted lookahead is being re-asked per seam`);
+});
+
+test("a seam whose reference label is past the cap is rejected once, not per `[`", () => {
+  const packed = `${"[".repeat(3000)}][${"y".repeat(3000)}]`.repeat(83);
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(packed + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(packed + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 150,
+    `500k of packed \`[\` cost ${median.toFixed(1)}ms; the window is re-tested from every \`[\``);
+  const label = "L".repeat(400);
+  assert.equal(markdownRenderScope(`See [guide][${label}].\n\n[${label}]: /u\n`), "document");
+});
+
+const STREAM_CHUNK = 24;
+const LOOKALIKE_PROSE = paragraphs(1_200);
+
+const streamInChunks = (source: string) => {
+  const cache = new IncrementalMarkdownCache();
+  for (let length = 0; length < source.length; length += STREAM_CHUNK) {
+    cache.update(source.slice(0, length));
+  }
+  return { cache, render: cache.update(source) };
+};
+
+const isFullDocumentMode = (cache: IncrementalMarkdownCache): boolean =>
+  (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode;
+
+test("a list-nested Python annotation does not stick to the full-document path", () => {
+  // The block opens with the list marker, not the fence.
+  for (const block of [
+    "1. item\n   ```python\n   def f() -> list[str]:\n       return []\n   ```",
+    "- item\n  ```python\n  def f() -> list[str]:\n      return []\n  ```",
+    "10. item\n    ```python\n    def f() -> list[str]:\n        return []\n    ```",
+  ]) {
+    const source = `See [a][ref].\n\n${block}\n\n${LOOKALIKE_PROSE}`;
+    const { cache, render } = streamInChunks(source);
+    assert.equal(markdownRenderScope(source), "blocks", block);
+    assert.equal(isFullDocumentMode(cache), false, block);
+    assert.ok(render.markdown.length < source.length / 4, block);
+  }
+});
+
+test("wrapped and unfenced lookalikes do not force the document path", () => {
+  for (const block of [
+    "```python\nlist[\n str\n]:\n```",
+    'd[\n "key"\n]: int',
+    'd["key"]: int',
+  ]) {
+    const source = `See [a][ref].\n\n${block}\n\n${LOOKALIKE_PROSE}`;
+    const { cache, render } = streamInChunks(source);
+    assert.equal(markdownRenderScope(source), "blocks", block);
+    assert.equal(isFullDocumentMode(cache), false, block);
+    assert.ok(render.markdown.length < source.length / 4, block);
+  }
+});
+
+test("a live reference pair inside a list or quote still holds as one document", () => {
+  for (const definition of [
+    "- [g]: /guide",
+    "> [g]: /guide",
+    "- - [g]: /guide",
+    "- > [g]: /guide",
+  ]) {
+    const source = `See [guide][g].\n\n${definition}\n\n${paragraphs(12)}end`;
+    const { cache } = streamInChunks(source);
+    assert.equal(markdownRenderScope(source), "document", definition);
+    assert.equal(isFullDocumentMode(cache), true, definition);
+  }
+});
+
+test("the animation-free plugin list keeps its identity across Streamdown's rebuilds", () => {
+  const animation = () => undefined;
+  const other = () => undefined;
+  const tuple = [other, { depth: 1 }] as const;
+  const animatePlugin = { rehypePlugin: animation } as never;
+  const streaming = [other, [tuple[0], tuple[1]], animation] as never;
+  const settled = [other, [tuple[0], tuple[1]]] as never;
+  const first = withoutStreamdownAnimationPlugin(streaming, animatePlugin);
+  const second = withoutStreamdownAnimationPlugin(settled, animatePlugin);
+  assert.equal(first, second, "the same plugins in the same order are one list, so blocks keep their memoised render");
+  assert.equal(withoutStreamdownAnimationPlugin(streaming, animatePlugin), first, "and a repeated input is a cache hit");
+  const different = [other] as never;
+  assert.notEqual(withoutStreamdownAnimationPlugin(different, animatePlugin), first, "a different list is a different identity");
 });

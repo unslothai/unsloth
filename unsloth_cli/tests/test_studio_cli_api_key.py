@@ -114,12 +114,12 @@ def test_different_names_keep_separate_keys(studio_home, monkeypatch):
 @pytest.mark.parametrize(
     "first_name, second_name",
     [
-        ("foo/bar", "foo?bar"),  # punctuation collapses to the same "_"
-        ("my key", "my_key"),  # space vs underscore
-        ("k" * 70 + "A", "k" * 70 + "B"),  # differ only past the 64-char cut
-        ("///", "cli"),  # sanitizes to empty, falls back to "cli"
-        ("cli", "CLI"),  # collides on APFS / NTFS case folding
-        ("中文", "日本"),  # non-ASCII stems both fold to "_", so only the digest separates them
+        ("foo/bar", "foo?bar"),
+        ("my key", "my_key"),
+        ("k" * 70 + "A", "k" * 70 + "B"),
+        ("///", "cli"),
+        ("cli", "CLI"),
+        ("中文", "日本"),
     ],
 )
 def test_distinct_names_never_share_a_cache_file(studio_home, monkeypatch, first_name, second_name):
@@ -130,7 +130,6 @@ def test_distinct_names_never_share_a_cache_file(studio_home, monkeypatch, first
 
     first_path = studio_mod._cli_api_key_secret_path(first_name)
     second_path = studio_mod._cli_api_key_secret_path(second_name)
-    # .lower(): on a case-insensitive filesystem the two would be one file.
     assert first_path.name.lower() != second_path.name.lower()
 
     first = studio_mod._create_api_key_inprocess(first_name)
@@ -149,8 +148,7 @@ def test_distinct_names_never_share_a_cache_file(studio_home, monkeypatch, first
         "..",
         "-",
         "x/y",
-        # isalnum() but multibyte: 64 chars was 282 bytes, over the 255-BYTE
-        # NAME_MAX, so the cache missed with ENAMETOOLONG and re-minted every launch.
+        # Multibyte isalnum(): 64 chars was 282 bytes, over NAME_MAX (255 bytes).
         "\U0001d7d8" * 64,
         "中文" * 100,
         "\U0001f600" * 80,
@@ -170,7 +168,7 @@ def test_cache_path_is_a_safe_filename_inside_auth(studio_home, name):
     "exc",
     [
         OSError(30, "Read-only file system"),
-        PermissionError(13, "locked by another process"),  # Windows AV / indexer
+        PermissionError(13, "locked by another process"),
         IsADirectoryError(21, "Is a directory"),
     ],
 )

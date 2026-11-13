@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: the diffusion paths must stub xformers and torchao before importing diffusers.
-
-The Windows xformers pin is CUDA-only, so against a ROCm torch (no distributed backend) ``import
-xformers.ops`` dies inside torch.distributed, and diffusers imports xformers on sight, so such a
-host cannot load any image or video model and the error names neither xformers nor the cause.
-diffusers reaches torchao the same way, through its quantizers.
-
-Every ``import diffusers`` there is lazy, so a module-scope install is what puts the stubs in
-first; asserting module scope stops a later edit tucking one inside a skippable function. Those
-modules are not enough alone: a stub only seeds names nothing has imported yet, and the server has
-already pulled torchao in via the route tree, so run.py installs both before its first import.
-
-CPU-only: source is parsed with ``ast``, and the behaviour tests fake the platform probe.
-"""
+"""Stubs for xformers and torchao must load at module scope, before diffusers imports them on sight."""
 
 from __future__ import annotations
 
@@ -27,18 +14,21 @@ import pytest
 
 from core import _torchao_stub
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
 
-_BACKEND = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND = Path(__file__).resolve().parent.parent
 _CORE = _BACKEND / "core"
-# Renaming either installer breaks the import above, loudly, rather than these assertions.
 _INSTALLS = frozenset(
-    {install_xformers_windows_rocm_stub.__name__, install_torchao_windows_rocm_stub.__name__}
+    {
+        install_xformers_windows_rocm_stub.__name__,
+        hide_xformers_built_for_another_torch.__name__,
+        install_torchao_windows_rocm_stub.__name__,
+    }
 )
 
-# Where diffusers gets imported: the loader, and the trainers' shared module (a spawned child, so the loader's install does not carry over).
 _DIFFUSION_MODULES = [
     _CORE / "inference" / "diffusion.py",
     _CORE / "training" / "diffusion_train_common.py",
@@ -47,7 +37,7 @@ _DIFFUSION_MODULES = [
 _ENTRY_POINT = _BACKEND / "run.py"
 _STUB_MODULE = "core._torchao_stub"
 _ML_ROOTS = frozenset({"diffusers", "peft", "torch", "torchao", "transformers", "xformers"})
-# Must run BEFORE the installers: these set the env vars torch reads when it sizes its OpenMP/BLAS pools. Imports stdlib only.
+# Must run before the installers: sets env vars torch reads for thread pools.
 _PRE_STUB = frozenset({"utils.cpu_threads"})
 
 
@@ -63,7 +53,6 @@ def _import_roots(node) -> set[str]:
 
 
 def _reaches_torch(root: str) -> bool:
-    # Anything in the backend tree can, transitively; probing the tree keeps this honest as modules come and go. stdlib falls through.
     return root in _ML_ROOTS or (_BACKEND / root).is_dir() or (_BACKEND / f"{root}.py").is_file()
 
 
@@ -84,7 +73,7 @@ def test_diffusion_modules_install_both_stubs_at_module_scope(path):
     tree = ast.parse(path.read_text(encoding = "utf-8"))
 
     assert _module_level_installs(tree) == _INSTALLS, (
-        f"{path.relative_to(_BACKEND)} must call both stub installers at module scope, before the "
+        f"{path.relative_to(_BACKEND)} must call every import guard at module scope, before the "
         "lazy `import diffusers` calls below them."
     )
 
@@ -124,11 +113,11 @@ def test_the_entry_point_installs_both_stubs_before_its_first_heavy_import():
                     "reaches torchao or xformers is a no-op."
                 )
 
-    assert installed == _INSTALLS, "run.py must call both stub installers at module scope"
+    assert installed == _INSTALLS, "run.py must call every import guard at module scope"
 
 
 def _is_stub_key(name: str) -> bool:
-    # Both packages: a torchao stub left behind turns a later importorskip("torchao.quantization") into a silent no-op.
+    # A leftover torchao stub makes a later importorskip a silent no-op.
     return any(name == p or name.startswith(p + ".") for p in ("xformers", "torchao"))
 
 
@@ -149,7 +138,6 @@ def on_windows_rocm(monkeypatch):
 def test_xformers_is_stubbed_on_windows_rocm(on_windows_rocm):
     install_xformers_windows_rocm_stub()
 
-    # The names diffusers imports, plus a deeper one nothing seeded: the finder covers it.
     import xformers  # noqa: F401
     import xformers.ops  # noqa: F401
     import xformers.ops.fmha  # noqa: F401
@@ -170,13 +158,96 @@ def test_a_real_xformers_is_left_alone(on_windows_rocm, monkeypatch):
 
 
 def test_no_stub_off_windows_rocm(monkeypatch):
-    # A CUDA or Linux host has a working xformers; shadowing it would cost real attention kernels.
     monkeypatch.setattr(_torchao_stub, "_is_windows_rocm", lambda: False)
     monkeypatch.delitem(sys.modules, "xformers", raising = False)
 
     install_xformers_windows_rocm_stub()
 
     assert "xformers" not in sys.modules
+
+
+_BROKEN_XFORMERS_PROBE = """
+import importlib.util, json, sys
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
+from core._torchao_stub import hide_xformers_built_for_another_torch
+hide_xformers_built_for_another_torch()
+out = {"visible": importlib.util.find_spec("xformers") is not None}
+try:
+    import xformers.ops
+    out["import"] = "ok"
+except Exception as exc:
+    out["import"] = type(exc).__name__
+if importlib.util.find_spec("diffusers") is not None:
+    from diffusers.utils import is_xformers_available
+    out["diffusers_sees_xformers"] = is_xformers_available()
+print(json.dumps(out))
+"""
+
+
+def _fake_xformers(root: Path, torch_requirement: str) -> Path:
+    """An xformers whose ops import fails as 0.0.35's does on torch 2.6, declaring ``torch_requirement``."""
+    pkg = root / "xformers"
+    (pkg / "ops").mkdir(parents = True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "ops" / "__init__.py").write_text(
+        "raise ImportError(\"cannot import name 'GroupName' from 'torch.distributed.distributed_c10d'\")\n"
+    )
+    dist = root / "xformers-0.0.35.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: xformers\nVersion: 0.0.35\nRequires-Dist: {torch_requirement}\n"
+    )
+    return root
+
+
+def _probe_broken_xformers(tmp_path, torch_requirement):
+    import json
+    import subprocess
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        version("torch")
+    except PackageNotFoundError:
+        pytest.skip("the check compares against the installed torch's metadata")
+    site = _fake_xformers(tmp_path, torch_requirement)
+    result = subprocess.run(
+        [sys.executable, "-c", _BROKEN_XFORMERS_PROBE, str(site), str(_BACKEND)],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1]), result.stderr
+
+
+def test_an_xformers_requiring_a_newer_torch_looks_uninstalled(tmp_path):
+    seen, stderr = _probe_broken_xformers(tmp_path, "torch>=999")
+
+    assert seen["visible"] is False
+    assert seen["import"] == "ModuleNotFoundError"
+    assert seen.get("diffusers_sees_xformers", False) is False
+    assert "requires torch>=999" in stderr
+
+
+def test_an_xformers_whose_torch_requirement_holds_is_left_visible(tmp_path):
+    seen, stderr = _probe_broken_xformers(tmp_path, "torch>=1")
+
+    assert seen["visible"] is True
+    assert seen["import"] == "ImportError"
+    assert "requires torch" not in stderr
+
+
+def test_an_already_imported_xformers_is_not_replaced(monkeypatch):
+    real = types.ModuleType("xformers")
+    monkeypatch.setitem(sys.modules, "xformers", real)
+    monkeypatch.setattr(
+        "utils.wheel_utils.xformers_torch_requirement_unmet",
+        lambda: ("0.0.35", ">=2.10", "2.6.0+cu124"),
+    )
+
+    hide_xformers_built_for_another_torch()
+
+    assert sys.modules["xformers"] is real
 
 
 def test_the_finder_is_registered_once(on_windows_rocm):
@@ -215,8 +286,6 @@ def test_dense_quant_declines_a_stubbed_torchao(on_windows_rocm):
 def test_dense_quant_still_allowed_without_the_stub(on_windows_rocm):
     """The positive control: the guard must reject the stub, not the whole path."""
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
-
-    # The fixture cleared torchao out of sys.modules, so nothing is stubbed here.
     assert dense_transformer_supported(_bf16_target()) is True
 
 
@@ -265,15 +334,13 @@ def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode, monkeypatch):
     with pytest.raises(ValueError, match = "Windows-ROCm stub"):
         _resolve_base_precision(cfg, None, "cuda")
 
-    # Pin the earlier gates: on a CPU-only runner they answer first and correctly,
-    # so without this the assertion below reads their message and the stub gate is
-    # never exercised (it passes only on a GPU host).
+    # Pin earlier gates, or on CPU runners they answer first and the stub gate is skipped.
     import torch
 
     monkeypatch.setattr(dtc, "bf16_unsupported_reason", lambda _f: None)
     monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda _f: None)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    # A real DiT family name, or the gate block is skipped and the test proves nothing.
+    # A real DiT family name, or the gate block is skipped.
     reason = training_precision_preflight_error("flux.1", mode)
     assert reason and "Windows-ROCm stub" in reason, (
         f"the child refuses {mode} under the stub but the preflight does not, so a start would "
@@ -284,9 +351,8 @@ def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode, monkeypatch):
 @pytest.mark.parametrize(
     "dist_version, hip_line, expected",
     [
-        # AMD's own Windows build (repo.radeon.com/rocm/windows) carries no "rocm" tag, so only hip answers.
+        # AMD's Windows build has no "rocm" tag, so only hip answers.
         ("2.8.0a0+gitfc14c65", "hip: Optional[str] = '6.4.50101-9a6572ae7'", True),
-        # download.pytorch.org and TheRock DO tag theirs; the fast path must still work.
         ("2.9.1+rocm7.2.1", "hip: Optional[str] = '7.2.1'", True),
         ("2.9.0+rocmsdk20251116", "hip: Optional[str] = None", True),
         ("2.9.1+cu128", "hip: Optional[str] = None", False),
@@ -320,7 +386,6 @@ def test_rocm_is_detected_off_disk_without_importing_torch(
     assert "torch" not in sys.modules
 
 
-# The two ways a ROCm wheel identifies itself: torch.version.hip set (pytorch.org), or a "rocm" tag in torch.__version__ only (AMD SDK / Radeon).
 _ROCM_WHEELS = [("7.2.1", "2.9.1+rocm7.2.1"), (None, "2.10.0a0+rocm7.10.0a20251116")]
 
 
@@ -339,5 +404,55 @@ def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch, hip, version):
     for speed in (True, False):
         assert select_attention_backend(rocm, "xformers", speed_active = speed) is None
         assert select_attention_backend(rocm, "auto", speed_active = speed) != "_native_cudnn"
-    # aiter is the AMD kernel: misreading the wheel as NVIDIA drops the one that works here.
     assert select_attention_backend(rocm, "aiter", speed_active = True) == "aiter"
+
+
+def _metadata_free_version(name: str) -> str:
+    """transformers 5's version for a package with no dist-info."""
+    import importlib
+    return getattr(importlib.import_module(name), "__version__", "N/A")
+
+
+@pytest.mark.parametrize(
+    "install, name",
+    [
+        (install_torchao_windows_rocm_stub, "torchao"),
+        (install_xformers_windows_rocm_stub, "xformers"),
+    ],
+)
+def test_a_stub_reports_a_version_every_minimum_rejects(on_windows_rocm, install, name):
+    """Neither package has dist-info on Windows ROCm, so this is the version transformers 5 reads."""
+    from packaging.version import Version
+
+    install()
+    version = _metadata_free_version(name)
+    assert Version(version) < Version("0.0.1"), version
+
+
+def test_transformers_reads_the_torchao_stub_as_unavailable(on_windows_rocm, monkeypatch):
+    transformers = pytest.importorskip("transformers")
+    import importlib.metadata
+
+    from packaging.version import Version
+
+    if Version(transformers.__version__).major < 5:
+        pytest.skip("transformers 4.x reads torchao once, at its own import")
+
+    # Hide torchao's dist-info as on Windows ROCm, or a real install answers.
+    real_version = importlib.metadata.version
+
+    def no_torchao_metadata(name):
+        if name.lower().startswith("torchao"):
+            raise importlib.metadata.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", no_torchao_metadata)
+    install_torchao_windows_rocm_stub()
+    import_utils = pytest.importorskip("transformers.utils.import_utils")
+    probe = import_utils.is_torchao_available
+    clear = getattr(probe, "cache_clear", lambda: None)
+    clear()
+    try:
+        assert probe() is False
+    finally:
+        clear()

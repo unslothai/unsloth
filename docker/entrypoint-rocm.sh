@@ -13,13 +13,28 @@
 #   docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
+# Relink the Studio code into the home before anything reads the venv; fatal on failure.
+if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
+    /usr/local/bin/unsloth-studio-home || {
+        echo "ERROR: could not link Unsloth Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}; see the messages above" >&2
+        exit 1
+    }
+fi
+
+# best-effort, gated by UNSLOTH_SKIP_NOTEBOOK_SYNC, never blocks the container;
+# no-op on the base image, which ships no notebooks
+sync_notebooks() {
+    if [[ -x /usr/local/bin/unsloth-sync-notebooks ]]; then
+        /usr/local/bin/unsloth-sync-notebooks || true
+    fi
+}
+
 err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
 warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
+note() { printf "\033[1;36mNOTE:\033[0m %s\n"  "$*" >&2; }
 
-# UNSLOTH_DEV_ROOT prefixes the /dev probes (DESTDIR idiom) so the regression
-# tests can stage a device tree; leave it unset in normal use.
+# UNSLOTH_DEV_ROOT prefixes /dev probes for the regression tests; unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
-# What the image was built with; written by Dockerfile.rocm.
 BUILD_INFO="${UNSLOTH_ROCM_BUILD_INFO:-/etc/unsloth-rocm-build}"
 IMAGE_ROCM=""
 IMAGE_GFX=""
@@ -27,9 +42,8 @@ if [[ -r "$BUILD_INFO" ]]; then
     IMAGE_ROCM="$(sed -n 's/^ROCM_VERSION=//p' "$BUILD_INFO")"
     IMAGE_GFX="$(sed -n 's/^ROCM_GFX=//p' "$BUILD_INFO")"
 fi
-# A per-arch image has native kernels for its gfx; a leftover
-# HSA_OVERRIDE_GFX_VERSION (the generic-wheel workaround) would make ROCr present
-# an arch this image has no kernels for. install.sh clears it the same way.
+# A per-arch image has native kernels; a leftover HSA_OVERRIDE_GFX_VERSION would present
+# an arch the image lacks.
 case "$IMAGE_GFX" in
     gfx1150|gfx1151|gfx1152|gfx1200|gfx1201)
         if [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
@@ -38,16 +52,53 @@ case "$IMAGE_GFX" in
         fi ;;
 esac
 
-# The skip flag bypasses the diagnostics only; the override cleanup above
-# still applies, since it changes what the command sees.
+# The skip flag bypasses diagnostics only; the override cleanup above still applies.
 if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
+    sync_notebooks
     exec "$@"
 fi
 
-# --- Check 1: /dev/kfd is accessible ----------------------------------------
-# /dev/kfd is the AMD Kernel Fusion Driver node. It must exist AND be readable
-# by the container user before any HIP / torch.cuda call can succeed.
-if [[ ! -e "$DEV_ROOT/dev/kfd" ]]; then
+# Check 1: /dev/kfd (amdgpu), or /dev/dxg on WSL2 via librocdxg with
+# HSA_ENABLE_DXG_DETECTION=1. Check 3 (torch) is the real gate.
+UNSLOTH_ROCM_DEV_PATH=kfd
+if [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]; then
+    _dxg_lib=""
+    # Pins the search for the regression tests.
+    for _d in ${UNSLOTH_ROCM_DXG_LIBDIRS:-/opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib \
+              /opt/rocm-*/lib64 /usr/lib/x86_64-linux-gnu}; do
+        if [[ -e "$_d/librocdxg.so" || -e "$_d/librocdxg.so.1" ]]; then
+            _dxg_lib="$_d"
+            break
+        fi
+    done
+    if [[ -n "$_dxg_lib" ]]; then
+        UNSLOTH_ROCM_DEV_PATH=dxg
+        # Exported so a plain `docker run --device /dev/dxg` works.
+        export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
+        note "no /dev/kfd, but /dev/dxg and librocdxg are present: using the WSL2 DXG bridge."
+    else
+        err "/dev/dxg is present but librocdxg is not, so the DXG bridge cannot load."
+        cat >&2 <<'MSG'
+
+This looks like WSL2, where there is no /dev/kfd and the card is reached through
+librocdxg instead. The image cannot ship that library (its build needs Windows
+SDK headers), so it comes off the host, along with the libdxcore it dlopens from
+WSL's own lib directory. The bundled wrapper mounts both; name this image, since
+it defaults to the published one, which cannot use the bridge:
+  UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>
+Or by hand:
+  docker run --device /dev/dxg \
+    -v /opt/rocm/lib/librocdxg.so.1:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro \
+    -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro -e LD_LIBRARY_PATH=/usr/lib/wsl/lib \
+    <other-flags> unsloth-rocm:latest <cmd>
+
+To bypass this check (e.g. offline tooling), set UNSLOTH_SKIP_GPU_CHECK=1.
+MSG
+        exit 1
+    fi
+fi
+
+if [[ "$UNSLOTH_ROCM_DEV_PATH" == "kfd" && ! -e "$DEV_ROOT/dev/kfd" ]]; then
     err "/dev/kfd not found inside the container."
     cat >&2 <<'MSG'
 
@@ -62,17 +113,20 @@ The AMD GPU device node is missing. Likely causes:
          --group-add $(getent group render | cut -d: -f3) \
          <other-flags> unsloth/unsloth-rocm:latest <cmd>
 
-  2. The host has no /dev/kfd to pass through. Docker Desktop on Windows and
-     macOS never has one (ROCm needs the Linux amdgpu driver; WSL exposes
-     /dev/dxg instead), so this image cannot reach a GPU there. On Linux, check
-     the driver:  lsmod | grep amdgpu
+  2. The host has no /dev/kfd to pass through. On Linux, check the driver:
+       lsmod | grep amdgpu
+     On Windows there is never one: the card is reached over WSL2's /dev/dxg,
+     which only a docker engine running INSIDE your WSL distribution can pass
+     through, and only into a per-arch build of this image:
+       UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>
+     Docker Desktop's own engine exposes neither node.
 
 To bypass this check (e.g. offline tooling), set UNSLOTH_SKIP_GPU_CHECK=1.
 MSG
     exit 1
 fi
 
-if [[ ! -r "$DEV_ROOT/dev/kfd" ]]; then
+if [[ "$UNSLOTH_ROCM_DEV_PATH" == "kfd" && ! -r "$DEV_ROOT/dev/kfd" ]]; then
     err "/dev/kfd exists but is not readable by the container user."
     cat >&2 <<'MSG'
 Add the host's video and render group ids to the container (NUMERIC: the
@@ -83,10 +137,10 @@ MSG
     exit 1
 fi
 
-# --- Check 2: what rocm-smi sees (advisory) --------------------------------
-# rocm-smi does not list every APU (measured on gfx1151: no GPU[..] line inside
-# the container), so it cannot be the gate; check 3 asks torch itself.
-if ! command -v rocm-smi >/dev/null 2>&1; then
+# Check 2 (advisory): rocm-smi misses some APUs and has nothing to read under DXG.
+if [[ "$UNSLOTH_ROCM_DEV_PATH" == "dxg" ]]; then
+    note "skipping rocm-smi: it reads the amdgpu sysfs, which the DXG bridge does not expose."
+elif ! command -v rocm-smi >/dev/null 2>&1; then
     warn "rocm-smi not found inside the container; skipping its listing."
 elif ! rocm-smi --showid 2>/dev/null | grep -q 'GPU\['; then
     warn "rocm-smi lists no GPU from inside the container. That is normal for some APUs;"
@@ -97,10 +151,66 @@ else
     rocm-smi --showid 2>/dev/null | grep 'GPU\[' | head -4 >&2
 fi
 
-# --- Check 3: a HIP torch that can see the device ---------------------------
-# ROCm maps the CUDA Python API, so torch.cuda.is_available() is the test;
-# torch.version.hip first, so a CUDA or CPU torch is named, not the host driver.
-IMAGE_ROCM="$IMAGE_ROCM" python - >&2 <<'PY' || exit 1
+# Generic wheels carry gfx1030 but not its RDNA 2 siblings, which segfault on the first kernel
+# unless run as gfx1030 (#17147). KFD, not torch: the override cannot spoof it. Never on a mixed
+# host (a global override misreports the other cards) or for gfx1033, which check 4 refuses.
+# A gfx1035/gfx1036 iGPU counts only on an APU-only host; beside a card it counts as mixed, since
+# a spoofed iGPU reads as covered and Studio would then select it.
+if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DEV_PATH" == "kfd" ]]; then
+    _gfx_all=()
+    _gfx103x=()
+    _gfx_igpu=()
+    _gfx_other=()
+    for _props in "${UNSLOTH_KFD_TOPOLOGY:-/sys/class/kfd/kfd/topology/nodes}"/*/properties; do
+        [[ -r "$_props" ]] || continue
+        _vendor=""
+        _gtv=0
+        while read -r _key _val; do
+            case "$_key" in
+                vendor_id) _vendor="$_val" ;;
+                gfx_target_version) _gtv="$_val" ;;
+            esac
+        done < "$_props"
+        [[ "$_vendor" == "4098" && "$_gtv" =~ ^[0-9]+$ && "$_gtv" -gt 0 ]] || continue
+        _gfx="$(printf 'gfx%d%d%x' $((_gtv / 10000 % 100)) $((_gtv / 100 % 100)) $((_gtv % 100)))"
+        _gfx_all+=("$_gfx")
+        case "$_gfx" in
+            gfx1030) ;;
+            gfx1031|gfx1032|gfx1034) _gfx103x+=("$_gfx") ;;
+            gfx1035|gfx1036) _gfx_igpu+=("$_gfx") ;;
+            *) _gfx_other+=("$_gfx") ;;
+        esac
+    done
+    if [[ ${#_gfx103x[@]} -gt 0 ]]; then
+        _gfx_other+=("${_gfx_igpu[@]}")
+    elif [[ ${#_gfx_igpu[@]} -eq ${#_gfx_all[@]} ]]; then
+        _gfx103x=("${_gfx_igpu[@]}")
+    fi
+    if [[ ${#_gfx103x[@]} -gt 0 ]]; then
+        _wheel_archs=" $(python - 2>/dev/null <<'PY' || true
+import torch
+print(" ".join(torch.cuda.get_arch_list()))
+PY
+) "
+        _missing=()
+        for _gfx in "${_gfx103x[@]}"; do
+            [[ "$_wheel_archs" == *" $_gfx "* ]] || _missing+=("$_gfx")
+        done
+        if [[ ${#_missing[@]} -gt 0 && "$_wheel_archs" == *" gfx1030 "* ]]; then
+            if [[ ${#_gfx_other[@]} -eq 0 ]]; then
+                export HSA_OVERRIDE_GFX_VERSION=10.3.0
+                note "${_missing[*]} has no kernels in this image's torch, which carries gfx1030: running it as"
+                note "gfx1030 (HSA_OVERRIDE_GFX_VERSION=10.3.0). Set HSA_OVERRIDE_GFX_VERSION yourself to change this."
+            else
+                warn "${_missing[*]} has no kernels in this image's torch; not setting HSA_OVERRIDE_GFX_VERSION=10.3.0"
+                warn "for it, because it would also apply to ${_gfx_other[*]}."
+            fi
+        fi
+    fi
+fi
+
+# Check 3: torch.cuda.is_available() on a HIP build; check torch.version.hip first.
+IMAGE_ROCM="$IMAGE_ROCM" UNSLOTH_ROCM_DEV_PATH="$UNSLOTH_ROCM_DEV_PATH" python - >&2 <<'PY' || exit 1
 import os
 import sys
 
@@ -114,12 +224,45 @@ if hip_ver is None:
     print("rebuild it with bash docker/build.sh --rocm.")
     sys.exit(1)
 
+# BEFORE the first torch.cuda call, which is where this would otherwise abort with a
+# glog FATAL and no explanation. librocprofiler-sdk enumerates GPUs from the KFD sysfs
+# topology; on the DXG bridge there is none, so it finds zero agents, disagrees with the
+# HSA agents that are there, and calls abort(). Match that library alone: the
+# librocprofiler-register.so beside it is harmless, and torch 2.11+rocm7.2 ships it and
+# runs here, so matching "rocprof" refuses a build that works.
+if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
+    _lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+    _prof = sorted(f for f in os.listdir(_lib) if f.startswith("librocprofiler-sdk")) if os.path.isdir(_lib) else []
+    if _prof:
+        print("ERROR: this image cannot use the WSL2 DXG bridge.")
+        print()
+        print(f"Its torch bundles {', '.join(_prof)}, which enumerates GPUs through the")
+        print("KFD sysfs topology that WSL does not have; it aborts rather than falling back.")
+        print("Two builds do work here: AMD's per-arch wheels, which bundle no rocprofiler")
+        print("(Strix APUs and RDNA4: gfx1150/1151/1152/1200/1201, no RDNA3 yet),")
+        print("  ROCM_GFX=<your gfx, e.g. gfx1201> bash docker/build.sh --rocm")
+        print("  UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>")
+        print("or a torch before 2.12 from the same index, which ships only -register.so.")
+        print("UNSLOTH_SKIP_GPU_CHECK=1 reaches the abort itself rather than avoiding it.")
+        sys.exit(1)
+
 if torch.cuda.is_available():
     sys.exit(0)
 image_rocm = os.environ.get("IMAGE_ROCM") or ".".join(hip_ver.split(".")[:2])
 print("ERROR: torch is a ROCm build but torch.cuda.is_available() is False: HIP could")
 print("not open the device the container was given.")
 print()
+if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
+    # WSL has no host amdgpu stack: the Linux driver advice below is wrong here.
+    print("This container is on the WSL2 DXG bridge, so the host amdgpu driver is not")
+    print("involved. Run rocminfo inside the container:")
+    print("  'Failed to load libdxcore.so': /usr/lib/wsl/lib is not mounted or not on")
+    print("    LD_LIBRARY_PATH (measured). Both come from")
+    print("      UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>")
+    print("  no GPU agent at all: update the Windows AMD driver (a current Adrenalin with")
+    print("    ROCm-on-WSL support, as scripts/install_rocm_wsl_strixhalo.sh documents).")
+    print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
+    sys.exit(1)
 print(f"This image was built against ROCm {image_rocm} (HIP {hip_ver}). The host's")
 print("amdgpu driver has to be at least as new. Check the host (NOT the container):")
 print("  rocm-smi --version   or   cat /opt/rocm/.info/version   or   dkms status")
@@ -131,9 +274,7 @@ print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
 sys.exit(1)
 PY
 
-# --- Check 4: the card's gfx arch against this image's wheels ---------------
-# gcnArchName carries the gfx code (e.g. "gfx1100:sramecc+"). Not a gate (ROCm
-# often runs unlisted arches), but where the user learns which build to use.
+# Check 4 (not a gate): the card's gfx arch vs this image's wheels.
 IMAGE_ROCM="$IMAGE_ROCM" IMAGE_GFX="$IMAGE_GFX" python - >&2 <<'PY' || exit 1
 import os
 import sys
@@ -262,7 +403,7 @@ for i in range(torch.cuda.device_count()):
         print("        fixes the generic rocm index lacks. Build that image with:")
         print(f"          ROCM_GFX={arch} bash docker/build.sh --rocm")
         print("        This generic image may still work; if training crashes, that is the fix.")
-    elif fam:
+    elif fam and arch in (set(getattr(torch.cuda, "get_arch_list", list)()) or {arch}):
         print(f"  -> {fam}")
     else:
         print(f"  NOTE: {arch} is not in the list of arches these wheels are built for.")
@@ -273,4 +414,5 @@ for i in range(torch.cuda.device_count()):
 sys.exit(0)
 PY
 
+sync_notebooks
 exec "$@"

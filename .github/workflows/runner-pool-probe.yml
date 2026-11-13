@@ -1,12 +1,19 @@
 name: Runner pool probe
 
-# Does the runner label change how long a job waits? Identical no-op cells dispatched in
-# the same second from one matrix, so the label is the only variable. Re-run it after any
-# relabelling, to check the advantage did not just move with the crowd.
+# Measures queue wait per runner label: identical no-op cells dispatched together.
 on:
   pull_request:
     paths:
       - .github/workflows/runner-pool-probe.yml
+
+# Latest-only: cancels a superseded ten-runner matrix. Four cells are macOS against an
+# account-wide cap of five concurrent macOS jobs, so the scarce resource is slots.
+# The saving is small: a dispatched cell is one echo, median 4s and longest 6s.
+# `timeout-minutes` below is the cutoff for a cell that hangs.
+# Labels are compared only within one dispatch, so cancelling loses no comparison.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

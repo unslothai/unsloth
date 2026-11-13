@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Escaping tests for the predefined chat templates' {system_message} placeholder.
-
-Every predefined template holds {system_message} inside a Jinja string literal, so a
-system message carrying a quote or a backslash has to be escaped on the way in. Without
-it a quote closes the literal (TemplateSyntaxError) and a backslash is read as an escape,
-which silently rewrites the text (\\boxed -> \\x08oxed). Rendering, not just compiling,
-is asserted here: the corrupting cases compile fine.
-"""
+"""Quotes break the Jinja literal and backslashes rewrite text, so {system_message} must be escaped."""
 
 import jinja2
 import pytest
@@ -21,7 +14,6 @@ from unsloth.chat_templates import (
 )
 
 
-# Discovered, not hardcoded, so a new predefined template is covered on arrival.
 TEMPLATES_WITH_SYSTEM_MESSAGE = sorted(
     name
     for name, entry in CHAT_TEMPLATES.items()
@@ -41,20 +33,30 @@ MESSAGES = [
 ]
 
 
-def _render(template):
-    # No system turn in `messages`, so the template falls back to the baked-in {system_message} literal, the path under
-    # test.
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+]
+
+
+def _render(template, **kwargs):
     environment = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
     return environment.from_string(template).render(
         messages = [{"role": "user", "content": "Hi"}],
         bos_token = "<s>",
         eos_token = "</s>",
         add_generation_prompt = False,
+        **kwargs,
     )
 
 
 def test_templates_with_system_message_were_found():
-    # An empty discovery list would make every case below vacuous.
     assert len(TEMPLATES_WITH_SYSTEM_MESSAGE) >= 10
 
 
@@ -68,11 +70,21 @@ def test_system_message_survives_the_jinja_literal(name, label, system_message):
 
 @pytest.mark.parametrize("name", TEMPLATES_WITH_SYSTEM_MESSAGE)
 def test_default_system_message_renders_verbatim(name):
-    # Defaults are no longer hand-escaped in the source; escaping them twice would surface a literal backslash to the
-    # user.
     default = DEFAULT_SYSTEM_MESSAGE[name]
     template, _ = _change_system_message(CHAT_TEMPLATES[name][0], name, None)
     assert default in _render(template)
+
+
+@pytest.mark.parametrize("name", TEMPLATES_WITH_SYSTEM_MESSAGE)
+def test_system_message_is_used_when_tools_are_passed(name):
+    template, _ = _change_system_message(CHAT_TEMPLATES[name][0], name, "You are a pirate.")
+    assert "You are a pirate." in _render(template, tools = TOOLS)
+
+
+@pytest.mark.parametrize("name", TEMPLATES_WITH_SYSTEM_MESSAGE)
+def test_default_system_message_is_used_when_tools_are_passed(name):
+    template, _ = _change_system_message(CHAT_TEMPLATES[name][0], name, None)
+    assert DEFAULT_SYSTEM_MESSAGE[name] in _render(template, tools = TOOLS)
 
 
 @pytest.mark.parametrize("name", ["vicuna", "vicuna_old", "vicuna old"])
@@ -86,7 +98,6 @@ def test_vicuna_default_has_a_plain_apostrophe(name):
 @pytest.mark.parametrize("quote", ["'", '"'])
 @pytest.mark.parametrize("label, text", MESSAGES, ids = [m[0] for m in MESSAGES])
 def test_escape_round_trips_in_either_quote_style(quote, label, text):
-    # get_chat_template also splices ShareGPT `mapping` values into literals, and llama-3.1 uses "..." where the rest
-    # use '...', so one escaper must cover both.
+    # llama-3.1 uses "..." where others use '...', so one escaper must cover both.
     template = "{{ " + quote + _escape_jinja_literal(text) + quote + " }}"
     assert jinja2.Environment().from_string(template).render() == text

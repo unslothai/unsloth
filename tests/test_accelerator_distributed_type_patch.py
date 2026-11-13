@@ -15,15 +15,16 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """`_utils.py` must patch `Accelerator.distributed_type` with a property, not a bare
 function: a function binds as a method and inverts accelerate's `!= NO` device_map
-guards on a single device (#10016). `import unsloth` needs CUDA or XPU, so these run
-the statement from source in a fresh interpreter, which also catches a revert.
+guards on a single device (#10016). It must still read as DEEPSPEED under DeepSpeed, or
+accelerate turns on a float16 autocast over a bfloat16 model (#225). `import unsloth` needs
+CUDA or XPU, so these run the statements from source in a fresh interpreter, which also
+catches a revert.
 """
 
 import ast
 import pathlib
 import subprocess
 import sys
-import textwrap
 
 import pytest
 
@@ -47,6 +48,43 @@ def _patch_statement() -> ast.Assign:
     return matches[0]
 
 
+def _getter_source() -> str:
+    """The function the property wraps, so the fresh interpreter can define it first."""
+    tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
+    name = ast.unparse(_patch_statement().value.args[0])
+    defs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name]
+    assert len(defs) == 1, f"expected one {name}, found {len(defs)}"
+    return ast.unparse(defs[0])
+
+
+def _read_distributed_type(state_type):
+    """repr of the patched attribute and its `== NO` / `!= NO` on an Accelerator whose state says `state_type`."""
+    script = "\n".join(
+        [
+            "import types",
+            "import accelerate.accelerator",
+            "from accelerate.utils.dataclasses import DistributedType",
+            _getter_source(),
+            ast.unparse(_patch_statement()),
+            # Read it off an instance without standing up a real distributed backend.
+            "accelerator = accelerate.accelerator.Accelerator.__new__(accelerate.accelerator.Accelerator)",
+            *(
+                []
+                if state_type is None
+                else [
+                    f"accelerator.state = types.SimpleNamespace(distributed_type = DistributedType.{state_type})"
+                ]
+            ),
+            "value = accelerator.distributed_type",
+            "print(repr(value))",
+            "print(value == DistributedType.NO, value != DistributedType.NO)",
+        ]
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip().splitlines()[-2:]
+
+
 def test_distributed_type_is_replaced_with_a_property():
     value = _patch_statement().value
     assert isinstance(value, ast.Call) and ast.unparse(value.func) == "property", (
@@ -57,26 +95,17 @@ def test_distributed_type_is_replaced_with_a_property():
 
 def test_patched_distributed_type_reads_as_no():
     """Running the real assignment must leave the attribute reading as NO."""
-    statement = ast.unparse(_patch_statement())
-    script = textwrap.dedent(
-        f"""
-        import accelerate.accelerator
-        from accelerate.utils.dataclasses import DistributedType
+    DistributedType = accelerate.utils.dataclasses.DistributedType
+    for state_type in (None, "NO", "MULTI_GPU", "FSDP"):
+        value, comparisons = _read_distributed_type(state_type)
+        assert value == repr(DistributedType.NO), (state_type, value)
+        # The second is what accelerate's device_map guards actually test.
+        assert comparisons == "True False", (state_type, comparisons)
 
-        {statement}
 
-        # Read it off an instance without standing up a real distributed backend.
-        accelerator = accelerate.accelerator.Accelerator.__new__(
-            accelerate.accelerator.Accelerator
-        )
-        value = accelerator.distributed_type
-        print(repr(value))
-        print(value == DistributedType.NO, value != DistributedType.NO)
-        """
-    )
-    result = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
-    assert result.returncode == 0, result.stderr
-    value, comparisons = result.stdout.strip().splitlines()[-2:]
-    assert value == repr(accelerate.utils.dataclasses.DistributedType.NO), value
-    # The second is what accelerate's device_map guards actually test.
-    assert comparisons == "True False", comparisons
+def test_patched_distributed_type_keeps_deepspeed():
+    """Under DeepSpeed, NO enables native AMP and get_mixed_precision_context_manager's
+    DeepSpeed fallthrough is a dtype-less, i.e. float16, autocast."""
+    value, comparisons = _read_distributed_type("DEEPSPEED")
+    assert value == repr(accelerate.utils.dataclasses.DistributedType.DEEPSPEED), value
+    assert comparisons == "False True", comparisons

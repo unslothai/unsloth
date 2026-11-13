@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drive the two coverage runs that a symbol bridge is built from.
-
-The bridge needs the IDENTICAL fixture executed at the same small rungs against
-two different builds. That is the only requirement, and it is a strict one: if
-the two ladders differ in any way that changes how many times a function runs,
-the count vectors describe different experiments and every match is spurious.
-`build_bridge` cannot detect that, which is why the anchor check exists.
-
-Everything here is expressed against a `RungRunner` callable rather than against
-the session harness, so this module has no dependency on how a rung is actually
-driven. The caller supplies something that puts the page into rung state; this
-module owns only the coverage bracketing and the ordering guarantees.
-
-WHY THE RUNGS ARE SMALL. The bridge is a dictionary lookup, not a measurement,
-so it wants exactly enough dynamic range to make count vectors unique and not
-one rung more. Small rungs also keep the dev build, which is slow, from taking
-minutes. Two or three rungs spanning about a decade is plenty: three counts of
-a few thousand each collide far less often than one does.
-"""
+"""Both builds must run the identical fixture at the same rungs, or every bridge match is spurious."""
 
 from __future__ import annotations
 
@@ -29,8 +11,7 @@ from typing import Any, Callable, Sequence
 from . import CellFailure
 from .symbols import FAILED, Bridge, build_bridge
 
-# A `RungRunner` puts the page into the state for one rung and returns when that rung's work is
-# finished. It must be deterministic, or the count vectors are noise.
+# Must be deterministic, or the count vectors are noise.
 RungRunner = Callable[[Any, str], None]
 
 DEFAULT_BRIDGE_RUNGS: tuple[str, ...] = ("bridge_s", "bridge_m", "bridge_l")
@@ -55,13 +36,7 @@ def collect_arm(
     *,
     detailed: bool = False,
 ) -> list[Any]:
-    """Run the ladder once under precise coverage, one snapshot per rung.
-
-    Coverage is started ONCE and snapshotted per rung, and each rung's counts are
-    the difference against the previous snapshot. Restarting coverage between
-    rungs would reset V8's counters and also re-run `DeoptimizeAll`, which
-    changes what gets compiled and therefore what gets counted.
-    """
+    """Starts coverage once and diffs snapshots per rung; restarting would reset V8 counters."""
     from ..instruments.coverage import PreciseCoverage
 
     cov = PreciseCoverage(arm.cdp, detailed = detailed)
@@ -89,14 +64,7 @@ def build(
     anchor_url_filter: str | None = None,
     symbols_dir: str | None = None,
 ) -> Bridge:
-    """Collect both arms and build the bridge, persisting it if asked.
-
-    The two arms are collected in sequence rather than interleaved, because
-    interleaving would mean two coverage sessions alive at once and V8's
-    coverage mode is per isolate. Sequential collection is safe here precisely
-    because nothing timed is being compared: only integers cross out of this
-    function, and an integer does not drift between sessions.
-    """
+    """Arms run in sequence, not interleaved, since V8 coverage is per isolate; only integers leave."""
     if dev_arm.build != "dev" or prod_arm.build != "prod":
         raise CellFailure(
             "bridge_arms_mislabelled",
@@ -121,20 +89,7 @@ def build(
 
 
 def assert_profiling_build_loaded(page: Any) -> dict[str, Any]:
-    """Prove the profiling build is actually what the page loaded.
-
-    The check is that `<Profiler>`'s `onRender` FIRES NON-ZERO. `onRender` is
-    gated on React's `__PROFILE__` compile-time flag, so it does not exist in
-    the production build at all: `react-dom-client.production.js` contains zero
-    occurrences of the string `actualDuration`. A React stage that reads exactly
-    0.00 is therefore not a fast app, it is a broken instrument, and it must
-    abort the run rather than pass as a clean result.
-
-    The page side is expected to have installed a recorder that pushes
-    `onRender` arguments into `window.__studiobench_profiler`, whose entries are
-    `[id, phase, actualDuration, baseDuration, startTime, commitTime]` in React
-    19's six-argument order.
-    """
+    """Requires Profiler onRender to fire non-zero: production builds compile it out, so 0.00 is broken."""
     entries = page.evaluate("window.__studiobench_profiler || null")
     if not entries:
         raise CellFailure(
@@ -176,23 +131,9 @@ PROFILER_RECORDER_JS = """
 """
 
 
-# Build provenance: is the thing under measurement the thing we think it is?
-# The worst output this layer can produce is a real number from the wrong bundle under the right
-# label: a dev server inflates React's own work several fold and would MANUFACTURE the symptom,
-# and a stale shipping dist would silently measure code without the profiling renderer. Both look
-# like a clean run.
-# Three independent checks: `/@vite/client` must not answer 200 (a fact about the SERVER); React
-# must report `bundleType: 0` in the same renderer entry as `rendererPackageName: "react-dom"` (a
-# fact about the RENDERER THAT ACTUALLY LOADED, the only one a build-config mistake cannot fake);
-# and `__STUDIOBENCH_ATTRIBUTION_BUILD__` must be true (which dist is mounted, catching a stale
-# shipping build in the `--frontend` directory).
-# DO NOT ADD A `jsxDEV` GREP: `hast-util-to-jsx-runtime`, which Streamdown pulls in, references
-# the dev JSX runtime in shipping code, so a production bundle contains the string and the check
-# condemns a correct build.
-# `bundleType` is read through the DevTools global hook, and React only injects into it if it
-# already exists when the renderer initialises, so the stub must be installed with
-# `add_init_script` BEFORE the first `goto`. Installed after, the hook is empty and the check
-# reads as 'React is missing' on a good page.
+# Build provenance: no `/@vite/client`, react-dom `bundleType: 0` on the same renderer entry, and
+# `__STUDIOBENCH_ATTRIBUTION_BUILD__`. Do not grep for `jsxDEV`: shipping Streamdown contains it.
+# Install this hook stub with `add_init_script` before the first `goto` or React never injects.
 
 DEVTOOLS_HOOK_STUB_JS = """
 (() => {
@@ -225,23 +166,13 @@ DEVTOOLS_HOOK_STUB_JS = """
 })();
 """
 
-# React's `bundleType`: 0 is production, 1 is development. Confirmed on a real pair. NOTE THAT 0
-# DOES NOT MEAN 'profiling renderer is loaded' (React's profiling build is a production build and
-# also reports 0) which is why `assert_profiling_build_loaded` separately checks `onRender`
-# actually firing.
+# 0 is production, but the profiling build also reports 0, hence the separate `onRender` check.
 BUNDLE_TYPE_PRODUCTION = 0
 BUNDLE_TYPE_DEVELOPMENT = 1
 
 
 def assert_production_bundle(page: Any, *, base_url: str | None = None) -> dict[str, Any]:
-    """Refuse to measure a development build.
-
-    Raises `CellFailure` rather than warning. A dev-server run must be REFUSED,
-    not annotated, because the numbers it produces are wrong in the direction
-    that confirms the hypothesis: React's development build does several times
-    the work of the shipping one, so it would manufacture exactly the symptom
-    being investigated.
-    """
+    """Raises rather than warns: a dev build does several times the work and manufactures the symptom."""
     renderers = page.evaluate("window.__studiobench_renderers || null")
     if not renderers:
         raise CellFailure(
@@ -250,9 +181,7 @@ def assert_production_bundle(page: Any, *, base_url: str | None = None) -> dict[
             "or DEVTOOLS_HOOK_STUB_JS was installed after the first navigation instead of "
             "through add_init_script before it, in which case React had nothing to inject into.",
         )
-    # Match on the SAME entry, not across entries: a page can host more than one renderer, and
-    # checking `bundleType` from one against `rendererPackageName` from another is how a development
-    # react-dom passes behind a production sibling.
+    # Same entry: a development react-dom could pass behind a production sibling renderer.
     dom = [r for r in renderers if str(r.get("rendererPackageName") or "") == "react-dom"]
     if not dom:
         raise CellFailure(
@@ -280,12 +209,7 @@ def assert_production_bundle(page: Any, *, base_url: str | None = None) -> dict[
 
 
 def assert_not_dev_server(page: Any, base_url: str) -> dict[str, Any]:
-    """`/@vite/client` must not answer 200.
-
-    Checked from inside the page so it goes through the same origin and the same
-    server the app was actually loaded from, rather than from Python where a
-    proxy or a different host could answer.
-    """
+    """/@vite/client must not answer 200; checked in-page, so it hits the server the app loaded from."""
     url = base_url.rstrip("/") + "/@vite/client"
     status = page.evaluate(
         """async (u) => {
@@ -306,14 +230,7 @@ def assert_not_dev_server(page: Any, base_url: str) -> dict[str, Any]:
 
 
 def assert_attribution_build(page: Any) -> dict[str, Any]:
-    """Confirm the dist under measurement is the studiobench attribution build.
-
-    Catches the staleness failure: a shipping dist left in the directory handed
-    to `unsloth studio --frontend <dir>` produces a perfectly healthy Unsloth
-    serving the WRONG bundle, with no profiling renderer and therefore a React
-    stage that reads 0.00. `../attribution/vite.studiobench.config.ts` defines
-    `__STUDIOBENCH_ATTRIBUTION_BUILD__` for exactly this check.
-    """
+    """Catches a stale shipping dist: a healthy Unsloth serving the wrong bundle, no profiling renderer."""
     marker = page.evaluate("globalThis.__STUDIOBENCH_ATTRIBUTION_BUILD__ === true")
     if not marker:
         raise CellFailure(
@@ -332,12 +249,7 @@ def verify_build_provenance(
     *,
     require_attribution: bool = True,
 ) -> dict[str, Any]:
-    """All the provenance gates at once, for an Unsloth that is up and rendering.
-
-    Call this once per cell before any measurement. Every failure raises, and
-    that is deliberate: each of these conditions produces numbers that look
-    entirely reasonable and describe a different program.
-    """
+    """Every gate raises: the wrong build yields plausible numbers that describe a different program."""
     out = assert_production_bundle(page, base_url = base_url)
     if require_attribution:
         out.update(assert_attribution_build(page))

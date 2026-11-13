@@ -1,21 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Hydration calls setLocale, which can come back "superseded" when a newer
-// request took the language over. The rest of personalization has still
-// hydrated by then, so the sync has to finish; leaving it unfinished pauses the
-// save gate for the whole signed-in session.
+// setLocale may return "superseded"; the sync must still finish or saves pause all session.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import { sanitizeCustomization } from "../src/features/settings/stores/appearance-custom-store.ts";
+import * as greeting from "../src/features/profile/greeting.ts";
 
 type Slot = {
   value?: unknown;
   deps?: readonly unknown[];
-  // Whatever the effect returned: a cleanup, or nothing.
   cleanup?: unknown;
   set?: boolean;
 };
@@ -30,6 +27,11 @@ type Profile = {
   avatarDataUrl: string | null;
   avatarShape: "circle" | "rounded";
   showGreetingSloth: boolean;
+  greetingStyle?: string;
+  greetingIcon?: string;
+  greetingIconDataUrl?: string | null;
+  greetingText?: string;
+  greetingImageDataUrl?: string | null;
 };
 
 type SavedPayload = {
@@ -52,7 +54,6 @@ function sameDeps(a: readonly unknown[], b: readonly unknown[]): boolean {
   return a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
 }
 
-/** The four hooks the sync uses, with renders and effects the test drives. */
 function createReact() {
   const slots: Slot[] = [];
   const effects: (() => void)[] = [];
@@ -116,7 +117,6 @@ function createReact() {
 
   return {
     react,
-    /** Renders until no state change is left, running effects after each pass. */
     flush(body: () => void): void {
       do {
         cursor = 0;
@@ -131,7 +131,6 @@ function createReact() {
   };
 }
 
-/** Timers the test releases by hand, so the debounced push is not a real wait. */
 function installWindow() {
   const timers = new Map<number, () => void>();
   let nextId = 1;
@@ -155,7 +154,6 @@ function installWindow() {
   };
 }
 
-/** Lets every pending promise callback run. */
 function settle(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -168,7 +166,7 @@ function remotePersonalization(language: string) {
       nickname: "",
       avatarDataUrl: null,
       avatarShape: "circle" as const,
-      showGreetingSloth: true,
+      ...greeting.DEFAULT_GREETING,
     },
     appearance: {
       theme: "system",
@@ -189,7 +187,12 @@ function setup(
     localCustomization?: Record<string, unknown>;
     remote?: ReturnType<typeof remotePersonalization> & {
       chatWidthSaved?: boolean;
+      sentAttachmentsSaved?: boolean;
+      greetingCustomSaved?: boolean;
     };
+    localProfile?: Partial<Profile>;
+    // Holds the personalization GET open until it resolves.
+    remoteGate?: Promise<void>;
   } = {},
 ) {
   const runTimers = installWindow();
@@ -213,10 +216,9 @@ function setup(
     nickname: "",
     avatarDataUrl: null,
     avatarShape: "circle",
-    showGreetingSloth: true,
+    ...greeting.DEFAULT_GREETING,
+    ...options.localProfile,
   };
-  // A newer request already took French, which is the state "superseded"
-  // reports: the hydrated language is not the one in effect.
   let preference = "auto";
   let releaseLocale!: () => void;
   const localeSettled = new Promise<void>((resolve) => {
@@ -233,28 +235,35 @@ function setup(
     },
   );
 
+  // The hook imports these from the settings store, theme store and personalization API modules.
+  const settings = {
+    isDefaultCustomization: (value: unknown) =>
+      Object.keys(value as object).length === 0,
+    isPalette: (value: unknown) => typeof value === "string",
+    loadPersonalization: async () => {
+      await options.remoteGate;
+      return options.remote ?? remotePersonalization("de");
+    },
+    migrateAppearanceMenuDefault: (value: unknown) => value,
+    migrateShippedSidebarNavDefault: (value: unknown) => value,
+    sanitizeCustomization,
+    savePersonalization: (data: SavedPayload) => {
+      saves.push(data);
+      return Promise.resolve();
+    },
+    setPalette: () => undefined,
+    setTheme: () => undefined,
+    useAppearanceCustomStore: appearanceStore,
+    usePalette: () => ({ palette: "standard" }),
+    useTheme: () => ({ theme: "system" }),
+  };
   const { usePersonalizationSync } = loadWithStubs<{
     usePersonalizationSync: (enabled: boolean) => void;
   }>(HOOK_URL, {
     react: host.react,
-    "@/features/settings": {
-      isDefaultCustomization: (value: unknown) =>
-        Object.keys(value as object).length === 0,
-      isPalette: (value: unknown) => typeof value === "string",
-      loadPersonalization: () =>
-        Promise.resolve(options.remote ?? remotePersonalization("de")),
-      migrateShippedSidebarNavDefault: (value: unknown) => value,
-      sanitizeCustomization,
-      savePersonalization: (data: SavedPayload) => {
-        saves.push(data);
-        return Promise.resolve();
-      },
-      setPalette: () => undefined,
-      setTheme: () => undefined,
-      useAppearanceCustomStore: appearanceStore,
-      usePalette: () => ({ palette: "standard" }),
-      useTheme: () => ({ theme: "system" }),
-    },
+    "@/features/settings/stores/appearance-custom-store": settings,
+    "@/features/settings/stores/theme-store": settings,
+    "@/features/settings/api/personalization": settings,
     "@/i18n": {
       DEFAULT_LOCALE_PREFERENCE: "auto",
       LOCALE_INITIALIZATION_TIMEOUT_MS: 2_000,
@@ -262,9 +271,8 @@ function setup(
       isLocalePreference: (value: unknown) => typeof value === "string",
       setLocale: async (value: unknown, options?: { timeoutMs?: number }) => {
         localeCalls.push(value);
-        // A catalog request the network accepted and never completed. It
-        // rejects nothing, so the only thing that can end this wait is the
-        // caller asking the store to bound it.
+        // A catalog request the network accepted but never completed; it rejects nothing, so only
+        // the caller asking the store to bound it can end the wait.
         if (localeResult === "stalled") {
           if (typeof options?.timeoutMs !== "number") {
             return new Promise<string>(() => {});
@@ -277,6 +285,7 @@ function setup(
       },
       useLocalePreference: () => preference,
     },
+    "../greeting": greeting,
     "../stores/user-profile-store": {
       PROFILE_TEXT_MAX_LENGTH: 200,
       useUserProfileStore: profileStore,
@@ -290,6 +299,11 @@ function setup(
     runTimers,
     saves,
     customization: () => customization,
+    profile: () => profile,
+    // What a settings control does: a new customization object in the store.
+    edit(next: Record<string, unknown>) {
+      customization = sanitizeCustomization({ ...customization, ...next });
+    },
     rename(displayName: string) {
       profile = { ...profile, displayName };
     },
@@ -310,9 +324,6 @@ test("a superseded locale hydration does not pause personalization saves", async
   await settle();
   app.render();
 
-  // Pre-fix the sync returned here without finishing hydration, so the save
-  // effect's generation gate never opened again and nothing the user changed
-  // for the rest of the session was written.
   app.rename("Ada");
   app.render();
   app.runTimers();
@@ -320,7 +331,6 @@ test("a superseded locale hydration does not pause personalization saves", async
 
   assert.equal(app.saves.length, 1);
   assert.equal(app.saves[0]?.profile.displayName, "Ada");
-  // The push carries the language actually in effect, not the superseded one.
   assert.equal(app.saves[0]?.appearance.language, "fr");
 });
 
@@ -349,8 +359,6 @@ test("a stalled locale catalog does not pause personalization saves", async () =
   await settle();
   assert.deepEqual(app.localeCalls, ["de"]);
 
-  // Pre-fix hydration awaited the catalog with no bound, so it never finished
-  // and nothing the user changed for the rest of the session was written.
   app.render();
   app.rename("Ada");
   app.render();
@@ -365,7 +373,7 @@ function widthRemote(chatWidthSaved?: boolean, chatWidth?: string) {
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 4,
+    version: 6,
     chatWidthSaved,
     appearance: {
       ...remote.appearance,
@@ -429,5 +437,164 @@ test("an older server without chat width metadata preserves local width", async 
   await settle();
   assert.equal(app.saves.length, 1);
   assert.equal(app.saves[0]?.appearance.customization.chatWidth, "wide");
+  app.host.unmount();
+});
+
+function attachmentsRemote(saved: boolean | undefined, customization: Record<string, string>) {
+  const remote = remotePersonalization("auto");
+  return {
+    ...remote,
+    version: 6,
+    chatWidthSaved: true,
+    sentAttachmentsSaved: saved,
+    appearance: {
+      ...remote.appearance,
+      customization: { chatWidth: "standard", uiFont: "Georgia", ...customization },
+    },
+  };
+}
+
+test("legacy attachment display preserves and uploads the local choice", async () => {
+  const app = setup("stalled", {
+    localCustomization: { sentAttachments: "chips" },
+    remote: attachmentsRemote(false, { sentAttachments: "auto" }),
+  });
+  app.render();
+  await settle();
+  app.render();
+
+  assert.equal(app.customization().sentAttachments, "chips");
+  assert.equal(app.customization().uiFont, "Georgia");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 1);
+  assert.equal(app.saves[0]?.appearance.customization.sentAttachments, "chips");
+  app.host.unmount();
+});
+
+test("saved attachment display overrides local without another save", async () => {
+  const app = setup("stalled", {
+    localCustomization: { sentAttachments: "chips" },
+    remote: attachmentsRemote(true, { sentAttachments: "list" }),
+  });
+  app.render();
+  await settle();
+  app.render();
+  assert.equal(app.customization().sentAttachments, "list");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 0);
+  app.host.unmount();
+});
+
+test("an older server without attachment display keys preserves the local choice", async () => {
+  const app = setup("stalled", {
+    localCustomization: { sentAttachments: "list" },
+    remote: attachmentsRemote(undefined, {}),
+  });
+  app.render();
+  await settle();
+  app.render();
+  assert.equal(app.customization().sentAttachments, "list");
+  app.host.unmount();
+});
+
+test("an edit made while the personalization request is in flight is not overwritten by it", async () => {
+  // The server still holds an older size (a save cut short by a reload); the user changes it
+  // before that answer arrives.
+  let releaseRemote!: () => void;
+  const remote = remotePersonalization("auto");
+  const app = setup("stalled", {
+    localCustomization: { uiFontSize: 12 },
+    remote: {
+      ...remote,
+      version: 6,
+      appearance: { ...remote.appearance, customization: { uiFontSize: 20 } },
+    },
+    remoteGate: new Promise<void>((resolve) => {
+      releaseRemote = resolve;
+    }),
+  });
+  app.render();
+  await settle();
+
+  app.edit({ uiFontSize: 15 });
+  app.render();
+  releaseRemote();
+  await settle();
+  app.render();
+
+  assert.equal(app.customization().uiFontSize, 15);
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 1);
+  assert.equal(app.saves[0]?.appearance.customization.uiFontSize, 15);
+  app.host.unmount();
+});
+
+test("without an edit in flight the saved server customization still wins", async () => {
+  const remote = remotePersonalization("auto");
+  const app = setup("stalled", {
+    localCustomization: { uiFontSize: 12 },
+    remote: {
+      ...remote,
+      version: 6,
+      appearance: { ...remote.appearance, customization: { uiFontSize: 20 } },
+    },
+  });
+  app.render();
+  await settle();
+  app.render();
+
+  assert.equal(app.customization().uiFontSize, 20);
+  app.host.unmount();
+});
+
+const ICON = "data:image/png;base64,AAAA";
+
+test("a server record from before the custom greeting keeps and re-pushes the local one", async () => {
+  const app = setup("stalled", {
+    localProfile: { greetingIcon: "custom", greetingIconDataUrl: ICON, greetingText: "Hi" },
+    remote: remotePersonalization("auto"),
+  });
+  app.render();
+  await settle();
+  app.render();
+
+  assert.equal(app.profile().greetingIcon, "custom");
+  assert.equal(app.profile().greetingIconDataUrl, ICON);
+  assert.equal(app.profile().greetingText, "Hi");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 1);
+  assert.equal(app.saves[0]?.profile.greetingIconDataUrl, ICON);
+  app.host.unmount();
+});
+
+test("a saved server greeting wins over the local one", async () => {
+  const remote = remotePersonalization("auto");
+  const app = setup("stalled", {
+    localProfile: { greetingText: "Local" },
+    remote: {
+      ...remote,
+      version: 6,
+      greetingCustomSaved: true,
+      profile: {
+        ...remote.profile,
+        greetingStyle: "image",
+        greetingImageDataUrl: ICON,
+      },
+    },
+  });
+  app.render();
+  await settle();
+  app.render();
+
+  assert.equal(app.profile().greetingStyle, "image");
+  assert.equal(app.profile().greetingImageDataUrl, ICON);
+  assert.equal(app.profile().greetingText, "");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 0);
   app.host.unmount();
 });

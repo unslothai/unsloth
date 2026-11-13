@@ -10,6 +10,7 @@
   ],
   "license": "AGPL-3.0-only",
   "author": "Unsloth AI",
+  "packageManager": "yarn@3.5.0",
   "private": true,
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -50,5 +51,8 @@
     "extension": true,
     "themePath": "style/index.css",
     "outputDir": "unsloth-jupyterlab/labextension"
+  },
+  "resolutions": {
+    "sanitize-html": "^2.17.7"
   }
 }

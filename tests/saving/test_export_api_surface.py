@@ -1,9 +1,4 @@
-"""CPU-only AST checks on the export API surface in save.py / _compressed_quantize.py.
-
-These catch wiring regressions - a save_method that stops dispatching, a public method that
-stops being attached to the model, or an export subprocess that becomes shell-unsafe - without
-importing torch or touching a GPU. Pure `ast`, so they run in milliseconds on CPU-only CI.
-"""
+"""Pure ast checks of export wiring, so they run on CPU-only CI without importing torch."""
 
 from __future__ import annotations
 
@@ -17,20 +12,20 @@ QUANT_PY = UNSLOTH / "_compressed_quantize.py"
 SAVE_SRC = SAVE_PY.read_text(encoding = "utf-8")
 SAVE_TREE = ast.parse(SAVE_SRC, filename = str(SAVE_PY))
 
-# Every merged-save entry point that must route compressed (FP8/FP4/INT) save_methods.
 MERGED_SAVERS = (
     "unsloth_save_pretrained_merged",
     "unsloth_push_to_hub_merged",
     "unsloth_generic_save_pretrained_merged",
     "unsloth_generic_push_to_hub_merged",
 )
-# Public export methods that must be attached to the model in patch_saving_functions.
 PUBLIC_EXPORT_METHODS = (
     "save_pretrained_merged",
     "push_to_hub_merged",
     "save_pretrained_gguf",
     "push_to_hub_gguf",
     "save_pretrained_torchao",
+    "save_pretrained_openvino",
+    "push_to_hub_openvino",
     "save_pretrained_ggml",
     "push_to_hub_ggml",
 )
@@ -113,8 +108,7 @@ def test_torchao_dispatches_both_ptq_and_qat():
 
 
 def test_export_subprocesses_are_shell_safe():
-    # The compressed-quantize and LoRA->GGUF subprocesses must run argv lists led by
-    # sys.executable, never shell=True (a crafted save path must not inject a shell command).
+    # Argv lists led by sys.executable, never shell=True, so a crafted save path cannot inject commands.
     for fn in ("_unsloth_save_compressed_tensors", "_unsloth_save_lora_gguf"):
         node = _func(SAVE_TREE, fn)
         calls = _subprocess_calls(node)
@@ -148,10 +142,8 @@ def test_export_subprocesses_are_shell_safe():
 
 
 def test_compressed_export_propagates_variant():
-    # save_pretrained_merged(..., save_method="fp8", variant="foo") must not leave the variant on the intermediate 16bit
-    # merge - the converter subprocess reloads that dir with default weight filenames, so variant-named shards there
-    # would break the reload after the merge. The variant is popped out of the merge kwargs and forwarded via --variant,
-    # which applies it to the final compressed checkpoint. Guards this subprocess-bridged contract without a GPU.
+    # The variant must not land on the intermediate 16bit merge: the converter reloads it with default
+    # filenames. It is forwarded via --variant to the final checkpoint instead.
     helper_src = ast.get_source_segment(
         SAVE_SRC, _func(SAVE_TREE, "_unsloth_save_compressed_tensors")
     )
@@ -169,6 +161,5 @@ def test_compressed_export_propagates_variant():
 
 
 def test_compressed_quantize_runner_parses():
-    # The standalone runner is invoked by path in a subprocess; make sure it stays importable (valid syntax) so a typo
-    # there is caught without launching the subprocess.
+    # The runner is invoked by path in a subprocess, so catch a syntax error here.
     ast.parse(QUANT_PY.read_text(encoding = "utf-8"), filename = str(QUANT_PY))

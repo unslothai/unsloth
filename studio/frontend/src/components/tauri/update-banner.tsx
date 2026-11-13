@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import { useNotificationGate } from "@/hooks/use-notification-frequency";
 import type {
   DesktopUpdatePolicyMode,
   RetainedUpdateFailure,
@@ -11,7 +12,9 @@ import type {
 } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { cn } from "@/lib/utils";
-import { CircleAlert, Download } from "lucide-react";
+import { useT } from "@/i18n";
+import { Alert02Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 
@@ -20,7 +23,8 @@ interface UpdateBannerProps {
   info: UpdateInfo | null;
   dismissed: boolean;
   lastFailure: RetainedUpdateFailure | null;
-  isExternalServer?: boolean;
+  // Set while attached to a server this app did not start, which blocks the update.
+  externalServerPort?: number | null;
   updatePolicyMode: DesktopUpdatePolicyMode;
   manualReleaseUrl: string | null;
   // Release page for this version, preferred over the generic changelog.
@@ -45,7 +49,7 @@ export function UpdateBanner({
   info,
   dismissed,
   lastFailure,
-  isExternalServer = false,
+  externalServerPort = null,
   updatePolicyMode,
   manualReleaseUrl,
   releasePageUrl = null,
@@ -54,6 +58,7 @@ export function UpdateBanner({
   onDismiss,
   onCopyDiagnostics,
 }: UpdateBannerProps) {
+  const t = useT();
   const [copying, setCopying] = useState(false);
   const [manualReport, setManualReport] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
@@ -61,14 +66,20 @@ export function UpdateBanner({
   const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const showFailure = Boolean(lastFailure) && !dismissed;
   const showAvailable = status === "available" && !dismissed && !showFailure;
-  const show = showFailure || (showAvailable && Boolean(info));
+  // Failures always show; only the offer follows the notification frequency.
+  const offerOpen = useNotificationGate(
+    "unsloth",
+    showAvailable && Boolean(info),
+  );
+  const show = showFailure || offerOpen;
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
+  const isExternalServer = externalServerPort !== null;
   const installDisabled = isManualLinuxPackage
     ? manualReleaseUrl === null
     : isExternalServer;
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
-  const Icon = showFailure ? CircleAlert : Download;
+  const icon = showFailure ? Alert02Icon : Download01Icon;
   const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
   const notesOpen =
     notesTargetVersion !== null && notesVersion === notesTargetVersion;
@@ -83,8 +94,7 @@ export function UpdateBanner({
       } else {
         setManualReport(result.report);
         setManualMessage(
-          result.error ??
-            "Clipboard copy failed. Select and copy the diagnostics below.",
+          result.error ?? t("desktopStartup.diagnostics.clipboardFailed"),
         );
       }
     } catch (error) {
@@ -105,9 +115,9 @@ export function UpdateBanner({
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
-                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] shrink-0 flex-col",
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
                   // Only rendered notes may shrink in the capped rail.
                   "has-[[data-slot=update-release-notes]]:min-h-[calc(117px+93px*var(--ui-font-scale,1))] has-[[data-slot=update-release-notes]]:shrink max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
                 ),
@@ -115,12 +125,12 @@ export function UpdateBanner({
           data-testid="tauri-update-banner"
         >
           {/* Paint the full floor even when the notes are short. */}
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="toast-surface relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
             <button
               type="button"
               onClick={onDismiss}
               className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-              aria-label="Dismiss app update notification"
+              aria-label={t("desktopUpdate.banner.dismiss")}
             >
               <svg
                 aria-hidden="true"
@@ -140,14 +150,15 @@ export function UpdateBanner({
             </button>
 
             <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
-              <Icon
+              <HugeiconsIcon
+                icon={icon}
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
                 strokeWidth={1.75}
               />
               <div className="min-w-0">
                 <p className="font-heading text-base font-medium text-foreground">
-                  {showFailure ? "App update failed" : "New Unsloth version"}
+                  {showFailure ? t("desktopUpdate.banner.failedTitle") : t("desktopUpdate.banner.newVersion")}
                 </p>
                 {showFailure ? null : (
                   <p className="mt-0.5 text-xs text-muted-foreground">
@@ -159,12 +170,14 @@ export function UpdateBanner({
                 )}
                 <p className="mt-1 text-ui-11 text-muted-foreground/70">
                   {showFailure
-                    ? "Backend recovered. Diagnostics are still available."
+                    ? t("desktopUpdate.banner.backendRecovered")
                     : isManualLinuxPackage
-                      ? "Open the GitHub release page to install the Linux package"
+                      ? t("desktopUpdate.banner.linuxManual")
                       : isExternalServer
-                        ? "Run `unsloth studio update` from your terminal"
-                        : "A new app update is available"}
+                        ? t("settings.about.update.desktopExternalServer", {
+                            port: externalServerPort,
+                          })
+                        : t("desktopUpdate.banner.available")}
                 </p>
               </div>
             </div>
@@ -202,7 +215,7 @@ export function UpdateBanner({
                   aria-expanded={notesOpen}
                   data-testid="tauri-update-release-notes-toggle"
                 >
-                  {notesOpen ? "Hide release notes" : "Show release notes"}
+                  {notesOpen ? t("desktopUpdate.banner.hideNotes") : t("desktopUpdate.banner.showNotes")}
                 </Button>
               ) : null}
               {showFailure ? (
@@ -215,7 +228,7 @@ export function UpdateBanner({
                       handleCopyDiagnostics().catch(console.error);
                     }}
                   >
-                    {copying ? "Copying..." : "Copy diagnostics"}
+                    {copying ? t("desktopStartup.diagnostics.copying") : t("desktopUpdate.banner.copyDiagnostics")}
                   </Button>
                   <Button
                     size="sm"
@@ -223,17 +236,18 @@ export function UpdateBanner({
                     className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
-                    Later
+                    {t("desktopUpdate.banner.later")}
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
+                    variant="primary"
+                    className="-mr-1 rounded-full text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
                     {isManualLinuxPackage
-                      ? "Open release page"
-                      : "Retry update"}
+                      ? t("desktopUpdate.banner.openReleasePage")
+                      : t("desktopUpdate.banner.retry")}
                   </Button>
                 </>
               ) : (
@@ -244,16 +258,17 @@ export function UpdateBanner({
                     className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
-                    Remind me later
+                    {t("desktopUpdate.banner.remindLater")}
                   </Button>
                   <Button
                     size="sm"
+                    variant="primary"
                     className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                     data-testid="tauri-update-install"
                   >
-                    {isManualLinuxPackage ? "Open release page" : "Update"}
+                    {isManualLinuxPackage ? t("desktopUpdate.banner.openReleasePage") : t("desktopUpdate.banner.update")}
                   </Button>
                 </div>
               )}
@@ -274,7 +289,7 @@ export function UpdateBanner({
                     readOnly={true}
                     value={manualReport}
                     onFocus={(event) => event.currentTarget.select()}
-                    className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
+                    className="mt-2 h-28 w-full resize-none rounded-xl border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
                   />
                 )}
               </div>

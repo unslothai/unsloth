@@ -26,7 +26,6 @@ export interface ChannelPreset {
   idSuffix?: string;
   format: ModelFormatFilter;
   sort: HfSortKey;
-  // Keep only formats Unsloth can fine-tune (drops fp8, nvfp4, w4a16, etc.).
   finetunableOnly?: boolean;
 }
 
@@ -38,7 +37,7 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     hint: "Most trending models published by Unsloth.",
     owner: "unsloth",
     tags: ["gguf"],
-    format: "gguf",
+    format: "recommended",
     sort: "trendingScore",
   },
   {
@@ -48,9 +47,8 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     hint: "Freshly released models from the Unsloth channel.",
     owner: "unsloth",
     format: "all",
-    // Newest by creation date so the feed shows freshly released models, not
-    // ones merely re-touched (lastModified).
-    sort: "createdAt",
+    // Trending weighed against creation date (lib/fresh-ranking.ts).
+    sort: "fresh",
   },
   {
     id: "unsloth-safetensors",

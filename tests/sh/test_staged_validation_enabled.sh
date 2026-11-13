@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit tests for setup.sh staged-validation helpers (#5854 gap 2).
+# Unit tests for setup.sh staged-validation helpers.
 # Opt-in GPU smoke after a source build; default off (Blackwell JIT stall).
 set -e
 

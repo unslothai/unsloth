@@ -1,0 +1,237 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+// streamdown 2.5 parseMarkdownIntoBlocks using blockTokens (vercel/streamdown#608): inline lexing
+// of one long backslash line takes seconds. Drop once streamdown includes #608.
+
+import { Lexer, type Token } from "marked";
+
+const footnoteReferencePattern = /\[\^[\w-]{1,200}\](?!:)/;
+const footnoteDefinitionPattern = /\[\^[\w-]{1,200}\]:/;
+const openingTagPattern = /<(\w+)[\s>]/;
+
+const voidElements = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
+
+const openTagPatternCache = new Map<string, RegExp>();
+const closeTagPatternCache = new Map<string, RegExp>();
+
+const getOpenTagPattern = (tagName: string): RegExp => {
+  const normalizedTag = tagName.toLowerCase();
+  const cached = openTagPatternCache.get(normalizedTag);
+  if (cached) {
+    return cached;
+  }
+  const pattern = new RegExp(`<${normalizedTag}(?=[\\s>/])[^>]*>`, "gi");
+  openTagPatternCache.set(normalizedTag, pattern);
+  return pattern;
+};
+
+const getCloseTagPattern = (tagName: string): RegExp => {
+  const normalizedTag = tagName.toLowerCase();
+  const cached = closeTagPatternCache.get(normalizedTag);
+  if (cached) {
+    return cached;
+  }
+  const pattern = new RegExp(`</${normalizedTag}(?=[\\s>])[^>]*>`, "gi");
+  closeTagPatternCache.set(normalizedTag, pattern);
+  return pattern;
+};
+
+const countNonSelfClosingOpenTags = (
+  block: string,
+  tagName: string,
+): number => {
+  if (voidElements.has(tagName.toLowerCase())) {
+    return 0;
+  }
+  const matches = block.match(getOpenTagPattern(tagName));
+  if (!matches) {
+    return 0;
+  }
+  let count = 0;
+  for (const match of matches) {
+    if (!match.trimEnd().endsWith("/>")) {
+      count += 1;
+    }
+  }
+  return count;
+};
+
+const countClosingTags = (block: string, tagName: string): number => {
+  const matches = block.match(getCloseTagPattern(tagName));
+  return matches ? matches.length : 0;
+};
+
+// Incremental `$$` count (a run of n holds n >> 1; the trailing run continues into appends):
+// rescanning the growing block per token is quadratic after a stray `$$`.
+interface DollarPairs {
+  closed: number;
+  run: number;
+}
+
+const appendDollarPairs = (state: DollarPairs, str: string): void => {
+  let { closed, run } = state;
+  for (let i = 0; i < str.length; i += 1) {
+    if (str.charCodeAt(i) === 36) {
+      run += 1;
+    } else if (run > 0) {
+      closed += run >> 1;
+      run = 0;
+    }
+  }
+  state.closed = closed;
+  state.run = run;
+};
+
+const hasOddDollarPairs = (state: DollarPairs): boolean =>
+  ((state.closed + (state.run >> 1)) & 1) === 1;
+
+const lineEndingPattern = /\r\n|\r/g;
+
+const lexBlocks = (markdown: string): Token[] =>
+  new Lexer({ gfm: true }).blockTokens(markdown);
+
+const mergeTokensIntoBlocks = (tokens: Token[]): string[] => {
+  const mergedBlocks: string[] = [];
+  const htmlStack: string[] = [];
+  let previousTokenWasCode = false;
+  const lastBlockDollars: DollarPairs = { closed: 0, run: 0 };
+
+  for (const token of tokens) {
+    const currentBlock = token.raw;
+    const mergedBlocksLen = mergedBlocks.length;
+
+    if (htmlStack.length > 0) {
+      mergedBlocks[mergedBlocksLen - 1] += currentBlock;
+      appendDollarPairs(lastBlockDollars, currentBlock);
+
+      const trackedTag = htmlStack.at(-1) as string;
+      const newOpenTags = countNonSelfClosingOpenTags(currentBlock, trackedTag);
+      const newCloseTags = countClosingTags(currentBlock, trackedTag);
+
+      for (let i = 0; i < newOpenTags; i += 1) {
+        htmlStack.push(trackedTag);
+      }
+      for (let i = 0; i < newCloseTags; i += 1) {
+        if (htmlStack.length > 0 && htmlStack.at(-1) === trackedTag) {
+          htmlStack.pop();
+        }
+      }
+      continue;
+    }
+
+    if (token.type === "html" && token.block) {
+      const openingTagMatch = currentBlock.match(openingTagPattern);
+      if (openingTagMatch) {
+        const tagName = openingTagMatch[1];
+        const openTags = countNonSelfClosingOpenTags(currentBlock, tagName);
+        const closeTags = countClosingTags(currentBlock, tagName);
+        if (openTags > closeTags) {
+          htmlStack.push(tagName);
+        }
+      }
+    }
+
+    if (
+      mergedBlocksLen > 0 &&
+      !previousTokenWasCode &&
+      hasOddDollarPairs(lastBlockDollars)
+    ) {
+      mergedBlocks[mergedBlocksLen - 1] += currentBlock;
+      appendDollarPairs(lastBlockDollars, currentBlock);
+      continue;
+    }
+
+    mergedBlocks.push(currentBlock);
+    lastBlockDollars.closed = 0;
+    lastBlockDollars.run = 0;
+    appendDollarPairs(lastBlockDollars, currentBlock);
+
+    if (token.type !== "space") {
+      previousTokenWasCode = token.type === "code";
+    }
+  }
+
+  return mergedBlocks;
+};
+
+// Prose that can still hold a link reference (code and definitions removed), and Marked's
+// own definitions.
+const collectReferenceProse = (
+  tokens: Token[],
+  out: { referenceProse: string[]; definitions: string[] },
+): { referenceProse: string[]; definitions: string[] } => {
+  for (const token of tokens) {
+    // Indented code stays: Marked and remark disagree on some list continuations.
+    if (
+      (token.type === "code" && token.codeBlockStyle !== "indented") ||
+      token.type === "space"
+    ) {
+      continue;
+    }
+    if (token.type === "def") {
+      out.definitions.push(token.raw);
+    } else if (token.type === "blockquote") {
+      collectReferenceProse(token.tokens ?? [], out);
+    } else if (token.type === "list") {
+      for (const item of token.items) {
+        collectReferenceProse(item.tokens, out);
+      }
+    } else {
+      out.referenceProse.push(token.raw);
+    }
+  }
+  return out;
+};
+
+// One lex for both the split and the reference prose.
+export function parseMarkdownBlockDetails(markdown: string): {
+  blocks: string[];
+  referenceProse: string[];
+  definitions: string[];
+} {
+  if (
+    footnoteReferencePattern.test(markdown) ||
+    footnoteDefinitionPattern.test(markdown)
+  ) {
+    return { blocks: [markdown], referenceProse: [markdown], definitions: [] };
+  }
+  const input = markdown.includes("\r")
+    ? markdown.replace(lineEndingPattern, "\n")
+    : markdown;
+  const tokens = lexBlocks(input);
+  return {
+    blocks: mergeTokensIntoBlocks(tokens),
+    ...collectReferenceProse(tokens, { referenceProse: [], definitions: [] }),
+  };
+}
+
+export function parseMarkdownIntoBlocks(markdown: string): string[] {
+  const hasFootnoteReference = footnoteReferencePattern.test(markdown);
+  const hasFootnoteDefinition = footnoteDefinitionPattern.test(markdown);
+
+  if (hasFootnoteReference || hasFootnoteDefinition) {
+    return [markdown];
+  }
+
+  const input = markdown.includes("\r")
+    ? markdown.replace(lineEndingPattern, "\n")
+    : markdown;
+
+  return mergeTokensIntoBlocks(lexBlocks(input));
+}

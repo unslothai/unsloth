@@ -1,26 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Guard the grad-accumulation loss-normalisation contract across TRL versions.
-
-Three components each decide "is this loss already token-count normalised?", and
-they must agree:
-
-  * unsloth_zoo `_unsloth_get_batch_samples` decides from the forward signature.
-  * The loss divides by num_items_in_batch when it is not None. Both
-    `unsloth_fused_ce_loss` and TRL's `_chunked_cross_entropy_loss` do this
-    without consulting `model_accepts_loss_kwargs`.
-  * transformers `training_step` divides by grad-accum when
-    `not self.model_accepts_loss_kwargs or num_items_in_batch is None`.
-
-When a model class sets `accepts_loss_kwargs = False` (gemma3, qwen-vl,
-paligemma, glm4v) and the loss still divides by the token count, loss and grads
-are silently scaled 1/GA. Nothing raises; the effective LR is just GA times too
-small. Regressed when TRL 1.7.0 defaulted SFT to "chunked_nll" (trl#5846):
-clean on 0.22.2-1.6.0, reproducible from 1.4.0 by opting in explicitly.
-
-Source/AST checks only, no GPU and no downloads, so they run in the CPU job that
-already exercises TRL latest and TRL git main.
-"""
+"""Three components must agree on token-count loss normalisation, or grads silently scale by 1/GA."""
 
 from __future__ import annotations
 
@@ -44,8 +24,7 @@ import pytest
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed", allow_module_level = True)
 
-# Unsloth refuses to import without a torch accelerator, so the GPU-less runner needs the same spoof the sibling CPU
-# canaries use. Must precede any unsloth import, which is why it sits at module scope rather than in a fixture.
+# Unsloth needs a torch accelerator, so spoof at module scope before any unsloth import.
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SPOOF_DIR))
 import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
@@ -53,9 +32,6 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
-# --------------------------------------------------------------------------
-# 1. TRL's SFT loss default
-# --------------------------------------------------------------------------
 def test_sft_loss_type_default_is_nll_after_unsloth_patch():
     """chunked_nll bypasses the forward (fused CE never runs) and double-divides."""
     import unsloth  # noqa: F401  must precede trl
@@ -73,21 +49,62 @@ def test_sft_loss_type_default_is_nll_after_unsloth_patch():
     )
 
 
+def _loss_type_field(cfg_cls):
+    """Reads the dataclass field; hasattr misses default_factory fields, which leave no class attribute."""
+    import dataclasses
+    return next((f for f in dataclasses.fields(cfg_cls) if f.name == "loss_type"), None)
+
+
+def _pristine_config_cls(cfg_cls):
+    """TRL's own config class, walking past the subclass patching rebinds over it."""
+    while "_unsloth_patched_rl_config" in cfg_cls.__dict__ or cfg_cls.__name__.startswith(
+        "Unsloth"
+    ):
+        cfg_cls = cfg_cls.__mro__[1]
+    return cfg_cls
+
+
 def test_loss_type_replacement_did_not_leak_to_other_trainers():
-    """loss_type is an unrelated field in DPO/KTO/GRPO; the global dict hits all."""
+    """DPO and KTO loss_type are checked against pristine TRL, whose default changes between releases."""
     import unsloth  # noqa: F401
     import trl
 
-    expected = {"DPOConfig": ["sigmoid"], "KTOConfig": "kto", "GRPOConfig": "bnpo"}
-    for name, want in expected.items():
+    from packaging.version import Version
+
+    checked = []
+    for name in ("DPOConfig", "KTOConfig"):
         cfg_cls = getattr(trl, name, None)
-        if cfg_cls is None or not hasattr(cfg_cls, "loss_type"):
+        if cfg_cls is None or _loss_type_field(cfg_cls) is None:
             continue
+        pristine = _pristine_config_cls(cfg_cls)
+        assert "_unsloth_patched_rl_config" not in pristine.__dict__, (
+            f"the pristine walk for {name} landed on a patched class, so comparing against "
+            f"it would compare the patch with itself"
+        )
+        want = pristine(output_dir = "unused").loss_type
         got = cfg_cls(output_dir = "unused").loss_type
         assert got == want, (
-            f"{name}.loss_type is {got!r}, expected {want!r}. A loss_type "
-            "replacement leaked out of the sft_trainer branch in rl.py."
+            f"{name}.loss_type is {got!r} and pristine TRL {trl.__version__} says {want!r}. "
+            "A loss_type replacement leaked out of the sft_trainer branch in rl.py."
         )
+        checked.append(name)
+
+    grpo = getattr(trl, "GRPOConfig", None)
+    grpo_refused = Version(trl.__version__) < Version("0.20.0")
+    if grpo is not None and not grpo_refused and _loss_type_field(grpo) is not None:
+        got = grpo(output_dir = "unused").loss_type
+        # Unsloth follows TRL's GRPO default from 0.22, the first TRL with 'dapo'.
+        want = "dapo" if Version(trl.__version__) >= Version("0.22.0") else "bnpo"
+        assert got == want, (
+            f"GRPOConfig.loss_type is {got!r}, expected {want!r}. That default is unsloth's own "
+            "(rl.py), so this is either a lost override or a leak."
+        )
+        checked.append("GRPOConfig")
+
+    assert len(checked) >= 2, (
+        f"only {checked} carried a loss_type field on trl {trl.__version__}, so this test "
+        f"checked almost nothing. Retarget it rather than letting it pass empty."
+    )
 
 
 def test_explicit_loss_type_still_wins():
@@ -97,17 +114,57 @@ def test_explicit_loss_type_still_wins():
 
     if not hasattr(trl.SFTConfig, "loss_type"):
         pytest.skip("this TRL has no SFTConfig.loss_type")
-    cfg = trl.SFTConfig(output_dir = "unused", loss_type = "chunked_nll")
-    assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
+    for wanted in ("chunked_nll", "dft"):
+        cfg = trl.SFTConfig(output_dir = "unused", loss_type = wanted)
+        assert cfg.loss_type == _trl_resolves(wanted), "explicit loss_type was clobbered"
+
+
+def _trl_resolves(wanted):
+    """Reads the chunked_nll to nll alias from TRL's FutureWarning, not from a version number."""
+    import warnings
+
+    pristine = _pristine_sft_config_cls()
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        got = pristine(output_dir = "unused", loss_type = wanted).loss_type
+    aliased = any(
+        issubclass(w.category, FutureWarning)
+        and repr(wanted) in str(w.message)
+        and "deprecated" in str(w.message)
+        for w in caught
+    )
+    return got if aliased else wanted
+
+
+def _skip_if_unsloth_refuses_grpo():
+    # Unsloth refuses GRPO below trl 0.20.0; the floor lane runs below it.
+    import trl
+    from packaging.version import Version
+    if Version(trl.__version__) < Version("0.20.0"):
+        pytest.skip(f"unsloth refuses GRPO on trl {trl.__version__} (< 0.20.0)")
+
+
+def test_dr_grpo_turns_off_reward_scaling_by_default():
+    """TRL >= 0.22 defaults scale_rewards to "group" (= True), so dr_grpo must override both."""
+    import unsloth  # noqa: F401
+    import trl
+
+    _skip_if_unsloth_refuses_grpo()
+
+    def scale(**kwargs):
+        return trl.GRPOConfig(output_dir = "unused", loss_type = "dr_grpo", **kwargs).scale_rewards
+
+    for kwargs in ({}, {"scale_rewards": True}, {"scale_rewards": "group"}):
+        assert scale(**kwargs) in (False, "none"), f"dr_grpo with {kwargs} still scales rewards"
+    assert scale(scale_rewards = None) in (True, "group"), "None should keep group scaling"
+    assert scale(scale_rewards = "batch") == "batch", "an explicit batch scaling was clobbered"
 
 
 def _pristine_sft_config_cls():
     """TRL's own SFTConfig, not the generated subclass patching rebinds over it."""
     import trl
 
-    # Go by the marker rather than the name: the generated subclass is renamed onto TRL's own name so that instances
-    # of it keep pickling, so `Unsloth` no longer appears in `__name__`. `__dict__` rather than `getattr`, so a user
-    # subclass of the generated class does not inherit its way past this.
+    # Check the marker, not the name: the generated subclass is renamed to TRL's name for pickling.
     cls = trl.SFTConfig
     while "_unsloth_patched_rl_config" in cls.__dict__ or cls.__name__.startswith("Unsloth"):
         cls = cls.__mro__[1]
@@ -115,12 +172,7 @@ def _pristine_sft_config_cls():
 
 
 def test_pristine_trl_sft_config_default_is_nll_too():
-    """`from trl import SFTConfig` before `import unsloth` keeps TRL's own class.
-
-    Patching only rebinds the module aliases, so that caller never sees the
-    generated subclass and would still build a chunked_nll config and hand it to
-    the patched trainer. The same ordering is covered by the padding-free tests.
-    """
+    """Importing SFTConfig before unsloth keeps TRL's own class, whose default must also be nll."""
     import unsloth  # noqa: F401  must precede trl
 
     pristine = _pristine_sft_config_cls()
@@ -146,17 +198,15 @@ def test_pristine_trl_sft_config_keeps_an_explicit_loss_type():
 
     for wanted in ("chunked_nll", "dft"):
         got = pristine(output_dir = "unused", loss_type = wanted).loss_type
-        assert got == wanted, f"explicit loss_type {wanted!r} was clobbered to {got!r}"
+        assert got == _trl_resolves(
+            wanted
+        ), f"explicit loss_type {wanted!r} was clobbered to {got!r}"
+    # "dft" is not an alias on any TRL, so it must always come back unchanged.
+    assert _trl_resolves("dft") == "dft"
 
 
 def test_dataclass_field_default_is_nll_for_hfargumentparser():
-    """`HfArgumentParser` reads the field, not the `__init__` default.
-
-    It builds one argparse argument per `dataclasses.fields()` entry and always
-    passes the value through, so a field left at TRL's unresolved `None` sends
-    `loss_type = None` into `__post_init__` and comes back out as chunked_nll
-    however the `__init__` default reads.
-    """
+    """HfArgumentParser passes the field value through, so the dataclass field default must be nll."""
     import dataclasses
 
     import unsloth  # noqa: F401
@@ -176,9 +226,6 @@ def test_dataclass_field_default_is_nll_for_hfargumentparser():
         )
 
 
-# --------------------------------------------------------------------------
-# 2. The normalisation predicates themselves
-# --------------------------------------------------------------------------
 def _divides_by_num_items(fn) -> bool:
     """True when the source contains a division by num_items_in_batch/n_items."""
     try:
@@ -275,9 +322,6 @@ def test_unsloth_get_batch_samples_is_installed_and_shaped_as_expected():
     )
 
 
-# --------------------------------------------------------------------------
-# 3. rl.py's own scoping
-# --------------------------------------------------------------------------
 def test_rl_py_scopes_loss_type_to_sft_trainer():
     """AST guard: no loss_type replacement outside an `if trainer_file ==` branch."""
     from unsloth.models import rl
@@ -296,8 +340,6 @@ def test_rl_py_scopes_loss_type_to_sft_trainer():
         keys = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
         if "loss_type" not in keys:
             continue
-        # A loss_type entry is only legitimate inside an `if trainer_file == ...` branch. Find the nearest enclosing
-        # If and check its test.
         guarded = False
         for parent in ast.walk(tree):
             if not isinstance(parent, ast.If):

@@ -11,14 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""A deferred compile-mode switch must be settled between training steps.
-
-unsloth_zoo defers the switch to eager on recompile-limit exhaustion, because
-switching mid-call splits a non-reentrant checkpoint region across two compile
-modes and the backward dies with "Something went unexpectedly wrong in
-activation checkpoint". The top of `Trainer.training_step` is the point where
-no region is half-packed.
-"""
+"""Settle the deferred eager switch in training_step, where no checkpoint region is half-packed."""
 
 import pytest
 
@@ -35,12 +28,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def FakeTrainer():
-    """Enough of a Trainer for the patch to wrap.
-
-    `training_step` has no `num_items_in_batch` on purpose, so the gradient
-    accumulation source rewrite skips it and only the settler is exercised.
-    A fresh class per test keeps the patch's install-once flag honest.
-    """
+    """training_step omits num_items_in_batch on purpose, so the grad-accum rewrite skips it."""
 
     class _FakeTrainer:
         def training_step(self, model, inputs):

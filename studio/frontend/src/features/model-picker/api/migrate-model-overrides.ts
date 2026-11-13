@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One-time backfill of per-model settings into the server override map. Settings used to live
-// only in this browser, so on upgrade an API load still used app defaults.
+// One-time backfill of browser-only per-model settings into the server override map.
 
 import {
+  cachedRepoConfigId,
   isNativeFileLabel,
   isOllamaLinkPath,
-  isOllamaModelId,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   splitQuantSuffix,
 } from "../model-config/model-identity";
 import {
+  adoptCachedRepoConfig,
   isDefaultConfig,
   listPerModelConfigs,
 } from "../model-config/per-model-config";
@@ -24,8 +24,8 @@ import {
   toApiOverride,
 } from "./model-overrides";
 
-// Bumped when the filter below started admitting Ollama tags, so a completed v1 pass reruns.
-const DONE_FLAG = "unsloth_model_overrides_backfilled_v2";
+// Bump when the filter admits more, so a completed pass reruns.
+const DONE_FLAG = "unsloth_model_overrides_backfilled_v3";
 
 function alreadyRan(): boolean {
   try {
@@ -44,10 +44,7 @@ function markRan(): void {
   }
 }
 
-/** A server key under the same identity this browser stores. `app_settings` has no schema
- *  version, so an old install holds keys the backend resolves to this model while an exact
- *  lookup calls them missing and overwrites them. The split folds repo ids while preserving
- *  POSIX path identity. */
+/** Folds keys like the backend: repo ids fold, POSIX paths keep their case. */
 function normalizedOverrideKey(key: string): string {
   const split = splitQuantSuffix(key);
   if (!split) {
@@ -59,8 +56,7 @@ function normalizedOverrideKey(key: string): string {
   );
 }
 
-/** The fields *config* would contribute that the stored entry does not hold. A malformed entry
- *  (nothing constrains what an older install wrote) counts as holding nothing. */
+/** A malformed entry from an older install counts as holding nothing. */
 function absentFields(
   stored: ApiModelOverride,
   config: Parameters<typeof toApiOverride>[0],
@@ -72,22 +68,20 @@ function absentFields(
   return fields.filter((field) => !(field in stored));
 }
 
-/** Push local settings the server does not hold. Never deletes and never overwrites: a value
- *  already there is the newer authority. Field by field, not entry by entry, since a legacy
- *  entry holds only llama_extra_args and max_seq_length. */
+/** Never deletes or overwrites: server values are the newer authority. Field by field. */
 export async function backfillModelOverrides(): Promise<void> {
   if (alreadyRan()) {
     return;
   }
+  // Uploaded under the path, an older cached-repo record would outrank the repo's.
+  for (const entry of listPerModelConfigs()) {
+    adoptCachedRepoConfig(entry.modelId, entry.ggufVariant);
+  }
   const local = listPerModelConfigs().filter(
-    // A quant means GGUF, all auto-switch resolves; a .gguf and a reference have a null variant.
-    // A link sits in a dir the resolver skips, a bare file name is a label it never keys.
     (entry) =>
-      (entry.ggufVariant != null ||
-        entry.modelId.toLowerCase().endsWith(".gguf") ||
-        isOllamaModelId(entry.modelId)) &&
       !isOllamaLinkPath(entry.modelId) &&
       !isNativeFileLabel(entry.modelId) &&
+      cachedRepoConfigId(entry.modelId, entry.ggufVariant) === null &&
       !isDefaultConfig(entry.config),
   );
   if (local.length === 0) {
@@ -99,7 +93,7 @@ export async function backfillModelOverrides(): Promise<void> {
   try {
     existing = await fetchModelOverrides();
   } catch {
-    // Offline or not authenticated yet: leave the flag unset so the next start retries.
+    // Leave the flag unset so the next start retries.
     return;
   }
 
@@ -110,7 +104,7 @@ export async function backfillModelOverrides(): Promise<void> {
 
   let failed = false;
   for (const entry of local) {
-    // Folded here too: the older `id::variant` keys hold the casing that was typed.
+    // Older `id::variant` keys keep the typed casing.
     const key = normalizedOverrideKey(
       modelOverrideKey(entry.modelId, entry.ggufVariant),
     );
@@ -125,12 +119,11 @@ export async function backfillModelOverrides(): Promise<void> {
       continue;
     }
     const stored = known.get(key);
-    // Nothing this browser could add, so skip the round trip entirely.
     if (stored && absentFields(stored, current.config).length === 0) {
       continue;
     }
     try {
-      // Fills the gaps only. `known` predates this loop, so another tab's save is invisible here.
+      // `known` predates this loop, so another tab's save is invisible here.
       await putModelOverride(
         current.modelId,
         current.ggufVariant,

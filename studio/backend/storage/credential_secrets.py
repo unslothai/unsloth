@@ -19,6 +19,7 @@ from typing import Optional
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from auth.storage import get_or_create_credential_encryption_key
+from storage.studio_db import connect_studio_db
 from utils.paths import ensure_dir, studio_db_path
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ def reset_schema_state_for_tests() -> None:
 def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path), timeout = 5.0)
+    conn = connect_studio_db(db_path, timeout = 5.0)
     conn.row_factory = sqlite3.Row
     try:
         os.chmod(db_path.parent, 0o700)
@@ -165,8 +166,8 @@ def insert_secret_if_absent(credential_kind: str, scope_id: str, plaintext: str)
         conn.close()
 
 
-def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
-    """Return a decrypted credential, or ``None`` if absent or unreadable."""
+def get_secret_with_presence(credential_kind: str, scope_id: str) -> "tuple[Optional[str], bool]":
+    """One read gives the secret and presence together; absent authorizes, but unreadable must not."""
     conn = get_connection()
     try:
         row = conn.execute(
@@ -179,25 +180,50 @@ def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
         ).fetchone()
     finally:
         conn.close()
-    if row is None or row["format_version"] != _FORMAT_VERSION:
-        return None
+    if row is None:
+        return (None, False)
+    if row["format_version"] != _FORMAT_VERSION:
+        return (None, True)
     try:
         plaintext = AESGCM(get_or_create_credential_encryption_key()).decrypt(
             bytes(row["nonce"]),
             bytes(row["ciphertext"]),
             _associated_data(credential_kind, scope_id),
         )
-        return plaintext.decode("utf-8")
+        return (plaintext.decode("utf-8"), True)
     except Exception:
         logger.warning(
             "Saved credential is unreadable; re-entry is required (kind=%s)",
             credential_kind,
         )
-        return None
+        return (None, True)
+
+
+def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
+    """Return a decrypted credential, or ``None`` if absent or unreadable."""
+    return get_secret_with_presence(credential_kind, scope_id)[0]
 
 
 def has_secret(credential_kind: str, scope_id: str) -> bool:
     return get_secret(credential_kind, scope_id) is not None
+
+
+def secret_row_exists(credential_kind: str, scope_id: str) -> bool:
+    """Whether a credential row exists, readable or not; get_secret and has_secret return None for
+    both absent and undecryptable, so callers that authorize on absence must use this"""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM credential_secrets
+            WHERE credential_kind = ? AND scope_id = ?
+            """,
+            (credential_kind, scope_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
 
 
 def delete_secret(
@@ -226,20 +252,70 @@ def get_hf_token() -> Optional[str]:
     return get_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
+def get_hf_token_with_presence() -> "tuple[Optional[str], bool]":
+    """The saved HF token and whether one is stored at all. See `get_secret_with_presence`."""
+    return get_secret_with_presence(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+
+
+def hf_token_row_exists() -> bool:
+    """Whether an HF token is saved, readable or not. See `secret_row_exists`."""
+    return secret_row_exists(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+
+
+def _note_a_credential_this_host_held() -> None:
+    """Records the outgoing token identity while it is still there, so a tokenless caller cannot inherit its downloads; unreadable rows record a sentinel."""
+    try:
+        from hub.utils.hf_tokens import note_host_credential_identity
+        note_host_credential_identity(get_hf_token(), a_credential_was_held = hf_token_row_exists())
+    except Exception:  # noqa: BLE001 -- bookkeeping must never fail a settings write
+        pass
+
+
 def save_hf_token(token: str) -> None:
+    _note_a_credential_this_host_held()
     upsert_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    _note_a_credential_this_host_held()
 
 
 def save_hf_token_if_absent(token: str) -> bool:
-    return insert_secret_if_absent(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    inserted = insert_secret_if_absent(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    _note_a_credential_this_host_held()
+    return inserted
 
 
 def delete_hf_token() -> bool:
+    _note_a_credential_this_host_held()
     return delete_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
 def get_provider_api_key(provider_id: str) -> Optional[str]:
-    return get_secret(PROVIDER_API_KEY_KIND, provider_id)
+    key = get_secret(PROVIDER_API_KEY_KIND, provider_id)
+    if key is None and _owner_shared_provider(provider_id):
+        from utils.account_context import OWNER, run_as
+
+        # Server-side only: no route returns a saved key.
+        key = run_as(OWNER, get_secret, PROVIDER_API_KEY_KIND, provider_id)
+    return key
+
+
+def provider_api_key_saved(provider_id: str) -> bool:
+    if has_secret(PROVIDER_API_KEY_KIND, provider_id):
+        return True
+    if not _owner_shared_provider(provider_id):
+        return False
+    from utils.account_context import OWNER, run_as
+
+    return run_as(OWNER, has_secret, PROVIDER_API_KEY_KIND, provider_id)
+
+
+def _owner_shared_provider(provider_id: str) -> bool:
+    from utils.account_context import is_owner_context
+
+    if is_owner_context() or not provider_id:
+        return False
+    from storage import providers_db
+
+    return providers_db.is_owner_shared_provider(provider_id)
 
 
 def save_provider_api_key(

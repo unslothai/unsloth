@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
+import { SegmentedPill } from "@/components/segmented-control";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -23,10 +25,25 @@ import { SettingsSection } from "./settings-section";
 
 export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   const t = useT();
+  const pillId = useId();
   const prefs = useChatPreferencesStore();
   const ref = useRef<HTMLDivElement>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const labels = composerShortcutLabels(prefs.sendShortcut, isMacPlatform());
+  const multiline = composerShortcutLabels(prefs.sendShortcut, isMacPlatform(), "\n");
+  const oppositeShortcut =
+    labels.opposite === multiline.opposite
+      ? labels.opposite
+      : t("composerSettings.followUpMultilineShortcut", {
+          shortcut: labels.opposite,
+          multiline: multiline.opposite,
+        });
+  const mod = isMacPlatform() ? "\u2318" : "Ctrl";
+  const sendDescriptionKey = {
+    enter: "composerSettings.sendEnterDescription",
+    "mod-enter-multiline": "composerSettings.sendMultilineDescription",
+    "mod-enter": "composerSettings.sendAlwaysDescription",
+  } as const;
   useEffect(() => {
     if (scrollTarget !== "chat-composer") return;
     const frame = requestAnimationFrame(() => {
@@ -46,31 +63,36 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
           className={
             embedded
               ? ""
-              : "mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4"
+              : "mt-2 divide-y divide-border/60 rounded-xl border border-border/60 bg-muted/20 px-4"
           }
         >
           <SettingsRow
             label={t("composerSettings.sendShortcut")}
-            description={t("composerSettings.sendDescription")}
+            description={t(sendDescriptionKey[prefs.sendShortcut], { mod })}
           >
             <Select
               value={prefs.sendShortcut}
               onValueChange={(value) =>
                 prefs.setSendShortcut(
-                  value === "mod-enter" ? "mod-enter" : "enter",
+                  value === "mod-enter" || value === "mod-enter-multiline"
+                    ? value
+                    : "enter",
                 )
               }
             >
               <SelectTrigger
-                className="w-36"
+                className="w-auto max-w-72"
                 aria-label={t("composerSettings.sendShortcut")}
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent align="end">
                 <SelectItem value="enter">Enter</SelectItem>
+                <SelectItem value="mod-enter-multiline">
+                  {t("composerSettings.sendMultiline", { mod })}
+                </SelectItem>
                 <SelectItem value="mod-enter">
-                  {composerShortcutLabels("mod-enter", isMacPlatform()).send}
+                  {t("composerSettings.sendAlways", { mod })}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -78,11 +100,10 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
           <SettingsRow
             label={t("composerSettings.followUp")}
             description={t("composerSettings.followUpDescription", {
-              shortcut: labels.opposite,
+              shortcut: oppositeShortcut,
             })}
             hint={t("composerSettings.steerDescription")}
           >
-            {/* Shared track + pill selector, as on the API key expiry row. */}
             <div
               className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
               role="group"
@@ -95,12 +116,15 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
                   aria-pressed={prefs.followUpBehavior === behavior}
                   onClick={() => prefs.setFollowUpBehavior(behavior)}
                   className={cn(
-                    "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                     prefs.followUpBehavior === behavior
-                      ? "hub-tab-toggle-pill text-foreground"
+                      ? "text-foreground"
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
+                  {prefs.followUpBehavior === behavior && (
+                    <SegmentedPill group={`${pillId}-follow-up`} />
+                  )}
                   {t(
                     behavior === "queue"
                       ? "composerSettings.queue"
@@ -111,24 +135,64 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
             </div>
           </SettingsRow>
           <SettingsRow
-            label={t("composerSettings.plainText")}
-            description={t("composerSettings.plainTextDescription")}
+            label={t("composerSettings.shareDraft")}
+            description={t("composerSettings.shareDraftDescription")}
           >
             <Switch
-              aria-label={t("composerSettings.plainText")}
-              checked={prefs.plainTextComposer}
-              onCheckedChange={prefs.setPlainTextComposer}
-            />
-          </SettingsRow>
-          <SettingsRow label={t("composerSettings.showContext")}>
-            <Switch
-              aria-label={t("composerSettings.showContext")}
-              checked={prefs.showContextWindowUsage}
-              onCheckedChange={prefs.setShowContextWindowUsage}
+              aria-label={t("composerSettings.shareDraft")}
+              checked={prefs.shareComposerDraft}
+              onCheckedChange={prefs.setShareComposerDraft}
             />
           </SettingsRow>
         </div>
       </SettingsSection>
     </div>
+  );
+}
+
+export function ComposerFormatRows() {
+  const t = useT();
+  const prefs = useChatPreferencesStore();
+  return (
+    <>
+      <SettingsRow
+        label={t("composerSettings.plainText")}
+        description={t("composerSettings.plainTextDescription")}
+      >
+        <Switch
+          aria-label={t("composerSettings.plainText")}
+          checked={prefs.plainTextComposer}
+          onCheckedChange={prefs.setPlainTextComposer}
+        />
+      </SettingsRow>
+      <SettingsRow
+        label={t("composerSettings.richPaste")}
+        badge={<Badge variant="secondary" className="h-4 px-1.5 text-ui-10 text-muted-foreground">{t("shell.beta")}</Badge>}
+        description={t("composerSettings.richPasteDescription", {
+          shortcut: isMacPlatform() ? "\u21e7\u2318V" : "Ctrl+Shift+V",
+        })}
+      >
+        <Switch
+          aria-label={t("composerSettings.richPaste")}
+          checked={prefs.richTextPaste}
+          onCheckedChange={prefs.setRichTextPaste}
+        />
+      </SettingsRow>
+    </>
+  );
+}
+
+export function ContextWindowUsageRow() {
+  const t = useT();
+  const checked = useChatPreferencesStore((s) => s.showContextWindowUsage);
+  const setChecked = useChatPreferencesStore((s) => s.setShowContextWindowUsage);
+  return (
+    <SettingsRow label={t("composerSettings.showContext")}>
+      <Switch
+        aria-label={t("composerSettings.showContext")}
+        checked={checked}
+        onCheckedChange={setChecked}
+      />
+    </SettingsRow>
   );
 }

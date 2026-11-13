@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: /api/liveness says whether the backend is generating, and stays cheap.
-
-The desktop health watchdog probes this route every 15s with a 10s budget and declares the
-backend dead after 3 consecutive misses. Startup is not the only window where a healthy
-backend misses three in a row: a host serving a model far larger than it can hold runs at
-fractions of a token per second, and the loop feeding those streams goes quiet the same way
-the warm thread's `import torch` makes it go quiet. Killing there ends a response the user
-is still waiting on, and the window reports it as "Server stopped unexpectedly" (#8945).
-
-So liveness carries an `inference_active` marker and the watchdog widens its failure budget
-while the last answered probe was generating. Only for probes that time out: a refused
-connection means the port is gone, and that is still reported at three strikes.
-
-Media jobs do not enter `active_generations`, so the marker also checks video and both
-image engines.
-
-The marker must not cost what health costs: it is a len() under a lock already held for
-microseconds plus a bool off each resident media backend, never a wait on the work itself
-and never an import of the ML stack.
-
-CPU-only, no network, no GPU, no weights.
-"""
+"""Liveness reports inference_active, so a generating backend gets a wider budget on timeouts only."""
 
 from __future__ import annotations
 
@@ -32,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 _COMMANDS_RS = _BACKEND_DIR.parent / "src-tauri" / "src" / "commands.rs"
 
 
@@ -111,14 +90,18 @@ idle_after = probe()
 # Keep this independent of main._MEDIA_BACKEND_MODULES so omissions are detected.
 media_modules = (
     "core.inference.video",
+    "core.inference.video_restyle",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
+    "core.inference.mlx_diffusion_backend",
     "routes.inference",
 )
-# routes.inference is imported at startup regardless, so the ML-stack question is only
-# about the three engines.
+# routes.inference and the import-light restyle module load at startup regardless, so the
+# ML-stack question is only about the three engines.
 media_import_free = [
-    name for name in media_modules if name.startswith("core.") and name in sys.modules
+    name
+    for name in media_modules
+    if name.startswith("core.") and name != "core.inference.video_restyle" and name in sys.modules
 ]
 scanned = list(getattr(main, "_MEDIA_BACKEND_MODULES", ()) or ())
 
@@ -177,9 +160,8 @@ def test_liveness_reports_a_generation_in_flight():
 
 
 def test_the_marker_disappears_once_nothing_is_generating():
-    """The wide budget is for a backend that is producing tokens. Leaving the marker lit
-    after the last stream ends would arm it for the rest of the session, and a genuinely
-    hung backend would sit unreported."""
+    """The wide budget is for token production; a marker left lit after the stream would hide a real
+    hang."""
     result = _probe()["probes"]
 
     assert not result["idle_before"][
@@ -192,13 +174,7 @@ def test_the_marker_disappears_once_nothing_is_generating():
 
 
 def _watchdog_probe_budget_s() -> float:
-    """The launcher's per-probe HTTP budget, read out of the Rust that owns it.
-
-    A ceiling on this route has to sit under the number the watchdog actually allows, or a
-    regression that makes /api/liveness block for most of a probe passes here while every
-    real probe times out. Derived rather than written down so the two cannot drift apart,
-    the way test_health_answers_within_probe_budget.py derives its own budget.
-    """
+    """Reads HEALTH_PROBE_TIMEOUT from the Rust launcher so the liveness ceiling cannot drift past it."""
     assert _COMMANDS_RS.is_file(), f"{_COMMANDS_RS} moved; update this guard"
     match = re.search(
         r"const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs\((\d+)\)",
@@ -209,21 +185,10 @@ def _watchdog_probe_budget_s() -> float:
 
 
 def test_the_marker_costs_nothing_to_read():
-    """A probe every 15s cannot pay for anything that waits, which is why the route reads
-    a registry len() rather than asking the backend what it is doing."""
+    """A probe every 15s cannot wait, so the route reads a registry len() instead of asking the backend."""
     result = _probe()["probes"]
 
-    # Two bounds, because they answer different questions and neither covers the other.
-    #
-    # The first is the one that matters: liveness against a route in the same app that
-    # only returns a dict. Both pay the same interpreter, the same TestClient and the same
-    # scheduler, so what is left is the route's own work, and a second of new I/O shows up
-    # as a ratio however slow the runner is. Generous at 40x, since the floor here is tens
-    # of microseconds and small absolute jitter is a large ratio.
-    #
-    # The second is the absolute one the watchdog imposes: at or over its per-probe budget
-    # every real probe times out. A relative bound cannot see that, because a control that
-    # somehow took seconds would scale with it.
+    # relative bound vs a trivial route catches new I/O; absolute bound is the watchdog budget
     for state, sample in result.items():
         control = sample["control"]
         relative = max(control * 40, 0.05)
@@ -236,8 +201,7 @@ def test_the_marker_costs_nothing_to_read():
 
 
 def test_the_desktop_watchdog_still_reads_the_marker():
-    """Cross-language guard: the marker only does anything because commands.rs reads it,
-    and either side can be changed without the other."""
+    """Cross-language guard: commands.rs must keep reading the marker, or the watchdog ignores it."""
     assert _COMMANDS_RS.is_file(), f"{_COMMANDS_RS} moved; update this guard"
     rust = _COMMANDS_RS.read_text(encoding = "utf-8")
     probe = rust[rust.index("async fn check_health_inner") :]
@@ -304,11 +268,7 @@ def test_every_media_backend_is_scanned():
 
 
 def test_liveness_covers_the_image_persist_tail():
-    """An image job is not over when the engine's marker clears: the route is still writing
-    the gallery records the response is built from, and on a saturated host that write is
-    exactly when probes start missing. generate-progress already calls that window active
-    (routes/inference.py diffusion_generate_progress); liveness disagreeing with it is how a
-    request that is still running gets the idle three-strike budget."""
+    """Liveness must stay active through the image persist tail, as generate-progress already does."""
     import importlib
 
     routes_inference = importlib.import_module("routes.inference")
@@ -322,16 +282,189 @@ def test_liveness_covers_the_image_persist_tail():
     assert routes_inference.generation_in_flight() is False
 
 
+_PERSIST_COUNTER = "_diffusion_persist_active"
+# The image routes' run bodies: /images/generate, its X/Y grid, and the OpenAI-compatible /images/generations.
+_PERSIST_ROUTES = {"_generate_diffusion_image_run", "_generate_openai_images", "_generate_xy_grid"}
+
+
+def _persist_marker_violations(source: str) -> list[str]:
+    """Each image route raises the persist marker, and every raise is dropped on every exit.
+
+    A raise is balanced when the statement after it is a ``try`` whose ``finally`` drops it, or (a hold handed to a
+    later persist) when it sits under ``if C:`` and its ``try`` drops it in an ``except BaseException`` that re-raises,
+    and a later ``try`` in the same block drops ``2 if C else 1`` in its ``finally``, with nothing that can return or
+    await in between."""
+    import ast
+
+    def is_counter(node, op):
+        return (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == _PERSIST_COUNTER
+            and isinstance(node.op, op)
+        )
+
+    def is_one(value):
+        return isinstance(value, ast.Constant) and value.value == 1
+
+    def two_if(value):
+        """The condition C of ``2 if C else 1``, else None."""
+        if (
+            isinstance(value, ast.IfExp)
+            and isinstance(value.body, ast.Constant)
+            and value.body.value == 2
+            and is_one(value.orelse)
+        ):
+            return ast.dump(value.test)
+        return None
+
+    def finally_drop(node):
+        drops = [s for s in node.finalbody if is_counter(s, ast.Sub)]
+        return drops[0] if len(drops) == 1 else None
+
+    def reraising_drop(node):
+        for handler in node.handlers:
+            catches_all = handler.type is None or (
+                isinstance(handler.type, ast.Name) and handler.type.id == "BaseException"
+            )
+            body = handler.body
+            if (
+                catches_all
+                and body
+                and is_counter(body[0], ast.Sub)
+                and is_one(body[0].value)
+                and isinstance(body[-1], ast.Raise)
+                and body[-1].exc is None
+            ):
+                return body[0]
+        return None
+
+    tree = ast.parse(source)
+    problems: list[str] = []
+    mutators: set[str] = set()
+    for func in tree.body:
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        name = func.name
+        parents = {}
+        for node in ast.walk(func):
+            for field, value in ast.iter_fields(node):
+                if isinstance(value, list):
+                    for index, child in enumerate(value):
+                        if isinstance(child, ast.AST):
+                            parents[id(child)] = (node, value, index)
+        raises = [n for n in ast.walk(func) if is_counter(n, ast.Add)]
+        drops = [n for n in ast.walk(func) if is_counter(n, ast.Sub)]
+        if not raises and not drops:
+            continue
+        mutators.add(name)
+        accounted: set[int] = set()
+        handoffs: dict[str, tuple] = {}
+        releases: dict[str, tuple] = {}
+        for stmt in raises:
+            owner, body, index = parents[id(stmt)]
+            follow = body[index + 1] if index + 1 < len(body) else None
+            if not is_one(stmt.value) or not isinstance(follow, ast.Try):
+                problems.append(
+                    f"{name}:{stmt.lineno}: the raise is not followed by the try that drops it"
+                )
+                continue
+            drop = finally_drop(follow)
+            if drop is not None and is_one(drop.value):
+                accounted.add(id(drop))
+                continue
+            if drop is not None and two_if(drop.value) is not None:
+                accounted.add(id(drop))
+                releases[two_if(drop.value)] = (stmt, body, index)
+                continue
+            handed = reraising_drop(follow)
+            if (
+                drop is None
+                and handed is not None
+                and isinstance(owner, ast.If)
+                and body is owner.body
+            ):
+                accounted.add(id(handed))
+                handoffs[ast.dump(owner.test)] = (stmt, owner)
+                continue
+            problems.append(
+                f"{name}:{stmt.lineno}: a raise is not dropped on every exit of its try"
+            )
+        for drop in drops:
+            if id(drop) not in accounted:
+                problems.append(f"{name}:{drop.lineno}: a drop with no matching raise")
+        for cond, (stmt, guard) in handoffs.items():
+            if cond not in releases:
+                problems.append(f"{name}:{stmt.lineno}: a handed-off hold no later persist drops")
+                continue
+            _, release_body, release_index = releases.pop(cond)
+            _, guard_body, guard_index = parents[id(guard)]
+            if guard_body is not release_body or guard_index >= release_index:
+                problems.append(
+                    f"{name}:{stmt.lineno}: the hold's release is not later in its block"
+                )
+                continue
+            for between in guard_body[guard_index + 1 : release_index]:
+                if isinstance(between, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue  # defined here, run inside the release's try
+                for node in ast.walk(between):
+                    if isinstance(node, (ast.Return, ast.Raise, ast.Await, ast.Yield)):
+                        problems.append(
+                            f"{name}:{node.lineno}: an exit between a held marker and its release"
+                        )
+        for cond, (stmt, _, _) in releases.items():
+            problems.append(f"{name}:{stmt.lineno}: a persist drops a hold nothing raised")
+    for route in sorted(_PERSIST_ROUTES - mutators):
+        problems.append(f"{route}: persists gallery records without publishing the marker")
+    for other in sorted(mutators - _PERSIST_ROUTES):
+        problems.append(f"{other}: moves the persist marker outside the image routes")
+    return problems
+
+
 def test_both_image_routes_publish_the_persist_marker():
-    """The Unsloth route and the OpenAI-compatible one write the gallery on separate paths.
-    Only the first used to count, so an OpenAI client's persist was invisible to both
-    generate-progress and liveness."""
+    """Both image routes must raise the persist marker and drop it on every exit, or liveness goes stale."""
     import inspect
     import importlib
 
     source = inspect.getsource(importlib.import_module("routes.inference"))
-    assert source.count("_diffusion_persist_active += 1") == 2, (
-        "an image route persists gallery records without publishing the marker, so liveness "
-        "reports idle while that request is still in flight"
+    assert _persist_marker_violations(source) == [], (
+        "an image route persists gallery records without a balanced marker, so liveness "
+        "misreports that request"
     )
-    assert source.count("_diffusion_persist_active -= 1") == 2
+
+
+def test_the_persist_marker_check_catches_each_imbalance():
+    """The check above fails on each way the marker can go wrong, so its pass means something."""
+    import inspect
+    import importlib
+
+    source = inspect.getsource(importlib.import_module("routes.inference"))
+    detailer_drop = "_diffusion_persist_active -= 2 if detailer is not None else 1"
+    handoff_drop = "        except BaseException:\n            _diffusion_persist_active -= 1\n            raise\n"
+    openai_raise = '    global _diffusion_persist_active\n    _diffusion_persist_active += 1\n    try:\n        with account_access.media_generation("diffusion"):\n            data ='
+    assert source.count(detailer_drop) == 1
+    assert source.count(handoff_drop) == 1
+    assert source.count(openai_raise) == 1
+    mutants = {
+        "the persist no longer drops the Detailer's hold": source.replace(
+            detailer_drop, "_diffusion_persist_active -= 1"
+        ),
+        "a failed Detailer pass leaks its hold": source.replace(
+            handoff_drop, "        except BaseException:\n            raise\n"
+        ),
+        "the OpenAI route stops publishing": source.replace(
+            openai_raise,
+            openai_raise.replace("    _diffusion_persist_active += 1\n", "    pass\n"),
+        ),
+        "the OpenAI route never drops its marker": source.replace(
+            "    finally:\n        _diffusion_persist_active -= 1\n\n    return ImageGen",
+            "    finally:\n        pass\n\n    return ImageGen",
+        ),
+        "a return between the hold and its release": source.replace(
+            "    created_at = time.time()\n    per_image_seeds",
+            "    if not result:\n        return None\n    created_at = time.time()\n    per_image_seeds",
+        ),
+    }
+    for why, mutant in mutants.items():
+        assert mutant != source, why
+        assert _persist_marker_violations(mutant), why

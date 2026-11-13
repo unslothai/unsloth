@@ -1,16 +1,4 @@
-"""The package must stay importable on the Python floor ``pyproject.toml`` declares.
-
-It was not. ``requires-python`` says ``>=3.9`` while ``registry/registry.py`` annotated a
-dataclass field ``list[QuantType] | dict[str, list[QuantType]]``, which evaluates at class
-creation, so importing ``unsloth.registry.registry`` died with ``TypeError: unsupported
-operand type(s) for |``. Nothing caught it: every CI job here pins 3.12.
-
-The floor is read from ``pyproject.toml`` rather than hardcoded, so raising
-``requires-python`` relaxes these checks instead of turning them into a false alarm.
-
-This is a static AST check. It imports nothing from the package, so it needs no torch, no
-GPU and no network, and it sees files that are never imported at test time.
-"""
+"""Package must import on the requires-python floor; a dataclass annotation with | broke 3.9."""
 
 import ast
 import re
@@ -21,15 +9,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "unsloth"
+CLI_ROOT = REPO_ROOT / "unsloth_cli"
 
-# studio/ ships under the same requires-python, so it is held to the syntax check. Its
-# evaluated-union debt is ratcheted rather than fixed here: the files involved include FastAPI routers and pydantic
-# models, where `from __future__ import annotations` is supported but has real failure modes around class
-# dependencies, so converting them needs Unsloth actually booted and its routes exercised.
-#
-# The SET, not just a count, so a breach can name the files it added. Shrinking is the only edit that should ever be
-# made here: a new entry means a new file evaluates a union on the floor, and the fix is the future import in that
-# file, not a longer list.
+# studio/ union debt is ratcheted: only shrink this set; fix new files with the future import.
 STUDIO_UNION_DEBT_FILES = frozenset(
     {
         "studio/backend/auth/hashing.py",
@@ -82,15 +64,7 @@ def declared_floor():
 
 
 def guarded_floor(init_path):
-    """The floor an ``__init__.py`` refuses to import below, if it declares one.
-
-    The shape a vendored package uses to state its own requirement:
-
-        if sys.version_info < (3, 10):
-            raise ImportError("truststore requires Python 3.10 or later")
-
-    Returns ``(3, 10)`` there, ``None`` when no such guard exists.
-    """
+    """Reads the floor from an 'if sys.version_info < (x, y): raise ImportError' guard; None if absent."""
     try:
         tree = ast.parse(init_path.read_text(encoding = "utf-8"), filename = str(init_path))
     except (OSError, SyntaxError):
@@ -116,18 +90,7 @@ def guarded_floor(init_path):
 
 
 def floor_guarded_dirs(root):
-    """Package directories that refuse to import below a floor above ours.
-
-    `studio/backend/vendor/truststore` is vendored third-party code whose
-    `__init__.py` raises on anything under 3.10, so the PEP 604 type aliases in
-    its `_api.py` can never evaluate on our 3.9 floor: the package is gone
-    before that module is reached, and its one caller wraps `import truststore`
-    in try/except. Scanning those files reports a break that cannot happen.
-
-    Keyed on the guard, not the path, so unguarded code dropped into the same
-    vendor directory is still scanned. A blanket `vendor/` exclusion would have
-    covered that silently.
-    """
+    """Skip packages whose __init__ guards a higher floor, keyed on the guard, not the vendor path."""
     guarded = []
     for init in root.rglob("__init__.py"):
         if "__pycache__" in init.parts:
@@ -152,11 +115,7 @@ def package_files(root = PACKAGE_ROOT, minimum = 50):
 
 
 def packaged_roots():
-    """Top-level directories setuptools ships, from the `include` list in pyproject.
-
-    Read rather than hardcoded so a newly packaged directory cannot silently escape the
-    floor guarantee.
-    """
+    """Read packaged roots from pyproject's include list, so no new package escapes the floor check."""
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
     block = re.search(r"^include\s*=\s*\[(.*?)\]", text, re.MULTILINE | re.DOTALL)
     assert block, "no packages.find include list in pyproject.toml"
@@ -198,12 +157,7 @@ def signature_annotations(node):
 
 
 def evaluated_annotations(tree):
-    """Annotations Python evaluates, so the future import is what defers them.
-
-    Variable annotations are evaluated at module and class scope only; inside a function
-    body they are never evaluated, so flagging those is a false positive. Signature
-    annotations are evaluated wherever their ``def`` is.
-    """
+    """Variable annotations inside a function body are never evaluated, so they must not be flagged."""
     out = []
 
     def walk(node, in_function):
@@ -215,7 +169,7 @@ def evaluated_annotations(tree):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 walk(child, True)
             elif isinstance(child, ast.ClassDef):
-                walk(child, False)  # a class body is class scope wherever it sits
+                walk(child, False)
             else:
                 walk(child, in_function)
 
@@ -223,8 +177,7 @@ def evaluated_annotations(tree):
     return out
 
 
-# A `|` between these is a union, not arithmetic. These are the builtin types; `None` and whatever the module pulled
-# in from typing count as anchors too, and are handled in the check below.
+# A `|` between these is a union, not arithmetic; None and typing imports are handled below.
 TYPE_ANCHORS = frozenset(
     {
         "str",
@@ -271,13 +224,8 @@ def union_operands(node):
 
 
 def looks_like_a_type_alias(node, known_typing_names):
-    """``PathLike = str | Path`` yes; ``defaults | extra`` and ``re.A | re.M`` no.
-
-    Every operand must be name-shaped and at least one must be a recognisable type.
-    Without that anchor a ``|`` between plain names is far more likely to be a dict merge
-    (PEP 584, valid on 3.9), a set union or flag arithmetic, and failing the gate on those
-    would block code that runs perfectly well on the floor.
-    """
+    """A bare | between names is often a dict merge or flag union, so require a recognisable type
+    operand."""
     operands = union_operands(node)
     if not operands:
         return False
@@ -285,7 +233,7 @@ def looks_like_a_type_alias(node, known_typing_names):
         if isinstance(operand, ast.Constant):
             if operand.value is None:
                 return True
-            continue  # a bare string is a forward reference, never an anchor alone
+            continue
         name = operand.id if isinstance(operand, ast.Name) else operand.attr
         if name in TYPE_ANCHORS or name in known_typing_names:
             return True
@@ -293,14 +241,7 @@ def looks_like_a_type_alias(node, known_typing_names):
 
 
 def evaluated_values(tree):
-    """Expressions that run at import, at module or class scope.
-
-    Type aliases are the case that matters: ``PathLike = str | Path`` raises below 3.10
-    and, unlike an annotation, the future import does not defer it. Decorator expressions
-    and parameter defaults are evaluated the same way, so they belong here too. Control
-    flow is descended into (a branch that runs, runs) but function bodies are not, since
-    those only execute when called.
-    """
+    """Type aliases run at import and the future import does not defer them, so they are checked."""
     out = []
     scoped = (
         ast.If,
@@ -320,7 +261,7 @@ def evaluated_values(tree):
                 out.extend(child.decorator_list)
                 out.extend(d for d in child.args.defaults if d is not None)
                 out.extend(d for d in child.args.kw_defaults if d is not None)
-                continue  # the body only runs when called
+                continue
             if isinstance(child, ast.ClassDef):
                 out.extend(child.decorator_list)
             if isinstance(child, (ast.Assign, ast.AnnAssign)) and child.value is not None:
@@ -363,12 +304,7 @@ def test_every_packaged_module_parses_on_the_declared_floor():
 
 
 def test_every_packaged_module_compiles():
-    """``ast.parse`` accepts things ``compile`` rejects, and only compile runs on import.
-
-    A misplaced ``from __future__ import annotations`` is the case that bites here: it
-    parses, it makes ``has_future_annotations`` suppress the union check, and it still
-    raises SyntaxError on import.
-    """
+    """ast.parse accepts a misplaced __future__ import that compile rejects, so compile every module."""
     broken = []
     for root in packaged_roots():
         for path in package_files(root, minimum = 1):
@@ -380,26 +316,19 @@ def test_every_packaged_module_compiles():
 
 
 def test_studio_evaluated_unions_do_not_grow():
-    """studio/ is shipped on the same floor but still carries unions that raise there.
-
-    A ratchet, not a pass: converting those files needs Unsloth booted and its routes
-    exercised, because FastAPI resolves annotations when it builds each endpoint. This
-    keeps the debt from growing in the meantime.
-    """
+    """Ratchet: studio/ still has unions that raise on the floor, and FastAPI resolves them per endpoint."""
     if declared_floor() >= (3, 10):
         pytest.skip("floor is 3.10+, PEP 604 evaluates fine")
     studio = REPO_ROOT / "studio"
     if not studio.is_dir():
         pytest.skip("no studio/ directory in this checkout")
     offenders = sorted(str(p.relative_to(REPO_ROOT)) for p in evaluated_union_files(studio))
-    # Name the files that are NEW against the recorded set, not the whole list.
-    # A bare count told you only that 37 exceeded 35, and the full list was truncated at 2000 chars, so finding the two
-    # additions meant re-running the scan on an older checkout and diffing by hand.
+    # Check membership and count: a swap keeps the count equal; net growth may add no new file.
     added = [p for p in offenders if p not in STUDIO_UNION_DEBT_FILES]
     removed = [p for p in sorted(STUDIO_UNION_DEBT_FILES) if p not in offenders]
-    assert len(offenders) <= len(STUDIO_UNION_DEBT_FILES), (
-        f"{len(offenders)} studio files now evaluate PEP 604 unions on the floor, up from "
-        f"{len(STUDIO_UNION_DEBT_FILES)}. Add `from __future__ import annotations` to "
+    assert not added and len(offenders) <= len(STUDIO_UNION_DEBT_FILES), (
+        f"{len(offenders)} studio files now evaluate PEP 604 unions on the floor, against "
+        f"{len(STUDIO_UNION_DEBT_FILES)} recorded. Add `from __future__ import annotations` to "
         "these, do not raise the ratchet:\n  "
         + "\n  ".join(added or offenders)
         + (
@@ -423,8 +352,10 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
         known_typing_names = typing_names(tree)
         # The future import defers annotations only; an assigned value still runs.
         deferred = has_future_annotations(tree)
-        in_unsloth = PACKAGE_ROOT in path.parents
-        annotation_sources = [] if (deferred or not in_unsloth) else evaluated_annotations(tree)
+        in_floor_package = PACKAGE_ROOT in path.parents or CLI_ROOT in path.parents
+        annotation_sources = (
+            [] if (deferred or not in_floor_package) else evaluated_annotations(tree)
+        )
         for expression in annotation_sources:
             for inner in ast.walk(expression):
                 if isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.BitOr):
@@ -444,10 +375,6 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
     )
 
 
-# ---- the exemption itself ------------------------------------------------
-#
-# The skip above is the kind of thing that rots into a blanket `vendor/`
-# exclusion. These pin it to the guard.
 def test_the_truststore_guard_is_what_exempts_it():
     """Not the path. If upstream drops the version guard, the files come back
     into the scan and this gate goes red again -- which is correct, because at

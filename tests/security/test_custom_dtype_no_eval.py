@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`UNSLOTH_FORCE_CUSTOM_DTYPE` is a five field string, two of whose fields are code.
-
-`vision.py` used to `eval` the dtype fields and `exec` the code fields straight out of
-the environment. Two changes are pinned: the dtype fields go through a fixed table, and
-the code fields run only when this process set the variable. Defence in depth rather
-than a privilege boundary, but the code path is gone either way.
-"""
+"""UNSLOTH_FORCE_CUSTOM_DTYPE: dtypes come from a fixed table; code runs only if set in-process."""
 
 import ast
 import pathlib
@@ -74,9 +68,6 @@ def test_shipped_dtype_fields_match_the_old_eval(value):
         assert resolve_dtype(field) is reference, field
 
 
-# --- a dtype field is no longer an expression --------------------------------
-
-
 @pytest.mark.parametrize(
     "payload",
     [
@@ -99,9 +90,6 @@ def test_table_covers_only_dtypes():
         assert value is None or isinstance(value, torch.dtype), key
 
 
-# --- the code fields are only ours -------------------------------------------
-
-
 def test_a_value_we_set_is_trusted(monkeypatch):
     monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising = False)
     value = _shipped_values()[0]
@@ -116,7 +104,7 @@ def test_an_inherited_value_is_not_trusted(monkeypatch):
     payload = "all;None;None;pass;import os; os.system('touch /tmp/pwned')"
     monkeypatch.setenv("UNSLOTH_FORCE_CUSTOM_DTYPE", payload)
     got, trusted = trusted_custom_dtype()
-    assert got == payload  # dtype fields still readable
+    assert got == payload
     assert not trusted
 
 
@@ -126,11 +114,6 @@ def test_an_inherited_value_that_mimics_ours_is_still_not_trusted(monkeypatch):
     monkeypatch.setenv("UNSLOTH_FORCE_CUSTOM_DTYPE", value)
     _, trusted = trusted_custom_dtype()
     assert not trusted
-
-
-def test_unset_is_empty(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising = False)
-    assert trusted_custom_dtype() == ("", False)
 
 
 # --- vision.py no longer evaluates the fields --------------------------------

@@ -11,19 +11,22 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown } from "streamdown";
+import {
+  FINISHED_TEXT_REMEND,
+  LITERAL_LINK_REMEND,
+  hasIncompleteLinkRepair,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
- * before parsing it, and Unsloth runs it on every SETTLED body: `markdown-text.tsx` passes
- * `parseIncompleteMarkdown={!incrementalRender}` and `incrementalRender` is null exactly when the
- * message is not streaming. So this dependency decides what a finished message LOOKS like, not
- * only what a half-written one looks like, and a version bump is a rendering change.
+ * before parsing it, and Unsloth runs it on every settled body (marker completions only on a cut
+ * one), so a version bump is a rendering change.
  *
  * These are RUN, not scraped. Every assertion below is either a call into the resolved package or
  * a render through Streamdown, so the file fails if the dependency is downgraded, if the override
  * that forces one copy of it is dropped, or if the settled branch stops asking for the repair.
  * That last one is checked by EVALUATING the `parseIncompleteMarkdown` expression that
- * `markdown-text.tsx` writes, at `incrementalRender === null`, and handing the result to a real
+ * `markdown-text.tsx` writes and handing the result to a real
  * `<Streamdown>` -- not by asserting on the package in isolation and hoping the wiring agrees.
  *
  * WHAT THIS FILE DOES NOT COVER, so that the paragraph above is not read as wider than it is: the
@@ -36,11 +39,7 @@ import { Streamdown } from "streamdown";
  * The first test fails on remend 1.3.0, which is the point of the bump.
  */
 
-// remend 1.3.0 does not recognise `\( ... \)` or `\[ ... \]` as math, so it counts the `_` of a
-// subscript as an unmatched emphasis marker and "completes" it by appending another one. The
-// document is COMPLETE, so there is nothing to complete, and Unsloth renders the extra character
-// literally at the end of the message. Shared with the copy sweep below, which runs the same four
-// documents through every remend on disk rather than through the one this file imports.
+// remend 1.3.0 misreads `\(`/`\[` math subscripts as open emphasis and appends a stray `_`.
 const COMPLETE_LATEX_DOCUMENTS = [
   String.raw`where \( \delta_{r} = 1 \) holds.`,
   "\\[ \\delta_{r} = 1 \\]\n",
@@ -79,9 +78,7 @@ test("ordinary complete markdown is returned unchanged", () => {
 });
 
 test("a truncated stream is still repaired", () => {
-  // The other half of the bump: the repair must still DO something. Without this, dropping the
-  // dependency entirely, or passing `parseIncompleteMarkdown={false}`, would pass the tests above
-  // and silently take the streaming repair with it.
+  // Ensures the repair still runs; dropping it would otherwise pass the tests above.
   const repairs: [string, string][] = [
     ["see [the docs](https://exa", "]("],
     ["this is **bol", "**"],
@@ -106,13 +103,8 @@ const MARKDOWN_TEXT = new URL(
   import.meta.url,
 );
 
-/**
- * The `parseIncompleteMarkdown` a SETTLED body is rendered with, taken from the source and
- * evaluated rather than restated. `incrementalRender` is null exactly when the message is not
- * streaming, so evaluating the real expression in that state is the same question the component
- * answers on the settled path.
- */
-function settledParseIncompleteMarkdown(): boolean {
+/** The settled `parseIncompleteMarkdown`, evaluated from the source rather than restated. */
+function settledParseIncompleteMarkdown(cut: boolean): boolean {
   const source = readFileSync(MARKDOWN_TEXT, "utf8");
   const opened = source.indexOf("<Streamdown");
   assert.notEqual(
@@ -131,38 +123,48 @@ function settledParseIncompleteMarkdown(): boolean {
   );
   const value: unknown = new Function(
     "incrementalRender",
+    "cut",
     `return (${expression});`,
-  )(null);
+  )(null, cut);
   assert.equal(
     typeof value,
     "boolean",
-    `parseIncompleteMarkdown={${expression}} did not evaluate to a boolean at incrementalRender === null`,
+    `parseIncompleteMarkdown={${expression}} did not evaluate to a boolean for a settled part`,
   );
   return value as boolean;
 }
 
-function renderSettled(markdown: string): string {
+function renderSettled(markdown: string, cut = true): string {
   return renderToStaticMarkup(
     createElement(
       Streamdown,
       {
         mode: "streaming",
-        parseIncompleteMarkdown: settledParseIncompleteMarkdown(),
+        parseIncompleteMarkdown: settledParseIncompleteMarkdown(cut),
+        remend: !cut
+          ? FINISHED_TEXT_REMEND
+          : hasIncompleteLinkRepair(markdown)
+            ? LITERAL_LINK_REMEND
+            : undefined,
       },
       markdown,
     ),
   );
 }
 
+test("a settled unfinished link remains text without a blocked placeholder", () => {
+  const html = renderSettled("See [example](https://exa");
+  assert.match(html, /See \[example\]\(/);
+  assert.match(html, /https:\/\/exa/);
+  assert.doesNotMatch(html, /\[blocked\]|streamdown:incomplete-link/);
+  assert.match(renderSettled("See [example](javascript:alert)"), /\[blocked\]/);
+  const list = renderSettled("- >= 16 GB\n\nSee [foo");
+  assert.match(list, /<li[^>]*>&gt;= 16 GB<\/li>/);
+  assert.doesNotMatch(list, /blockquote|\[blocked\]/);
+});
+
 test("the settled render path runs the repair, not just the package", () => {
-  // THE TESTS ABOVE CALL `remend` THEMSELVES, so all of them pass while the UI has the repair
-  // switched off: mutating `parseIncompleteMarkdown={!incrementalRender}` to `{false}` in
-  // `markdown-text.tsx` left this file green until this test existed. The only way to see the
-  // difference is to render, and the only documents where the repair is VISIBLE are truncated
-  // ones -- a complete document is by construction unchanged either way.
-  //
-  // A truncated body does reach the settled path: a cancelled or errored response settles
-  // mid-construct and is then rendered with `incrementalRender === null` forever.
+  // The tests above call `remend` directly, so only a render shows the UI still repairs cut bodies.
   for (const [truncated, repaired] of [
     ["this is **bol", 'data-streamdown="strong"'],
     ["call `foo(", 'data-streamdown="inline-code"'],
@@ -176,15 +178,7 @@ test("the settled render path runs the repair, not just the package", () => {
   }
 });
 
-// The text a reader would see, given markup produced by renderToStaticMarkup. Deliberately a scan
-// rather than a `<[^>]*>` replace: that pattern is bypassable in general, and CodeQL fails the
-// build over it at high severity, correctly, because nothing in the type system says the input is
-// trusted. The scan is sound for this input for a reason worth stating: React escapes `<` in text
-// to `&lt;`, so every raw `<` in the output really does open a tag.
-//
-// Measured, so nobody has to guess: today this changes no count, because Streamdown's attributes
-// happen to contain no underscores, and the assertion below is red with or without it. It is here
-// so that stays true if an attribute ever gains one, not because it is currently load-bearing.
+// A scan, not a `<[^>]*>` replace, which CodeQL flags; React escapes `<` in text.
 const renderedText = (markup: string): string => {
   let text = "";
   let inTag = false;
@@ -201,13 +195,9 @@ const renderedText = (markup: string): string => {
 };
 
 test("a complete document survives the settled render path unchanged", () => {
-  // The rendering half of the bump, asserted where the reader sees it. Under remend 1.3.0 the
-  // subscript `_` is "completed" with a second one, so the paragraph gains a character that is
-  // not in the source; count them rather than matching a fixed string, since the renderer resolves
-  // the `\(` escapes.
   const underscores = (text: string): number => (text.match(/_/g) ?? []).length;
   for (const complete of COMPLETE_LATEX_DOCUMENTS) {
-    const text = renderedText(renderSettled(complete));
+    const text = renderedText(renderSettled(complete, false));
     assert.equal(
       underscores(text),
       underscores(complete),
@@ -217,11 +207,64 @@ test("a complete document survives the settled render path unchanged", () => {
   }
 });
 
+test("a finished reply keeps its lone markers as written", () => {
+  for (const reply of [
+    "Fields marked with an asterisk (*) are required.",
+    "Add *.pyc to your .gitignore file.",
+    "Pass options with **kwargs to forward them.",
+    "Press the ` key to open the console.",
+    "Delete files matching *.tmp first.\n\nThen restart the server.",
+    "Unpack it with ***args in Python 2 style.",
+    "Use ***args to unpack them.\n",
+    "It costs ~~ 5 dollars.",
+    "Load it as ~~fast mode in the config.",
+  ]) {
+    const html = renderSettled(reply, false);
+    assert.doesNotMatch(
+      html,
+      /data-streamdown="(emphasis|strong|inline-code|strikethrough)"|<em>|<strong>|<code|<del/,
+      `a finished ${JSON.stringify(reply)} was restyled: ${html}`,
+    );
+    assert.equal(
+      renderedText(html).replace(/\s+/g, ""),
+      reply.replace(/\s+/g, ""),
+      `a finished ${JSON.stringify(reply)} did not reach the reader as written`,
+    );
+  }
+});
+
+test("a cut reply still hides a dangling image", () => {
+  for (const cut of [
+    "see ![alt](https://example.com/very/long/partial",
+    "see ![alt](data:image/png;base64,iVBORw0KGgo",
+  ]) {
+    const text = renderedText(renderSettled(cut));
+    assert.doesNotMatch(
+      text,
+      /!\[|example\.com|base64/,
+      `a cut ${JSON.stringify(cut)} showed its partial image: ${text}`,
+    );
+  }
+});
+
+test("a finished reply keeps remend's literal escapes", () => {
+  const list = renderSettled("- >= 16 GB of RAM", false);
+  assert.match(list, /<li[^>]*>&gt;= 16 GB of RAM<\/li>/);
+  assert.doesNotMatch(list, /blockquote/);
+  const ranges = renderSettled(
+    "It takes 5~10 minutes and uses 20~30 GB.",
+    false,
+  );
+  assert.doesNotMatch(ranges, /<del|data-streamdown="strikethrough"/);
+  assert.equal(
+    renderedText(ranges),
+    "It takes 5~10 minutes and uses 20~30 GB.",
+  );
+});
+
 const FRONTEND_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
-// Every `node_modules/**/remend` in the tree, in npm's own layout: a package's private copy lives
-// at `<package>/node_modules/remend`, and a scoped directory holds packages rather than packages
-// of its own.
+// A package's private copy lives at <package>/node_modules; scoped dirs hold packages.
 function collectRemendCopies(nodeModules: string, found: string[]): string[] {
   let entries: Dirent[];
   try {
@@ -246,17 +289,8 @@ function collectRemendCopies(nodeModules: string, found: string[]): string[] {
 }
 
 test("every remend in the tree is the pinned one, including Streamdown's", async () => {
-  // THE COPY THIS FILE IMPORTS IS NOT NECESSARILY THE ONE THE UI RUNS. Unsloth renders settled
-  // bodies through `<Streamdown parseIncompleteMarkdown>`, and streamdown@2.5.0 depends on
-  // `"remend": "1.3.0"` EXACTLY, so its own `import remend from "remend"` resolves against
-  // `node_modules/streamdown/node_modules` first. Bumping the top-level pin to 1.3.1 therefore
-  // makes npm nest a second, older copy under streamdown unless `overrides.remend` forces one
-  // version on the whole tree; verified with `npm install --package-lock-only` after deleting the
-  // override, which writes `node_modules/streamdown/node_modules/remend -> 1.3.0` into the lock.
-  //
-  // In that state the tests above still pass, because they import the hoisted 1.3.1, while the
-  // rendered message goes back to `where \( \delta_{r} = 1 \) holds._`. So the version is asserted
-  // where Streamdown would find it, not only where this file finds it.
+  // streamdown pins remend exactly, so without overrides.remend npm nests an older copy.
+  // Assert the version where Streamdown resolves it, not just where this file does.
   const copies = collectRemendCopies(
     path.join(FRONTEND_ROOT, "node_modules"),
     [],
@@ -288,8 +322,7 @@ test("every remend in the tree is the pinned one, including Streamdown's", async
       default: (text: string, options?: object) => string;
     };
     for (const complete of COMPLETE_LATEX_DOCUMENTS) {
-      // `undefined`, not `{}`: Streamdown forwards its optional `remend` prop straight through, and
-      // Unsloth does not pass one.
+      // `undefined`, not `{}`: Streamdown forwards its remend prop and Unsloth passes none.
       assert.equal(
         loaded.default(complete, undefined),
         complete,
@@ -299,20 +332,4 @@ test("every remend in the tree is the pinned one, including Streamdown's", async
   }
 });
 
-/*
- * NO TIMING ASSERTION HERE, deliberately.
- *
- * The bump is a performance change as well as a rendering one: 1.3.0 answers "is this offset
- * inside a code block" by scanning from the start of the document every time it is asked, once per
- * candidate marker, so the repair grows faster than the length of a body. Timed on the frozen
- * studiobench corpus with no browser and no profiler attached, ten bodies cost 697.6 ms under
- * 1.3.0 and 111.0 ms under 1.3.1, and the largest body alone reads 2.95 / 10.93 / 158.40 / 539.92
- * ms at 13,347 / 26,694 / 53,388 / 106,776 characters against 3.30 / 11.21 / 29.39 / 69.42.
- *
- * A doubling-factor assertion over that shape was written, measured, and DELETED. On this host it
- * separates the two versions by 3.10 against 2.61, which is a 15 percent margin on a quantity that
- * only moves one way under load: it would fail on a busy runner for a reason that has nothing to
- * do with the property, and a test whose failure mode is "the machine was busy" gets re-run rather
- * than read. The performance claim belongs in the pull request beside the rungs it was measured
- * at, not in a unit test that cannot hold it.
- */
+/* No timing assertion: a 15% margin would fail on a busy runner; the claim belongs in the PR. */

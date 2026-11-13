@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -42,6 +43,18 @@ _HIDDEN_STT_REPO_IDS = frozenset(
     }
 )
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
+# stt_mtmd_sidecar.MTMD_STT_MODELS file names: a loose pair in a custom folder has no repo id.
+_HIDDEN_STT_FILENAMES_LOWER = frozenset(
+    {
+        "qwen3-asr-0.6b-q8_0.gguf",
+        "mmproj-qwen3-asr-0.6b-q8_0.gguf",
+        "qwen3-asr-1.7b-q8_0.gguf",
+        "mmproj-qwen3-asr-1.7b-q8_0.gguf",
+    }
+)
+
+# audio.cpp umbrella repo: its subfolder GGUFs would show as chat models, so the Audio page and Voice settings reach them through the audio.cpp catalog.
+_HIDDEN_AUDIO_CPP_REPO_IDS_LOWER = frozenset({"audio-cpp/audio.cpp-gguf"})
 
 # Curated Audio-page TTS checkpoints, which stay VISIBLE but must not be chat-loadable: a chat turn on one comes back as synthesized speech. Listed by id because config sniffing cannot catch them (Orpheus/OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion carries no tokenizer_config for the codec probe.
 _CURATED_TTS_REPO_IDS = frozenset(
@@ -63,6 +76,35 @@ _CURATED_TTS_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _CURATED_
 def is_curated_tts_repo_id(value: str | None) -> bool:
     """True only for Unsloth's exact curated TTS Hub repositories."""
     return bool(value and value.strip().lower() in _CURATED_TTS_REPO_IDS_LOWER)
+
+
+def is_audio_cpp_repo_id(value: str | None) -> bool:
+    """True for audio.cpp's umbrella repo. Hidden from chat like a curated STT repo, and like one still
+    emitted as a Model Hub management row, since that row is where its downloaded packages are deleted."""
+    return bool(value and value.strip().lower() in _HIDDEN_AUDIO_CPP_REPO_IDS_LOWER)
+
+
+def decision_api_repo_ids() -> set[str]:
+    """Exact repos the Decision API serves. MLX adapter bases (Qwen3.5) are ordinary chat models and stay visible."""
+    from core.systemone.catalog import CHECKPOINTS, GGUF_COMPANIONS, MLX_COMPANIONS
+    return (
+        {c.source.lower() for c in CHECKPOINTS.values()}
+        | {c.repo.lower() for c in GGUF_COMPANIONS.values()}
+        | {c.repo.lower() for c in MLX_COMPANIONS.values()}
+    )
+
+
+def is_decision_api_model(*values: str | None) -> bool:
+    repo_ids = decision_api_repo_ids()
+    for value in values:
+        if not value:
+            continue
+        if _HF_REPO_ID_RE.match(value):
+            if value.lower() in repo_ids:
+                return True
+        elif _path_contains_repo_id(value, repo_ids):
+            return True
+    return False
 
 
 def is_curated_stt_repo_id(value: str | None) -> bool:
@@ -104,6 +146,41 @@ def _path_is_whisper_model(value: str) -> bool:
     except OSError:
         return False
     return any(_config_is_whisper(candidate) for candidate in candidates)
+
+
+# local_inventory._PAYLOAD_SUFFIXES, plus configs that make a folder a model on their own.
+_MODEL_PAYLOAD_SUFFIXES = (
+    ".safetensors",
+    ".gguf",
+    ".bin",
+    ".pt",
+    ".pth",
+    ".ckpt",
+    ".h5",
+    ".msgpack",
+    ".npz",
+)
+_MODEL_CONFIG_NAMES = frozenset({"config.json", "adapter_config.json", "model_index.json"})
+
+
+def _path_is_curated_stt_gguf_dir(value: str) -> bool:
+    """A local folder whose only model is the curated Qwen3-ASR pair. Other weights or a model config keep it listed."""
+    path = Path(value).expanduser()
+    # Absolute only: a bare id must not be listed against the working directory.
+    if not path.is_absolute():
+        return False
+    found = False
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                name = entry.name.lower()
+                if name in _HIDDEN_STT_FILENAMES_LOWER:
+                    found = True
+                elif name in _MODEL_CONFIG_NAMES or name.endswith(_MODEL_PAYLOAD_SUFFIXES):
+                    return False
+    except OSError:
+        return False
+    return found
 
 
 def _safe_resolve(path: Path) -> Optional[str]:
@@ -150,8 +227,26 @@ def _path_basename_is_default_embedder(value: str) -> bool:
     )
 
 
+def is_selected_embedder(repo_id: str | None) -> bool:
+    """True if *repo_id* is the Settings-picked (not env/default) embedder or its GGUF; the Hub keeps it as a deletable non-chat row."""
+    if not repo_id or not _HF_REPO_ID_RE.match(repo_id):
+        return False
+    from core.rag import config as rag_config
+
+    defaults = {
+        rag_config.EMBEDDING_MODEL.lower(),
+        rag_config.default_gguf_repo().lower(),
+        *(repo.lower() for repo in _DEFAULT_EMBEDDING_REPO_IDS),
+    }
+    wanted = repo_id.lower()
+    return wanted not in defaults and any(
+        model and model.lower() == wanted and not _existing_resolved_path(model)
+        for model in (rag_config.effective_embedding_model(), rag_config.effective_gguf_repo())
+    )
+
+
 def is_hidden_model(*values: str | None) -> bool:
-    """True if any id/path is the RAG embedding model (the effective embedder or its GGUF companion repo), the llama.cpp install validation probe (ggml-org/models / stories260K), or a curated/custom Whisper dictation model, so pickers hide them (GGUF and non-GGUF). None are usable chat models, and the probe can be cached as a side effect of installing the prebuilt llama-server and otherwise sorts smallest, so it would be auto-selected.
+    """True if any id/path is the RAG embedding model (the effective embedder or its GGUF companion repo), the llama.cpp install validation probe (ggml-org/models / stories260K), a curated/custom Whisper dictation model, or a Decision API model, so pickers hide them (GGUF and non-GGUF). None are usable chat models, and the probe can be cached as a side effect of installing the prebuilt llama-server and otherwise sorts smallest, so it would be auto-selected.
 
     Hub repo ids are matched EXACTLY (case-insensitive full "owner/name"), so a custom embedder with a generic basename like "org/model" cannot substring hide unrelated cached repos such as "user/model-chat" or "org/model-GGUF". Existing paths take precedence over the identical ``owner/name`` repo shape, cache and LM Studio paths use exact repo-derived segments, and local copies of the static default embedder also use a boundary-aware basename fallback, which configured custom repos never do.
     """
@@ -161,6 +256,8 @@ def is_hidden_model(*values: str | None) -> bool:
         _PROBE_REPO_ID.lower(),
         *(repo_id.lower() for repo_id in _DEFAULT_EMBEDDING_REPO_IDS),
         *_HIDDEN_STT_REPO_IDS_LOWER,
+        *_HIDDEN_AUDIO_CPP_REPO_IDS_LOWER,
+        *decision_api_repo_ids(),
     }
     exact_paths: list[str] = []
     for model in {
@@ -188,7 +285,8 @@ def is_hidden_model(*values: str | None) -> bool:
                 return True
             continue
         # Split on both separators so a Windows-style path is matched on a POSIX interpreter and vice versa. Anything else is a filesystem path: the probe is matched by its exact filename (stories260K.gguf) and a configured local-path embedder by exact resolved path.
-        if low.replace("\\", "/").rsplit("/", 1)[-1] == _PROBE_FILENAME:
+        basename = low.replace("\\", "/").rsplit("/", 1)[-1]
+        if basename == _PROBE_FILENAME or basename in _HIDDEN_STT_FILENAMES_LOWER:
             return True
         if _path_basename_is_default_embedder(v):
             return True
@@ -196,6 +294,8 @@ def is_hidden_model(*values: str | None) -> bool:
             return True
         # Custom Whisper checkpoints keep no curated repo id, so match by config.
         if _path_is_whisper_model(v):
+            return True
+        if _path_is_curated_stt_gguf_dir(v):
             return True
         if exact_paths:
             resolved = _safe_resolve(Path(v).expanduser())

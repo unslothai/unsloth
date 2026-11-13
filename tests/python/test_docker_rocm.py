@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""The AMD ROCm image's host-side plumbing: `docker/run.sh --rocm`,
-`docker/build.sh --rocm`, and the container entrypoint's refusal paths.
-
-None of these need an AMD GPU. run.sh and build.sh are driven with a recording
-`docker` stub and a staged /dev tree (the UNSLOTH_DEV_ROOT idiom); the
-entrypoint is driven the same way with stub `rocm-smi` and `python` binaries,
-so every message a user can hit before torch loads is checked here.
-"""
+"""Drives run.sh, build.sh and the entrypoint with stub docker, rocm-smi and python: no AMD GPU."""
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -25,6 +19,10 @@ _ENTRYPOINT = os.path.join(_DOCKER, "entrypoint-rocm.sh")
 _DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.rocm")
 _SMOKE = os.path.join(_DOCKER, "smoke_test_rocm.py")
 _WORKFLOW = os.path.join(_REPO, ".github", "workflows", "docker-publish-rocm.yml")
+_STUDIO_LAUNCH = os.path.join(_DOCKER, "studio_launch_rocm.sh")
+_STUDIO_DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.studio-rocm")
+_HUB_PAGE = os.path.join(_DOCKER, "DOCKERHUB-ROCM.md")
+_README = os.path.join(_REPO, "README.md")
 
 _posix_shell = pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None,
@@ -38,20 +36,19 @@ def _stub(path, body):
     os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-# ── run.sh --rocm ────────────────────────────────────────────────────────────
-
-
 def _run_sh(
     tmp_path,
     args,
     *,
     kfd = True,
     dri = True,
+    dxg = False,
+    librocdxg = False,
+    wsl_lib = True,
     nvidia = False,
     groups = "both",
     extra_env = None,
 ):
-    # a fresh sandbox per call: a test may drive run.sh twice
     tmp_path = tmp_path / f"run{len(os.listdir(tmp_path))}"
     tmp_path.mkdir()
     bindir = tmp_path / "bin"
@@ -83,6 +80,14 @@ def _run_sh(
         (dev_root / "dev" / "kfd").write_text("")
         if dri:
             (dev_root / "dev" / "dri").mkdir()
+    if dxg:
+        (dev_root / "dev" / "dxg").write_text("")
+    if librocdxg:
+        lib = dev_root / "opt" / "rocm" / "lib"
+        lib.mkdir(parents = True)
+        (lib / "librocdxg.so.1.2.1").write_text("")
+    if wsl_lib:
+        (dev_root / "usr" / "lib" / "wsl" / "lib").mkdir(parents = True)
     env = dict(os.environ)
     env["PATH"] = str(bindir) + ":/usr/bin:/bin"
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
@@ -94,6 +99,7 @@ def _run_sh(
         "UNSLOTH_GPUS",
         "UNSLOTH_ALLOW_CPU",
         "UNSLOTH_STUDIO_VOLUME",
+        "UNSLOTH_WORKSPACE_VOLUME",
         "UNSLOTH_IMAGE",
         "UNSLOTH_ROCM",
         "HSA_OVERRIDE_GFX_VERSION",
@@ -115,7 +121,6 @@ def _run_sh(
 
 def _image_and_cmd(argv):
     """The positional tail of `docker run`: image, then the container command."""
-    # every option run.sh emits takes a value or is a known flag
     flags_with_value = {
         "--device",
         "--group-add",
@@ -177,12 +182,53 @@ class TestRunShRocm:
         assert image == "unsloth/unsloth-rocm:latest"
         assert "/dev/kfd" in argv
 
-    def test_no_kfd_warns_and_starts_without_devices(self, tmp_path):
-        """Docker Desktop has no /dev/kfd; the entrypoint then explains, so the
-        container must still start rather than docker failing on a missing node."""
+    def test_no_kfd_and_no_dxg_warns_and_starts_without_devices(self, tmp_path):
+        """A host with neither node has no GPU to pass: the container must still start
+        rather than docker failing on a missing device."""
         argv, stderr = _run_sh(tmp_path, ["--rocm", "true"], kfd = False)
         assert "--device" not in argv and "--gpus" not in argv, argv
-        assert "/dev/kfd is not present" in stderr and "Docker Desktop" in stderr, stderr
+        assert "/dev/kfd is not present" in stderr, stderr
+        assert "/dev/dxg" in stderr, stderr
+
+    def test_wsl_passes_dxg_instead_of_kfd(self, tmp_path):
+        """WSL2 has no /dev/kfd: the card is reached over the DXG bridge, so the flags
+        are the device plus the runtime's opt-in, and librocdxg off the host (its cmake
+        build needs Windows SDK headers, so no Linux image build can carry it)."""
+        argv, stderr = _run_sh(
+            tmp_path,
+            ["--rocm", "true"],
+            kfd = False,
+            dxg = True,
+            librocdxg = True,
+        )
+        assert "/dev/dxg" in argv, argv
+        assert "/dev/kfd" not in argv, argv
+        assert "HSA_ENABLE_DXG_DETECTION=1" in argv, argv
+        assert any("librocdxg.so" in a for a in argv), argv
+        # librocdxg dlopens libdxcore from here; without the mount hsa_init fails.
+        assert "/usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" in argv, argv
+        assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in argv, argv
+        assert "--gpus" not in argv, argv
+        assert "DXG" in stderr or "dxg" in stderr, stderr
+
+    def test_a_missing_wsl_lib_dir_is_named_not_silently_dropped(self, tmp_path):
+        argv, stderr = _run_sh(
+            tmp_path,
+            ["--rocm", "true"],
+            kfd = False,
+            dxg = True,
+            librocdxg = True,
+            wsl_lib = False,
+        )
+        assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" not in argv, argv
+        assert "/usr/lib/wsl/lib is missing" in stderr, stderr
+
+    def test_dxg_without_librocdxg_warns_and_points_at_the_helper(self, tmp_path):
+        """/dev/dxg alone is not enough: without the bridge library the runtime cannot
+        reach the card, and the fix is the WSL ROCm helper, not a docker flag."""
+        argv, stderr = _run_sh(tmp_path, ["--rocm", "true"], kfd = False, dxg = True)
+        assert "librocdxg" in stderr, stderr
+        assert "install_rocm_wsl_strixhalo.sh" in stderr, stderr
 
     def test_a_mixed_host_is_not_offered_the_nvidia_toolkit(self, tmp_path):
         """An NVIDIA + AMD box under --rocm runs the ROCm image through the AMD nodes;
@@ -207,8 +253,7 @@ class TestRunShRocm:
             extra_env = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0", "UNSLOTH_ROCM_GFX_ARCH": "gfx1151"},
         )
         env_flags = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
-        # the dash-only form: docker reads the value from the environment, so it
-        # never lands in argv
+        # Dash-only form: docker reads the value from the environment, not argv.
         assert "HSA_OVERRIDE_GFX_VERSION" in env_flags and "UNSLOTH_ROCM_GFX_ARCH" in env_flags
 
     def test_the_studio_volume_and_caches_are_mounted_like_the_cuda_path(self, tmp_path):
@@ -216,6 +261,26 @@ class TestRunShRocm:
         mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
         assert "unsloth-studio:/opt/unsloth-studio" in mounts, mounts
         assert any(m.endswith(":/workspace/.cache/huggingface") for m in mounts), mounts
+
+    def test_the_workspace_volume_is_not_shared_with_the_cuda_image(self, tmp_path):
+        rocm, _ = _run_sh(tmp_path, ["--rocm", "true"])
+        cuda, _ = _run_sh(tmp_path, ["true"], nvidia = True)
+        ws = lambda argv: [
+            argv[i + 1]
+            for i, a in enumerate(argv)
+            if a == "-v" and argv[i + 1].endswith(":/workspace")
+        ]
+        assert ws(rocm) == ["unsloth-workspace-rocm:/workspace"], rocm
+        assert ws(cuda) == ["unsloth-workspace:/workspace"], cuda
+
+    def test_the_smoke_test_commands_skip_the_workspace_volume(self):
+        # a kept volume serves the first image's smoke test, not the one just built
+        for name in ("run.sh", "build.sh", "smoke_test_rocm.py"):
+            with open(os.path.join(_DOCKER, name), encoding = "utf-8") as f:
+                lines = [l for l in f if "run.sh --rocm python /workspace/smoke_test_rocm.py" in l]
+            assert lines, name
+            for line in lines:
+                assert "UNSLOTH_WORKSPACE_VOLUME= " in line, (name, line)
 
     def test_a_custom_image_is_kept(self, tmp_path):
         argv, _ = _run_sh(tmp_path, ["--rocm", "true"], extra_env = {"UNSLOTH_IMAGE": "me/rocm:dev"})
@@ -237,8 +302,6 @@ class TestRunShRocm:
         assert "/dev/kfd" not in argv and "--group-add" not in argv
         assert "rocm" not in stderr.lower(), stderr
 
-
-# ── build.sh --rocm ──────────────────────────────────────────────────────────
 
 _SHA_U = "a" * 40
 _SHA_Z = "b" * 40
@@ -351,7 +414,6 @@ class TestBuildShRocm:
         assert "ARG ROCM_VERSION=7.2.4" in body
         assert "ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm7.2" in body
         assert "FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}" in body
-        # a knowingly broken fallback range is worse than a failed build
         assert "bitsandbytes>=0.49" not in body
         assert "bitsandbytes>=0.50.0" in body
 
@@ -359,9 +421,11 @@ class TestBuildShRocm:
         body = open(_WORKFLOW, encoding = "utf-8").read()
         assert "DEFAULT_ROCM_VERSION: '7.2.4'" in body
         assert "DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'" in body
-        assert "6.2" not in body.replace("ubuntu-22.04", "")
-        # per RUN on main: a sha would still pair a scheduled run with a dispatch on
-        # an unchanged main, and the group keeps only one pending run
+        # Strip comments and runs-on first: pinned action comments contain `v6.2.0`.
+        meaningful = "\n".join(line.split("#", 1)[0] for line in body.splitlines()).replace(
+            "ubuntu-22.04", ""
+        )
+        assert "6.2" not in meaningful
         assert "github.ref == 'refs/heads/main' && github.run_id" in body
         assert "-r{0}', github.run_id" in body, "override sha tags need the run id suffix"
         assert "git ls-remote https://github.com/unslothai/unsloth-zoo" in body
@@ -369,7 +433,34 @@ class TestBuildShRocm:
         assert "org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only" in body
 
 
-# ── entrypoint-rocm.sh ───────────────────────────────────────────────────────
+class TestTheUserFacingDocsCoverWsl:
+    """docker/DOCKERHUB-ROCM.md is synced to the Docker Hub page and README.md is the
+    first thing a Windows user reads. Both said the image needs native Linux, and the
+    Hub quick start passed --device /dev/kfd unconditionally, which the daemon rejects
+    on WSL before the entrypoint runs."""
+
+    def test_the_hub_page_gives_the_same_wsl_flags_as_run_sh(self):
+        text = open(_HUB_PAGE, encoding = "utf-8").read()
+        for needle in (
+            "--device /dev/dxg",
+            "HSA_ENABLE_DXG_DETECTION=1",
+            "librocdxg.so.1:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro",
+            "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro",
+            "LD_LIBRARY_PATH=/usr/lib/wsl/lib",
+            "ROCM_GFX=<your gfx> bash docker/build.sh --rocm",
+            # run.sh defaults to the published image, which is refused on DXG.
+            "UNSLOTH_IMAGE=unsloth-rocm:latest bash run.sh --rocm",
+            # Dockerfile.rocm maps no RDNA3 arch to a per-arch index.
+            "RDNA3 cards (`gfx1100` to `gfx1103`) have no bridge path yet",
+        ):
+            assert needle in text, needle
+
+    def test_the_readme_no_longer_says_native_linux_only(self):
+        # README must not restore the claim that sent Windows users away, nor drop the Hub link.
+        text = open(_README, encoding = "utf-8").read()
+        assert "needs native Linux" not in text
+        assert "native Linux only" not in text
+        assert "https://hub.docker.com/r/unsloth/unsloth-rocm" in text
 
 
 def _entrypoint(
@@ -377,6 +468,7 @@ def _entrypoint(
     *,
     kfd = True,
     readable = True,
+    dxg = False,
     smi_sees_gpu = True,
     python_body = None,
     env_extra = None,
@@ -391,11 +483,12 @@ def _entrypoint(
         (dev_root / "dev" / "kfd").write_text("")
         if not readable:
             os.chmod(dev_root / "dev" / "kfd", 0)
+    if dxg:
+        (dev_root / "dev" / "dxg").write_text("")
     _stub(
         str(bindir / "rocm-smi"),
         'echo "GPU[0] : GPU ID: 0x1586"\n' if smi_sees_gpu else "echo 'No AMD GPUs specified'\n",
     )
-    # the two torch heredocs; stand in for torch on this host
     _stub(str(bindir / "python"), python_body or "cat > /dev/null\nexit 0\n")
     build_info = tmp_path / "build-info"
     build_info.write_text(f"TORCH_INDEX_URL=x\nROCM_GFX={build_info_gfx}\nROCM_VERSION=7.2.4\n")
@@ -418,16 +511,45 @@ def _entrypoint(
 
 
 @_posix_shell
+def _fake_rocm_torch(
+    tmp_path,
+    libnames,
+    available = True,
+):
+    """A ROCm torch on a supported arch whose lib/ holds exactly `libnames`."""
+    fake = tmp_path / "fake"
+    (fake / "torch" / "cuda").mkdir(parents = True)
+    (fake / "torch" / "lib").mkdir()
+    for name in libnames:
+        (fake / "torch" / "lib" / name).write_text("")
+    (fake / "torch" / "__init__.py").write_text(
+        "__version__ = '2.11.0+rocm7.2'\n"
+        "class version:\n    hip = '7.2.53211'\n"
+        "from . import cuda\n"
+    )
+    (fake / "torch" / "cuda" / "__init__.py").write_text(
+        "class _P:\n    gcnArchName = 'gfx1201'\n"
+        f"def is_available(): return {available}\n"
+        "def device_count(): return 1\n"
+        "def get_device_name(i): return 'AMD Radeon AI PRO R9700'\n"
+        "def get_device_properties(i): return _P()\n"
+        "def is_bf16_supported(): return True\n"
+    )
+    return f'PYTHONPATH="{fake}" exec python3 "$@"\n'
+
+
 class TestRocmEntrypoint:
     def test_no_kfd_refuses_and_names_docker_desktop(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path, kfd = False)
         assert rc == 1 and not ran
         assert "/dev/kfd not found" in err and "Docker Desktop" in err, err
-        # the old advice: a WSL or Docker Desktop host cannot modprobe anything
         assert "modprobe" not in err, err
         assert "run.sh --rocm" in err
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason = "root reads a mode-0 file")
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason = "needs POSIX mode bits, and root reads a mode-0 file regardless",
+    )
     def test_an_unreadable_kfd_names_the_group_ids(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path, readable = False)
         assert rc == 1 and not ran
@@ -446,6 +568,100 @@ class TestRocmEntrypoint:
 
     def test_a_happy_host_runs_the_command(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path)
+        assert rc == 0 and ran, err
+
+    def test_dxg_is_accepted_when_kfd_is_absent(self, tmp_path):
+        """WSL2 never has /dev/kfd. /dev/dxg plus librocdxg is the same GPU evidence
+        install.sh gates a WSL host on, so the run must proceed, not refuse."""
+        lib = tmp_path / "rocmlib"
+        lib.mkdir()
+        (lib / "librocdxg.so.1").write_text("")
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
+        )
+        assert rc == 0 and ran, err
+        assert "DXG bridge" in err, err
+
+    def test_dxg_skips_the_rocm_smi_advice(self, tmp_path):
+        """rocm-smi reads the amdgpu sysfs, which the bridge has none of (measured in the
+        container: "Driver not initialized"), and its advice is /dev/dri and group ids,
+        neither of which exists on WSL."""
+        lib = tmp_path / "rocmlib"
+        lib.mkdir()
+        (lib / "librocdxg.so.1").write_text("")
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            smi_sees_gpu = False,
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
+        )
+        assert rc == 0 and ran, err
+        assert "--group-add" not in err and "/dev/dri" not in err, err
+
+    def test_dxg_without_the_bridge_library_refuses(self, tmp_path):
+        """/dev/dxg alone cannot reach the card: the HSA runtime needs librocdxg."""
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(tmp_path / "empty")},
+        )
+        assert rc == 1 and not ran
+        assert "librocdxg" in err, err
+        # librocdxg dlopens libdxcore from WSL's lib dir, so the recovery must mount it.
+        assert "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" in err, err
+        assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in err, err
+        # The bridge refuses the published image, so the recovery must name the per-arch build.
+        assert "UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm" in err, err
+        assert "unsloth/unsloth-rocm:latest" not in err, err
+
+    def _dxg_with_torch(
+        self,
+        tmp_path,
+        libnames,
+        available = True,
+    ):
+        lib = tmp_path / "dxglib"
+        lib.mkdir()
+        (lib / "librocdxg.so.1").write_text("")
+        return _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            python_body = _fake_rocm_torch(tmp_path, libnames, available),
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
+        )
+
+    def test_dxg_torch_failure_gives_bridge_advice_not_amdgpu_advice(self, tmp_path):
+        """WSL has no host amdgpu stack, so rocm-smi, dkms and rebuild advice is wrong there; the
+        librocdxg bridge has its own two causes: the libdxcore mount and the Windows driver."""
+        rc, ran, err = self._dxg_with_torch(
+            tmp_path,
+            ["librocprofiler-register.so"],
+            available = False,
+        )
+        assert rc == 1 and not ran, err
+        assert "libdxcore" in err and "Windows AMD driver" in err, err
+        assert "dkms" not in err and "amdgpu driver has to be" not in err, err
+
+    def test_dxg_refuses_a_torch_bundling_librocprofiler_sdk(self, tmp_path):
+        """That library enumerates GPUs from a KFD topology WSL does not have, and aborts."""
+        rc, ran, err = self._dxg_with_torch(
+            tmp_path,
+            ["librocprofiler-register.so", "librocprofiler-sdk.so"],
+        )
+        assert rc == 1 and not ran, err
+        assert "librocprofiler-sdk.so" in err, err
+        assert "UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm" in err, err
+
+    def test_dxg_accepts_a_torch_carrying_only_librocprofiler_register(self, tmp_path):
+        """torch 2.11+rocm7.2 ships -register.so and runs on the bridge (measured on an
+        R9700), so matching every "rocprof" name refused a build that works."""
+        rc, ran, err = self._dxg_with_torch(tmp_path, ["librocprofiler-register.so"])
         assert rc == 0 and ran, err
 
     def test_a_failing_torch_check_stops_before_the_command(self, tmp_path):
@@ -483,7 +699,6 @@ class TestRocmEntrypoint:
         assert rc == 1 and not ran, err
         assert "gfx1033" in err and "refuses" in err, err
         assert "HSA_OVERRIDE_GFX_VERSION=10.3.0" not in err, err
-        # the same fake torch on a supported arch runs the command
         (fake / "torch" / "cuda" / "__init__.py").write_text(
             (fake / "torch" / "cuda" / "__init__.py")
             .read_text()
@@ -528,7 +743,6 @@ class TestRocmEntrypoint:
         )
         assert rc == 1 and not ran, err
         assert "kernel reports a gfx1033" in err and "10.3.0" in err, err
-        # the same topology without the spoof: torch already names gfx1033 and the plain refusal fires
         (tmp_path / "b").mkdir()
         rc, ran, err = _entrypoint(
             tmp_path / "b",
@@ -536,7 +750,6 @@ class TestRocmEntrypoint:
             env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo")},
         )
         assert rc == 1 and not ran and "refuses" in err, err
-        # a real gfx1030 with the override set is not refused
         (tmp_path / "c").mkdir()
         (tmp_path / "topo" / "1" / "properties").write_text(
             "vendor_id 4098\ngfx_target_version 100300\n"
@@ -551,6 +764,107 @@ class TestRocmEntrypoint:
         )
         assert rc == 0 and ran, err
         assert "KFD reports: gfx1030" in err, err
+
+    @staticmethod
+    def _gfx103x_host(
+        tmp_path,
+        *gtvs,
+        archs = "gfx1030 gfx1100",
+    ):
+        """A KFD topology holding `gtvs` (plus the CPU node), and a torch whose wheels carry
+        `archs` and that, like ROCr, reports gfx1030 for a gfx103X card under the override."""
+        for i, gtv in enumerate(("0",) + gtvs):
+            node = tmp_path / "topo" / str(i)
+            node.mkdir(parents = True)
+            vendor = "0" if gtv == "0" else "4098"
+            (node / "properties").write_text(f"vendor_id {vendor}\ngfx_target_version {gtv}\n")
+        fake = tmp_path / "fake"
+        (fake / "torch" / "cuda").mkdir(parents = True)
+        (fake / "torch" / "__init__.py").write_text(
+            "__version__ = '2.11.0+rocm7.2'\nclass version:\n    hip = '7.2.26015'\nfrom . import cuda\n"
+        )
+        g = int(gtvs[0])
+        physical = "gfx%d%d%x" % (g // 10000, g // 100 % 100, g % 100)
+        (fake / "torch" / "cuda" / "__init__.py").write_text(
+            "import os\n"
+            "class _P:\n"
+            "    gcnArchName = ('gfx1030' if os.environ.get('HSA_OVERRIDE_GFX_VERSION') == '10.3.0'"
+            f" else '{physical}')\n"
+            "def is_available(): return True\ndef device_count(): return 1\n"
+            "def get_device_name(i): return 'AMD GPU'\ndef get_device_properties(i): return _P()\n"
+            "def is_bf16_supported(): return True\n"
+            f"def get_arch_list(): return {archs.split()!r}\n"
+        )
+        return {
+            "python_body": f'PYTHONPATH="{fake}" exec python3 "$@"\n',
+            "command": "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}",
+        }
+
+    def test_a_gfx1031_runs_as_gfx1030_when_the_wheels_lack_it(self, tmp_path):
+        """The generic wheels carry gfx1030 but not gfx1031, whose first kernel launch
+        segfaults; ROCm runs the card as gfx1030, so the entrypoint exports that."""
+        kw = self._gfx103x_host(tmp_path, "100301")
+        rc, ran, err = _entrypoint(
+            tmp_path, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo")}, **kw
+        )
+        assert rc == 0 and ran, err
+        assert (tmp_path / "ran").read_text().strip() == "10.3.0"
+        assert "running it as" in err and "HSA_OVERRIDE_GFX_VERSION=10.3.0" in err, err
+        assert "KFD reports: gfx1031" in err and "arch=gfx1030" in err, err
+
+    def test_the_gfx103x_override_leaves_every_other_host_alone(self, tmp_path):
+        """No override when the user set one, when torch carries the card or lacks
+        gfx1030, on a gfx1030, on a per-arch image, or for a gfx1033 (check 4 refuses it)."""
+        cases = [
+            ("user-set", "100301", {"HSA_OVERRIDE_GFX_VERSION": "10.3.1"}, {}, "10.3.1"),
+            ("native", "100301", {}, {"archs": "gfx1030 gfx1031"}, "unset"),
+            ("no-gfx1030", "100301", {}, {"archs": "gfx1100"}, "unset"),
+            ("gfx1030", "100300", {}, {}, "unset"),
+            ("per-arch", "100301", {}, {"build_info_gfx": "gfx1151"}, "unset"),
+        ]
+        for name, gtv, env, opts, want in cases:
+            d = tmp_path / name
+            d.mkdir()
+            kw = self._gfx103x_host(d, gtv, archs = opts.pop("archs", "gfx1030 gfx1100"))
+            env = {"UNSLOTH_KFD_TOPOLOGY": str(d / "topo"), **env}
+            rc, ran, err = _entrypoint(d, env_extra = env, **kw, **opts)
+            assert rc == 0 and ran, (name, err)
+            assert (d / "ran").read_text().strip() == want, (name, err)
+            assert "running it as" not in err, (name, err)
+        d = tmp_path / "steamdeck"
+        d.mkdir()
+        kw = self._gfx103x_host(d, "100303")
+        rc, ran, err = _entrypoint(d, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(d / "topo")}, **kw)
+        assert rc == 1 and not ran and "refuses" in err and "running it as" not in err, err
+
+    def test_a_mixed_host_is_warned_not_spoofed(self, tmp_path):
+        """A global override would also present the gfx1100 as gfx1030."""
+        kw = self._gfx103x_host(tmp_path, "100301", "110000")
+        rc, ran, err = _entrypoint(
+            tmp_path, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo")}, **kw
+        )
+        assert rc == 0 and ran, err
+        assert (tmp_path / "ran").read_text().strip() == "unset"
+        assert "gfx1031 has no kernels" in err and "also apply to gfx1100" in err, err
+        assert "-> RDNA 2" not in err and "than gfx1030: 10.3.0" in err, err
+
+    def test_an_igpu_spoofs_only_on_an_apu_only_host(self, tmp_path):
+        """A spoofed gfx1036 iGPU reads as covered and Studio could then select it over the
+        card, so beside any card it is left alone (a gfx1031 is warned); alone, it is run as gfx1030."""
+        for name, gtvs, want, warned in [
+            ("beside-gfx1100", ("100306", "110000"), "unset", False),
+            ("beside-gfx1030", ("100306", "100300"), "unset", False),
+            ("beside-gfx1031", ("100301", "100306"), "unset", True),
+            ("alone", ("100306",), "10.3.0", False),
+        ]:
+            d = tmp_path / name
+            d.mkdir()
+            kw = self._gfx103x_host(d, *gtvs)
+            rc, ran, err = _entrypoint(d, env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(d / "topo")}, **kw)
+            assert rc == 0 and ran, (name, err)
+            assert (d / "ran").read_text().strip() == want, (name, err)
+            assert ("running it as" in err) == (want == "10.3.0"), (name, err)
+            assert ("also apply to gfx1036" in err) == warned, (name, err)
 
     def test_a_per_arch_image_on_a_generic_card_points_at_the_generic_image(self, tmp_path):
         """Dockerfile.rocm refuses ROCM_GFX outside the per-arch families, so the advice
@@ -614,7 +928,16 @@ class TestRocmEntrypoint:
         out.write_text("")
         env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(out)}
         env.update({k: str(v) for k, v in wf["env"].items()})
-        env.update({"IN_UNSLOTH": "", "IN_ZOO": "", "IN_ROCM": "", "IN_INDEX": "", "IN_GFX": ""})
+        env.update(
+            {
+                "IN_UNSLOTH": "",
+                "IN_ZOO": "",
+                "IN_NOTEBOOKS": "",
+                "IN_ROCM": "",
+                "IN_INDEX": "",
+                "IN_GFX": "",
+            }
+        )
         env.update(inputs)
         proc = subprocess.run(
             ["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True
@@ -664,6 +987,69 @@ class TestRocmEntrypoint:
         assert "load_in_4bit = four_bit" in smoke and "ROCM_GFX=gfx906" in smoke
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
+        # Pinned index skips the gfx906 reroute and the builder has no GPU, so forward the arch.
+        studio = open(os.path.join(_DOCKER, "Dockerfile.studio-rocm"), encoding = "utf-8").read()
+        install = studio[
+            studio.index(". /etc/unsloth-rocm-build") : studio.index("bash install.sh --local")
+        ]
+        assert 'UNSLOTH_TORCH_INDEX_URL="${TORCH_INDEX_URL}"' in install
+        assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in install
+
+    def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
+        """Neither tag set moves until both digests exist, so a failed Studio build cannot strand
+        :studio."""
+        import yaml
+
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        build = wf["jobs"]["build-studio"]
+        assert "build" in build["needs"] and "tag" not in build["needs"], build["needs"]
+        assert "build-studio" in wf["jobs"]["tag"]["needs"], wf["jobs"]["tag"]["needs"]
+        step = next(s for s in build["steps"] if s.get("id") == "build")
+        assert step["with"]["file"] == "./docker/Dockerfile.studio-rocm"
+        args = dict(ln.split("=", 1) for ln in step["with"]["build-args"].splitlines() if ln)
+        assert args["BASE_IMAGE"].endswith("@${{ needs.build.outputs.digest }}"), args
+        assert args["UNSLOTH_STUDIO_REF"] == "${{ needs.prepare.outputs.unsloth_ref }}"
+        assert args["UNSLOTH_STUDIO_ZOO_REF"] == "${{ needs.prepare.outputs.zoo_ref }}"
+        assert args["UNSLOTH_NOTEBOOKS_REF"] == "${{ needs.prepare.outputs.notebooks_commit }}"
+        prepare = wf["jobs"]["prepare"]
+        assert prepare["outputs"]["notebooks_commit"] == "${{ steps.notebooks.outputs.commit }}"
+        resolve = next(s for s in prepare["steps"] if s.get("id") == "notebooks")
+        assert "git ls-remote https://github.com/unslothai/notebooks" in resolve["run"]
+
+        def tag_lines(job):
+            meta = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == "meta")
+            return [ln for ln in meta["with"]["tags"].splitlines() if ln.strip()]
+
+        tag = wf["jobs"]["tag-studio"]
+        assert "build-studio" in tag["needs"] and "tag" in tag["needs"], tag["needs"]
+        studio, base = tag_lines("tag-studio"), tag_lines("tag")
+        assert len(studio) == len(base) == 5
+        for s_ln, b_ln in zip(studio, base):
+            assert "studio" in s_ln, s_ln
+            assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
+        assert "tag-studio" in wf["jobs"]["hub-readme"]["needs"]
+
+    def test_a_release_does_not_move_latest(self):
+        import yaml
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        for job in ("tag", "tag-studio"):
+            meta = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == "meta")
+            assert meta["with"].get("flavor") == "latest=false", job
+            lines = meta["with"]["tags"].splitlines()
+            alias = [ln for ln in lines if re.search(r"value=(latest|studio),", ln)]
+            assert len(alias) == 1, (job, alias)
+            assert "github.ref == format('refs/heads/{0}', github.event" in alias[0]
+
+    def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
+        """A dispatch that bakes another notebooks ref is an experiment like any
+        other override: :studio and :latest name the default build only."""
+        for ref in ("", "main"):
+            rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = ref)
+            assert rc == 0 and got["stable"] == "true", (ref, out)
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch")
+        assert rc == 0 and got["stable"] == "false", out
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch", IN_GFX = "gfx1151")
+        assert rc == 0 and got["gfx_tag"] == "false", out
 
     def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
         """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public
@@ -689,3 +1075,114 @@ class TestRocmEntrypoint:
 
         assert not re.search(r"RX\s*\d{4}", body), "marketing names in the entrypoint's arch table"
         assert "gfx906" in body and "6.3" in body, "gfx906 needs the version-aware note"
+
+
+def _studio_launch(
+    tmp_path,
+    *,
+    password = None,
+    stored = False,
+):
+    """Drive the launcher with unsloth-studio-run stubbed: `--stored` answers from a
+    marker, and the real call records the env and the initial-password file it saw."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    initial = tmp_path / "initial-password"
+    seen = tmp_path / "seen"
+    if stored:
+        (tmp_path / "stored").write_text("")
+    _stub(str(bindir / "unsloth-studio-home"), "echo home-linked\n")
+    _stub(
+        str(bindir / "unsloth-studio-run"),
+        f'if [[ "${{1:-}}" == "--stored" ]]; then [[ -e "{tmp_path / "stored"}" ]]; exit; fi\n'
+        f"printf 'env=%s\\nfile=%s\\n' \"${{UNSLOTH_STUDIO_PASSWORD:-unset}}\" "
+        f'"$(cat "{initial}" 2>/dev/null || echo none)" > "{seen}"\n',
+    )
+    env = {
+        "PATH": str(bindir) + ":/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE": str(initial),
+        "UNSLOTH_STUDIO_PORT": "8123",
+    }
+    if password is not None:
+        env["UNSLOTH_STUDIO_PASSWORD"] = password
+    proc = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", _STUDIO_LAUNCH],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    recorded = (
+        dict(ln.split("=", 1) for ln in seen.read_text().splitlines()) if seen.exists() else {}
+    )
+    return proc, recorded, initial
+
+
+@_posix_shell
+class TestStudioLaunchRocm:
+    """UNSLOTH_STUDIO_PASSWORD only sets the FIRST admin password and `unsloth studio`
+    exits 1 when handed one afterwards, so the launcher must hand it over through the
+    file unsloth-studio-run reads while nothing is stored, and never as env."""
+
+    def test_the_first_boot_hands_the_password_over_by_file_not_env(self, tmp_path):
+        proc, seen, initial = _studio_launch(tmp_path, password = "s3cret pw")
+        assert proc.returncode == 0, proc.stderr
+        assert seen == {"env": "unset", "file": "s3cret pw"}, seen
+        assert stat.S_IMODE(os.stat(initial).st_mode) == 0o600
+        assert "password from UNSLOTH_STUDIO_PASSWORD env" in proc.stdout
+        assert "http://localhost:8123" in proc.stdout
+
+    def test_a_restart_with_the_variable_still_set_does_not_replay_it(self, tmp_path):
+        proc, seen, initial = _studio_launch(tmp_path, password = "s3cret pw", stored = True)
+        assert proc.returncode == 0, proc.stderr
+        assert seen == {"env": "unset", "file": "none"}, seen
+        assert not initial.exists()
+        assert "set on an earlier boot" in proc.stdout
+
+    def test_no_password_starts_studio_and_says_one_is_generated(self, tmp_path):
+        proc, seen, initial = _studio_launch(tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert seen == {"env": "unset", "file": "none"}, seen
+        assert not initial.exists()
+        assert "generated on first boot" in proc.stdout
+
+    def test_a_stale_file_from_an_earlier_boot_is_cleared_first(self, tmp_path):
+        (tmp_path / "initial-password").write_text("old")
+        proc, seen, initial = _studio_launch(tmp_path, stored = True)
+        assert proc.returncode == 0, proc.stderr
+        assert not initial.exists() and seen["file"] == "none"
+
+    def test_the_image_runs_the_launcher_and_ships_the_run_helper(self):
+        body = open(_STUDIO_DOCKERFILE, encoding = "utf-8").read()
+        assert 'CMD ["/usr/local/bin/unsloth-studio-launch"]' in body
+        assert "COPY studio_run.sh /usr/local/bin/unsloth-studio-run" in body
+        assert "COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch" in body
+        assert "COPY supervisord.conf /etc/supervisor/supervisord.conf" in body
+        assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in body
+        ignore = open(os.path.join(_DOCKER, ".dockerignore"), encoding = "utf-8").read()
+        assert "!studio_launch.sh" in ignore and "!studio_run.sh" in ignore
+
+
+class TestStudioRocmGgufOnTheGpu:
+    """#5405: GGUF chat in the ROCm Studio image ran on the CPU (CPU llama.cpp bundle)."""
+
+    def _body(self):
+        return open(_STUDIO_DOCKERFILE, encoding = "utf-8").read()
+
+    def test_llama_cpp_is_installed_as_the_vulkan_bundle(self):
+        body = self._body()
+        install = body[
+            body.index(". /etc/unsloth-rocm-build") : body.index("bash install.sh --local")
+        ]
+        assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in install, install
+        assert "UNSLOTH_LLAMA_CPP_BACKEND=cpu" not in body
+        # install.sh falls back to the CPU bundle on a failed Vulkan install
+        assert "assert m.get('backend') == 'vulkan'" in body
+
+    def test_the_radv_driver_is_installed(self):
+        body = self._body()
+        apt = re.search(r"apt-get install -y --no-install-recommends \\\n\s+([^\n]+)", body).group(
+            1
+        )
+        assert "libvulkan1" in apt and "mesa-vulkan-drivers" in apt, apt

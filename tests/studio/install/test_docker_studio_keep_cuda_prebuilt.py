@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Docker Studio layer must keep the base image's CUDA llama.cpp bundle.
-
-docker/Dockerfile.studio symlinks Studio's llama.cpp dir at the base's baked CUDA bundle
-and then runs install.sh --local. No GPU is visible during an image build, so setup.sh's
-hardware detection resolves the CPU bundle for the host arch and installs it over the CUDA
-one: the published unsloth/unsloth:latest carries whiteouts for libggml-cuda.so on BOTH
-arm64 and amd64, and its UNSLOTH_PREBUILT_INFO.json reads backend: cpu.
-
-Part one pins that root cause on both arches with the real selector. Part two drives the
-fix, setup.sh's _keep_installed_gpu_prebuilt, against real markers on a stubbed aarch64
-host with no working nvidia-smi. Part three pins the wiring that turns the knob on.
-"""
+"""With no GPU at image build time, setup.sh replaces the base image's CUDA llama.cpp with CPU."""
 
 from __future__ import annotations
 
@@ -70,9 +59,6 @@ BASH = _usable_bash()
 requires_bash = pytest.mark.skipif(BASH is None, reason = "a working bash is required")
 
 
-# ── part one: why the CUDA bundle is replaced, on both arches ──
-
-
 def _host(machine):
     return HostInfo(
         system = "Linux",
@@ -117,7 +103,6 @@ def _release(artifacts):
     )
 
 
-# (arch, the CUDA bundle the base image bakes, the CPU bundle detection lands on)
 _ARCH_CASES = [
     (
         "aarch64",
@@ -156,17 +141,11 @@ _ARCH_CASES = [
     ("machine", "cuda_artifact", "cpu_artifact"), _ARCH_CASES, ids = ["arm64", "amd64"]
 )
 def test_a_gpuless_build_host_resolves_the_cpu_bundle(machine, cuda_artifact, cpu_artifact):
-    """The defect: with no GPU visible the selector picks CPU even though CUDA is published.
-
-    This is what install.sh --local runs inside the Docker build, and it is why the CUDA
-    bundle the base baked is overwritten. amd64 is NOT exempt.
-    """
+    """With no GPU visible the selector picks CPU even when CUDA is published, on amd64 too."""
     attempts = _linux_published_attempts(_host(machine), _release([cuda_artifact, cpu_artifact]))
     assert [choice.name for choice in attempts] == [cpu_artifact.asset_name]
     assert [choice.install_kind for choice in attempts] == [cpu_artifact.install_kind]
 
-
-# ── part two: the fix, driven out of setup.sh ──
 
 _BASE_IMAGE_MARKER = {
     "upstream_tag": RELEASE_TAG,
@@ -228,10 +207,7 @@ fi
 
 
 def _sliced_sh_functions(tmp_path):
-    """_has_local_llama_server + _keep_installed_gpu_prebuilt, sliced out of setup.sh.
-
-    setup.sh runs install steps at load, so the functions are sliced rather than sourced.
-    """
+    """setup.sh runs install steps at load, so functions are sliced out rather than sourced."""
     text = SETUP_SH.read_text(encoding = "utf-8")
     body = ""
     for name in ("_has_local_llama_server() {", "_keep_installed_gpu_prebuilt() {"):
@@ -273,6 +249,7 @@ def _run_keep_decision(
     requested_tag,
     repo = FORK,
     env = None,
+    damage = None,
 ):
     install_dir = tmp_path / "llama.cpp"
     (install_dir / "build" / "bin").mkdir(parents = True, exist_ok = True)
@@ -284,6 +261,25 @@ def _run_keep_decision(
         for path in (install_dir / "llama-server", install_dir / "build" / "bin" / "llama-server"):
             path.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
             path.chmod(0o755)
+    runtime_dir = install_dir / "build" / "bin"
+    quantize = runtime_dir / "llama-quantize"
+    quantize.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    quantize.chmod(0o755)
+    for name in (
+        "libllama-common.so.0",
+        "libllama.so.0",
+        "libggml.so.0",
+        "libggml-base.so.0",
+        "libggml-cpu.so.0",
+        "libmtmd.so.0",
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
+        "libggml-cuda.so",
+        "libggml-hip.so",
+    ):
+        (runtime_dir / name).write_bytes(b"library")
+    if damage is not None:
+        (runtime_dir / damage).unlink()
     script = tmp_path / "drive.sh"
     script.write_text(_SH_HARNESS, encoding = "utf-8")
     stub_dir = _stub_bin(tmp_path)
@@ -291,6 +287,7 @@ def _run_keep_decision(
     run_env.pop("UNSLOTH_LLAMA_KEEP_PREBUILT", None)
     run_env.pop("UNSLOTH_LLAMA_RELEASE_TAG", None)
     run_env["PATH"] = f"{stub_dir}{os.pathsep}{run_env.get('PATH', '')}"
+    run_env["SCRIPT_DIR"] = str(MODULE_PATH.parent)
     run_env.update(env or {})
     proc = subprocess.run(
         [
@@ -315,7 +312,6 @@ def _run_keep_decision(
 
 ON = {"UNSLOTH_LLAMA_KEEP_PREBUILT": "1"}
 
-# (id, marker, llama-server present, requested tag, extra env, expected verdict)
 _KEEP_CASES = [
     ("base_image_cuda_marker_pinned_tag", _BASE_IMAGE_MARKER, True, RELEASE_TAG, ON, "KEEP"),
     ("base_image_cuda_marker_base_build", _BASE_IMAGE_MARKER, True, LLAMA_TAG, ON, "KEEP"),
@@ -330,7 +326,6 @@ _KEEP_CASES = [
         "KEEP",
     ),
     ("rocm_bundle", _marker(platform = "linux-rocm"), True, RELEASE_TAG, ON, "KEEP"),
-    # a full mix pin names one bundle: only that exact mix may be kept
     ("full_mix_pin_exact_match", _BASE_IMAGE_MARKER, True, RELEASE_TAG, ON, "KEEP"),
     ("full_mix_pin_other_mix_same_base", _BASE_IMAGE_MARKER, True, OTHER_MIX, ON, "REPLACE"),
     (
@@ -341,7 +336,6 @@ _KEEP_CASES = [
         ON,
         "REPLACE",
     ),
-    # a bare base build pin still accepts any mix cut from that build
     (
         "bare_base_pin_accepts_any_mix",
         _marker(release_tag = OTHER_MIX, upstream_tag = OTHER_MIX),
@@ -350,7 +344,6 @@ _KEEP_CASES = [
         ON,
         "KEEP",
     ),
-    # UNSLOTH_LLAMA_RELEASE_TAG is checked against the marker's release_tag on its own
     (
         "release_tag_pin_match",
         _BASE_IMAGE_MARKER,
@@ -375,7 +368,6 @@ _KEEP_CASES = [
         {**ON, "UNSLOTH_LLAMA_RELEASE_TAG": RELEASE_TAG},
         "REPLACE",
     ),
-    # the shipped defect: a CPU bundle must still be replaced
     ("shipped_cpu_marker", _SHIPPED_CPU_MARKER, True, RELEASE_TAG, ON, "REPLACE"),
     (
         "cpu_platform_no_backend_key",
@@ -386,7 +378,6 @@ _KEEP_CASES = [
         "REPLACE",
     ),
     ("deliberate_force_cpu", _marker(force_cpu = True), True, RELEASE_TAG, ON, "REPLACE"),
-    # stale trees must still be replaced
     (
         "stale_release_tag",
         _marker(tag = "b10700", release_tag = "b10700-mix-aaaaaaa", upstream_tag = "b10700-mix-aaaaaaa"),
@@ -406,7 +397,6 @@ _KEEP_CASES = [
     ("no_marker_at_all", None, True, RELEASE_TAG, ON, "REPLACE"),
     ("marker_is_not_json", "not json", True, RELEASE_TAG, ON, "REPLACE"),
     ("no_llama_server_binary", _BASE_IMAGE_MARKER, False, RELEASE_TAG, ON, "REPLACE"),
-    # the knob is opt-in, and an explicit backend request still wins
     ("knob_unset", _BASE_IMAGE_MARKER, True, RELEASE_TAG, {}, "REPLACE"),
     (
         "knob_zero",
@@ -443,9 +433,6 @@ def test_keep_decision(tmp_path, marker, server, requested_tag, env, expected):
         tmp_path, marker = marker, server = server, requested_tag = requested_tag, env = env
     )
     assert verdict == expected
-
-
-# ── part three: the wiring that turns the knob on ──
 
 
 def test_setup_sh_keeps_the_bundle_instead_of_installing_a_prebuilt():
@@ -486,3 +473,22 @@ def test_dockerfile_studio_sets_the_knob_and_asserts_the_cuda_backend():
     assert (
         "exit 1" in text[assertion : assertion + 600]
     ), "a missing CUDA backend library must fail the build, not just print"
+
+
+@requires_bash
+@pytest.mark.parametrize("marker", [_BASE_IMAGE_MARKER, _INSTALLER_CUDA_MARKER])
+@pytest.mark.parametrize("damage", ["libggml-base.so.0", "llama-quantize"])
+def test_docker_keep_does_not_preserve_a_runtime_preflight_rejects(tmp_path, marker, damage):
+    assert (
+        _run_keep_decision(
+            tmp_path,
+            marker = marker,
+            server = True,
+            requested_tag = RELEASE_TAG,
+            env = ON,
+            damage = damage,
+        )
+        == "REPLACE"
+    )
+    health = INSTALL_LLAMA_PREBUILT.installed_runtime_health(tmp_path / "llama.cpp")
+    assert health is not None and not health[0]

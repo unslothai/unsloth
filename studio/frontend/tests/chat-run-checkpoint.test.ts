@@ -17,7 +17,6 @@ test("uses an eight-second production checkpoint interval", () => {
   assert.equal(RUN_CHECKPOINT_INTERVAL_MS, 8_000);
 });
 
-/** The scheduler reschedules from a promise continuation, so let those run. */
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 8; i += 1) {
     await Promise.resolve();
@@ -106,7 +105,6 @@ test("waits for a slow checkpoint instead of stacking the next one behind it", a
   await clock.advance(INTERVAL);
   assert.equal(saves, 1);
 
-  // No timer is armed while the save is in flight.
   await clock.advance(INTERVAL * 10);
   assert.equal(saves, 1);
   assert.equal(clock.pending(), 0);

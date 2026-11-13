@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the parent-lifetime reaper (utils/process_lifetime).
-
-The Linux PDEATHSIG cases spawn real processes and assert actual liveness; the
-Windows Job Object path is exercised with a mocked kernel32 so it runs on CI.
-"""
+"""Linux PDEATHSIG cases spawn real processes; the Windows Job Object path uses a mocked kernel32."""
 
 from __future__ import annotations
 
@@ -73,19 +69,16 @@ def _wait_dead(pid: int, timeout: float) -> bool:
     return not _alive(pid)
 
 
-# ── No-op safety / composition ──
-
-
 def test_initialize_idempotent_and_noop_on_posix():
     pl.initialize_parent_lifetime()
-    pl.initialize_parent_lifetime()  # second call short-circuits
+    pl.initialize_parent_lifetime()
     if IS_POSIX:
-        assert pl._win_job_handle is None  # POSIX installs no job
+        assert pl._win_job_handle is None
 
 
 def test_adopt_pid_tolerates_none_and_dead_pid():
-    pl.adopt_pid(None)  # ignored
-    pl.adopt_pid(2**31 - 1)  # almost-certainly-dead pid: recorded, never raises
+    pl.adopt_pid(None)
+    pl.adopt_pid(2**31 - 1)
     assert None not in pl._tracked_pids
 
 
@@ -93,7 +86,7 @@ def test_child_popen_kwargs_linux_vs_other(monkeypatch):
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
     assert "preexec_fn" in pl.child_popen_kwargs()
     monkeypatch.setattr(pl, "_is_linux", lambda: False)
-    assert pl.child_popen_kwargs() == {}  # Windows/macOS add nothing here
+    assert pl.child_popen_kwargs() == {}
 
 
 def test_compose_preexec_runs_pdeathsig_then_existing(monkeypatch):
@@ -112,16 +105,12 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
 
 
 def test_child_popen_kwargs_binds_the_spawning_pid(monkeypatch):
-    # Compare against the forking pid, so a healthy child of a pid-1 parent is
-    # not mistaken for an orphan (#7886).
+    # Compare against the forking pid, so a healthy child of a pid-1 parent is not an orphan.
     seen = []
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
     monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: seen.append(owner))
     pl.child_popen_kwargs()["preexec_fn"]()
     assert seen == [os.getpid()]
-
-
-# ── Orphan decision inside the preexec hook ──
 
 
 class _ExitCalled(BaseException):
@@ -130,7 +119,6 @@ class _ExitCalled(BaseException):
 
 
 def _run_preexec(monkeypatch, *, owner_pid, getppid):
-    # prctl is stubbed so the decision runs on any platform.
     import ctypes
 
     class _Libc:
@@ -147,8 +135,7 @@ def _run_preexec(monkeypatch, *, owner_pid, getppid):
 
 
 def test_pdeathsig_keeps_child_whose_parent_is_pid_1(monkeypatch):
-    # Unsloth as a container entrypoint runs as pid 1, so a healthy child sees
-    # getppid() == 1; killing it took down every llama-server spawn (#7886).
+    # As a container entrypoint Unsloth is pid 1, so healthy children see getppid() == 1.
     _run_preexec(monkeypatch, owner_pid = 1, getppid = 1)
 
 
@@ -170,11 +157,9 @@ def _bind_with_parent(monkeypatch, parent):
 
 
 def test_bind_keeps_a_worker_whose_creator_is_alive(monkeypatch):
-    # The decision comes from the creator's sentinel, not a pid compare: under
-    # forkserver the kernel parent is the fork server, so pids would read every
-    # healthy worker as orphaned.
+    # Decided from the creator's sentinel: under forkserver the kernel parent is the fork server.
     seen, exited = _bind_with_parent(monkeypatch, _FakeParent(4242, alive = True))
-    assert seen == [os.getppid()]  # PDEATHSIG still bound to the kernel parent
+    assert seen == [os.getppid()]
     assert exited == []
 
 
@@ -185,15 +170,12 @@ def test_bind_exits_when_the_creator_is_already_gone(monkeypatch):
 
 
 def test_bind_only_arms_pdeathsig_outside_a_multiprocessing_worker(monkeypatch):
-    # No creator to consult and nothing orphaned: arm PDEATHSIG, decide nothing.
     seen, exited = _bind_with_parent(monkeypatch, None)
     assert seen == [os.getppid()]
     assert exited == []
 
 
 def test_bind_keeps_a_non_worker_whose_parent_is_pid_1(monkeypatch):
-    # Runs the REAL hook: a non-worker under a container init sees getppid() == 1,
-    # which the bare fallback killed outright.
     import ctypes
     import multiprocessing
 
@@ -215,9 +197,6 @@ class _FakeParent:
         return self._alive
 
 
-# ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
-
-
 @pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
 def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
     mid = tmp_path / "mid.py"
@@ -233,18 +212,185 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
     try:
         sleeper_pid = int(proc.stdout.readline().strip())
         assert _alive(sleeper_pid)
-        proc.kill()  # hard-kill the parent (no graceful shutdown runs)
+        proc.kill()
         proc.wait(timeout = 5)
         assert _wait_dead(sleeper_pid, 5.0), "child orphaned after parent SIGKILL"
     finally:
         proc.kill()
 
 
+def _fake_pyav_frame(monkeypatch):
+    import threading
+    import types
+
+    frame = types.ModuleType("av.video.frame")
+    frame._thread_local = threading.local()
+    monkeypatch.setitem(sys.modules, "av.video.frame", frame)
+    return frame
+
+
+def test_a_fork_frees_other_threads_cached_scalers_in_the_parent(monkeypatch):
+    """PyAV 19+ caches a scaler per thread; one freed in a fork child waits on FFmpeg threads it does not have."""
+    import threading
+
+    frame = _fake_pyav_frame(monkeypatch)
+    freed_in = []
+
+    class Scaler:
+        def __del__(self):
+            freed_in.append(os.getpid())
+
+    cached, stop = threading.Event(), threading.Event()
+
+    def video_worker():
+        frame._thread_local.reformatter = Scaler()
+        cached.set()
+        stop.wait()  # an idle pool thread keeps its cache
+
+    worker = threading.Thread(target = video_worker, daemon = True)
+    worker.start()
+    try:
+        assert cached.wait(5), "the worker never cached its scaler"
+        pl._suspend_native_caches()
+        # Freed now, in this process, though the thread that cached it is still alive.
+        assert freed_in == [os.getpid()]
+    finally:
+        pl._resume_native_caches_in_parent()
+        stop.set()
+        worker.join(5)
+    assert type(frame._thread_local) is threading.local
+
+
+def test_nothing_is_cached_into_a_fork_while_the_old_scalers_are_freed(monkeypatch):
+    """Freeing a scaler releases the GIL, so another thread can reformat (and cache) before the fork happens."""
+    frame = _fake_pyav_frame(monkeypatch)
+
+    class Scaler:
+        def __del__(self):
+            # What a reformat on another thread does while this one is in sws_freeContext.
+            frame._thread_local.reformatter = "cached during the fork"
+
+    frame._thread_local.reformatter = Scaler()
+    try:
+        pl._suspend_native_caches()
+        assert getattr(frame._thread_local, "reformatter", None) is None
+    finally:
+        pl._resume_native_caches_in_parent()
+    frame._thread_local.reformatter = "cached after the fork"
+    assert frame._thread_local.reformatter == "cached after the fork"
+
+
+def test_overlapping_forks_keep_caching_off_until_the_last_returns(monkeypatch):
+    import threading
+
+    frame = _fake_pyav_frame(monkeypatch)
+    pl._suspend_native_caches()
+    pl._suspend_native_caches()  # a second thread forking before the first one's fork returned
+    pl._resume_native_caches_in_parent()
+    assert type(frame._thread_local) is pl._UncachedReformatters
+    pl._resume_native_caches_in_parent()
+    assert type(frame._thread_local) is threading.local
+    pl._resume_native_caches_in_parent()  # an unpaired resume cannot go negative
+    pl._suspend_native_caches()
+    assert type(frame._thread_local) is pl._UncachedReformatters
+    pl._resume_native_caches_in_parent()
+
+
+def test_the_hooks_are_registered_at_import(tmp_path):
+    """At import, so forks that bring their own preexec_fn or call os.fork directly are covered too."""
+    if not hasattr(os, "register_at_fork"):
+        pytest.skip("os.register_at_fork is POSIX-only")
+    probe = (
+        "import os, sys\n"
+        "registered = []\n"
+        "os.register_at_fork = lambda **kw: registered.append(sorted((k, v.__name__) for k, v in kw.items()))\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "import utils.process_lifetime\n"
+        "print(registered)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output = True, text = True, timeout = 60)
+    ours = [
+        ("after_in_child", "_resume_native_caches_in_child"),
+        ("after_in_parent", "_resume_native_caches_in_parent"),
+        ("before", "_suspend_native_caches"),
+    ]
+    assert str(ours) in out.stdout, out.stdout + out.stderr
+
+
+_SPAWN_AFTER_REFORMAT = """
+import os, signal, subprocess, sys, threading
+sys.path.insert(0, {backend!r})
+import av, numpy as np
+from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread
+
+ready, stop, errors = threading.Event(), threading.Event(), []
+
+
+def video_worker():
+    try:
+        frame = av.VideoFrame.from_ndarray(np.zeros((720, 1280, 3), dtype = np.uint8), format = "rgb24")
+        frame.reformat(format = "yuv420p", width = 640, height = 360)
+    except Exception as exc:
+        errors.append(repr(exc))
+    ready.set()
+    stop.wait()
+
+
+def fork_once(how):
+    if how == "spawner":
+        return spawn_on_lifetime_thread(lambda: subprocess.Popen(["true"], **child_popen_kwargs())).wait()
+    if how == "own_preexec":
+        return subprocess.Popen(["true"], preexec_fn = lambda: None).wait()
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    return os.waitpid(pid, 0)[1]
+
+
+threading.Thread(target = video_worker, daemon = True).start()
+if not ready.wait(30) or errors:
+    print("worker failed", errors, flush = True)
+    os._exit(4)
+box = []
+t = threading.Thread(target = lambda: box.append(fork_once({how!r})), daemon = True)
+t.start()
+t.join(30)
+if t.is_alive():
+    print("hung", flush = True)
+    # The stuck child never reached PDEATHSIG, so it would outlive this script.
+    for tid in os.listdir("/proc/self/task"):
+        try:
+            with open(f"/proc/self/task/{{tid}}/children") as handle:
+                kids = handle.read().split()
+        except OSError:
+            continue
+        for kid in kids:
+            try:
+                os.kill(int(kid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    os._exit(3)
+print("exit", box[0], flush = True)
+"""
+
+
+@pytest.mark.skipif(not IS_LINUX, reason = "the fork-then-Python spawn paths are Linux-only here")
+@pytest.mark.parametrize("how", ["spawner", "own_preexec", "os_fork"])
+def test_a_fork_after_a_video_reformat_still_completes(tmp_path, how):
+    """A pool thread that reformatted one frame used to hang the next fork whose child runs Python before exec."""
+    pytest.importorskip("av")
+    pytest.importorskip("numpy")
+    script = tmp_path / "fork_after_reformat.py"
+    script.write_text(_SPAWN_AFTER_REFORMAT.format(backend = str(_BACKEND), how = how))
+    # The hang is in a child that never execs, so bound the whole scenario from outside.
+    result = subprocess.run(
+        [sys.executable, str(script)], capture_output = True, text = True, timeout = 120
+    )
+    assert result.stdout.strip() == "exit 0", result.stdout + result.stderr
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows Job Object")
 def test_windows_job_kills_child_when_parent_dies(tmp_path):
-    # Real kill-on-job-close: the parent installs the job and assigns itself, a
-    # child inherits it automatically, and terminating the parent must reap the
-    # child (the orphaned-cloudflared.exe scenario).
     mid = tmp_path / "mid.py"
     mid.write_text(
         "import sys, subprocess, time\n"
@@ -261,14 +407,11 @@ def test_windows_job_kills_child_when_parent_dies(tmp_path):
         child_pid, installed = int(first[0]), first[1] == "1"
         assert installed, "Windows Job Object was not installed"
         assert _alive(child_pid)
-        proc.kill()  # TerminateProcess the parent -> last job handle closes
+        proc.kill()
         proc.wait(timeout = 5)
         assert _wait_dead(child_pid, 5.0), "child orphaned after parent killed"
     finally:
         proc.kill()
-
-
-# ── terminate_all backstop sweep ──
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
@@ -276,13 +419,12 @@ def test_terminate_all_signals_tracked_and_is_idempotent():
     p = subprocess.Popen(["sleep", "300"])
     pl.adopt_pid(p.pid)
     pl.terminate_all()
-    assert p.wait(timeout = 5) is not None  # reap + confirm it died
-    pl.terminate_all()  # registry now empty; must not raise
+    assert p.wait(timeout = 5) is not None
+    pl.terminate_all()
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
 def test_terminate_all_escalates_to_sigkill():
-    # A child that ignores SIGTERM must still be reaped via SIGKILL after timeout.
     p = subprocess.Popen(
         [
             sys.executable,
@@ -290,15 +432,14 @@ def test_terminate_all_escalates_to_sigkill():
             "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)",
         ]
     )
-    time.sleep(0.5)  # let the handler install
+    time.sleep(0.5)
     pl.adopt_pid(p.pid)
     pl.terminate_all(timeout = 0.3)
-    assert p.wait(timeout = 5) == -signal.SIGKILL  # SIGTERM ignored, SIGKILL wins
+    assert p.wait(timeout = 5) == -signal.SIGKILL
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
 def test_terminate_all_lets_cooperative_child_exit_cleanly(tmp_path):
-    # A child that handles SIGTERM gets `timeout` to exit cleanly (not -SIGKILL).
     marker = tmp_path / "clean.txt"
     p = subprocess.Popen(
         [
@@ -313,7 +454,7 @@ def test_terminate_all_lets_cooperative_child_exit_cleanly(tmp_path):
     time.sleep(0.5)
     pl.adopt_pid(p.pid)
     pl.terminate_all(timeout = 3.0)
-    assert p.wait(timeout = 3) == 0  # exited via its own handler, not SIGKILL
+    assert p.wait(timeout = 3) == 0
     assert marker.read_text() == "clean"
 
 
@@ -326,12 +467,11 @@ def test_forget_pid_unregisters():
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
 def test_terminate_all_skips_recycled_pid(monkeypatch):
-    # A tracked pid whose identity changed (recycled) must not be signalled.
     p = subprocess.Popen(["sleep", "300"])
-    pl.adopt_pid(p.pid)  # records the real identity
+    pl.adopt_pid(p.pid)
     monkeypatch.setattr(pl, "_pid_identity", lambda _pid: "DIFFERENT")
     pl.terminate_all()
-    assert _alive(p.pid)  # left untouched: identity mismatch
+    assert _alive(p.pid)
     p.kill()
     p.wait(timeout = 5)
 
@@ -339,9 +479,8 @@ def test_terminate_all_skips_recycled_pid(monkeypatch):
 @pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
 @pytest.mark.parametrize("lifetime_thread", [False, True])
 def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path, lifetime_thread):
-    # multiprocessing workers can't take a preexec_fn, so the child binds itself
-    # via bind_current_process_to_parent_lifetime(). Killing the parent must reap
-    # it (the gap reviewers found in adopt_pid alone).
+    # multiprocessing workers can't take a preexec_fn, so they bind via
+    # bind_current_process_to_parent_lifetime().
     mid = tmp_path / "mid_mp.py"
     mid.write_text(
         "import sys, time, multiprocessing as mp\n"
@@ -369,9 +508,6 @@ def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path, lifetime_thr
         assert _wait_dead(child_pid, 5.0), "mp child orphaned after parent SIGKILL"
     finally:
         proc.kill()
-
-
-# ── Windows Job Object path (mocked kernel32, runs on Linux CI) ──
 
 
 class _Call:
@@ -410,26 +546,23 @@ def test_windows_job_install_order(monkeypatch):
     _patch_windows(monkeypatch, _FakeKernel32(log))
     pl._install_windows_job()
     assert log.index("create") < log.index("set") < log.index("assign")
-    assert pl._win_job_handle == 4321  # handle retained
+    assert pl._win_job_handle == 4321
 
 
 def test_windows_job_install_degrades_on_create_failure(monkeypatch):
     log: list[str] = []
     _patch_windows(monkeypatch, _FakeKernel32(log, create_ret = 0))
-    pl._install_windows_job()  # must not raise
+    pl._install_windows_job()
     assert pl._win_job_handle is None
-    assert "set" not in log  # short-circuited after the failed create
+    assert "set" not in log
 
 
 def test_windows_job_install_degrades_on_assign_failure(monkeypatch):
     log: list[str] = []
     _patch_windows(monkeypatch, _FakeKernel32(log, assign_ret = 0))
     pl._install_windows_job()
-    assert pl._win_job_handle is None  # not retained when assignment fails
-    assert "close" in log  # the orphaned job handle is closed
-
-
-# Daemonic workers spawning children (#9094)
+    assert pl._win_job_handle is None
+    assert "close" in log
 
 
 _NESTED_CHILD_SCRIPT = """
@@ -504,7 +637,6 @@ def test_daemonic_worker_spawns_children_through_the_shim(tmp_path):
     stdout, grandchild_ran = _run_nested_child_arm(tmp_path, "shim")
     assert "worker started exit=0" in stdout
     assert grandchild_ran
-    # The parent still sees the worker as daemonic.
     assert "parent-sees-daemon True" in stdout
 
 
@@ -524,11 +656,7 @@ def test_allow_child_processes_survives_a_missing_config(monkeypatch):
 
 
 def test_an_older_process_lifetime_still_gets_the_parent_death_binding(monkeypatch):
-    """A tree without `allow_child_processes` must keep the binding that predates it.
-
-    Importing both names in one statement would raise ImportError for the whole
-    block, costing the worker its parent-death binding as well.
-    """
+    """Import the names separately so a missing newer name cannot cost the parent-death binding."""
     from utils import native_path_leases
 
     calls = []

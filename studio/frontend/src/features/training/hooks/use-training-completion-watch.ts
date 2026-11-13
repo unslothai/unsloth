@@ -4,6 +4,8 @@
 import { useEffect } from "react";
 
 import { getTrainingStatus } from "../api/train-api";
+// eslint-disable-next-line no-restricted-imports
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { createSingleFlightRequest } from "@/lib/single-flight-request";
 import {
   isTrainingStatusRequestCurrent,
@@ -16,13 +18,8 @@ import {
 
 const WATCH_INTERVAL_MS = 6000;
 
-/**
- * Keep training state fresh while a run is active, even off the Train page.
- *
- * The lifecycle poll (`useTrainingRuntimeLifecycle`) only runs while Train is mounted, so a run
- * finishing on another tab would leave the sidebar spinner stuck. Polls `/api/train/status` only
- * while a run is in progress. Mount once in an always-rendered shell.
- */
+/** The lifecycle poll only runs on the Train page; this keeps the sidebar fresh elsewhere.
+ * Mount once in an always-rendered shell. */
 export function useTrainingCompletionWatch(): void {
   const active = useTrainingRuntimeStore(isTrainingStartPending);
 
@@ -50,6 +47,9 @@ export function useTrainingCompletionWatch(): void {
     return () => {
       cancelled = true;
       window.clearInterval(id);
+      // Post-download disk check: the worker downloads after start, so look again when the run stops,
+      // finished or failed. Forced so the reading is taken after the writes.
+      void checkDiskSpace({ force: true });
     };
   }, [active]);
 }

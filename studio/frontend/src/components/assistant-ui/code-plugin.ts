@@ -8,18 +8,34 @@ import type {
   HighlightResult,
   ThemeInput,
 } from "@streamdown/code";
+import type { GrammarState, ThemedToken } from "shiki";
+import { createBundledHighlighter } from "shiki/core";
+import {
+  createJavaScriptRegexEngine,
+  defaultJavaScriptRegexConstructor,
+} from "shiki/engine/javascript";
 import {
   type BundledLanguage,
   bundledLanguages,
   bundledLanguagesInfo,
-  createHighlighter,
-  type GrammarState,
-  type ThemedToken,
-} from "shiki";
-import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+} from "shiki/langs";
 
-// Common fence tags shiki doesn't expose as aliases.
-// Keys: lower-cased input; values: canonical shiki language ids.
+// Keep named themes limited to Studio and Streamdown defaults; other callers pass objects.
+type NamedTheme = "github-light" | "github-dark";
+const NAMED_THEMES = {
+  "github-light": () => import("@shikijs/themes/github-light"),
+  "github-dark": () => import("@shikijs/themes/github-dark"),
+};
+
+const createHighlighter = createBundledHighlighter<
+  BundledLanguage,
+  NamedTheme
+>({
+  langs: bundledLanguages,
+  themes: NAMED_THEMES,
+  engine: () => createJavaScriptRegexEngine({ forgiving: true }),
+});
+
 const LANGUAGE_ALIAS_OVERRIDES: Record<string, BundledLanguage> = {
   objectivec: "objective-c",
   "obj-c": "objective-c",
@@ -61,42 +77,45 @@ const SUPPORTED_LANGUAGE_LIST = Array.from(
 ) as BundledLanguage[];
 const PLAIN_TEXT = "text" as BundledLanguage;
 
-/**
- * The fence tag as Shiki will see it: lower-cased, aliases resolved. Exported so that anything
- * keying a per-grammar cache uses the same identity `highlight` does -- `py` and `Python` are one
- * grammar here, and two keys anywhere else means the same grammar is warmed twice.
- */
+// Shiki names shells by grammar ("Shell" for bash and zsh); readers name them by the tag they typed.
+const DISPLAY_NAME_OVERRIDES: Record<string, string> = {
+  bash: "Bash",
+  zsh: "Zsh",
+  text: "Text",
+  plaintext: "Text",
+  txt: "Text",
+  cuda: "CUDA",
+};
+const DISPLAY_NAMES = new Map(
+  bundledLanguagesInfo.flatMap((info) =>
+    [info.id, ...(info.aliases ?? [])].map((name) => [name.toLowerCase(), info.name] as const),
+  ),
+);
+
+export const languageDisplayName = (language: string): string => {
+  const key = language.trim().toLowerCase();
+  return DISPLAY_NAME_OVERRIDES[key] ?? DISPLAY_NAMES.get(key) ?? key.charAt(0).toUpperCase() + key.slice(1);
+};
+
 export const normalizeLanguage = (language: string): BundledLanguage => {
   const key = language.trim().toLowerCase();
   const alias = LANGUAGE_ALIAS_OVERRIDES[key] ?? SHIKI_LANGUAGE_ALIASES[key];
   return alias ?? (key as BundledLanguage);
 };
 
-// A streaming fence re-enters highlight() every frame with the whole block, so Shiki re-tokenizes
-// it in full ~60x/sec. Past MIN_INCREMENTAL_CHARS, cache the completed lines and their grammar
-// state so each refresh tokenizes only new text, keeping the 250 ms plain-tail cadence.
 export const MIN_INCREMENTAL_CHARS = 2000;
+export const LIVE_TAIL_CHARS = 1024;
 const REFRESH_MS = 250;
-// Shiki's own tokenizer guard is a wall clock: a line that takes longer than `tokenizeTimeLimit`
-// (default 500 ms) is abandoned part-way and the rest of it is emitted as one uncoloured token.
-// Dual themes are two passes with two separate budgets, and only the first pays to compile the
-// grammar's regexes, so a loaded machine drops the light theme to plain and keeps the dark one
-// correct -- for the same line, in the same result. Committed lines are never re-tokenized, so that
-// half-plain line is then cached for the life of the fence. Bound the work by line length instead:
-// same protection against a minified blob (~120 ms at this length, growing quadratically past it,
-// which is VS Code's `editor.maxTokenizationLineLength` default for the same reason), but the
-// output depends on the source rather than on the host.
+const REFRESH_SLICE_MS = 8;
+// A wall-clock limit can cache a half-plain theme; bound line length for deterministic dual-theme output.
 export const TOKENIZE_LIMITS = {
   tokenizeTimeLimit: 0,
   tokenizeMaxLineLength: 20_000,
 } as const;
-// An unvirtualized thread mounts every fence. Bound both their count and source
-// size; token data measured roughly 30 bytes per source character.
-const MAX_FENCES = 512;
-const MAX_CACHED_CHARACTERS = 512_000;
+export const MAX_FENCES = 512;
+export const MAX_CACHED_CHARACTERS = 512_000;
 
-// Wall-clock Date.now() can step backwards (NTP, sleep resume) and make
-// `elapsed` negative; the throttle only needs elapsed time, so stay monotonic.
+// Date.now() can step backwards (NTP, sleep resume), so use a monotonic clock.
 const monotonicNow = (): number =>
   typeof performance !== "undefined" && typeof performance.now === "function"
     ? performance.now()
@@ -114,27 +133,23 @@ type Fence = {
   code: string;
   result: HighlightResult | null;
   meta: ResultMeta | null;
-  /** Absolute-offset tokens for completed lines. */
   lines: TokenLine[];
-  /** Source prefix covered by `lines`. */
   committedLength: number;
   state: GrammarState | undefined;
   liveTokens: TokenLine | null;
   lastTokenizedAt: number;
   trailing: ReturnType<typeof setTimeout> | null;
   pending: Pending | null;
+  seeded: boolean;
 };
 
-// Tokens without colors preserve the previous plain-tail rendering.
 const plainLine = (content: string): TokenLine =>
   [{ content, offset: 0 } as unknown as ThemedToken] as TokenLine;
 
 const themeName = (theme: ThemeInput): string =>
   typeof theme === "string" ? theme : (theme.name ?? "custom");
 
-// Two custom themes can share a name, or carry none, so a cache key built from
-// names alone would serve one theme's tokens for another. Reduce each distinct
-// definition to a short id once: the key is compared on every lookup.
+// Custom themes can share or lack names, so key on a short id per distinct definition.
 const themeIds = new Map<string, string>();
 const themeIdByInput = new WeakMap<object, string>();
 
@@ -165,52 +180,70 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
     ? line
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
 
-// ADJACENT-TOKEN COALESCING: TRIED, MEASURED AT ZERO, REMOVED.
-// The renderer emits one <span> per themed token, so a fence's span census is
-// its token census, and Shiki splits on GRAMMAR boundaries rather than on
-// rendered appearance. Merging runs of adjacent tokens whose rendered style is
-// byte-identical looked like a pure reduction with no gating at all: no
-// viewport state machine, nothing a reader could do to push a fence back into a
-// more expensive shape.
-// It buys exactly nothing. Running the whole studiobench corpus, 728 fences and
-// 1,335,897 code characters, through this component's own Shiki configuration:
-//   dual        tokens 537013 -> merged 537013   0.0% fewer
-//   darkonly    tokens 535981 -> merged 535981   0.0% fewer
-// and the 100K rung's 99 assembled fences, 180,902 characters, 72550 -> 72550
-// dual, 72408 -> 72408 dark only, 62098 -> 62098 light only. Not one adjacent
-// pair in half a million shares a rendered style, in any theme mode. Shiki
-// already emits maximally coalesced tokens. No timing was run on it, because a
-// mechanism that removes no spans cannot make anything faster.
-// The implementation is not kept. Carrying a runtime-flippable flag through the
-// fence cache for a measured-zero benefit only adds a way for a cached result
-// to disagree with the flag that produced it. Run
-// `node scripts/coal-span-census.mjs <markdown>` from studio/frontend to check
-// the census on any thread rather than taking these numbers on trust.
-
-// Markdown reports a closing fence as body until it recognizes it, so that line is all a fence can
-// lose: up to three spaces, one run of backticks or tildes, then spaces. It also starts a line, so
-// the body it leaves behind ends at a newline. The run can be short, because the cached code is the
-// last text tokenized and the run may still have been arriving then.
+// Markdown reports a closing fence as body until it recognizes it, so that line (possibly
+// a partial run) is all a fence can lose.
+// Shiki already coalesces (537013 -> merged 537013); reproduce with scripts/coal-span-census.mjs.
 const CLOSING_FENCE = /^ {0,3}(?:`+|~+)[ \t]*$/;
 
-/** Whether `longer` is one fence's body, `shorter`, plus its closing line. */
 const shedsClosingRun = (shorter: string, longer: string): boolean =>
   (shorter === "" || shorter.endsWith("\n")) &&
   longer.startsWith(shorter) &&
   CLOSING_FENCE.test(longer.slice(shorter.length));
 
+export type FenceCover = {
+  uncovered: number;
+  result: HighlightResult | null;
+};
+
+export type UnslothCodePlugin = CodeHighlighterPlugin & {
+  cached: (opts: HighlightOptions) => HighlightResult | null;
+  cover: (opts: HighlightOptions) => FenceCover;
+  seed: (opts: HighlightOptions, result: HighlightResult) => void;
+  highlight: (
+    opts: HighlightOptions,
+    callback?: (result: HighlightResult) => void,
+    exact?: boolean,
+  ) => HighlightResult | null;
+  highlightExact: (
+    opts: HighlightOptions,
+    callback?: (result: HighlightResult) => void,
+  ) => HighlightResult | null;
+};
+
+const fenceKeyOf = (opts: HighlightOptions): string =>
+  `${normalizeLanguage(opts.language)} ${themeKey(opts.themes[0])} ${themeKey(opts.themes[1])}`;
+
+const javaScriptCore =
+  typeof navigator !== "undefined"
+  && navigator.userAgent.includes("AppleWebKit/")
+  && !/Chrom(?:e|ium)\//.test(navigator.userAgent);
+
 export function createCodePlugin(
   options: CodePluginOptions = {},
-): CodeHighlighterPlugin {
+): UnslothCodePlugin {
   const defaultThemes: [ThemeInput, ThemeInput] = options.themes ?? [
     "github-light",
     "github-dark",
   ];
-  const engine = createJavaScriptRegexEngine({ forgiving: true });
+  const engine = createJavaScriptRegexEngine(
+    javaScriptCore
+      ? {
+          forgiving: true,
+          regexConstructor: (pattern) => {
+            try {
+              return defaultJavaScriptRegexConstructor(pattern, {
+                target: "ES2018",
+                accuracy: "strict",
+              });
+            } catch {
+              return defaultJavaScriptRegexConstructor(pattern);
+            }
+          },
+        }
+      : { forgiving: true },
+  );
   const highlighters = new Map<string, { highlighter: Highlighter | null }>();
-  // Most recently used first.
   const fences: Fence[] = [];
-  // Avoid scanning every fence for exact cache hits.
   const fencesByCode = new Map<string, Fence>();
   let cachedCharacters = 0;
 
@@ -218,7 +251,6 @@ export function createCodePlugin(
   const codeKey = (key: string, code: string): string =>
     `${key}\n${code.length}\n${code.slice(0, 32)}\n${code.slice(-32)}`;
 
-  // Identical fences can share an index key.
   const dropCodeIndex = (fence: Fence): void => {
     const indexKey = codeKey(fence.key, fence.code);
     if (fencesByCode.get(indexKey) === fence) fencesByCode.delete(indexKey);
@@ -262,7 +294,6 @@ export function createCodePlugin(
       fences.length > MAX_FENCES ||
       (cachedCharacters > MAX_CACHED_CHARACTERS && fences.length > 1)
     ) {
-      // Keep pending callbacks until their grammar resolves.
       let dropIndex = fences.length - 1;
       while (dropIndex >= 0 && fences[dropIndex].pending !== null) {
         dropIndex -= 1;
@@ -270,6 +301,20 @@ export function createCodePlugin(
       if (dropIndex < 0) return;
       dropFence(fences[dropIndex]);
     }
+  };
+
+  const forkFence = (fence: Fence): Fence => {
+    const fork: Fence = {
+      ...fence,
+      lines: [...fence.lines],
+      liveTokens: null,
+      trailing: null,
+      pending: null,
+      seeded: false,
+    };
+    fences.unshift(fork);
+    cachedCharacters += fence.code.length;
+    return fork;
   };
 
   const promote = (fence: Fence): Fence => {
@@ -281,7 +326,16 @@ export function createCodePlugin(
     return fence;
   };
 
-  /** The fence whose cached code reaches furthest into `code`. */
+  const reachInto = (fence: Fence, code: string): number => {
+    if (fence.result === null || fence.seeded) return -1;
+    const anchor = fence.code;
+    // Lost more than its closing delimiter: a different fence, so do not share the entry.
+    const reaches =
+      code.startsWith(anchor) ||
+      (code.length >= fence.committedLength && shedsClosingRun(code, anchor));
+    return anchor && reaches ? Math.min(anchor.length, code.length) : -1;
+  };
+
   const findFence = (key: string, code: string): Fence => {
     const exact = fencesByCode.get(codeKey(key, code));
     if (exact && exact.code === code) return promote(exact);
@@ -294,14 +348,8 @@ export function createCodePlugin(
         if (fence.pending?.code === code) return promote(fence);
         continue;
       }
-      const anchor = fence.code;
-      // A block that lost more than its closing delimiter is a different fence;
-      // sharing this entry would cancel the refresh it has queued.
-      const reaches =
-        code.startsWith(anchor) ||
-        (code.length >= fence.committedLength && shedsClosingRun(code, anchor));
-      const reach = Math.min(anchor.length, code.length);
-      if (!anchor || reach <= matchLength || !reaches) continue;
+      const reach = reachInto(fence, code);
+      if (reach <= matchLength) continue;
       match = fence;
       matchLength = reach;
     }
@@ -318,18 +366,19 @@ export function createCodePlugin(
       lastTokenizedAt: 0,
       trailing: null,
       pending: null,
+      seeded: false,
     };
     fences.unshift(fence);
     return fence;
   };
 
-  /** Tokenize what `fence` has not seen yet and return the whole fence. */
   const tokenize = (
     fence: Fence,
     highlighter: Highlighter,
     code: string,
     language: BundledLanguage,
     themes: ThemeNames,
+    budgetMs: number,
   ): HighlightResult => {
     const lang = highlighter.getLoadedLanguages().includes(language)
       ? language
@@ -342,8 +391,35 @@ export function createCodePlugin(
         ...TOKENIZE_LIMITS,
       });
 
-    // Commit every newly completed line.
     const lastNewline = code.lastIndexOf("\n");
+    if (lastNewline >= fence.committedLength && budgetMs < Number.POSITIVE_INFINITY) {
+      const deadline = monotonicNow() + budgetMs;
+      while (fence.committedLength <= lastNewline) {
+        const newline = code.indexOf("\n", fence.committedLength);
+        const end =
+          newline > fence.committedLength && code[newline - 1] === "\r"
+            ? newline - 1
+            : newline;
+        const completed = tokenizeFrom(code.slice(fence.committedLength, end));
+        for (const line of completed.tokens) {
+          fence.lines.push(shiftLine(line, fence.committedLength));
+        }
+        fence.state = completed.grammarState;
+        fence.committedLength = newline + 1;
+        fence.liveTokens = null;
+        fence.meta = stripTokens(completed);
+        if (monotonicNow() >= deadline) break;
+      }
+      if (fence.committedLength <= lastNewline) {
+        fence.lastTokenizedAt = monotonicNow();
+        const tail = code.slice(fence.committedLength).split("\n");
+        return {
+          ...(fence.meta as ResultMeta),
+          tokens: [...fence.lines, ...tail.map(plainLine)],
+        };
+      }
+    }
+
     if (lastNewline >= fence.committedLength) {
       // Shiki omits CR from CRLF token content.
       const completedEnd =
@@ -353,9 +429,6 @@ export function createCodePlugin(
       const completed = tokenizeFrom(
         code.slice(fence.committedLength, completedEnd),
       );
-      // Coalesced ONCE, here, as the line is committed. A committed line is
-      // never re-tokenized, so this is paid once per line for the life of the
-      // fence and every later render of it reads the reduced array.
       for (const line of completed.tokens) {
         fence.lines.push(shiftLine(line, fence.committedLength));
       }
@@ -392,22 +465,21 @@ export function createCodePlugin(
     fence.meta = null;
   };
 
-  // Leave the block plain if highlighting fails instead of breaking render.
   const update = (
     fence: Fence,
     highlighter: Highlighter,
     code: string,
     language: BundledLanguage,
     themes: ThemeNames,
+    budgetMs = Number.POSITIVE_INFINITY,
   ): HighlightResult | null => {
     let result: HighlightResult;
     try {
-      result = tokenize(fence, highlighter, code, language, themes);
+      result = tokenize(fence, highlighter, code, language, themes, budgetMs);
     } catch (error) {
       console.error("[Unsloth Code] Failed to highlight code:", error);
       resetFence(fence);
-      // A fence that never produced tokens has no anchor to match on, so a
-      // block that keeps failing would strand a new one on every render.
+      // A fence that never produced tokens has no anchor, so a failing block would strand one per render.
       if (fence.result === null) dropFence(fence);
       return null;
     }
@@ -470,9 +542,60 @@ export function createCodePlugin(
     return null;
   };
 
-  return {
+  const plugin: UnslothCodePlugin = {
     name: "shiki",
     type: "code-highlighter",
+    cached: (opts) => {
+      const exact = fencesByCode.get(codeKey(fenceKeyOf(opts), opts.code));
+      return exact && exact.code === opts.code && exact.result
+        ? promote(exact).result
+        : null;
+    },
+    cover: (opts) => {
+      const key = fenceKeyOf(opts);
+      const exact = fencesByCode.get(codeKey(key, opts.code));
+      if (exact && exact.code === opts.code && exact.result) {
+        return { uncovered: 0, result: exact.result };
+      }
+      let match: Fence | null = null;
+      let matchLength = -1;
+      for (const fence of fences) {
+        if (fence.key !== key) continue;
+        const reach = reachInto(fence, opts.code);
+        if (reach <= matchLength) continue;
+        match = fence;
+        matchLength = reach;
+      }
+      if (match === null) return { uncovered: opts.code.length, result: null };
+      return {
+        uncovered:
+          opts.code.length - Math.min(match.committedLength, opts.code.length),
+        result: approximateResult(match, opts.code),
+      };
+    },
+    seed: (opts, result) => {
+      const key = fenceKeyOf(opts);
+      const exact = fencesByCode.get(codeKey(key, opts.code));
+      if (exact && exact.code === opts.code && exact.result) return;
+      const fence: Fence = {
+        key,
+        code: opts.code,
+        result,
+        meta: stripTokens(result),
+        lines: result.tokens,
+        committedLength: opts.code.length,
+        state: undefined,
+        liveTokens: null,
+        lastTokenizedAt: monotonicNow(),
+        trailing: null,
+        pending: null,
+        seeded: true,
+      };
+      fences.unshift(fence);
+      cachedCharacters += opts.code.length;
+      fencesByCode.set(codeKey(key, opts.code), fence);
+      evict();
+    },
     getSupportedLanguages: () => SUPPORTED_LANGUAGE_LIST,
     getThemes: () => defaultThemes,
     supportsLanguage: (language) =>
@@ -480,6 +603,7 @@ export function createCodePlugin(
     highlight: (
       opts: HighlightOptions,
       callback?: (result: HighlightResult) => void,
+      exact = false,
     ): HighlightResult | null => {
       const language = normalizeLanguage(opts.language);
       const themes: ThemeNames = {
@@ -489,15 +613,14 @@ export function createCodePlugin(
       const key = `${language} ${themeKey(opts.themes[0])} ${themeKey(opts.themes[1])}`;
       const fence = findFence(key, opts.code);
 
-      if (fence.result && fence.code === opts.code) {
+      const partial = fence.committedLength <= fence.code.lastIndexOf("\n");
+      if (fence.result && fence.code === opts.code && !(exact && partial)) {
         const pending = fence.pending;
         if (
           pending !== null &&
           shedsClosingRun(opts.code, pending.code)
         ) {
-          // This may be one fence shedding its closing run or a shorter sibling
-          // reusing the same entry. Settle the queued body before serving the
-          // shorter exact hit so neither caller loses its final highlighted state.
+          // Settle the queued body before serving the shorter exact hit, so neither caller loses state.
           const loaded = highlighters.get(key)?.highlighter;
           if (loaded) {
             const exact = fence.result;
@@ -509,7 +632,7 @@ export function createCodePlugin(
       }
 
       const highlighter = loadHighlighter(key, language, opts.themes, (ready) => {
-        // Use a stable, oldest-first snapshot because updates can evict fences.
+        // Oldest-first snapshot because updates can evict fences.
         for (const waiting of [...fences].reverse()) {
           const pending = waiting.pending;
           if (waiting.key !== key || !pending) continue;
@@ -523,6 +646,9 @@ export function createCodePlugin(
         evict();
         return null;
       }
+      if (exact && fence.result !== null && fence.code !== opts.code) {
+        return update(forkFence(fence), highlighter, opts.code, language, themes);
+      }
 
       const pending = fence.pending;
       if (pending && shedsClosingRun(opts.code, pending.code)) {
@@ -534,30 +660,43 @@ export function createCodePlugin(
       const grewLargeFence =
         fence.result !== null &&
         fence.code.length >= MIN_INCREMENTAL_CHARS &&
-        opts.code.length > fence.code.length;
-      if (grewLargeFence && elapsed < REFRESH_MS) {
+        opts.code.length > fence.code.length &&
+        opts.code.length - fence.committedLength > LIVE_TAIL_CHARS;
+      if (!exact && grewLargeFence && elapsed < REFRESH_MS) {
         const result = approximateResult(fence, opts.code);
         queuePending(fence, opts.code, callback);
+        const refresh = (): void => {
+          const pending = fence.pending;
+          fence.trailing = null;
+          fence.pending = null;
+          if (!pending) return;
+          const refreshed = update(
+            fence,
+            highlighter,
+            pending.code,
+            language,
+            themes,
+            REFRESH_SLICE_MS,
+          );
+          if (refreshed) notifyPending(pending, refreshed);
+          if (
+            refreshed
+            && fence.code === pending.code
+            && fence.committedLength <= pending.code.lastIndexOf("\n")
+          ) {
+            fence.pending = pending;
+            fence.trailing = setTimeout(refresh, 0);
+          }
+        };
         fence.trailing = setTimeout(
-          () => {
-            const pending = fence.pending;
-            fence.trailing = null;
-            fence.pending = null;
-            if (!pending) return;
-            const refreshed = update(
-              fence,
-              highlighter,
-              pending.code,
-              language,
-              themes,
-            );
-            if (refreshed) notifyPending(pending, refreshed);
-          },
-          Math.max(0, REFRESH_MS - elapsed),
+          refresh,
+          partial ? 0 : Math.max(0, REFRESH_MS - elapsed),
         );
         return result;
       }
       return update(fence, highlighter, opts.code, language, themes);
     },
+    highlightExact: (opts, callback) => plugin.highlight(opts, callback, true),
   };
+  return plugin;
 }

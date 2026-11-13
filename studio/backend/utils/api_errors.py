@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Error-envelope helpers for the OpenAI/Anthropic-compatible ``/v1/*`` API surface.
-
-FastAPI's defaults emit ``{"detail": ...}`` bodies, but real OpenAI/Anthropic clients expect provider-specific envelopes, so Unsloth's own client-error responses on ``/v1/*`` are re-wrapped as ``{"error": {"message", "type", "param", "code"}}`` for the OpenAI surface and ``{"type": "error", "error": {"type", "message"}}`` for any path under ``/v1/messages``.
-
-CRITICAL: the handlers installed by :func:`install_api_error_handlers` are global but ONLY transform paths starting with ``/v1/``. Every other path (``/api/...``, frontend routes) reproduces FastAPI's default behavior byte-for-byte, because the frontend depends on the ``{"detail": ...}`` shape for ``/api/*``.
-"""
+"""Re-wrap /v1/* errors in OpenAI or Anthropic envelopes; other paths keep FastAPI's detail shape"""
 
 import math
 import re
@@ -47,6 +42,22 @@ ANTHROPIC_TYPE_BY_STATUS = {
     503: "api_error",
     529: "overloaded_error",
 }
+
+
+# A machine-readable code for an agent-actionable failure, as ``code k=v ...``. A header, so the
+# body (and the detail text the frontend shows) stays exactly as it was.
+PROBLEM_HEADER = "X-Unsloth-Problem"
+_PROBLEM_TOKEN = re.compile(r"^[A-Za-z0-9_.:/-]{1,200}$")
+
+
+def problem_headers(code: str, **fields) -> dict:
+    """``{PROBLEM_HEADER: "code k=v"}``; a field that is unset or not a plain token is left out."""
+    pairs = [
+        f"{key}={value}"
+        for key, value in fields.items()
+        if value is not None and _PROBLEM_TOKEN.match(str(value))
+    ]
+    return {PROBLEM_HEADER: " ".join([code, *pairs])}
 
 
 def openai_error_body(
@@ -90,9 +101,14 @@ def is_anthropic_path(path: str) -> bool:
     return path.startswith("/v1/messages")
 
 
+# Jev-compatible, not OpenAI: its clients expect FastAPI's own 422 and {"detail": ...} bodies.
+_NATIVE_ERROR_PATHS = frozenset({"/v1/systemone"})
+
+
 def wants_api_error_envelope(path: str) -> bool:
-    """True for the OpenAI/Anthropic-compatible surfaces: the ``/v1/*`` mount and
-    the preview ``/p/<run>[/<ckpt>]/v1/*`` mount."""
+    """True for OpenAI/Anthropic-compatible surfaces: /v1/* and preview /p/<run>[/<ckpt>]/v1/*."""
+    if path in _NATIVE_ERROR_PATHS:
+        return False
     return path.startswith("/v1/") or (path.startswith("/p/") and "/v1/" in path)
 
 

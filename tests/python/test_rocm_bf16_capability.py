@@ -1,3 +1,4 @@
+import ast
 import inspect
 import types
 from pathlib import Path
@@ -85,8 +86,6 @@ def test_model_utils_uses_the_patched_hip_probe():
     assert "SUPPORTS_BFLOAT16 = True" not in hip_branch
 
 
-# The tests below exec the real bf16 chain: no CI has gfx10, and a text assert only checks spelling.
-
 _CHAIN_START = 'if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():'
 _CHAIN_END = "\n# For Gradio HF Spaces?"
 
@@ -107,7 +106,7 @@ def _fake_torch(
             raise RuntimeError("device wedged")
         return types.SimpleNamespace(gcnArchName = archs[i])
 
-    # Not *args: the cuda branch sniffs this signature with inspect.signature and would fall back.
+    # Not *args: the cuda branch inspects this signature and would fall back.
     def is_bf16_supported(including_emulation = True):
         return base_bf16
 
@@ -118,22 +117,61 @@ def _fake_torch(
             get_device_properties = get_device_properties,
             is_bf16_supported = is_bf16_supported,
             is_available = lambda: True,
-            get_device_capability = lambda: (9, 0),
+            get_device_capability = lambda *a, **k: (9, 0),
         ),
         xpu = types.SimpleNamespace(is_bf16_supported = lambda: True),
     )
 
 
-def _namespace(fake_torch, device_type):
-    from unsloth.device_type import hip_visible_archs
-    return {
+def _device_type_imports() -> list[str]:
+    """What _gpu_init.py imports from .device_type, read from its source, so a name the chain
+    starts using (#11615's arch_lacks_buffer_ops) reaches this namespace without a hand edit."""
+    tree = ast.parse(GPU_INIT.read_text(encoding = "utf-8"))
+    return [
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module == "device_type"
+        for alias in node.names
+    ]
+
+
+def _namespace(fake_torch, device_type, workarounds):
+    import unsloth.device_type as dt
+
+    overrides = {
         "torch": fake_torch,
         "inspect": inspect,
         "DEVICE_TYPE": device_type,
-        "arch_lacks_bf16": arch_lacks_bf16,
-        # Reads unsloth.device_type's own `torch`, not this fake, so the caller must monkeypatch.
-        "hip_visible_archs": hip_visible_archs,
+        "apply_gfx101x_triton_workaround": lambda *a, **k: workarounds.append((a, k)),
     }
+    # hip_visible_archs uses unsloth.device_type's own torch, so the caller must monkeypatch it.
+    namespace = {
+        name: getattr(dt, name) for name in _device_type_imports() if name not in overrides
+    }
+    namespace.update(overrides)
+    return namespace
+
+
+def test_the_conftest_stub_carries_every_name_gpu_init_imports():
+    """tests/conftest.py installs a stub unsloth.device_type when the real one cannot load, and
+    `import unsloth` then imports these names from it. #11615 added two it did not have."""
+    tree = ast.parse((REPO_ROOT / "tests" / "conftest.py").read_text(encoding = "utf-8"))
+    stub = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_install_device_type_stub"
+    )
+    provided = {
+        target.attr
+        for node in ast.walk(stub)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "stub"
+    }
+    missing = sorted(set(_device_type_imports()) - provided)
+    assert not missing, f"the device_type stub lacks {missing}, so import unsloth fails under it"
 
 
 def _run_chain(monkeypatch, fake_torch, device_type):
@@ -142,8 +180,10 @@ def _run_chain(monkeypatch, fake_torch, device_type):
     monkeypatch.setattr(dt, "torch", fake_torch, raising = False)
     source = GPU_INIT.read_text(encoding = "utf-8")
     body = _CHAIN_START + source.split(_CHAIN_START, 1)[1].split(_CHAIN_END, 1)[0]
-    namespace = _namespace(fake_torch, device_type)
+    workarounds = []
+    namespace = _namespace(fake_torch, device_type, workarounds)
     exec(compile(body, str(GPU_INIT), "exec"), namespace)
+    namespace["_workarounds"] = workarounds
     return namespace
 
 
@@ -223,3 +263,21 @@ def test_importing_unsloth_twice_is_stable(monkeypatch):
     namespace = _run_chain(monkeypatch, fake, "hip")
     assert namespace["SUPPORTS_BFLOAT16"] is False
     assert fake.cuda.is_bf16_supported() is False
+
+
+@pytest.mark.parametrize(
+    "archs,device_type,applied",
+    [
+        (["gfx1010"], "hip", True),
+        (["gfx1100", "gfx1012:xnack-"], "hip", True),
+        (["gfx1030"], "hip", False),
+        (["gfx1100"], "hip", False),
+        (["gfx1010"], "cuda", False),
+    ],
+)
+def test_the_chain_turns_triton_buffer_ops_off_only_for_a_visible_gfx101x(
+    monkeypatch, archs, device_type, applied
+):
+    """#11615 put the RDNA1 buffer-op workaround inside this chain; RDNA2 (gfx103x) must not match."""
+    namespace = _run_chain(monkeypatch, _fake_torch(archs), device_type)
+    assert len(namespace["_workarounds"]) == (1 if applied else 0)

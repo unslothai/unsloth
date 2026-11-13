@@ -7,7 +7,6 @@ function normalizedRepo(repo: string): string {
   return repo.trim().toLowerCase();
 }
 
-/** Resolve the inference checkpoint paired with the base a diffusion adapter trained on. */
 export function resolveDiffusionDeployBase(
   family: DiffusionTrainableFamily | undefined,
   trainedBase: string,
@@ -18,7 +17,6 @@ export function resolveDiffusionDeployBase(
   );
   if (variant) return variant[1];
 
-  // Backward-compatible family-wide mapping used by Krea 2 and older backends.
   if (
     family?.deploy_base &&
     family.base_repos.some((repo) => normalizedRepo(repo) === key)
@@ -28,12 +26,10 @@ export function resolveDiffusionDeployBase(
   return trainedBase;
 }
 
-/** The TRAINING base paired with a checkpoint currently loaded for inference, or null. The inverse
- *  of the mapping above, and what the Train panel needs to preselect: the distilled variants a
- *  user generates with are not trainable, so a loaded `...klein-9B` never appears in `base_repos`
- *  and an exact-match preselect falls through to the FIRST entry, which for FLUX.2 Klein is the
- *  4B base. Only a pairing the family declares is returned, and only when the paired training
- *  repo is offered, so this can never invent a base the backend would refuse. */
+/**
+ * Training base paired with a loaded inference checkpoint, or null. Distilled variants are not
+ * trainable, so an exact match would fall back to the wrong base (Klein 4B).
+ */
 export function resolveDiffusionTrainingBase(
   family: DiffusionTrainableFamily | undefined,
   loadedBase: string,
@@ -49,13 +45,30 @@ export function resolveDiffusionTrainingBase(
     (repo) => normalizedRepo(repo) === normalizedRepo(trainingRepo),
   );
   if (exact) return exact;
-  // A checkpoint loaded from the ungated MIRROR pairs with the mirror training id, and
-  // /diffusion/info offers only the vendor ids, so the exact match finds nothing and the panel
-  // falls back to the first base -- for Klein the 4B, the very mix-up this function prevents. A
-  // mirror keeps the upstream repo NAME, so fold to that, still only returning an offered base.
+  // A mirror keeps the upstream repo NAME, so fold to it; only an offered base is returned.
   const name = normalizedRepo(trainingRepo.split("/").pop() ?? "");
   if (!name) return null;
   return (
-    family.base_repos.find((repo) => normalizedRepo(repo.split("/").pop() ?? "") === name) ?? null
+    family.base_repos.find(
+      (repo) => normalizedRepo(repo.split("/").pop() ?? "") === name,
+    ) ?? null
   );
+}
+
+// The catalog id is the file stem, or the full name when a same-stem file of the other format exists.
+export function catalogFileName(catalogPath: string): string {
+  return catalogPath.split(/[\\/]/).pop() ?? catalogPath;
+}
+
+// Same format only (a stale run must not pick a same-stem GGUF), stem before full name (`x.safetensors.safetensors`).
+export function matchCatalogId(
+  loras: { id: string; format: string }[],
+  fileName: string,
+): string | undefined {
+  const match = /^(.*)\.(safetensors|gguf)$/i.exec(fileName);
+  const ids = loras
+    .filter((l) => !match || l.format === match[2].toLowerCase())
+    .map((l) => l.id);
+  const stem = match ? match[1] : fileName;
+  return ids.find((id) => id === stem) ?? ids.find((id) => id === fileName);
 }

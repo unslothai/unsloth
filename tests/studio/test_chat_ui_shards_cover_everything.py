@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every Playwright script in Chat UI Tests belongs to exactly one shard.
-
-The job used to run 11 scripts in sequence against four Unsloth instances, at 22.1 minutes on
-average, the largest single job in the repo. It was split into four shards on the Unsloth
-boundaries, and is now two: `banner` folded into `chat` and `picker` into `extra`, because
-four cells of 3 to 9 minutes each queued about two hours for a runner while the account ran
-30 to 35 jobs at once. Two cells of about 12 minutes take half the slots.
-
-The failure mode that matters is not a broken shard, which is loud. It is a step whose
-`if:` names no shard, or names one that does not exist, or is dropped from the matrix: the
-step then runs nowhere, the job is green on every shard, and a Playwright regression
-suite has silently stopped existing. Nothing else in CI would notice, because a test that
-does not run cannot fail.
-
-So this asserts coverage from the workflow itself rather than from a list kept here: every
-step that invokes a Playwright script must be reachable on at least one shard in the
-matrix, and every shard in the matrix must have something to do.
-"""
+"""A step whose `if:` names no shard or a missing one silently never runs, and nothing fails."""
 
 import re
 from pathlib import Path
@@ -56,11 +39,7 @@ def _driving_steps() -> list[dict]:
 
 
 def test_the_job_still_drives_every_script_it_used_to():
-    """A dropped step is the quiet failure, so the count is pinned.
-
-    Eleven invocations across ten scripts: the banner layout script runs twice, once for
-    chromium and once for the other two engines at the viewports that reproduce.
-    """
+    """Pins the step count, since a step dropped in a shard edit fails quietly."""
     steps = _driving_steps()
     assert len(steps) >= 11, (
         f"only {len(steps)} steps invoke a Playwright script, down from 11. If one was "
@@ -85,12 +64,7 @@ def test_every_playwright_step_runs_on_some_shard(step):
 
 
 def test_the_studio_a_script_depends_on_boots_on_the_same_shard():
-    """A script and the Unsloth it drives cannot be split across machines.
-
-    Each boot step names its port, and so does every script that talks to it. A shard
-    holding the script but not the boot fails on connection refused, which is at least
-    loud; the reverse wastes a boot. Both are edits worth catching here.
-    """
+    """A script must share a shard with the Unsloth boot it targets, or it fails on connection refused."""
     steps = _job()["steps"]
     booted: dict[str, set[str]] = {}
     for step in steps:
@@ -126,17 +100,7 @@ def test_no_shard_is_left_with_nothing_to_do():
 
 
 def test_each_shard_uploads_under_its_own_artifact_name():
-    """Four cells cannot upload one artifact name.
-
-    Artifacts are immutable within a workflow run, so the first shard to finish creates
-    the name and the other three fail on the conflict. The upload step carries
-    `if: always()` and no `continue-on-error`, so that failure is the job's: a UI run
-    where every test passed goes red, on three cells out of four, for a reason that has
-    nothing to do with the UI.
-
-    Asserted for any matrix job in this workflow rather than for this one by name, since
-    the next job to be sharded inherits the same trap.
-    """
+    """Artifacts are immutable within a run, so each matrix cell needs a distinct upload name."""
     document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
     for job_name, job in document["jobs"].items():
         dimensions = (job.get("strategy") or {}).get("matrix") or {}
@@ -155,13 +119,7 @@ def test_each_shard_uploads_under_its_own_artifact_name():
 
 
 def test_every_shard_captures_its_own_server_logs():
-    """Each cell is a separate machine with its own ~/.unsloth/studio/logs.
-
-    The copy used to live inside the step that stops the last Unsloth, whose comment said
-    all three Unsloth instances share the directory. True when they shared a runner; false now. A
-    shard-gated copy leaves three artifacts with no server-side traceback, which is
-    exactly what anyone debugging a failed shard opens first.
-    """
+    """Each shard must capture its own server logs, since each cell is a separate machine."""
     for step in _job()["steps"]:
         if "server-logs" not in str(step.get("run", "")):
             continue

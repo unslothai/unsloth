@@ -12,10 +12,6 @@ const { useExportRuntimeStore } = await import(
   "../src/features/export/stores/export-runtime-store.ts"
 );
 
-// A local imatrix export resolves the matrix from a Hub repo, but export-page.tsx only sets
-// `token` for a hub push, so the GGUF request falls back to the load token as the LoRA request
-// already does. Asserting the emitted body, not the source, so a refactor still passes.
-
 function params(overrides: Record<string, unknown>) {
   return {
     sourceMode: "model",
@@ -74,7 +70,7 @@ test("a hub push prefers its own upload token over the load token", async () => 
 test("no token anywhere sends null rather than undefined", async () => {
   const body = await ggufRequest({ useImatrix: true, loadToken: null, token: undefined });
 
-  // undefined would be dropped by JSON.stringify and the field would go missing entirely.
+  // undefined would be dropped by JSON.stringify and the field would go missing.
   assert.equal(body.hf_token, null);
   assert.ok("hf_token" in body);
 });
@@ -101,4 +97,69 @@ test("the load phase keeps using the load token on its own", async () => {
   const load = stub.calls.find((entry) => entry.name === "loadCheckpoint");
   assert.ok(load, "no load request was made");
   assert.equal((load.args[0] as Record<string, unknown>).hf_token, "hf_load");
+});
+
+test("a local model forwards its trimmed custom imatrix path", async () => {
+  const body = await ggufRequest({
+    modelSource: "local",
+    source: "/models/merged-model",
+    useImatrix: true,
+    imatrixPath: "  /models/calibration data/imatrix.gguf  ",
+    quantLevels: ["iq2_xxs", "q4_k_m"],
+  });
+
+  assert.equal(body.imatrix_path, "/models/calibration data/imatrix.gguf");
+  assert.deepEqual(body.quantization_method, ["iq2_xxs", "q4_k_m"]);
+});
+
+test("a checkpoint hub export preserves a Windows imatrix path", async () => {
+  const path = String.raw`C:\models\校准 data\imatrix.dat`;
+  const body = await ggufRequest({
+    sourceMode: "checkpoint",
+    checkpointPath: "/checkpoints/run/checkpoint-10",
+    useImatrix: true,
+    imatrixPath: path,
+    destination: "hub",
+    repoId: "org/model",
+  });
+
+  assert.equal(body.imatrix_path, path);
+  assert.equal(body.push_to_hub, true);
+});
+
+test("an empty custom path keeps automatic imatrix download", async () => {
+  for (const imatrixPath of [undefined, "", "   "]) {
+    const body = await ggufRequest({ useImatrix: true, imatrixPath });
+    assert.equal(body.imatrix, true);
+    assert.equal(body.imatrix_path, null);
+  }
+});
+
+test("disabling imatrix excludes a previously entered path", async () => {
+  const body = await ggufRequest({
+    useImatrix: false,
+    imatrixPath: "/models/imatrix.gguf",
+  });
+
+  assert.equal(body.imatrix, false);
+  assert.equal(body.imatrix_path, null);
+});
+
+test("a checkpoint load forwards the remote-code approval", async () => {
+  stub.resetStub();
+  await useExportRuntimeStore.getState().runExport(
+    params({
+      sourceMode: "checkpoint",
+      checkpointPath: "/studio/outputs/k2-horizon/checkpoint-60",
+      source: "checkpoint-60",
+      trustRemoteCode: true,
+      approvedRemoteCodeFingerprint: "fp123",
+    }),
+  );
+  const load = stub.calls.find((entry) => entry.name === "loadCheckpoint");
+  assert.ok(load, "no load request was made");
+  const body = load.args[0] as Record<string, unknown>;
+  assert.equal(body.checkpoint_path, "/studio/outputs/k2-horizon/checkpoint-60");
+  assert.equal(body.trust_remote_code, true);
+  assert.equal(body.approved_remote_code_fingerprint, "fp123");
 });

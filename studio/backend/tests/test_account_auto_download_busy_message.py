@@ -30,7 +30,7 @@ def alice_downloading(monkeypatch):
         return True
 
     monkeypatch.setattr(auto, "_is_downloadable_model", downloadable)
-    monkeypatch.setattr(auto, "_is_not_servable", lambda repo_id, hf_token: False)
+    monkeypatch.setattr(auto, "_is_not_servable", lambda repo_id, hf_token, *_: False)
 
 
 def _refusal(account):

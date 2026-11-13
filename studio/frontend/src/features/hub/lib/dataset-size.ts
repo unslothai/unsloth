@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getHfDatasetsServerBase, getHfEndpoint } from "@/lib/hf-endpoint";
+import {
+  getHfDatasetsServerBase,
+  getHfEndpoint,
+  hasDatasetsServer,
+} from "@/lib/hf-endpoint";
+import type { ImageCheckpointFile } from "../download-manager/required-assets";
 import { LruMap } from "./lru-map";
 import { fetchWithTimeout } from "./network";
 import { fingerprintToken } from "./token-fingerprint";
@@ -24,9 +29,7 @@ interface DatasetSizeApiResponse {
   };
 }
 
-// Transient (429/5xx/network) misses cache briefly so a rate-limited burst doesn't pin the size to
-// "unknown" until reload. "longlived" covers stable-ish answers like datasets-server 404 ("not
-// processed yet"); "permanent" is a genuinely missing repo (HF models API 404).
+// Transient misses cache briefly; "longlived" covers datasets-server 404; "permanent" a missing repo.
 const TRANSIENT_MISS_TTL_MS = 60_000;
 const LONGLIVED_MISS_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
@@ -77,7 +80,7 @@ function fetchCachedSize<T>(
     return Promise.resolve(entry.kind === "value" ? entry.value : null);
   }
   const existing = inflight.get(cacheKey);
-  if (existing) return attachInflight(existing, signal);
+  if (existing && !existing.cancelledByConsumers) return attachInflight(existing, signal);
 
   let timedOut = false;
   const controller = new AbortController();
@@ -96,6 +99,7 @@ function fetchCachedSize<T>(
   inflightEntry.promise = (async (): Promise<T | null> => {
     try {
       const result = await load(controller.signal);
+      if (inflightEntry.cancelledByConsumers) return null;
       if ("value" in result) {
         cache.set(cacheKey, { kind: "value", value: result.value });
         return result.value;
@@ -133,7 +137,7 @@ function fetchCachedSize<T>(
     } finally {
       clearTimeout(timeout);
       inflightEntry.settled = true;
-      inflight.delete(cacheKey);
+      if (inflight.get(cacheKey) === inflightEntry) inflight.delete(cacheKey);
     }
   })();
 
@@ -209,6 +213,7 @@ export function fetchDatasetSize(
   tokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal,
 ): Promise<DatasetSizeInfo | null> {
+  if (!hasDatasetsServer()) return Promise.resolve(null);
   const resolvedToken =
     typeof tokenOrSignal === "string" ? tokenOrSignal : undefined;
   const resolvedSignal =
@@ -231,7 +236,7 @@ export function fetchDatasetSize(
         FETCH_TIMEOUT_MS,
       );
       if (!res.ok) {
-        // datasets-server 404 often means "not processed yet", not "never".
+        // datasets-server 404 often means "not processed yet".
         return { miss: res.status === 404 ? "longlived" : "transient" };
       }
       const data = (await res.json()) as DatasetSizeApiResponse;
@@ -256,9 +261,13 @@ export function fetchDatasetSize(
 export interface ModelSizeInfo {
   totalBytes: number | null;
   weightsBytes: number | null;
+  revision?: string;
+  imageCheckpointCandidates?: ImageCheckpointFile[];
 }
 
 interface ModelInfoApiResponse {
+  sha?: string;
+  config?: { diffusers?: { _class_name?: string } };
   siblings?: Array<{
     rfilename?: string;
     size?: number;
@@ -272,6 +281,122 @@ const SNAPSHOT_WEIGHT_FILE_RE =
 const SNAPSHOT_NON_BIN_WEIGHT_FILE_RE =
   /\.(safetensors|pt|pth|ckpt|h5|msgpack|npz)$/i;
 const SNAPSHOT_BIN_WEIGHT_PREFIX_RE = /^(model|pytorch_model|adapter_model).*\.bin$/i;
+// [0-9], not \d, to match the backend's SHARDED_SAFETENSORS_RE in snapshot_filters.py.
+const SHARDED_SAFETENSORS_RE = /^model[-_][0-9]+-of-[0-9]+\.safetensors$/;
+const SAFETENSORS_INDEX = "model.safetensors.index.json";
+const DUPLICATE_WEIGHT_FORMAT_RE =
+  /^(?:(?:original|metal|coreml)\/|(?:tf_model.*\.h5|flax_model.*\.msgpack)$|(?:tf_model\.h5|flax_model\.msgpack)\.index\.json$|rust_model\.ot$)/s;
+// Mirrors redundant_torch_bin_files in snapshot_filters.py: a dtype variant is redundant only when
+// the same variant ships as safetensors. Both shard layouts are recognised.
+const BIN_WEIGHT_RES = [
+  /^pytorch_model(?:\.([A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin$/,
+  /^pytorch_model[-_][0-9]+-of-[0-9]+\.([A-Za-z0-9_]+)\.bin$/,
+];
+const BIN_INDEX_RE =
+  /^pytorch_model(?:\.([A-Za-z0-9_]+))?\.bin\.index(?:\.([A-Za-z0-9_]+))?\.json$/;
+
+function variantShipsAsSafetensors(names: string[], variant: string | undefined): boolean {
+  if (!variant) return true;
+  if (names.includes(`model.${variant}.safetensors`)) return true;
+  // transformers' _add_variant puts the variant second-to-last.
+  if (!names.includes(`model.safetensors.index.${variant}.json`)) return false;
+  const v = variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sharded = new RegExp(
+    `^(?:model\\.${v}[-_][0-9]+-of-[0-9]+\\.safetensors|model[-_][0-9]+-of-[0-9]+\\.${v}\\.safetensors)$`,
+  );
+  return names.some((n) => sharded.test(n));
+}
+
+function redundantTorchBinFiles(names: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const name of names) {
+    let variant: string | undefined;
+    const weight = BIN_WEIGHT_RES.map((re) => re.exec(name)).find((m) => m);
+    if (weight) {
+      variant = weight[1];
+    } else {
+      const index = BIN_INDEX_RE.exec(name);
+      if (!index) continue;
+      variant = index[1] ?? index[2];
+    }
+    if (variantShipsAsSafetensors(names, variant)) out.add(name);
+  }
+  return out;
+}
+
+// Mirrors pipeline_pickle_files (diffusers_safetensors.py, via diffusers_pickle_files in snapshot_filters.py):
+// a diffusers pipeline repo skips a .pt / .pth / .ckpt / .pkl inside a component folder or beside its same-stem
+// .safetensors twin (a root pickle with no twin is the only copy and stays), and a .bin beside safetensors weights.
+const PIPELINE_MANIFESTS = ["model_index.json", "modular_model_index.json"];
+const NEVER_READ_PICKLE_RE = /\.(pt|pth|ckpt|pkl|pickle)$/i;
+// Mirrors _MODEL_SAFETENSORS: only a component's own non-variant weights make its .bin redundant.
+const MODEL_SAFETENSORS_RE =
+  /^(diffusion_pytorch_model|model)(-\d+-of-\d+)?\.safetensors(\.index\.json)?$/;
+
+function folderOf(name: string): string {
+  const slash = name.lastIndexOf("/");
+  return slash >= 0 ? name.slice(0, slash) : "";
+}
+
+function diffusersPickleFiles(names: string[]): Set<string> {
+  const out = new Set<string>();
+  if (!names.some((n) => PIPELINE_MANIFESTS.includes(n))) return out;
+  const safetensorsFolders = new Set(
+    names
+      .filter((n) => MODEL_SAFETENSORS_RE.test(basename(n)))
+      .map(folderOf),
+  );
+  const safetensorsStems = new Set(
+    names
+      .filter((n) => n.toLowerCase().endsWith(".safetensors"))
+      .map((n) => n.slice(0, -".safetensors".length).toLowerCase()),
+  );
+  for (const n of names) {
+    const lower = n.toLowerCase();
+    if (NEVER_READ_PICKLE_RE.test(lower)) {
+      if (folderOf(n) !== "" || safetensorsStems.has(lower.slice(0, lower.lastIndexOf(".")))) {
+        out.add(n);
+      }
+    } else if (
+      (lower.endsWith(".bin") || lower.endsWith(".bin.index.json")) &&
+      safetensorsFolders.has(folderOf(n))
+    ) {
+      out.add(n);
+    }
+  }
+  return out;
+}
+
+// Mirrors PRECISION_FOLDER_SOURCE and precision_variant_subfolders in snapshot_filters.py.
+const PRECISION_FOLDER_SOURCE =
+  "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)";
+const PRECISION_FOLDER_RE = new RegExp(`^(?:${PRECISION_FOLDER_SOURCE})$`, "i");
+
+export function isPrecisionFolderName(name: string): boolean {
+  return PRECISION_FOLDER_RE.test(name);
+}
+
+function precisionVariantFolders(names: string[]): Set<string> {
+  const files = new Map<string, string[]>();
+  for (const name of names) {
+    const slash = name.indexOf("/");
+    const folder = name.slice(0, slash);
+    const rest = name.slice(slash + 1);
+    if (slash <= 0 || !rest || rest.includes("/")) continue;
+    if (!PRECISION_FOLDER_RE.test(folder)) continue;
+    files.set(folder, [...(files.get(folder) ?? []), rest]);
+  }
+  const out = new Set<string>();
+  for (const [folder, rest] of files) {
+    if (
+      rest.includes("config.json") &&
+      rest.some((n) => n.toLowerCase().endsWith(".safetensors"))
+    ) {
+      out.add(folder);
+    }
+  }
+  return out;
+}
 
 function basename(path: string): string {
   return path.split("/").pop() ?? path;
@@ -288,11 +413,26 @@ function shipsTransformersWeights(siblings: ModelSibling[]): boolean {
   });
 }
 
+// One numbered shard is not a loadable checkpoint. Mirrors repo_ships_root_safetensors.
+function shipsRootSafetensors(siblings: ModelSibling[]): boolean {
+  const names = siblings.map((s) => s.rfilename ?? "");
+  if (names.some((n) => n === "model.safetensors")) return true;
+  return (
+    names.includes(SAFETENSORS_INDEX) &&
+    names.some((n) => SHARDED_SAFETENSORS_RE.test(n))
+  );
+}
+
 function isSnapshotIgnored(
   filename: string,
   skipConsolidated: boolean,
+  skipDuplicateFormats: boolean,
+  redundantBins: Set<string>,
+  precisionFolders: Set<string> = new Set(),
+  pipelinePickles: Set<string> = new Set(),
 ): boolean {
   const lower = filename.toLowerCase();
+  const folder = filename.includes("/") ? filename.slice(0, filename.indexOf("/")) : "";
   return (
     lower.endsWith(".gguf") ||
     lower.endsWith(".onnx") ||
@@ -300,7 +440,11 @@ function isSnapshotIgnored(
     lower.startsWith("openvino/") ||
     lower.startsWith("mlx/") ||
     lower.endsWith(".bin.index.json.bak") ||
-    (skipConsolidated && lower.startsWith("consolidated"))
+    pipelinePickles.has(filename) ||
+    (skipConsolidated && lower.startsWith("consolidated")) ||
+    (skipDuplicateFormats &&
+      (DUPLICATE_WEIGHT_FORMAT_RE.test(filename) || redundantBins.has(filename) ||
+        precisionFolders.has(folder)))
   );
 }
 
@@ -333,13 +477,40 @@ export function fetchModelSize(
       }
       const data = (await res.json()) as ModelInfoApiResponse;
       const siblings = data.siblings ?? [];
+      // SDXL repos can package alternate whole checkpoints alongside their Diffusers component folders.
+      const imageCheckpointCandidates = data.config?.diffusers?._class_name === "StableDiffusionXLPipeline"
+        ? siblings.flatMap(({ rfilename, size }) =>
+            rfilename && /^[^/\\]+\.safetensors$/i.test(rfilename) && !/[-_]\d+-of-\d+\./i.test(rfilename)
+              ? [{ filename: rfilename, bytes: size ?? null }]
+              : [],
+          )
+        : [];
       const skipConsolidated = shipsTransformersWeights(siblings);
+      const skipDuplicateFormats = shipsRootSafetensors(siblings);
+      const names = siblings.map((s) => s.rfilename ?? "");
+      const redundantBins = redundantTorchBinFiles(names);
+      const precisionFolders = names.includes("config.json")
+        ? precisionVariantFolders(names)
+        : new Set<string>();
+      const pipelinePickles = diffusersPickleFiles(names);
       let total = 0;
       let weights = 0;
       for (const s of siblings) {
         if (typeof s.size !== "number") continue;
         const filename = s.rfilename ?? "";
-        if (filename && isSnapshotIgnored(filename, skipConsolidated)) continue;
+        if (
+          filename &&
+          isSnapshotIgnored(
+            filename,
+            skipConsolidated,
+            skipDuplicateFormats,
+            redundantBins,
+            precisionFolders,
+            pipelinePickles,
+          )
+        ) {
+          continue;
+        }
         total += s.size;
         if (filename && SNAPSHOT_WEIGHT_FILE_RE.test(filename)) {
           weights += s.size;
@@ -349,6 +520,7 @@ export function fetchModelSize(
         value: {
           totalBytes: total > 0 ? total : null,
           weightsBytes: weights > 0 ? weights : null,
+          ...(imageCheckpointCandidates.length ? { imageCheckpointCandidates, revision: data.sha } : {}),
         },
       };
     },

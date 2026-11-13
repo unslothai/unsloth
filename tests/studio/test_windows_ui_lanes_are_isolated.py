@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two Windows UI lanes must not share the state that used to serialise them.
-
-Five Playwright suites ran end to end for ~788s of a 20.6 minute job. They are
-disjoint and their ports were already distinct; what forced the sequence was shared
-auth state, because boot-studio-api-only.sh hardcoded ~/.unsloth/studio/auth and every
-"pass the bootstrap password" step read that same file back.
-
-Every failure this file guards against LOOKS LIKE SUCCESS, which is why they are worth
-pinning:
-
-  * A lane losing its own UNSLOTH_STUDIO_HOME. Both lanes then wipe and re-seed one
-    auth directory while the other is logging in with the password it just read. That
-    is a race, so it fails intermittently and on someone else's PR.
-  * Backgrounding without wait-and-collect. `&` defeats `set -e`; the step exits 0 and
-    the job goes green having run neither suite to completion.
-  * Waiting on only the first lane. The second lane's failure is then invisible, which
-    is the specific regression #9158 called out for the Linux indicator engines.
-  * A lane home with no venv link. UNSLOTH_STUDIO_HOME is the CLI's INSTALL root, so a
-    bare directory makes `unsloth studio` exit "Unsloth Studio not set up" before it
-    binds a port.
-  * A lane home with no llama.cpp path. Setting the variable makes the root custom, and
-    unsloth_cli/commands/studio.py then resolves UNSLOTH_LLAMA_CPP_PATH under it rather
-    than the legacy ~/.unsloth/llama.cpp. These lanes load a real GGUF, so the model
-    load fails rather than falling back.
-
-The assertions read the script and the workflow rather than a list written here, so a
-list cannot agree with itself while the scripts move.
-"""
+"""Each Windows UI lane needs its own UNSLOTH_STUDIO_HOME; a shared auth dir races between them."""
 
 from __future__ import annotations
 
@@ -47,12 +20,7 @@ LANES = ("chat", "extra")
 
 
 def _strip_comments(text: str) -> str:
-    """Assertions must not be satisfied by the prose that explains them.
-
-    Every one of these scripts documents the thing being asserted in a comment
-    directly above it, so a substring check against the raw file passes even after the
-    code it describes is deleted. This has already bitten this repo once.
-    """
+    """Assertions use comment-stripped text, since a comment above the code would satisfy a raw match."""
     out = []
     for line in text.split("\n"):
         stripped = re.sub(r"(^|\s)#.*$", "", line)

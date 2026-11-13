@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`_get_new_mapper` used to `exec` an HTTPS response body: arbitrary code execution
-inside an ordinary model load, gated only on transport integrity. It now
-`literal_eval`s the `__INT_TO_FLOAT_MAPPER` dict and derives the five tables with the
-INSTALLED `build_mappers`, so a hostile body can still change what the probe reports,
-which was always true, but can no longer run."""
+"""_get_new_mapper must literal_eval the fetched __INT_TO_FLOAT_MAPPER dict, never exec the body."""
 
 import builtins
 import pathlib
@@ -124,7 +120,6 @@ def test_probe_does_not_call_exec_or_eval(no_dynamic_execution, monkeypatch):
     with _serving(REAL_MAPPER, monkeypatch):
         result = loader_utils._get_new_mapper()
     assert no_dynamic_execution == [], f"the probe reached {no_dynamic_execution}"
-    # And it did the WORK, rather than falling into the except and returning empties.
     assert len(result) == 5
     assert all(result[:3]), "the probe returned nothing, so it proved nothing"
 
@@ -280,9 +275,8 @@ def test_a_deferred_lambda_body_is_not_read(monkeypatch):
 
 
 def test_an_alias_added_inside_the_builder_is_read(monkeypatch):
-    """`build_mappers` is called at import, so its body runs. The aliases that cannot
-    be derived from the source table live in there, and the installed builder cannot
-    know one a newer mapper.py adds."""
+    """build_mappers is called at import, so its body runs: aliases not derivable from the source
+    table live there, and the installed builder cannot know ones a newer mapper.py adds."""
     lines = REAL_MAPPER.splitlines(True)
     for index, line in enumerate(lines):
         if line.startswith("def build_mappers("):
@@ -326,7 +320,6 @@ def test_a_builder_that_is_never_called_is_not_read(monkeypatch):
     uncalled = REAL_MAPPER.replace(
         "= build_mappers(__INT_TO_FLOAT_MAPPER)", "= ({}, {}, {}, {}, {})"
     )
-    # The `def` line names it too, so the CALL is what has to be gone.
     assert "= build_mappers(" not in uncalled
     lines = uncalled.splitlines(True)
     insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
@@ -803,8 +796,7 @@ def test_a_mutation_above_a_class_shadow_still_counts(monkeypatch):
     ), "an entry installed before the class bound the name was dropped"
 
 
-# How mapper.py looks on any release older than `build_mappers`: the five exports are
-# initialised empty and filled by a module-scope loop rather than by a builder call.
+# mapper.py before `build_mappers`: exports start empty and are filled by a module-scope loop.
 _NO_BUILDER_MAPPER = (
     '__INT_TO_FLOAT_MAPPER = {"vendor/x-bnb-4bit": ("vendor/x",)}\n'
     "INT_TO_FLOAT_MAPPER  = {}\n"

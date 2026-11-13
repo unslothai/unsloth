@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two surfaces that hung at 100% when a finished worker would not exit (#7897).
-
-/api/train/status and the progress SSE keyed off liveness-based is_training_active(), so a
-worker wedged in post-save teardown kept reporting "training" forever; they now consult
-is_run_finished() too. A live run must be unaffected, and /api/train/stop must be
-terminal-aware too: a late Stop must not latch _should_stop over the finished banner.
-"""
+"""Status and SSE also consult is_run_finished, so a worker wedged after save is not training."""
 
 from __future__ import annotations
 
@@ -167,7 +161,7 @@ def test_progress_stream_stays_open_while_training(monkeypatch):
         task = asyncio.create_task(pump())
         await asyncio.sleep(1.5)
         assert "complete" not in names, names
-        b._handle_event(dict(_DONE))  # run ends; worker still lingers
+        b._handle_event(dict(_DONE))
         for _ in range(100):
             if "complete" in names:
                 break
@@ -179,13 +173,7 @@ def test_progress_stream_stays_open_while_training(monkeypatch):
 
 
 def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
-    """Stop clicked in the poll window after the run already finished.
-
-    The button greys out only once /api/train/status reports is_training_running=False (3s
-    poll), so a click can still land on a run that has saved. /stop is terminal-aware, so it
-    reports idle instead of latching _should_stop and overwriting the finished banner with a
-    "Stopping..." message no later path clears.
-    """
+    """A Stop landing after the run finished must report idle, not latch _should_stop over the banner."""
     b = _running(monkeypatch)
     b._handle_event(dict(_DONE))
 
@@ -197,7 +185,6 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
     assert st.phase == "completed"
     assert st.message.startswith("Training completed!")
 
-    # ... and it survives the watchdog reaping the wedged worker.
     b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_1")
     st = asyncio.run(rt.get_training_status(current_subject = "t"))
     assert st.phase == "completed"
@@ -205,12 +192,7 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
 
 
 def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monkeypatch):
-    """The same late Stop, except the run finishes *after* the route's terminal check.
-
-    The pump publishes terminal state under the backend lock, so the re-test has to sit
-    inside stop_training() next to the mutation it guards. Without it, /status derives
-    "stopped" for a run the DB finalized as completed.
-    """
+    """The re-check must sit inside stop_training under the lock, or a completed run reads stopped."""
     b = _running(monkeypatch)
     b._db_run_created = True
     real_stop, fired = b.stop_training, []
@@ -218,7 +200,7 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
     def stop_after_complete(save = True, expected_job_id = None):
         if not fired:
             fired.append(True)
-            b._handle_event(dict(_DONE))  # the pump wins the gap
+            b._handle_event(dict(_DONE))
         return real_stop(save = save, expected_job_id = expected_job_id)
 
     b.stop_training = stop_after_complete
@@ -277,3 +259,51 @@ def test_surfaces_tolerate_a_backend_without_is_run_finished(monkeypatch):
     st = asyncio.run(rt.get_training_status(current_subject = "t"))
     assert st.is_training_running is False
     assert rt._run_finished(_Minimal()) is False
+
+
+def test_status_retains_resolved_repo_through_preparation_and_clears_on_next_load(monkeypatch):
+    b = _running(monkeypatch)
+    b._handle_event({"type": "model_load_started"})
+    b._handle_event({"type": "model_load_resolved", "repo_id": "org/resolved"})
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.details["model_download_repo_id"] == "org/resolved"
+    b._handle_event({"type": "model_load_completed"})
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.details["model_download_repo_id"] == "org/resolved"
+    b._handle_event({"type": "model_load_started"})
+    assert b._model_download_repo_id is None
+
+
+def test_status_does_not_report_download_after_worker_finishes(monkeypatch):
+    b = _running(monkeypatch)
+    b._handle_event({"type": "model_load_started"})
+    b._handle_event({"type": "model_load_resolved", "repo_id": "org/resolved"})
+    b._handle_event(dict(_DONE))
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.details["model_download_repo_id"] is None
+
+
+def test_worker_reports_remote_repo_but_not_local_paths(monkeypatch, tmp_path):
+    import ast
+    import os
+    import queue
+    import time
+
+    source = Path(__file__).parents[1] / "core/training/worker.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    report = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_report_model_repo"
+    )
+    events = queue.SimpleQueue()
+    namespace = {"event_queue": events, "os": os, "time": time}
+    exec(compile(ast.Module(body = [report], type_ignores = []), str(source), "exec"), namespace)
+    b = _running(monkeypatch)
+    b._handle_event({"type": "model_load_started"})
+    namespace["_report_model_repo"]("org/actual-download")
+    b._handle_event(events.get_nowait())
+    status = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert status.details["model_download_repo_id"] == "org/actual-download"
+    namespace["_report_model_repo"](str(tmp_path))
+    assert events.empty()

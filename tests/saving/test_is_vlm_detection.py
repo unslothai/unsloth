@@ -1,18 +1,4 @@
-"""Regression test for `_is_vlm` in `unsloth/save.py`.
-
-The VLM check in `unsloth_save_pretrained_gguf` (and the torchao export path)
-used to guard on `hasattr(self.config, "architectures")` and then iterate
-`self.config.architectures` directly. That guard is a no-op: transformers'
-`PretrainedConfig` always sets `architectures` (defaulting to `None`), so a
-config with `architectures = None` passed the guard and hit `for x in None`,
-raising `TypeError: 'NoneType' object is not iterable` and aborting the export
-before any merge/convert work.
-
-`_is_vlm` centralizes the check and guards `architectures` with
-`getattr(config, "architectures", None) or ()`, matching the sibling
-`_is_gpt_oss` / `_is_qwen3_5_vlm` helpers. We ast-extract just that function so
-the test runs with no GPU and no `import unsloth` (which needs `unsloth_zoo`).
-"""
+"""_is_vlm must treat config.architectures = None as empty, or the export dies with a TypeError."""
 
 import ast
 import os
@@ -50,7 +36,6 @@ class _Model:
 
 def test_is_vlm_handles_none_architectures():
     is_vlm = _load_is_vlm()
-    # architectures = None must not raise (it did before: `for x in None`).
     assert is_vlm(_Model(_Cfg(None))) is False
 
 

@@ -2,33 +2,35 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSyncExternalStore } from "react";
+import {
+  COLOR_THEME_IDS,
+  type ColorThemeId,
+  isColorThemeId,
+} from "../lib/color-themes.ts";
 
 export type Theme = "light" | "dark" | "system";
 export type ResolvedTheme = "light" | "dark";
-export type Palette = "standard" | "classic" | "minimal";
+export type Palette = ColorThemeId;
 
 const STORAGE_KEY = "theme";
 const PALETTE_STORAGE_KEY = "palette";
 
-export const PALETTES: readonly Palette[] = ["standard", "classic", "minimal"];
+export const PALETTES: readonly Palette[] = COLOR_THEME_IDS;
 
 export function isPalette(value: unknown): value is Palette {
-  return value === "standard" || value === "classic" || value === "minimal";
+  return isColorThemeId(value);
 }
 
-// Persist a re-derived literal from a fixed allow-list rather than the argument,
-// so a value arriving via the authenticated personalization sync is not tracked
-// as sensitive data flowing into storage (these are plain UI preferences).
+// Persist a literal from an allow-list, not the argument, so synced values are not flagged as
+// sensitive data flowing into storage.
 const STORED_THEME: Record<Theme, Theme> = {
   light: "light",
   dark: "dark",
   system: "system",
 };
-const STORED_PALETTE: Record<Palette, Palette> = {
-  standard: "standard",
-  classic: "classic",
-  minimal: "minimal",
-};
+const STORED_PALETTE = Object.fromEntries(
+  COLOR_THEME_IDS.map((id) => [id, id]),
+) as Record<Palette, Palette>;
 
 function readStoredTheme(): Theme {
   if (typeof window === "undefined") return "system";
@@ -54,9 +56,7 @@ function readStoredPalette(): Palette {
   return isPalette(stored) ? stored : "standard";
 }
 
-// In-memory source of truth so a selected value survives even when localStorage is blocked (private
-// browsing). Without it the snapshots would re-read empty storage and revert React state to the
-// default while the DOM already changed.
+// In-memory source of truth so a choice survives blocked localStorage.
 let currentTheme: Theme = readStoredTheme();
 let currentPalette: Palette = readStoredPalette();
 
@@ -70,25 +70,57 @@ function resolveTheme(theme: Theme): ResolvedTheme {
   return theme;
 }
 
+export const THEME_SWITCHING_CLASS = "theme-switching";
+
+// Mirrors the two index.css reduced-motion blocks.
+function reducedMotionActive(el: HTMLElement): boolean {
+  if (el.classList.contains("force-reduced-motion")) return true;
+  if (el.classList.contains("force-motion")) return false;
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+  );
+}
+
+// Reduce motion's 0.01ms `all` transition starts one per element per colour on a flip; otherwise the extra restyle costs WebKit more.
+export function withoutTransitions(change: () => void): void {
+  const el = document.documentElement;
+  if (!reducedMotionActive(el)) {
+    change();
+    return;
+  }
+  el.classList.add(THEME_SWITCHING_CLASS);
+  change();
+  void window.getComputedStyle(document.body ?? el).color;
+  window.setTimeout(() => el.classList.remove(THEME_SWITCHING_CLASS), 0);
+}
+
 function applyToDocument(resolved: ResolvedTheme) {
   if (typeof document === "undefined") return;
   const el = document.documentElement;
-  el.classList.toggle("dark", resolved === "dark");
-  el.classList.toggle("light", resolved === "light");
-  // Native controls (scrollbars, spinners, pickers) follow the app mode.
-  el.style.colorScheme = resolved;
+  if (
+    el.classList.contains("dark") === (resolved === "dark") &&
+    el.classList.contains("light") === (resolved === "light")
+  ) {
+    el.style.colorScheme = resolved;
+    return;
+  }
+  withoutTransitions(() => {
+    el.classList.toggle("dark", resolved === "dark");
+    el.classList.toggle("light", resolved === "light");
+    el.style.colorScheme = resolved;
+  });
 }
 
 function applyPaletteToDocument(palette: Palette) {
   if (typeof document === "undefined") return;
   const el = document.documentElement;
-  // Standard is the base :root/.dark palette; no attribute keeps the DOM
-  // (and CSS selectors) simple for the default look.
-  if (palette === "standard") {
-    el.removeAttribute("data-palette");
-  } else {
-    el.setAttribute("data-palette", palette);
-  }
+  // Standard is the base :root/.dark palette and uses no attribute.
+  const next = palette === "standard" ? null : palette;
+  if (el.getAttribute("data-palette") === next) return;
+  withoutTransitions(() => {
+    if (next === null) el.removeAttribute("data-palette");
+    else el.setAttribute("data-palette", next);
+  });
 }
 
 const listeners = new Set<() => void>();
@@ -98,13 +130,11 @@ function subscribe(cb: () => void) {
     return () => listeners.delete(cb);
   }
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
-  // OS scheme flip: only the resolved value changes; keep the in-memory choice
-  // (re-reading storage here would clobber it when storage is blocked).
+  // Keep the in-memory choice; re-reading blocked storage would clobber it.
   const onSchemeChange = () => {
     applyToDocument(resolveTheme(currentTheme));
     cb();
   };
-  // Another tab wrote storage (only fires when storage is available): adopt it.
   const onStorage = (e: StorageEvent) => {
     if (
       e.key === STORAGE_KEY ||
@@ -118,8 +148,7 @@ function subscribe(cb: () => void) {
       cb();
     }
   };
-  // Apply on mount so this store is the single source of truth for the DOM
-  // class after the index.html bootstrap script painted the first frame.
+  // Take over the DOM class after the index.html bootstrap painted the first frame.
   applyToDocument(resolveTheme(currentTheme));
   applyPaletteToDocument(currentPalette);
   mq.addEventListener("change", onSchemeChange);
@@ -139,9 +168,7 @@ function getServerSnapshot(): Theme {
   return "system";
 }
 
-// Snapshot the RESOLVED mode too: under "system" the theme string never
-// changes when the OS scheme flips, so consumers keyed on `resolved`
-// (customization applier, mode-scoped settings) would not re-render.
+// Under "system" the theme string never changes when the OS flips, so snapshot the resolved mode.
 function getResolvedSnapshot(): ResolvedTheme {
   return resolveTheme(currentTheme);
 }
@@ -150,11 +177,7 @@ function getResolvedServerSnapshot(): ResolvedTheme {
   return "light";
 }
 
-/**
- * Single source of truth for setting the theme. All writers (Settings dialog
- * control, sidebar dropdown toggler) route through this so the DOM class,
- * localStorage, and React subscribers stay in sync.
- */
+/** Every writer goes through here so the DOM class, storage and subscribers stay in sync. */
 export function setTheme(next: Theme): void {
   if (typeof window === "undefined") return;
   currentTheme = next;
@@ -190,11 +213,6 @@ function getPaletteServerSnapshot(): Palette {
   return "standard";
 }
 
-/**
- * Single source of truth for setting the color palette; mirrors setTheme so
- * the data-palette attribute, localStorage, and React subscribers stay in
- * sync.
- */
 export function setPalette(next: Palette): void {
   if (typeof window === "undefined") return;
   currentPalette = next;

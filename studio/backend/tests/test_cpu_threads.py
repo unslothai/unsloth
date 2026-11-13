@@ -11,7 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from utils.cpu_threads import _THREAD_POOL_ENV_VARS, configure_cpu_threads
+import utils.cpu_threads as cpu_threads
+from utils.cpu_threads import (
+    _THREAD_POOL_ENV_VARS,
+    configure_cpu_threads,
+    default_openblas_threads,
+)
 
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -19,7 +24,6 @@ _RUN_PY = _BACKEND_DIR / "run.py"
 _MAIN_PY = _BACKEND_DIR / "main.py"
 
 
-# Explicit positive integers seed all four native pool env vars.
 def test_cpu_thread_cap_seeds_native_pool_limits():
     env = {"UNSLOTH_CPU_THREADS": " 6 "}
 
@@ -30,7 +34,6 @@ def test_cpu_thread_cap_seeds_native_pool_limits():
     }
 
 
-# Explicit per-library values win over the Unsloth knob via setdefault.
 def test_cpu_thread_cap_preserves_runtime_specific_override():
     env = {"UNSLOTH_CPU_THREADS": "4", "OMP_NUM_THREADS": "2"}
 
@@ -40,7 +43,6 @@ def test_cpu_thread_cap_preserves_runtime_specific_override():
     assert env["MKL_NUM_THREADS"] == "4"
 
 
-# Whitespace / plus-prefix / leading zero all normalise via int().
 @pytest.mark.parametrize("raw", ["+4", "007", "  4  "])
 def test_cpu_thread_cap_normalises_valid_inputs(raw):
     env = {"UNSLOTH_CPU_THREADS": raw}
@@ -50,26 +52,113 @@ def test_cpu_thread_cap_normalises_valid_inputs(raw):
     assert env["OMP_NUM_THREADS"] == str(int(raw.strip()))
 
 
-# Unset / empty / whitespace -> no env mutation (pure opt-in).
 @pytest.mark.parametrize("raw", [None, "", "   ", "\t"])
-def test_cpu_thread_cap_is_opt_in(raw):
+def test_cpu_thread_cap_unset_limits_only_openblas(raw, monkeypatch):
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: 32)
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
     env = {} if raw is None else {"UNSLOTH_CPU_THREADS": raw}
     snapshot = dict(env)
 
     configure_cpu_threads(env)
 
-    assert env == snapshot
-    assert all(variable not in env for variable in _THREAD_POOL_ENV_VARS)
+    assert env == {**snapshot, "OPENBLAS_NUM_THREADS": "8"}
 
 
-# Anything that is not a positive integer raises a clear ValueError.
+@pytest.mark.parametrize(
+    "cpus, expected", [(1, 1), (2, 1), (4, 2), (12, 6), (16, 8), (24, 8), (192, 8)]
+)
+def test_openblas_default_scales_with_cores_and_is_capped(cpus, expected, monkeypatch):
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: cpus)
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
+
+    assert default_openblas_threads() == expected
+
+
+@pytest.mark.parametrize(
+    "headroom_mb, expected",
+    [(None, 8), (64 << 10, 8), (2600, 8), (1280, 4), (640, 2), (320, 1), (100, 1), (0, 1)],
+)
+def test_openblas_default_shrinks_when_memory_is_short(headroom_mb, expected, monkeypatch):
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: 32)
+    monkeypatch.setattr(
+        cpu_threads,
+        "_openblas_memory_headroom",
+        lambda: None if headroom_mb is None else headroom_mb << 20,
+    )
+
+    assert default_openblas_threads() == expected
+
+
+# A process pinned to one CPU of a large host (taskset, Slurm, cpusets) must not get the host's default.
+def test_the_default_follows_the_cpus_this_process_may_use(monkeypatch):
+    monkeypatch.delattr(os, "process_cpu_count", raising = False)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {3}, raising = False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 192)
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
+
+    assert cpu_threads._usable_cpus() == 1
+    assert default_openblas_threads() == 1
+
+
+def test_an_unreadable_memory_reading_keeps_the_core_count_default(monkeypatch):
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: 32)
+
+    def boom():
+        raise OSError("no reading")
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cpu_threads, "_address_space_headroom", boom)
+
+    assert cpu_threads._openblas_memory_headroom() is None
+    assert default_openblas_threads() == 8
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason = "address-space rlimit is read on Linux"
+)
+def test_linux_reads_the_address_space_rlimit(monkeypatch):
+    import resource
+
+    monkeypatch.setattr(
+        resource, "getrlimit", lambda which: (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
+    )
+    assert cpu_threads._address_space_headroom() is None
+    monkeypatch.setattr(resource, "getrlimit", lambda which: (1 << 40, 1 << 40))
+    assert 0 < cpu_threads._address_space_headroom() < 1 << 40
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows commit and job limits")
+def test_windows_reads_the_free_commit():
+    headroom = cpu_threads._windows_commit_headroom()
+
+    assert headroom is not None and headroom > 0
+
+
+def test_openblas_default_keeps_user_value():
+    env = {"OPENBLAS_NUM_THREADS": "8"}
+
+    configure_cpu_threads(env)
+
+    assert env == {"OPENBLAS_NUM_THREADS": "8"}
+
+
+@pytest.mark.parametrize("raw", ["", "  "])
+def test_openblas_default_replaces_blank_value(raw, monkeypatch):
+    monkeypatch.setattr(cpu_threads, "_usable_cpus", lambda: 8)
+    monkeypatch.setattr(cpu_threads, "_openblas_memory_headroom", lambda: None)
+    env = {"OPENBLAS_NUM_THREADS": raw}
+
+    configure_cpu_threads(env)
+
+    assert env == {"OPENBLAS_NUM_THREADS": "4"}
+
+
 @pytest.mark.parametrize("raw", ["zero", "0", "-3", "1.5", "abc", "8a", "0x4", "1e3", "4 0"])
 def test_cpu_thread_cap_requires_positive_integer(raw):
     with pytest.raises(ValueError, match = "must be a positive integer"):
         configure_cpu_threads({"UNSLOTH_CPU_THREADS": raw})
 
 
-# env=None path uses real os.environ (production call from run.py / main.py).
 def test_cpu_thread_cap_uses_os_environ_when_env_is_none(monkeypatch):
     for variable in (*_THREAD_POOL_ENV_VARS, "UNSLOTH_CPU_THREADS"):
         monkeypatch.delenv(variable, raising = False)
@@ -81,7 +170,6 @@ def test_cpu_thread_cap_uses_os_environ_when_env_is_none(monkeypatch):
         assert os.environ[variable] == "3"
 
 
-# Calling twice must not flip any seeded value.
 def test_cpu_thread_cap_idempotent(monkeypatch):
     for variable in (*_THREAD_POOL_ENV_VARS, "UNSLOTH_CPU_THREADS"):
         monkeypatch.delenv(variable, raising = False)
@@ -116,8 +204,6 @@ def _ast_line_of_platform_compat_import(source: str) -> int:
     raise AssertionError("_platform_compat import not found")
 
 
-# AST ordering: configure_cpu_threads() must precede _platform_compat in both
-# run.py and main.py. Robust to formatting / line shifts.
 @pytest.mark.parametrize("entry_point", [_RUN_PY, _MAIN_PY])
 def test_cpu_thread_configuration_runs_before_backend_imports(entry_point):
     source = entry_point.read_text(encoding = "utf-8")
@@ -129,8 +215,6 @@ def test_cpu_thread_configuration_runs_before_backend_imports(entry_point):
     )
 
 
-# Invalid env -> exit 1, one-line stderr, no traceback, gated before any
-# heavy import. Parametrised over both entry points.
 @pytest.mark.parametrize("entry_point", [_RUN_PY, _MAIN_PY])
 def test_invalid_cpu_thread_cap_exits_without_traceback(entry_point):
     env = os.environ.copy()

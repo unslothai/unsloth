@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Background auto-load must prepare the stored HF token before its GGUF
-metadata preflight.
-
-The Hub rejects an invalid Authorization header with 401 even for a PUBLIC
-repo. ``fetchGgufStagedMetadata`` posts to the same /api/inference/validate
-endpoint ``validateModel`` uses, and ``parseJsonOrThrow`` turns a non-OK
-response into a throw. In ``loadAutoLoadCandidate`` that preflight runs BEFORE
-``validateModel``, and every call site of ``loadAutoLoadCandidate`` is wrapped
-in ``catch { hadNonTrustFailure = true; continue; }``. So a stale saved token
-made auto-load skip a cached model that would have loaded anonymously, without
-ever reaching validateModel's "continue anonymously / replace token" recovery.
-
-The real classification block is sliced verbatim out of chat-adapter.ts and run
-under node, so this asserts on the token value that actually reaches the
-request rather than on the presence of a symbol.
-"""
+"""Prepare the stored HF token before the GGUF preflight: a stale token gets 401 even on public repos."""
 
 import json
 import os
@@ -58,12 +43,7 @@ def _require_node():
 
 
 def _classification_slice() -> str:
-    """The verbatim `isDiffusion` classification block from loadAutoLoadCandidate.
-
-    Anchored on the declaration and on the `effectiveGpuIds` statement that
-    consumes it, so the slice tracks either the prepared-token form or the
-    older raw-token ternary.
-    """
+    """Slices from the isDiffusion declaration to effectiveGpuIds, so either token form is covered."""
     src = ADAPTER.read_text(encoding = "utf-8")
     anchor = src.index("async function loadAutoLoadCandidate(")
     starts = [

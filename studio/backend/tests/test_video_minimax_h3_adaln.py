@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermetic CPU tests for MiniMax-H3's pruned (curve-form) adaLN conversion.
-
-No diffusers, no CUDA, no checkpoint: a tiny stand-in with the same module layout as
-``MiniMaxH3Transformer3DModel`` (``transformer_blocks[i].adaln_proj.linear``, ``norm_out.linear``,
-``time_embedder``, ``time_proj``) exercises every branch of the conversion, and the numerics are
-checked against the reference formula written out longhand rather than against the implementation.
-"""
+"""CPU-only H3 adaLN conversion tests; numerics checked against the formula written longhand."""
 
 from __future__ import annotations
 
@@ -76,10 +70,7 @@ class _Block(nn.Module):
 
 
 class _FourierTimeProj(nn.Module):
-    """Stands in for ``Timesteps``: expands a scalar timestep into features.
-
-    Deliberately NOT an identity, so a test asserting `time_proj` became a passthrough actually
-    fails when the conversion forgets to replace it."""
+    """Stand-in for Timesteps, not an identity, so a forgotten time_proj replacement fails."""
 
     def forward(self, timestep):
         return torch.stack([timestep.sin(), timestep.cos()], dim = -1)
@@ -102,7 +93,6 @@ class _FakeH3(nn.Module):
         self.norm_out = _NormOut(time_embed_dim, HIDDEN)
 
 
-# ── is_curve_checkpoint ──────────────────────────────────────────────────────────
 def test_is_curve_checkpoint_accepts_a_fully_specified_curve_artifact():
     assert is_curve_checkpoint(_curve_meta()) is True
 
@@ -117,8 +107,6 @@ def test_is_curve_checkpoint_accepts_a_fully_specified_curve_artifact():
     ],
 )
 def test_is_curve_checkpoint_rejects_incomplete_metadata(overrides):
-    # A checkpoint that does not DECLARE the form, or omits either dimension, must not trigger a
-    # reshape: the loader would then install differently-shaped weights and generate noise.
     assert is_curve_checkpoint(_curve_meta(**overrides)) is False
 
 
@@ -127,7 +115,6 @@ def test_is_curve_checkpoint_rejects_a_non_mapping():
     assert is_curve_checkpoint("curve") is False
 
 
-# ── apply_h3_adaln_curve ─────────────────────────────────────────────────────────
 def test_dense_metadata_leaves_the_model_untouched():
     model = _FakeH3()
     before = model.transformer_blocks[0].adaln_proj.linear.in_features
@@ -142,7 +129,6 @@ def test_curve_conversion_reshapes_every_projection():
     assert apply_h3_adaln_curve(model, _curve_meta()) is True
     for block in model.transformer_blocks:
         assert block.adaln_proj.linear.in_features == CURVE_DIM
-        # Output width is the modulation fan-out and must NOT change.
         assert block.adaln_proj.linear.out_features == 6 * HIDDEN * MODALITIES
     assert model.norm_out.linear.in_features == CURVE_DIM
     assert model.norm_out.linear.out_features == 2 * HIDDEN
@@ -161,26 +147,22 @@ def test_curve_conversion_rejects_a_block_whose_projection_is_not_a_linear():
         apply_h3_adaln_curve(model, _curve_meta())
 
 
-# ── the state dict must match the hosted checkpoint exactly ──────────────────────
 def test_conversion_swaps_the_time_embedder_keys_for_the_table():
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta())
     keys = set(model.state_dict())
     assert "time_embedder.table" in keys
-    # The dense MLP keys must be GONE, or strict=True load of a curve checkpoint reports them missing.
     assert not any(k.startswith("time_embedder.linear_") for k in keys)
 
 
 def test_the_dtype_shim_stays_out_of_the_state_dict():
-    # The model's forward reads time_embedder.linear_1.weight.dtype, so the shim must exist as an
-    # attribute but must NOT be a persistent buffer: an extra key breaks the strict load it exists to allow.
+    # The shim must be an attribute, not a persistent buffer, or strict load breaks.
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta())
     assert model.time_embedder.linear_1.weight.dtype == torch.float32
     assert "time_embedder.linear_1.weight" not in set(model.state_dict())
 
 
-# ── numerics ─────────────────────────────────────────────────────────────────────
 def _fill_table(model):
     with torch.no_grad():
         model.time_embedder.table.copy_(
@@ -193,7 +175,6 @@ def test_time_embedder_interpolates_between_the_two_neighbouring_grid_rows():
     apply_h3_adaln_curve(model, _curve_meta())
     _fill_table(model)
     table = model.time_embedder.table
-    # Half-way between grid rows 0 and 1 (grid of 5 spans [0,1], so t=0.125 is row 0.5).
     got = model.time_embedder(torch.tensor([0.125]))
     expected = 0.5 * table[0] + 0.5 * table[1]
     assert torch.allclose(got[0], expected, atol = 1e-6)
@@ -206,7 +187,6 @@ def test_time_embedder_pins_the_grid_endpoints():
     table = model.time_embedder.table
     got = model.time_embedder(torch.tensor([0.0, 1.0]))
     assert torch.equal(got[0], table[0])
-    # t=1.0 must land exactly on the LAST row, not read past the table.
     assert torch.equal(got[1], table[-1])
 
 
@@ -221,8 +201,7 @@ def test_time_embedder_clamps_out_of_range_timesteps_to_the_curve_ends():
 
 
 def test_modulation_forward_drops_the_silu():
-    # The tabulated curve is the dense path's POST-activation embedding projected onto the basis,
-    # so re-applying SiLU would square the nonlinearity. This is the assertion that catches it.
+    # The table holds post-activation embeddings, so SiLU must not be re-applied.
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta())
     proj = model.transformer_blocks[0].adaln_proj
@@ -235,9 +214,7 @@ def test_modulation_forward_drops_the_silu():
 
 
 def test_modulation_casts_the_chunks_to_the_recorded_stream_dtype():
-    # The pruned modulation is stored float32 while the block stack runs bfloat16, and the block's
-    # forward multiplies without casting. Leaving the chunks float32 promotes the stack and the
-    # first quantized matmul fails on mismatched dtypes, so this cast is what makes the model run.
+    # Chunks must be cast to the block dtype, else fp32 promotes the stack and matmul fails.
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
     proj = model.transformer_blocks[0].adaln_proj
@@ -247,7 +224,6 @@ def test_modulation_casts_the_chunks_to_the_recorded_stream_dtype():
 
 
 def test_modulation_keeps_the_projection_dtype_when_none_was_recorded():
-    # An unrecognised or absent value must not be guessed at: leave the chunks where they were.
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "not_a_dtype"))
     chunks = model.transformer_blocks[0].adaln_proj(torch.randn(2, CURVE_DIM))
@@ -255,8 +231,6 @@ def test_modulation_keeps_the_projection_dtype_when_none_was_recorded():
 
 
 def test_norm_out_is_not_cast_down():
-    # Unlike the block modulation, the final layer's shift/scale stay at their own precision: the
-    # result goes straight into the float32 output heads.
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
     out = model.norm_out(torch.randn(2, HIDDEN), torch.randn(1, CURVE_DIM), torch.tensor([0, 0]))
@@ -270,8 +244,6 @@ def test_the_out_dtype_marker_stays_out_of_the_state_dict():
 
 
 def test_modulation_forward_keeps_the_dense_row_layout():
-    # Rows are [t0_mod0, t0_mod1, t0_mod2, t1_mod0, ...]: the block's adaln_indices address that
-    # layout, so a reshape that changed it would silently modulate the wrong modality.
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta())
     chunks = model.transformer_blocks[0].adaln_proj(torch.randn(2, CURVE_DIM))
@@ -301,7 +273,6 @@ def test_norm_out_forward_drops_the_silu_and_indexes_per_row():
 
 
 def test_time_proj_becomes_a_passthrough():
-    # The curve table is indexed by the RAW timestep, not by time_proj's Fourier features.
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta())
     timestep = torch.tensor([0.25, 0.75])
@@ -309,7 +280,6 @@ def test_time_proj_becomes_a_passthrough():
 
 
 def test_the_curve_forward_is_bound_per_instance_not_on_the_class():
-    # A dense H3 load in the same process shares these classes; patching the class would corrupt it.
     converted = _FakeH3()
     dense = _FakeH3()
     apply_h3_adaln_curve(converted, _curve_meta())
@@ -319,3 +289,69 @@ def test_the_curve_forward_is_bound_per_instance_not_on_the_class():
         dense.transformer_blocks[0].adaln_proj.linear(nn.functional.silu(temb)).view(-1, 6 * HIDDEN)
     )
     assert torch.allclose(got, expected, atol = 1e-6)
+
+
+def _to_copy_inputs(proj, temb):
+    from torch.fx.experimental.proxy_tensor import make_fx
+
+    graph = make_fx(lambda t: proj(t))(temb).graph
+    casts = [n for n in graph.nodes if n.target == torch.ops.aten._to_copy.default]
+    return [tuple(n.args[0].meta["val"].shape) for n in casts]
+
+
+def test_modulation_casts_with_the_modality_axis_still_split():
+    model = _FakeH3()
+    apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
+    proj = model.transformer_blocks[0].adaln_proj
+    assert _to_copy_inputs(proj, torch.randn(2, CURVE_DIM)) == [(2, MODALITIES, 6 * HIDDEN)]
+
+
+def test_modulation_values_match_the_single_view_form_bit_for_bit():
+    model = _FakeH3()
+    apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
+    proj = model.transformer_blocks[0].adaln_proj
+    temb = torch.randn(3, CURVE_DIM)
+    got = torch.cat(proj(temb), dim = -1)
+    expected = proj.linear(temb).to(torch.bfloat16).view(-1, 6 * HIDDEN)
+    assert torch.equal(got, expected)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "the mis-indexing is in Inductor's CUDA lowering"
+)
+def test_compiled_modulation_with_unbacked_rows_matches_eager_on_cuda():
+    import torch.compiler.config as compiler_config
+
+    if not hasattr(compiler_config, "unbacked_sources"):
+        pytest.skip("this torch has no torch.compiler.config.unbacked_sources")
+    model = _FakeH3()
+    apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
+    model = model.cuda()
+    proj = model.transformer_blocks[0].adaln_proj
+    norm = nn.RMSNorm(HIDDEN, eps = 1e-5).cuda()
+
+    def modulate(temb, adaln_indices, hidden_states):
+        shift, scale, _, _, _, _ = proj(temb)
+        normed = norm(hidden_states).to(torch.bfloat16)
+        return normed * (1.0 + scale.index_select(0, adaln_indices)) + shift.index_select(
+            0, adaln_indices
+        )
+
+    saved = compiler_config.unbacked_sources
+    compiler_config.unbacked_sources = "L['temb']"
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(modulate, dynamic = True)
+        generator = torch.Generator(device = "cuda").manual_seed(0)
+        hidden = torch.randn(1, 64, HIDDEN, device = "cuda", generator = generator)
+        for rows in (1, 2, 4):
+            temb = torch.randn(rows, CURVE_DIM, device = "cuda", generator = generator)
+            indices = torch.randint(0, rows * MODALITIES, (64,), device = "cuda", generator = generator)
+            with torch.no_grad():
+                expected = modulate(temb, indices, hidden)
+                got = compiled(temb, indices, hidden)
+            torch.cuda.synchronize()
+            assert torch.allclose(got.float(), expected.float(), atol = 2e-2, rtol = 2e-2), rows
+    finally:
+        compiler_config.unbacked_sources = saved
+        torch._dynamo.reset()

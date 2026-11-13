@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Sequence
 
 from hub.utils.download_manifest import ExpectedFile
@@ -12,6 +12,7 @@ from hub.utils.gguf import (
     bare_quant_alias,
     drop_shadowed_appledouble_siblings,
     extract_quant_label,
+    gguf_shard_set,
     gguf_variant_family,
     gguf_variant_key,
     is_big_endian_gguf_path,
@@ -34,6 +35,70 @@ class GgufVariantPlan:
     expected_files: tuple[ExpectedFile, ...]
     main_size_bytes: int
     download_size_bytes: int
+    # The repo's standalone Engram tables, and the split shard holding this quant's own one.
+    engram_tables: tuple[ExpectedFile, ...] = ()
+    engram_shard: Optional[ExpectedFile] = None
+    # Precision of the table this quant ships in ``engram_shard``.
+    engram_precision: Optional[str] = None
+
+    def engram_table(self, precision: Optional[str]) -> Optional[ExpectedFile]:
+        from core.inference.engram_tables import engram_tables, find_engram_table
+        found = find_engram_table(
+            engram_tables((t.path, t.size) for t in self.engram_tables), precision
+        )
+        return next((t for t in self.engram_tables if found and t.path == found.filename), None)
+
+    def with_engram(self, precision: Optional[str]) -> "GgufVariantPlan":
+        """The files a load with the ``precision`` table fetches: the quant's own table shard
+        swapped for the standalone file. Unchanged when the table is the quant's own (same size),
+        the repo has no such table, or the quant's shard is unknown."""
+        table = self.engram_table(precision)
+        shard = self.engram_shard
+        if table is None or shard is None or table.size == shard.size:
+            return self
+        # Any standalone table already swapped in goes too, so a plan never fetches two.
+        dropped = {shard.path, *(t.path for t in self.engram_tables)}
+        expected = tuple(f for f in self.expected_files if f.path not in dropped) + (table,)
+        return replace(
+            self,
+            target_filenames = tuple(f.path for f in expected),
+            # The table is one of this download's own weights, so a partial of it is purged like the
+            # shards' before a transport resumes. The shard's hash stays: dropping it would let a
+            # stale-copy reclaim treat a cached built-in table as foreign.
+            main_hashes = self.main_hashes | ({table.sha256} if table.sha256 else set()),
+            required_hashes = frozenset(f.sha256 for f in expected if f.sha256),
+            expected_files = expected,
+            download_size_bytes = sum(max(0, int(f.size or 0)) for f in expected),
+        )
+
+
+def engram_table_files(siblings: Sequence) -> tuple[ExpectedFile, ...]:
+    """The repo's standalone Engram tables (``engram/*-engram-<PRECISION>.gguf_file``)."""
+    from core.inference.engram_tables import engram_table_precision
+    return tuple(
+        file
+        for sibling in siblings
+        if engram_table_precision(getattr(sibling, "rfilename", "") or "")
+        and (file := expected_file_from_sibling(sibling)) is not None
+        and file.size
+    )
+
+
+def _with_engram_tables(plan: GgufVariantPlan, tables: tuple[ExpectedFile, ...]) -> GgufVariantPlan:
+    if not tables:
+        return plan
+    from core.inference.engram_tables import bundled_table, engram_tables
+
+    known = engram_tables((t.path, t.size) for t in tables)
+    main = [f for f in plan.expected_files if f.path in plan.main_filenames]
+    bundled = bundled_table(((f.path, f.size) for f in main), known)
+    shard = next((f for f in main if bundled and f.path == bundled[0]), None)
+    return replace(
+        plan,
+        engram_tables = tables,
+        engram_shard = shard,
+        engram_precision = bundled[1].precision if shard is not None else None,
+    )
 
 
 def sibling_sha256(sibling) -> Optional[str]:
@@ -101,6 +166,11 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
     candidates = mmproj_siblings(siblings)
     if not candidates:
         return None
+    from utils.models.model_config import mmproj_order, mmproj_order_rank
+
+    order = mmproj_order(*(_gguf_rfilename(s) for s in siblings))
+    if order:
+        return max(candidates, key = lambda s: mmproj_order_rank(getattr(s, "rfilename"), order))
     return next(
         (s for s in candidates if extract_quant_label(getattr(s, "rfilename")).upper() == "F16"),
         candidates[0],
@@ -117,9 +187,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     gguf_names = [name for sibling in siblings if (name := _gguf_rfilename(sibling))]
 
     def _complete(name: str) -> bool:
-        # Match detect_mtp_file's launchability gate. A half-published family
-        # must step aside before preference ranking so a complete fallback can
-        # be selected instead of making the plan omit MTP entirely.
+        # Match detect_mtp_file launchability gate; a half-published family must step aside before ranking.
         return split_listing_is_complete(gguf_names, name)
 
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
@@ -137,10 +205,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     if candidates:
         return candidates[0]
 
-    # The remote planner cannot read an undownloaded GGUF header to prove
-    # ``qwen4exp`` the way the loader can. This family token is part of every
-    # main weight and every sidecar in the sole repo that needs the fallback,
-    # and boundary matching keeps future names such as Flash-Next2 out.
+    # Remote planner cannot read the GGUF header to prove qwen4exp; match the family token.
     flash_next = any(
         re.search(r"(?:^|[/_-])qwen3\.8-flash-next(?:$|[/_.-])", name, re.IGNORECASE)
         for sibling in siblings
@@ -231,14 +296,7 @@ def dflash_plan_files(
     *,
     max_bytes: int = 0,
 ) -> tuple[ExpectedFile, ...]:
-    """Every shard of the DFlash sidecar to plan alongside ``weight_name``, or ().
-
-    Whole shard family, not the ranked file alone: the loader refuses an incomplete split set, so planning shard 1 reports the variant complete and then loses DFlash. A half-published family is dropped for the same reason.
-
-    Bounded by ``max_bytes``, the variant's own weights: ``dflash-`` is a prefix real weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF) and a listing cannot read the ``general.architecture`` the loader rejects them by, but a drafter is a few layers of its target and cannot outweigh it. An unknown size stays out.
-
-    Both rules filter BEFORE the ranking, so an oversized or half-published name at the top steps aside for a usable sidecar behind it.
-    """
+    """Whole DFlash shard family; bounded by max_bytes, and an unknown size stays out."""
     from utils.models.drafters import dflash_repo_preference_key, split_listing_is_complete
 
     families: dict[str, list[ExpectedFile]] = {}
@@ -270,9 +328,97 @@ def dflash_plan_files(
     return eligible[best]
 
 
+def _audio_cpp_package_plans(siblings: Sequence) -> Optional[dict[str, GgufVariantPlan]]:
+    """Shared files of every mix are companions, so deleting one mix never counts them as its weights."""
+    try:
+        from core.inference.audio_cpp_models import package_variant_files
+    except Exception:
+        return None
+    by_name = {
+        name: sibling
+        for sibling in siblings
+        if isinstance(name := getattr(sibling, "rfilename", None), str)
+    }
+    packages = package_variant_files(by_name)
+    if not packages:
+        return None
+    shared = set.intersection(*(set(files) for files in packages.values()))
+    plans: dict[str, GgufVariantPlan] = {}
+    for key, files in packages.items():
+        expected = tuple(
+            file
+            for name in files
+            if (file := expected_file_from_sibling(by_name[name])) is not None
+        )
+        main_files = tuple(
+            file for file in expected if is_gguf_filename(file.path) and file.path not in shared
+        )
+        companions = tuple(file for file in expected if file.path in shared)
+        plans[key.lower()] = GgufVariantPlan(
+            main_filenames = frozenset(file.path for file in main_files),
+            target_filenames = tuple(file.path for file in expected),
+            main_hashes = frozenset(file.sha256 for file in main_files if file.sha256),
+            required_hashes = frozenset(file.sha256 for file in expected if file.sha256),
+            companion_hashes = frozenset(file.sha256 for file in companions if file.sha256),
+            mmproj_filenames = frozenset(),
+            mmproj_hashes = frozenset(),
+            expected_files = expected,
+            main_size_bytes = sum(max(0, int(file.size or 0)) for file in main_files),
+            download_size_bytes = sum(max(0, int(file.size or 0)) for file in expected),
+        )
+    return plans
+
+
+def _with_audio_cpp_extras(plan: GgufVariantPlan, siblings: Sequence) -> GgufVariantPlan:
+    """*plan* plus what audio.cpp reads beside its GGUF: the voice embeddings in ``<dir>/embeddings/``
+    (PocketTTS) and a companion model in the same repo (MioTTS's MioCodec). Otherwise unchanged."""
+    dirs = {name.rpartition("/")[0] for name in plan.main_filenames}
+    if len(dirs) != 1:
+        return plan
+    prefix = f"{next(iter(dirs))}/embeddings/".lstrip("/")
+    by_name = {
+        name: sibling
+        for sibling in siblings
+        if isinstance(name := getattr(sibling, "rfilename", None), str)
+    }
+    wanted = {
+        name
+        for name in by_name
+        if name.startswith(prefix) and name.lower().endswith(".safetensors")
+    }
+    try:
+        from core.inference.audio_cpp_models import companion_files
+    except Exception:
+        companion_files = None
+    if companion_files is not None:
+        wanted.update(companion_files(min(plan.main_filenames), by_name))
+    extras = tuple(
+        file
+        for name, sibling in by_name.items()
+        if name in wanted and (file := expected_file_from_sibling(sibling)) is not None
+    )
+    if not extras:
+        return plan
+    hashes = frozenset(file.sha256 for file in extras if file.sha256)
+    from dataclasses import replace
+
+    return replace(
+        plan,
+        target_filenames = (*plan.target_filenames, *(file.path for file in extras)),
+        required_hashes = plan.required_hashes | hashes,
+        companion_hashes = plan.companion_hashes | hashes,
+        expected_files = (*plan.expected_files, *extras),
+        download_size_bytes = plan.download_size_bytes
+        + sum(max(0, int(file.size or 0)) for file in extras),
+    )
+
+
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     # Family grouping keeps the family holding the lexicographically first name, which is the "._" one, so the plan fetched the sidecar and marked the variant complete, leaving header-based local discovery no main GGUF to load.
     siblings = drop_shadowed_appledouble_siblings(list(siblings))
+    package_plans = _audio_cpp_package_plans(siblings)
+    if package_plans is not None:
+        return package_plans
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
     all_mmproj_filenames = frozenset(
@@ -285,6 +431,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
     mtp_expected = mtp_plan_files(siblings)
     common_companions_expected = (companion_expected,) if companion_expected is not None else ()
+    engram_expected = engram_table_files(siblings)
 
     for sibling in siblings:
         name = _gguf_rfilename(sibling)
@@ -330,22 +477,23 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             *mtp_expected,
             *dflash_expected,
         )
-        plans[quant] = plan_from_expected_files(
-            quant,
-            expected_files,
-            all_mmproj_filenames = all_mmproj_filenames,
-            all_mmproj_hashes = all_mmproj_hashes,
+        plans[quant] = _with_engram_tables(
+            _with_audio_cpp_extras(
+                plan_from_expected_files(
+                    quant,
+                    expected_files,
+                    all_mmproj_filenames = all_mmproj_filenames,
+                    all_mmproj_hashes = all_mmproj_hashes,
+                ),
+                siblings,
+            ),
+            engram_expected,
         )
     return plans
 
 
 def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optional[GgufVariantPlan]:
-    """The plan for *variant*, accepting a bare quant when exactly one plan carries it.
-
-    A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``) qualifies every key, because the key is a pure function of the path and cannot know that the directory disambiguates nothing. Every stored pin and every explicit ``repo:Q4_K_M`` then missed the plan map and the worker exited with "No GGUF shards matching variant".
-
-    Resolved at LOOKUP rather than by aliasing the map, so the key stays a pure function of the path (the remote listing and a partial cache scan have to agree on it) and the advertised rows stay one per checkpoint. Only when the bare name is UNAMBIGUOUS: a repo that really does hold several checkpoints at one quant gets no fallback, because there the bare name genuinely does not name one of them.
-    """
+    """A bare quant matches at lookup only when exactly one plan carries it; map keys stay path-based."""
     wanted = (variant or "").strip().lower()
     if not wanted:
         return None
@@ -357,13 +505,52 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
     return plans[matches[0]] if len(matches) == 1 else None
 
 
+def precision_folder_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
+    """Each MLX precision folder (``6-bit/``) as a variant plan over every file in the folder."""
+    from hub.utils.snapshot_filters import precision_variant_subfolders
+
+    by_name = {getattr(s, "rfilename", ""): s for s in siblings}
+    return {
+        folder.lower(): _precision_folder_plan(
+            tuple(expected_file_from_sibling(by_name[name]) for name in sorted(names))
+        )
+        for folder, names in precision_variant_subfolders(by_name).items()
+    }
+
+
+def _precision_folder_plan(expected: tuple[ExpectedFile, ...]) -> GgufVariantPlan:
+    hashes = frozenset(file.sha256 for file in expected if file.sha256)
+    size = sum(max(0, int(file.size or 0)) for file in expected)
+    return GgufVariantPlan(
+        main_filenames = frozenset(file.path for file in expected),
+        target_filenames = tuple(file.path for file in expected),
+        main_hashes = hashes,
+        required_hashes = hashes,
+        companion_hashes = frozenset(),
+        mmproj_filenames = frozenset(),
+        mmproj_hashes = frozenset(),
+        expected_files = expected,
+        main_size_bytes = size,
+        download_size_bytes = size,
+    )
+
+
+def resolve_variant_plan(siblings: Sequence, variant: str) -> Optional[GgufVariantPlan]:
+    """A GGUF variant's plan, else the MLX precision folder of that name."""
+    siblings = list(siblings)
+    plan = plan_for_variant(build_gguf_variant_plans(siblings), variant)
+    if plan is not None:
+        return plan
+    return precision_folder_plans(siblings).get((variant or "").strip().lower())
+
+
 def _one_shard_family(main_files: Sequence[ExpectedFile]) -> tuple[ExpectedFile, ...]:
-    """Narrow a variant's weight files to the single shard family a load would read. A repo can ship one quant twice under names that share a variant key, the same BF16 as ``QwQ-32B-BF16-*`` and ``QwQ-32B.BF16-*``, or one Q6_K under both ``Q6_K/`` and ``<model>-Q6_K/``; fetching both doubles the download and leaves the variant permanently short of its expected bytes, because the loader only ever opens one. Keep the family holding the lexicographically first file, the shard the lister advertises and the loader opens. A genuinely split GGUF is one family, so all of its shards survive untouched."""
+    """Narrow a variant's weight files to the one shard set the loader opens (see ``group_gguf_variant_files``); a genuine split keeps every shard."""
     if len(main_files) < 2:
         return tuple(main_files)
-    families: dict[str, list[ExpectedFile]] = {}
+    families: dict[tuple[str, int], list[ExpectedFile]] = {}
     for file in main_files:
-        families.setdefault(gguf_variant_family(file.path), []).append(file)
+        families.setdefault(gguf_shard_set(file.path), []).append(file)
     if len(families) < 2:
         return tuple(main_files)
     chosen = min(families.values(), key = lambda group: min(file.path for file in group))
@@ -379,6 +566,16 @@ def plan_from_expected_files(
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
     all_main = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
+    from hub.utils.snapshot_filters import PRECISION_FOLDER_RE
+
+    folder = (variant or "").strip()
+    if (
+        not all_main
+        and expected
+        and PRECISION_FOLDER_RE.fullmatch(folder)
+        and all(file.path.lower().startswith(f"{folder.lower()}/") for file in expected)
+    ):
+        return _precision_folder_plan(expected)
     main_files = _one_shard_family(all_main)
     # A discarded family has to leave the plan ENTIRELY: target_filenames, required_hashes and download_size_bytes are what the worker fetches, so leaving the copy there downloaded it, then reclaim deleted it as not-ours (absent from main_hashes) and the job fetched it again.
     kept = {file.path for file in main_files}
@@ -386,7 +583,14 @@ def plan_from_expected_files(
     companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
     # companion_files also holds the MTP drafter, so keep an mmproj-only view for the manifest-resume fallback.
     mmproj_files = tuple(file for file in companion_files if is_mmproj_filename(file.path))
-    main_hashes = frozenset(file.sha256 for file in main_files if file.sha256)
+    from core.inference.engram_tables import engram_table_precision
+
+    # A standalone Engram table in a resumed --ple plan is one of its weights, as in with_engram.
+    main_hashes = frozenset(
+        file.sha256
+        for file in expected
+        if file.sha256 and (file in main_files or engram_table_precision(file.path))
+    )
     companion_hashes = frozenset(file.sha256 for file in companion_files if file.sha256)
     required_hashes = frozenset(file.sha256 for file in expected if file.sha256)
     main_size = sum(max(0, int(file.size or 0)) for file in main_files)

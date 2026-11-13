@@ -81,6 +81,26 @@ def test_a_single_exchange_converts_as_before():
     ]
 
 
+def test_role_names_are_matched_case_and_whitespace_insensitively():
+    dataset = Dataset.from_dict(
+        {
+            "messages": [
+                [
+                    {"role": "System", "content": "Be brief."},
+                    {"role": "User", "content": "Hello"},
+                    {"role": " ASSISTANT ", "content": "Hi there"},
+                ]
+            ]
+        }
+    )
+
+    converted = convert_chatml_to_alpaca(dataset, num_proc = 1)
+
+    assert converted.to_list() == [
+        {"instruction": "Hello", "input": "Be brief.", "output": "Hi there"}
+    ]
+
+
 def test_unpaired_empty_and_unknown_turns_are_skipped():
     dataset = Dataset.from_dict(
         {
@@ -186,5 +206,5 @@ def test_alpaca_format_trains_on_every_sharegpt_exchange():
     assert len(texts) == 6
     assert texts[5].endswith(
         "### Instruction:\nQ3-2\n\n### Input:\nSYS-2\n\nUser: Q1-2\nAssistant: A1-2\n"
-        "User: Q2-2\nAssistant: A2-2\n\n### Response:\nA3-2"
+        "User: Q2-2\nAssistant: A2-2\n\n### Response:\nA3-2</s>"
     )

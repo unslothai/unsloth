@@ -3,8 +3,8 @@
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
+import { autoscrollDelta, clipSpan } from "./autoscroll";
 import { flipShifts, insertionIndex, ownsDrag } from "./reorder";
-import { GripVerticalIcon, XIcon } from "lucide-react";
 import {
   type ReactElement,
   useCallback,
@@ -13,8 +13,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { Cancel01Icon, DragDropVerticalIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
-// Textarea that grows with its content, capped at maxHeight.
 export function AutoTextarea({
   value,
   onChange,
@@ -41,18 +42,16 @@ export function AutoTextarea({
     el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [maxHeight]);
 
-  // Layout effect: measuring after paint flashes the wrong height while typing.
+  // Layout effect: measuring after paint flashes the wrong height.
   useLayoutEffect(measure, [value, measure]);
 
-  // A width change rewraps the text without touching `value`, and overflowY may be "hidden", so
-  // the new lines would be clipped until the next keystroke.
+  // Width changes rewrap without a `value` change, so re-measure.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
 
     window.addEventListener("resize", measure);
 
-    // Catches the column resizing without the window doing so.
     let observer: ResizeObserver | undefined;
     if (typeof ResizeObserver !== "undefined") {
       let lastWidth = el.clientWidth;
@@ -80,7 +79,7 @@ export function AutoTextarea({
       placeholder={placeholder}
       rows={minRows}
       className={cn(
-        "w-full resize-none rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed",
+        "w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed",
         className,
       )}
     />
@@ -100,8 +99,18 @@ function nextUid(): string {
   return `i${uidSeq}`;
 }
 
-// Rows are keyed by a synthetic uid, not array index: index keys would swap the values under
-// the caret on reorder and break the animation.
+function findScrollParents(el: HTMLElement | null): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll") out.push(node);
+    node = node.parentElement;
+  }
+  return out;
+}
+
+// Keyed by synthetic uid, not index, or reorder swaps values under the caret.
 export function SortablePromptItems({
   items,
   onChange,
@@ -122,28 +131,24 @@ export function SortablePromptItems({
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const prevOffsets = useRef(new Map<string, number>());
   const uidsRef = useRef(uids);
-  // Only a reorder animates, or an auto-growing textarea would make the rows below it wobble as you type.
+  // Only a reorder animates, or a growing textarea makes rows below wobble.
   const reorderTick = useRef(0);
   const animatedTick = useRef(0);
 
-  // Resync when the count changes from outside (revert, switching lists, import). During render
-  // rather than in an effect, which would paint the new row once under a stale key first.
+  // Resync during render, not an effect, to avoid painting a stale key.
   let rowUids = uids;
   if (uids.length !== items.length) {
     rowUids = items.map((_, i) => uids[i] ?? nextUid());
     setUids(rowUids);
   }
 
-  // Layout offsets, not client rects: a rect moves with the scroll position, so scrolling the
-  // pane between reorders would bake that distance into every transform.
+  // Layout offsets, not client rects: rects shift with autoscroll.
   const measureOffsets = useCallback(() => {
     const offsets = new Map<string, number>();
     rowRefs.current.forEach((el, uid) => offsets.set(uid, el.offsetTop));
     return offsets;
   }, []);
 
-  // FLIP: snap each moved row back to where it was, then release, so the browser animates one
-  // transform per row rather than animating layout.
   useLayoutEffect(() => {
     if (reorderTick.current === animatedTick.current) return;
     animatedTick.current = reorderTick.current;
@@ -159,8 +164,6 @@ export function SortablePromptItems({
     });
   }, [uids, measureOffsets]);
 
-  // Mirrors, so the drag listener does not resubscribe on every keystroke. A layout effect, not
-  // an assignment during render: they only have to be current before the next pointer event.
   const itemsRef = useRef(items);
   const onChangeRef = useRef(onChange);
   useLayoutEffect(() => {
@@ -171,15 +174,12 @@ export function SortablePromptItems({
 
   const applyOrder = useCallback((from: number, to: number) => {
     if (from === to) return;
-    // FLIP's "first", read now rather than at whichever commit last recorded it: the preview
-    // toggle and a resize change row heights on their own, and animating from those stale
-    // offsets shifted the whole list.
+    // Read FLIP "first" now: row heights change independently of order.
     prevOffsets.current = measureOffsets();
     reorderTick.current += 1;
     const nextItems = move(itemsRef.current, from, to);
     const nextUids = move(uidsRef.current, from, to);
-    // Advance the mirrors here too. A drag reorders faster than a commit, and the next hit-test
-    // must not run against the pre-move order.
+    // Advance mirrors now: a drag reorders faster than a commit.
     itemsRef.current = nextItems;
     uidsRef.current = nextUids;
     onChangeRef.current(nextItems);
@@ -188,14 +188,12 @@ export function SortablePromptItems({
 
   const handlePointerDown = useCallback(
     (uid: string, e: React.PointerEvent<HTMLButtonElement>) => {
-      // Primary press only: a right or middle drag reports buttons 2 or 4, which the zero-buttons
-      // release check below cannot end.
+      // Primary press only: other buttons are not caught by the zero-buttons release check.
       if (e.button !== 0 || !e.isPrimary) return;
       // isPrimary is per pointer type, so a mouse press can pass it mid-touch-drag.
       if (pointerIdRef.current !== null) return;
       pointerIdRef.current = e.pointerId;
-      // No setPointerCapture: reordering moves the row's DOM node, and detaching releases capture,
-      // killing the drag one row in. The window listener below outlives the move instead.
+      // No setPointerCapture: moving the row's DOM node releases capture.
       e.preventDefault();
       pointerYRef.current = e.clientY;
       setDraggingUid(uid);
@@ -207,14 +205,15 @@ export function SortablePromptItems({
     if (!draggingUid) return;
     const container = containerRef.current;
     if (!container) return;
+    const scrollers = findScrollParents(container);
+    let raf = 0;
 
     const evaluate = () => {
       const order = uidsRef.current;
       const from = order.indexOf(draggingUid);
       if (from < 0) return;
 
-      // Layout offsets, not client rects: mid-FLIP a client rect still reports the pre-animation
-      // position. offsetTop/offsetHeight ignore transforms.
+      // offsetTop/offsetHeight ignore transforms; client rects are wrong mid-FLIP.
       const localY = pointerYRef.current - container.getBoundingClientRect().top;
       const boxes = order.map((uid) => {
         const el = rowRefs.current.get(uid);
@@ -224,20 +223,42 @@ export function SortablePromptItems({
       if (to !== from) applyOrder(from, to);
     };
 
+    // pointerdown suppresses native drag scrolling, so scroll here.
+    const tick = () => {
+      for (let i = 0; i < scrollers.length; i++) {
+        const scroller = scrollers[i];
+        const limit = scroller.scrollHeight - scroller.clientHeight;
+        if (limit <= 0) continue;
+        const span = clipSpan(scroller.getBoundingClientRect(), [
+          ...scrollers.slice(i + 1).map((el) => el.getBoundingClientRect()),
+          { top: 0, bottom: window.innerHeight },
+        ]);
+        if (!span) continue;
+        const delta = autoscrollDelta(pointerYRef.current, span.top, span.bottom);
+        if (delta === 0) continue;
+        const before = scroller.scrollTop;
+        const next = Math.max(0, Math.min(limit, before + delta));
+        if (next === before) continue;
+        scroller.scrollTop = next;
+        evaluate();
+        break;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
     const endDrag = () => {
       pointerIdRef.current = null;
       setDraggingUid(null);
     };
 
-    // Window listeners see every pointer; a second finger would otherwise reorder with its own
-    // clientY and its release would end this drag. An already-ended drag owns no pointer.
+    // Ignore other pointers, or a second finger reorders or ends this drag.
     const isDragPointer = (e: PointerEvent) =>
       ownsDrag(pointerIdRef.current, e.pointerId);
 
     const onMove = (e: PointerEvent) => {
       if (!isDragPointer(e)) return;
-      // Releasing outside the window delivers no pointerup, so treat the first move with no buttons
-      // held as the release we missed.
+      // Release outside the window sends no pointerup; treat a buttonless move as release.
       if (e.buttons === 0) {
         endDrag();
         return;
@@ -254,9 +275,9 @@ export function SortablePromptItems({
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onPointerEnd);
     window.addEventListener("pointercancel", onPointerEnd);
-    // Release entirely outside the page, where no move follows to catch it.
     window.addEventListener("blur", endDrag);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onPointerEnd);
       window.removeEventListener("pointercancel", onPointerEnd);
@@ -280,7 +301,6 @@ export function SortablePromptItems({
       ref={containerRef}
       className={cn(
         "relative flex flex-col gap-2",
-        // The drag tracks the pointer window-wide; without this it paints a text selection behind itself.
         draggingUid && "select-none",
       )}
     >
@@ -295,7 +315,7 @@ export function SortablePromptItems({
               else rowRefs.current.delete(uid);
             }}
             className={cn(
-              "flex items-start gap-2 rounded-lg",
+              "flex items-start gap-2 rounded-xl",
               isDragging && "relative z-10 bg-muted/60 ring-1 ring-border",
             )}
           >
@@ -313,11 +333,11 @@ export function SortablePromptItems({
                 }
               }}
               className={cn(
-                "mt-1.5 flex h-7 w-5 shrink-0 touch-none items-center justify-center rounded text-muted-foreground/30 hover:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring outline-none transition-colors",
+                "mt-1.5 flex h-7 w-5 shrink-0 touch-none items-center justify-center rounded-full text-muted-foreground/30 hover:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring outline-none transition-colors",
                 isDragging ? "cursor-grabbing text-muted-foreground" : "cursor-grab",
               )}
             >
-              <GripVerticalIcon className="size-4" />
+              <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={1.75} className="size-4" />
             </button>
             <span className="mt-2.5 w-5 shrink-0 text-right text-xs font-medium tabular-nums text-muted-foreground/60">
               {i + 1}.
@@ -344,10 +364,10 @@ export function SortablePromptItems({
                   setUids((prev) => prev.filter((_, idx) => idx !== i));
                 }}
                 disabled={items.length <= minItems}
-                className="mt-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                className="mt-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Remove"
               >
-                <XIcon className="size-3.5" />
+                <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
               </button>
             )}
           </div>

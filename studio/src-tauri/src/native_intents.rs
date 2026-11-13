@@ -5,9 +5,10 @@ use crate::native_backend_lease::{
 };
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
-    classify_native_document_folder, classify_native_model_path, is_audio_only_3gp,
-    is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_binary_office_template, is_compiled_fortran_mod, is_text_attachment_name,
-    reveal_target, ClassifiedPath, NativeArtifactKind,
+    classify_native_document_folder, classify_native_model_path, has_transport_stream_extension,
+    is_audio_only_3gp, is_binary_office_template, is_binary_property_list, is_binary_tracker_mod,
+    is_binary_vobsub, is_compiled_fortran_mod, is_mpeg_transport_stream, is_text_attachment_name,
+    office_template_mime_type, reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -16,7 +17,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, WebviewWindow};
+use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -98,14 +99,14 @@ pub struct NativeIntent {
 pub struct NativeDocumentFolderSelection {
     token: String,
     display_name: String,
+    expires_at_ms: u64,
 }
 
 #[derive(Default)]
 struct NativeIntakeInner {
     tokens: HashMap<String, NativePathEntry>,
     queued_intents: VecDeque<NativeIntent>,
-    // Paths Rust itself saw land on the window, so the renderer can only register
-    // what the user actually dropped. Expiry keeps a stale drop from being spent later.
+    // Paths Rust saw land on the window, so the renderer can only register what the user dropped.
     recent_drops: HashMap<PathBuf, u64>,
 }
 
@@ -114,10 +115,8 @@ pub struct NativeIntakeState {
     lease_secret: Vec<u8>,
 }
 
-/// Per process, and deliberately not persisted: a key on disk outlives every
-/// backend restart, and spent nonces are only remembered in memory, so a
-/// consumed lease could be replayed against a replacement inside the TTL. The
-/// adopted-survivor case is answered by `native_path_leases_usable` instead.
+/// Per process, deliberately not persisted: spent nonces live only in memory, so a persisted key
+/// would let a consumed lease replay against a restarted backend.
 pub fn new_native_intake_state() -> NativeIntakeState {
     NativeIntakeState {
         inner: Mutex::new(NativeIntakeInner::default()),
@@ -151,8 +150,7 @@ impl NativeIntakeState {
         self.register_classified_path(classified, source_kind, NativePathValidationPolicy::Model)
     }
 
-    /// Record what the OS dropped on the window. Called from the window event handler,
-    /// never from the renderer.
+    /// Called from the window event handler, never from the renderer.
     pub fn note_dropped_paths(&self, paths: &[PathBuf]) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
@@ -180,8 +178,7 @@ impl NativeIntakeState {
         source_kind: NativePathSourceKind,
     ) -> Result<NativeIntent, String> {
         let classified = classify_native_attachment_path(path.as_ref())?;
-        // The renderer hands us a path string, so a script in the webview could name any
-        // readable document. Only paths the user actually dropped can be registered.
+        // A webview script could name any readable path; only user-dropped paths may register.
         if !self.was_recently_dropped(&classified.canonical_path)? {
             return Err("Attachments must come from a file dropped on the window.".to_string());
         }
@@ -243,6 +240,7 @@ impl NativeIntakeState {
         Ok(NativeDocumentFolderSelection {
             token: lease.native_path_lease,
             display_name: lease.display_label,
+            expires_at_ms: lease.expires_at_ms,
         })
     }
 
@@ -403,8 +401,8 @@ fn prune_expired(inner: &mut NativeIntakeInner) {
         .retain(|intent| intent.path.expires_at_ms > now);
 }
 
-pub(crate) fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
-    if window.label() == "main" {
+pub(crate) fn ensure_main_window(webview: &tauri::Webview) -> Result<(), String> {
+    if webview.label() == "main" {
         Ok(())
     } else {
         Err("Native path commands are only available to the main window.".to_string())
@@ -413,50 +411,50 @@ pub(crate) fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 pub fn drain_native_intents(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Vec<NativeIntent>, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.drain_intents()
 }
 
 #[tauri::command]
 pub fn register_native_model_path(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
 ) -> Result<NativeIntent, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.register_model_path(path, NativePathSourceKind::Drop)
 }
 
 #[tauri::command]
 pub fn register_native_attachment_path(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
 ) -> Result<NativeIntent, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.register_attachment_path(path, NativePathSourceKind::Drop)
 }
 
 #[tauri::command]
 pub fn register_native_dataset_path(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
 ) -> Result<NativeIntent, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.register_dataset_path(path, NativePathSourceKind::Drop)
 }
 
 #[tauri::command]
 pub async fn pick_native_model(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Option<NativeIntent>, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -478,14 +476,27 @@ pub async fn pick_native_model(
 
 #[tauri::command]
 pub async fn pick_hugging_face_cache_dir(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
 ) -> Result<Option<String>, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
+    pick_local_folder(&app, "Choose model download location").await
+}
+
+#[tauri::command]
+pub async fn pick_native_model_folder(
+    webview: tauri::Webview,
+    app: AppHandle,
+) -> Result<Option<String>, String> {
+    ensure_main_window(&webview)?;
+    pick_local_folder(&app, "Choose a model folder").await
+}
+
+async fn pick_local_folder(app: &AppHandle, title: &str) -> Result<Option<String>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("Choose model download location")
+        .set_title(title)
         .pick_folder(move |path| {
             let _ = tx.send(path);
         });
@@ -506,15 +517,15 @@ pub async fn pick_hugging_face_cache_dir(
 
 #[tauri::command]
 pub async fn pick_native_document_folder(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Option<NativeDocumentFolderSelection>, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("Link a document folder")
+        .set_title("Choose a local folder")
         .pick_folder(move |path| {
             let _ = tx.send(path);
         });
@@ -529,12 +540,12 @@ pub async fn pick_native_document_folder(
 
 #[tauri::command]
 pub fn consume_native_path_token(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
     operation: NativePathOperation,
 ) -> Result<NativePathLeaseResponse, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     match operation {
         NativePathOperation::Reveal | NativePathOperation::Open => {
             Err("Reveal/Open do not use backend path grants.".to_string())
@@ -545,29 +556,34 @@ pub fn consume_native_path_token(
 
 #[tauri::command]
 pub fn register_artifact_path(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     kind: NativeArtifactKind,
     path: String,
 ) -> Result<NativePathRef, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.register_artifact(kind, path)
 }
 
 #[tauri::command]
 pub fn reveal_path_token(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<(), String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Reveal)?;
+    reveal_in_file_manager(&entry.canonical_path)
+}
+
+/// Show `path` in Finder or Explorer with the file selected; elsewhere, open its folder.
+pub(crate) fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        if entry.canonical_path.is_file() {
+        if path.is_file() {
             return std::process::Command::new("open")
                 .arg("-R")
-                .arg(&entry.canonical_path)
+                .arg(path)
                 .spawn()
                 .map(|_| ())
                 .map_err(|e| format!("Failed to reveal path: {e}"));
@@ -575,9 +591,9 @@ pub fn reveal_path_token(
     }
     #[cfg(target_os = "windows")]
     {
-        if entry.canonical_path.is_file() {
+        if path.is_file() {
             let mut select_arg = std::ffi::OsString::from("/select,");
-            select_arg.push(entry.canonical_path.as_os_str());
+            select_arg.push(path.as_os_str());
             return std::process::Command::new("explorer")
                 .arg(select_arg)
                 .spawn()
@@ -585,37 +601,31 @@ pub fn reveal_path_token(
                 .map_err(|e| format!("Failed to reveal path: {e}"));
         }
     }
-    let target = reveal_target(&entry.canonical_path);
+    let target = reveal_target(path);
     crate::process::open_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
 }
 
 #[tauri::command]
 pub fn open_path_token(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<(), String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Open)?;
     crate::process::open_detached(entry.canonical_path)
         .map_err(|e| format!("Failed to open path: {e}"))
 }
 
-// Covers the generic client-side limit (audio, 25 MB).
 const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 
-// Matches the clipboard reader, so a dropped source file and a pasted one
-// accept the same sizes.
+// Matches the clipboard reader.
 const MAX_NATIVE_TEXT_BYTES: u64 = 20 * 1024 * 1024;
-// OpenDocument archives use the composer's larger archive limit.
+// Documents use the composer's larger archive and PDF limit.
 const MAX_NATIVE_OPEN_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
-// Images stop lower: the composer throws over 20 MB without a toast and the
-// drain swallows it, so a larger read loses them silently.
+// The composer silently drops images over 20 MB, so a larger read would lose them.
 const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
-// The largest client-side video limit: a reference clip, whose 96 MiB cap
-// bounds the data URL, not the file. Mirrors rawLimitFor in reference-budget.ts
-// so we don't read and encode 96 MiB the caller is about to reject. Each caller
-// still enforces its own tighter limit.
+// Mirrors rawLimitFor in reference-budget.ts; each caller still enforces its own tighter limit.
 const MAX_NATIVE_VIDEO_BYTES: u64 = 75_497_280;
 
 #[derive(Serialize)]
@@ -632,10 +642,23 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
+        "txt" => Some("text/plain"),
+        "md" | "markdown" => Some("text/markdown"),
+        "html" | "htm" => Some("text/html"),
+        "pdf" => Some("application/pdf"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "xlsm" => Some("application/vnd.ms-excel.sheet.macroEnabled.12"),
+        "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "png" => Some("image/png"),
         "webp" => Some("image/webp"),
         "gif" => Some("image/gif"),
+        "heic" => Some("image/heic"),
+        "heif" => Some("image/heif"),
+        "avif" => Some("image/avif"),
+        "bmp" => Some("image/bmp"),
+        "tif" | "tiff" => Some("image/tiff"),
         "wav" => Some("audio/wav"),
         "mp3" | "mp2" => Some("audio/mpeg"),
         "m4a" => Some("audio/mp4"),
@@ -647,6 +670,9 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "caf" => Some("audio/x-caf"),
         "wma" => Some("audio/x-ms-wma"),
         "amr" => Some("audio/amr"),
+        "m4b" => Some("audio/mp4"),
+        "weba" => Some("audio/webm"),
+        "mka" => Some("audio/x-matroska"),
         "mp4" => Some("video/mp4"),
         "m4v" => Some("video/x-m4v"),
         "mov" => Some("video/quicktime"),
@@ -657,10 +683,12 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "wmv" => Some("video/x-ms-wmv"),
         "flv" => Some("video/x-flv"),
         "3gp" => Some("video/3gpp"),
+        "3g2" => Some("video/3gpp2"),
         "ogv" => Some("video/ogg"),
+        "m2ts" => Some("video/mp2t"),
         "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
         "odt" => Some("application/vnd.oasis.opendocument.text"),
-        // Stamped like native_clipboard.rs.
+        "rtf" => Some("application/rtf"),
         "json" | "jsonl" | "ndjson" | "jsonc" | "json5" | "geojson" | "har" | "avsc"
         | "tfstate" => Some("application/json"),
         "mdx" | "rmd" | "qmd" => Some("text/markdown"),
@@ -676,11 +704,20 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => {
             Some("text/plain")
         }
+        other if crate::native_path_policy::SERVER_DOCUMENT_ATTACHMENT_EXTS.contains(&other) => {
+            Some("application/octet-stream")
+        }
+        other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
+            Some("application/octet-stream")
+        }
         _ => None,
     }
 }
 
 fn attachment_payload_mime_type(path: &Path, raw: &[u8]) -> Option<&'static str> {
+    if is_mpeg_transport_stream(path, raw) {
+        return Some("video/mp2t");
+    }
     if path
         .extension()
         .and_then(|value| value.to_str())
@@ -692,8 +729,7 @@ fn attachment_payload_mime_type(path: &Path, raw: &[u8]) -> Option<&'static str>
     attachment_mime_type(path)
 }
 
-// Same shape as the clipboard reader: never traverse a link swapped in after
-// the path was validated, and never block the caller on a FIFO.
+// Never traverse a link swapped in after validation, and never block on a FIFO.
 fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
     let unavailable = || "Path is no longer available.".to_string();
     let metadata = fs::symlink_metadata(path).map_err(|_| unavailable())?;
@@ -709,8 +745,8 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
             .open(path)
             .map_err(|_| unavailable())
     }
-    // Windows analogue: open the reparse point itself, then refuse it. Literals
-    // because windows-sys is not built with Win32_Storage_FileSystem here.
+    // Open the reparse point itself, then refuse it. Literals: windows-sys is built without
+    // Win32_Storage_FileSystem here.
     #[cfg(windows)]
     {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -745,13 +781,26 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
             .is_some_and(|ext| {
                 crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&ext.as_str())
             });
-    let max_bytes = if is_text_attachment {
+    // A .ts or .mts path is provisionally video; the text cap is reapplied if it is TypeScript.
+    let max_bytes = if has_transport_stream_extension(path) {
+        MAX_NATIVE_VIDEO_BYTES
+    } else if crate::native_path_policy::has_office_template_extension(path) {
+        // May be a Word/PowerPoint template; the text cap is reapplied below once the bytes say text.
+        MAX_NATIVE_OPEN_DOCUMENT_BYTES
+    } else if is_text_attachment || mime_type.starts_with("text/") {
         MAX_NATIVE_TEXT_BYTES
     } else if mime_type.starts_with("image/") {
         MAX_NATIVE_IMAGE_BYTES
     } else if mime_type.starts_with("video/") {
         MAX_NATIVE_VIDEO_BYTES
-    } else if mime_type.starts_with("application/vnd.oasis.opendocument.") {
+    } else if crate::native_path_policy::is_server_document_attachment(path)
+        || mime_type.starts_with("application/vnd.oasis.opendocument.")
+        || mime_type.starts_with("application/vnd.openxmlformats-officedocument.")
+        || matches!(
+            mime_type,
+            "application/pdf" | "application/vnd.ms-excel.sheet.macroEnabled.12"
+        )
+    {
         MAX_NATIVE_OPEN_DOCUMENT_BYTES
     } else {
         MAX_NATIVE_ATTACHMENT_BYTES
@@ -763,8 +812,7 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     if !metadata.is_file() || metadata.len() > max_bytes {
         return Err("Attachment is unavailable or too large.".to_string());
     }
-    // path_for_operation validated a fingerprint against the path; bind the
-    // handle we are about to read to that same one, or a swap in between wins.
+    // Bind the handle to the fingerprint path_for_operation validated, or a swap in between wins.
     let modified_ms = metadata
         .modified()
         .ok()
@@ -798,16 +846,16 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
             "Compiled Fortran .mod modules are not supported as text attachments.".to_string(),
         );
     }
-    if is_binary_office_template(path, &bytes) {
-        return Err(
-            "Legacy Word and PowerPoint templates are not supported as text attachments."
-                .to_string(),
-        );
+    let mime_type = if is_binary_office_template(path, &bytes) {
+        office_template_mime_type(path)
+    } else {
+        attachment_payload_mime_type(path, &bytes)
+            .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?
+    };
+    if mime_type.starts_with("text/") && bytes.len() as u64 > MAX_NATIVE_TEXT_BYTES {
+        return Err("Attachment is unavailable or too large.".to_string());
     }
-    let mime_type = attachment_payload_mime_type(path, &bytes)
-        .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
-    // A 3GP path is provisionally video until its track handlers are available.
-    // Reapply the audio cap after an audio-only recording is identified.
+    // Reapply the audio cap once a provisional 3GP is identified as audio-only.
     if mime_type.starts_with("audio/") && bytes.len() as u64 > MAX_NATIVE_ATTACHMENT_BYTES {
         return Err("Attachment is unavailable or too large.".to_string());
     }
@@ -822,15 +870,14 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     })
 }
 
-// Async: a sync command would base64 up to 20 MiB on the main thread. Only the
-// token lookup stays here; State is not 'static and validation hits the disk.
+// Async: a sync command would base64 up to 20 MiB on the main thread.
 #[tauri::command]
 pub async fn read_native_attachment_file(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<NativeAttachmentFile, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let entry = state.entry_for_operation(&token, NativePathOperation::Attach)?;
     tokio::task::spawn_blocking(move || {
         validate_entry_path(&entry, NativePathOperation::Attach)?;
@@ -848,12 +895,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
+        // Parallel tests plus macOS's microsecond clock can collide on names; the counter keeps
+        // them unique.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         crate::native_path_policy::scratch_root().join(format!(
-            "unsloth-native-intents-{name}-{}-{nanos}",
+            "unsloth-native-intents-{name}-{}-{nanos}-{seq}",
             std::process::id()
         ))
     }
@@ -870,7 +921,6 @@ mod tests {
         (state, entry)
     }
 
-    // The reader maps its own mime types; an unmapped one refuses an accepted file.
     #[test]
     fn audio_read_round_trips_with_its_mime_type() {
         for (ext, mime) in [
@@ -923,6 +973,30 @@ mod tests {
         assert_eq!(payload.mime_type, "audio/3gpp");
         assert_eq!(BASE64.decode(payload.base64).unwrap(), raw);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn transport_stream_reads_as_video_past_the_text_cap_and_typescript_does_not() {
+        let stream = temp_path("camcorder").with_extension("MTS");
+        let mut raw = vec![0; MAX_NATIVE_TEXT_BYTES as usize + 192];
+        for offset in (4..raw.len()).step_by(192) {
+            raw[offset] = 0x47;
+        }
+        fs::write(&stream, &raw).unwrap();
+        let (_state, entry) = attachment_entry(&stream);
+        assert_eq!(
+            read_attachment_payload(&entry).unwrap().mime_type,
+            "video/mp2t"
+        );
+        let typescript = temp_path("module").with_extension("ts");
+        fs::write(&typescript, vec![b' '; MAX_NATIVE_TEXT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&typescript);
+        let Err(error) = read_attachment_payload(&entry) else {
+            panic!("expected oversized TypeScript read to fail");
+        };
+        assert!(error.contains("too large"), "unexpected error: {error}");
+        let _ = fs::remove_file(stream);
+        let _ = fs::remove_file(typescript);
     }
 
     #[test]
@@ -1023,10 +1097,12 @@ mod tests {
     }
 
     #[test]
-    fn open_document_read_round_trips_with_its_mime_type() {
+    fn composer_document_read_round_trips_with_its_mime_type() {
         for (ext, mime) in [
             ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
             ("odt", "application/vnd.oasis.opendocument.text"),
+            ("rtf", "application/rtf"),
+            ("Parquet", "application/octet-stream"),
         ] {
             let path = temp_path("open-document").with_extension(ext);
             fs::write(&path, b"open-document").unwrap();
@@ -1040,20 +1116,108 @@ mod tests {
     }
 
     #[test]
-    fn document_token_is_refused_by_the_image_reader() {
-        let path = temp_path("note").with_extension("pdf");
-        fs::write(&path, b"%PDF-1.4").unwrap();
+    fn server_documents_read_inline_under_the_document_cap() {
+        for ext in ["doc", "xls", "ppt", "msg", "mht", "epub"] {
+            let path = temp_path("server-document").with_extension(ext);
+            fs::write(&path, b"document bytes").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry).unwrap();
+            assert_eq!(payload.mime_type, "application/octet-stream", "{ext}");
+            let _ = fs::remove_file(path);
+        }
+        let path = temp_path("server-document-cap").with_extension("doc");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_NATIVE_ATTACHMENT_BYTES + 1)
+            .unwrap();
         let (_state, entry) = attachment_entry(&path);
-        let Err(err) = read_attachment_payload(&entry) else {
-            panic!("expected the read to be refused");
-        };
-        assert!(err.contains("Only chat attachments can be read inline"));
+        assert!(read_attachment_payload(&entry).is_ok());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn composer_documents_read_inline_with_adapter_mime_types() {
+        for (ext, mime) in [
+            ("txt", "text/plain"),
+            ("md", "text/markdown"),
+            ("markdown", "text/markdown"),
+            ("html", "text/html"),
+            ("htm", "text/html"),
+            ("pdf", "application/pdf"),
+            (
+                "docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            (
+                "xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            ("xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"),
+            (
+                "pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+        ] {
+            let path = temp_path("composer-document").with_extension(ext);
+            fs::write(&path, b"document bytes").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry).unwrap();
+            assert_eq!(payload.mime_type, mime, "{ext}");
+            assert_eq!(BASE64.decode(payload.base64).unwrap(), b"document bytes");
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn binary_office_templates_read_with_an_office_mime_and_graphviz_stays_text() {
+        let ole = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0];
+        for (ext, mime) in [
+            ("dot", "application/msword"),
+            ("pot", "application/vnd.ms-powerpoint"),
+        ] {
+            let path = temp_path("office-template").with_extension(ext);
+            fs::write(&path, ole).unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            assert_eq!(
+                read_attachment_payload(&entry).unwrap().mime_type,
+                mime,
+                "{ext}"
+            );
+            let _ = fs::remove_file(path);
+        }
+        let path = temp_path("graph").with_extension("dot");
+        fs::write(&path, b"digraph { a -> b }").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert_eq!(
+            read_attachment_payload(&entry).unwrap().mime_type,
+            "text/plain"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_large_template_uses_the_document_cap_and_large_text_keeps_the_text_cap() {
+        let size = MAX_NATIVE_TEXT_BYTES as usize + 1;
+        let path = temp_path("big-template").with_extension("dot");
+        let mut ole = vec![0u8; size];
+        ole[..8].copy_from_slice(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+        fs::write(&path, &ole).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert_eq!(
+            read_attachment_payload(&entry).unwrap().mime_type,
+            "application/msword"
+        );
+        fs::write(&path, vec![b'a'; size]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert!(read_attachment_payload(&entry).is_err());
         let _ = fs::remove_file(path);
     }
 
     #[test]
     fn text_attachments_read_inline_with_their_own_cap() {
         for (ext, mime) in [
+            ("txt", "text/plain"),
+            ("md", "text/markdown"),
             ("cs", "text/plain"),
             ("php", "text/plain"),
             ("js", "text/plain"),
@@ -1076,8 +1240,15 @@ mod tests {
     }
 
     #[test]
-    fn every_text_extension_the_drop_accepts_has_a_mime_type() {
-        for ext in crate::native_path_policy::TEXT_ATTACHMENT_EXTS {
+    fn every_text_video_and_tool_only_extension_the_drop_accepts_has_a_mime_type() {
+        use crate::native_path_policy::{
+            TEXT_ATTACHMENT_EXTS, TOOL_ONLY_ATTACHMENT_EXTS, VIDEO_ATTACHMENT_EXTS,
+        };
+        for ext in TEXT_ATTACHMENT_EXTS
+            .iter()
+            .chain(VIDEO_ATTACHMENT_EXTS)
+            .chain(TOOL_ONLY_ATTACHMENT_EXTS)
+        {
             let path = PathBuf::from(format!("sample.{ext}"));
             assert!(attachment_mime_type(&path).is_some(), "{ext}");
         }
@@ -1096,8 +1267,6 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
-    // Reading past the image cap would make the file disappear instead of
-    // reporting it.
     #[test]
     fn image_read_refuses_more_than_the_image_cap() {
         let path = temp_path("huge").with_extension("png");
@@ -1110,7 +1279,6 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
-    // Audio keeps the larger cap: the caps are per kind, not one shared ceiling.
     #[test]
     fn audio_read_allows_more_than_the_image_cap() {
         let path = temp_path("clip").with_extension("wav");
@@ -1144,6 +1312,24 @@ mod tests {
             payload.mime_type,
             "application/vnd.oasis.opendocument.spreadsheet"
         );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn composer_documents_use_the_document_cap() {
+        let path = temp_path("document-cap").with_extension("pdf");
+        fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert!(read_attachment_payload(&entry).is_ok());
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_NATIVE_OPEN_DOCUMENT_BYTES + 1)
+            .unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(error) = read_attachment_payload(&entry) else {
+            panic!("expected the document cap to reject the read");
+        };
+        assert!(error.contains("too large"));
         let _ = fs::remove_file(path);
     }
 
@@ -1209,7 +1395,7 @@ mod tests {
         let err = state
             .sign_grant(&intent.path.token, NativePathOperation::ValidateModel)
             .unwrap_err();
-        assert!(err.contains("changed"));
+        assert!(err.contains("changed"), "unexpected error: {err}");
         let _ = fs::remove_file(path);
     }
 
@@ -1219,7 +1405,6 @@ mod tests {
         let path = temp_path("attachment").with_extension("txt");
         fs::write(&path, b"notes").unwrap();
 
-        // A renderer naming a path we never saw dropped gets nothing.
         let err = state
             .register_attachment_path(&path, NativePathSourceKind::Drop)
             .unwrap_err();
@@ -1234,7 +1419,6 @@ mod tests {
             .path
             .allowed_operations
             .contains(&NativePathOperation::Attach));
-        // The fingerprint the frontend dedups on comes from the stat, not the label.
         assert_eq!(intent.path.size_bytes, Some(5));
         let _ = fs::remove_file(path);
     }

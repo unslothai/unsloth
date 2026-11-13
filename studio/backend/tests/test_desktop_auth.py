@@ -40,13 +40,18 @@ def seed_user(*, must_change_password = False):
     )
 
 
-def auth_client():
+def auth_route_module():
+    """A fresh copy of routes/auth.py, so its in-memory rate-limit buckets start empty."""
     route_path = Path(__file__).resolve().parents[1] / "routes" / "auth.py"
     spec = importlib.util.spec_from_file_location("_desktop_auth_route", route_path)
     auth_route = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(auth_route)
+    return auth_route
 
+
+def auth_client(auth_route = None):
+    auth_route = auth_route or auth_route_module()
     app = FastAPI()
     app.include_router(auth_route.router, prefix = "/api/auth")
     return TestClient(app)
@@ -137,7 +142,6 @@ def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch
 
 
 def test_bootstrap_password_file_ends_with_a_newline():
-    # Otherwise `cat` welds the passphrase onto the shell prompt.
     storage.ensure_default_admin()
 
     # Bytes: read_text would decode CRLF back to "\n" and hide a CR.
@@ -156,7 +160,6 @@ def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
 
 
 def test_upgrade_normalises_the_bootstrap_file():
-    # Upgrade path: the admin row exists, so generate_bootstrap_password() never runs.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
@@ -169,7 +172,7 @@ def test_upgrade_normalises_the_bootstrap_file():
 @pytest.mark.parametrize(
     "other",
     [
-        b"legacy-bootstrap-secret\r\n",  # only an unreleased build wrote this
+        b"legacy-bootstrap-secret\r\n",
         b"legacy-bootstrap-secret\r",
         b"legacy-bootstrap-secret   ",
     ],
@@ -222,7 +225,6 @@ def test_migration_failure_does_not_break_startup(monkeypatch):
 
 
 def test_normalising_never_recreates_a_cleared_bootstrap_file(monkeypatch):
-    # A rename would resurrect revoked plaintext if the password changed after the read.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
@@ -254,7 +256,6 @@ def test_normalising_does_not_overwrite_a_rotated_bootstrap_file(monkeypatch):
 
     storage._read_persisted_bootstrap_password()
 
-    # The append may add a second newline; the rotated credential must survive.
     raw = storage._BOOTSTRAP_PW_PATH.read_bytes()
     assert raw.strip() == b"brand-new-secret"
     storage._bootstrap_password = None
@@ -262,7 +263,6 @@ def test_normalising_does_not_overwrite_a_rotated_bootstrap_file(monkeypatch):
 
 
 def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
-    # An in-place rewrite is not atomic, so only the exact unterminated shape is touched.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"  legacy-bootstrap-secret  ")
 
@@ -273,7 +273,6 @@ def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
 
 
 def test_normalising_opens_the_file_in_binary_mode(monkeypatch):
-    # Without O_BINARY, Windows text mode turns the written LF back into CRLF.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
     monkeypatch.setattr(storage.os, "O_BINARY", 0x8000, raising = False)
@@ -293,8 +292,8 @@ def test_normalising_opens_the_file_in_binary_mode(monkeypatch):
 
 
 def test_clearing_by_truncation_mid_normalisation_is_not_undone(monkeypatch):
-    # clear_bootstrap_password() truncates through its own descriptor when the unlink
-    # fails (Windows, while ours is open); the append must not restore the plaintext.
+    # clear_bootstrap_password() truncates via its own fd when unlink fails (Windows);
+    # the append must not restore the plaintext.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
@@ -310,7 +309,6 @@ def test_clearing_by_truncation_mid_normalisation_is_not_undone(monkeypatch):
 
     storage._read_persisted_bootstrap_password()
 
-    # A lone newline over a cleared file still reads back as no password.
     assert storage._BOOTSTRAP_PW_PATH.read_bytes().strip() == b""
     storage._bootstrap_password = None
     assert storage._load_bootstrap_password() is None
@@ -329,7 +327,6 @@ def test_normalising_works_without_fchmod(monkeypatch):
 
 
 def test_persisting_the_bootstrap_password_is_atomic(monkeypatch, tmp_path):
-    # A partial write would destroy the only plaintext recovery credential.
     storage._persist_bootstrap_password("original-secret")
 
     def boom(src, dst):
@@ -468,7 +465,6 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
         try:
             return storage.consume_refresh_token(raw)
         except sqlite3.OperationalError:
-            # "database is locked" under contention; treat as losing the race.
             return None
 
     with ThreadPoolExecutor(max_workers = workers) as pool:
@@ -532,14 +528,12 @@ def test_desktop_sets_the_remote_password_without_the_seeded_one():
     assert response.json()["must_change_password"] is False
     assert is_desktop_token(response.json()["access_token"])
     assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME) is False
-    # Desktop auto-auth survives the change the desktop itself made.
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
     remote_login = client.post(
         "/api/auth/login",
         json = {"username": storage.DEFAULT_ADMIN_USERNAME, "password": "remote-password-123"},
     )
     assert remote_login.status_code == 200
-    # The seeded credential is gone, so change-password owns every later change.
     repeat = client.post(
         "/api/auth/desktop-initial-password",
         headers = {"Authorization": f"Bearer {response.json()['access_token']}"},
@@ -559,7 +553,6 @@ def test_remote_password_refuses_credentials_that_are_not_the_desktop_app():
             headers = {"Authorization": f"Bearer {bearer}"},
             json = {"new_password": "remote-password-123"},
         )
-        # Distinguishable from the pre-existing "Password change required" refusal.
         assert response.status_code == 403
         assert response.json()["detail"] == "This action requires the Unsloth desktop app."
     assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME) is True
@@ -598,8 +591,6 @@ def test_change_password_revokes_the_desktop_secret_only_for_browsers(desktop):
 
 
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
-    # _inject_local_providers mints an internal sk-unsloth-* API key (not a
-    # forwarded JWT) that validates as admin whether the session was desktop or web.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = True)
@@ -622,7 +613,6 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
 
 
 def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_model):
-    # Mirror of the desktop variant: API-key issuance is identical for web/desktop tokens.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = False)
@@ -642,8 +632,7 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
 
 
 def test_rotated_credential_job_start_is_401_not_500(loaded_local_model):
-    # A reset-password landing mid-request makes the workflow-key mint refuse.
-    # That must reach the client as a revoked credential, not an unhandled error.
+    # A reset mid-request makes the mint refuse; that must surface as a revoked credential.
     from fastapi import HTTPException
 
     seed_user()
@@ -719,7 +708,6 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     result = CliRunner().invoke(studio_cli.studio_app, ["reset-password"])
 
     assert result.exit_code == 0, result.output
-    # The DB survives on purpose: a running server keeps serving from its admin row.
     assert (auth_dir / "auth.db").exists()
     assert not (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).exists()
     assert not (auth_dir / studio_cli.DESKTOP_SECRET_FILE).exists()
@@ -804,29 +792,49 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     settings_module.router = APIRouter()
     llama_module = ModuleType("routes.llama")
     llama_module.router = APIRouter()
+    engines_module = ModuleType("routes.engines")
+    engines_module.router = APIRouter()
     llama_compat_module = ModuleType("routes.llama_compat")
     llama_compat_module.router = APIRouter()
-    # main.py imports this name alongside the router and calls it from serve_frontend.
     llama_compat_module.is_engine_probe_path = lambda full_path: False
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
+    scheduled_tasks_module = ModuleType("routes.scheduled_tasks")
+    scheduled_tasks_module.router = APIRouter()
     preview_module = ModuleType("routes.preview")
     preview_module.router = APIRouter()
     whisper_module = ModuleType("routes.whisper")
     whisper_module.router = APIRouter()
+    npu_module = ModuleType("routes.npu")
+    npu_module.router = APIRouter()
+    video_restyle_module = ModuleType("routes.video_restyle")
+    video_restyle_module.router = APIRouter()
     profile_stats_module = ModuleType("routes.profile_stats")
     profile_stats_module.router = APIRouter()
     accounts_module = ModuleType("routes.accounts")
     accounts_module.router = APIRouter()
+    library_module = ModuleType("routes.library")
+    library_module.router = APIRouter()
+    sandbox_capability_module = ModuleType("routes.sandbox_capability")
+    sandbox_capability_module.router = APIRouter()
+    systemone_module = ModuleType("routes.systemone")
+    systemone_module.router = APIRouter()
+    from fastmcp import FastMCP
 
-    # Derived from main.py's import block, not hand-listed: the old hardcoded dict went stale
-    # twice (#8511's openai_codex_auth_router, #8648's youtube_router), each time killing every
-    # test in this file with an ImportError.
+    systemone_module.MCP_PATH = "/mcp/decisions"
+    systemone_module.RequireStudioAuth = lambda app: app
+    systemone_module.decisions_mcp = FastMCP("Unsloth Decisions")
+    browser_module = ModuleType("routes.browser")
+    browser_module.router = APIRouter()
+    browser_module.BROWSER_FRAME_PATH = "/api/browser/frame"
+    browser_module.BROWSER_PRINT_PATH = "/api/browser/print"
+    browser_module.EXPOSED_HEADERS = ()
+
+    # Derived from main.py's import block: hand-listed stubs went stale and broke this file.
     for name in _routers_main_imports():
         setattr(
             routes_module,
             name,
-            # The health payload reads the real settings router.
             settings_module.router if name == "settings_router" else APIRouter(),
         )
     routes_module.settings = settings_module
@@ -835,17 +843,23 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes", routes_module)
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
+    monkeypatch.setitem(sys.modules, "routes.engines", engines_module)
     monkeypatch.setitem(sys.modules, "routes.llama_compat", llama_compat_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
+    monkeypatch.setitem(sys.modules, "routes.scheduled_tasks", scheduled_tasks_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
     monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
+    monkeypatch.setitem(sys.modules, "routes.npu", npu_module)
+    monkeypatch.setitem(sys.modules, "routes.video_restyle", video_restyle_module)
     monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
     monkeypatch.setitem(sys.modules, "routes.accounts", accounts_module)
+    monkeypatch.setitem(sys.modules, "routes.library", library_module)
+    monkeypatch.setitem(sys.modules, "routes.sandbox_capability", sandbox_capability_module)
+    monkeypatch.setitem(sys.modules, "routes.systemone", systemone_module)
+    monkeypatch.setitem(sys.modules, "routes.browser", browser_module)
 
     import studio.backend.main as backend_main
 
-    # DEVICE alongside the two it is set with, since /api/health waits on
-    # ensure_hardware_detected(). CPU + "mlx_unavailable" is an MLX-less Apple Silicon.
     monkeypatch.setattr(backend_main._hw_module, "DEVICE", backend_main._hw_module.DeviceType.CPU)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
@@ -855,7 +869,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     _settled = threading.Event()
     _settled.set()
     monkeypatch.setattr(backend_main._hw_module, "DETECTION_COMPLETE", _settled)
-    # On a Mac the MLX self-heal overturns "mlx_unavailable" and health_check() drops the snapshot.
+    # On a Mac the MLX self-heal would overturn "mlx_unavailable" and drop the snapshot.
     monkeypatch.setattr(backend_main._hw_module, "is_apple_silicon", lambda: False)
 
     seed_user()
@@ -928,7 +942,6 @@ if result.exit_code != 0:
         capture_output = True,
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    # Strip like the src-tauri readers do.
     secret = (auth_dir / ".desktop_secret").read_text().strip()
     assert secret.startswith("desktop-")
 
@@ -1080,10 +1093,7 @@ def test_desktop_auth_provision_has_bounded_timeout():
 
 
 def test_the_router_stub_covers_every_router_main_imports():
-    """The stub is derived from main.py, so it cannot go stale as it did for #8511's
-    ``openai_codex_auth_router`` and #8648's ``youtube_router``. What can still break is the
-    derivation: a reshaped import block would silently yield a short list. So pin it against the
-    real package's ``__all__``, read textually for the same no-import reason."""
+    """Router stub is parsed from main.py, so a reshaped import shrinks it; check __all__."""
     import re
     from pathlib import Path
 
@@ -1102,7 +1112,6 @@ def test_the_router_stub_covers_every_router_main_imports():
         f"the app itself would fail to start"
     )
 
-    # Same drift for submodule imports, which need a sys.modules entry and are still hand-listed.
     import inspect
 
     main_src = (backend / "main.py").read_text(encoding = "utf-8")
@@ -1116,3 +1125,286 @@ def test_the_router_stub_covers_every_router_main_imports():
         f"main.py imports from routes.{{{','.join(unstubbed)}}}, which this file never "
         f"registers in sys.modules, so the real package would be imported instead"
     )
+
+
+def test_desktop_login_validates_off_the_event_loop():
+    """Keep desktop_login sync so its 100k PBKDF2 runs in the threadpool, not the uvicorn event loop."""
+    auth_route = auth_route_module()
+
+    assert not asyncio.iscoroutinefunction(auth_route.desktop_login)
+
+
+# Posted on purpose by the shipped shell (src-tauri preflight/backend.rs, desktop_backend_owner.rs).
+_SHIPPED_PROBE_SECRETS = (
+    "desktop-preflight-invalid-secret",
+    "desktop-owner-adoption-invalid-secret",
+)
+
+
+def well_formed_wrong_secret(body = "A"):
+    """A candidate shaped exactly like a real secret, and not one. What a KDF flood would send."""
+    return storage.DESKTOP_SECRET_PREFIX + body * 64
+
+
+def test_desktop_login_throttles_unauthenticated_attempts():
+    """The route takes no credential and pays the KDF before it can reject the secret."""
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    secret = well_formed_wrong_secret()
+    codes = [
+        client.post("/api/auth/desktop-login", json = {"secret": secret}).status_code
+        for _ in range(auth_route._LOGIN_MAX_FAILS + 3)
+    ]
+
+    assert codes[0] == 401
+    assert 429 in codes
+    blocked = client.post("/api/auth/desktop-login", json = {"secret": secret})
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"]
+
+
+def test_desktop_login_still_admits_the_real_shell_after_a_miss():
+    """A stale secret from a restarted shell must not lock the retry out."""
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    stale = storage.create_desktop_secret()
+    raw = storage.create_desktop_secret()  # rotation makes `stale` a real, well formed miss
+    assert client.post("/api/auth/desktop-login", json = {"secret": stale}).status_code == 401
+    admitted = client.post("/api/auth/desktop-login", json = {"secret": raw})
+    assert admitted.status_code == 200
+    assert admitted.json()["access_token"]
+    assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+
+@pytest.mark.parametrize("probe", _SHIPPED_PROBE_SECRETS)
+def test_the_shipped_desktop_probes_never_consume_the_login_budget(probe):
+    """Desktop probes must not use the login budget, or the shell's own secret exchange gets a 429."""
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    codes = [
+        client.post("/api/auth/desktop-login", json = {"secret": probe}).status_code
+        for _ in range(auth_route._LOGIN_MAX_FAILS * 3)
+    ]
+
+    assert codes == [401] * len(codes)
+    assert not auth_route._LOGIN_BUCKETS
+    assert not auth_route._LOGIN_IP_BUCKETS
+    raw = storage.create_desktop_secret()
+    assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+
+def test_the_shipped_desktop_probe_is_answered_during_a_real_lockout():
+    """Shape checks come before the lockout bucket, so a real lockout answers 401, not 429."""
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+    guess = well_formed_wrong_secret()
+
+    for _ in range(auth_route._LOGIN_MAX_FAILS):
+        client.post("/api/auth/desktop-login", json = {"secret": guess})
+    assert client.post("/api/auth/desktop-login", json = {"secret": guess}).status_code == 429
+
+    for probe in _SHIPPED_PROBE_SECRETS:
+        assert client.post("/api/auth/desktop-login", json = {"secret": probe}).status_code == 401
+    assert client.post("/api/auth/desktop-login", json = {"secret": guess}).status_code == 429
+
+
+def test_a_malformed_desktop_secret_never_reaches_the_kdf(monkeypatch):
+    """Malformed secrets fail before the KDF, so unauthenticated callers cannot burn KDF time."""
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    def no_kdf(raw_secret):
+        raise AssertionError(f"PBKDF2 ran for a malformed candidate: {raw_secret!r}")
+
+    monkeypatch.setattr(storage, "_pbkdf2_desktop_secret", no_kdf)
+
+    malformed = [
+        *_SHIPPED_PROBE_SECRETS,
+        "",
+        "desktop-",
+        "not-a-desktop-secret",
+        storage.DESKTOP_SECRET_PREFIX + "A" * 63,
+        storage.DESKTOP_SECRET_PREFIX + "A" * 65,
+        storage.DESKTOP_SECRET_PREFIX + "A" * 63 + "\n",
+        storage.DESKTOP_SECRET_PREFIX + "A" * 63 + "=",
+        storage.DESKTOP_SECRET_PREFIX + "é" * 64,
+    ]
+    for secret in malformed:
+        response = client.post("/api/auth/desktop-login", json = {"secret": secret})
+        assert response.status_code == 401, secret
+        assert response.json()["detail"] == "Desktop authentication failed", secret
+
+
+def test_a_well_formed_guess_still_pays_the_kdf_and_still_throttles(monkeypatch):
+    """The DoS fix is preserved: a shaped guess costs a KDF, and stops costing one once blocked."""
+    seed_user(must_change_password = False)
+    storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    real_kdf = storage._pbkdf2_desktop_secret
+    calls = []
+
+    def counting_kdf(raw_secret):
+        calls.append(raw_secret)
+        return real_kdf(raw_secret)
+
+    monkeypatch.setattr(storage, "_pbkdf2_desktop_secret", counting_kdf)
+
+    guess = well_formed_wrong_secret()
+    codes = [
+        client.post("/api/auth/desktop-login", json = {"secret": guess}).status_code
+        for _ in range(auth_route._LOGIN_MAX_FAILS + 3)
+    ]
+
+    assert codes[: auth_route._LOGIN_MAX_FAILS] == [401] * auth_route._LOGIN_MAX_FAILS
+    assert codes[auth_route._LOGIN_MAX_FAILS :] == [429, 429, 429]
+    assert len(calls) == auth_route._LOGIN_MAX_FAILS
+
+
+def test_a_minute_of_watchdog_ticks_does_not_lock_the_shell_out():
+    """Watchdog probes must not lock the shell out before its preflight sends the real secret."""
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    for _ in range(8):  # two windows' worth of watchdog ticks, no success in between
+        probe = _SHIPPED_PROBE_SECRETS[1]
+        assert client.post("/api/auth/desktop-login", json = {"secret": probe}).status_code == 401
+
+    admitted = client.post("/api/auth/desktop-login", json = {"secret": raw})
+    assert admitted.status_code == 200, "the shell's own valid secret was throttled out"
+    assert admitted.json()["access_token"]
+
+
+def test_desktop_login_failures_do_not_lock_everyone_out_of_login():
+    """Desktop failures must not fill the unknown-user bucket that /login reads; tunnels share one peer."""
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+    good = {"username": storage.DEFAULT_ADMIN_USERNAME, "password": "human-password-123"}
+
+    assert client.post("/api/auth/login", json = good).status_code == 200
+
+    guess = well_formed_wrong_secret()
+    for _ in range(auth_route._LOGIN_MAX_FAILS + 1):
+        client.post("/api/auth/desktop-login", json = {"secret": guess})
+
+    assert (
+        client.post("/api/auth/login", json = good).status_code == 200
+    ), "unauthenticated desktop-login attempts rejected a correct password"
+    assert client.post("/api/auth/desktop-login", json = {"secret": guess}).status_code == 429
+    assert auth_route._desktop_login_key(None)[1] != auth_route._unknown_user_key(None)[1]
+
+
+def test_a_password_spray_does_not_lock_the_desktop_shell_out():
+    """A password spray must not lock the shell out: tunnel visitors share its loopback address."""
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+    for i in range(auth_route._LOGIN_IP_MAX_FAILS):
+        client.post("/api/auth/login", json = {"username": f"sprayed{i}", "password": "wrong-pw-1"})
+
+    admitted = client.post("/api/auth/desktop-login", json = {"secret": raw})
+    assert admitted.status_code == 200, "a password spray locked the shell out of its own backend"
+    assert admitted.json()["access_token"]
+    blocked = client.post(
+        "/api/auth/login", json = {"username": "sprayed0", "password": "wrong-pw-1"}
+    )
+    assert blocked.status_code == 429
+
+
+def test_a_desktop_exchange_does_not_reset_the_shared_password_throttle():
+    """Desktop exchange must not reset /login's per-IP throttle; NAT users get fresh guesses."""
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    sprayed = auth_route._LOGIN_IP_MAX_FAILS - 1
+    for i in range(sprayed):
+        client.post("/api/auth/login", json = {"username": f"sprayed{i}", "password": "wrong"})
+    ip = next(iter(auth_route._LOGIN_IP_BUCKETS))
+    assert len(auth_route._LOGIN_IP_BUCKETS[ip]) == sprayed
+
+    assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+    assert (
+        len(auth_route._LOGIN_IP_BUCKETS.get(ip, [])) == sprayed
+    ), "a desktop exchange cleared /login's per-IP aggregate"
+    assert auth_route._desktop_login_key(None)[1] not in {k[1] for k in auth_route._LOGIN_BUCKETS}
+    assert auth_route._desktop_login_key(None)[0] != ip
+    assert auth_route._desktop_login_key(None)[0] not in auth_route._LOGIN_IP_BUCKETS
+
+
+def test_a_desktop_success_clears_its_own_ip_aggregate():
+    """A success clears only this route's own IP aggregate, so cycles cannot lock a valid secret out."""
+    seed_user(must_change_password = False)
+    auth_route = auth_route_module()
+    client = auth_client(auth_route)
+
+    for _ in range(auth_route._LOGIN_IP_MAX_FAILS):
+        stale = storage.create_desktop_secret()
+        raw = storage.create_desktop_secret()
+        assert client.post("/api/auth/desktop-login", json = {"secret": stale}).status_code == 401
+        assert client.post("/api/auth/desktop-login", json = {"secret": raw}).status_code == 200
+
+    assert auth_route._desktop_login_key(None)[0] not in auth_route._LOGIN_IP_BUCKETS
+
+
+def test_multi_user_desktop_exchange_grants_no_session_and_clears_no_aggregate(monkeypatch):
+    """The sharpest case: multi-user returns login_required, so nothing was authenticated at all."""
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    auth_route = auth_route_module()
+    monkeypatch.setattr(auth_route.policy, "installation_is_multi_user", lambda: True)
+    import auth.policy as auth_policy
+
+    monkeypatch.setattr(auth_policy, "installation_is_multi_user", lambda: True)
+    client = auth_client(auth_route)
+
+    sprayed = auth_route._LOGIN_IP_MAX_FAILS - 1
+    for i in range(sprayed):
+        client.post("/api/auth/login", json = {"username": f"sprayed{i}", "password": "wrong"})
+    ip = next(iter(auth_route._LOGIN_IP_BUCKETS))
+
+    response = client.post("/api/auth/desktop-login", json = {"secret": raw})
+    assert response.json() == {"login_required": True, "login_mode": "multi"}
+    assert len(auth_route._LOGIN_IP_BUCKETS.get(ip, [])) == sprayed
+
+
+def test_storage_rejects_a_malformed_desktop_secret_before_the_kdf(monkeypatch):
+    """Shape gate lives in storage so every validator caller gets it, not only the desktop route."""
+    seed_user(must_change_password = False)
+    storage.create_desktop_secret()
+
+    def no_kdf(raw_secret):
+        raise AssertionError(f"PBKDF2 ran for a malformed candidate: {raw_secret!r}")
+
+    monkeypatch.setattr(storage, "_pbkdf2_desktop_secret", no_kdf)
+
+    for probe in _SHIPPED_PROBE_SECRETS:
+        assert storage.validate_desktop_secret_with_credential(probe) is None
+        assert storage.validate_desktop_secret(probe) is None
+
+
+def test_every_minted_desktop_secret_is_well_formed():
+    """The gate is keyed to the one shape the minters produce, so it has to track them."""
+    seed_user(must_change_password = False)
+    for _ in range(16):
+        assert storage.desktop_secret_is_well_formed(storage.create_desktop_secret())
+    for probe in _SHIPPED_PROBE_SECRETS:
+        assert not storage.desktop_secret_is_well_formed(probe)

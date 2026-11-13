@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The macOS tab-capability smoke has to be able to fail.
-
-tests/studio/playwright_mac_tab_capabilities.py needs a live Unsloth and a browser, so
-CI is the only place it runs and nothing else checks that a red case comes out red.
-Twice now it has gone green having observed nothing: first by authenticating with
-nobody, then by computing `seen_spinner` and only logging it, so a backend that
-settled before the browser arrived skipped every assertion.
-
-This drives the same functions with the page and the backend stubbed, over the exact
-shapes that used to pass: the warm window already shut, the row absent, the row greyed
-out. It is a plain pytest file so it runs in the Backend CI walk over tests/, where
-neither playwright nor an Unsloth is installed.
-"""
+"""Checks the macOS tab-capability smoke can fail: it twice passed green while observing nothing."""
 
 from __future__ import annotations
 
@@ -30,14 +18,14 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tests/studio/playwright_mac_tab_capabilities.py"
 APPEARANCE_STORE = REPO / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
+APP_SIDEBAR = REPO / "studio/frontend/src/components/app-sidebar.tsx"
 
 BASE = "http://127.0.0.1:18893"
-# A settled reply: no hardware_detecting at all.
 SETTLED = {"status": "healthy", "service": "Unsloth UI Backend", "device_type": "mac"}
 UNMEASURED = {"status": "healthy", "service": "Unsloth UI Backend", "hardware_detecting": True}
 
-# Spelled out rather than read off the script, so these cases run unchanged against a build of it that does not define
-# the constant yet. test_inline_row_ids_match_the_frontends_default_pinned_set is what keeps the spelling honest.
+# Spelled out so these cases run against a build without the constant; the drift test
+# keeps the spelling honest.
 TRAIN = "train"
 
 GREYED = {"disabled": True, "spinner": False}
@@ -46,11 +34,8 @@ SETTLED_ENABLED = {"disabled": False, "spinner": False}
 
 
 def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Import the script with playwright and its env contract stubbed out.
-
-    Fresh per test: the script keeps its failures and its row sightings in module
-    globals, so a shared instance would carry one test's verdict into the next.
-    """
+    """Load fresh per test: failures and row sightings live in module globals and would leak across
+    tests."""
     if "playwright.sync_api" not in sys.modules:
         pkg = types.ModuleType("playwright")
         api = types.ModuleType("playwright.sync_api")
@@ -61,8 +46,7 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BASE_URL", BASE)
     monkeypatch.setenv("STUDIO_OLD_PW", "stub-password")
     monkeypatch.setenv("PW_ART_DIR", str(tmp_path / "art"))
-    # The real default gives the row 15s to settle; the stub answers instantly, so the only thing the wait would buy
-    # here is 15s of a red test.
+    # The stub answers instantly; the real 15s settle would only delay a red test.
     monkeypatch.setenv("STUDIO_MAC_FORCED_PENDING_S", "0.2")
     spec = importlib.util.spec_from_file_location("mac_tab_capabilities_under_test", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
@@ -71,9 +55,17 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 class FakeLocator:
-    def __init__(self, present: bool) -> None:
+    def __init__(
+        self,
+        present: bool,
+        visible: bool = True,
+    ) -> None:
         self._present = present
+        self._visible = present and visible
         self.clicked = False
+
+    def is_visible(self) -> bool:
+        return self._visible
 
     def count(self) -> int:
         return 1 if self._present else 0
@@ -90,21 +82,24 @@ class FakeLocator:
 
 
 class FakePage:
-    """Enough of a Playwright page for the pending-state checks.
-
-    `rows` maps a nav row id to the DOM state the stub reports, or None for a row that
-    is not in the document. `row_missing` makes wait_for_selector time out the way a
-    sidebar that never rendered does.
-    """
+    """Maps nav ids to DOM state (None if absent) for rows; row_missing makes wait_for_selector time out."""
 
     def __init__(
         self,
         rows: dict,
         *,
         row_missing: bool = False,
+        sections: frozenset = frozenset(),
+        hidden_sections: frozenset = frozenset(),
+        mounts_after_wait: dict | None = None,
     ) -> None:
         self.rows = rows
+        # The app's boot screen: no rows until the script waits, then these mount.
+        self.mounts_after_wait = mounts_after_wait
+        self.waited_for_shell = 0
         self.row_missing = row_missing
+        self.sections = sections
+        self.hidden_sections = hidden_sections
         self.url = f"{BASE}/chat"
         self.routed: list[str] = []
         self.unrouted: list[str] = []
@@ -120,9 +115,7 @@ class FakePage:
 
     def route(self, pattern, handler) -> None:
         self.routed.append(pattern)
-        # Prove the stub body is valid JSON and reaches the browser, rather than only
-        # that route() was called: a body the frontend cannot parse would leave the row
-        # in its pre-fetch state and the check would read the wrong thing.
+        # Prove the body parses in the browser, not just that route() was called.
         handler(_RecordingRoute(self))
 
     def unroute(
@@ -152,6 +145,18 @@ class FakePage:
     def wait_for_timeout(self, ms) -> None:
         pass
 
+    def wait_for_function(
+        self,
+        script,
+        arg = None,
+        timeout = None,
+    ) -> None:
+        self.waited_for_shell += 1
+        if self.mounts_after_wait is not None:
+            self.rows = self.mounts_after_wait
+        if not any(state is not None for state in self.rows.values()):
+            raise TimeoutError("no nav row mounted")
+
     def screenshot(
         self,
         path = None,
@@ -160,6 +165,13 @@ class FakePage:
         self.screenshots.append(str(path))
 
     def locator(self, selector: str):
+        section = re.fullmatch(r'\[data-sidebar-section="(\w+)"\]', selector)
+        if section:
+            key = section.group(1)
+            return FakeLocator(
+                key in self.sections or key in self.hidden_sections,
+                visible = key not in self.hidden_sections,
+            )
         rid = selector.split("nav-row-")[1].rstrip('"]')
         return FakeLocator(self.rows.get(rid) is not None)
 
@@ -190,15 +202,9 @@ def _health(mod, bodies):
     mod._get_json = fake
 
 
-# --------------------------------------------------------------------------------
-# The regression Codex found: the window shut before the browser got there.
-# --------------------------------------------------------------------------------
-
-
 def test_greyed_row_fails_even_though_the_warm_window_already_shut(tmp_path, monkeypatch):
-    """The vacuous-pass case. Health has settled, so the real-warm sampler observes
-    nothing and breaks on its first iteration; the row is blacked out exactly as it was
-    in the field. Before the forced-verdict check this run went green."""
+    """A greyed row fails even when the warm window already shut: health has settled so the sampler
+    observes nothing, and without the forced-verdict check this run went green."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [SETTLED])
     page = FakePage({TRAIN: GREYED})
@@ -237,9 +243,8 @@ def test_absent_row_fails_instead_of_skipping(tmp_path, monkeypatch):
 
 
 def test_spinning_row_passes_and_the_route_is_lifted(tmp_path, monkeypatch):
-    """The green case, and the only one there should be: the row spins on a forced
-    unmeasured verdict, and the interception is taken back off so the tab walk that
-    follows sees the real backend."""
+    """The only green case: a spinning row passes on a forced unmeasured verdict, and the route
+    interception is lifted so the tab walk that follows sees the real backend."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [SETTLED])
     page = FakePage({TRAIN: SPINNING})
@@ -253,9 +258,8 @@ def test_spinning_row_passes_and_the_route_is_lifted(tmp_path, monkeypatch):
 
 
 def test_forced_body_is_a_real_reply_with_the_measurement_removed(tmp_path, monkeypatch):
-    """What the browser is served has to be provisional by env.ts's rules: hardware
-    detecting, no device_type, and not the deferred marker (which env.ts reads as
-    settled and would grey the row out legitimately)."""
+    """The forced body must stay provisional under env.ts rules: hardware detecting, no device_type,
+    and not the deferred marker, which env.ts reads as settled and would grey rows out."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [{**SETTLED, "hardware_detection_deferred": True, "studio_root_id": "abc"}])
     page = FakePage({TRAIN: SPINNING})
@@ -267,7 +271,6 @@ def test_forced_body_is_a_real_reply_with_the_measurement_removed(tmp_path, monk
     assert page.fulfilled["chat_only"] is True
     assert "device_type" not in page.fulfilled
     assert "hardware_detection_deferred" not in page.fulfilled
-    # Untouched fields survive, so the reply differs from a real one only where it must.
     assert page.fulfilled["studio_root_id"] == "abc"
 
 
@@ -280,11 +283,6 @@ def test_unreadable_health_fails_rather_than_returning_early(tmp_path, monkeypat
     mod.assert_row_never_greyed_while_unmeasured(page)
 
     assert any("provisional" in m for m in mod._failed), mod._failed
-
-
-# --------------------------------------------------------------------------------
-# The real-warm sampler still has to fail when it does catch a grey-out.
-# --------------------------------------------------------------------------------
 
 
 def test_real_warm_grey_out_still_fails(tmp_path, monkeypatch):
@@ -310,6 +308,29 @@ def test_sampler_that_cannot_read_the_page_at_all_fails(tmp_path, monkeypatch):
     assert any("could not read the sidebar" in m for m in mod._failed), mod._failed
 
 
+def test_a_navigation_in_flight_on_the_first_read_is_not_a_failure(tmp_path, monkeypatch):
+    """A navigation in flight on the first read is not a failure: the forced password change can
+    abort the post-login goto and drop the first evaluate's context."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [UNMEASURED, SETTLED])
+    page = FakePage({TRAIN: SPINNING})
+    real_evaluate = page.evaluate
+    lost = ["Page.evaluate: Execution context was destroyed, most likely because of a navigation"]
+
+    def evaluate(script, arg = None):
+        if lost:
+            raise RuntimeError(lost.pop())
+        return real_evaluate(script, arg)
+
+    page.evaluate = evaluate
+    page.wait_for_load_state = lambda *a, **k: None
+
+    mod.sample_natural_warm_window(page)
+
+    assert not lost, "the context loss was never hit, so this proves nothing"
+    assert not any("could not read the sidebar" in m for m in mod._failed), mod._failed
+
+
 def test_missed_warm_window_alone_is_not_a_failure(tmp_path, monkeypatch):
     """Missing the real window is normal and must stay quiet, or the macOS job goes red
     on every run. The forced check above is what carries the guarantee instead."""
@@ -320,11 +341,6 @@ def test_missed_warm_window_alone_is_not_a_failure(tmp_path, monkeypatch):
     mod.sample_natural_warm_window(page)
 
     assert mod._failed == []
-
-
-# --------------------------------------------------------------------------------
-# The tab walk: a pinned row that is not there means the tab checked nothing.
-# --------------------------------------------------------------------------------
 
 
 def test_drive_tabs_fails_when_the_pinned_rows_never_render(tmp_path, monkeypatch):
@@ -339,10 +355,36 @@ def test_drive_tabs_fails_when_the_pinned_rows_never_render(tmp_path, monkeypatc
         assert any(f"nav row {row_id} is pinned inline" in m for m in mod._failed), mod._failed
 
 
+def test_drive_tabs_waits_out_the_boot_screen_before_judging_the_rows(tmp_path, monkeypatch):
+    """Rows are judged once the sidebar has mounted: a full navigation reboots the app, and a slow
+    macOS runner can still show the Loading screen past the fixed settle wait."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    page = FakePage({}, mounts_after_wait = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS})
+
+    mod.drive_tabs(page)
+
+    assert page.waited_for_shell >= 1
+    assert mod._failed == []
+    assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
+
+
+def test_a_row_missing_from_a_mounted_sidebar_still_fails(tmp_path, monkeypatch):
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "library"}
+    page = FakePage({}, mounts_after_wait = rows)
+
+    mod.drive_tabs(page)
+
+    failures = [m for m in mod._failed if "nav row library is pinned inline" in m]
+    assert failures, mod._failed
+    assert "shell mounted: True" in failures[0]
+
+
 def test_drive_tabs_does_not_fail_on_the_rows_that_live_under_more(tmp_path, monkeypatch):
-    """Video and Export render inside the More dropdown, which mounts no data-testid at
-    all. Their absence is the documented shape, not a miss -- asserting on it would be
-    asserting on something that can never be true."""
+    """Video and Export live under the More dropdown, which mounts no data-testid at all, so their
+    absence is the documented shape and not a miss; do not assert on it."""
     mod = _load(tmp_path, monkeypatch)
     _health(mod, [SETTLED])
     page = FakePage({rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS})
@@ -353,15 +395,67 @@ def test_drive_tabs_does_not_fail_on_the_rows_that_live_under_more(tmp_path, mon
     assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
 
 
-# --------------------------------------------------------------------------------
-# Drift guard: the row asserted on has to be one the sidebar actually pins.
-# --------------------------------------------------------------------------------
+def test_the_projects_section_stands_in_for_its_row(tmp_path, monkeypatch):
+    """Since #12016 a fresh install shows the Projects section and the pinned Projects row
+    yields to it. The section proves the sidebar rendered, so its row's absence is not a miss."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows, sections = frozenset({"projects"}))
+
+    mod.drive_tabs(page)
+
+    assert mod._failed == []
+    assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
+
+
+def test_a_missing_row_whose_section_is_also_missing_still_fails(tmp_path, monkeypatch):
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows)
+
+    mod.drive_tabs(page)
+
+    assert "projects" not in mod._rows_seen
+    assert any("nav row projects is pinned inline" in m for m in mod._failed), mod._failed
+
+
+def test_a_mounted_but_hidden_section_does_not_stand_in(tmp_path, monkeypatch):
+    """The icon rail keeps the Projects section mounted and hides it in CSS, and that is when the
+    Projects row must come back. A hidden section proves nothing about the row."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows, hidden_sections = frozenset({"projects"}))
+
+    mod.drive_tabs(page)
+
+    assert "projects" not in mod._rows_seen
+    assert any("nav row projects is pinned inline" in m for m in mod._failed), mod._failed
+
+
+def test_every_stand_in_names_a_pinned_row_and_a_section_the_sidebar_renders():
+    """A stand-in selector the sidebar never renders would let a missing row pass as absent by design."""
+    stand_ins = _module_constant("ROW_STAND_INS")
+    sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    assert "data-sidebar-section={key}" in sidebar, "sections no longer carry data-sidebar-section"
+    assert "projectsSectionShowing" in sidebar, "the Projects row no longer yields to its section"
+    for row_id, selector in stand_ins.items():
+        assert row_id in _module_constant("INLINE_ROW_IDS"), row_id
+        key = re.fullmatch(r'\[data-sidebar-section="(\w+)"\]', selector)
+        assert key, selector
+        assert re.search(
+            rf'_SECTION_KEY = "{key.group(1)}"',
+            REPO.joinpath(
+                "studio/frontend/src/features/chat/stores/sidebar-organization-store.ts"
+            ).read_text(encoding = "utf-8"),
+        ), f"no sidebar section is keyed {key.group(1)!r}"
 
 
 def test_inline_row_ids_match_the_frontends_default_pinned_set():
-    """If a row is unpinned in the store, it stops rendering a data-testid and every
-    assertion pinned to it silently becomes unobservable. That is how the Video half of
-    this script came to check nothing, and it must not happen again unnoticed."""
+    """INLINE_ROW_IDS must match the frontend default pinned set: an unpinned row stops rendering
+    its data-testid, silently making its assertions unobservable."""
     src = APPEARANCE_STORE.read_text(encoding = "utf-8")
     block = re.search(
         r"SIDEBAR_NAV_DEFAULT_PINNED[^{]*\{(.*?)\n\};",
@@ -415,22 +509,12 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
 
-# --------------------------------------------------------------------------------
-# What the survival poller fails on, now that it no longer replays the watchdog.
-# --------------------------------------------------------------------------------
-
 POLL_S = 5.0
 BUDGET_S = 10.0
 
 
 def _timeline(duration_s, stalls = ()):
-    """Simulate the poller against a backend that answers nothing during *stalls*.
-
-    Each stall is a (start, end) window in seconds. A probe issued inside one answers
-    when the stall lifts if that falls inside its 10s budget, and times out otherwise.
-    Probes are sequential and a timeout costs the whole budget before the next route is
-    tried, which is what the real poller does.
-    """
+    """Backend silent during stalls: a probe answers only if the stall lifts inside its 10s budget."""
 
     def lifts_at(t):
         for start, end in stalls:
@@ -532,17 +616,15 @@ def test_a_stall_the_backend_recovers_from_is_not_a_failure(tmp_path, monkeypatc
 
 
 def test_even_a_long_stall_passes_if_the_backend_comes_back(tmp_path, monkeypatch):
-    """No threshold shorter than the launcher's most generous path is decidable in the
-    120s this phase gets, so there is deliberately no threshold at all. A stall far past
-    anything the old replay would have killed on still passes once the backend answers."""
+    """No stall threshold is used: none shorter than the launcher's most generous path is decidable
+    in the 120s this phase gets, so a long stall still passes once the backend answers."""
     mod = _load(tmp_path, monkeypatch)
     assert _verdict(mod, _timeline(220, stalls = [(30, 150)])) == []
 
 
 def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
-    """The terminal stall. This is what the poller exists to catch and it needs no
-    watchdog arithmetic: the backend stopped answering and was still not answering when
-    the run ended, confirmed by the final probe."""
+    """A terminal stall fails: the backend stopped answering and was still silent when the run
+    ended, as confirmed by the final probe; no watchdog arithmetic is needed."""
     mod = _load(tmp_path, monkeypatch)
     failed = _verdict(
         mod, _timeline(150, stalls = [(60, 9999)]), final_kind = "timeout", final_status = 0
@@ -552,9 +634,8 @@ def test_a_backend_that_never_answers_again_fails(tmp_path, monkeypatch):
 
 
 def test_a_trailing_stall_the_final_probe_clears_is_not_a_failure(tmp_path, monkeypatch):
-    """A stall still in progress when sampling stopped is not a terminal one if the
-    backend answers the final probe. Without that probe this would be indistinguishable
-    from death, which is why report() takes it rather than guessing from the samples."""
+    """A stall still open when sampling stopped is not terminal if the final probe is answered;
+    report() takes that probe because the samples alone cannot tell it from death."""
     mod = _load(tmp_path, monkeypatch)
     samples = _timeline(150, stalls = [(60, 9999)])
     assert samples[-1]["kind"] == "timeout", "fixture no longer ends mid-stall"
@@ -642,18 +723,10 @@ def test_the_probe_budget_is_the_launchers_own_number():
 
 
 def test_the_watchdog_replay_is_gone():
-    """It was removed on purpose: mirroring the launcher's state machine made every line
-    of commands.rs a correctness requirement here, for a rule this phase never runs and
-    could not decide inside its 120s window. Reintroducing it should be a deliberate act,
-    not a quiet one."""
+    """Removed on purpose: mirroring the launcher's state machine would couple this phase to commands.rs."""
     source = SCRIPT.read_text(encoding = "utf-8")
     for gone in ("watchdog_replay", "WATCHDOG_MAX_FAILURES", "WATCHDOG_INTERVAL_S"):
         assert f"def {gone}" not in source and f"\n{gone} =" not in source, gone
-
-
-# --------------------------------------------------------------------------------
-# The post-run watch, which is what stops the window boundary deciding the verdict.
-# --------------------------------------------------------------------------------
 
 
 def _scripted_probes(mod, kinds):
@@ -675,7 +748,6 @@ def test_the_watch_keeps_probing_until_the_backend_answers(tmp_path, monkeypatch
     tell the difference, so the watch keeps asking until something comes back."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["timeout", "timeout", "ok"])
-    # spacing off: this case is about the loop continuing, not about how it paces.
     kind, status, _, probes = mod.await_recovery(window_s = 30.0, spacing_s = 0.0)
     assert (kind, status) == ("ok", 200)
     assert len(calls) == 3, calls
@@ -698,7 +770,6 @@ def test_a_refused_port_does_not_get_the_recovery_window(tmp_path, monkeypatch):
     at once rather than costing the run 90 seconds to reach the same answer."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["refused"])
-    # Small but non-zero on purpose.
     kind, _, _, probes = mod.await_recovery(window_s = 2.0, spacing_s = 0.0)
     assert kind == "refused"
     assert len(calls) == 1, f"spent the window instead of returning at once: {len(calls)} probes"
@@ -714,9 +785,8 @@ def test_an_answered_non_200_does_not_get_the_recovery_window(tmp_path, monkeypa
 
 
 def test_the_recovery_window_clears_the_stalls_actually_seen():
-    """Sized from evidence, not from a round number. Run 32862298967 produced stalls of
-    10.03s, 25.1s, 27.75s and 33.2s on one runner, so the window has to clear 33.2s with
-    room to spare or it decides "never ended" about stalls this job has already seen."""
+    """RECOVERY_WINDOW_S must exceed twice the longest stall seen on one runner (33.2s), or a stall
+    this job has already seen would be judged never ended."""
     longest_observed_s = 33.2
     assert _module_constant("RECOVERY_WINDOW_S") > 2 * longest_observed_s
 
@@ -747,11 +817,6 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
     assert {"final_kind", "final_wait_s"} <= passed, passed
 
 
-# --------------------------------------------------------------------------------
-# The watch has to be bounded, paced, and honest about what it saw.
-# --------------------------------------------------------------------------------
-
-
 def _serve(
     handler_body,
     trickle = False,
@@ -768,8 +833,7 @@ def _serve(
 
         def do_GET(self):
             if trickle:
-                # Headers, then a byte at a time forever. Every chunk resets urllib's per-operation timeout, which is
-                # the shape that hangs a naive read().
+                # A byte at a time forever: each chunk resets urllib's per-operation timeout.
                 self.send_response(200)
                 self.send_header("Content-Length", "1000000")
                 self.end_headers()
@@ -799,9 +863,8 @@ def _serve(
 
 
 def test_a_trickling_response_cannot_outlive_the_probe_budget(tmp_path, monkeypatch):
-    """urllib's timeout is per socket operation, so a peer that dribbles bytes resets it
-    forever and read() never returns. That would outlive the script's wall watchdog and
-    hang the job, which reports nothing at all. The read carries its own deadline."""
+    """urllib's timeout is per socket operation, so a peer that dribbles bytes can hang read() past
+    the wall watchdog; the read carries its own deadline."""
     mod = _load(tmp_path, monkeypatch)
     base, state, shutdown = _serve(b"{}", trickle = True)
     monkeypatch.setattr(mod, "BASE", base)
@@ -833,9 +896,8 @@ def test_an_oversized_body_does_not_get_read_to_the_end(tmp_path, monkeypatch):
 
 
 def test_immediate_failures_are_paced_during_recovery(tmp_path, monkeypatch):
-    """_transport_kind calls a reset a stall on purpose, and a reset returns in about a
-    millisecond, so an unpaced window becomes thousands of connections against a backend
-    that is already in trouble. Pacing is bounded by the window, never past it."""
+    """Recovery probes are paced, bounded by the window: _transport_kind counts a reset as a stall
+    and it returns in about 1 ms, so unpaced retries would flood a sick backend."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["timeout"])
     began = time.monotonic()
@@ -894,16 +956,13 @@ def test_the_wall_watchdog_stays_armed_through_recovery_and_reporting():
 
 
 def test_the_warning_counts_the_post_run_wait(tmp_path, monkeypatch, capsys):
-    """Sampling stops at an arbitrary moment. If it stops mid-stall, the span ends at the
-    last timed-out sample, so the reported length leaves out every second of the watch
-    that actually saw the stall clear. A warning nobody can trust is worse than none."""
+    """The warning counts the post-run wait, since sampling can stop mid-stall and a span ending at
+    the last timeout would hide the watch seconds that saw it clear."""
     mod = _load(tmp_path, monkeypatch)
-    # A SHORT trailing stall on purpose.
     samples = _timeline(150, stalls = [(140, 9999)])
     assert samples[-1]["kind"] == "timeout", "fixture no longer ends mid-stall"
     raw = max(end - start for start, end, _ in mod._stall_windows(samples))
     assert raw < 40.0, f"fixture stall is already long enough to pass on its own: {raw}s"
-    # The watch keeps probing for another 40s before it clears.
     recovery = _recovery_probes(samples[-1]["t"], timeouts = 4)
     assert (
         _verdict(mod, samples, final_kind = "ok", final_wait_s = 40.0, recovery_samples = recovery) == []
@@ -938,12 +997,7 @@ def test_pacing_never_sleeps_past_the_end_of_the_window(tmp_path, monkeypatch):
 
 
 def _serve_trickling_headers():
-    """A listener that accepts, then dribbles response HEADERS and never finishes them.
-
-    Deliberately raw sockets rather than http.server: the point is to stall inside
-    urlopen's header parsing, which is before any body-level bound can run, and a
-    BaseHTTPRequestHandler writes its headers in one go.
-    """
+    """Raw sockets, since http.server sends headers in one go and cannot stall urlopen's header parsing."""
     import socket as socket_mod
     import threading
 
@@ -953,12 +1007,10 @@ def _serve_trickling_headers():
     srv.listen(4)
     srv.settimeout(0.25)
     port = srv.getsockname()[1]
-    # Bytes, never whole header lines: whole lines hit http.client's _MAXHEADERS cap of 100
-    # and end the call themselves in ~2s, passing against a build with no deadline at all.
+    # Bytes, not header lines: lines hit http.client's 100-header cap and end the call early.
     chunk = b"x"
-    # urllib's per-socket-operation timeout is reset by any traffic. While max_gap stays under
-    # it no per-operation timeout can have fired, so a probe that returned anyway returned on
-    # the whole-request deadline. That is the only thing here that tells the two bounds apart.
+    # While max_gap stays under the per-operation timeout, a return must be the whole-request
+    # deadline.
     state = {"accepted": 0, "lines": 0, "chunk": chunk, "max_gap": 0.0, "last_write": None}
     stop = threading.Event()
 
@@ -1004,12 +1056,7 @@ def _serve_trickling_headers():
 
 
 def _probe_bounded(mod, path, timeout, wait):
-    """Call mod._get_json on a daemon thread and join for *wait*.
-
-    No test here may detect its own mutation by hanging: a hang reports nothing and
-    burns the runner, which is the failure these tests are about. A build whose probe
-    cannot end fails the assertion below instead of stopping the suite.
-    """
+    """Daemon-thread probe joined for wait, so an unending probe fails the assertion instead of hanging."""
     import threading
 
     box = {}
@@ -1025,10 +1072,8 @@ def _probe_bounded(mod, path, timeout, wait):
 
 
 def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, monkeypatch):
-    """The body deadline does not cover this. While response headers are still arriving,
-    urlopen has not returned, so nothing inside it is running yet and only urllib's
-    per-socket-operation timeout applies, which a peer resets by dribbling. The budget is
-    whole-request for that reason: connect, headers and body under one deadline."""
+    """A per-socket timeout resets whenever a peer dribbles, so one deadline must cover the whole
+    request."""
     socket_timeout = 0.5
     mod = _load(tmp_path, monkeypatch)
     base, state, shutdown = _serve_trickling_headers()
@@ -1048,8 +1093,7 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
         f"end the call by itself and this would pass without any deadline: {state['chunk']!r}"
     )
 
-    # Contention that breaks the gap invariant yields no evidence, not a failure: report that
-    # rather than pass on a build with no deadline or go red on a busy machine.
+    # Contention breaking the gap invariant is no evidence either way: report it.
     trickled_throughout = (
         lines >= 3
         and last_write is not None
@@ -1070,26 +1114,19 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
 
 
 def test_the_deadline_covers_the_whole_request_not_one_layer():
-    """Stated so the next reader does not swap it back for a per-layer bound. Each layer
-    bounded on its own just moves the hole: the body cap left headers open, and a header
-    cap would leave the redirect chain or the handshake."""
+    """The deadline covers the whole request, not one layer: a per-layer cap just moves the hole, as
+    a body cap leaves headers open and a header cap leaves redirects or the handshake."""
     source = SCRIPT.read_text(encoding = "utf-8")
     assert "WHOLE-REQUEST deadline" in source
     assert "worker.join(timeout)" in source
 
 
 def test_a_stall_that_begins_after_sampling_is_still_reported(tmp_path, monkeypatch, capsys):
-    """The gap the recovery watch opened. Sampling can end on a good probe and the backend
-    stall immediately afterwards; the watch then sees several timeouts, gets an answer, and
-    returns ok. Measuring spans from the poller's samples alone leaves that stall in no
-    span at all, so the run passes in silence. A recovered stall reported nowhere is the
-    one outcome this window was added to avoid, since the argument for warning instead of
-    failing is that somebody reads the warning."""
+    """A stall starting after the last sample must still be reported, or the run passes in silence."""
     mod = _load(tmp_path, monkeypatch)
     samples = _timeline(120)
     assert all(s["kind"] == "ok" for s in samples), "fixture must end with sampling healthy"
     assert not mod._stall_windows(samples), "fixture already has a stall during sampling"
-    # 60s of silence after sampling stops, then the backend answers.
     recovery = _recovery_probes(samples[-1]["t"], timeouts = 6)
     assert (
         _verdict(mod, samples, final_kind = "ok", final_wait_s = 60.0, recovery_samples = recovery) == []

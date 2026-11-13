@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The config page scrolls inside the popover rather than making the popover the scroller, so the
-// rounded surface keeps its corners when the OS draws scrollbars always. That splits one box into
-// two, and the split only holds while the outer one is a height-capped flex column: measured in a
-// browser against the built CSS, a non-flex parent leaves the inner box at its full content height
-// with nothing scrollable and Run below the clip. Both halves of the contract are pinned here.
+// The outer box must stay a height-capped flex column or the inner one cannot scroll.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -22,8 +18,6 @@ const SELECTOR = read(
 const POPOVER = read("../src/components/ui/popover.tsx");
 
 test("the popover surface clips and caps, so it never scrolls itself", () => {
-  // Scrolling the rounded box put the bar inside it, running through the top and bottom right
-  // corners and squaring them off.
   assert.match(
     SELECTOR,
     /max-h-\[var\(--radix-popover-content-available-height\)\][^"]*overflow-hidden p-0/,
@@ -34,20 +28,17 @@ test("the popover surface clips and caps, so it never scrolls itself", () => {
 test("the config page gets its own scroller inside that surface", () => {
   assert.ok(
     SELECTOR.includes(
-      '<div className="min-h-0 w-full overflow-y-auto px-4 pt-4 pb-4">',
+      '<div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">',
     ),
-    "the inner box scrolls and carries the padding the surface gave up",
+    "the inner box scrolls, carries the padding the surface gave up, and reserves its scrollbar gutter: on an auto gutter the custom scrollbar re-laid out the whole page twice a frame while a slider was dragged",
   );
 });
 
 test("the surface is a flex column, which is what gives the scroller a height", () => {
-  // The inner box sets no height of its own. It gets one by being a shrinkable flex item in a
-  // capped column: drop `flex flex-col` here and it stays at full content height, nothing
-  // scrolls, and the bottom of the config page including Run is clipped and unreachable.
+  // Without `flex flex-col` the inner box keeps full height and Run is clipped.
   const content = POPOVER.slice(POPOVER.indexOf("function PopoverContent"));
   const base = content.slice(0, content.indexOf("{...props}"));
   assert.match(base, /\bflex flex-col\b/, "the base class is the constraint");
-  // Overriding it from the call site would break the same way, quietly.
   const configClass = SELECTOR.slice(
     SELECTOR.indexOf("max-h-[var(--radix-popover-content-available-height)]"),
   ).slice(0, 200);

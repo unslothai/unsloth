@@ -6,7 +6,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-const THUMB_SIZE_PX = 16;
+const THUMB_SIZE_PX = 20;
 
 function getThumbInBoundsOffset(width: number, percent: number) {
   const halfWidth = width / 2;
@@ -19,14 +19,7 @@ function getThumbInBoundsOffset(width: number, percent: number) {
 }
 
 type SliderProps = React.ComponentProps<typeof SliderPrimitive.Root> & {
-  /**
-   * What a screen reader should say instead of the bare number.
-   *
-   * Radix does not synthesise `aria-valuetext`, so a slider whose positions mean
-   * something other than their value announces the value and nothing else. The
-   * context slider's leftmost position means Auto, which without this reads as
-   * "0" -- a context length no model has.
-   */
+  /** Radix does not synthesise `aria-valuetext`; e.g. the context slider's leftmost means Auto. */
   thumbValueText?: (value: number, index: number) => string;
 };
 
@@ -59,6 +52,24 @@ function Slider({
   );
   const isSingleThumbHorizontal =
     values.length === 1 && orientation === "horizontal";
+  // The thumb scales with the UI size, so the fill measures it.
+  const thumbRef = React.useRef<HTMLSpanElement | null>(null);
+  const [thumbWidth, setThumbWidth] = React.useState(THUMB_SIZE_PX);
+  React.useLayoutEffect(() => {
+    const thumb = thumbRef.current;
+    if (!thumb) return;
+    const measure = () => {
+      const width = thumb.offsetWidth;
+      if (width > 0) {
+        setThumbWidth((current) => (current === width ? current : width));
+      }
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(thumb);
+    return () => observer.disconnect();
+  }, []);
   const fillPercent = isSingleThumbHorizontal
     ? Math.min(
         100,
@@ -73,7 +84,7 @@ function Slider({
       ? undefined
       : fillPercent <= 0
         ? "0%"
-        : `calc(${fillPercent}% + ${getThumbInBoundsOffset(THUMB_SIZE_PX, fillPercent)}px)`;
+        : `calc(${fillPercent}% + ${getThumbInBoundsOffset(thumbWidth, fillPercent)}px)`;
 
   return (
     <SliderPrimitive.Root
@@ -85,19 +96,19 @@ function Slider({
       orientation={orientation}
       onValueChange={handleValueChange}
       className={cn(
-        "data-vertical:min-h-40 relative flex w-full touch-none items-center select-none data-disabled:opacity-50 data-vertical:h-full data-vertical:w-auto data-vertical:flex-col",
+        "data-horizontal:min-h-(--slider-thumb-size) data-vertical:min-h-40 data-vertical:min-w-(--slider-thumb-size) relative flex w-full touch-none items-center select-none data-disabled:opacity-50 data-vertical:h-full data-vertical:w-auto data-vertical:flex-col",
         className,
       )}
       {...props}
     >
       <SliderPrimitive.Track
         data-slot="slider-track"
-        className="bg-black/10 dark:bg-black/12 rounded-4xl data-horizontal:h-2 data-horizontal:w-full data-vertical:h-full data-vertical:w-2 relative grow overflow-hidden cursor-pointer"
+        className="bg-(--slider-track) rounded-full data-horizontal:h-(--slider-track-height) data-horizontal:w-full data-vertical:h-full data-vertical:w-(--slider-track-height) relative grow overflow-hidden cursor-pointer"
       >
         <SliderPrimitive.Range
           data-slot="slider-range"
           className={cn(
-            "bg-primary absolute select-none data-horizontal:h-full data-vertical:w-full",
+            "bg-(--slider-fill) absolute select-none data-horizontal:h-full data-vertical:w-full",
             isSingleThumbHorizontal && "opacity-0",
           )}
         />
@@ -105,8 +116,8 @@ function Slider({
           <div
             aria-hidden={true}
             className={cn(
-              "absolute inset-y-0 left-0 bg-primary pointer-events-none",
-              fillPercent === 100 ? "rounded-4xl" : "rounded-l-4xl",
+              "absolute inset-y-0 left-0 bg-(--slider-fill) pointer-events-none",
+              fillPercent === 100 ? "rounded-full" : "rounded-l-full",
             )}
             style={{ width: fillWidth }}
           />
@@ -116,14 +127,12 @@ function Slider({
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
-          // The thumb is the element carrying role="slider", so the name and the spoken value
-          // belong here. Everything else spreads onto Root, which is a plain div: an aria-label
-          // passed to this component reached that div and left the actual control unnamed, and
-          // Radix only fills in a label of its own for multi-thumb ranges.
+          ref={index === 0 ? thumbRef : undefined}
+          // The thumb carries role="slider", so the name and spoken value belong here, not on Root.
           aria-label={props["aria-label"]}
           aria-labelledby={props["aria-labelledby"]}
           aria-valuetext={thumbValueText?.(values[index] ?? min, index)}
-          className="ring-ring/50 relative z-10 size-4 rounded-4xl bg-white shadow-sm block shrink-0 select-none cursor-pointer disabled:pointer-events-none disabled:opacity-50 transition-transform duration-100 ease-out hover:scale-110 hover:ring-4 active:scale-95 focus-visible:ring-1 focus-visible:outline-hidden"
+          className="ring-(--slider-fill)/30 relative z-10 size-(--slider-thumb-size) rounded-full bg-(--slider-thumb) shadow-(--slider-thumb-shadow) block shrink-0 select-none cursor-pointer disabled:pointer-events-none disabled:opacity-50 focus-visible:ring-4 focus-visible:outline-hidden"
         />
       ))}
     </SliderPrimitive.Root>

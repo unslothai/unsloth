@@ -14,26 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""`playwright install --with-deps` must not come back.
-
-The flag looks like a convenience and is actually an unbounded apt step wearing
-a different name: playwright runs its own `apt-get update` inside it, which is
-the one apt call in this repo that cannot be restructured to try the image's
-lists first. Everything CI has learned about apt -- the shared retry helper, the
-20s transfer cap, `APT_ACQUIRE_RETRIES: '0'`, the archive cache -- applies to
-the `install-deps` subcommand and is bypassed entirely when the work happens
-inside `install --with-deps`.
-
-Both failures that motivated this were the same shape and the same package:
-
-  studio-ui-smoke.yml  webkit shards, 181 packages / 102 MB
-  studio-frontend-ci.yml  chromium, 9 packages / 21.1 MB, and
-    `fonts-wqy-zenhei [7472 kB]` alone took 5m50s off azure.archive.ubuntu.com
-
-The supported shape is: download the engine, launch it to find out whether the
-system libraries are actually missing, and run `install-deps` only if they are.
-That is what this guard pins -- not the comments describing it, which drift.
-"""
+"""Forbids playwright install --with-deps: its unbounded apt step bypasses CI's apt retry helper."""
 
 from __future__ import annotations
 
@@ -46,10 +27,7 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
-# `playwright install --with-deps`, however the flag is spelled or ordered, and
-# whether invoked as `playwright`, `python -m playwright` or `python3 -m playwright`.
-# Deliberately NOT anchored on `chromium`/`webkit`: the engine list is irrelevant
-# to the defect, which is that apt runs at all.
+# Any spelling or launcher; not anchored on engines, since the defect is apt running at all.
 _WITH_DEPS = re.compile(r"playwright\s+install\b[^\n]*--with-deps")
 
 

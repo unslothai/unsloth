@@ -1,17 +1,38 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pydantic schemas for the Hub inventory layer (/api/hub/*).
+"""Pydantic Hub inventory schemas, kept independent of upstream models/models.py by design."""
 
-Kept independent from upstream models/models.py so the Hub module can ship
-without modifying any upstream schema."""
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from typing import List, Literal, Optional
+
+from core.inference.audio_workflows import inventory_audio_workflows
 
 
 ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
 ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
+LocalModelSource = Literal[
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"
+]
+LocalArtifactKind = Literal[
+    "diffusers_pipeline",
+    "diffusers_modular_pipeline",
+    "diffusers_dual_pipeline",
+    "transformers_model",
+    "single_file_checkpoint",
+    "gguf",
+    "adapter",
+    "unknown",
+]
+
+
+class EngramTableDetail(BaseModel):
+    """A standalone Engram table a GGUF repo publishes (engram/*-engram-<PRECISION>.gguf_file)."""
+
+    precision: str = Field(..., description = "Precision label from the file name, e.g. 'Q8_0'")
+    filename: str = Field(..., description = "Repo path of the table file")
+    size_bytes: int = Field(0, description = "File size in bytes")
+    downloaded: bool = Field(False, description = "Whether the table is in the local HF cache")
 
 
 class GgufVariantDetail(BaseModel):
@@ -19,11 +40,27 @@ class GgufVariantDetail(BaseModel):
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
+    cache_path: Optional[str] = Field(
+        None, description = "Owning cache repository for this complete variant"
+    )
+    # Declared so the redacted ref survives response-model serialization.
+    cache_ref: Optional[str] = Field(
+        None, description = "Opaque stand-in for cache_path, stable for the server's life"
+    )
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    estimated_resident_gb: Optional[float] = Field(
+        None,
+        description = "audio.cpp only: GiB of GPU memory the load check requires for this variant",
+    )
+    lookup_table_bytes: int = Field(
+        0,
+        description = "Bytes of lazily read lookup tables (per-layer embeddings / Engram) "
+        "llama.cpp streams from disk by default. Part of size_bytes; 0 when none or unknown.",
+    )
     pending_drafter_filename: Optional[str] = Field(
         None,
         description = (
@@ -35,7 +72,6 @@ class GgufVariantDetail(BaseModel):
     pending_drafter_size_bytes: int = Field(
         0, description = "Remote size of pending_drafter_filename"
     )
-    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     download_remaining_bytes: Optional[int] = Field(
         None,
         description = (
@@ -45,7 +81,11 @@ class GgufVariantDetail(BaseModel):
         ),
     )
     downloaded: bool = Field(
-        False, description = "Whether this variant is already in the local HF cache"
+        False,
+        description = (
+            "Whether this variant is already in the local HF cache: with its own Engram "
+            "table, or with a cached standalone one in its place (engram_ready)"
+        ),
     )
     update_available: bool = Field(
         False, description = "Whether a newer main GGUF blob is available on Hugging Face"
@@ -74,6 +114,21 @@ class GgufVariantDetail(BaseModel):
             "Whether THIS partial can be continued byte for byte, which is what picks "
             "Resume over Continue. False for a Xet partial, and for an HTTP one no "
             "installed writer can reopen."
+        ),
+    )
+    engram_precision: Optional[str] = Field(
+        None,
+        description = (
+            "Precision of the Engram table this quant ships in its own split shard, when "
+            "the repo publishes standalone tables to swap it for; None otherwise"
+        ),
+    )
+    engram_ready: List[str] = Field(
+        default_factory = list,
+        description = (
+            "Engram table precisions this quant loads with without downloading anything: "
+            "its own when downloaded, and each cached standalone table when every other "
+            "file is cached"
         ),
     )
     dependency_key: Optional[str] = Field(
@@ -123,6 +178,27 @@ class GgufVariantsResponse(BaseModel):
         None,
         description = "Whether a variantless load resolves GGUF weights; None when unanswered",
     )
+    variant_format: Optional[str] = Field(
+        None,
+        description = (
+            "'mlx' when the variants are precision folders of an MLX repo rather than GGUF "
+            "quants; None for GGUF"
+        ),
+    )
+    engram_tables: List[EngramTableDetail] = Field(
+        default_factory = list,
+        description = (
+            "Standalone Engram tables a load can use in place of a quant's own "
+            "(engram_precision), most precise first"
+        ),
+    )
+    engram_supported: Optional[bool] = Field(
+        None,
+        description = (
+            "Whether this server's llama.cpp loads a standalone Engram table (--ple); "
+            "None when the repo publishes none or the build could not be probed"
+        ),
+    )
 
 
 class LocalModelCapabilities(BaseModel):
@@ -138,6 +214,8 @@ class LocalModelCapabilities(BaseModel):
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
+    _scan_root: Optional[str] = PrivateAttr(None)
+
     id: str = Field(..., description = "Identifier to use for loading/training")
     inventory_id: Optional[str] = Field(
         None, description = "Stable semantic inventory row identifier"
@@ -149,6 +227,10 @@ class LocalModelInfo(BaseModel):
     path: str = Field(..., description = "Local path where model data was discovered")
     size_bytes: int = Field(0, description = "Observed model artifact size in bytes")
     model_format: ModelFormat = Field("unknown", description = "Model file format")
+    artifact_kind: LocalArtifactKind = Field(
+        "unknown",
+        description = "Structural contract, e.g. a Diffusers pipeline root vs a Transformers dir",
+    )
     runtime: ModelRuntime = Field("unknown", description = "Expected runtime backend")
     format_variant: Optional[str] = Field(
         None, description = "Format variant label, for example a GGUF quant"
@@ -157,7 +239,7 @@ class LocalModelInfo(BaseModel):
         default_factory = LocalModelCapabilities,
         description = "Declared capabilities for this inventory row",
     )
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
+    source: LocalModelSource = Field(
         ...,
         description = "Discovery source",
     )
@@ -180,6 +262,10 @@ class LocalModelInfo(BaseModel):
     audio_type: Optional[str] = Field(
         None,
         description = "Detected output-audio architecture or codec used by Audio runtime policy",
+    )
+    audio_workflows: Optional[List[str]] = Field(
+        None,
+        description = "Audio page workflows (speak, clone, music, transcribe) this row serves; null when not audio",
     )
     base_model: Optional[str] = Field(
         None,
@@ -216,6 +302,20 @@ class LocalModelInfo(BaseModel):
         False,
         description = "Whether THIS partial can be continued byte for byte.",
     )
+    # Mirrors CachedModelRepo.companion_prefetch: the Hub merges both listings.
+    companion_prefetch: bool = Field(
+        False,
+        description = (
+            "Pipeline repo holding only what a GGUF load borrowed (VAE, text encoder): partial "
+            "for loading, not an unfinished download."
+        ),
+    )
+
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = inventory_audio_workflows(self.task, self.audio_type)
+        return self
 
 
 class LocalModelListResponse(BaseModel):
@@ -250,6 +350,8 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
@@ -257,13 +359,21 @@ class CachedRepoBase(BaseModel):
     inventory_id: Optional[str] = None
     load_id: Optional[str] = None
     model_format: ModelFormat = "unknown"
+    artifact_kind: LocalArtifactKind = "unknown"
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
-    # The task-scoped pickers filter On Device rows on the inferred task and the chat picker routes a
-    # diffusion pick by it, so a row without one is dropped from those lists.
+    # Pickers drop rows without a task.
     task: Optional[str] = None
     audio_type: Optional[str] = None
+    # Audio page workflows the row serves, from the task first: audio.cpp music rows carry no audio_type.
+    audio_workflows: Optional[List[str]] = None
+
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = inventory_audio_workflows(self.task, self.audio_type)
+        return self
 
 
 class CachedGgufRepo(CachedRepoBase):
@@ -276,6 +386,7 @@ class CachedGgufRepo(CachedRepoBase):
             "watching for on-disk change need this to notice it."
         ),
     )
+    umbrella_folder: bool = False
 
 
 class CachedGgufResponse(BaseModel):
@@ -289,16 +400,12 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
-    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint
-    # needing from_single_file plus a filename. Pickers must not offer it as a pipeline load unless
-    # the catalog carries a curated artifact.
+    # Diffusion repo with no model_index.json is a single-file checkpoint; pickers must not offer it as a pipeline load unless curated.
     single_file: bool = False
-    # An sd.cpp companion mirror is never a pick on any page, but still gets a row, because these run to
-    # tens of GB and the row is how they are seen and deleted.
+    # sd.cpp companion mirror is never picked but keeps a row, as tens of GB must be seen and deleted.
     companion: bool = False
-    # An unrecognised pipeline carries no task and no root config for can_chat, so this flag is all
-    # that keeps it out of a chat picker. Declared because response_model drops undeclared keys, which
-    # left the CLI and the frontend disagreeing about the same row.
+    companion_prefetch: bool = False
+    # Only flag keeping unrecognised pipelines out of chat; declared or response_model drops it.
     diffusers: bool = False
 
 
@@ -320,6 +427,10 @@ class AddScanFolderRequest(BaseModel):
         ...,
         description = "Absolute or relative folder path, or a model weight file path",
     )
+    recursive: Optional[bool] = Field(
+        None,
+        description = "Also scan sub-folders. Omitted keeps the stored setting of an already registered folder.",
+    )
 
 
 class ScanFolderInfo(BaseModel):
@@ -328,9 +439,10 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    recursive: bool = Field(False, description = "Sub-folders are scanned too")
     status: str = Field(
         default = "ok",
-        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+        description = "Last scan result: ok, permission_denied, missing, unreadable, partial, or slow",
     )
 
 
@@ -362,6 +474,12 @@ class CompanionAssetInfo(BaseModel):
 class DeleteImpactResponse(BaseModel):
     """What a pending delete would actually do, so the confirm dialog can say it."""
 
+    cache_path: Optional[str] = Field(
+        None, description = "Cache repository folder targeted by this delete"
+    )
+    # Opaque stand-in for ``cache_path``, filled in by the host-path boundary for API-key callers.
+    cache_ref: Optional[str] = None
+
     repo_id: str
     variant: Optional[str] = None
     reclaimed_bytes: int = Field(0, description = "Bytes this delete frees, from the cache scan")
@@ -383,6 +501,8 @@ class OrphanCompanionInfo(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
 
 
 class OrphanCompanionsResponse(BaseModel):

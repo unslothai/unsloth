@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { BaseModelSource } from "./api";
+import type { BaseModelSource, LocalArtifactKind } from "./api";
 import type { InventoryHintKind, LocalSource } from "./constants";
 
 export type ModelInventoryFormat =
@@ -37,28 +37,29 @@ export interface CachedInventoryRow {
   repo: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
+  artifact: LocalArtifactKind;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   bytes: number;
   cachePath?: string | null;
   loadCachePath?: string | null;
-  /** last changed time as epoch milliseconds. */
   lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
-  /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
-  /** A download manifest or cancel marker exists for some quant; moves on a sibling cancel, which changes neither bytes nor mtime. */
+  downloading?: boolean;
+  /** Set when a download manifest or cancel marker exists for some quant; moves on a sibling cancel. */
   hasVariantState?: boolean;
   pipelineTag?: string | null;
-  // Inferred pipeline task from the backend. The task-scoped pickers filter On Device rows on it.
   task?: string | null;
   audioType?: string | null;
+  audioWorkflows?: string[] | null;
+  umbrellaFolder?: boolean;
   // Diffusion repo with no pipeline index: loadable only via from_single_file + a filename, so the task pickers must not offer it as a pipeline load.
   singleFile?: boolean;
-  // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
-  // run to tens of GB and the row is how they are seen and deleted, but never a pick.
+  // VAE / text encoders without a denoiser: listed so they can be deleted, never picked.
   companion?: boolean;
+  companionPrefetch?: boolean;
   tags?: string[];
   libraryName?: string | null;
   quantMethod?: string | null;
@@ -79,8 +80,10 @@ export interface LocalInventoryRow {
   modelId?: string | null;
   displayName?: string;
   path: string;
+  bytes?: number | null;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
+  artifact: LocalArtifactKind;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   baseModel?: string | null;
@@ -90,12 +93,12 @@ export interface LocalInventoryRow {
   trainingMethod?: string | null;
   task?: string | null;
   audioType?: string | null;
-  /** last changed time as epoch milliseconds. */
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;
-  /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
+  downloading?: boolean;
+  companionPrefetch?: boolean;
   activeCache?: boolean | null;
   pipelineTag?: string | null;
   tags?: string[];

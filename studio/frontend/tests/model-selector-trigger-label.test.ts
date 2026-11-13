@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The selector trigger names a lora by the segment before its first slash, so the
-// training run shows rather than "<run>/<model>". Local inventory names carry real
-// slashes, so the same strip left an Ollama row reading "hf.co". Pinned end to end:
-// what Chat feeds the selector, and what the trigger then renders.
+// Local inventory names have real slashes, so the lora first-segment strip must not apply.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -64,8 +61,6 @@ test("an LM Studio pick shows the model folder, not the publisher", () => {
 });
 
 test("an Ollama pick keeps the slashes in its repo name", () => {
-  // ollama pull hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M; repo_name keeps its host and
-  // namespace for anything outside registry.ollama.ai/library.
   const options = chatLocalModelOptions([
     localRow({
       id: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fhf.co%2Funsloth",
@@ -95,4 +90,32 @@ test("an Ollama pick keeps the slashes in its repo name", () => {
   ])[0];
   assert.ok(namespaced);
   assert.equal(loraOptionLabel(namespaced), "someuser/mymodel:latest");
+});
+
+test("the trigger's suffix keeps the space in its ' - ' separator", () => {
+  const selector = readSrc(
+    "features/model-picker/components/model-selector.tsx",
+  );
+  // A blockified flex item drops the leading space of its text, so the separator is its own
+  // span that preserves white space.
+  assert.match(
+    selector,
+    /\{subtitle \? <span className="whitespace-pre"> - <\/span> : null\}\s*\{currentModel\.descriptionSuffix\}/,
+  );
+  assert.doesNotMatch(selector, /\{subtitle \? " - " : ""\}/);
+});
+
+test("an audio page's loaded quant names the trigger only for the model it belongs to", () => {
+  const selector = readSrc(
+    "features/model-picker/components/model-selector.tsx",
+  );
+  assert.match(
+    selector,
+    /const triggerGgufVariant =\s*loadedGgufVariantOverride !== undefined\s*\? selected &&\s*loadedModelIdOverride &&\s*selected\.toLowerCase\(\) === loadedModelIdOverride\.toLowerCase\(\)\s*\? loadedGgufVariantOverride\s*: null\s*: activeGgufVariant;/,
+  );
+  // An MLX precision label belongs to the chat's own load, never to a task-owned quant.
+  assert.match(
+    selector,
+    /const isMlx =\s*activeVariantIsMlx && loadedGgufVariantOverride === undefined;\s*const desc = `\$\{isMlx \? "MLX" : "GGUF"\} · \$\{triggerGgufVariant\}`;/,
+  );
 });

@@ -7,10 +7,7 @@ import { DEFAULT_CUSTOMIZATION } from "../src/features/settings/stores/appearanc
 
 import { readSrcAsync, readText } from "./helpers/kit.ts";
 
-// A record predating sidebarNav is served the backend's own defaults, so a drift there
-// hands the user a layout this side never shipped. settings.py says the two must match;
-// the backend's parity test compares against a hand-copied list, which cannot catch a
-// frontend-only change. Read the real constant instead.
+// Old records get the backend's defaults, so they must match; read the real constant.
 test("the backend sidebar nav defaults match the frontend", async () => {
   const source = readText("../../backend/routes/settings.py");
   const block = /SIDEBAR_NAV_ITEM_DEFAULTS = \{([\s\S]*?)^\}/m.exec(source);
@@ -19,21 +16,39 @@ test("the backend sidebar nav defaults match the frontend", async () => {
     id: m[1],
     pinned: m[2] === "True",
   }));
-  // Order matters too: the backend appends its missing ids in this order.
+  // Order matters: the backend appends missing ids in this order.
   assert.deepEqual(backend, DEFAULT_CUSTOMIZATION.sidebarNav);
 });
 
-// The two capability-gated rows. They are the ones that can render disabled without the user
-// having done anything, so they are also the ones a rename would silently un-gate: navRows is
-// keyed by SidebarNavItemId, so a dropped `pending` there just stops spinning, it does not
-// fail to compile.
+// PersonalizationCustomization ignores unknown keys, so undeclared fields are lost on save.
+test("the backend stores every customization field the frontend sends", () => {
+  const source = readText("../../backend/routes/settings.py");
+  const model = /class PersonalizationCustomization\(BaseModel\):([\s\S]*?)\nclass /.exec(
+    source,
+  );
+  assert.ok(model, "could not find PersonalizationCustomization in settings.py");
+  const fields = new Set(
+    [...model[1].matchAll(/^ {4}(\w+):/gm)]
+      .map((m) => m[1])
+      .filter((name) => name !== "model_config"),
+  );
+  for (const key of Object.keys(DEFAULT_CUSTOMIZATION)) {
+    assert.ok(fields.has(key), `the backend drops "${key}" on every save`);
+  }
+  // Defaults to None so a pre-field record differs from a user-chosen empty list.
+  assert.match(
+    model[1],
+    /sidebarNavAuto: Optional\[list\[SidebarNavItemId\]\] = Field\(\n\s*None,/,
+  );
+});
+
+// navRows is keyed by id, so a rename silently un-gates a capability row.
 test("Train and Video are still the capability-gated rows", async () => {
   const source = await readSrcAsync("components/app-sidebar.tsx");
   const rows = /const navRows: Record<SidebarNavItemId, NavRowDef> = \{([\s\S]*?)\n  \};/.exec(
     source,
   );
   assert.ok(rows, "could not find navRows in app-sidebar.tsx");
-  // Split on the top-level row keys so each row's body can be checked on its own.
   const bodies = new Map<string, string>();
   const keys = [...rows[1].matchAll(/^    ([a-z]+): \{$/gm)];
   keys.forEach((key, i) => {
@@ -41,7 +56,6 @@ test("Train and Video are still the capability-gated rows", async () => {
     const end = i + 1 < keys.length ? keys[i + 1].index : rows[1].length;
     bodies.set(key[1], rows[1].slice(start, end));
   });
-  // Every id the backend knows about has a row, or the personalization round-trip renders a gap.
   const backend = readText("../../backend/routes/settings.py");
   const block = /SIDEBAR_NAV_ITEM_DEFAULTS = \{([\s\S]*?)^\}/m.exec(backend);
   assert.ok(block, "could not find SIDEBAR_NAV_ITEM_DEFAULTS in settings.py");
@@ -49,19 +63,17 @@ test("Train and Video are still the capability-gated rows", async () => {
     assert.ok(bodies.has(id), `the backend ships a "${id}" row the sidebar does not define`);
   }
 
-  // Train reads the chat-only verdict; Video reads only the subset of its reasons that leave no
-  // video device, and that expression is pinned in provisional-hardware-verdict.test.ts, so it is
-  // not restated here. Video is still required to have a disabled state -- swapping it for
-  // Train's would pass there, and un-gate the row on a Mac whose only problem is MLX.
+  // Video needs its own disabled state; reusing the chat-only verdict un-gates it on MLX-only Macs.
   for (const [id, disabled] of [
-    ["train", /disabled: chatOnlyMeasured,/],
+    // Train stays enabled only to open the full install dialog on an upgradable Chat only install.
+    ["train", /disabled: trainBlocked && !fullInstall,/],
     ["video", /disabled: (?!chatOnlyMeasured)\w+,/],
   ] as const) {
     const body = bodies.get(id);
     assert.ok(body, `no ${id} row`);
     assert.match(
       body,
-      /pending: capabilitiesUnknown,/,
+      /pending: capabilitiesUnknown && !detectionDeferred,/,
       `the ${id} row renders its disabled state before the verdict is measured`,
     );
     assert.match(

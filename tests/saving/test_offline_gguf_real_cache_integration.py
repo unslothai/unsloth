@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Integration tests for #7481 using real cached Gemma weights.
-
-Requires a one-time online download into ``$HF_HOME`` (defaults to a
-``hf_offline_test_cache`` directory under the platform temp dir):
-
-  HF_HOME=<cache> python -c \\
-    "from huggingface_hub import snapshot_download; snapshot_download('unsloth/gemma-3-270m-it-bnb-4bit', cache_dir='<cache>/hub')"
-
-Every test here drives unsloth's own resolver. Resolving through
-``hf_hub_download`` directly would pass with the fix reverted, since that is
-plain huggingface_hub behaviour rather than anything this change touches.
-
-Importing unsloth pulls the whole package graph, which CPU-only hosts cannot
-do, so the suite is gated behind ``UNSLOTH_INTEGRATION_IMPORT=1``.
-"""
+"""Must drive unsloth's resolver; hf_hub_download alone passes even with the fix reverted."""
 
 from __future__ import annotations
 
@@ -55,8 +41,7 @@ def _block_network(monkeypatch):
     def _guard(*args, **kwargs):
         raise OSError("network blocked for offline integration test")
 
-    # Patch the method, not the class: replacing socket.socket itself breaks any
-    # isinstance(x, socket.socket) in the stack under test.
+    # Patch the method, not the class: replacing socket.socket breaks isinstance checks.
     monkeypatch.setattr(socket.socket, "connect", _guard)
     monkeypatch.setattr(socket, "create_connection", _guard)
     monkeypatch.setattr(socket, "getaddrinfo", _guard)
@@ -100,7 +85,6 @@ def test_real_cached_tokenizer_loads_from_snapshot_not_repo_id(monkeypatch):
         cache_dir = str(CACHE_ROOT / "hub"),
     )
     assert tok.vocab_size > 0
-    # A repo id here means the Hub metadata probe was reached, which is the bug.
     assert tok.name_or_path != REPO
     assert Path(tok.name_or_path).is_dir()
 

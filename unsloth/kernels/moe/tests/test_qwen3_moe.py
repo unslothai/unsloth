@@ -96,7 +96,6 @@ SEED = 42
 SEQ_LENS = [1024]
 DTYPES = [torch.bfloat16]
 
-# Reduce the number of autotuning configs to prevent excessive runtime.
 NUM_AUTOTUNE_CONFIGS = 50
 
 
@@ -113,16 +112,13 @@ def test_qwen3_moe(
     permute_y: bool,
     autotune: bool,
 ):
-    torch.manual_seed(
-        SEED
-    )  # Should not be needed when running using pytest -- autouse fixture in conftest.py
+    torch.manual_seed(SEED)
     device = "cuda"
     hidden_size = config.hidden_size
     bs = 1
     atol, rtol = TOLERANCES[dtype]
     moe_block = Qwen3MoeSparseMoeBlock(config).to(device, dtype)
 
-    # Torch-native grouped gemm version of the MoE block, for sanity checking.
     grouped_gemm_block = Qwen3MoeGroupedGEMMBlock.from_hf(moe_block).to(device, dtype)
     grouped_gemm_block.check_weights(moe_block)
 
@@ -137,7 +133,6 @@ def test_qwen3_moe(
         )
         from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
 
-        # Hack to reduce number of autotuning configs
         _autotuned_grouped_gemm_forward_kernel.configs = (
             _autotuned_grouped_gemm_forward_kernel.configs[:NUM_AUTOTUNE_CONFIGS]
         )
@@ -152,7 +147,6 @@ def test_qwen3_moe(
         kernel_config_bwd_dW = None
         kernel_config_bwd_dX = None
 
-    # Triton kernel grouped gemm version of the MoE block, the thing under test.
     fused_gemm_block = Qwen3MoeFusedGroupedGEMMBlock.from_hf(
         moe_block,
         permute_x = permute_x,
@@ -182,7 +176,6 @@ def test_qwen3_moe(
         with annotated_context(
             "Checking torch grouped gemm MoE vs fused grouped gemm MoE forward outputs..."
         ):
-            # Custom check over the grouped gemm intermediates, for easier debugging.
             check_grouped_gemm_results(
                 grouped_result.grouped_gemm_result,
                 fused_result.grouped_gemm_result,

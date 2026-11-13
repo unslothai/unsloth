@@ -13,10 +13,7 @@ SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
 def _zoo_vision_helpers(*names):
-    """The multi image helpers ship with unsloth_zoo. An unsloth_zoo installed from before
-    they landed has none of them, and the static gates in this file already prove this repo
-    asks for them and fails loudly without them, so behaviour that can only be driven
-    through the zoo is skipped rather than reported as this repo being broken."""
+    """Skip rather than fail when the installed unsloth_zoo predates the multi-image helpers."""
     zoo = pytest.importorskip("unsloth_zoo.rl_replacements")
     missing = [name for name in names if not hasattr(zoo, name)]
     if missing:
@@ -96,9 +93,6 @@ def test_pixel_attention_mask_axis_is_chosen_per_shape():
     assert per_row[1]["pixel_attention_mask"].shape[0] == 4
 
 
-# Behavioral simulation of chunk math
-
-
 def _simulate_chunk_indices(num_images, B):
     total_samples = len(num_images)
     batch_size = max(1, math.ceil(total_samples / B))
@@ -140,9 +134,6 @@ def test_simulate_pixel_attention_mask_axis_decision():
     assert select_axis(9, 9, 3, 2, True) == "pixel"
     assert select_axis(4, 4, 4, 4, False) == "sample"
     assert select_axis(2, 2, 2, 2, False) == "sample"
-
-
-# Zoo compatibility guard
 
 
 def test_zoo_guard_branch_present():

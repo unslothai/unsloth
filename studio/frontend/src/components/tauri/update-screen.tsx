@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { parseBackendDownloadProgress } from "@/components/tauri/backend-download-progress";
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
 import { LogDetails } from "@/components/tauri/log-details";
+import { shouldUseNativeMacWindowTitlebar } from "@/components/tauri/window-titlebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { UpdateStatus } from "@/hooks/use-tauri-update";
+import { useT } from "@/i18n";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
 import { AnimatePresence, motion } from "motion/react";
@@ -29,7 +32,7 @@ function Logo() {
         src="/sticker.png"
         alt=""
         aria-hidden="true"
-        className="h-[60px] w-[60px] object-contain"
+        className="h-[calc(60px*var(--ui-space-scale,1))] w-[calc(60px*var(--ui-space-scale,1))] object-contain"
       />
       <span
         className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
@@ -41,31 +44,33 @@ function Logo() {
   );
 }
 
-function statusLabel(status: UpdateStatus): string {
+type Translate = ReturnType<typeof useT>;
+
+function statusLabel(status: UpdateStatus, t: Translate): string {
   switch (status) {
     case "updating-backend":
-      return "Updating backend...";
+      return t("desktopUpdate.updatingBackend");
     case "downloading":
-      return "Downloading app update...";
+      return t("desktopUpdate.downloadingApp");
     case "installing":
-      return "Installing update...";
+      return t("desktopUpdate.installing");
     case "error":
-      return "Update failed";
+      return t("desktopUpdate.failed");
     default:
-      return "Updating...";
+      return t("desktopUpdate.updating");
   }
 }
 
-function statusSubtext(status: UpdateStatus, progress: number): string {
+function statusSubtext(status: UpdateStatus, progress: number, t: Translate): string {
   switch (status) {
     case "updating-backend":
-      return "This may take a few minutes. Do not close the app.";
+      return t("desktopUpdate.updatingBackendDetail");
     case "downloading":
-      return `${progress}% downloaded`;
+      return t("desktopUpdate.percentDownloaded", { percent: progress });
     case "installing":
-      return "The app will restart shortly.";
+      return t("desktopUpdate.restartShortly");
     case "error":
-      return "Something went wrong during the update.";
+      return t("desktopUpdate.failedDetail");
     default:
       return "";
   }
@@ -80,10 +85,24 @@ export function UpdateScreen({
   onSkipRestart,
   onCopyDiagnostics,
 }: UpdateScreenProps) {
+  const t = useT();
   const isError = status === "error";
+  const backendDownload =
+    status === "updating-backend"
+      ? parseBackendDownloadProgress(logs.at(-1) ?? "")
+      : null;
+  const downloadProgress =
+    status === "downloading" ? progress : backendDownload?.percent;
 
   return (
     <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
+      {shouldUseNativeMacWindowTitlebar() && (
+        <div
+          data-tauri-drag-region={true}
+          aria-hidden="true"
+          className="pointer-events-auto modal-pe-live fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+        />
+      )}
       <div className="flex min-h-0 w-full max-w-md flex-1 items-center justify-center px-6">
         <motion.div
           initial={{ opacity: 0 }}
@@ -104,18 +123,37 @@ export function UpdateScreen({
                   : "text-sm font-bold text-foreground"
               }
             >
-              {statusLabel(status)}
+              {statusLabel(status, t)}
             </p>
             <p className="text-sm text-muted-foreground">
-              {statusSubtext(status, progress)}
+              {statusSubtext(status, progress, t)}
             </p>
 
-            {status === "downloading" && (
+            {backendDownload && (
+              <div className="mt-2 w-full max-w-sm text-xs text-muted-foreground">
+                <p className="break-words">
+                  {t("desktopUpdate.downloadingFile", { file: backendDownload.file })}
+                </p>
+                <p>{backendDownload.detail}</p>
+              </div>
+            )}
+
+            {downloadProgress != null && (
               <div className="mt-2 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-muted">
+                <progress
+                  aria-label={
+                    backendDownload
+                      ? t("desktopUpdate.downloadingFile", { file: backendDownload.file })
+                      : t("desktopUpdate.downloadingAppLabel")
+                  }
+                  max={100}
+                  value={downloadProgress}
+                  className="sr-only"
+                />
                 <motion.div
                   className="h-full rounded-full bg-primary"
                   initial={{ width: 0 }}
-                  animate={{ width: `${progress}%` }}
+                  animate={{ width: `${downloadProgress}%` }}
                   transition={{ duration: 0.3 }}
                 />
               </div>
@@ -136,16 +174,20 @@ export function UpdateScreen({
 
             {isError && (
               <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-                <Button size="hero" onClick={onRetry}>
-                  Retry
+                <Button variant="dark" size="hero" onClick={onRetry}>
+                  {t("desktopStartup.retry")}
                 </Button>
                 <Button variant="muted" size="hero" onClick={onSkipRestart}>
-                  Skip & Restart
+                  {t("desktopUpdate.skipRestart")}
                 </Button>
               </DiagnosticsCopyActions>
             )}
 
-            <LogDetails label="update details" lines={logs} />
+            <LogDetails
+              showLabel={t("desktopStartup.details.showUpdate")}
+              hideLabel={t("desktopStartup.details.hideUpdate")}
+              lines={logs}
+            />
           </div>
         </motion.div>
       </div>

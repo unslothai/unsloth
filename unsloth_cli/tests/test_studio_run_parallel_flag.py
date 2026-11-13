@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the `unsloth studio run --parallel` CLI flag.
-
-Pre-PR `llama_parallel_slots` was hardcoded to 4. These tests pin
-the typer Option (aliases, default 4, 1..64 range), the
-typer/denylist subset invariant, and re-exec forwarding.
-
-See ``test_studio_run_short_alias_clashes.py`` for the argv
-canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
-"""
+"""The --parallel aliases (default 4, 1..64) must stay a subset of the backend denylist."""
 
 from __future__ import annotations
 
@@ -29,8 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def _load_run_command():
-    """Import `studio` without triggering server start; backend imports
-    are lazy inside run()."""
+    """Import studio without starting the server; backend imports are lazy inside run()."""
     from unsloth_cli.commands import studio as _studio
     return _studio
 
@@ -45,7 +36,7 @@ def test_parallel_option_is_registered():
     assert "parallel" in sig.parameters, "missing `parallel` parameter on run()"
 
     param = sig.parameters["parallel"]
-    opt = param.default  # typer.OptionInfo
+    opt = param.default
     flags = set()
     decls = getattr(opt, "param_decls", None) or []
     for d in decls:
@@ -116,17 +107,25 @@ def test_parallel_range_guards_are_set():
     assert getattr(opt, "max", None) == 64, "max must be 64 (KV split sanity cap)"
 
 
+def test_parallel_help_describes_the_shared_kv_cache():
+    """Multi-slot launches add --kv-unified; builds lacking it run one slot (load_model), never ctx/N."""
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.run)
+    help_text = " ".join(sig.parameters["parallel"].default.help.split())
+    assert "--kv-unified" in help_text
+    assert "ctx/N" not in help_text
+    assert "fall back to one slot" in help_text
+
+
 def test_typer_parallel_aliases_are_subset_of_backend_denylist():
-    """Every typer alias for --parallel must be denied on the backend
-    too; otherwise HTTP /load could smuggle the value via
-    `llama_extra_args` and desync llama_parallel_slots from the
-    running llama-server."""
+    """Backend must deny every --parallel alias, or /load can smuggle it in via llama_extra_args."""
     studio_mod = _load_run_command()
     import inspect
     import importlib.util
 
-    # Load llama_server_args.py directly so the test does not need the backend's full runtime chain
-    # installed; the invariant is just about the _DENYLIST_GROUPS tuple.
+    # Load llama_server_args.py directly to avoid the backend's full runtime chain.
     lsa_path = (
         Path(__file__).resolve().parents[2]
         / "studio"
@@ -152,15 +151,6 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
         f"add them to _DENYLIST_GROUPS to keep /load from desyncing "
         f"llama_parallel_slots."
     )
-
-
-# test_in_venv_path_passes_parallel_to_run_server (below) is the runtime equivalent of the retired
-# source-text guard for hardcoded `llama_parallel_slots = 4`.
-
-
-# Re-exec arg-builder coverage. run() re-execs into the studio venv (execvp on POSIX, Popen on
-# Windows), and without explicit forwarding the child reverts to typer defaults and silently drops
-# the user's value.
 
 
 class _ExecCaptured(SystemExit):
@@ -198,7 +188,6 @@ def _install_reexec_capture(monkeypatch, *, platform):
     )
 
     monkeypatch.setattr(sys, "platform", platform)
-    # Emulate Windows re-exec without calling Win32 APIs on non-Windows hosts.
     monkeypatch.setattr(
         studio_mod,
         "_studio_runtime_launch_guard",
@@ -357,8 +346,7 @@ def test_in_venv_child_reports_bound_port_before_start_api_key(
 
 
 def test_run_default_sets_tool_call_env(monkeypatch):
-    """Plain `unsloth run` enables healing and nudging via the inherited env
-    (written before the re-exec so the child server picks them up at import)."""
+    """Plain run enables healing and nudging via the inherited env, set before the re-exec."""
     studio_mod = _load_run_command()
     monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
     monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
@@ -382,8 +370,7 @@ def test_run_disable_flags_set_tool_call_env(monkeypatch):
 
 @pytest.mark.parametrize("inherited", ["0", "false", "False", "no", ""])
 def test_run_omitted_flag_respects_inherited_env(monkeypatch, inherited):
-    """When the flag is omitted, a value the parent set (e.g. `unsloth start`) wins
-    instead of being reset to the default."""
+    """Omitted flag keeps a value the parent set (e.g. unsloth start) instead of resetting it."""
     studio_mod = _load_run_command()
     monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", inherited)
     monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
@@ -450,7 +437,6 @@ def test_reexec_np_is_first_class_alias(monkeypatch):
     assert (
         _value_after(argv, "--parallel") == "8"
     ), f"-np 8 silently became 4 after re-exec; argv = {argv}"
-    # `-np 8` must not clobber --port (default 8888).
     assert _value_after(argv, "--port") == "8888", argv
 
 
@@ -481,6 +467,38 @@ def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
     assert "--gpu-memory-mode" not in captured[0]["argv"]
 
 
+def test_reexec_forwards_engine_parallelism_and_gpus(monkeypatch):
+    result, captured = _invoke_run(
+        monkeypatch,
+        ["--model", "unsloth/Qwen3-8B", "--engine", "vllm"]
+        + ["--engine-parallelism", "data", "--gpus", "0,2"],
+    )
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--engine-parallelism") == "data", argv
+    assert _value_after(argv, "--gpus") == "0,2", argv
+
+
+def test_reexec_omits_default_engine_parallelism_and_gpus(monkeypatch):
+    result, captured = _invoke_run(monkeypatch, _BASE)
+    assert len(captured) == 1, result.output
+    assert "--engine-parallelism" not in captured[0]["argv"]
+    assert "--gpus" not in captured[0]["argv"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--engine-parallelism", "data"], "--engine-parallelism applies only to --engine"),
+        (["--gpus", "0,x"], "--gpus takes comma-separated GPU indices"),
+    ],
+)
+def test_bad_engine_parallelism_or_gpus_is_refused_before_reexec(monkeypatch, extra, message):
+    result, captured = _invoke_run(monkeypatch, _BASE + extra)
+    assert result.exit_code == 2 and not captured
+    assert message in result.output
+
+
 def test_reexec_forwards_speculative_options(monkeypatch):
     result, captured = _invoke_run(
         monkeypatch,
@@ -493,8 +511,7 @@ def test_reexec_forwards_speculative_options(monkeypatch):
 
 
 def test_reexec_forwards_dflash_speculative_type(monkeypatch):
-    """SpeculativeType is what Typer validates the option against, so a mode missing
-    from the literal is rejected before any loading code runs."""
+    """Typer validates the option against SpeculativeType; a mode missing from it fails early."""
     result, captured = _invoke_run(
         monkeypatch,
         _BASE + ["--speculative-type", "dflash"],
@@ -683,13 +700,11 @@ def test_load_model_http_payload_for_dspark(monkeypatch):
 
 
 def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
-    """A slow load commits its 200 and pads the body (routes/inference.py
-    _tunnel_safe_json), so a late failure arrives in-band; it must still surface as the
-    RuntimeError `run` reports, not as a successful load."""
+    """A slow load commits its 200 and pads the body, so a late failure arrives in-band and must
+    still raise the RuntimeError run reports, not a successful load."""
     studio_mod = _load_run_command()
 
     def urlopen(request, timeout):
-        # Keepalive pad, then the deferred failure: what the wire really carries.
         return BytesIO(
             b"  "
             + json.dumps(
@@ -733,8 +748,7 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
         monkeypatch,
-        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use --seed /
-        # --temp here, which remain genuine llama-server pass-through flags.
+        # --top-k is a first-class sampling flag now; --seed / --temp still pass through.
         _BASE + ["--parallel", "8", "--seed", "42", "--temp", "0.7"],
     )
     assert len(captured) == 1
@@ -765,13 +779,12 @@ def test_context_length_banner_line_omits_unknown_values(value):
     [
         ("--load-in-4bit", "--load-in-4bit"),
         ("--no-load-in-4bit", "--no-load-in-4bit"),
-        (None, "--load-in-4bit"),  # default True
+        (None, "--load-in-4bit"),
     ],
 )
 def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag, expected_in_child):
-    """Re-exec must emit the chosen polarity (or the typer default),
-    so a future default flip on one layer can't silently invert
-    behaviour for users who never typed the flag."""
+    """Re-exec must forward the chosen polarity or the typer default, so a default flip on one layer
+    cannot silently invert behaviour for users who never typed the flag."""
     extras = [user_flag] if user_flag else []
     result, captured = _invoke_run(monkeypatch, _BASE + extras)
     assert len(captured) == 1
@@ -781,10 +794,6 @@ def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag,
     )
     assert expected_in_child in argv, f"expected {expected_in_child} in child argv; got {argv}"
     assert other_polarity not in argv, f"unexpected {other_polarity} in child argv; got {argv}"
-
-
-# Runtime check: fake sys.prefix into the studio venv to bypass re-exec, then assert run_server
-# receives --parallel as llama_parallel_slots.
 
 
 class _RunServerCaptured(SystemExit):
@@ -845,8 +854,7 @@ def test_studio_default_rejects_api_only_when_subcommand_invoked():
 
 
 def test_studio_default_default_parallel_with_subcommand_does_not_error():
-    """Omitting --parallel on the group must still let subcommands
-    run; the group's default 1 is benign."""
+    """Omitting --parallel on the group must not block subcommands; its default 1 is benign."""
     studio_mod = _load_run_command()
     import typer as _typer
 
@@ -887,8 +895,7 @@ def test_in_venv_path_passes_parallel_to_run_server(
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
 
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and locks inside it, so an
-    # unwritable home aborts the run before run_server is reached.
+    # A real directory: the launch gate creates STUDIO_HOME and locks inside it.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     # Pin STUDIO_HOME so sys.prefix.startswith() picks the in-venv branch.
@@ -913,9 +920,7 @@ def test_in_venv_path_passes_parallel_to_run_server(
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
-    # run() loads the backend via _load_run_module() (by file path), which ignores a sys.modules mock
-    # with no matching __file__; inject it as the cached run module so the stubbed run_server is
-    # used.
+    # run() loads the backend by file path; inject the mock as the cached run module.
     monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
 
     import typer as _typer
@@ -934,16 +939,13 @@ def test_in_venv_path_passes_parallel_to_run_server(
     ), f"run_server got llama_parallel_slots={captured.get('llama_parallel_slots')!r}, expected {value}"
 
 
-# --api-only: serve API only (no UI). Both re-exec and in-venv paths must carry it.
-
-
 def test_api_only_option_is_registered():
     studio_mod = _load_run_command()
     import inspect
 
     opt = inspect.signature(studio_mod.run).parameters["api_only"].default
     assert "--api-only" in set(getattr(opt, "param_decls", []) or [])
-    assert getattr(opt, "default", None) is False  # opt-in; plain run keeps the UI
+    assert getattr(opt, "default", None) is False
 
 
 @pytest.mark.parametrize(
@@ -983,8 +985,7 @@ def test_in_venv_path_passes_api_only_to_run_server(
     """In-venv path must forward --api-only to run_server(api_only=...)."""
     studio_mod = _load_run_command()
 
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and locks inside it, so an
-    # unwritable home aborts the run before run_server is reached.
+    # A real directory: the launch gate creates STUDIO_HOME and locks inside it.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -1024,7 +1025,6 @@ def test_in_venv_path_passes_api_only_to_run_server(
     assert (
         captured.get("api_only") is expected
     ), f"run_server got api_only={captured.get('api_only')!r}, expected {expected}"
-    # Headless serving must suppress the Tauri-only TAURI_PORT line.
     assert (
         captured.get("emit_tauri_port") is False
     ), f"run_server got emit_tauri_port={captured.get('emit_tauri_port')!r}, expected False"

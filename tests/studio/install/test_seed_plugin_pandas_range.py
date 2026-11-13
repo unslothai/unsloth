@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The bundled seed plugin is installed with --no-deps, so its own pandas range was never
-resolved. On Windows on ARM (Python 3.11+) constraints.txt installs pandas 3, which the
-plugin declared out of range: a dependency-aware reinstall of the plugin would then look for
-a pandas 2 that has no win_arm64 wheel. The plugin's range must admit every pandas the
-constraints can install."""
+"""Installed with --no-deps, so its pandas range must admit every pandas the constraints can install."""
 
 import pathlib
 import re

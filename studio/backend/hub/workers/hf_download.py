@@ -1,21 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HuggingFace Hub download worker, spawned as a subprocess so SIGKILL stops all chunk threads.
-
-Resume safety: downloads here MUST be single-stream sequential writers so the parent's SIGKILL then restart loop can rely on ``os.path.getsize(.incomplete)`` for the resume offset. Enforced by setting ``HF_HUB_DISABLE_XET=1`` and ``HF_HUB_ENABLE_HF_TRANSFER=0`` on the spawning side (see :mod:`hub.utils.download_registry`) for transport=http; passing ``max_workers=1`` to ``snapshot_download`` so files download serially and the at-most-one-active-`.incomplete` invariant holds globally; letting ``prepare_cache_for_transport`` purge any pre-existing ``.incomplete`` blobs not provably from the same sequential writer; and restoring huggingface_hub's 1.17 append-mode writer where safe (see :mod:`hub.utils.resumable_partials`), since 1.18+ writes a process-unique partial and unlinks it, leaving this loop nothing to resume from.
-
-If the final byte count does not match what HF declared, huggingface_hub raises ``EnvironmentError`` ("Consistency check failed: ..."), which is surfaced on stderr so the watcher can show the exact message to the user.
-"""
+"""HF download subprocess (SIGKILL stops chunk threads); resume needs single-stream writes per file, enforced
+by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), one writer per blob, purge of unprovable
+.incomplete blobs."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import signal
 import sys
 import threading
 import time
+import uuid
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Union
 
@@ -24,26 +25,43 @@ _BACKEND = _HERE.parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# Fresh interpreter: main.py's truststore injection does not survive the spawn.
+# Fresh interpreter: main.py's process-wide network injections do not survive the spawn.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 from hub.utils.snapshot_filters import (
     SNAPSHOT_IGNORE_PATTERNS,
 )
 from hub.utils.gguf_plan import (
     GgufVariantPlan,
-    build_gguf_variant_plans,
-    plan_for_variant,
     plan_from_expected_files,
+    resolve_variant_plan,
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
-from hub.utils.resumable_partials import restore_resumable_partials
+from utils.download_speed_limit import DOWNLOAD_SPEED_LIMIT_ENV, speed_limit_bytes_per_second
+from hub.utils.resumable_partials import (
+    LAST_STOCK_RESUMABLE_VERSION,
+    _hub_version,
+    restore_resumable_partials,
+)
 
 # Put huggingface_hub's 1.17 HTTP writer back: the SIGKILL then restart loop reads .incomplete for its resume offset, and 1.18+ leaves nothing to read.
 _PARTIALS_RESUMABLE = restore_resumable_partials()
+
+# Each file is still one sequential writer under huggingface_hub's per-blob lock, so overlapping files only hides request latency and per-connection caps.
+_HTTP_FILE_WORKERS = 4
+
+
+def _file_workers(mode: str) -> int:
+    """``snapshot_download(max_workers=...)``. Xet stays serial: hf_xet fans out inside a file and a killed Xet file restarts from zero. HTTP overlaps only where a killed partial resumes: the stock writer up to 1.17, past it only the writer restored at import."""
+    version = _hub_version()
+    resumes = _PARTIALS_RESUMABLE or (bool(version) and version <= LAST_STOCK_RESUMABLE_VERSION)
+    return _HTTP_FILE_WORKERS if mode == "http" and resumes else 1
+
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.
 HfTokenArg = Union[str, bool, None]
@@ -58,6 +76,79 @@ _METADATA_RETRY_DELAY = 1.0
 def _on_signal(signum, frame):
     # 130 is what `classify_exit` maps to the "cancelled" job state.
     sys.exit(130)
+
+
+def _lift_http_ceiling_on_modelscope() -> None:
+    """The hub refuses large HTTP transfers on the client side, for Hugging Face's storage; ModelScope's CDN serves them."""
+    from huggingface_hub import constants
+    from utils.hub_settings import MODELSCOPE, active_source
+
+    if active_source() == MODELSCOPE:
+        constants.MAX_HTTP_DOWNLOAD_SIZE = sys.maxsize
+
+
+class _Pacer:
+    def __init__(self, bytes_per_second: float):
+        self._rate = bytes_per_second
+        self._lock = threading.Lock()
+        self._ready_at = time.monotonic()
+
+    def wait(self, nbytes: int) -> None:
+        with self._lock:
+            now = time.monotonic()
+            # A quarter second of credit, so sleep overshoot (15ms on Windows) does not erode the rate.
+            self._ready_at = max(self._ready_at, now - 0.25) + nbytes / self._rate
+            delay = self._ready_at - now
+        if delay > 0:
+            time.sleep(delay)
+
+
+def _paced_stream(inner, pacer: _Pacer):
+    # iter_raw demands its own library's SyncByteStream: httpx on hub 1.x, httpx2 on 2.x.
+    base = sys.modules[type(inner).__module__.partition(".")[0]].SyncByteStream
+
+    class _PacedStream(base):
+        def __iter__(self):
+            for chunk in inner:
+                pacer.wait(len(chunk))
+                yield chunk
+
+        def close(self) -> None:
+            inner.close()
+
+    return _PacedStream()
+
+
+def _install_speed_limit() -> None:
+    bytes_per_second = speed_limit_bytes_per_second(os.environ.get(DOWNLOAD_SPEED_LIMIT_ENV))
+    if not bytes_per_second:
+        return
+    try:
+        from huggingface_hub import constants, set_client_factory
+        from huggingface_hub.utils._http import default_client_factory
+    except ImportError:
+        print(
+            "download speed limit needs huggingface_hub 1.x; downloading at full speed",
+            file = sys.stderr,
+        )
+        return
+
+    pacer = _Pacer(bytes_per_second)
+    # http_get writes (and progress reads) per DOWNLOAD_CHUNK_SIZE: 10 MB stalls the bar for minutes at a low limit.
+    constants.DOWNLOAD_CHUNK_SIZE = max(
+        64 * 1024, min(constants.DOWNLOAD_CHUNK_SIZE, int(bytes_per_second // 2))
+    )
+
+    def pace(response) -> None:
+        response.stream = _paced_stream(response.stream, pacer)
+
+    def paced_client():
+        client = default_client_factory()
+        hooks = client.event_hooks
+        client.event_hooks = {"request": hooks["request"], "response": [*hooks["response"], pace]}
+        return client
+
+    set_client_factory(paced_client)
 
 
 def _install_signal_handlers() -> None:
@@ -87,12 +178,7 @@ def _protected_blob_hashes() -> frozenset[str]:
 
 
 def _parent_is_alive(parent_pid: int) -> bool:
-    """Whether the recorded parent (the backend) is still running.
-
-    Liveness ONLY: ``os.kill(pid, 0)`` on POSIX, an ``OpenProcess`` handle on Windows, against the *recorded* PID (never os.getppid(), so POSIX reparenting to init after the backend dies still resolves as dead). Probe ambiguity is treated as alive so a transient error never kills a healthy download.
-
-    Deliberately does NOT compare psutil ``create_time()`` for PID-reuse detection: it is not stable across reads on some platforms, so an exact match can spuriously kill a live download. PID-reuse after parent death is covered by the boot-time orphan reaper.
-    """
+    """Probes the recorded parent PID, never getppid(), so reparenting to init still reads as dead."""
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
@@ -124,7 +210,7 @@ def _parent_is_alive(parent_pid: int) -> bool:
     return True
 
 
-def _terminate_orphaned_self() -> None:
+def _terminate_orphaned_self(heartbeat: str | None = None) -> None:
     # Hard exit from the watchdog thread: a self-SIGTERM would be deferred while the main thread is GIL-blocked in a C socket read, and the partial resumes byte-exact with atomic marker writes.
     try:
         print(
@@ -134,10 +220,16 @@ def _terminate_orphaned_self() -> None:
         sys.stderr.flush()
     except Exception:
         pass
+    # The parent owns heartbeat cleanup and is gone, so nobody else will remove it.
+    try:
+        from hub.utils.download_heartbeat import remove
+        remove(heartbeat)
+    except Exception:
+        pass
     os._exit(130)
 
 
-def _install_parent_death_watchdog(parent_pid: int | None) -> None:
+def _install_parent_death_watchdog(parent_pid: int | None, heartbeat: str | None = None) -> None:
     if not parent_pid or parent_pid <= 0:
         return
     interval = _parent_poll_seconds()
@@ -149,7 +241,7 @@ def _install_parent_death_watchdog(parent_pid: int | None) -> None:
             except Exception:
                 alive = True
             if not alive:
-                _terminate_orphaned_self()
+                _terminate_orphaned_self(heartbeat)
                 return
             time.sleep(interval)
 
@@ -160,8 +252,37 @@ def _install_parent_death_watchdog(parent_pid: int | None) -> None:
     ).start()
 
 
+# One job per process: once the Hub has refused the token, every later read skips it.
+_REJECTED_TOKEN: str | None = None
+
+
 def _hf_token_arg(hf_token: str | None) -> HfTokenArg:
-    return hf_token if hf_token else False
+    if not hf_token or hf_token == _REJECTED_TOKEN:
+        return False
+    return hf_token
+
+
+def _metadata_read(fn, hf_token: str | None, *args, **kwargs):
+    """A metadata read that retries once anonymously when the Hub rejects the token (HTTP 401)."""
+    global _REJECTED_TOKEN
+    from hub.utils.hf_tokens import (
+        call_hub_with_anonymous_retry,
+        collecting_hub_token_rejections,
+        saved_token_rejected,
+    )
+
+    token = _hf_token_arg(hf_token)
+    with collecting_hub_token_rejections():
+        result = call_hub_with_anonymous_retry(fn, token, *args, **kwargs)
+        rejected = token is not False and saved_token_rejected(token)
+    if hf_token and rejected:
+        _REJECTED_TOKEN = hf_token
+        print(
+            "Hugging Face rejected the saved token (HTTP 401); downloading without it. "
+            "Update or remove the token in Settings if it has expired or been revoked.",
+            file = sys.stderr,
+        )
+    return result
 
 
 def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
@@ -179,26 +300,363 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
     raise RuntimeError(f"{label} unavailable for {repo_id}")
 
 
+_RESOLVED_COMMITS: dict[str, str] = {}
+# huggingface_hub's REGEX_COMMIT_HASH: only a full sha is taken as already resolved.
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+
+
 def _model_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import model_info as hf_model_info
-    return _retry_metadata_fetch(
+
+    info = _retry_metadata_fetch(
         repo_id,
-        lambda timeout: hf_model_info(
+        lambda timeout: _metadata_read(
+            hf_model_info,
+            hf_token,
             repo_id,
-            token = _hf_token_arg(hf_token),
             timeout = timeout,
             files_metadata = True,
         ),
         label = "Metadata",
     )
+    commit = getattr(info, "sha", None)
+    if isinstance(commit, str) and commit:
+        _RESOLVED_COMMITS[repo_id] = commit
+    return info
+
+
+def _read_ref(ref: Path):
+    try:
+        return ref.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _write_ref(ref: Path, commit: str) -> None:
+    """Atomic, with even transient files outside refs/ (scan_cache_dir reads branch names)."""
+    ref.parent.mkdir(parents = True, exist_ok = True)
+    tmp = ref.parent.parent / f".studio-{ref.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        tmp.write_text(commit, encoding = "utf-8")
+        os.replace(tmp, ref)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
+    """Select an immutable revision without exposing an unverified snapshot through refs/main."""
+    if not isinstance(commit, str) or not _COMMIT_SHA.fullmatch(commit):
+        return {}
+    return {"revision": commit}
+
+
+def _model_manifest_attestation(commit) -> dict:
+    """Date copied files only when metadata resolved an immutable revision."""
+    if isinstance(commit, str) and _COMMIT_SHA.fullmatch(commit):
+        return {"commit_hash": commit, "metadata_derived": True}
+    return {}
+
+
+# Among cooperating workers, the latest-started verified success owns main.
+# SHA transfers leave main unchanged; native owner locks identify abandoned attempts.
+# Journal/ref writes are not a power-loss transaction and cannot coordinate external writers.
+
+
+@dataclass(frozen = True)
+class _MainRefState:
+    next_sequence: int = 1
+    published_sequence: int = 0
+    published_commit: str | None = None
+    attempts: tuple[tuple[int, str], ...] = ()
+    owners: tuple[tuple[int, str], ...] = ()
+
+
+def _start_main_ref(state: _MainRefState, commit: str, owner: str) -> tuple[_MainRefState, int]:
+    sequence = state.next_sequence
+    return _MainRefState(
+        sequence + 1,
+        state.published_sequence,
+        state.published_commit,
+        (*state.attempts, (sequence, commit)),
+        (*state.owners, (sequence, owner)),
+    ), sequence
+
+
+def _finish_main_ref(state: _MainRefState, sequence: int, verified: bool) -> _MainRefState:
+    attempts = dict(state.attempts)
+    commit = attempts.pop(sequence)
+    publish = verified and sequence > state.published_sequence
+    return _MainRefState(
+        state.next_sequence,
+        sequence if publish else state.published_sequence,
+        commit if publish else state.published_commit,
+        tuple(attempts.items()),
+        tuple((seq, owner) for seq, owner in state.owners if seq != sequence),
+    )
+
+
+def _prune_main_ref_attempts(state: _MainRefState, owner_is_alive) -> _MainRefState:
+    for sequence, owner in state.owners:
+        if not owner_is_alive(owner):
+            state = _finish_main_ref(state, sequence, False)
+    return state
+
+
+def _main_ref_owner_lock(lock_dir: Path, owner: str):
+    # Soft locks survive SIGKILL and cannot prove ownership.
+    from filelock import FileLock, SoftFileLock
+
+    lock = FileLock(lock_dir / f"studio-main-owner-{owner}.lock")
+    lock.acquire(timeout = 0)
+    if isinstance(lock, SoftFileLock):
+        lock.release()
+        raise OSError("refs/main attempt ownership requires native file locks")
+    return lock
+
+
+def _main_ref_owner_is_alive(lock_dir: Path, owner: str) -> bool:
+    from filelock import Timeout
+
+    try:
+        lock = _main_ref_owner_lock(lock_dir, owner)
+    except Timeout:
+        return True
+    lock.release()
+    Path(lock.lock_file).unlink(missing_ok = True)
+    return False
+
+
+def _load_main_ref_state(path: Path, previous: str | None) -> _MainRefState:
+    try:
+        raw = path.read_text(encoding = "utf-8")
+    except FileNotFoundError:
+        return _MainRefState(published_commit = previous)
+    # Resetting a damaged journal could reuse a live peer's sequence.
+    data = json.loads(raw)
+    state = _MainRefState(
+        data["next_sequence"],
+        data["published_sequence"],
+        data["published_commit"],
+        tuple(tuple(attempt) for attempt in data["attempts"]),
+        tuple(tuple(owner) for owner in data.get("owners", ())),
+    )
+    if (
+        type(state.next_sequence) is not int
+        or type(state.published_sequence) is not int
+        or not 0 <= state.published_sequence < state.next_sequence
+        or not (state.published_commit is None or isinstance(state.published_commit, str))
+        or (state.published_sequence > 0 and state.published_commit is None)
+        or len(dict(state.attempts)) != len(state.attempts)
+        or any(
+            type(sequence) is not int
+            or not 0 < sequence < state.next_sequence
+            or not isinstance(commit, str)
+            or not _COMMIT_SHA.fullmatch(commit)
+            for sequence, commit in state.attempts
+        )
+        or len(dict(state.owners)) != len(state.owners)
+        or set(dict(state.owners)) != set(dict(state.attempts))
+        or any(
+            type(sequence) is not int
+            or not isinstance(owner, str)
+            or re.fullmatch(r"[0-9a-f]{32}", owner) is None
+            for sequence, owner in state.owners
+        )
+    ):
+        raise ValueError(f"Invalid refs/main publication state: {path}")
+    return state
+
+
+def _update_main_ref(
+    repo_dir: Path,
+    *,
+    commit: str | None = None,
+    sequence: int | None = None,
+    verified: bool = False,
+    on_publish = None,
+    owner: str | None = None,
+) -> int | None:
+    """Persist one decision under the lock; no network, transfer or verification here."""
+    from huggingface_hub.utils import WeakFileLock
+
+    lock_dir = repo_dir.parent / ".locks" / repo_dir.name
+    lock_dir.mkdir(parents = True, exist_ok = True)
+    state_path = lock_dir / "studio-main.json"
+    ref = repo_dir / "refs" / "main"
+    with WeakFileLock(lock_dir / "studio-main.lock"):
+        previous = _read_ref(ref)
+        before = _prune_main_ref_attempts(
+            _load_main_ref_state(state_path, previous),
+            lambda attempt_owner: _main_ref_owner_is_alive(lock_dir, attempt_owner),
+        )
+        if commit is not None:
+            if owner is None:
+                raise ValueError("refs/main attempt requires a live owner")
+            state, sequence = _start_main_ref(before, commit, owner)
+        else:
+            state = _finish_main_ref(before, sequence, verified)
+        try:
+            _write_ref(state_path, json.dumps(asdict(state)))
+            if verified and previous != state.published_commit:
+                _write_ref(ref, state.published_commit)
+        except BaseException:
+            if verified:
+                # A failed publication must not disown an older active success.
+                failed = _finish_main_ref(before, sequence, False)
+                _write_ref(state_path, json.dumps(asdict(failed)))
+                if _read_ref(ref) != previous:
+                    if previous is None:
+                        ref.unlink(missing_ok = True)
+                    else:
+                        _write_ref(ref, previous)
+            raise
+        # Reclaim under this lock so no new peer loses its snapshot.
+        if verified and state.published_sequence == sequence and on_publish is not None:
+            on_publish(state)
+    return sequence
+
+
+def _pinned_snapshot_download(
+    snapshot_download,
+    commit,
+    *,
+    expected_files = (),
+    verify = None,
+    on_publish = None,
+    **kwargs,
+):
+    """Transfer and verify outside the lock; publish and reclaim under it."""
+    from hub.utils.snapshot_reuse import repo_cache_dir
+
+    repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
+    repo_dir = repo_cache_dir(repo_type, repo_id)
+    if commit is None:
+        commit = _read_ref(repo_dir / "refs" / "main")
+    pin = _pinned_revision(repo_type, repo_id, commit)
+    if not pin:
+        raise OSError(
+            f"Cannot resolve an immutable revision for {repo_id}; retry when metadata is available"
+        )
+
+    lock_dir = repo_dir.parent / ".locks" / repo_dir.name
+    lock_dir.mkdir(parents = True, exist_ok = True)
+    owner = uuid.uuid4().hex
+    owner_lock = _main_ref_owner_lock(lock_dir, owner)
+    try:
+        sequence = _update_main_ref(repo_dir, commit = commit, owner = owner)
+        try:
+            path = snapshot_download(**kwargs, **pin)
+            if Path(path).name != commit or not Path(path).is_dir():
+                raise OSError(
+                    f"Pinned download of {repo_id} returned a snapshot other than {commit}"
+                )
+            # Legacy Hub can return an existing incomplete snapshot after metadata
+            # fails. Check before making it visible to offline repo-ID resolution.
+            if expected_files:
+                from hub.utils.download_manifest import Manifest, verify_against_disk
+                manifest = Manifest(repo_type, repo_id, None, "", tuple(expected_files))
+                if not verify_against_disk(manifest, Path(path)).ok:
+                    raise OSError(f"Pinned snapshot of {repo_id} is incomplete")
+            if verify is not None:
+                verify(path)
+        except BaseException:
+            _update_main_ref(repo_dir, sequence = sequence)
+            raise
+        _update_main_ref(repo_dir, sequence = sequence, verified = True, on_publish = on_publish)
+        return path
+    finally:
+        owner_lock.release()
+        Path(owner_lock.lock_file).unlink(missing_ok = True)
+
+
+def _rebuild_header_only_ggufs(
+    repo_type: RepoType, repo_id: str, commit_hash, expected_files: list, hf_token: str | None
+) -> None:
+    """Rebuild each pending image / video GGUF whose new revision changed only its header from the older snapshot's
+    copy. Chat, audio and other GGUFs keep the plain download; the gate is read only when a rebuild is possible."""
+    try:
+        from hub.utils.download_manifest import expected_path_is_safe, normalized_commit_hash
+        from hub.utils.gguf_header_delta import (
+            _is_media_gguf,
+            delta_enabled,
+            hub_range_fetcher,
+            rebuild_from_older_snapshot,
+        )
+        from hub.utils.snapshot_reuse import repo_cache_dir
+
+        commit = normalized_commit_hash(commit_hash)
+        if not commit or not delta_enabled():
+            return
+        repo_dir = repo_cache_dir(repo_type, repo_id)
+        protected = _protected_blob_hashes()
+        for item in expected_files:
+            path = getattr(item, "path", None)
+            digest = getattr(item, "sha256", None)
+            size = int(getattr(item, "size", 0) or 0)
+            if not expected_path_is_safe(path) or not str(path).lower().endswith(".gguf"):
+                continue
+            result = rebuild_from_older_snapshot(
+                repo_dir,
+                commit,
+                path,
+                size,
+                digest or "",
+                hub_range_fetcher(repo_id, path, hf_token, repo_type = repo_type, revision = commit),
+                protected_blob_hashes = protected,
+                media_gate = lambda old, path = path: _is_media_gguf(old, repo_id, path),
+            )
+            if result.placed:
+                print(
+                    f"Rebuilt {path} from the cached older copy (only its header changed): fetched "
+                    f"{result.fetched_bytes / 1e6:.2f} MB instead of {result.size / 1e9:.2f} GB.",
+                    file = sys.stderr,
+                )
+    except Exception as exc:  # noqa: BLE001 - an optimisation only: snapshot_download fetches what is left
+        print(f"GGUF header reuse skipped for {repo_id}: {exc}", file = sys.stderr)
+
+
+def _reuse_unchanged_files(
+    repo_type: RepoType, repo_id: str, commit_hash, expected_files: list, hf_token: str | None
+) -> list:
+    """Link files unchanged since an older snapshot into this commit; return the files still to download."""
+    from hub.utils.snapshot_reuse import paths_in_snapshot, reuse_unchanged_snapshot_files
+
+    if not expected_files or not commit_hash:
+        return list(expected_files)
+    result = reuse_unchanged_snapshot_files(
+        repo_type,
+        repo_id,
+        commit_hash,
+        expected_files,
+        # Always hash locally: a Hub digest proves what the old commit served, not what is on disk now.
+        protected_blob_hashes = _protected_blob_hashes(),
+    )
+    if result.reused:
+        print(
+            f"Reused {len(result.reused)} unchanged file(s) ({result.reused_bytes / 1e9:.2f} GB) "
+            f"from an older snapshot of {repo_id} instead of downloading them again.",
+            file = sys.stderr,
+        )
+    _rebuild_header_only_ggufs(repo_type, repo_id, commit_hash, expected_files, hf_token)
+    # Files an earlier attempt placed are skipped by snapshot_download and have no blob for the preflight to discount.
+    present = paths_in_snapshot(
+        repo_type, repo_id, commit_hash, [getattr(f, "path", None) for f in expected_files]
+    )
+    return [f for f in expected_files if getattr(f, "path", None) not in present]
 
 
 def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import HfApi
-    api = HfApi(token = _hf_token_arg(hf_token))
+    api = HfApi()
     return _retry_metadata_fetch(
         repo_id,
-        lambda timeout: api.dataset_info(
+        lambda timeout: _metadata_read(
+            api.dataset_info,
+            hf_token,
             repo_id,
             timeout = timeout,
             files_metadata = True,
@@ -509,12 +967,16 @@ def _recover_manifest_after_download(
         )
 
 
-def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
+def _download_snapshot(
+    repo_id: str,
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
+) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils import download_manifest
 
-    # One metadata fetch powers both the ignore-pattern decision and the manifest's expected_files; a failure is non-fatal and falls back to the legacy ignore set, losing verification only.
     try:
         info = _model_info_with_retry(repo_id, hf_token)
     except Exception as e:
@@ -525,14 +987,25 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
         )
         info = None
 
+    commit = getattr(info, "sha", None)
     download_manifest.clear_cancel_marker("model", repo_id, None)
     if info is not None:
         ignore_patterns, expected_files = _snapshot_download_plan(info)
         # The manifest verifies the finalized files under snapshots/, which both transports produce identically; XET's block-level dedup lives only in the chunk cache.
-        download_manifest.write_manifest("model", repo_id, None, expected_files, mode)
+        download_manifest.write_manifest(
+            "model",
+            repo_id,
+            None,
+            expected_files,
+            mode,
+            **_model_manifest_attestation(getattr(info, "sha", None)),
+        )
     else:
         ignore_patterns = list(SNAPSHOT_IGNORE_PATTERNS)
-        expected_files = []
+        manifest = download_manifest.read_manifest("model", repo_id, None)
+        expected_files = list(manifest.expected_files) if manifest is not None else []
+        if manifest is not None and manifest.metadata_derived:
+            commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
 
     purged = prepare_cache_for_transport("model", repo_id, mode)
     if purged:
@@ -541,28 +1014,39 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("model", repo_id, expected_files)
-    snapshot_path = snapshot_download(
+    to_download = _reuse_unchanged_files(
+        "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
+    )
+    _preflight_disk_space("model", repo_id, to_download)
+
+    def verify(snapshot_path: str) -> None:
+        if info is None:
+            _recover_manifest_after_download(
+                "model",
+                repo_id,
+                snapshot_path,
+                mode,
+                fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
+                expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
+            )
+        _verify_completed_download(
+            "model",
+            repo_id,
+            None,
+            snapshot_path,
+            metadata_unavailable = info is None,
+        )
+
+    _pinned_snapshot_download(
+        snapshot_download,
+        commit,
+        expected_files = expected_files,
+        verify = verify,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
-        max_workers = 1,
-    )
-    if info is None:
-        _recover_manifest_after_download(
-            "model",
-            repo_id,
-            snapshot_path,
-            mode,
-            fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
-            expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
-        )
-    _verify_completed_download(
-        "model",
-        repo_id,
-        None,
-        snapshot_path,
-        metadata_unavailable = info is None,
+        max_workers = _file_workers(mode),
+        tqdm_class = tqdm_class,
     )
 
 
@@ -580,11 +1064,18 @@ def _gguf_variant_target_plan(
         raise RuntimeError(
             f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
         ) from e
-    # plan_for_variant, not .get: a repo filing every variant under one shared container qualifies every key, so a stored pin or an explicit repo:Q4_K_M missed the map and the worker exited with "No GGUF shards matching variant".
-    return plan_for_variant(build_gguf_variant_plans(list(info.siblings)), variant)
+    # plan_for_variant (inside resolve_variant_plan), not .get: a repo filing every variant under one shared container qualifies every key, so a stored pin or an explicit repo:Q4_K_M missed the map and the worker exited with "No GGUF shards matching variant".
+    return resolve_variant_plan(info.siblings, variant)
 
 
-def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mode: str) -> None:
+def _download_gguf_variant(
+    repo_id: str,
+    variant: str,
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
+    engram_precision: str | None = None,
+) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils.hf_cache_state import has_active_incomplete_blobs
@@ -597,6 +1088,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
         plan = None
         metadata_unavailable = True
 
+    commit = None if metadata_unavailable else _RESOLVED_COMMITS.get(repo_id)
     if not metadata_unavailable:
         if plan is None:
             print(
@@ -604,6 +1096,15 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
                 file = sys.stderr,
             )
             sys.exit(1)
+        if engram_precision:
+            if plan.engram_table(engram_precision) is None:
+                print(
+                    f"{repo_id} publishes no {engram_precision} Engram table",
+                    file = sys.stderr,
+                )
+                sys.exit(1)
+            # The standalone table in place of the quant's own table shard.
+            plan = plan.with_engram(engram_precision)
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
         main_blob_hashes = plan.main_hashes
@@ -614,6 +1115,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             variant,
             expected_files,
             mode,
+            **_model_manifest_attestation(commit),
         )
     else:
         # Metadata unreachable: resume the exact shards the original attempt recorded so snapshot_download can range over the surviving .incomplete blobs.
@@ -625,7 +1127,21 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
                 file = sys.stderr,
             )
             sys.exit(1)
+        from core.inference.engram_tables import engram_table_precision
+
+        recorded = {engram_table_precision(f.path) for f in manifest.expected_files} - {None}
+        if {p.upper() for p in recorded} != (
+            {engram_precision.upper()} if engram_precision else set()
+        ):
+            print(
+                f"Metadata unavailable and the existing manifest for GGUF variant '{variant}' of "
+                f"{repo_id} fetches a different Engram table; retry when metadata is available.",
+                file = sys.stderr,
+            )
+            sys.exit(1)
         plan = plan_from_expected_files(variant, manifest.expected_files)
+        if manifest.metadata_derived:
+            commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
         download_manifest.write_manifest(
@@ -634,6 +1150,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             variant,
             expected_files,
             mode,
+            **_model_manifest_attestation(commit),
         )
         main_blob_hashes = plan.main_hashes
         companion_blob_hashes = plan.companion_hashes
@@ -676,29 +1193,26 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("model", repo_id, expected_files)
-    snapshot_path = snapshot_download(
-        repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
-        allow_patterns = targets,
-        max_workers = 1,
+    to_download = (
+        expected_files
+        if metadata_unavailable
+        else _reuse_unchanged_files("model", repo_id, commit, expected_files, hf_token)
     )
-    _verify_completed_download(
-        "model",
-        repo_id,
-        variant,
-        snapshot_path,
-        metadata_unavailable = metadata_unavailable,
-    )
-    if plan is not None:
+    _preflight_disk_space("model", repo_id, to_download)
+
+    def reclaim(state: _MainRefState) -> None:
         try:
             from hub.services.models.deletion import reclaim_replaced_gguf_variant
+            from hub.utils.snapshot_reuse import repo_cache_dir
             reclaim_replaced_gguf_variant(
                 repo_id,
                 variant,
                 plan.main_hashes,
                 hf_token,
-                hub_cache = Path(snapshot_path).parents[2],
+                hub_cache = repo_cache_dir("model", repo_id).parent,
+                protected_revisions = frozenset(
+                    [state.published_commit, *(sha for _, sha in state.attempts)]
+                ),
             )
         except Exception as e:
             print(
@@ -707,9 +1221,33 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
                 file = sys.stderr,
             )
 
+    snapshot_path = _pinned_snapshot_download(
+        snapshot_download,
+        commit,
+        expected_files = expected_files,
+        on_publish = reclaim,
+        repo_id = repo_id,
+        token = _hf_token_arg(hf_token),
+        allow_patterns = targets,
+        max_workers = _file_workers(mode),
+        tqdm_class = tqdm_class,
+    )
+    _verify_completed_download(
+        "model",
+        repo_id,
+        variant,
+        snapshot_path,
+        metadata_unavailable = metadata_unavailable,
+    )
+
 
 def _download_scoped_snapshot(
-    repo_id: str, scope: str, files: list[str], hf_token: str | None, mode: str
+    repo_id: str,
+    scope: str,
+    files: list[str],
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
 ) -> None:
     """Fetch exactly ``files`` from ``repo_id``, keyed under ``scope``. For consumers that read a deliberate subset of a repo (the diffusion loader skips the packaged root single, transformer/ shards and fp16 twins). Keyed apart from the repo's full snapshot so neither manifest describes the other, and the repo is not later judged partial against expectations it was never meant to meet."""
     from huggingface_hub import HfApi, snapshot_download
@@ -727,6 +1265,7 @@ def _download_scoped_snapshot(
         )
         info = None
 
+    commit = getattr(info, "sha", None)
     expected_files: list[ExpectedFile] = []
     blob_hashes: frozenset[str] = frozenset()
     if info is not None:
@@ -751,7 +1290,20 @@ def _download_scoped_snapshot(
         from hub.utils.snapshot_filters import blob_hashes_for_siblings
 
         blob_hashes = blob_hashes_for_siblings(siblings)
-        download_manifest.write_manifest("model", repo_id, scope, expected_files, mode)
+        download_manifest.write_manifest(
+            "model",
+            repo_id,
+            scope,
+            expected_files,
+            mode,
+            **_model_manifest_attestation(getattr(info, "sha", None)),
+        )
+    else:
+        manifest = download_manifest.read_manifest("model", repo_id, scope)
+        if manifest is not None:
+            expected_files = list(manifest.expected_files)
+            if manifest.metadata_derived:
+                commit = download_manifest.normalized_commit_hash(manifest.commit_hash)
 
     download_manifest.clear_cancel_marker("model", repo_id, scope)
     purged = prepare_cache_for_transport(
@@ -768,35 +1320,51 @@ def _download_scoped_snapshot(
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("model", repo_id, expected_files)
-    snapshot_path = snapshot_download(
+    to_download = _reuse_unchanged_files(
+        "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
+    )
+    _preflight_disk_space("model", repo_id, to_download)
+
+    def verify(snapshot_path: str) -> None:
+        if info is None:
+            # A saved manifest may omit files in the current request.
+            root = Path(snapshot_path)
+            absent = tuple(f for f in files if not (root / f).exists())
+            if absent:
+                print(
+                    f"Could not reach Hugging Face for {repo_id} [{scope}] and the copy on disk "
+                    f"is incomplete ({len(absent)} file(s) missing): {_format_path_list(absent)}. "
+                    "Reconnect (or set a valid HF token) and resume the download.",
+                    file = sys.stderr,
+                )
+                sys.exit(1)
+        _verify_completed_download(
+            "model",
+            repo_id,
+            scope,
+            snapshot_path,
+            metadata_unavailable = info is None,
+        )
+
+    _pinned_snapshot_download(
+        snapshot_download,
+        commit,
+        expected_files = expected_files,
+        verify = verify,
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
-        max_workers = 1,
-    )
-    if info is None:
-        # With no metadata there is no manifest, and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER when repo_info also fails, flipping the job to complete with no weights.
-        root = Path(snapshot_path)
-        absent = tuple(f for f in files if not (root / f).exists())
-        if absent:
-            print(
-                f"Could not reach Hugging Face for {repo_id} [{scope}] and the copy on disk "
-                f"is incomplete ({len(absent)} file(s) missing): {_format_path_list(absent)}. "
-                "Reconnect (or set a valid HF token) and resume the download.",
-                file = sys.stderr,
-            )
-            sys.exit(1)
-    _verify_completed_download(
-        "model",
-        repo_id,
-        scope,
-        snapshot_path,
-        metadata_unavailable = info is None,
+        max_workers = _file_workers(mode),
+        tqdm_class = tqdm_class,
     )
 
 
-def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
+def _download_dataset(
+    repo_id: str,
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
+) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils import download_manifest
@@ -834,12 +1402,14 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("dataset", repo_id, expected_files)
+    to_download = _reuse_unchanged_files("dataset", repo_id, commit_hash, expected_files, hf_token)
+    _preflight_disk_space("dataset", repo_id, to_download)
     download_kwargs = {
         "repo_id": repo_id,
         "token": _hf_token_arg(hf_token),
         "repo_type": "dataset",
-        "max_workers": 1,
+        "max_workers": _file_workers(mode),
+        "tqdm_class": tqdm_class,
     }
     if isinstance(commit_hash, str) and commit_hash.strip():
         download_kwargs["revision"] = commit_hash.strip()
@@ -892,10 +1462,28 @@ def _force_stall_for_tests(repo_id: str, repo_type: str) -> None:
         time.sleep(3600)
 
 
+def _progress_class(heartbeat: str | None) -> type | None:
+    if not heartbeat:
+        return None
+    from huggingface_hub.utils import tqdm as hf_tqdm
+    from hub.utils.download_heartbeat import HeartbeatWriter
+
+    writer = HeartbeatWriter(heartbeat)
+
+    class _Heartbeat(hf_tqdm):
+        def update(self, n = 1):
+            if n and n > 0:
+                writer.add(int(n))
+            return super().update(n)
+
+    return _Heartbeat
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description = "HuggingFace Hub download worker")
     parser.add_argument("--repo-id", required = True)
     parser.add_argument("--variant", default = None)
+    parser.add_argument("--engram", default = None)
     parser.add_argument("--dataset", action = "store_true")
     parser.add_argument("--transport", choices = ("http", "xet"), default = "http")
     parser.add_argument("--parent-pid", type = int, default = None)
@@ -904,6 +1492,7 @@ def main() -> None:
         default = None,
         help = "Temp JSON file holding a scoped job's exact file list (deleted after reading).",
     )
+    parser.add_argument("--heartbeat", default = None)
     args = parser.parse_args()
 
     scoped_files: list[str] = []
@@ -919,24 +1508,34 @@ def main() -> None:
                 pass
 
     _install_signal_handlers()
-    _install_parent_death_watchdog(args.parent_pid)
+    _install_parent_death_watchdog(args.parent_pid, args.heartbeat)
 
     hf_token = os.environ.get("HF_TOKEN") or None
+    _lift_http_ceiling_on_modelscope()
+    _install_speed_limit()
 
     if args.transport == "xet" and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         _force_stall_for_tests(args.repo_id, "dataset" if args.dataset else "model")
 
+    progress = _progress_class(args.heartbeat)
     try:
         if args.dataset:
-            _download_dataset(args.repo_id, hf_token, args.transport)
+            _download_dataset(args.repo_id, hf_token, args.transport, progress)
         elif scoped_files:
             _download_scoped_snapshot(
-                args.repo_id, args.variant, scoped_files, hf_token, args.transport
+                args.repo_id, args.variant, scoped_files, hf_token, args.transport, progress
             )
         elif args.variant:
-            _download_gguf_variant(args.repo_id, args.variant, hf_token, args.transport)
+            _download_gguf_variant(
+                args.repo_id,
+                args.variant,
+                hf_token,
+                args.transport,
+                progress,
+                engram_precision = args.engram,
+            )
         else:
-            _download_snapshot(args.repo_id, hf_token, args.transport)
+            _download_snapshot(args.repo_id, hf_token, args.transport, progress)
         sys.exit(0)
     except SystemExit:
         raise

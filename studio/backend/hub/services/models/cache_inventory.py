@@ -7,19 +7,25 @@ from __future__ import annotations
 
 
 import json
+import os
 import asyncio
+import contextvars
+import functools
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from pathlib import Path
 from typing import NamedTuple, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils import download_manifest, download_registry
 from hub.utils.hf_cache_state import snapshot_selection_key
+from hub.utils.host_paths import scrub_paths
 from hub.utils.snapshot_filters import (
     snapshot_download_blob_hashes,
     snapshot_download_size,
@@ -27,6 +33,7 @@ from hub.utils.snapshot_filters import (
 from hub.services.models.common import (
     _capabilities_for_format,
     _classify_non_gguf_model_format,
+    _diffusers_pipeline_artifact_kind,
     _gguf_variant_state_summary,
     _is_adapter_weight_name,
     _is_checkpoint_weight_name,
@@ -46,9 +53,12 @@ from hub.services.models.common import (
 from utils.paths.path_utils import is_appledouble_metadata
 from utils.audio_tokens import detect_local_tts_audio_type
 from utils.hidden_models import (
+    is_audio_cpp_repo_id,
     is_curated_stt_repo_id,
     is_curated_tts_repo_id,
+    is_decision_api_model,
     is_hidden_model,
+    is_selected_embedder,
 )
 
 logger = get_logger(__name__)
@@ -72,6 +82,19 @@ class _CachedInventoryScan(NamedTuple):
 _cached_inventory_flights: dict[
     tuple[asyncio.AbstractEventLoop, tuple[str, int]], asyncio.Task[list[dict]]
 ] = {}
+
+# Own pool: on the default executor a cold walk queued every asyncio.to_thread caller (#14038).
+_CACHED_INVENTORY_POOL = ThreadPoolExecutor(
+    max_workers = 2, thread_name_prefix = "cached-inventory-scan"
+)
+
+
+async def _inventory_scan_thread(fn, /, *args):
+    """``asyncio.to_thread`` on the inventory pool, context variables carried along."""
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, fn, *args)
+    return await loop.run_in_executor(_CACHED_INVENTORY_POOL, call)
+
 
 # Retrying a superseded scan is only worth it while invalidations are occasional; past this the endpoint has to answer instead of restarting the walk forever.
 _INVENTORY_SCAN_MAX_ATTEMPTS = 8
@@ -135,8 +158,96 @@ def get_repo_snapshot_metadata_cached(
     return total, blob_hashes
 
 
+_mlx_plan_cache: OrderedDict = OrderedDict()
+
+
+def _cached_mlx_siblings(repo_id):
+    from huggingface_hub.hf_api import RepoSibling
+
+    # The raw tree retains LFS SHA256s, not just Git pointer IDs.
+    from huggingface_hub._tree_cache import read_tree_cache
+    from hub.utils.hf_cache_state import preferred_repo_cache_dirs
+
+    for entry in preferred_repo_cache_dirs("model", repo_id):
+        snapshot = hf_cache_scan.default_ref_snapshot(entry)
+        tree = read_tree_cache(str(entry), snapshot.name) if snapshot is not None else None
+        if tree:
+            return [
+                RepoSibling(rfilename = path, size = item.size, blob_id = item.lfs_sha256 or item.blob_id)
+                for path, item in tree.items()
+            ]
+    return []
+
+
+def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
+    from hub.utils.snapshot_filters import blob_hashes_for_siblings, mlx_load_siblings
+    from huggingface_hub import HfApi
+
+    key = (repo_id, hf_cache_scan.token_fingerprint(hf_token))
+    with _repo_size_cache_lock:
+        cached = _mlx_plan_cache.get(key)
+        if cached is not None and time.monotonic() - cached[1] < _REPO_SIZE_POS_TTL:
+            _mlx_plan_cache.move_to_end(key)
+            return cached[0]
+    try:
+        siblings = (
+            HfApi(token = hf_token)
+            .model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
+            )
+            .siblings
+        )
+    except Exception:
+        try:
+            siblings = _cached_mlx_siblings(repo_id)
+        except Exception:
+            siblings = []
+    siblings = mlx_load_siblings(siblings)
+    files = tuple(
+        download_manifest.ExpectedFile(
+            path = item.rfilename,
+            size = int(item.size or 0),
+            sha256 = getattr(getattr(item, "lfs", None), "sha256", None),
+        )
+        for item in siblings
+    )
+    plan = (sum(file.size for file in files), blob_hashes_for_siblings(siblings), files)
+    if not siblings and cached is not None:
+        plan = cached[0]
+    with _repo_size_cache_lock:
+        _mlx_plan_cache[key] = (plan, time.monotonic())
+        _mlx_plan_cache.move_to_end(key)
+        while len(_mlx_plan_cache) > _REPO_SIZE_CACHE_MAX:
+            _mlx_plan_cache.popitem(last = False)
+    return plan
+
+
 def all_hf_cache_scans():
     return hf_cache_scan.all_hf_cache_scans()
+
+
+def _blob_key(file_obj, fallback: str) -> str:
+    """Key existing files by inode: no-symlink snapshot paths are their own blob_path, and reuse hard links them."""
+    blob_path = getattr(file_obj, "blob_path", None)
+    if not blob_path:
+        return fallback
+    try:
+        st = Path(blob_path).stat()
+    except OSError:
+        return str(blob_path)
+    return f"inode:{st.st_dev}:{st.st_ino}" if st.st_ino else str(blob_path)
+
+
+def repo_unique_size_bytes(repo_info) -> int:
+    """Every file across revisions, each stored copy counted once (see ``_blob_key``)."""
+    unique: dict[str, int] = {}
+    for revision in repo_info.revisions:
+        rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
+        for f in cached_repo_files(revision):
+            unique[_blob_key(f, f"{rev_id}:{f.file_name}")] = int(f.size_on_disk or 0)
+    return sum(unique.values())
 
 
 def _repo_gguf_size_bytes(repo_info) -> int:
@@ -148,12 +259,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
             # Snapshot-relative: only the directory marks an MTP/ drafter as a companion.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
-                blob_path = getattr(f, "blob_path", None)
-                size = f.size_on_disk or 0
-                if blob_path:
-                    unique_blobs[str(blob_path)] = size
-                else:
-                    unique_blobs[f"{rev_id}:{name}"] = size
+                unique_blobs[_blob_key(f, f"{rev_id}:{name}")] = f.size_on_disk or 0
     return sum(unique_blobs.values())
 
 
@@ -212,7 +318,6 @@ def _cached_repo_file_name(file_obj) -> str:
 
 def cached_repo_files(revision) -> list:
     """``revision.files`` without the Finder metadata companions. Every classification below reads these by name, and a "._" companion carries the described file's own name, so it answers each one the way the real file does."""
-    # The "._" name is on the snapshot entry while the bytes are in the content-addressed blob, but the entry is a symlink to it, so one open reads both.
     return [
         f
         for f in getattr(revision, "files", ()) or ()
@@ -225,7 +330,9 @@ def _is_real_cache_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
     if blob is None or repo_dir is None:
         return False
     try:
-        return blob.parent.resolve(strict = False) == (repo_dir / "blobs").resolve(strict = False)
+        parent = blob.parent.resolve(strict = False)
+        store = (repo_dir / "blobs").resolve(strict = False)
+        return parent == store or parent.samefile(store)
     except OSError:
         return False
 
@@ -389,7 +496,7 @@ def _cache_inventory_fields(
     ):
         capabilities["supports_vision"] = True
     # Qwen3-ASR's required mmproj is an audio projector, not a vision one, and stt_only covers any repo whose config sniffs as Whisper, curated or not: a third-party checkpoint or a user's own fine-tune is just as unchattable. can_chat is what auto-load and the chat picker filter on, neither of which looks at the task, so task-scoping alone would leave curated STT rows eligible for chat auto-load.
-    if stt_only or is_curated_stt_repo_id(repo_id):
+    if stt_only or is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id):
         capabilities["supports_vision"] = False
         capabilities["can_chat"] = False
     # The codec probe covers uncurated safetensors copies and native audio architectures are passed explicitly; a GGUF repo ships no tokenizer_config to probe, so the curated ids answer for those.
@@ -416,7 +523,7 @@ def invalidate_hf_cache_scans() -> None:
 
 
 def _is_hidden_infra_repo(*values: str | None) -> bool:
-    """True for infra-only repos (the RAG embedder and the llama.cpp install validation probe) that are cached as a side effect of Unsloth itself and are not usable chat models."""
+    """True for infra-only repos (the RAG embedder, the llama.cpp install validation probe, Decision API models) that are cached as a side effect of Unsloth itself and are not usable chat models."""
     return is_hidden_model(*values)
 
 
@@ -457,6 +564,18 @@ def _cached_row_companion(repo_id: str, snapshot: Optional[Path] = None) -> bool
         )
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return False
+
+
+_AUDIO_ONLY_GGUF_TASKS = frozenset(
+    {
+        "text-to-speech",
+        "text-to-audio",
+        "automatic-speech-recognition",
+        "audio-to-audio",
+        # Foreign ASR GGUFs (parakeet.cpp): not chat, and no Unsloth page can load them (#16273).
+        "speech-recognition-unsupported",
+    }
+)
 
 
 def _cached_row_task(
@@ -512,10 +631,11 @@ def _scan_cached_gguf(
         )
     except Exception as e:
         # The index is built once for the whole scan and outside the per-repository try, so one undecodable cache directory name, hashed for the repo key, answered 500 with every valid row hidden.
-        logger.warning("Could not build shared cached-GGUF state index: %s", e)
+        logger.warning("Could not build shared cached-GGUF state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
+    repo_cache_roots: dict[str, set[Path]] = {}
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -544,9 +664,15 @@ def _scan_cached_gguf(
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
-                is_curated_stt = is_curated_stt_repo_id(repo_id)
-                # Hide infra repos unless the user downloaded a variant: variant state only exists for user downloads, and curated STT repos are still emitted as management rows.
-                if is_hidden_infra and not is_curated_stt and not has_variant_state:
+                is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
+                # Hide infra repos unless the user downloaded a variant (variant state only exists for user downloads); curated STT, Decision API and Settings-picked embedder repos stay as management rows.
+                if (
+                    is_hidden_infra
+                    and not is_curated_stt
+                    and not has_variant_state
+                    and not is_decision_api_model(repo_id)
+                    and not is_selected_embedder(repo_id)
+                ):
                     continue
                 if total_size == 0 and not has_variant_state:
                     continue
@@ -577,17 +703,35 @@ def _scan_cached_gguf(
                     selected = gguf_identity.load_snapshot or gguf_snapshot,
                 )
                 row_audio_type = None
-                if row_task == "text-to-speech":
+                row_audio_workflows = None
+                if row_task in ("text-to-speech", "audio-to-audio"):
                     try:
                         from hub.services.models import catalog_classification
+
                         row_audio_type = catalog_classification._repo_gguf_audio_type(
                             repo_info, gguf_identity.load_snapshot or gguf_snapshot
                         )
+                        if row_task == "audio-to-audio" and row_audio_type != "audiocpp_sep":
+                            row_audio_type = None
+                        if row_audio_type in ("audiocpp_tts", "audiocpp_sep"):
+                            row_audio_workflows = catalog_classification._gguf_path_audio_workflows(
+                                gguf_identity.load_snapshot
+                                or gguf_snapshot
+                                or Path(repo_info.repo_path),
+                                (repo_id,),
+                            )
                     except Exception:
                         pass
+                row_size = max(total_size, variant_state_size)
+                # An artifact mirror's diffusers folders IN THIS ROOT are listed nowhere else (see
+                # _scan_cached_models), and this row's whole-repo delete removes them, so the row counts them. A copy
+                # in another root is that root's own companion row: a delete is scoped to one cache root, so counting
+                # it here would promise bytes this row's delete never frees.
+                if _hosts_artifacts(repo_id):
+                    row_size += artifact_folder_bytes(repo_path)
                 row = {
                     "repo_id": repo_id,
-                    "size_bytes": max(total_size, variant_state_size),
+                    "size_bytes": row_size,
                     "cache_path": str(repo_info.repo_path),
                     "task": row_task,
                     "audio_type": row_audio_type,
@@ -597,6 +741,8 @@ def _scan_cached_gguf(
                     "partial_transport": None,
                     "partial_resumable": False,
                 }
+                if row_audio_workflows is not None:
+                    row["audio_workflows"] = row_audio_workflows
                 last_modified = max(last_modified, (existing or {}).get("last_modified", 0.0))
                 if last_modified > 0:
                     row["last_modified"] = last_modified
@@ -614,19 +760,94 @@ def _scan_cached_gguf(
                         gguf_snapshot = gguf_snapshot,
                         repo_info = repo_info,
                         hidden_infra = is_hidden_infra,
-                        tts_only = row_task == "text-to-speech",
+                        # Only the audio runtime serves these, standalone repos included (Yue2, MiniMax).
+                        tts_only = row_task in _AUDIO_ONLY_GGUF_TASKS,
                     )
                 )
-                # Only the winning cache root loads, so the loser's vision flag must not carry over.
+                # refs/main can be stale; only multi-root repos need repo-wide resolution.
+                repo_cache_roots.setdefault(key, set()).add(repo_path.parent)
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
+                logger.warning("Skipping cached GGUF repo %s: %s", repo_label, scrub_paths(e))
                 continue
-    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+    from hub.utils.gguf_sources import CHAT_GGUF_TASKS
+
+    for key, row in seen_lower.items():
+        if (
+            len(repo_cache_roots.get(key, ())) > 1
+            and not row["partial"]
+            and row["task"] in CHAT_GGUF_TASKS
+        ):
+            row["load_id"] = row["repo_id"]
+    rows = list(seen_lower.values())
+    umbrella = next((row for row in rows if is_audio_cpp_repo_id(row["repo_id"])), None)
+    if umbrella is not None:
+        rows.extend(_umbrella_folder_rows(umbrella, cache_scans, active_hub_cache))
+    return sorted(rows, key = lambda c: c["repo_id"])
+
+
+def _umbrella_folder_rows(umbrella: dict, cache_scans, active_hub_cache) -> list[dict]:
+    """One row per downloaded folder of the audio.cpp umbrella repo, so an Audio page can list its own
+    models On Device. Flagged ``umbrella_folder``: the Model Hub keeps managing the repo as one row."""
+    try:
+        from core.inference import audio_cpp_models as acm
+
+        active = Path(active_hub_cache).resolve(strict = False)
+        repo_info = next(
+            (
+                repo
+                for scan in cache_scans
+                for repo in scan.repos
+                if str(repo.repo_type) == "model"
+                and is_audio_cpp_repo_id(repo.repo_id)
+                and Path(repo.repo_path).parent.resolve(strict = False) == active
+            ),
+            None,
+        )
+        if repo_info is None:
+            return []
+        sizes: dict[str, int] = {}
+        seen_blobs: set[str] = set()
+        for rev in repo_info.revisions:
+            for f in rev.files:
+                try:
+                    folder = Path(f.file_path).relative_to(rev.snapshot_path).parts[0]
+                except (ValueError, IndexError):
+                    continue
+                blob = str(getattr(f, "blob_path", "") or f.file_path)
+                if blob in seen_blobs:
+                    continue
+                seen_blobs.add(blob)
+                sizes[folder.lower()] = sizes.get(folder.lower(), 0) + (f.size_on_disk or 0)
+        rows: dict[str, dict] = {}
+        for model in acm.downloaded_models():
+            # A companion with no page of its own (the forced aligner) stays under the repo row.
+            if not acm.is_umbrella_id(model.id) or not model.workflows or model.id.lower() in rows:
+                continue
+            row = {
+                **umbrella,
+                "repo_id": model.id,
+                "load_id": model.id,
+                "inventory_id": _local_inventory_id("cache", "gguf", model.id),
+                "cache_path": str(repo_info.repo_path),
+                "size_bytes": sizes.get(model.folder.lower(), 0),
+                "task": model.hub_task,
+                "audio_type": model.audio_type,
+                "audio_workflows": list(model.workflows),
+                "partial": False,
+                "has_variant_state": False,
+                "capabilities": {**umbrella["capabilities"], "can_chat": False},
+                "umbrella_folder": True,
+            }
+            rows[model.id.lower()] = row
+        return list(rows.values())
+    except Exception as e:  # noqa: BLE001 - never hide the umbrella row itself
+        logger.warning("Could not list audio.cpp folder rows: %s", scrub_paths(e))
+        return []
 
 
 class _CacheSourceChanged(RuntimeError):
@@ -654,7 +875,7 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> _CachedInventoryS
             rows = await hf_cache_scan.shared_scan(
                 _cached_inventory_flights,
                 (name, epoch),
-                lambda expected_epoch = epoch: asyncio.to_thread(
+                lambda expected_epoch = epoch: _inventory_scan_thread(
                     _scan_cached_inventory_snapshot, scanner, expected_epoch
                 ),
             )
@@ -670,6 +891,7 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> _CachedInventoryS
     return _CachedInventoryScan(_last_confirmed_inventory.get(name, []), False)
 
 
+@in_scan_memo
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
@@ -767,9 +989,8 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     def _record_blob(
         target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str
     ) -> None:
-        blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
-        key = str(blob_path) if blob_path else f"{rev_id}:{file_name}"
+        key = _blob_key(file_obj, f"{rev_id}:{file_name}")
         value = (size, _blob_mtime(file_obj))
         target[key] = value
         all_weight_blobs[key] = value
@@ -901,6 +1122,80 @@ def _is_whisper_model_config(config: object) -> bool:
     )
 
 
+def _is_mlx_stt_model_config(config: object) -> bool:
+    try:
+        from core.inference.stt_mlx import is_mlx_stt_config
+        return is_mlx_stt_config(config)
+    except Exception:  # noqa: BLE001 -- a classification failure never hides a row
+        return False
+
+
+def _ships_custom_code(snapshot: Path) -> bool:
+    try:
+        from core.inference.stt_mlx import ships_custom_code
+        return ships_custom_code(snapshot)
+    except Exception:  # noqa: BLE001 -- unreadable: dictation refuses it at load anyway
+        return True
+
+
+# Snapshot READMEs are immutable blobs and yaml.safe_load is pure Python (ms per card), so the
+# listing keeps the fields it reads per stat key. A file within the settle window is not kept: a
+# coarse filesystem clock can give a rewrite identical timestamps (same rule as #16320).
+_CARD_FIELDS: "OrderedDict[str, tuple[tuple, tuple]]" = OrderedDict()
+_CARD_FIELDS_MAX = 4096
+_CARD_FIELDS_SETTLE_NS = 2_000_000_000
+_CARD_FIELDS_LOCK = threading.Lock()
+
+
+def _stat_key(path: Path) -> Optional[tuple]:
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _clean_card_fields(card: dict) -> tuple:
+    fields = []
+    for name in ("pipeline_tag", "library_name"):
+        value = card.get(name)
+        if isinstance(value, str) and value.strip():
+            fields.append((name, value.strip()))
+    tags = card.get("tags")
+    if isinstance(tags, list):
+        clean_tags = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
+        if clean_tags:
+            fields.append(("tags", tuple(clean_tags)))
+    return tuple(fields)
+
+
+def _model_card_fields(path: Path) -> dict:
+    key = _stat_key(path)
+    cache_id = str(path)
+    if key is not None:
+        with _CARD_FIELDS_LOCK:
+            entry = _CARD_FIELDS.get(cache_id)
+            if entry is not None and entry[0] == key:
+                _CARD_FIELDS.move_to_end(cache_id)
+                return _fields_dict(entry[1])
+    fields = _clean_card_fields(_read_model_card_frontmatter(path))
+    if (
+        key is not None
+        and time.time_ns() - max(key[3], key[4]) > _CARD_FIELDS_SETTLE_NS
+        and _stat_key(path) == key
+    ):
+        with _CARD_FIELDS_LOCK:
+            _CARD_FIELDS[cache_id] = (key, fields)
+            _CARD_FIELDS.move_to_end(cache_id)
+            while len(_CARD_FIELDS) > _CARD_FIELDS_MAX:
+                _CARD_FIELDS.popitem(last = False)
+    return _fields_dict(fields)
+
+
+def _fields_dict(fields: tuple) -> dict:
+    return {name: list(value) if name == "tags" else value for name, value in fields}
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
         text = path.read_text(encoding = "utf-8")
@@ -934,6 +1229,9 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
     config = _read_json_object(snapshot / "config.json")
     if _is_whisper_model_config(config):
         result["_hidden_stt"] = True
+    elif _is_mlx_stt_model_config(config) and not _ships_custom_code(snapshot):
+        result["_hidden_stt"] = True
+        result["_mlx_stt"] = True
     tts_audio_type = detect_local_tts_audio_type(snapshot)
     if tts_audio_type is not None:
         result["_tts_audio_type"] = tts_audio_type
@@ -945,18 +1243,7 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
     if isinstance(quant_method, str) and quant_method.strip():
         result["quant_method"] = quant_method.strip()
 
-    card = _read_model_card_frontmatter(snapshot / "README.md")
-    pipeline_tag = card.get("pipeline_tag")
-    if isinstance(pipeline_tag, str) and pipeline_tag.strip():
-        result["pipeline_tag"] = pipeline_tag.strip()
-    library_name = card.get("library_name")
-    if isinstance(library_name, str) and library_name.strip():
-        result["library_name"] = library_name.strip()
-    tags = card.get("tags")
-    if isinstance(tags, list):
-        clean_tags = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
-        if clean_tags:
-            result["tags"] = clean_tags
+    result.update(_model_card_fields(snapshot / "README.md"))
     return result
 
 
@@ -975,10 +1262,12 @@ def _scan_cached_models(
             active_hub_cache = active_hub_cache,
         )
     except Exception as e:
-        logger.warning("Could not build shared cached-model state index: %s", e)
+        logger.warning("Could not build shared cached-model state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
+    # Across EVERY root: the GGUF can sit in one cache root and its mirror's diffusers folders in the other.
+    artifact_gguf_keys = _artifact_gguf_repo_ids(cache_scans)
     inspected = 0
     skipped_gguf = 0
     skipped_no_weights = 0
@@ -991,16 +1280,21 @@ def _scan_cached_models(
                 repo_id = repo_info.repo_id
                 repo_path = Path(repo_info.repo_path)
                 snapshot_path = _cached_model_snapshot_path(repo_path)
-                # The non-GGUF embedder has no variant downloads; always hide.
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
-                is_curated_stt = is_curated_stt_repo_id(repo_id)
+                is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
                 snapshot_metadata = _cached_model_local_metadata(repo_path, snapshot_path)
                 is_whisper_stt = bool(snapshot_metadata.get("_hidden_stt"))
-                if is_hidden_infra and not is_curated_stt and not is_whisper_stt:
+                if (
+                    is_hidden_infra
+                    and not is_curated_stt
+                    and not is_whisper_stt
+                    and not is_decision_api_model(repo_id)
+                    and not is_selected_embedder(repo_id)
+                ):
                     continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)
@@ -1011,8 +1305,19 @@ def _scan_cached_models(
                 if not payload.has_runnable_weights:
                     skipped_no_weights += 1
                     continue
-                key = repo_id.lower()
-                existing = seen_lower.get(key)
+                # Base folders in a GGUF repo count toward its GGUF row; a second row's delete would
+                # wipe quants.
+                any_root_gguf = has_main_gguf or repo_id.lower() in artifact_gguf_keys
+                if has_main_gguf and _hosts_artifacts(repo_id):
+                    skipped_gguf += 1
+                    continue
+                # Holds only the companion folders for a GGUF in another root; own row, scoped
+                # delete, never a pipeline or single-file pick.
+                cross_root_folders = any_root_gguf and _hosts_artifacts(repo_id)
+                # The FP8 artifact mirror (unsloth/Qwen-Image-2.1-Turbo-FP8): its folders are what a pick of the BASE
+                # fetches, and a pipeline pick of the repo itself is refused, so the row stays the root checkpoint row
+                # released builds listed.
+                artifact_checkpoint = not any_root_gguf and _hosts_artifacts(repo_id)
                 identity = _resolve_load_identity(
                     repo_id,
                     repo_path = repo_path,
@@ -1021,23 +1326,40 @@ def _scan_cached_models(
                     payload_snapshots = payload.payload_snapshots,
                 )
                 load_snapshot = identity.load_snapshot
+                # Unless the whole base pipeline is cached: then the row is that base pick, listed and loaded by the base id.
+                base_pipeline = (
+                    artifact_checkpoint
+                    and hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                    and not hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                )
+                cached_id = repo_id
+                if base_pipeline:
+                    from core.inference.diffusion_families import canonical_base
+
+                    artifact_checkpoint = False
+                    repo_id = canonical_base(cached_id)
+                    if identity.load_id == cached_id:
+                        identity = identity._replace(load_id = repo_id)
+                key = repo_id.lower()
+                existing = seen_lower.get(key)
                 local_metadata = (
                     snapshot_metadata
                     if load_snapshot == snapshot_path
                     else _cached_model_local_metadata(repo_path, load_snapshot)
                 )
                 is_whisper_stt = local_metadata.pop("_hidden_stt", False)
+                is_mlx_stt = local_metadata.pop("_mlx_stt", False)
                 tts_audio_type = local_metadata.pop("_tts_audio_type", None)
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
-                    repo_id,
+                    cached_id,
                     repo_path,
                     snapshot_dir = load_snapshot,
                     variant_state = (
                         variant_states.for_repo(
                             "model",
-                            repo_id,
+                            cached_id,
                             hub_cache = repo_path.parent,
                         )
                         if variant_states is not None
@@ -1045,7 +1367,12 @@ def _scan_cached_models(
                     ),
                 )
                 # A companion-only prefetch passes the download check yet cannot from_pretrained, so mark it partial.
-                companion_only = hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                companion_only = (
+                    not artifact_checkpoint
+                    and hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                ) or hf_cache_scan.snapshot_is_encoder_companion(
+                    cached_id, repo_path, load_snapshot
+                )
                 snapshot_partial = download_partial or companion_only
                 # Flags are OR-ed over revisions, so no payload snapshot means no directory serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
@@ -1067,24 +1394,41 @@ def _scan_cached_models(
                         else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
                     )
                 )
-                if is_whisper_stt:
+                if is_mlx_stt:
+                    # The Transcribe picker admits non-Whisper speech rows by this name, on a Mac only.
+                    local_metadata["pipeline_tag"] = "automatic-speech-recognition"
+                    local_metadata["library_name"] = "mlx-audio"
+                elif is_whisper_stt:
                     local_metadata["pipeline_tag"] = "automatic-speech-recognition"
                     local_metadata["library_name"] = "transformers"
                     tags = list(local_metadata.get("tags", []))
                     if not any(tag.lower() == "whisper" for tag in tags):
                         tags.append("whisper")
                     local_metadata["tags"] = tags
+                pipeline_artifact_kind = (
+                    None
+                    if artifact_checkpoint
+                    else _diffusers_pipeline_artifact_kind(load_snapshot)
+                )
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
+                    "artifact_kind": pipeline_artifact_kind or "unknown",
                     "task": row_task,
                     "audio_type": audio_type,
                     "partial": snapshot_partial,
+                    # Still partial so no picker loads it, but the Hub must not offer "Continue": that pulls the denoiser a GGUF replaces.
+                    "companion_prefetch": (
+                        companion_only
+                        and not download_partial
+                        # Some denoiser shards on disk is a torn download, which must stay downloadable.
+                        and not hf_cache_scan.snapshot_denoiser_has_weights(load_snapshot)
+                    ),
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(
                             "model",
-                            repo_id,
+                            cached_id,
                             repo_cache_dir = repo_path,
                         )
                         # Only a genuine download partial has a transport; a companion-only snapshot arrived intact and has no Resume story.
@@ -1094,7 +1438,7 @@ def _scan_cached_models(
                     "partial_resumable": (
                         hf_cache_scan.partial_resume_available(
                             "model",
-                            repo_id,
+                            cached_id,
                             repo_cache_dir = repo_path,
                         )
                         if download_partial
@@ -1103,10 +1447,14 @@ def _scan_cached_models(
                     # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must not offer them as pipeline loads.
                     "single_file": bool(
                         row_task is not None
-                        and not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                        and (
+                            artifact_checkpoint
+                            or not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                        )
                     ),
                     # Listed so tens of GB of companion weights stay visible and deletable, but flagged so no picker offers a denoiser-less repo as a load.
-                    "companion": _cached_row_companion(repo_id, load_snapshot),
+                    "companion": cross_root_folders
+                    or _cached_row_companion(cached_id, load_snapshot),
                     "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
                 }
@@ -1128,6 +1476,9 @@ def _scan_cached_models(
                         tts_only = is_output_audio,
                     )
                 )
+                # Pin the immutable snapshot, not the bare id: refs/main can move after this structural scan.
+                if row_task is None and pipeline_artifact_kind is not None:
+                    row["load_id"] = str(load_snapshot)
                 # Native backend selection reads the load identity itself, so a custom native fork addressed only by repo id is indistinguishable from an ordinary LLM.
                 if native_audio_type and load_snapshot is not None:
                     row["load_id"] = str(load_snapshot)
@@ -1137,7 +1488,7 @@ def _scan_cached_models(
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached model repo {repo_label}: {e}")
+                logger.warning("Skipping cached model repo %s: %s", repo_label, scrub_paths(e))
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(
@@ -1150,6 +1501,7 @@ def _scan_cached_models(
     return cached
 
 
+@in_scan_memo
 async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
@@ -1170,3 +1522,84 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
             status_code = 500,
             detail = "Failed to read the local model cache.",
         ) from e
+
+
+def artifact_folder_bytes(*repo_paths: Path) -> int:
+    """Bytes of every non-GGUF file under the repo's snapshots, in every cache root given: the diffusers folders an
+    artifact mirror (``mirror_hosts_artifacts``) holds beside its quants, which only its GGUF row lists. Counted by
+    the physical blob each snapshot entry resolves to, as ``repo_unique_size_bytes`` does: a whole-repo delete frees
+    every revision's blob once, so a file changed under the same name counts twice and one blob behind several paths
+    once. Never raises."""
+    seen: dict[object, int] = {}
+    for repo_path in repo_paths:
+        snapshots = Path(repo_path) / "snapshots"
+        try:
+            for path in snapshots.rglob("*"):
+                if path.name.lower().endswith(".gguf") or not path.is_file():
+                    continue
+                st = path.stat()
+                # No inode on this filesystem: the resolved blob path, as _blob_key does.
+                key = (st.st_dev, st.st_ino) if st.st_ino else str(path.resolve())
+                seen[key] = st.st_size
+        except (OSError, ValueError):
+            continue
+    return sum(seen.values())
+
+
+def artifact_mirror_delete_id(repo_id: str, cache_path: Optional[str]) -> Optional[str]:
+    """Quant-free artifact mirror copy listed under base *repo_id*, else None."""
+    try:
+        from core.inference.diffusion_families import mirror_repo
+
+        mirror = mirror_repo(repo_id)
+        if not mirror or not _hosts_artifacts(mirror):
+            return None
+        target = None
+        if cache_path:
+            name = f"models--{mirror.replace('/', '--')}".lower()
+            path = Path(cache_path).expanduser().resolve(strict = False)
+            target = next((p for p in (path, *path.parents) if p.name.lower() == name), None)
+            if target is None:
+                return None
+        copies = []
+        for hf_cache in all_hf_cache_scans():
+            for repo in getattr(hf_cache, "repos", ()) or ():
+                if str(repo.repo_type) != "model":
+                    continue
+                if target is None and repo.repo_id.lower() == repo_id.lower():
+                    return None
+                if repo.repo_id.lower() == mirror.lower() and (
+                    target is None or Path(repo.repo_path).resolve(strict = False) == target
+                ):
+                    copies.append(repo)
+        if not copies or any(_repo_has_gguf_files(repo) for repo in copies):
+            return None
+        return copies[0].repo_id
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _artifact_gguf_repo_ids(cache_scans) -> set[str]:
+    """Lowercased ids of artifact mirrors with a main GGUF in ANY cache root."""
+    found: set[str] = set()
+    for hf_cache in cache_scans or ():
+        for repo in getattr(hf_cache, "repos", ()) or ():
+            try:
+                if (
+                    str(repo.repo_type) == "model"
+                    and _hosts_artifacts(repo.repo_id)
+                    and _repo_has_gguf_files(repo)
+                ):
+                    found.add(repo.repo_id.lower())
+            except Exception:  # noqa: BLE001
+                continue
+    return found
+
+
+def _hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False

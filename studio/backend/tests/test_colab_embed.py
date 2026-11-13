@@ -307,8 +307,7 @@ def test_finalize_colab_admin_password_redisplay_on_rerun(monkeypatch):
 
 
 def test_finalize_colab_admin_password_drops_stale_cached_credentials(monkeypatch):
-    """After an in-app password change the cached first-run password no longer
-    authenticates, so it must not be redisplayed (#7349 Codex review)."""
+    """After an in-app password change the cached first-run password must not be redisplayed."""
     monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
     monkeypatch.setattr(
         colab,
@@ -359,7 +358,6 @@ def test_colab_login_html_includes_credentials():
     html = colab._colab_login_html("unsloth", "alpha-beta-gamma-delta")
     assert "unsloth" in html
     assert "alpha-beta-gamma-delta" in html
-    # The username is fixed, so it reads inline rather than as its own field.
     assert "Username:" not in html
 
 
@@ -368,10 +366,8 @@ def test_shareable_link_html_embeds_password_under_the_link():
     html = colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth")
     assert "share.trycloudflare.com" in html
     assert "secret-pass" in html
-    # Username is stated inline, not as its own labelled field.
     assert "Username:" not in html
     assert "unsloth" in html
-    # The password must sit after the link, not above it.
     assert html.index("share.trycloudflare.com") < html.index("secret-pass")
 
 
@@ -397,9 +393,8 @@ def test_shareable_link_html_password_has_no_adjacent_whitespace():
     before, after = html.split("secret-pass", 1)
     assert before.endswith(">")
     assert after.startswith("<")
-    # Label on its own line, so nothing shares the password's text node.
     assert "Password:" not in html
-    # Plain selectable text: user-select overrides break double click to select.
+    # user-select overrides break double click to select.
     assert "user-select" not in html
 
 

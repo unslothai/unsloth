@@ -1,9 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# _is_studio_root decides whether ~/.unsloth/studio, or a UNSLOTH_STUDIO_HOME root, is recursively
-# deleted, so both directions are asserted in both modes: a gate that accepts everything, anywhere,
-# passes a one-sided test. The uninstaller body deletes trees, so the gate is sed'd out of it.
+# _is_studio_root decides a recursive delete, so both directions are asserted in both modes.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,7 +16,6 @@ trap 'rm -rf "$_TMP_ROOT"' EXIT
 HOME="$_TMP_ROOT/home"
 mkdir -p "$HOME"
 
-# _is_studio_root calls all three helpers, so each comes across or the suite is vacuous.
 for _name in _is_owner_marker _is_venv_dir _is_installer_leftover_name _is_studio_root; do
     _fn=$(sed -n "/^$_name() {/,/^}/p" "$UNINSTALL_SH")
     if [ -z "$_fn" ]; then
@@ -28,8 +25,7 @@ for _name in _is_owner_marker _is_venv_dir _is_installer_leftover_name _is_studi
     eval "$_fn"
 done
 
-# name, expected (own|foreign), mode (managed|custom), then paths; a trailing / makes a dir.
-# "managed" is the uninstaller's second argument, for $HOME/.unsloth/studio and nothing else.
+# name, expected (own|foreign), mode (managed|custom), then paths; trailing / makes a dir.
 check() {
     _name="$1"; _want="$2"; _mode="$3"; shift 3
     _root="$_TMP_ROOT/$(printf '%s' "$_name" | tr -c 'a-zA-Z0-9' '_')"
@@ -53,11 +49,8 @@ check() {
 
 echo "Layouts Unsloth created at the managed root, which must stay removable:"
 check "partial install: the root marker alone" own managed ".unsloth-studio-owned"
-# A relocated install is still an install. Moving a multi-gigabyte venv to another disk and
-# leaving a symlink behind puts a REAL marker behind a link, and refusing it would strand the
-# install this gate exists to keep removable. Refusing links here would also buy nothing: anyone
-# who can plant one at these paths can plant a plain file instead, which the gate has always
-# taken. The link test belongs in install.sh's claim, where following one TRUNCATES the target.
+# A relocated venv symlinked back is still an install; refusing links buys nothing here.
+# The link test belongs in install.sh's claim, where following one truncates the target.
 : > "$_TMP_ROOT/linked_marker_target"
 for _lm in ".unsloth-studio-owned" "unsloth_studio/.unsloth-studio-owned" \
            ".venv/.unsloth-studio-owned" "share/studio.conf"; do
@@ -71,7 +64,6 @@ for _lm in ".unsloth-studio-owned" "unsloth_studio/.unsloth-studio-owned" \
         echo "  FAIL: a relocated $_lm stranded the install"; FAIL=$((FAIL+1))
     fi
 done
-# ... and the shape a user really produces: the whole venv directory moved and symlinked back.
 _lmdir="$_TMP_ROOT/lm_linked_dir"
 mkdir -p "$_lmdir" "$_TMP_ROOT/lm_real_venv/bin"
 : > "$_TMP_ROOT/lm_real_venv/.unsloth-studio-owned"
@@ -83,7 +75,6 @@ if _is_studio_root "$_lmdir"; then
 else
     echo "  FAIL: a relocated venv directory stranded the install"; FAIL=$((FAIL+1))
 fi
-# The same relocation for a PRE-MARKER install, which reaches the gate by the venv fallback.
 _lmpre="$_TMP_ROOT/lm_linked_premarker"
 mkdir -p "$_lmpre" "$_TMP_ROOT/lm_pre_venv/bin"
 : > "$_TMP_ROOT/lm_pre_venv/pyvenv.cfg"
@@ -101,7 +92,6 @@ check "legacy .venv carrying the owner marker" own managed ".venv/.unsloth-studi
 check "pre-marker unsloth_studio venv" own managed "unsloth_studio/bin/unsloth" "unsloth_studio/bin/python"
 check "pre-marker legacy .venv" own managed ".venv/bin/unsloth" ".venv/bin/python"
 check "pre-marker venv proved by pyvenv.cfg alone" own managed ".venv/bin/unsloth" ".venv/pyvenv.cfg"
-# An install that died before the marker was written. The root is ours and holds nothing else.
 check "partial install: rollback copy only" own managed "unsloth_studio.rollback.20260908120000.4242/pyvenv.cfg"
 check "partial install: invalid legacy venv only" own managed ".venv.invalid.20260908120000.4242/pyvenv.cfg"
 
@@ -116,11 +106,10 @@ echo
 echo "Directories that are not ours, which must stay refused:"
 check "a bare project venv" foreign managed ".venv/bin/python"
 check "a venv merely NAMED unsloth_studio" foreign managed "unsloth_studio/bin/python"
-# bin/unsloth is pip's console script for the unsloth distribution, not just any console script.
 check "a venv with an unrelated console script" foreign managed ".venv/bin/black" ".venv/bin/python"
 check "a hand-made scratch directory" foreign managed "notes.txt"
 check "an empty directory" foreign managed
-# Why the split exists: pip writes bin/unsloth into ANY venv with the wheel.
+# pip writes bin/unsloth into ANY venv with the wheel.
 check "a project venv with unsloth pip-installed, as a custom root" foreign custom \
     ".venv/bin/unsloth" ".venv/bin/python" "pyproject.toml" "src/main.py"
 check "a project whose venv is NAMED unsloth_studio, as a custom root" foreign custom \
@@ -129,12 +118,10 @@ check "a partial-install leftover at a custom root" foreign custom \
     ".venv.invalid.20260908120000.4242/pyvenv.cfg"
 # The literal glob must not match itself when the directory holds nothing.
 check "a directory named like the glob is not conjured" foreign managed "notes.txt"
-# The name alone is not proof: only a renamed venv carries the shape.
 check "a FILE named like a leftover" foreign managed ".venv.invalid.20260908120000.4242"
 check "an empty directory named like a leftover" foreign managed "unsloth_studio.rollback.20260908120000.4242/"
 check "a leftover-named directory holding the user's own files" foreign managed \
     ".venv.invalid.20260908120000.4242/notes.txt"
-# bin/unsloth is only pip's console script when it is inside a venv; on its own it is a file.
 check "a console script with no venv around it" foreign managed ".venv/bin/unsloth"
 check "the same under a directory named unsloth_studio" foreign managed "unsloth_studio/bin/unsloth"
 # install.sh keeps any rollback outside <stamp>.<pid>[.<n>] as user data; do not be looser.
@@ -146,7 +133,6 @@ check "a rollback name with a non-numeric pid" foreign managed \
     "unsloth_studio.rollback.20260908120000.mine/pyvenv.cfg"
 check "a rollback name with a short stamp" foreign managed \
     "unsloth_studio.rollback.2026.4242/pyvenv.cfg"
-# Only the rollback name has a collision counter; .venv.invalid is written once per run.
 check "an invalid-venv name with a rollback-style suffix" foreign managed \
     ".venv.invalid.20260908120000.4242.2/pyvenv.cfg"
 # install.sh only ever renames a directory into place, so a link points at a venv it did not put.
@@ -189,10 +175,8 @@ else
     echo "  FAIL: a path containing spaces was refused"; FAIL=$((FAIL+1))
 fi
 
-# The other half of the question: install.sh decides when to WRITE the marker this gate reads,
-# and claiming a workspace the installer is about to refuse hands it to the uninstaller.
-# A removal that took the sentinels and then failed must leave the root identifiable, or the
-# retry it asks for is refused.
+# install.sh decides when to WRITE the marker this gate reads; a failed removal must leave
+# the root identifiable so the retry is accepted.
 echo
 echo "After a partial removal:"
 _fn=$(sed -n '/^_restore_owner_marker() {/,/^}/p' "$UNINSTALL_SH")
@@ -220,7 +204,6 @@ fi
 
 echo
 echo "Who the installer is allowed to claim:"
-# _claim_studio_root calls _claim_sentinel, so both come across or every claim below is vacuous.
 _fn=""
 for _cname in _claim_sentinel _claim_studio_root; do
     _cfn=$(sed -n "/^$_cname() {/,/^}/p" "$INSTALL_SH")
@@ -256,12 +239,9 @@ else
     claim_check "an empty custom root" claimed env
     claim_check "a custom root already carrying our marker" claimed env "unsloth_studio/.unsloth-studio-owned"
     claim_check "a custom root with share/studio.conf" claimed env "share/studio.conf"
-    # The case: the venv-step guard refuses this root, so the claim must not run ahead of it.
     claim_check "somebody's workspace" left env "pyproject.toml" "src/main.py"
     claim_check "somebody's workspace with a venv of their own" left env "unsloth_studio/pyvenv.cfg"
-    # Any file of that name. The uninstaller reads it only as a symlink into the venv.
     claim_check "a workspace holding a plain bin/unsloth" left env "bin/unsloth" "notes.txt"
-    # A LINKED share or unsloth_studio holding a genuine marker: -L answers for the file only.
     for _cl in "share/studio.conf" "unsloth_studio/.unsloth-studio-owned"; do
         _cldir=$(dirname "$_cl")
         STUDIO_HOME="$_TMP_ROOT/claim_linked_$(printf '%s' "$_cl" | tr -c 'a-zA-Z0-9' '_')"
@@ -315,7 +295,6 @@ else
                 *) echo "  PASS: and the caller's globbing setting is restored"; PASS=$((PASS+1)) ;;
     esac
 
-    # Writable and searchable but not readable: the globs cannot enumerate it.
     STUDIO_HOME="$_TMP_ROOT/claim_unreadable"
     # shellcheck disable=SC2034  # read by the extracted _claim_studio_root
     VENV_DIR="$STUDIO_HOME/unsloth_studio"
@@ -383,11 +362,9 @@ else
     fi
 fi
 
-# A first install that dies after creating unsloth_studio leaves an occupied venv with no
-# in-venv marker, so the retry guard has to read the root marker the same run wrote. Structural:
-# the guard is a condition in the middle of the install.
+# A failed first install leaves a venv with no in-venv marker, so the retry guard
+# reads the root marker.
 _guard=$(sed -n '/why: matching guard to the .venv branch below/,/Move it aside or choose an empty/p' "$INSTALL_SH")
-# ... the same way the claim writes it, or a link gets a foreign workspace past the guard.
 _guard_pat2="_claim_sentinel \"[\$]STUDIO_HOME/[.]unsloth-studio-owned\""
 if printf '%s' "$_guard" | grep -q "$_guard_pat2"; then
     echo "  PASS: and through _claim_sentinel, not -f"; PASS=$((PASS+1))

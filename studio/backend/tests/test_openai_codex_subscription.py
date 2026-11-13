@@ -72,7 +72,7 @@ def _jwt(payload: dict) -> str:
     return f"header.{encoded}.signature"
 
 
-def test_protocol_constants_and_curated_provider_contract():
+def test_protocol_constants_and_provider_contract():
     assert OPENAI_CODEX_CLIENT_ID == "app_EMoamEEZ73f0CkXaXp7hrann"
     info = get_provider_info("openai_codex")
     assert info["base_url"] == OPENAI_CODEX_API_BASE
@@ -80,20 +80,15 @@ def test_protocol_constants_and_curated_provider_contract():
     assert info["model_list_mode"] == "curated"
     assert info["base_url_editable"] is False
     assert info["model_ids_editable"] is False
-    assert info["default_models"] == [
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.5",
-        "gpt-5.6-luna",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-6-astra",
-    ]
     assert OPENAI_CODEX_DEVICE_REDIRECT_URI == ("https://auth.openai.com/deviceauth/callback")
     row = next(
-        item for item in list_available_providers() if item["provider_type"] == "openai_codex"
+        item
+        for item in list_available_providers(include_oauth = True)
+        if item["provider_type"] == "openai_codex"
     )
     assert row["auth_kind"] == "chatgpt_oauth"
+    assert row["default_models"] == []
+    assert row["model_capabilities"] == {}
 
 
 def test_provider_lock_can_release_from_another_executor_thread():
@@ -400,6 +395,125 @@ def test_browser_state_mismatch_does_not_consume_flow(monkeypatch):
         )
 
 
+def _persisted_browser_flow(monkeypatch, flow_id):
+    record = {
+        "marker": "marker",
+        "flow_id": flow_id,
+        "method": "browser",
+        "created_at": time.time(),
+        "expires_at": time.time() + 60,
+        "state": "expected-state",
+        "verifier": "secret-verifier",
+        "redirect_uri": "http://localhost:1455/auth/callback",
+        "status": "pending",
+        "message": "",
+    }
+
+    @asynccontextmanager
+    async def oauth_guard(_provider_id):
+        yield
+
+    def upsert(_kind, _provider_id, value):
+        record.clear()
+        record.update(json.loads(value))
+
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", oauth_guard)
+    monkeypatch.setattr(codex_auth, "_oauth_flow_record", lambda _provider: record.copy())
+    monkeypatch.setattr(codex_auth.credential_secrets, "upsert_secret", upsert)
+    flow = OAuthFlow(
+        id = flow_id,
+        provider_id = "provider",
+        method = "browser",
+        created_at = record["created_at"],
+        expires_at = record["expires_at"],
+        state = "expected-state",
+        verifier = "secret-verifier",
+        redirect_uri = record["redirect_uri"],
+        marker = "marker",
+        persist_bundle = lambda *_args: None,
+    )
+    return flow, record
+
+
+def test_denied_browser_callback_fails_the_flow(monkeypatch):
+    flow, record = _persisted_browser_flow(monkeypatch, "browser-denied")
+
+    async def deny():
+        server = await asyncio.start_server(
+            lambda r, w: codex_auth._loopback_handler(flow, r, w), "127.0.0.1", 0
+        )
+        flow.server = server
+        port = server.sockets[0].getsockname()[1]
+        try:
+            async with httpx.AsyncClient(trust_env = False) as client:
+                response = await client.get(
+                    f"http://127.0.0.1:{port}/auth/callback",
+                    params = {
+                        "state": "expected-state",
+                        "error": "access_denied",
+                        "error_description": "The user denied the request",
+                    },
+                )
+            rebound = await asyncio.start_server(lambda r, w: None, "127.0.0.1", port)
+            rebound.close()
+            await rebound.wait_closed()
+            return response
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    response = asyncio.run(deny())
+
+    assert flow.server is None
+
+    assert "Authorization failed" in response.text
+    assert flow.status == "error"
+    assert "denied" in flow.message
+    persisted = codex_auth._load_persisted_oauth_flow("provider", flow.id)
+    assert persisted is not None
+    assert persisted.status == "error"
+    assert persisted.message == flow.message
+    assert not record["state"] and not record["verifier"]
+
+
+def test_pasted_denied_callback_fails_the_flow(monkeypatch):
+    flow, record = _persisted_browser_flow(monkeypatch, "pasted-denied")
+    monkeypatch.setitem(codex_auth._flows, flow.id, flow)
+
+    with pytest.raises(codex_auth.CodexAuthError, match = "denied"):
+        asyncio.run(
+            codex_auth.complete_browser_flow(
+                "provider",
+                flow.id,
+                "http://localhost:1455/auth/callback?error=access_denied&state=expected-state",
+            )
+        )
+
+    assert flow.status == "error"
+    assert record["status"] == "error"
+    assert record["message"] == flow.message
+
+
+def _patch_poll_sleep(monkeypatch, record = None):
+    """Make the device poll's asyncio.sleep instant, for this test's thread only.
+
+    codex_auth.asyncio is the asyncio module, so the patch reaches every event loop in the
+    process. A loop another test left running in this xdist worker then called the fake on
+    every tick: it never slept, spun, and flooded `sleeps` until the assert's repr of that
+    list ran past pytest-timeout. Other threads get the real sleep.
+    """
+    real_sleep = asyncio.sleep
+    owner = threading.get_ident()
+
+    async def fake_sleep(delay, *args, **kwargs):
+        if threading.get_ident() != owner:
+            return await real_sleep(delay, *args, **kwargs)
+        if record is not None:
+            record.append(delay)
+
+    monkeypatch.setattr(codex_auth.asyncio, "sleep", fake_sleep)
+
+
 def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch):
     poll_bodies = []
     sleeps = []
@@ -429,9 +543,6 @@ def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch
             status, body = responses.pop(0)
             return FakeResponse(status, body)
 
-    async def fake_sleep(delay):
-        sleeps.append(delay)
-
     exchange_data = {}
     token = _jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}})
 
@@ -453,7 +564,7 @@ def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch
         persist_bundle = lambda _provider, bundle: persisted.append(bundle),
     )
     monkeypatch.setattr(codex_auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
-    monkeypatch.setattr(codex_auth.asyncio, "sleep", fake_sleep)
+    _patch_poll_sleep(monkeypatch, sleeps)
     monkeypatch.setattr(codex_auth, "_token_request", token_request)
 
     asyncio.run(codex_auth._device_poll(flow))
@@ -501,9 +612,6 @@ def test_device_poll_persists_terminal_error_for_other_workers(monkeypatch):
         async def post(self, *_args, **_kwargs):
             return FakeResponse()
 
-    async def fake_sleep(_delay):
-        return None
-
     @asynccontextmanager
     async def oauth_guard(_provider_id):
         yield
@@ -524,7 +632,7 @@ def test_device_poll_persists_terminal_error_for_other_workers(monkeypatch):
         marker = "marker",
     )
     monkeypatch.setattr(codex_auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
-    monkeypatch.setattr(codex_auth.asyncio, "sleep", fake_sleep)
+    _patch_poll_sleep(monkeypatch)
     monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", oauth_guard)
     monkeypatch.setattr(codex_auth, "_oauth_flow_record", lambda _provider: record.copy())
     monkeypatch.setattr(codex_auth.credential_secrets, "upsert_secret", upsert)
@@ -847,7 +955,6 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
                         {"effort": "high"},
                     ],
                 },
-                # Internal review slug the picker must never offer.
                 {"slug": "codex-auto-review", "visibility": "hide"},
                 {"slug": "", "visibility": "list"},
                 "not-a-model",
@@ -868,8 +975,7 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
             "reasoning_efforts": ["low", "high"],
             "listed": True,
         },
-        # Kept and marked, not dropped: an account can still call a slug it saved while
-        # the slug was listed, and only the picker needs to stop offering it.
+        # Kept and marked: an account can still call a saved slug; only the picker stops offering it.
         {
             "id": "codex-auto-review",
             "display_name": "codex-auto-review",
@@ -881,11 +987,9 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
     ]
     assert fake.calls[0][0] == f"{OPENAI_CODEX_API_BASE}/codex/models"
     assert fake.calls[0][1] == {"client_version": codex_auth.OPENAI_CODEX_CLIENT_VERSION}
-    # A second call is served from cache rather than re-hitting upstream.
     assert asyncio.run(list_subscription_models("provider-1", "secret-token", "acct-1")) == models
     assert len(fake.calls) == 1
-    # Outlives the cache so a slow save is still accepted by the provider routes.
-    # Cached for its metadata, but a hidden slug is not authorized by the fetch alone.
+    # Outlives the cache so a slow save is still accepted; hidden slugs are not authorized by fetch alone.
     assert offered_subscription_model_ids("provider-1") == {"gpt-5.4"}
     assert codex_client.offered_subscription_model("provider-1", "codex-auto-review") is not None
     forget_subscription_models("provider-1")
@@ -894,11 +998,7 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
 
 
 def test_subscription_catalog_is_dropped_when_the_account_changes(monkeypatch):
-    """A reconnect can bind the same provider row to a different ChatGPT account.
-
-    Nothing on the reauthorization path clears the catalog, so a lookup keyed only by
-    provider would keep serving the previous plan's slugs for the whole TTL.
-    """
+    """Drop the catalog on account change, else the old plan's slugs serve for the whole TTL."""
     first = _models_response({"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: first)
     forget_subscription_models("provider-4")
@@ -907,7 +1007,6 @@ def test_subscription_catalog_is_dropped_when_the_account_changes(monkeypatch):
 
     second = _models_response({"models": [{"slug": "gpt-5.5", "visibility": "list"}]})
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: second)
-    # Same provider, new account: the stale catalog must not be served from cache.
     models = asyncio.run(list_subscription_models("provider-4", "token-b", "acct-b"))
     assert [model["id"] for model in models] == ["gpt-5.5"]
     assert offered_subscription_model_ids("provider-4") == {"gpt-5.5"}
@@ -916,12 +1015,7 @@ def test_subscription_catalog_is_dropped_when_the_account_changes(monkeypatch):
 
 
 def test_persisting_a_new_account_drops_the_plan_catalog(monkeypatch):
-    """Rebinding a connection to another ChatGPT account retires its catalog at once.
-
-    The user can leave the form before the browser callback lands, so the post-connect
-    picker refresh never runs, and the chat gate only refetches a catalog it does not
-    already have. Nothing else would notice the account changed.
-    """
+    """Rebinding retires the catalog at once, since the chat gate refetches only when none is held."""
     stored = {}
 
     monkeypatch.setattr(
@@ -948,7 +1042,6 @@ def test_persisting_a_new_account_drops_the_plan_catalog(monkeypatch):
         "gpt-5.7-nova": {"id": "gpt-5.7-nova", "listed": True}
     }
     try:
-        # A refresh for the same account keeps it: only the account identity matters.
         codex_auth.save_oauth_bundle("provider-5", _bundle("acct-a"))
         assert offered_subscription_model_ids("provider-5") == {"gpt-5.7-nova"}
 
@@ -969,7 +1062,6 @@ def test_a_forced_reload_skips_the_cached_catalog(monkeypatch):
     second = _models_response({"models": [{"slug": "gpt-5.8-new", "visibility": "list"}]})
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: second)
     try:
-        # Unforced, the fresh slug stays invisible for the rest of the TTL.
         cached = asyncio.run(list_subscription_models("provider-6", "token", "acct-1"))
         assert [model["id"] for model in cached] == ["gpt-5.4"]
         assert len(second.calls) == 0
@@ -979,7 +1071,6 @@ def test_a_forced_reload_skips_the_cached_catalog(monkeypatch):
         )
         assert [model["id"] for model in reloaded] == ["gpt-5.8-new"]
         assert len(second.calls) == 1
-        # The refreshed catalog replaces what the picker and the chat gate read.
         assert offered_subscription_model_ids("provider-6") == {"gpt-5.8-new"}
     finally:
         forget_subscription_models("provider-6")
@@ -1000,10 +1091,9 @@ def test_subscription_model_list_rejects_non_200(monkeypatch):
     assert cached_subscription_models("provider-2") is None
 
 
-def test_model_route_falls_back_to_curated_when_upstream_is_unusable(monkeypatch):
+def test_model_route_lists_nothing_of_its_own_when_upstream_is_unusable(monkeypatch):
     from routes import openai_codex_auth as codex_routes
 
-    curated = get_provider_info("openai_codex")["default_models"]
     monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
 
     def call():
@@ -1015,8 +1105,7 @@ def test_model_route_falls_back_to_curated_when_upstream_is_unusable(monkeypatch
 
     monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "disconnected")
     disconnected = call()
-    assert disconnected["source"] == "curated"
-    assert [model["id"] for model in disconnected["models"]] == curated
+    assert disconnected == {"models": [], "source": "curated"}
 
     async def _resolve(_provider_id):
         return "secret-token", "acct-1"
@@ -1027,7 +1116,8 @@ def test_model_route_falls_back_to_curated_when_upstream_is_unusable(monkeypatch
     monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "connected")
     monkeypatch.setattr(codex_routes.codex_auth, "resolve_access", _resolve)
     monkeypatch.setattr(codex_routes.codex_client, "list_subscription_models", _boom)
-    assert call()["source"] == "curated"
+    monkeypatch.setattr(codex_routes.codex_auth, "load_oauth_bundle", lambda _id: None)
+    assert call() == {"models": [], "source": "curated"}
 
     async def _models(*_args, **_kwargs):
         return [
@@ -1037,7 +1127,6 @@ def test_model_route_falls_back_to_curated_when_upstream_is_unusable(monkeypatch
                 "context_length": 272000,
                 "listed": True,
             },
-            # Present on the plan but not offered: reported as known, never in the picker.
             {"id": "codex-auto-review", "display_name": "codex-auto-review", "listed": False},
         ]
 
@@ -1046,12 +1135,10 @@ def test_model_route_falls_back_to_curated_when_upstream_is_unusable(monkeypatch
     assert live["source"] == "subscription"
     assert [model["id"] for model in live["models"]] == ["gpt-5.6-terra"]
     assert [model["id"] for model in live["known"]] == ["gpt-5.6-terra", "codex-auto-review"]
-    # The hidden entry keeps its metadata so the picker can still describe it.
     assert live["known"][1]["display_name"] == "codex-auto-review"
 
 
 def test_client_never_emits_done_marker_itself():
-    # The route owns the one Chat-Completions [DONE] marker.
     assert not any("[DONE]" in line for line in asyncio.run(_successful_stream_lines()))
 
 
@@ -1150,6 +1237,57 @@ def test_permanent_refresh_rejection_sets_only_sanitized_reconnect_marker(monkey
     assert saved and saved[-1]["reauthorization_required"] is True
     assert "secret-access" not in str(error.value)
     assert "secret-refresh" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "status, body, permanent",
+    [
+        (401, {"error": {"code": "refresh_token_reused"}}, True),
+        (400, {"error": {"code": "refresh_token_reused"}}, True),
+        (401, {"error": {"code": "refresh_token_invalidated"}}, True),
+        (401, {"error": {"message": "unknown"}}, True),
+        (400, {"code": "refresh_token_reused"}, True),
+        (400, {"error": "REFRESH_TOKEN_INVALIDATED"}, True),
+        (400, {"error": {"code": "server_error"}}, False),
+        (503, {"error": {"code": "server_error"}}, False),
+    ],
+)
+def test_refresh_rejections_the_codex_cli_treats_as_permanent_ask_to_reconnect(
+    monkeypatch, status, body, permanent
+):
+    bundle = {
+        "access_token": "secret-access",
+        "refresh_token": "secret-refresh",
+        "expires_at": time.time() - 10,
+        "account_id": "secret-account",
+    }
+    saved = []
+
+    class Lock:
+        def acquire(self):
+            return None
+
+        def release(self):
+            return None
+
+    real_client = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda _request: httpx.Response(status, json = body))
+    monkeypatch.setattr(
+        codex_auth.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport = transport, **kwargs),
+    )
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _provider: bundle.copy())
+    monkeypatch.setattr(
+        codex_auth, "save_oauth_bundle", lambda _provider, value: saved.append(value)
+    )
+    monkeypatch.setattr(codex_auth, "FileLock", lambda *_args, **_kwargs: Lock())
+    codex_auth._refresh_locks.clear()
+
+    with pytest.raises(codex_auth.CodexAuthError) as error:
+        asyncio.run(codex_auth.resolve_access("provider"))
+    assert isinstance(error.value, codex_auth.CodexReauthorizationRequired) is permanent
+    assert bool(saved and saved[-1].get("reauthorization_required")) is permanent
 
 
 def test_stale_unauthorized_response_does_not_poison_reconnected_bundle(monkeypatch):
@@ -1504,8 +1642,7 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
         "call_1",
         "call_2",
     ]
-    # The shared loop carries the local loops' closing nudge, so the tool results
-    # are no longer the tail of the conversation.
+    # The shared loop carries the closing nudge, so tool results are no longer the tail.
     assert replayed[-1]["role"] == "user"
     assert "provide your final answer now" in replayed[-1]["content"]
 
@@ -1516,13 +1653,7 @@ def _codex_chat_gate(
     resolve = None,
     saved_models = None,
 ):
-    """Drive the chat route far enough to answer "may this model be used?".
-
-    The gate is one line inside ``_proxy_to_external_provider`` and is only
-    reachable through the route, so the access resolver is stubbed to raise: a
-    401 means the model was accepted and the request moved on, a 400 means it
-    was refused.
-    """
+    """Probe the chat gate by stubbing the resolver to raise; 401 means accepted, 400 means refused."""
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
     from routes import inference as inf
@@ -1565,7 +1696,7 @@ def test_codex_chat_receives_the_current_date(monkeypatch):
     from models.inference import ChatCompletionRequest
     from routes import inference as inf
 
-    model = get_provider_info("openai_codex")["default_models"][0]
+    model = "gpt-5.4"
     monkeypatch.setattr(
         inf.providers_db,
         "get_provider",
@@ -1637,26 +1768,16 @@ def test_codex_chat_receives_the_current_date(monkeypatch):
     assert captured["messages"][1] == {"role": "user", "content": "hello"}
 
 
-def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
-    """A slug the picker offered and the provider routes saved must be chattable.
-
-    ``/codex/models`` is the truth once connected, so a plan can list a model
-    newer than the curated seed. The provider routes accept saving it; gating
-    the chat route on the seed alone would reject the very model the user just
-    picked, on every message.
-    """
+def test_chat_accepts_a_plan_listed_slug(monkeypatch):
     listed = "gpt-5.7-nova"
-    assert listed not in get_provider_info("openai_codex")["default_models"]
 
-    # A catalog that simply does not list it: the refusal is about the model, not the
-    # connection, so the gate never reaches for a refresh.
+    # Refusal is about the model, not the connection, so the gate never refreshes.
     forget_subscription_models("codex-1")
     codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4", "listed": True}}
     refused = _codex_chat_gate(monkeypatch, listed)
     assert refused.status_code == 400
     assert "Choose a curated Codex model." in str(refused.detail)
 
-    # Exactly what a picker fetch records for this connection.
     codex_client._offered_models["codex-1"] = {
         listed: {"id": listed, "display_name": listed, "vision": True, "listed": True}
     }
@@ -1664,7 +1785,6 @@ def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
         accepted = _codex_chat_gate(monkeypatch, listed)
         assert accepted.status_code == 401, accepted.detail
         assert "Choose a curated Codex model." not in str(accepted.detail)
-        # A slug no plan ever listed is still refused.
         never_listed = _codex_chat_gate(monkeypatch, "gpt-5.3-codex-spark")
         assert never_listed.status_code == 400
         assert "Choose a curated Codex model." in str(never_listed.detail)
@@ -1673,12 +1793,7 @@ def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
 
 
 def test_chat_refetches_the_plan_catalog_after_a_restart(monkeypatch):
-    """A restart empties the in-memory catalog; the saved slug must still work.
-
-    Nothing refetches /codex/models on startup, so gating on the seed alone would
-    reject a model the user legitimately saved until they reopened the connection
-    editor.
-    """
+    """Chat refetches the plan catalog after restart, since nothing refreshes /codex/models on startup."""
     listed = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
 
@@ -1686,8 +1801,6 @@ def test_chat_refetches_the_plan_catalog_after_a_restart(monkeypatch):
 
     async def _resolve(_provider_id):
         calls.append(_provider_id)
-        # The gate's refresh resolves first; the chat path's own call then stops
-        # the request before it can reach upstream.
         if len(calls) > 1:
             raise codex_auth.CodexAuthError("stub: past the model gate")
         return "secret-token", "acct-1"
@@ -1697,7 +1810,6 @@ def test_chat_refetches_the_plan_catalog_after_a_restart(monkeypatch):
     )
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
     try:
-        # Cold cache, exactly as after a restart: the gate fetches rather than refusing.
         accepted = _codex_chat_gate(monkeypatch, listed, resolve = _resolve)
         assert accepted.status_code == 401, accepted.detail
         assert offered_subscription_model_ids("codex-1") == {listed}
@@ -1730,11 +1842,7 @@ def test_chat_refuses_when_the_catalog_cannot_be_refreshed(monkeypatch):
 
 
 def test_chat_asks_for_reconnection_rather_than_another_model(monkeypatch):
-    """A dead connection is not a bad model choice, and the message has to say so.
-
-    The catalog is unreadable because the credentials are, so refusing with "choose a
-    curated model" would send the user to fix a selection that may be perfectly valid.
-    """
+    """Unreadable catalog from dead credentials must ask to reconnect, not blame the model choice."""
     forget_subscription_models("codex-1")
 
     async def _needs_reauth(_provider_id):
@@ -1756,7 +1864,6 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
     from routes import inference as inf
 
     listed = "gpt-5.7-nova"
-    assert listed not in get_provider_info("openai_codex")["model_capabilities"]
 
     monkeypatch.setattr(
         inf.providers_db,
@@ -1808,7 +1915,6 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
         refused = call()
         assert refused.status_code == 400
         assert "does not accept image input" in str(refused.detail)
-        # The same slug listed as image-capable is carried through to the provider.
         codex_client._offered_models["codex-1"] = {
             listed: {"id": listed, "display_name": listed, "vision": True, "listed": True}
         }
@@ -1820,16 +1926,9 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
 
 
 def test_chat_keeps_a_saved_slug_the_plan_stopped_listing(monkeypatch):
-    """visibility is how a slug is presented, not whether the account may call it.
-
-    An aged slug flips to "hide" and drops out of the normalized catalog. Rebuilding the
-    allowlist from that catalog alone would refuse a model the user saved while it was
-    listed and may still be using.
-    """
+    """Visibility is presentation, not permission: a saved slug the plan later hides stays usable."""
     hidden = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
-    # The plan still returns it, marked hidden: that is what ageing out of the picker
-    # looks like, as opposed to a slug the account cannot reach at all.
     codex_client._offered_models["codex-1"] = {
         "gpt-5.4": {"id": "gpt-5.4", "listed": True},
         hidden: {"id": hidden, "listed": False},
@@ -1846,19 +1945,13 @@ def test_chat_keeps_a_saved_slug_the_plan_stopped_listing(monkeypatch):
 
 
 def test_chat_retires_a_saved_slug_the_new_account_does_not_carry(monkeypatch):
-    """Reauthorizing to another account is a real revocation, unlike ageing out.
-
-    The saved row still names the previous account's slugs, so trusting it forever would
-    keep sending them upstream on an account that never had them.
-    """
+    """Reauthorizing to another account revokes saved slugs the new account lacks; ageing out does not."""
     stale = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
     try:
-        # No catalog read yet: the row is the only evidence, so it is still trusted.
         cold = _codex_chat_gate(monkeypatch, stale, saved_models = [stale])
         assert cold.status_code == 401, cold.detail
 
-        # The new account's catalog does not carry it at all, hidden or otherwise.
         codex_client._offered_models["codex-1"] = {"gpt-5.5": {"id": "gpt-5.5", "listed": True}}
         refused = _codex_chat_gate(monkeypatch, stale, saved_models = [stale])
         assert refused.status_code == 400
@@ -1924,11 +2017,7 @@ def test_chat_reports_reconnection_when_an_image_needs_the_catalog(monkeypatch):
 
 
 def test_a_hidden_slug_is_not_invocable_just_because_the_catalog_was_fetched(monkeypatch):
-    """codex-auto-review and its kin are withheld from the picker on purpose.
-
-    They are cached for their metadata and stay usable on a connection that already
-    carries one, but a catalog fetch alone must not make an internal slug invocable.
-    """
+    """Hidden slugs such as codex-auto-review are not invocable from a catalog fetch alone."""
     hidden = "codex-auto-review"
     fake = _models_response(
         {
@@ -1947,28 +2036,38 @@ def test_a_hidden_slug_is_not_invocable_just_because_the_catalog_was_fetched(mon
         assert refused.status_code == 400
         assert "Choose a curated Codex model." in str(refused.detail)
 
-        # Still reachable when the connection already carries it.
         accepted = _codex_chat_gate(monkeypatch, hidden, saved_models = [hidden])
         assert accepted.status_code == 401, accepted.detail
     finally:
         forget_subscription_models("codex-1")
 
 
-def test_chat_stops_trusting_the_seed_once_the_plan_catalog_is_known(monkeypatch):
-    """The registry seed bootstraps a connection; it says nothing about this account.
+class _UnreachableCatalog:
+    async def get(self, *_args, **_kwargs):
+        raise httpx.ConnectError("upstream down")
 
-    gpt-5.6-sol is seeded but a Go plan does not carry it, and sending it upstream only
-    to be refused is the failure this PR exists to remove.
-    """
-    seeded = get_provider_info("openai_codex")["default_models"][0]
+    async def aclose(self):
+        return None
+
+
+async def _resolves(_provider_id, **_kwargs):
+    return "secret-token", "acct-1"
+
+
+def test_chat_knows_only_the_saved_models_until_the_plan_catalog_is_read(monkeypatch):
+    model = "gpt-5.4"
     forget_subscription_models("codex-1")
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: _UnreachableCatalog())
     try:
-        # Nothing read yet: the seed is all there is, so it is still accepted.
-        cold = _codex_chat_gate(monkeypatch, seeded)
-        assert cold.status_code == 401, cold.detail
+        unsaved = _codex_chat_gate(monkeypatch, model, resolve = _resolves)
+        assert unsaved.status_code == 400
+        assert "Choose a curated Codex model." in str(unsaved.detail)
+
+        saved = _codex_chat_gate(monkeypatch, model, saved_models = [model])
+        assert saved.status_code == 401, saved.detail
 
         codex_client._offered_models["codex-1"] = {"gpt-5.5": {"id": "gpt-5.5", "listed": True}}
-        refused = _codex_chat_gate(monkeypatch, seeded)
+        refused = _codex_chat_gate(monkeypatch, model, saved_models = [model])
         assert refused.status_code == 400
         assert "Choose a curated Codex model." in str(refused.detail)
 
@@ -1978,17 +2077,169 @@ def test_chat_stops_trusting_the_seed_once_the_plan_catalog_is_known(monkeypatch
         forget_subscription_models("codex-1")
 
 
+def _signed_in(account_id: str, **extra) -> dict:
+    return {
+        "access_token": "token",
+        "refresh_token": "refresh",
+        "expires_at": 1,
+        "account_id": account_id,
+        **extra,
+    }
+
+
+def _stored_bundles(monkeypatch, bundles: dict) -> None:
+    @asynccontextmanager
+    async def _guard(_provider_id):
+        yield
+
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", _guard)
+    monkeypatch.setattr(
+        codex_auth,
+        "load_oauth_bundle",
+        lambda provider_id: json.loads(json.dumps(bundles.get(provider_id))),
+    )
+    monkeypatch.setattr(
+        codex_auth.credential_secrets,
+        "upsert_secret",
+        lambda _kind, provider_id, value: bundles.__setitem__(provider_id, json.loads(value)),
+    )
+
+
+def test_the_plan_catalog_survives_a_restart_without_upstream(monkeypatch):
+    listed, dropped = "gpt-5.7-nova", "gpt-5.4"
+    bundles = {"codex-1": _signed_in("acct-1", catalog_account_id = "acct-1")}
+    _stored_bundles(monkeypatch, bundles)
+    forget_subscription_models("codex-1")
+    fake = _models_response(
+        {"models": [{"slug": listed, "visibility": "list", "input_modalities": ["text", "image"]}]}
+    )
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    try:
+        asyncio.run(list_subscription_models("codex-1", "token", "acct-1"))
+        assert bundles["codex-1"]["plan_catalog"]["account_id"] == "acct-1"
+        assert bundles["codex-1"]["access_token"] == "token"
+
+        # A restart: nothing in memory, and upstream cannot be asked.
+        forget_subscription_models("codex-1")
+        monkeypatch.setattr(codex_client, "_create_http_client", lambda: _UnreachableCatalog())
+        refused = _codex_chat_gate(monkeypatch, dropped, resolve = _resolves, saved_models = [dropped])
+        assert refused.status_code == 400
+        assert "Choose a curated Codex model." in str(refused.detail)
+        assert offered_subscription_model_ids("codex-1") == {listed}
+        assert codex_client.offered_subscription_model("codex-1", listed)["vision"] is True
+
+        accepted = _codex_chat_gate(monkeypatch, listed)
+        assert accepted.status_code == 401, accepted.detail
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_a_saved_plan_catalog_is_never_read_for_another_account(monkeypatch):
+    previous = {"account_id": "acct-a", "models": [{"id": "gpt-5.7-nova", "listed": True}]}
+    forget_subscription_models("codex-1")
+    try:
+        assert (
+            codex_client.restore_subscription_catalog(
+                "codex-1", _signed_in("acct-b", plan_catalog = previous)
+            )
+            == []
+        )
+        assert codex_client.subscription_catalog_known("codex-1") is False
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_signing_in_as_another_account_drops_the_saved_plan_catalog(monkeypatch):
+    slug = "gpt-5.7-nova"
+    bundles = {"codex-1": _signed_in("acct-a")}
+    _stored_bundles(monkeypatch, bundles)
+    forget_subscription_models("codex-1")
+    fake = _models_response({"models": [{"slug": slug, "visibility": "list"}]})
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    try:
+        asyncio.run(list_subscription_models("codex-1", "token", "acct-a"))
+        assert "plan_catalog" in bundles["codex-1"]
+
+        codex_auth.save_oauth_bundle("codex-1", _signed_in("acct-b"))
+        assert "plan_catalog" not in bundles["codex-1"]
+        assert codex_client.subscription_catalog_known("codex-1") is False
+
+        monkeypatch.setattr(codex_client, "_create_http_client", lambda: _UnreachableCatalog())
+        refused = _codex_chat_gate(monkeypatch, slug, resolve = _resolves, saved_models = [slug])
+        assert refused.status_code == 400
+        assert "Choose a curated Codex model." in str(refused.detail)
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_a_catalog_that_cannot_be_saved_still_answers(monkeypatch):
+    bundles = {"codex-1": _signed_in("acct-1")}
+    _stored_bundles(monkeypatch, bundles)
+
+    @asynccontextmanager
+    async def _busy(_provider_id):
+        raise codex_auth.CodexAuthError("ChatGPT credential update is busy. Please retry.")
+        yield
+
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", _busy)
+    forget_subscription_models("codex-1")
+    fake = _models_response({"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    try:
+        models = asyncio.run(list_subscription_models("codex-1", "token", "acct-1"))
+        assert [model["id"] for model in models] == ["gpt-5.4"]
+        assert offered_subscription_model_ids("codex-1") == {"gpt-5.4"}
+        assert "plan_catalog" not in bundles["codex-1"]
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_the_model_route_serves_the_saved_plan_catalog_when_upstream_is_down(monkeypatch):
+    from routes import openai_codex_auth as codex_routes
+
+    catalog = {
+        "account_id": "acct-1",
+        "models": [
+            {"id": "gpt-5.7-nova", "display_name": "gpt-5.7-nova", "listed": True},
+            {"id": "codex-auto-review", "display_name": "codex-auto-review", "listed": False},
+        ],
+    }
+    bundles = {
+        "same": _signed_in("acct-1", plan_catalog = catalog),
+        "other": _signed_in("acct-2", plan_catalog = catalog),
+    }
+    _stored_bundles(monkeypatch, bundles)
+    monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolves)
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: _UnreachableCatalog())
+
+    def call(provider_id):
+        forget_subscription_models(provider_id)
+        try:
+            return asyncio.run(
+                codex_routes.list_subscription_models(
+                    provider_id, _credential = ("user", "session"), via_api_key = False
+                )
+            )
+        finally:
+            forget_subscription_models(provider_id)
+
+    answered = call("same")
+    assert answered["source"] == "subscription"
+    assert [model["id"] for model in answered["models"]] == ["gpt-5.7-nova"]
+    assert [model["id"] for model in answered["known"]] == ["gpt-5.7-nova", "codex-auto-review"]
+    assert call("other") == {"models": [], "source": "curated"}
+
+
 def test_chat_does_not_trust_the_saved_row_after_a_rebind(monkeypatch):
     """Rebinding empties the catalog on purpose, so absence is not a cold start here."""
     stale_slug = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
     try:
-        # A plain cold start still trusts the row.
         cold = _codex_chat_gate(monkeypatch, stale_slug, saved_models = [stale_slug])
         assert cold.status_code == 401, cold.detail
 
-        # Rebound: the row is not evidence, so the gate reads the new account's catalog
-        # rather than trusting it, and that catalog does not carry the slug.
+        # A rebound row is not evidence; the gate reads the new account's catalog instead.
         codex_client.mark_subscription_catalog_stale("codex-1")
 
         async def _resolve(_provider_id):
@@ -2007,11 +2258,7 @@ def test_chat_does_not_trust_the_saved_row_after_a_rebind(monkeypatch):
 
 
 def test_disconnecting_leaves_the_saved_models_unproven(monkeypatch):
-    """A disconnect erases the identity a later save would be compared against.
-
-    The provider row keeps its models, so without a mark here the next account inherits
-    them as cold-start evidence and sends them under its own credentials.
-    """
+    """Disconnect marks saved models unproven, or the next account inherits them as cold-start evidence."""
     stored = {}
     monkeypatch.setattr(
         codex_auth.credential_secrets,
@@ -2027,11 +2274,7 @@ def test_disconnecting_leaves_the_saved_models_unproven(monkeypatch):
 
 
 def test_evicting_the_response_cache_keeps_authorization_evidence(monkeypatch):
-    """The TTL cache is bounded; what a plan proved about a connection is not.
-
-    Clearing both together made every other connection look cold, which is exactly the
-    state that licenses a saved slug the account no longer carries.
-    """
+    """Evicting the TTL cache must not clear authorization evidence, or other connections look cold."""
     codex_client._models_cache.clear()
     codex_client._offered_models.clear()
     codex_client._catalog_accounts.clear()
@@ -2045,7 +2288,6 @@ def test_evicting_the_response_cache_keeps_authorization_evidence(monkeypatch):
     try:
         asyncio.run(list_subscription_models("provider-8", "token", "acct-8"))
         assert codex_client.cached_subscription_models("filler-0") is None
-        # The other connection's proof survives the eviction.
         assert offered_subscription_model_ids("other") == {"gpt-5.4"}
         assert codex_client._catalog_accounts["other"] == "acct-other"
     finally:
@@ -2055,16 +2297,11 @@ def test_evicting_the_response_cache_keeps_authorization_evidence(monkeypatch):
 
 
 def test_a_superseded_catalog_read_does_not_commit(monkeypatch):
-    """A read overtaken by a rebind must not reinstate the account it was reading for.
-
-    Committing late would also clear the mark that says the saved models are unproven,
-    turning a self-correcting state into a sticky one.
-    """
+    """A catalog read overtaken by a rebind must not commit, or it reinstates the old account."""
     forget_subscription_models("provider-9")
 
     class Rebinding:
         async def get(self, *_args, **_kwargs):
-            # The rebind lands while this read is out.
             forget_subscription_models("provider-9")
             mark = codex_client.mark_subscription_catalog_stale
             mark("provider-9")
@@ -2077,7 +2314,6 @@ def test_a_superseded_catalog_read_does_not_commit(monkeypatch):
     try:
         models = asyncio.run(list_subscription_models("provider-9", "token-a", "acct-a"))
         assert [model["id"] for model in models] == ["gpt-5.4"]
-        # Returned to its caller, but never stored over what replaced it.
         assert codex_client.subscription_catalog_known("provider-9") is False
         assert codex_client.subscription_catalog_stale("provider-9") is True
     finally:
@@ -2085,22 +2321,16 @@ def test_a_superseded_catalog_read_does_not_commit(monkeypatch):
 
 
 def test_chat_drops_a_catalog_another_worker_rebound(monkeypatch):
-    """The OAuth bundle is shared through the DB; the catalog is per process.
-
-    Unsloth serializes token refreshes across workers on purpose, so this process can hold
-    a catalog for an account the connection has since moved off.
-    """
+    """Catalogs are per process, so a worker can hold one for an account another worker rebound."""
     stale_slug = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
     codex_client._offered_models["codex-1"] = {stale_slug: {"id": stale_slug, "listed": True}}
     codex_client._catalog_accounts["codex-1"] = "acct-a"
 
-    # What the shared DB now says this connection is bound to.
     monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"})
     try:
         refused = _codex_chat_gate(monkeypatch, stale_slug, saved_models = [stale_slug])
         assert refused.status_code == 401, refused.detail
-        # The catalog for the previous account is gone and the row is unproven again.
         assert codex_client.subscription_catalog_known("codex-1") is False
         assert codex_client.subscription_catalog_stale("codex-1") is True
     finally:
@@ -2111,7 +2341,6 @@ def test_the_model_route_reports_a_dead_connection(monkeypatch):
     """The editor route must say reconnect rather than answer with a healthy seed list."""
     from routes import openai_codex_auth as codex_routes
 
-    curated = get_provider_info("openai_codex")["default_models"]
     monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
     monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "connected")
 
@@ -2124,18 +2353,12 @@ def test_the_model_route_reports_a_dead_connection(monkeypatch):
             "provider-10", _credential = ("user", "session"), via_api_key = False
         )
     )
-    # Not a 401: authFetch would read that as an expired Unsloth session, refresh it and
-    # retry, and the retry would look like a healthy curated list.
-    assert answered["source"] == "reauthorization_required"
-    assert [model["id"] for model in answered["models"]] == curated
+    # Not a 401: authFetch would refresh the session and the retry would look healthy.
+    assert answered == {"models": [], "source": "reauthorization_required"}
 
 
 def test_a_catalog_401_spends_one_forced_refresh(monkeypatch):
-    """Upstream can reject a token before its recorded expiry; the refresh may be fine.
-
-    The responses transport already spends one forced refresh on that, so the editor
-    should not be the only path that gives up and demands a reconnect.
-    """
+    """Upstream can reject a token before its expiry, so a catalog 401 gets one forced refresh first."""
     forget_subscription_models("provider-11")
     calls = []
 
@@ -2196,12 +2419,7 @@ def test_a_second_catalog_401_asks_for_reconnection(monkeypatch):
 
 
 def test_a_refresh_that_cannot_be_reached_stays_retryable(monkeypatch):
-    """An unanswered refresh is not a rejected credential.
-
-    resolve_access raises the permanent variant only when the refresh token itself was
-    rejected, so anything else has to stay transient or the user is sent to reconnect a
-    connection whose credentials are fine.
-    """
+    """Only a rejected refresh token is permanent; an unreachable refresh must stay retryable."""
     forget_subscription_models("provider-13")
 
     class Rejecting:
@@ -2266,11 +2484,7 @@ def test_a_rejected_refresh_credential_is_a_reauthorization(monkeypatch):
 
 
 def test_a_catalog_is_not_committed_for_an_account_another_worker_replaced(monkeypatch):
-    """The request counter is process-local; rebinding travels through the shared DB.
-
-    A read this worker started is not retired by another worker's rebind, so the stored
-    bundle is the only thing that can say the answer is for the wrong account.
-    """
+    """Another worker's rebind does not retire this worker's reads, so the stored bundle must reveal it."""
     forget_subscription_models("provider-15")
 
     class Slow:
@@ -2286,14 +2500,12 @@ def test_a_catalog_is_not_committed_for_an_account_another_worker_replaced(monke
             return None
 
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: Slow())
-    # While the read was out, another worker rebound the connection to acct-b.
     monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"})
     try:
         models = asyncio.run(list_subscription_models("provider-15", "token-a", "acct-a"))
         assert [model["id"] for model in models] == ["gpt-5.4"]
         assert codex_client.subscription_catalog_known("provider-15") is False
 
-        # The same read for the account the DB actually names does commit.
         forget_subscription_models("provider-15")
         asyncio.run(list_subscription_models("provider-15", "token-b", "acct-b"))
         assert offered_subscription_model_ids("provider-15") == {"gpt-5.4"}
@@ -2305,7 +2517,6 @@ def test_the_model_route_reports_an_already_marked_connection(monkeypatch):
     """A bundle marked by someone else still has to reach the editor as reconnect."""
     from routes import openai_codex_auth as codex_routes
 
-    curated = get_provider_info("openai_codex")["default_models"]
     monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
     monkeypatch.setattr(
         codex_routes.codex_auth, "auth_status", lambda _id: "reauthorization_required"
@@ -2315,8 +2526,7 @@ def test_the_model_route_reports_an_already_marked_connection(monkeypatch):
             "provider-16", _credential = ("user", "session"), via_api_key = False
         )
     )
-    assert answered["source"] == "reauthorization_required"
-    assert [model["id"] for model in answered["models"]] == curated
+    assert answered == {"models": [], "source": "reauthorization_required"}
 
     monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "disconnected")
     plain = asyncio.run(
@@ -2328,11 +2538,7 @@ def test_the_model_route_reports_an_already_marked_connection(monkeypatch):
 
 
 def test_an_overtaken_read_still_answers_its_own_caller(monkeypatch):
-    """Its models came from upstream for this account even though a newer read owns the cache.
-
-    Reporting nothing listed would let a manual reload overlapping a chat refuse a model
-    the chat's own lookup had just seen.
-    """
+    """An overtaken read must still answer its own caller, or a reload could refuse a model just seen."""
     forget_subscription_models("provider-17")
 
     class Overtaken:
@@ -2342,7 +2548,6 @@ def test_an_overtaken_read_still_answers_its_own_caller(monkeypatch):
             headers = None,
             params = None,
         ):
-            # A newer read for the same connection starts while this one is out.
             codex_client._begin_catalog_request("provider-17")
             return httpx.Response(200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
 
@@ -2362,7 +2567,6 @@ def test_an_overtaken_read_still_answers_its_own_caller(monkeypatch):
     try:
         listed = asyncio.run(codex_client.ensure_subscription_models("provider-17"))
         assert listed == {"gpt-5.4"}
-        # Still not stored: the newer read owns the cache.
         assert codex_client.subscription_catalog_known("provider-17") is False
     finally:
         forget_subscription_models("provider-17")
@@ -2414,7 +2618,6 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
         expected_access_token = None,
     ):
         calls.append(_provider_id)
-        # The gate's own refresh resolves; the chat path's later call stops the request.
         if len(calls) > 1:
             raise codex_auth.CodexAuthError("stub: past the model gate")
         return "token", "acct-b"
@@ -2426,8 +2629,6 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
         async def aclose(self):
             return None
 
-    # Cold: the refresh cannot reach upstream, so the catalog stays unknown and the
-    # decision is the cold branch alone.
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: Unreachable())
     monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"})
     try:
@@ -2435,7 +2636,6 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
         assert refused.status_code == 400
         assert "Choose a curated Codex model." in str(refused.detail)
 
-        # The same cold process, with the row on record as proven for this account.
         monkeypatch.setattr(
             codex_auth,
             "load_oauth_bundle",
@@ -2455,21 +2655,14 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
             monkeypatch, saved, resolve = _always_refuse, saved_models = [saved]
         )
         assert accepted.status_code == 401, accepted.detail
-        # Allowed straight off the row, so the gate never reached for a catalog: the one
-        # call is the chat path's own.
         assert len(proven_calls) == 1
     finally:
         forget_subscription_models("codex-1")
 
 
 def test_reading_a_catalog_does_not_by_itself_prove_the_saved_row(monkeypatch):
-    """Reading a catalog says which account answered, not that the row was judged by it.
-
-    After a rebind the user can open the editor, which fetches, and then cancel without
-    saving, leaving the previous account's slugs in the row. Recording proof on the read
-    would authorize exactly those on the next cold start.
-    """
-    stored = {"provider-19": None}
+    """A catalog read must not prove the saved row, or a cancelled edit would authorize old slugs."""
+    stored = {}
     bundle = {
         "access_token": "token",
         "refresh_token": "refresh",
@@ -2487,17 +2680,13 @@ def test_reading_a_catalog_does_not_by_itself_prove_the_saved_row(monkeypatch):
     forget_subscription_models("provider-19")
     try:
         asyncio.run(list_subscription_models("provider-19", "token", "acct-1"))
-        assert stored["provider-19"] is None
+        assert "catalog_account_id" not in stored["provider-19"]
     finally:
         forget_subscription_models("provider-19")
 
 
 def test_a_token_refresh_keeps_the_catalog_proof(monkeypatch):
-    """Rotating credentials is not rebinding, so the proof has to survive it.
-
-    _validate_token_payload rebuilds the bundle from the token response alone, which
-    knows nothing about which account the saved models were proven for.
-    """
+    """A token refresh is not a rebind, so the catalog proof must survive rebuilding the bundle."""
     stored = {}
 
     bundle = {
@@ -2506,6 +2695,7 @@ def test_a_token_refresh_keeps_the_catalog_proof(monkeypatch):
         "expires_at": 1,
         "account_id": "acct-1",
         "catalog_account_id": "acct-1",
+        "plan_catalog": {"account_id": "acct-1", "models": [{"id": "gpt-5.4", "listed": True}]},
     }
 
     monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: dict(bundle))
@@ -2539,6 +2729,7 @@ def test_a_token_refresh_keeps_the_catalog_proof(monkeypatch):
     token, account = asyncio.run(codex_auth.resolve_access("provider-20", force_refresh = True))
     assert (token, account) == ("new", "acct-1")
     assert stored["provider-20"]["catalog_account_id"] == "acct-1"
+    assert stored["provider-20"]["plan_catalog"] == bundle["plan_catalog"]
 
 
 def test_recording_the_proof_never_overwrites_newer_credentials(monkeypatch):
@@ -2562,7 +2753,6 @@ def test_recording_the_proof_never_overwrites_newer_credentials(monkeypatch):
 
     asyncio.run(codex_auth.remember_catalog_account("provider-21", "acct-1"))
     assert len(saved) == 1
-    # The tokens written back are the ones read inside the guard, not any older copy.
     assert saved[0]["access_token"] == "rotated"
     assert saved[0]["refresh_token"] == "refresh-2"
     assert saved[0]["catalog_account_id"] == "acct-1"
@@ -2592,18 +2782,13 @@ def test_a_second_catalog_401_is_recorded_on_the_connection(monkeypatch):
     try:
         with pytest.raises(CodexReauthorizationError):
             asyncio.run(list_subscription_models("provider-22", "stale", "acct-1"))
-        # Recorded against the refreshed token, not the stale one it started with.
         assert marked == [("provider-22", "fresh-token")]
     finally:
         forget_subscription_models("provider-22")
 
 
 def test_a_catalog_with_nothing_offerable_is_not_committed(monkeypatch):
-    """The route answers such a catalog with the seed, so the two must not disagree.
-
-    Committing it would leave the picker offering seeds while validation and chat read
-    the same empty catalog and refuse them.
-    """
+    """A catalog with nothing offerable must not be committed, or the picker and chat disagree."""
     fake = _models_response({"models": [{"slug": "codex-auto-review", "visibility": "hide"}]})
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
     forget_subscription_models("provider-23")
@@ -2616,11 +2801,7 @@ def test_a_catalog_with_nothing_offerable_is_not_committed(monkeypatch):
 
 
 def test_a_cold_worker_rejects_credentials_for_another_account(monkeypatch):
-    """With no catalog here, the catalog comparison has no opinion to offer.
-
-    The row was authorized from the persisted proof against the account the gate read, so
-    that is what the resolved credentials have to match.
-    """
+    """With no catalog, resolved credentials must match the account the persisted proof was made for."""
     saved = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
     reads = []
@@ -2643,18 +2824,13 @@ def test_a_cold_worker_rejects_credentials_for_another_account(monkeypatch):
         refused = _codex_chat_gate(monkeypatch, saved, resolve = _resolve, saved_models = [saved])
         assert refused.status_code == 400
         assert "Choose a curated Codex model." in str(refused.detail)
-        # The connection is left needing a fresh catalog before anything is trusted again.
         assert codex_client.subscription_catalog_stale("codex-1") is True
     finally:
         forget_subscription_models("codex-1")
 
 
 def test_the_reauthorization_marker_is_written_under_the_guard(monkeypatch):
-    """Read and write have to be one step, or a rotation in between is written back over.
-
-    The streaming error path already takes this guard; the catalog path is the same kind
-    of write and needs the same protection.
-    """
+    """Marker read and write must share the guard, or a concurrent token rotation is overwritten."""
     forget_subscription_models("provider-24")
     order = []
 
@@ -2694,13 +2870,7 @@ def test_the_reauthorization_marker_is_written_under_the_guard(monkeypatch):
 
 
 def test_one_malformed_entry_does_not_cost_the_whole_catalog(monkeypatch):
-    """A scalar where a list belongs must drop that entry, not the account's plan.
-
-    ``supported_reasoning_levels`` was the one field guarded with ``or []``, which only
-    covers a falsy value. A scalar raised TypeError out of list_subscription_models, and
-    every caller turns that into "no catalog": the picker falls back to the curated seed
-    and the chat gate stops recognising slugs it had just been offering.
-    """
+    """A non-list field must drop only its entry; a scalar TypeError would erase the whole catalog."""
     fake = _models_response(
         {
             "models": [
@@ -2730,12 +2900,7 @@ def test_one_malformed_entry_does_not_cost_the_whole_catalog(monkeypatch):
 
 
 def test_a_repeated_slug_cannot_be_offered_and_refused_at_once(monkeypatch):
-    """The offered list and the by-id map must describe a duplicate the same way.
-
-    The list keeps every entry while the map keeps the last, so a slug listed once and
-    hidden once was reported to the picker as offered and recorded for the chat gate as
-    hidden. The picker offered it and every send refused it.
-    """
+    """Offered list and by-id map must agree on duplicate slugs, or the picker offers a refused model."""
     fake = _models_response(
         {
             "models": [
@@ -2791,13 +2956,7 @@ def _gated_models_client(gate, slug):
 
 
 def test_a_disconnect_mid_read_retires_that_read_and_releases_its_ticket(monkeypatch):
-    """Dropping the ticket must still retire the read that was holding it.
-
-    forget_subscription_models releases the entry rather than writing a larger number
-    over it, so an outstanding read finds nothing there instead of finding a mismatch.
-    Either way it must answer its own caller without reinstating the catalog that was
-    just dropped.
-    """
+    """A disconnect releases the read ticket; the outstanding read must not reinstate the catalog."""
     gate = asyncio.Event()
     monkeypatch.setattr(
         codex_client, "_create_http_client", lambda: _gated_models_client(gate, "gpt-5.4")
@@ -2834,13 +2993,7 @@ def test_a_disconnect_mid_read_retires_that_read_and_releases_its_ticket(monkeyp
 
 
 def test_a_read_started_after_a_release_cannot_be_matched_by_the_older_one(monkeypatch):
-    """Why the ticket counter is shared by every connection rather than per connection.
-
-    Releasing the entry and then counting up from it again would hand the next read the
-    same number the outstanding one is holding, and that stale read would then commit
-    its catalog over the newer one. Drawing from a counter that never reissues a value
-    is what makes releasing the entry safe.
-    """
+    """Tickets come from one counter that never reissues a value, so releasing an entry is safe."""
     first_gate = asyncio.Event()
     second_gate = asyncio.Event()
     clients = [
@@ -2903,7 +3056,6 @@ def test_quota_metadata_falls_back_to_retry_after_ms():
     request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
     ms_only = httpx.Response(429, headers = {"retry-after-ms": "30000"}, request = request)
     assert codex_client._quota_metadata(ms_only) == {"retry_after": "30.0"}
-    # Seconds win when both are present, and neither means no invented delay.
     both = httpx.Response(
         429,
         headers = {"retry-after": "45", "retry-after-ms": "30000"},
@@ -2967,9 +3119,7 @@ def test_a_transient_code_behind_a_generic_message_stays_retryable(monkeypatch):
 
 
 def test_upstream_error_code_survives_a_body_that_cannot_be_read():
-    """Parsing a body whose read failed raises StreamError, which is not an HTTPError. The
-    classification runs after a failed read, so an uncaught one would replace the quota error
-    the caller is supposed to see."""
+    """A failed body read raises StreamError, not HTTPError; uncaught, it would hide the quota error."""
 
     class _FailingStream(httpx.AsyncByteStream):
         async def __aiter__(self):
@@ -2980,7 +3130,6 @@ def test_upstream_error_code_survives_a_body_that_cannot_be_read():
 
     async def _both():
         response = httpx.Response(429, stream = _FailingStream(), request = request)
-        # The order the send loop uses: the message first, then the code off the same response.
         return (
             await codex_client._upstream_error_detail(response),
             await codex_client._upstream_error_code(response),

@@ -1,35 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Split the load phase into FETCH and WEIGHT LOAD, so one dispatch can say
-whether the Hub download is worth optimising at all.
-
-Every leg today reports one `load` number covering `from_pretrained`, which is
-a download, a disk read and a quantised materialisation in one figure. The
-prefetch lane, the second-wave reorder and the whole `D` argument in the plan
-rest on how that figure splits, and it has never been measured -- only bounded
-by subtraction, which is not the same thing.
-
-**Why this instruments the process rather than the cache.** The obvious
-approach is to diff the hub cache around the call. It cannot work here: the
-legs download into ONE shared cache CONCURRENTLY, so a whole-cache delta
-credits another leg's bytes to this one and reports a rate the Hub never
-delivered. Scoping the diff to one repo folder fixes that but reintroduces a
-different error, because `load_in_4bit=True` redirects through Unsloth's
-FLOAT_TO_INT_MAPPER and the repo that downloads is not the repo that was asked
-for. Timing the download calls INSIDE this interpreter is immune to both: each
-leg is its own process, so anything measured here was fetched by this leg.
-
-**The failure mode this is built to avoid.** An instrument that silently
-reports zero is worse than no instrument, because "no download happened" and
-"the timer never attached" read identically in a report and only one of them is
-a finding. So `seconds` is None until something is genuinely patched, and
-`patched` names what was wrapped. A reader can tell the two apart.
-
-Nothing here may fail the run. A payload that dies while collecting a
-diagnostic reports nothing at all, which is the one outcome worse than a
-missing number.
-"""
+"""Times Hub calls in-process, since a shared cache filled concurrently by legs can't be diffed."""
 
 from __future__ import annotations
 
@@ -37,14 +9,8 @@ import os
 import threading
 import time
 
-# The download entry points transformers and unsloth actually reach. Every one
-# is patched where present, and the transformers aliases are NOT redundant:
-# `transformers.utils.hub` does `from huggingface_hub import ...` at import
-# time, so it holds its own reference and rebinding the public name leaves it
-# untouched. `cached_files` calls its module-level `snapshot_download` for a
-# multi-file (sharded) checkpoint, which is the dominant download in every leg
-# here, so omitting that alias moves the largest fetch into weight_load_seconds
-# while `patched` stays non-empty and the record still looks valid.
+# transformers.utils.hub binds its own huggingface_hub names at import, so its aliases must be
+# patched too; missing cached_files' snapshot_download hides the largest (sharded) fetch.
 _TARGETS = (
     ("huggingface_hub", "hf_hub_download"),
     ("huggingface_hub", "snapshot_download"),
@@ -54,13 +20,7 @@ _TARGETS = (
 
 
 class FetchTimer:
-    """Accumulate wall time and bytes spent inside Hub download calls.
-
-    Re-entrant by design: `snapshot_download` calls `hf_hub_download` per file,
-    so a naive sum would count the inner calls twice and report more download
-    seconds than the phase itself took. A depth counter means only the
-    OUTERMOST call contributes to `seconds`.
-    """
+    """Re-entrant: snapshot_download nests hf_hub_download, so only the outermost call adds to seconds."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -70,8 +30,6 @@ class FetchTimer:
         self.bytes = 0
         self.patched: list = []
         self._originals: list = []
-
-    # -------------------------------------------------------------- patching
 
     def _wrap(self, fn):
         def wrapped(*args, **kwargs):
@@ -87,12 +45,7 @@ class FetchTimer:
                     self._depth -= 1
                     if outermost:
                         self._seconds += time.time() - started
-            # The returned path is the file or directory that now exists, so
-            # its size is what this call put on disk. A warm cache returns the
-            # same path having transferred nothing, which reads as its own size
-            # rather than as zero -- accepted, and stated, because the leg runs
-            # against a cache the prefetch may already have warmed and the
-            # interesting number there is `seconds`, not `bytes`.
+            # A warm cache reports the existing path's size, not zero; `seconds` is the meaningful number.
             try:
                 self.bytes += _path_bytes(result)
             except Exception:  # noqa: BLE001
@@ -127,8 +80,6 @@ class FetchTimer:
                 pass
         self._originals = []
 
-    # --------------------------------------------------------------- reading
-
     @property
     def seconds(self):
         """None when nothing was patched, so a dead timer cannot read as 0.0."""
@@ -153,10 +104,7 @@ class FetchTimer:
                 "the split; do not read the absence as 'no download happened'"
             )
             return out
-        # Clamped at zero: the two clocks are the same clock, but rounding and
-        # a download finishing inside the final microseconds of the phase can
-        # still produce a negative by a tenth, and a negative duration in a
-        # report is read as a bug in the report rather than as rounding.
+        # Clamped at zero: rounding can produce a tiny negative.
         out["weight_load_seconds"] = round(max(total_seconds - self._seconds, 0.0), 1)
         if self.bytes and self._seconds > 0:
             out["fetch_mb_s"] = round(self.bytes / 1024**2 / self._seconds, 1)

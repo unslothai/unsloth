@@ -26,7 +26,6 @@ test("missing readiness has a bounded escape and backend restarts reset the hand
 test("handoff keeps app geometry and identity while deferring native intents", () => {
   assert.match(source, /style=\{\{ visibility: showApp \? "visible" : "hidden" \}\}/);
   assert.match(source, /\{showApp && <NativeIntentDrain \/>\}/);
-  // The startup layer stays below the draggable/titlebar controls (z-50/z-70).
   assert.match(source, /fixed inset-0 z-40 bg-background/);
   const root = readSrc("app/routes/__root.tsx");
   assert.match(root, /<CredentialBootstrapGate active=\{!isAuthFlowRoute\}>/);

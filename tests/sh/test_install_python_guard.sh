@@ -1,11 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Behaviour tests for the #7803 fix: the Python request handed to uv, and the
-# guard that recreates a venv left on a skipped interpreter by an earlier run.
-# The real helpers and the real guard block are extracted from install.sh and
-# executed against a stubbed uv, so this cannot drift into testing a copy.
+# #7803: the Python request handed to uv, and the guard that recreates a venv on a skipped
+# interpreter. Real helpers are extracted from install.sh and run against a stubbed uv.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,7 +11,6 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 
 _HELPERS=$(mktemp)
 {
-    # Quiet stand-ins for the reporting helpers the extracted functions call.
     printf 'substep() { :; }\nrollback_substep() { :; }\n'
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
     sed -n '/^_python_skip_applies()/,/^}/p' "$INSTALL_SH"
@@ -39,8 +35,7 @@ echo "=== the request handed to uv ==="
 
 assert_eq "a bare 3.13 asks for its own series minus the bad patch" \
     ">=3.13,<3.14,!=3.13.8" "$(_python_request 3.13)"
-# Not a floor: an offline host, or a uv whose manifest predates 3.13.9, may still
-# have a good cached 3.13.7, and ">=3.13.9" would refuse it and fail the install.
+# Not a floor: an offline host may only have a good cached 3.13.7.
 assert_eq "the request never becomes a floor above the bad patch" \
     "" "$(_python_request 3.13 | grep -o '>=3\.13\.9' || true)"
 assert_eq "a minor with nothing skipped still gets its own series" \
@@ -49,8 +44,7 @@ assert_eq "an explicit patch from --python is the user's choice" \
     "3.13.8" "$(_python_request 3.13.8)"
 assert_eq "a --python path is not a version and is passed through" \
     "/usr/bin/python3.13" "$(_python_request /usr/bin/python3.13)"
-# The exclusions are generated from PYTHON_SKIP, so adding a patch there is the
-# only edit a future bad release needs.
+# Exclusions come from PYTHON_SKIP, the only edit a future bad release needs.
 _saved_skip="$PYTHON_SKIP"
 PYTHON_SKIP="3.13.8 3.13.20 3.12.4"
 assert_eq "every skipped patch in the series is excluded" \
@@ -61,8 +55,7 @@ PYTHON_SKIP="$_saved_skip"
 
 echo "=== values that are not a plain X.Y ==="
 
-# dash aborts the whole install on "Illegal number", so anything that could
-# reach the arithmetic has to be turned away before it.
+# dash aborts on "Illegal number", so anything reaching the arithmetic must be rejected first.
 assert_eq "a relative path whose first segment looks like a version" \
     "3.13/bin/python" "$(_python_request 3.13/bin/python)"
 assert_eq "a Windows-style path" \
@@ -92,9 +85,8 @@ fi
 
 echo "=== the uv version probe on an image with no awk ==="
 
-# The comment on that block says an unreadable version counts as "uv present".
-# Without the guard the pipeline exits 127 and set -e kills the install first,
-# which is exactly the host the block exists to keep working.
+# An unreadable version counts as "uv present"; without the guard the pipeline exits 127
+# and set -e kills the install.
 _PROBE=$(mktemp)
 sed -n '/^        _uv_prev_ver=\$(uv --version/,/_uv_prev_ver=""$/p' "$INSTALL_SH" > "$_PROBE"
 [ -s "$_PROBE" ] || { echo "  FAIL: could not extract the uv version probe"; exit 1; }
@@ -102,8 +94,7 @@ _probe_work=$(mktemp -d)
 mkdir -p "$_probe_work/bin"
 printf '#!/bin/sh\necho "uv 0.9.2"\n' > "$_probe_work/bin/uv"
 chmod +x "$_probe_work/bin/uv"
-# PATH is narrowed inside the child, not around it: narrowing it around the
-# child would hide `sh` itself and the test would pass for the wrong reason.
+# PATH is narrowed inside the child, else `sh` itself would be hidden.
 _probe_out=$(sh -c "PATH='$_probe_work/bin'; export PATH; set -e; . '$_PROBE'; echo \"SURVIVED:\${_uv_prev_ver:-empty}\"" 2>&1 || true)
 assert_eq "no awk means an unreadable version, not a dead install" \
     "SURVIVED:empty" "$(printf '%s' "$_probe_out" | tail -1)"
@@ -133,8 +124,7 @@ _GUARD=$(mktemp)
 sed -n '/^# The request above only decides/,/^fi$/p' "$INSTALL_SH" > "$_GUARD"
 [ -s "$_GUARD" ] || { echo "  FAIL: could not extract the venv guard"; exit 1; }
 
-# Runs the guard against a fake venv whose python reports $1, with uv stubbed.
-# Echoes the request uv was asked for, or nothing when the guard did not fire.
+# Fake venv whose python reports $1; echoes the uv request, or nothing if the guard did not fire.
 run_guard() {
     _reported="$1"
     _user_python="${2:-}"
@@ -158,9 +148,10 @@ EOF
         # shellcheck disable=SC1090
         . "$_HELPERS"
         _run_uv_venv() {
-            shift  # label
-            shift  # target dir
-            shift  # --python
+            # Drop the label, target dir and --python.
+            shift
+            shift
+            shift
             echo "REQUEST=$1" >&2
             mkdir -p "$VENV_DIR/bin"
             printf '#!/bin/sh\necho 3.13.12\n' > "$VENV_DIR/bin/python"
@@ -183,15 +174,8 @@ assert_eq "--python is honoured even on a skipped version" \
 
 echo "=== a failed recreate must not cost the user their environment ==="
 
-# The legacy-layout migration moves $STUDIO_HOME/.venv into $VENV_DIR without
-# arming _start_studio_venv_replacement, so the guard runs with no rollback in
-# place. If it removed the venv outright, a `uv venv` that cannot resolve an
-# interpreter (offline, or a uv older than the requested patch) would leave the
-# machine with nothing. $_rollback_active mirrors whether a replacement is
-# already in flight; $_recreate_rc is what the stubbed uv returns.
-# A separate `sh`, not a subshell: `( ... ) || true` puts the subshell in an ||
-# list, which switches set -e off for everything inside it, so the guard would
-# never abort the way it does in the real installer.
+# The legacy-layout migration runs the guard with no rollback armed, so it must not remove
+# the venv outright. A separate `sh`, not a subshell: `( ... ) || true` disables set -e inside.
 _DRIVER=$(mktemp)
 cat > "$_DRIVER" <<'DRIVER'
 STUDIO_HOME="$1"
@@ -226,7 +210,6 @@ run_guard_failure() {
     mkdir -p "$_work/venv/bin"
     printf '#!/bin/sh\necho 3.13.8\n' > "$_work/venv/bin/python"
     chmod +x "$_work/venv/bin/python"
-    # Only present in the environment the user already had.
     : > "$_work/venv/USER_DATA"
 
     sh "$_DRIVER" "$_work" "$_HELPERS" "$_rollback_active" "$_recreate_rc" "$_GUARD" \

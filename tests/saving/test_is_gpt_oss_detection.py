@@ -29,7 +29,6 @@ def _model(architectures = None, model_type = None):
 
 
 def test_detects_gpt_oss_by_architecture():
-    # architectures is a list, so detection must use membership, not ==.
     is_gpt_oss = _load_is_gpt_oss()
     assert is_gpt_oss(_model(architectures = ["GptOssForCausalLM"])) is True
     assert is_gpt_oss(_model(architectures = ["GptOssForCausalLM"], model_type = "gpt_oss")) is True

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`--out` must not move the notebook's execution directory.
-
-nbconvert derives the kernel's working directory from the INPUT notebook's path
-(``Exporter.from_filename`` sets ``resources["metadata"]["path"]`` to its dirname,
-which nbclient passes to the kernel as cwd), so staging the input beside ``--out``
-made every relative ``open()``, local import and save inside the notebook resolve
-against the OUTPUT tree instead of the tree the notebook lives in.
-"""
+"""Kernel cwd follows the input notebook's path, so staging it beside --out breaks relative opens."""
 
 from __future__ import annotations
 
@@ -44,7 +37,6 @@ def _run(runner, monkeypatch, argv):
     seen = {}
 
     def stub(cmd, env = None):
-        # the input notebook is the positional argument before --output
         seen["input"] = cmd[cmd.index("--output") - 1]
         out_dir = cmd[cmd.index("--output-dir") + 1]
         name = cmd[cmd.index("--output") + 1]

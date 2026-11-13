@@ -9,6 +9,7 @@ import pytest
 
 from utils import host_policy
 from utils.host_policy import (
+    dial_host,
     is_wildcard_host,
     normalize_wildcard_bind_host,
     resolved_bind_address_count,
@@ -40,6 +41,13 @@ def test_unspecified_bind_aliases_are_wildcards(host):
 @pytest.mark.parametrize("host", ["", "127.0.0.1", "localhost", "::1", "192.168.1.24", "fd00::5"])
 def test_specific_bind_hosts_are_not_wildcards(host):
     assert is_wildcard_host(host) is False
+
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1", "::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "localhost"]
+)
+def test_loopback_hosts_include_ipv4_mapped_spellings(host):
+    assert host_policy.is_loopback_host(host) is True
 
 
 @pytest.mark.parametrize(
@@ -242,18 +250,30 @@ def test_run_server_rejects_an_ephemeral_multi_address_bind(monkeypatch):
         ("fe80::1234%eth0", "[fe80::1234%25eth0]"),
         ("fe80::1234%12", "[fe80::1234%2512]"),
         ("[::1]", "[::1]"),
+        ("[fe80::1234%eth0]", "[fe80::1234%25eth0]"),
     ],
 )
 def test_published_url_host_builds_a_url_authority(host, expected):
     assert published_url_host(host) == expected
 
 
+@pytest.mark.parametrize(
+    "host, expected",
+    [
+        ("127.0.0.1", "127.0.0.1"),
+        ("::1", "[::1]"),
+        ("[::1]", "[::1]"),
+        ("fe80::1%en0", "[fe80::1%en0]"),
+        ("[fe80::1%en0]", "[fe80::1%en0]"),
+    ],
+)
+def test_dial_host_builds_a_dialable_url_authority(host, expected):
+    assert dial_host(host) == expected
+
+
 def test_run_server_publishes_urls_through_the_shared_formatter():
     import run
     assert run._url_host is published_url_host
-
-
-# ── self-call address resolution ─────────────────────────────────────
 
 
 def _resolve_recipe_endpoint(request):
@@ -304,7 +324,6 @@ def test_the_data_recipe_endpoint_falls_back_to_the_accepting_address_outside_ru
 def test_the_data_recipe_endpoint_maps_a_wildcard_bind_back_to_loopback(
     wildcard, expected_authority
 ):
-    # The IPv6 family carries this: loopback is also the fallback.
     request = _recipe_request(server = (wildcard, 8889), base_url = "http://testserver:1234/")
     assert _resolve_recipe_endpoint(request) == f"http://{expected_authority}/v1"
 

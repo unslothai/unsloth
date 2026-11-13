@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { TTS_MAX_TOKENS } from "@/features/audio/audio-workspace-constants";
 import { authFetch } from "@/features/auth";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
+import {
+  audioModelsFromCatalog,
+  loadedSpeechModelId,
+} from "../../settings/api/openai-model-catalog";
 import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { markdownToSpeechText } from "../utils/speech-text";
+import { splitIntoSentences } from "../voice/speech-text";
+import { planTtsChunk } from "../voice/tts-chunk-plan";
 
-/** Voice for a stored voiceURI. "default" resolves to the voice the platform marks as its
- *  default, so the "System default" choice means what it says instead of falling back to a
- *  curated pick. Undefined lets the browser pick. */
+/** "default" resolves to the platform's default voice; undefined lets the browser pick. */
 export function findTtsVoice(
   voiceURI: string,
 ): SpeechSynthesisVoice | undefined {
@@ -60,13 +67,11 @@ const LOW_QUALITY_VOICE_NAMES = new Set([
 ]);
 
 function voiceBaseName(voice: SpeechSynthesisVoice): string {
-  // "Eddy (English (US))" -> "eddy"; "Bad News" -> "bad news"
   const name = voice.name.split("(")[0]?.trim().toLowerCase() ?? "";
   return name;
 }
 
-// Well-known natural English voices, best first. Breaks ties when the name carries no quality
-// hint, so basic voices are not just alphabetical.
+// Tie-breaker when the name has no quality hint, so basic voices are not just alphabetical.
 const PREFERRED_VOICE_NAMES = [
   "samantha",
   "alex",
@@ -82,7 +87,6 @@ const PREFERRED_VOICE_NAMES = [
   "fiona",
 ];
 
-// Quality tier from vendor hints in the voice name.
 function voiceQualityScore(voice: SpeechSynthesisVoice): number {
   const name = voice.name.toLowerCase();
   let score = 0;
@@ -95,7 +99,6 @@ function voiceQualityScore(voice: SpeechSynthesisVoice): number {
   return score;
 }
 
-// Higher for voices in the user's exact region, then the same language.
 function voiceLocaleScore(voice: SpeechSynthesisVoice): number {
   const navLang =
     typeof navigator !== "undefined" && navigator.language
@@ -107,7 +110,6 @@ function voiceLocaleScore(voice: SpeechSynthesisVoice): number {
   return 0;
 }
 
-// Rank in the preferred list, best first; 0 when the voice is not listed.
 function voicePreferredRank(voice: SpeechSynthesisVoice): number {
   const index = PREFERRED_VOICE_NAMES.indexOf(voiceBaseName(voice));
   return index === -1 ? 0 : PREFERRED_VOICE_NAMES.length - index;
@@ -119,9 +121,6 @@ function langBase(tag: string): string {
 
 const MAX_CURATED_VOICES = 20;
 
-/** Keep the best, most relevant voices: drop low-quality ones, keep English, the browser
- *  language and the dictation language, rank by quality hints, and cap the list. The selected
- *  voice is always kept. */
 export function curateSystemVoices(
   voices: SpeechSynthesisVoice[],
   selectedVoiceURI?: string,
@@ -135,8 +134,7 @@ export function curateSystemVoices(
     wantedLangs.add(langBase(dictationLanguage));
   }
 
-  // WebKit and Linux engines report voices with empty or duplicate voiceURIs; drop them so the
-  // Radix Select never gets an empty or colliding value.
+  // WebKit and Linux report empty or duplicate voiceURIs, which break Radix Select.
   const seenVoiceURIs = new Set<string>();
   const kept = voices.filter((voice) => {
     if (!voice.voiceURI || seenVoiceURIs.has(voice.voiceURI)) return false;
@@ -157,8 +155,7 @@ export function curateSystemVoices(
     return a.name.localeCompare(b.name);
   });
 
-  // macOS reports some voices twice (compact + enhanced) under one name. Keep one per name and
-  // language, preferring the selected voice then the best ranked.
+  // macOS lists some voices twice (compact + enhanced) under one name; keep one per name/language.
   const keyOf = (voice: SpeechSynthesisVoice) =>
     `${voiceBaseName(voice)}|${voice.lang.toLowerCase()}`;
   const winners = new Map<string, string>();
@@ -185,8 +182,7 @@ export function curateSystemVoices(
   return curated;
 }
 
-/** Best voice when none is chosen. The browser default on macOS is often a robotic legacy
- *  voice, so fall back to the top curated voice instead. */
+/** The macOS browser default is often a robotic legacy voice; use the top curated one. */
 function defaultTtsVoice(): SpeechSynthesisVoice | undefined {
   if (typeof window === "undefined" || !window.speechSynthesis) {
     return undefined;
@@ -199,7 +195,6 @@ function defaultTtsVoice(): SpeechSynthesisVoice | undefined {
   );
 }
 
-/** Build an utterance from the current Voice settings. */
 export function createConfiguredUtterance(
   text: string,
 ): SpeechSynthesisUtterance {
@@ -217,40 +212,101 @@ export function createConfiguredUtterance(
   return utterance;
 }
 
-/** Generate speech via the loaded TTS audio model; returns a WAV data URL. */
+/** Named because an unnamed request reaches the active (chat) model; null leaves it unnamed.
+ *  Lists loaded models only: /v1/models rescans every downloaded model once its cache expires. */
+async function resolveReadAloudModel(
+  wantsClone: boolean,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  try {
+    const res = await authFetch("/api/inference/loaded-models", { signal });
+    if (!res.ok) return null;
+    return loadedSpeechModelId(
+      audioModelsFromCatalog(await res.json()),
+      wantsClone,
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+}
+
+function readAloudError(
+  detail: string,
+  model: string | null,
+  voiceId: string,
+): Error {
+  if (/no model loaded|not an audio model/i.test(detail)) {
+    return new Error(
+      "No Unsloth speech model is loaded. Open Audio › Text to Speech and load one, then try again.",
+    );
+  }
+  // The named model was unloaded after the listing (an image or video load, or idle unload).
+  if (model && /downloaded but not loaded|is not loaded/i.test(detail)) {
+    return new Error(
+      "The Unsloth speech model for read aloud is no longer loaded. Load it again in Audio › Text to Speech.",
+    );
+  }
+  // Only this 404 is about the voice; another one (a model hidden from the account) must not
+  // drop the user's choice.
+  if (voiceId && /saved voice no longer exists/i.test(detail)) {
+    useVoiceSettingsStore.getState().setTtsStudioVoiceId("");
+    return new Error(
+      "The saved voice for read aloud no longer exists. Read aloud now uses the model's own voice.",
+    );
+  }
+  if (voiceId && /can clone a voice/i.test(detail)) {
+    return new Error(
+      "The loaded model can't use saved voices. Load a voice-cloning model in Audio › Text to Speech, or choose Model's own voice in Settings → Voice.",
+    );
+  }
+  return new Error(detail);
+}
+
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  const { ttsStudioVoiceId } = useVoiceSettingsStore.getState();
+  const model = await resolveReadAloudModel(Boolean(ttsStudioVoiceId), signal);
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       messages: [{ role: "user", content: text }],
       stream: false,
+      // Read aloud is not a Speak run, so it stays out of Speak's history.
+      persist: false,
+      max_tokens: TTS_MAX_TOKENS,
+      ...(model ? { model } : {}),
+      ...(ttsStudioVoiceId ? { voice_id: ttsStudioVoiceId } : {}),
     }),
     signal,
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    const detail = body?.detail ?? `HTTP ${response.status}`;
-    if (/no model loaded|not an audio model/i.test(detail)) {
-      throw new Error(
-        "No TTS model is loaded. Load an audio model (e.g. Orpheus TTS) from the model selector, then try again.",
-      );
-    }
-    throw new Error(detail);
+    // Some refusals nest the message ({detail: {error: {message}}}), so read it like other routes.
+    const body: unknown = await response.json().catch(() => null);
+    throw readAloudError(
+      formatApiErrorBody(body) ?? `HTTP ${response.status}`,
+      model,
+      ttsStudioVoiceId,
+    );
   }
-  const data = (await response.json()) as { audio?: { data?: string } };
+  const data = (await response.json()) as {
+    audio?: { data?: string };
+    choices?: { finish_reason?: string }[];
+  };
   if (!data.audio?.data) {
     throw new Error("The TTS model returned no audio.");
+  }
+  if (data.choices?.[0]?.finish_reason === "length") {
+    toast.warning(
+      "Read aloud stopped at the speech model's length limit before the end of the reply.",
+    );
   }
   return `data:audio/wav;base64,${data.audio.data}`;
 }
 
-/** Speech via a saved connection's /audio/speech. Returns an object URL to release. */
 export async function generateCustomTtsAudio(
   text: string,
   signal?: AbortSignal,
@@ -270,8 +326,7 @@ export async function generateCustomTtsAudio(
       "Custom TTS is not configured. Pick a connection and model in Settings → Voice.",
     );
   }
-  // A browser whose key migration failed keeps the connection selectable on a retained legacy
-  // key; send it like chat and STT do, or this call is unauthenticated.
+  // A failed key migration leaves a legacy key; send it like chat and STT, or this is unauthenticated.
   const provider = providersState.providers.find(
     (candidate) => candidate.id === ttsProviderId,
   );
@@ -288,9 +343,8 @@ export async function generateCustomTtsAudio(
     ? await encryptProviderApiKey(legacyApiKey)
     : "";
 
-  // Encryption and auth refresh both yield. Reuse this check before the first request and every
-  // authFetch retry so neither path can release assistant text or a retained key after the
-  // frontend-only connection policy changes.
+  // Both encryption and auth refresh yield; re-check before each request so a policy change
+  // cannot release text or a retained key.
   const assertConnectionSnapshot = () => {
     const currentProvidersState = useExternalProvidersStore.getState();
     if (!currentProvidersState.connectionsEnabled) {
@@ -349,9 +403,22 @@ export async function generateCustomTtsAudio(
   return URL.createObjectURL(new Blob([bytes], { type: contentType }));
 }
 
-/** Release a URL returned by the generate helpers (data URLs need nothing). */
 export function releaseTtsAudioUrl(url: string): void {
   if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
+/** Read-aloud chunks: one sentence first for a fast start, then sentences merged to a budget. */
+export function readAloudChunks(text: string): string[] {
+  const pending = splitIntoSentences(text);
+  const chunks: string[] = [];
+  while (pending.length > 0) {
+    const take = Math.max(
+      1,
+      planTtsChunk({ pending, first: chunks.length === 0, final: true, playing: false, waitedMs: 0 }),
+    );
+    chunks.push(pending.splice(0, take).join(" "));
+  }
+  return chunks;
 }
 
 function speakWithBackendAudio(
@@ -365,11 +432,12 @@ function speakWithBackendAudio(
 ): { cancel: () => void } {
   const { ttsRate, ttsVolume } = useVoiceSettingsStore.getState();
   const controller = new AbortController();
+  const chunks = readAloudChunks(text);
   let audio: HTMLAudioElement | null = null;
   let audioUrl: string | null = null;
+  let next: Promise<string> | null = null;
   let cancelled = false;
 
-  // Release the element and its multi-MB WAV data URL as soon as playback ends.
   const cleanup = () => {
     if (audio) {
       audio.pause();
@@ -382,36 +450,64 @@ function speakWithBackendAudio(
     }
   };
 
-  void (async () => {
-    try {
-      const url = await generate(text, controller.signal);
-      if (cancelled) {
-        releaseTtsAudioUrl(url);
-        return;
-      }
+  const synth = (index: number): Promise<string> => {
+    const pending = generate(chunks[index] ?? "", controller.signal);
+    // Awaited later; a chunk dropped by cancel must not reject unhandled.
+    pending.catch(() => {});
+    return pending;
+  };
+
+  const play = (url: string) =>
+    new Promise<void>((resolve, reject) => {
       audioUrl = url;
       audio = new Audio(url);
       audio.playbackRate = ttsRate;
       audio.volume = ttsVolume;
-      // Some browsers reset playbackRate to 1 once the source loads; reapply it on loadedmetadata so
-      // the speed setting reliably takes effect.
+      // Some browsers reset playbackRate on load, so reapply it on loadedmetadata.
       audio.addEventListener("loadedmetadata", () => {
         if (audio) audio.playbackRate = ttsRate;
       });
       audio.addEventListener("ended", () => {
         cleanup();
-        handleEnd("finished");
+        resolve();
       });
       audio.addEventListener("error", () => {
-        if (cancelled) return;
         cleanup();
-        handleEnd("error", new Error("Audio playback failed."));
+        reject(new Error("Audio playback failed."));
       });
-      markRunning();
-      await audio.play();
+      audio.play().catch(reject);
+    });
+
+  void (async () => {
+    try {
+      let pendingChunk = synth(0);
+      next = pendingChunk;
+      for (let i = 0; i < chunks.length; i++) {
+        const url = await pendingChunk;
+        next = null;
+        if (cancelled) {
+          releaseTtsAudioUrl(url);
+          return;
+        }
+        if (i + 1 < chunks.length) {
+          pendingChunk = synth(i + 1);
+          next = pendingChunk;
+        }
+        if (i === 0) markRunning();
+        // A subscriber may cancel on the running notification.
+        if (cancelled) {
+          releaseTtsAudioUrl(url);
+          return;
+        }
+        await play(url);
+        if (cancelled) return;
+      }
+      handleEnd("finished");
     } catch (error) {
       if (cancelled || controller.signal.aborted) return;
       cleanup();
+      controller.abort();
+      next?.then(releaseTtsAudioUrl, () => {});
       handleEnd("error", error);
     }
   })();
@@ -420,16 +516,14 @@ function speakWithBackendAudio(
     cancel: () => {
       cancelled = true;
       controller.abort();
+      next?.then(releaseTtsAudioUrl, () => {});
       cleanup();
       handleEnd("cancelled");
     },
   };
 }
 
-/** Text-to-speech for assistant messages. Reads Voice settings at speak time. Engines:
- *  "system" (speechSynthesis), "studio" (local TTS model), "custom" (a connection). */
 export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
-  /** Web Speech synthesis, used by the "system" engine. */
   static systemVoicesSupported(): boolean {
     return (
       typeof window !== "undefined" &&
@@ -438,8 +532,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     );
   }
 
-  // The "studio" engine only needs fetch plus Audio playback, so a WebView without Web Speech
-  // synthesis can still read aloud through the backend.
+  // The studio engine needs only fetch and Audio, so WebViews without Web Speech still work.
   static isSupported(): boolean {
     return (
       StudioSpeechSynthesisAdapter.systemVoicesSupported() ||
@@ -448,8 +541,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   }
 
   speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
-    // Renderer markup: without this the reader says the token id out loud.
-    const text = stripSearchImageTokens(spokenText);
+    const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 
     const handleEnd = (
@@ -457,8 +549,6 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       error?: unknown,
     ) => {
       if (res.status.type === "ended") return;
-      // Surface genuine read-aloud failures; a cancelled or interrupted utterance is a normal stop,
-      // not an error, and must not toast.
       if (
         reason === "error" &&
         error !== "interrupted" &&
@@ -494,9 +584,11 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
         };
       },
     };
-
-    // Fall back to the backend model when the runtime lacks Web Speech synthesis, so read-aloud
-    // still works.
+    if (!text.trim()) {
+      cancelImpl = () => {};
+      handleEnd("finished");
+      return res;
+    }
     if (
       ttsEngine !== "system" ||
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()
@@ -507,8 +599,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
           : generateStudioTtsAudio;
       const session = speakWithBackendAudio(generate, text, handleEnd, () => {
         if (res.status.type === "ended") return;
-        // Notify subscribers of the async starting -> running transition; the adapter contract drives
-        // UI state off these subscribe callbacks.
+        // The adapter contract drives UI state off these subscribe callbacks.
         res.status = { type: "running" };
         for (const handler of subscribers) handler();
       });
@@ -520,8 +611,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     utterance.addEventListener("end", () => handleEnd("finished"));
     utterance.addEventListener("error", (e) => handleEnd("error", e.error));
 
-    // Chrome silently drops speak() while another utterance is queued from a cancelled run;
-    // clearing first keeps read-aloud deterministic.
+    // Chrome silently drops speak() while a cancelled run's utterance is queued.
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
     res.status = { type: "running" };

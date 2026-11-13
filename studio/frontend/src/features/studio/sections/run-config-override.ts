@@ -3,10 +3,9 @@
 
 import { parseBackendTrainingMethod } from "@/features/training";
 
-/** Shape of the Training Config popover's data when it is driven by a saved
- * run snapshot instead of the editable form store. */
 export interface RunConfigOverride {
   trainingMethod?: string;
+  isDecision?: boolean;
   epochs?: number;
   batchSize?: number;
   learningRate?: string;
@@ -20,10 +19,7 @@ export interface RunConfigOverride {
   loraVariant?: string;
 }
 
-/** Map a saved run's config (GET /api/train/runs/{id} `detail.config`) into the
- * Training Config popover's override shape. Shared by the History view and the
- * live Current Run view so both read the same authoritative run snapshot
- * instead of the editable form store (#6853). */
+/** Shared by History and Current Run so both read the saved snapshot, not the form store. */
 export function mapRunConfigToOverride(
   config: Record<string, unknown> | null | undefined,
 ): RunConfigOverride | undefined {
@@ -35,6 +31,7 @@ export function mapRunConfigToOverride(
       config.training_type,
       config.load_in_4bit,
     ),
+    isDecision: config.is_decision === true,
     epochs: config.num_epochs as number | undefined,
     batchSize: config.batch_size as number | undefined,
     learningRate: config.learning_rate as string | undefined,

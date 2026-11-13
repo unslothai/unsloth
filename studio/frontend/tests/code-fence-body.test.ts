@@ -1,0 +1,465 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import { runInNewContext } from "node:vm";
+import * as React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ts from "@typescript/typescript6";
+import {
+  FENCE_CHUNK_LINES,
+  sameFenceBodyProps,
+  updateFenceChunks,
+} from "../src/components/assistant-ui/code-fence-chunks.ts";
+
+import {
+  isBlankLine,
+  lineRendered,
+  plainLineText,
+  WINDOW_CAP_LINES,
+} from "../src/components/assistant-ui/code-fence-window.ts";
+
+import { readSrc } from "./helpers/kit.ts";
+
+const DEFER = readSrc("components/assistant-ui/code-fence-defer.tsx");
+const MARKDOWN_TEXT = readSrc("components/assistant-ui/markdown-text.tsx");
+const LINE_SOURCE = DEFER.slice(DEFER.indexOf("const FenceLine = memo"), DEFER.indexOf("const FenceLineChunk = memo"));
+
+test("a line shows the same characters inside the window and outside it", () => {
+  const line = [
+    { content: "const " },
+    { content: "x" },
+    { content: " = " },
+    { content: "1;" },
+  ];
+  assert.equal(plainLineText(line), "const x = 1;");
+});
+
+test("the plain form is the tokens, never a slice of the source", () => {
+  // Shiki drops the CR of a CRLF pair, so a source slice would gain a character.
+  assert.equal(plainLineText([{ content: "x = 1" }]), "x = 1");
+  assert.ok(
+    !/source\.slice|split\(["'`]\\n["'`]\)/.test(
+      LINE_SOURCE,
+    ),
+    "the line renderer must not reach for the source",
+  );
+});
+
+test("a blank line is one line tall, not nothing", () => {
+  // An empty text node has no line box, so the fence would collapse.
+  assert.equal(isBlankLine([]), true);
+  assert.equal(isBlankLine([{ content: "" }]), true);
+  assert.equal(isBlankLine([{ content: " " }]), false);
+  assert.equal(isBlankLine([{ content: "" }, { content: "" }]), false);
+  assert.ok(
+    /if \(!inline && isBlankLine\(line\)\) \{\s*return <span className=\{LINE_CLASS\}>\{"\\n"\}<\/span>;/
+      .test(DEFER),
+    "a blank line must render the newline streamdown renders for it",
+  );
+});
+
+test("the line component is memoized, which is the whole point of it", () => {
+  assert.ok(
+    /const FenceLine = memo\(function FenceLine\(/.test(DEFER),
+    "FenceLine must be memoized",
+  );
+  assert.ok(
+    !/memo\(\s*function FenceLine[\s\S]*?\},\s*\(/.test(LINE_SOURCE),
+    "and on the default shallow comparison: a custom comparator here would have to know that a " +
+      "committed line is immutable, which is a second place for that to stop being true",
+  );
+});
+
+test("the fence branch no longer renders streamdown's Block", () => {
+  const from = MARKDOWN_TEXT.indexOf("function FenceBlock(");
+  const to = MARKDOWN_TEXT.indexOf("const StreamdownBlock = memo(", from);
+  assert.ok(from > 0 && to > from, "FenceBlock still bounds a branch of its own");
+  const body = MARKDOWN_TEXT.slice(from, to);
+  // Comment lines stripped: this branch still explains `<Block>` in comments.
+  const code = body.replace(/^\s*(?:\/\/|\/?\*).*$/gm, "");
+  assert.ok(
+    !/<Block\b/.test(code),
+    "the reached fence must render FenceBody, not Block",
+  );
+  assert.ok(
+    /<FenceBody[\s\S]{0,80}language=\{languageToken\}/.test(code),
+    "and it must be handed the parsed language token, not the raw info string",
+  );
+});
+
+test("a streaming open fence is highlighted rather than shown plain", () => {
+  assert.ok(
+    /if \(props\.isIncomplete\) \{\s*const openFence = markdownBlockFallback\(props\.content\);\s*if \(openFence\.fenced\) \{\s*return highlightCode \? \(\s*<StreamingFenceBlock/m
+      .test(MARKDOWN_TEXT),
+    "an open fence must leave the bare Block route",
+  );
+  const streaming = MARKDOWN_TEXT.slice(
+    MARKDOWN_TEXT.indexOf("function StreamingFenceBlock("),
+  );
+  assert.ok(
+    /<FenceBody[\s\S]{0,200}result=\{tokens\}/.test(streaming),
+    "and it must render the tokens, not a plain shell: keeping the highlighting while it streams " +
+      "is the difference between this and the change that was rejected",
+  );
+});
+
+test("a fence in the thinking box is coloured off the main thread, while it grows only on screen", () => {
+  assert.match(readSrc("components/assistant-ui/code-highlight-context.ts"), /export const CodeHighlightModeContext = createContext<CodeHighlightMode>\("all"\);/);
+  assert.match(MARKDOWN_TEXT, /\{highlightCode \|\| highlightMode === "settled" \? \(\s*<FenceBlock[\s\S]{0,300}isIncomplete=\{highlightCode \? props\.isIncomplete : false\}/, "a closed fence in a trace takes the deferred, worker-routed block, never the growing fence's tokenizer");
+  assert.equal((MARKDOWN_TEXT.match(/\) : \(\s*<PlainFenceBlock/g) ?? []).length, 1, "only the ``` closed fence route keeps a plain twin");
+  assert.match(MARKDOWN_TEXT, /<StreamingFenceBlock\s*language=\{openFence\.language\}\s*source=\{openFence\.text\}\s*\/>\s*\) : \(\s*<LiveThinkingFence/, "a growing thinking fence takes the viewport-gated worker route");
+  const live = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("function LiveThinkingFence("), MARKDOWN_TEXT.indexOf("function FenceBlock("));
+  assert.match(live, /useThinkingCodeColour\(host, source, languageToken, settled\)/);
+  assert.match(live, /<FenceBody\s*isIncomplete=\{!settled\}/);
+  assert.equal(/useFenceTokens|code\.highlight|noteStreamingFence/.test(live), false, "no main-thread tokenizer for a growing thinking fence");
+  assert.match(live, /result === null \? \(\s*<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/, "plain until the worker answers");
+  assert.match(MARKDOWN_TEXT, /const STREAMDOWN_PLAIN_CODE_PLUGINS = \{ math, mermaid \}/);
+  assert.match(MARKDOWN_TEXT, /plugins=\{\s*highlightCode \? STREAMDOWN_PLUGINS : STREAMDOWN_PLAIN_CODE_PLUGINS\s*\}/, "a fence nested in a list or a quote is plain too");
+  const start = MARKDOWN_TEXT.indexOf("function PlainFenceBlock(");
+  const plain = MARKDOWN_TEXT.slice(start, MARKDOWN_TEXT.indexOf("\n}\n", start));
+  assert.equal(/useFenceTokens|requestFullHighlight|code\.highlight|noteStreamingFence/.test(plain), false);
+  assert.match(plain, /<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/);
+  assert.match(DEFER, /<code>\{plain \? <PlainFenceText source=\{source\} \/> : shellBody\(source\)\}<\/code>/);
+  assert.match(DEFER, /<PlainFenceTextChunk key=\{index\} nodes=\{nodes\} \/>/);
+  assert.match(DEFER, /data-unsloth-fence-deferred=\{plain \? undefined : "true"\}/, "a plain fence is never upgraded, so it does not carry the deferred marker");
+});
+
+test("a completed fence on a non-``` form keeps the bounded renderer", () => {
+  assert.ok(
+    /const settledFence = props\.isIncomplete \? null : markdownBlockFallback\(props\.content\);\s*if \(settledFence\?\.fenced/.test(
+      MARKDOWN_TEXT,
+    ),
+    "a completed fence must be recognised by the CommonMark-complete scanner",
+  );
+  const settled = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("const settledFence ="));
+  const branch = settled.slice(0, settled.indexOf("if (props.isIncomplete)"));
+  assert.ok(
+    /<StreamingFenceBlock[\s\S]{0,120}isIncomplete=\{false\}[\s\S]{0,120}settledFence\.language/.test(
+      branch,
+    ),
+    "and it must render the per-line body rather than Block, or the spans remount",
+  );
+  // In a thinking box the same forms, and a fence left open by Stop, keep their colour once settled.
+  assert.match(
+    branch,
+    /\) : \(\s*<LiveThinkingFence\s*language=\{settledFence\.language\}\s*settled\s*source=\{settledFence\.text\}/,
+    "a settled tilde, four-backtick, indented or stopped fence in a trace must not drop to the plain block",
+  );
+    // Not `FenceBlock`: that branch also owns the reach latch, the action bar and the mode switch.
+  assert.ok(
+    !/<FenceBlock[\s\S]{0,200}settledFence/.test(MARKDOWN_TEXT),
+    "widening FenceBlock would add controls and artifact paths to blocks that do not have them",
+  );
+});
+
+test("markdownBlockFallback is what recognises the open fence, not getCodeFence", () => {
+  assert.ok(
+    MARKDOWN_TEXT.includes(
+      'import { markdownBlockFallback } from "./markdown-block-fallback";',
+    ),
+    "the streaming route must use the CommonMark-complete scanner",
+  );
+});
+
+test("the window decision is not reimplemented in the component", () => {
+  assert.ok(
+    /import \{[\s\S]*?selectLineWindow,[\s\S]*?\} from "\.\/code-fence-window";/.test(DEFER),
+    "the component must consume the decision",
+  );
+  assert.ok(
+    !/WINDOW_CAP_LINES\s*=|OVERSCAN_VIEWPORTS\s*=|HYSTERESIS_VIEWPORTS\s*=/.test(DEFER),
+    "no copy of the window constants may live here as well",
+  );
+});
+
+test("the text is never removed from the document, only its colour", () => {
+  const body = DEFER.slice(DEFER.indexOf("export const FenceBody = memo("));
+  assert.ok(
+    /tokens\.map\(\(line, index\) => \(/.test(body),
+    "every line must still be rendered; only what is INSIDE a line changes",
+  );
+  assert.ok(
+    !/contentVisibility:\s*"hidden"|display:\s*"none"/.test(body),
+    "no line may be hidden from the engine",
+  );
+});
+
+test("one scroll listener serves every windowed fence on the page", () => {
+  assert.ok(
+    /const windowedFences = new Set<\(\) => void>\(\);/.test(DEFER),
+    "the registry must be shared",
+  );
+  assert.ok(
+    /document\.addEventListener\("scroll", scheduleRemeasure, \{\s*capture: true,\s*passive: true,\s*\}\);/
+      .test(DEFER),
+    "capturing, so the nested reasoning pane's scroller is seen too, and passive",
+  );
+  assert.ok(
+    /windowFrame = requestAnimationFrame\(remeasureWindows\);/.test(DEFER),
+    "and coalesced into a frame: scroll fires faster than the screen updates",
+  );
+});
+
+test("the scrolling ancestor is resolved from outside the code block", () => {
+  // overflow-x: auto forces overflow-y to auto too, so walking up from <code> stops at the fence.
+  assert.ok(
+    /const scroller = scrollerOf\(outer\);/.test(DEFER),
+    "resolve from the fence's outermost element, not from the code element",
+  );
+});
+
+test("the body reproduces streamdown's language class and incomplete flag", () => {
+  const body = DEFER.slice(DEFER.indexOf("export const FenceBody = memo("));
+  assert.ok(
+    /const languageClass = language === null \? null : `language-\$\{language\}`;/.test(DEFER),
+    "the first word of the info string, which is what remark-rehype emits",
+  );
+  assert.ok(
+    /className=\{joinClasses\(\s*languageClass,/.test(body),
+    "the body div carries it, as streamdown's does",
+  );
+  assert.ok(
+    /<pre className=\{joinClasses\(languageClass, PRE_CLASS\)\}/.test(body),
+    "and so does the pre",
+  );
+  assert.ok(
+    /data-incomplete=\{isIncomplete \|\| undefined\}/.test(body),
+    "an open fence carries data-incomplete, and a settled one carries no attribute at all",
+  );
+});
+
+test("a print colours the whole fence, and the window comes back afterwards", () => {
+  assert.ok(
+    /let printing = false;/.test(DEFER),
+    "the print state has to be module-global: a print is a document-wide event",
+  );
+  assert.ok(
+    /window\.addEventListener\("afterprint", \(\) => setPrinting\(false\)\);/.test(DEFER),
+    "and it must revert, or one Ctrl+P un-windows every huge fence for the life of the tab. " +
+      "Unlike the reach latch this costs nothing to undo, because the tokens are already cached",
+  );
+  assert.ok(
+    /if \(event\.matches\) \{\s*upgradeEverythingForPrint\(\);\s*setPrinting\(true\);\s*\} else \{\s*setPrinting\(false\);\s*\}/
+      .test(DEFER),
+    "both doors: beforeprint for Ctrl+P, the media query for page.pdf() and devtools emulation",
+  );
+  assert.ok(
+    /flushSync\(remeasureWindows\);/.test(DEFER),
+    "synchronously, because there is no next paint before the print snapshot",
+  );
+  assert.ok(
+    /if \(printing \|\| findBarOpen\(\)\) \{\s*if \(current\.current === null && pinned\.current === null\) return;/.test(DEFER),
+    "and the measurement has to honour it",
+  );
+});
+
+test("a block is scanned for a mermaid fence once per render, not twice", () => {
+  const body = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("function StreamdownBlockContent("));
+  const walks = body.match(/findMermaidFence\(props\.content\)/g) ?? [];
+  assert.equal(walks.length, 1, "the walk must happen once and both answers come off it");
+  assert.ok(
+    !/isMermaidFenceOpener\(/.test(MARKDOWN_TEXT),
+    "the second walk's wrapper must be gone, not merely unused",
+  );
+  assert.ok(
+    /const mermaidSource = mermaidSourceOf\(props\.content, mermaidFence\);/.test(body),
+    "the source must be derived from the walk that already ran",
+  );
+});
+
+test("a fence source is highlighted once per revision, not twice", () => {
+  const hook = MARKDOWN_TEXT.slice(
+    MARKDOWN_TEXT.indexOf("function useFenceTokens("),
+    MARKDOWN_TEXT.indexOf("function StreamingFenceBlock("),
+  );
+  assert.ok(hook.length > 0, "useFenceTokens still bounds a hook of its own");
+  assert.equal(
+    (hook.match(/code\.highlight\(/g) ?? []).length,
+    1,
+    "one highlight call per revision",
+  );
+  assert.equal(
+    (hook.match(/useLayoutEffect\(|useEffect\(/g) ?? []).length,
+    1,
+    "and one effect, which must be the LAYOUT one so an already-cached fence is coloured before " +
+      "its first paint",
+  );
+  assert.ok(
+    /useLayoutEffect\(\(\) => \{/.test(hook),
+    "the surviving effect runs before paint",
+  );
+});
+
+const TABLE_CONTROLS = ".aui-md-table-actions";
+const POSITIONAL_ANCESTOR =
+  /:(?:first|last|only)-child[^{,]*?>\s*(?:\.relative|button)\b/;
+const TABLE_BUTTON =
+  /height: calc\(var\(--spacing\) \* 8\);[\s\S]*border-radius: 9999px;\s*color: var\(--color-chat-icon-fg\);/;
+
+test("a table's toolbar buttons are drawn like the code block's", () => {
+  const css = readSrc("index.css");
+  const at = css.indexOf(`${TABLE_CONTROLS} > .relative > button {`);
+  assert.match(css.slice(at, css.indexOf("}", at)), TABLE_BUTTON);
+  assert.ok(
+    css.includes(`${TABLE_CONTROLS} > .relative {\n\t\tdisplay: flex;`),
+  );
+});
+
+test("no positional pseudo-class sits above .relative or button in a selector", () => {
+  const css = readSrc("index.css");
+  const rules = css.match(/[^{}]+\{/g) ?? [];
+  const offenders = rules.filter((rule) => POSITIONAL_ANCESTOR.test(rule));
+  assert.deepEqual(
+    offenders,
+    [],
+    "a :first-child or :last-child above a subject keys the invalidation set on that subject, so inserting before #root (every modal's focus guard) restyled every .relative and button in the app",
+  );
+});
+
+test("paint containment is limited to large completed full-token bodies", () => {
+  const parsed = ts.createSourceFile("code-fence-defer.tsx", DEFER, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declaration = parsed.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((node) => ts.isIdentifier(node.name) && node.name.text === "FenceBody");
+  assert.ok(declaration);
+  const { outputText } = ts.transpileModule(
+    `const ${declaration.getText(parsed)}; exports.render = FenceBody;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } },
+  );
+  type Token = { content: string };
+  type BodyProps = {
+    isIncomplete: boolean | undefined;
+    language: string | null;
+    result: { tokens: Token[][] } | null;
+    source: string;
+    windowing: boolean;
+  };
+  const context = {
+    exports: {} as { render: React.ComponentType<BodyProps> },
+    React,
+    memo: React.memo,
+    useMemo: React.useMemo,
+    useRef: React.useRef,
+    WINDOW_SETTLED_FENCES: false,
+    useCodeWrap: () => false,
+    useOffscreenFenceText: () => false,
+    useFenceHighlightLimit: () => ({ progress: null, staged: false }),
+    FENCE_CHUNK_LINES,
+    sameFenceBodyProps,
+    updateFenceChunks,
+    useLineWindow: () => ({ window: null, pins: null, measured: false }),
+    usePinnedWhileStreaming: () => {},
+    CodeBlockLanguage: () => null,
+    lineRendered,
+    WINDOW_CAP_LINES,
+    joinClasses: (...parts: (string | null)[]) => parts.filter(Boolean).join(" "),
+    CODE_CLASS: "",
+    PRE_CLASS: "",
+    FenceShell: ({ source }: { source: string }) => React.createElement("pre", null, source),
+    FenceLine: ({ line, windowed }: { line: Token[]; windowed: boolean }) =>
+      React.createElement("span", { "data-highlighted": String(windowed) }, plainLineText(line)),
+    FenceLines: ({ tokens }: { tokens: Token[][] }) =>
+      React.createElement(React.Fragment, null, tokens.map((line, index) =>
+        React.createElement("span", { key: index, "data-highlighted": "true" }, plainLineText(line)))),
+  };
+  runInNewContext(outputText, context);
+  const count = WINDOW_CAP_LINES + 1;
+  for (const [lines, incomplete, windowing, missing, contained] of [
+    [WINDOW_CAP_LINES, false, false, false, false],
+    [count, false, false, false, true],
+    [count, undefined, false, false, true],
+    [count, true, false, false, false],
+    [count, false, true, false, false],
+    [count, false, false, true, false],
+    [0, false, false, false, false],
+  ] as const) {
+    const tokens = Array.from({ length: lines }, (_, i) => [{ content: `line_${i};` }]);
+    const html = renderToStaticMarkup(React.createElement(context.exports.render, {
+      isIncomplete: incomplete,
+      language: "text",
+      result: missing ? null : { tokens },
+      source: "fallback",
+      windowing,
+    }));
+    assert.equal(html.includes('data-unsloth-fence-paint="true"'), contained,
+      JSON.stringify({ lines, incomplete, windowing, missing }));
+    if (!missing && lines > 0) {
+      assert.equal((html.match(/data-highlighted="true"/g) ?? []).length, lines);
+      for (const [token] of tokens) assert.ok(html.includes(`>${token.content}</span>`));
+    } else {
+      assert.match(html, /<pre>fallback<\/pre>/);
+    }
+  }
+});
+
+test("chat code blocks cap their height and scroll inside, except on paper", () => {
+  const css = readSrc("index.css");
+  const at = css.indexOf('.aui-thread-root [data-streamdown="code-block-body"] {');
+  const rule = css.slice(at, css.indexOf("}", at));
+  assert.match(rule, /max-height: var\(--unsloth-code-block-max-height, min\(30rem, 55vh\)\);/);
+  assert.match(rule, /overflow-y: auto;/);
+  assert.match(css, /@media print \{\s+\.aui-thread-root \[data-streamdown="code-block-body"\] \{\s+max-height: none;/);
+});
+
+test("a capped block colours only what is in view and a streaming one follows its last line", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /const capped = innerLineWindow\(code\.current, body\);/);
+  assert.match(hook, /lineWindowColoured\(tokens, progress, capped\)/);
+  assert.match(hook, /\}, \(\) => setPrevious\(\{ tokens, parked, progress: null \}\), capped !== null\);/);
+  const pin = DEFER.slice(DEFER.indexOf("function usePinnedWhileStreaming("), DEFER.indexOf("export const FenceBody = memo("));
+  assert.match(pin, /if \(atBottom \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
+  assert.match(pin, /body\.scrollTop = body\.scrollHeight;/);
+  assert.match(pin, /body\.scrollTop = saved\.atBottom \? body\.scrollHeight : saved\.top;/);
+  assert.match(DEFER, /const READER_SCROLL_EVENTS = \["wheel", "touchmove", "keydown", "pointerdown"\] as const;/);
+});
+
+test("Expand code resumes colouring a capped block that had stopped at its view", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /if \(next === null \|\| !lineWindowColoured\(tokens, progress, next\)\) setScrolled/);
+  assert.match(hook, /new ResizeObserver\(recheck\)/);
+  assert.match(hook, /resized\?\.observe\(body\);/);
+});
+
+test("printing colours capped blocks that paused at their view", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /const finish = \(\): void => setPrevious\(\{ tokens, parked, progress: null \}\);\s*pausedFences\.add\(finish\);/);
+  assert.match(hook, /pausedFences\.delete\(finish\);/);
+  const print = DEFER.slice(DEFER.indexOf("const setPrinting = "), DEFER.indexOf("const scheduleRemeasure"));
+  assert.match(print, /if \(value && pausedFences\.size > 0\) flushSync\(\(\) => \{\s*for \(const finish of \[\.\.\.pausedFences\]\) finish\(\);/);
+});
+
+test("only a finished body mounting right after a stream takes its scroll place, once", () => {
+  const pin = DEFER.slice(DEFER.indexOf("type BodyScroll"), DEFER.indexOf("export const FenceBody = memo("));
+  assert.match(pin, /if \(streamedRef\.current\) rememberBodyScroll\(keyRef\.current, body\);/);
+  assert.match(pin, /const saved = streamedRef\.current \? undefined : takeBodyScroll\(keyRef\.current\);/);
+  assert.match(pin, /bodyScrolls\.delete\(key\);\s*return saved !== undefined && performance\.now\(\) - saved\.at < JUST_STREAMED_MS/);
+  assert.equal(pin.match(/rememberBodyScroll\(/g)?.length, 1);
+});
+
+test("a block's own word wrap turns off line windowing for that block only", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { runInNewContext } = await import("node:vm");
+  const ts = (await import("@typescript/typescript6")).default;
+  const src = readFileSync(new URL("../src/components/assistant-ui/code-fence-defer.tsx", import.meta.url), "utf8");
+  const start = src.indexOf("const codeWrapOn = ");
+  const end = src.indexOf("const useCodeWrap = ", start);
+  const js = ts.transpileModule(src.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const html = { attrs: new Set<string>(), hasAttribute(name: string) { return this.attrs.has(name); } };
+  const block = (wrap: string | null) => ({
+    closest: (selector: string) => selector === "[data-wrap]" && wrap !== null
+      ? { getAttribute: () => wrap } : null,
+  });
+  const context: Record<string, unknown> = { document: { documentElement: html } };
+  runInNewContext(`${js}\nthis.codeWrapOn = codeWrapOn;`, context);
+  const codeWrapOn = context.codeWrapOn as (node: unknown) => boolean;
+  assert.equal(codeWrapOn(block(null)), false, "setting off, no override");
+  assert.equal(codeWrapOn(block("on")), true, "the block's wrap button wins over the setting");
+  html.attrs.add("data-code-wrap");
+  assert.equal(codeWrapOn(block(null)), true, "setting on");
+  assert.equal(codeWrapOn(block("off")), false, "the block's unwrap wins too");
+  assert.equal(codeWrapOn(null), true, "before mount: the setting");
+  assert.match(src, /attributeFilter: \["data-code-wrap", "data-wrap"\]/, "a toggle re-reads the guard");
+});

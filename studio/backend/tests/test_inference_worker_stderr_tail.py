@@ -156,8 +156,7 @@ def test_a_signalled_exit_keeps_its_hint_and_gains_the_tail(tmp_path):
     assert "exitcode=-9" in message
     assert "c10::Error" in message
 
-    # POSIX only: a Windows process never reports a negative code and signal.Signals(9)
-    # raises there, so that branch names the signal SIG9 and offers no hint.
+    # POSIX only: Windows never reports negative codes and signal.Signals(9) raises there.
     if hasattr(signal, "SIGKILL"):
         assert "memory pressure" in message
         assert "signal=SIGKILL" in message
@@ -187,7 +186,6 @@ def test_a_worker_still_running_is_not_given_a_tail(tmp_path):
 
 
 def test_the_orchestrator_hands_the_sink_to_the_child_it_spawns():
-    # Read from the source: exercising it for real needs a model load.
     source = (
         (Path(_BACKEND_DIR) / "core/inference/orchestrator.py")
         .read_text(
@@ -215,8 +213,7 @@ def _spawn(
 ):
     from utils.native_path_leases import run_without_native_path_secret
 
-    # Bare name, with this directory on sys.path: a dotted name finds the repository's own
-    # top-level "tests" package instead. Spawn hands the child the parent's sys.path.
+    # Bare name: a dotted one finds the repo's top-level tests package. Spawn inherits sys.path.
     tests_dir = str(Path(__file__).resolve().parent)
     if tests_dir not in sys.path:
         sys.path.insert(0, tests_dir)
@@ -394,7 +391,6 @@ def test_a_worker_holding_a_second_handle_on_stderr_still_exits_promptly(tmp_pat
     source = (Path(_BACKEND_DIR) / "utils/worker_stderr.py").read_text(encoding = "utf-8")
     teardown = source.split("def _stop_mirror(", 1)[1].split("\ndef ", 1)[0]
     close_at = teardown.index("os.close(inherited_fd)")
-    # Both threads write to the inherited descriptor, so both must be done with it.
     for guard in ("pump.is_alive()", "relay.is_alive()"):
         assert guard in teardown[:close_at], (
             "the teardown closes the inherited stderr without first checking that the "
@@ -436,8 +432,6 @@ def test_the_sink_directory_is_never_swept_by_pattern():
         assert forbidden not in source, f"cleanup grew a directory sweep ({forbidden})"
 
 
-# Spaces and non-ASCII are what break code that builds paths by string, and a Windows
-# profile routinely has both.
 _INSTALL_TEMP_SHAPES = {
     "linux": "tmp",
     "windows-profile": "C_/Users/Jos\u00e9 Mu\u00f1oz/AppData/Local/Temp",
@@ -688,7 +682,6 @@ def test_compaction_never_deletes_what_a_racing_writer_appended(tmp_path):
         os.close(appender)
 
     kept = path.read_bytes()
-    # Both windows: the append during the tail READ and the one during the REWRITE.
     assert b"terminate called" in kept, kept[-300:]
     assert b"device-side assert" in kept, kept[-300:]
     assert len(kept) <= 1024 + 256, len(kept)
@@ -814,8 +807,7 @@ def test_the_worker_marks_every_continuation_line_of_a_record():
     handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     logger_object.addHandler(handler)
 
-    # cover_later_handlers off so this case does not edit the interpreter's logging for
-    # the rest of the session; the process-wide half is exercised on its own below.
+    # cover_later_handlers off so this case does not alter global logging for the session.
     assert mark_log_record_continuations(logger_object, cover_later_handlers = False) == 1
     assert mark_log_record_continuations(logger_object, cover_later_handlers = False) == 0
 
@@ -844,8 +836,6 @@ def test_the_worker_marks_every_continuation_line_of_a_record():
     )
     one_line = handler.formatter.format(single)
     assert "\n" not in one_line
-    # A single-line record through a default formatter is otherwise the same bytes a dying
-    # runtime writes.
     assert one_line.startswith(START_MARK), repr(one_line)
 
 
@@ -1072,7 +1062,6 @@ def test_the_stream_asks_who_owned_the_worker_before_handing_over_the_tail():
     from core.inference import orchestrator as orchestrator_module
 
     body = inspect.getsource(orchestrator_module.InferenceOrchestrator._consume_token_stream)
-    # The other crash exit, the swapped-worker branch, passes no tail at all.
     assert body.count("with_worker_output = self._owns_worker(cancel_event)") == 1, body
 
 
@@ -1125,7 +1114,6 @@ def test_the_worker_output_is_opt_in_at_every_call_site():
     assert "with_worker_output: bool = False" in source
     calls = source.count("self._subprocess_crash_message(")
     owned = source.count("with_worker_output = self._owns_worker(")
-    # Every call site but one asks ownership; the exception is the swapped-worker branch.
     assert calls == owned + 1, (calls, owned)
 
 
@@ -1135,7 +1123,7 @@ def test_a_stream_whose_worker_was_swapped_gets_no_tail_at_all():
 
     body = inspect.getsource(orchestrator_module.InferenceOrchestrator._consume_token_stream)
     swap = body.index("initial_proc or self._resp_queue is not initial_resp_queue")
-    following = body[swap : body.index("resp = read_one(read_timeout)", swap)]
+    following = body[swap : body.index("resp = read_one(", swap)]
     assert "_subprocess_crash_message(crash_context)" in following, following
     assert "with_worker_output" not in following, following
 
@@ -1146,7 +1134,6 @@ def _logging_restored():
 
     from utils import worker_stderr
 
-    # getattr so a build without the hook lets the CASE report the gap, not this fixture.
     saved = (
         logging.Handler.setFormatter,
         logging.Logger.addHandler,
@@ -1204,7 +1191,6 @@ def test_a_handler_installed_after_startup_is_marked_too(_logging_restored):
     assert formatted.split("\n")[0] == START_MARK + "ERROR one", formatted
     assert formatted.split("\n")[1].startswith(MARK), formatted
 
-    # Clearing the formatter is the one case the hook cannot wrap; it must not crash.
     handler.setFormatter(None)
     assert handler.formatter is None
 
@@ -1241,3 +1227,76 @@ def test_two_paths_on_one_line_are_two_matches():
 
     spaced = _redact_worker_output("C:\\Program Files\\unsloth\\weights.gguf failed\n")
     assert spaced.strip() == ".../weights.gguf failed", spaced
+
+
+def test_the_mirror_module_does_not_pull_logging_into_a_spawned_worker():
+    """Every inference worker imports this module at spawn, so it must not pull in logging."""
+    import ast
+
+    source = (Path(_BACKEND_DIR) / "utils/worker_stderr.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    top_level = [
+        alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names
+    ]
+    top_level += [node.module for node in tree.body if isinstance(node, ast.ImportFrom)]
+    assert "logging" not in top_level, (
+        "utils/worker_stderr.py imports logging at module scope again, which every "
+        "spawned worker pays for before its entrypoint runs"
+    )
+
+    # Skipped, not failed, where the interpreter already loaded logging for its own reasons.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "preloaded = 'logging' in sys.modules\n"
+            f"sys.path.insert(0, {_BACKEND_DIR!r})\n"
+            "import utils.worker_stderr\n"
+            "print(preloaded, 'logging' in sys.modules)\n",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert probe.returncode == 0, probe.stderr
+    preloaded, after = probe.stdout.split()
+    if preloaded == "True":
+        pytest.skip("this interpreter loads logging before any of our code runs")
+    assert after == "False", "importing utils.worker_stderr imported logging"
+
+
+def test_a_second_formatter_class_cannot_wrap_a_handler_that_is_already_marked():
+    """Marking classes built by a race differ, so a marked handler must never be wrapped twice."""
+    import io
+    import logging as logging_module
+
+    from utils import worker_stderr
+    from utils.worker_stderr import LOG_RECORD_CONTINUATION_PREFIX, LOG_RECORD_START_MARK
+
+    stream = io.StringIO()
+    handler = logging_module.StreamHandler(stream)
+    handler.setFormatter(logging_module.Formatter("%(message)s"))
+
+    original = worker_stderr._PREFIX_FORMATTER_CLASS
+    try:
+        assert worker_stderr._mark_handler(handler) is True
+        first_class = worker_stderr._PREFIX_FORMATTER_CLASS
+        worker_stderr._PREFIX_FORMATTER_CLASS = None
+        assert (
+            worker_stderr._mark_handler(handler) is False
+        ), "a handler already marked by one formatter class was marked again by another"
+        second_class = worker_stderr._prefix_formatter_class()
+        assert first_class is not second_class, "the rebuild this test needs did not happen"
+
+        logger = logging_module.getLogger(f"{__name__}.two-classes")
+        logger.handlers = [handler]
+        logger.propagate = False
+        logger.setLevel(logging_module.DEBUG)
+        logger.error("boom\n  File x")
+        emitted = stream.getvalue()
+    finally:
+        worker_stderr._PREFIX_FORMATTER_CLASS = original
+
+    expected = LOG_RECORD_START_MARK + "boom\n" + LOG_RECORD_CONTINUATION_PREFIX + "  File x\n"
+    assert emitted == expected, emitted

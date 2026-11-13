@@ -35,7 +35,6 @@ def test_patch_trl_rl_trainers_swallows_garbage_input():
 
 
 def test_impl_is_separately_exposed():
-    # The impl stays directly callable for the raising path.
     _wrapper, impl = _import_helpers()
     assert callable(impl)
 

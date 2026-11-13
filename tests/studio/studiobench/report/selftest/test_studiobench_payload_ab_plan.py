@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The `ab_plan` row must survive payload assembly (unsloth#9580).
-
-It used to be filed under `header`, which is collapsed to its FIRST row, so the plan was
-dropped without a word while `record_counts` still reported two header rows.
-"""
+"""ab_plan must not be filed under header, which is collapsed to its first row and drops the plan."""
 
 from __future__ import annotations
 
@@ -62,9 +58,7 @@ def test_absent_ab_plan_is_an_empty_mapping():
     assert built["ab_plan"] == {}
 
 
-# A plan is written BEFORE its session runs, so cell rows decide ownership and the plan's own
-# `balanced` predates the run. Real `make_cell_id` shapes: a placeholder id would silently take
-# `executed_balance`'s cannot-tell path and exercise nothing.
+# Use real make_cell_id shapes; a placeholder id takes executed_balance's cannot-tell path.
 def _pair(
     rung,
     rep,
@@ -93,8 +87,6 @@ def _cells(
     *cell_ids,
     row_type = "cell",
 ):
-    # `Recorder.emit` stamps session_id on every row; ownership keys on it as
-    # `latest_attempt_rows` does, over the same ATTEMPT_ROW_TYPES.
     return [
         {
             "row_type": row_type,
@@ -162,9 +154,8 @@ def test_a_retry_that_never_reached_its_cell_row_still_owns_the_cell():
 
 
 def test_a_plan_balanced_as_written_is_unbalanced_if_only_its_first_half_ran():
-    """A `--reps 2` interrupted after rep 0 planned base, treatment, treatment, base and ran
-    base, treatment, so base led every pair that happened and drift lands on treatment instead
-    of cancelling. That pair is scored, so the plan's `True` describes an order nothing ran."""
+    """Interrupted --reps 2 run plans base,treatment,treatment,base but runs only the first half, so
+    balanced must be False, not True."""
     rows = [ROWS[0], _plan("s1", LADDER, balanced = True), *_cells("s1", *PAIR)]
     assert _assemble(rows)["ab_plan"]["balanced"] is False
     whole = [ROWS[0], _plan("s1", LADDER, balanced = True), *_cells("s1", *LADDER)]

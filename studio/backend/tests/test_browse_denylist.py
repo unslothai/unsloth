@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""System-directory denylist enforcement for the folder browser.
-
-Once the allowlist can hold a whole Windows drive root (C:\\) or a legacy /
-root, the browse endpoints must re-apply the ``_denied_path_prefixes()`` policy
-``add_scan_folder`` enforces, so /etc, /proc, C:\\Windows, C:\\Program Files stay
-unbrowseable even under an allowlisted root. Windows/macOS branches run on this
-POSIX host by AST-extracting the pure helper with ``ntpath`` / a mocked ``platform``.
-"""
+"""Browse endpoints re-apply the add_scan_folder denylist, so allowlisted roots still hide /etc."""
 
 from __future__ import annotations
 
@@ -16,6 +9,7 @@ import ast
 import ntpath
 import os
 import posixpath
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -37,6 +31,17 @@ class _HTTPException(Exception):
         self.detail = detail
 
 
+_WIN_ENV_OS = SimpleNamespace(
+    sep = "\\",
+    environ = {
+        "SystemRoot": r"C:\Windows",
+        "ProgramFiles": r"C:\Program Files",
+        "ProgramFiles(x86)": r"C:\Program Files (x86)",
+    },
+    path = SimpleNamespace(normcase = ntpath.normcase),
+)
+
+
 def _extract_is_denied_windows():
     """is_denied_system_path (+ _denied_path_prefixes) from studio_db.py under Windows semantics (ntpath) on a POSIX host."""
     src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(encoding = "utf-8")
@@ -50,26 +55,15 @@ def _extract_is_denied_windows():
     module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)
 
-    win_os = SimpleNamespace(
-        sep = "\\",
-        environ = {
-            "SystemRoot": r"C:\Windows",
-            "ProgramFiles": r"C:\Program Files",
-            "ProgramFiles(x86)": r"C:\Program Files (x86)",
-        },
-        path = SimpleNamespace(normcase = ntpath.normcase),
-    )
     ns = {
-        "os": win_os,
+        "os": _WIN_ENV_OS,
         "platform": SimpleNamespace(system = lambda: "Windows"),
-        # /run has no Windows analog, so the carve-out is never reached.
         "is_linux_run_media_path": lambda _p: False,
     }
     exec(compile(module, "<extracted studio_db.py>", "exec"), ns)
     return ns["is_denied_system_path"]
 
 
-# is_denied_system_path -- Linux (real helper, this host)
 @pytest.mark.parametrize(
     "path",
     [
@@ -96,7 +90,6 @@ def test_is_denied_system_path_linux_denies_system_dirs(monkeypatch, path):
     ["/run/media/dspofu/nvmeB", "/run/media/dspofu/nvmeB/models"],
 )
 def test_is_denied_system_path_linux_allows_run_media_mounts(monkeypatch, path):
-    # The /run/media/<user>/<volume> carve-out keeps removable media browseable.
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
     assert studio_db.is_denied_system_path(path) is False
 
@@ -117,7 +110,6 @@ def test_legacy_and_hub_denylist_agree(monkeypatch):
         assert studio_db.is_denied_system_path(p) == scan_folders.is_denied_system_path(p)
 
 
-# is_denied_system_path -- Windows (ntpath-backed), case-insensitive + collisions
 @pytest.mark.parametrize(
     "path",
     [
@@ -153,7 +145,63 @@ def test_is_denied_system_path_windows_allows_non_system(path):
     assert is_denied(path) is False
 
 
-# _resolve_browse_target -- real-FS integration (legacy browser)
+_POSIX_SEP = pytest.mark.skipif(sys.platform == "win32", reason = "simulates a POSIX host")
+
+
+@pytest.mark.parametrize(
+    "system, path, denied",
+    [
+        ("Windows", r"\\?\C:\Windows\Temp\x", True),
+        ("Windows", r"\\?\c:\program files\y", True),
+        ("Windows", r"\\?\C:\WINDOWS", True),
+        ("Windows", r"\\?\D:\models", False),
+        ("Windows", r"\\?\UNC\server\share\Windows", False),
+        pytest.param("Darwin", "/LIBRARY/x", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/library", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/private/TMP/x", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/SYSTEM/Volumes", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/Users/me/Library-Backup", False, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/Volumes/Drive/library", False, marks = _POSIX_SEP),
+    ],
+)
+def test_is_denied_system_path_sees_through_spelling(system, path, denied, monkeypatch):
+    legacy = studio_db.is_denied_system_path
+    if system == "Windows":
+        legacy = _extract_is_denied_windows()
+        monkeypatch.setattr(scan_folders, "os", _WIN_ENV_OS)
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: system)
+    assert legacy(path) is denied
+    assert scan_folders.is_denied_system_path(path) is denied
+
+
+@_POSIX_SEP
+def test_is_within_any_compares_like_the_disk(monkeypatch):
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Darwin")
+    assert scan_folders.is_within_any("/Users/Me/Library/CACHES/x", ["/Users/me/Library/Caches"])
+    assert not scan_folders.is_within_any("/Users/me/Library/Caches2", ["/Users/me/Library/Caches"])
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Linux")
+    assert not scan_folders.is_within_any("/TMP/x", ["/tmp"])
+    assert scan_folders.is_within_any("/tmp", ["/tmp/"])
+
+
+@_POSIX_SEP
+def test_a_case_sensitive_macos_volume_keeps_case_apart(monkeypatch):
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Darwin")
+    for module in (scan_folders, studio_db):
+        monkeypatch.setattr(module, "macos_volume_ignores_case", lambda path: False)
+    for check in (studio_db.is_denied_system_path, scan_folders.is_denied_system_path):
+        assert check("/Library/x") and not check("/library/models")
+    assert not scan_folders.is_within_any(
+        "/Users/Me/Library/CACHES/x", ["/Users/me/Library/Caches"]
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "asks the real macOS volume")
+def test_macos_volume_case_is_asked_of_the_nearest_existing_folder():
+    from utils.paths.path_utils import macos_volume_ignores_case
+    assert macos_volume_ignores_case("/no/such/folder/here") == macos_volume_ignores_case("/")
+
+
 def _extract_resolver():
     """Extract the legacy browse resolver; its inline imports use the real storage.studio_db policy."""
     src = (_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8")
@@ -180,7 +228,6 @@ def _extract_resolver():
 
 
 def test_resolve_browse_target_blocks_etc_via_root():
-    # Registering "/" must not make /etc browsable (Codex #3 regression guard).
     resolve = _extract_resolver()
     with pytest.raises(_HTTPException) as exc:
         resolve("/etc", [Path("/")])
@@ -188,10 +235,7 @@ def test_resolve_browse_target_blocks_etc_via_root():
 
 
 def test_resolve_browse_target_blocks_stale_denied_root(tmp_path, monkeypatch):
-    # A stale scan-folder row pointing at a denied dir is refused by the
-    # browse-time denylist even though it is its own allowlist root. A tmp-based
-    # denied prefix (+ Linux compare) keeps the assertion OS-agnostic: on macOS
-    # tmp lives under the already-denied /private/var, masking the message.
+    # Use a tmp-based denied prefix: macOS tmp is already under /private/var.
     denied = (tmp_path / "sysfake").resolve()
     denied.mkdir()
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
@@ -209,8 +253,7 @@ def test_resolve_browse_target_allows_root_itself():
 
 
 def test_resolve_browse_target_allows_legit_nested_dir(tmp_path, monkeypatch):
-    # Force the Linux denylist so the macOS temp location (under the denied
-    # /private/var) doesn't reject the tmp fixture; a normal nested dir must not be over-blocked.
+    # Force the Linux denylist: macOS tmp lives under denied /private/var.
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
     resolve = _extract_resolver()
     base = tmp_path / "allowed"
@@ -233,7 +276,6 @@ def test_resolve_browse_target_symlink_escape_blocked(tmp_path):
     assert exc.value.status_code == 403
 
 
-# _is_path_inside_allowlist -- bare POSIX root parity (legacy == hub)
 def _extract_is_inside(rel_parts, *, os_module = os):
     """Extract a standalone _is_path_inside_allowlist (os/Path only) so both browsers' copies compare without importing their heavy modules."""
     src = _BACKEND_ROOT.joinpath(*rel_parts).read_text(encoding = "utf-8")
@@ -250,8 +292,7 @@ def _extract_is_inside(rel_parts, *, os_module = os):
     return ns["_is_path_inside_allowlist"]
 
 
-# ntpath semantics with a no-FS realpath, so UNC containment can be driven on a
-# POSIX CI (the real realpath cannot resolve \\server\share off Windows).
+# ntpath with no-FS realpath so UNC containment runs on POSIX CI.
 _WIN_OS = SimpleNamespace(
     sep = ntpath.sep,
     path = SimpleNamespace(
@@ -265,22 +306,18 @@ _WIN_OS = SimpleNamespace(
 
 
 def test_legacy_and_hub_allowlist_agree_on_posix_root():
-    # A bare "/" allowlist entry must authorize only "/" itself in BOTH
-    # browsers, never descend into /var, /root, /home (which the denylist does
-    # not cover). Guards the hub browser against authorizing every absolute path.
+    # A bare "/" allowlist entry authorizes only "/", not its descendants.
     legacy = _extract_is_inside(["routes", "models.py"])
     hub = _extract_is_inside(["hub", "services", "models", "folder_browser.py"])
     roots = [Path("/")]
     for tgt in ["/var", "/root", "/home", "/usr", "/opt", "/etc"]:
         assert legacy(Path(tgt), roots) is False
         assert hub(Path(tgt), roots) is False
-    # "/" itself stays browseable; only its descendants are withheld.
     assert legacy(Path("/"), roots) is True
     assert hub(Path("/"), roots) is True
 
 
 def test_hub_allowlist_authorizes_normal_nested_dir(tmp_path):
-    # The bare-root special case must not over-block a normal allowlist root's descendants.
     hub = _extract_is_inside(["hub", "services", "models", "folder_browser.py"])
     base = tmp_path / "allowed"
     sub = base / "models" / "gguf"
@@ -289,7 +326,6 @@ def test_hub_allowlist_authorizes_normal_nested_dir(tmp_path):
     assert hub(base, [base]) is True
 
 
-# add_scan_folder -- filesystem-root rejection parity (legacy == hub)
 def test_legacy_add_scan_folder_rejects_filesystem_root(monkeypatch):
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
     with pytest.raises(ValueError, match = "filesystem root"):
@@ -302,33 +338,24 @@ def test_hub_add_scan_folder_rejects_filesystem_root(monkeypatch):
         scan_folders.add_scan_folder("/")
 
 
-# is_local_filesystem_root: reject "/" and "C:\\" (roots above denied system dirs),
-# but NOT a UNC share root -- registering \\server\share was allowed before this
-# guard and has no system dirs under it. _pathmod drives Windows semantics on POSIX CI.
+# Reject local roots like "/" and "C:\\" but not a UNC share root.
 @pytest.mark.parametrize(
     "path, pathmod, expected",
     [
-        # Local filesystem roots -> rejected (True).
         ("/", posixpath, True),
         ("C:\\", ntpath, True),
         ("c:\\", ntpath, True),
         ("D:\\", ntpath, True),
-        # UNC share roots -> NOT a local root, stay registerable (False).
         (r"\\server\share", ntpath, False),
         (r"\\nas\models", ntpath, False),
         ("//server/share", ntpath, False),
-        # Device / extended-length volume roots -> still local roots (rejected),
-        # so neither \\?\C:\ nor a drive-letter-less \\?\Volume{GUID}\ can slip
-        # past the guard as if it were a share root.
         (r"\\?\C:" + "\\", ntpath, True),
         (r"\\.\C:" + "\\", ntpath, True),
         (r"\\?\C:", ntpath, True),
         (r"\\.\C:", ntpath, True),
         (r"\\?\Volume{2f8e6d31-0000-0000-0000-100000000000}" + "\\", ntpath, True),
         (r"\\.\Volume{2f8e6d31-0000-0000-0000-100000000000}", ntpath, True),
-        # Device-namespace UNC share root -> stays registerable (False).
         (r"\\?\UNC\server\share", ntpath, False),
-        # Non-root paths (incl. deep device / extended-length) -> not a root (False).
         ("C:\\Models", ntpath, False),
         (r"\\server\share\models", ntpath, False),
         (r"\\?\C:\Users\me\models", ntpath, False),
@@ -341,18 +368,13 @@ def test_is_local_filesystem_root(path, pathmod, expected):
 
 
 def test_both_guards_use_the_shared_local_root_helper():
-    # Register-root parity: both browsers reject the same roots via one helper, so a
-    # UNC-share exemption can never drift between the legacy and hub code paths.
     legacy_src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(encoding = "utf-8")
     hub_src = (_BACKEND_ROOT / "hub" / "storage" / "scan_folders.py").read_text(encoding = "utf-8")
     assert "is_local_filesystem_root(normalized)" in legacy_src
     assert "is_local_filesystem_root(normalized)" in hub_src
 
 
-# A registered UNC share root must authorize its own descendants in both browsers.
-# os.path.commonpath raises "can't mix absolute and relative" on a bare
-# \\server\share, so containment falls back to a boundary-safe prefix test; without
-# it, registering a UNC share (now allowed) would 403 every folder under it.
+# commonpath raises on a bare UNC share, so containment uses a prefix test.
 @pytest.mark.parametrize(
     "rel_parts",
     [
@@ -363,9 +385,9 @@ def test_both_guards_use_the_shared_local_root_helper():
 def test_unc_share_root_authorizes_its_descendants(rel_parts):
     is_inside = _extract_is_inside(rel_parts, os_module = _WIN_OS)
     root = [Path(r"\\server\share")]
-    assert is_inside(Path(r"\\server\share"), root) is True  # the root itself
-    assert is_inside(Path(r"\\server\share\models"), root) is True  # direct child
-    assert is_inside(Path(r"\\server\share\a\b\c"), root) is True  # deep descendant
-    assert is_inside(Path(r"\\SERVER\SHARE\Models"), root) is True  # case-insensitive
-    assert is_inside(Path(r"\\server\share2\models"), root) is False  # sibling share
-    assert is_inside(Path(r"C:\models"), root) is False  # different volume
+    assert is_inside(Path(r"\\server\share"), root) is True
+    assert is_inside(Path(r"\\server\share\models"), root) is True
+    assert is_inside(Path(r"\\server\share\a\b\c"), root) is True
+    assert is_inside(Path(r"\\SERVER\SHARE\Models"), root) is True
+    assert is_inside(Path(r"\\server\share2\models"), root) is False
+    assert is_inside(Path(r"C:\models"), root) is False

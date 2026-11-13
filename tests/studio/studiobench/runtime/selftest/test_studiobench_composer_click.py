@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`composer_click_ms` must be the click, and only the click.
-
-The session opens every instrument before the window's body and closes them after it, and at
-instrument level 1-3 those hooks stop a CPU profile, collect coverage and write and analyse a
-trace. Timed around the `with` rather than inside it, this reading would grow with the instrument
-level while still being labelled a `page.click` duration -- and it is the number the slow-click
-warning is compared against.
-"""
+"""composer_click_ms must time only the click, not the instrument hooks wrapping the window body."""
 
 from __future__ import annotations
 
@@ -39,11 +32,11 @@ class _Session:
         kind = "action",
     ):
         self.opened.append((name, kind))
-        time.sleep(TEARDOWN_S)  # the `open` hooks
+        time.sleep(TEARDOWN_S)
         try:
             yield types.SimpleNamespace(note = lambda *a: None)
         finally:
-            time.sleep(TEARDOWN_S)  # the `close` hooks
+            time.sleep(TEARDOWN_S)
 
 
 class _Page:
@@ -87,7 +80,6 @@ def test_composer_click_ms_excludes_the_instrument_hooks():
     runner = _run()
     got = runner._composer_click_ms
     assert got is not None
-    # The click is 100 ms and the hooks are 800 ms between them. Timed around the window this came back near 900.
     assert CLICK_S * 1000 <= got < CLICK_S * 1000 + TEARDOWN_S * 1000
 
 
@@ -96,9 +88,6 @@ def test_the_click_is_filed_as_setup_and_not_as_an_action():
     `scoring/from_payload.UNSCORED_WINDOW_KINDS`."""
     runner = _run()
     assert runner.session.opened == [("setup:composer_click", "setup")]
-
-
-# ── the probe's own output has to survive the payload schema ─────────────────────────────────
 
 
 class _ProbePage(_Page):

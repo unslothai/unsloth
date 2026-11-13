@@ -4,16 +4,17 @@
 import { Button } from "@/components/ui/button";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
 import { type DeviceType, usePlatformStore } from "@/config/env";
+import { useNotificationGate } from "@/hooks/use-notification-frequency";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
-import { Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
-// macOS, Linux and WSL update via the POSIX installer; only native Windows (PowerShell) needs the
-// irm one-liner. Any non-windows device_type (incl. wsl) resolves to the curl command below.
+// Only native Windows needs the PowerShell one-liner; WSL uses the POSIX installer.
 const STUDIO_INSTALL_UNIX_CMD = "curl -fsSL https://unsloth.ai/install.sh | sh";
 const STUDIO_INSTALL_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
 const RELEASE_NOTES_URL = "https://unsloth.ai/docs/new/changelog";
@@ -27,8 +28,7 @@ function installCommandForDevice(deviceType: DeviceType): string {
 
 interface WebUpdateBannerProps {
   enabled?: boolean;
-  // false: fill the parent instead of self-anchoring, so it can stack with the
-  // llama.cpp banner. true (default) keeps standalone mounts working.
+  // false: fill the parent to stack with the llama.cpp banner; true anchors standalone.
   positioned?: boolean;
 }
 
@@ -37,6 +37,7 @@ export function WebUpdateBanner({
   positioned = true,
 }: WebUpdateBannerProps): ReactElement | null {
   const { status, dismiss, snooze } = useWebUpdateCheck({ enabled });
+  const open = useNotificationGate("unsloth", status != null && !isTauri);
   const deviceType = usePlatformStore((s) => s.deviceType);
   const installCmd = installCommandForDevice(deviceType);
   const [copiedVersion, setCopiedVersion] = useState<string | null>(null);
@@ -63,8 +64,7 @@ export function WebUpdateBanner({
     if (dismissTimerRef.current) {
       clearTimeout(dismissTimerRef.current);
     }
-    // Copying is not updating: snooze instead of dismissing, so the banner
-    // returns on the next launch if the install is still behind.
+    // Copying is not updating: snooze so the banner returns if the install is still behind.
     dismissTimerRef.current = setTimeout(() => snooze(), 1200);
   }
 
@@ -74,27 +74,34 @@ export function WebUpdateBanner({
 
   return (
     <AnimatePresence>
-      {status ? (
+      {status && open ? (
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.96 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
-            // Wider than the other overlays: notes preview plus three buttons.
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
-                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] shrink-0 flex-col",
-                  // Only rendered notes may shrink in the capped rail. Without
-                  // them, shrink-0 keeps the compact card at its natural height.
-                  "has-[[data-slot=update-release-notes]]:min-h-[calc(109px+80px*var(--ui-font-scale,1))] has-[[data-slot=update-release-notes]]:shrink max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(139px+96px*var(--ui-font-scale,1))]",
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
+                  // Only rendered notes may shrink; the floor is the surface's own content, not a constant.
+                  "has-[[data-slot=update-release-notes]]:shrink",
                 ),
           )}
           data-testid="web-update-banner"
         >
-          {/* Paint the full floor even when the notes content is short. */}
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          {/* Paint the full floor even when the notes content is short.
+              No min-h-0 and no overflow-hidden here on purpose: both of them
+              set this box's automatic minimum size to zero, which is what made
+              the card need a hand-written floor at all. Left alone it floors
+              itself at header + notes + actions, and the notes panel carries
+              its own min-h-0 and clipping, so it stays the one part that
+              yields. That is the floor the constant was approximating, except
+              it is measured rather than guessed and it holds at every type
+              size. */}
+          <div className="toast-surface relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+
             <button
               type="button"
               onClick={dismiss}
@@ -119,7 +126,7 @@ export function WebUpdateBanner({
             </button>
 
             <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
-              <Download
+              <HugeiconsIcon icon={Download01Icon}
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
                 strokeWidth={1.75}
@@ -143,8 +150,6 @@ export function WebUpdateBanner({
               releaseNotesUrl={RELEASE_NOTES_URL}
             />
 
-            {/* one row at one type size; wraps only on narrow viewports, and
-                never compresses on a short one */}
             <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-y-2">
               <Button
                 size="sm"
@@ -171,7 +176,7 @@ export function WebUpdateBanner({
                 </Button>
                 <Button
                   size="sm"
-                  // -mr optically aligns the filled pill's edge with the card padding
+                  variant="primary"
                   className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                   onClick={handleCopyCommand}
                   data-testid="web-update-copy-button"

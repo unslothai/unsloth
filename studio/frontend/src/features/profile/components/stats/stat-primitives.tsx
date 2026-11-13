@@ -4,7 +4,6 @@
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 
-/** Bordered surface every stats block sits on, matching the profile card. */
 export function StatsCard({
   title,
   description,
@@ -22,12 +21,12 @@ export function StatsCard({
     <section
       {...(title ? { "data-settings-label": title } : {})}
       className={cn(
-        "flex w-full flex-col gap-4 rounded-2xl border border-border bg-background dark:border-transparent dark:bg-white/[0.06] px-5 py-5",
+        "flex w-full flex-col gap-4 rounded-2xl border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] px-5 py-5",
         className,
       )}
     >
       {title ? (
-        <header className="flex items-start justify-between gap-3">
+        <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-0.5">
             <h3 className="text-sm font-semibold font-heading text-foreground">
               {title}
@@ -36,7 +35,17 @@ export function StatsCard({
               <p className="text-xs text-muted-foreground">{description}</p>
             ) : null}
           </div>
-          {action ? <div className="shrink-0">{action}</div> : null}
+          {action ? (
+            <div
+              className={cn(
+                "max-w-full shrink-0",
+                // Top edge on the h3's cap top (text-sm at its default leading; Hellix: 0.336em).
+                description && "mt-[calc(var(--text-sm)*0.336)]",
+              )}
+            >
+              {action}
+            </div>
+          ) : null}
         </header>
       ) : null}
       {children}
@@ -44,7 +53,6 @@ export function StatsCard({
   );
 }
 
-/** Big number + caption, used across the highlight and training rows. */
 export function StatTile({
   value,
   label,
@@ -73,7 +81,6 @@ export function StatTile({
   );
 }
 
-/** Label left, value right: the "Activity insights" rows. */
 export function StatRow({
   label,
   value,
@@ -103,7 +110,6 @@ export function StatRow({
   );
 }
 
-/** Thin progress track (level bar, achievement progress, model share). */
 export function StatMeter({
   progress,
   className,

@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two authorization decisions the external-provider route makes before proxying.
-
-Both are one-line conditions in ``_proxy_to_external_provider`` and both are
-reachable only by driving the route, so they are pinned here rather than through
-a helper's return value:
-
-* the confirm gate. Unsloth's UI expresses "ask me first" as ``permission_mode``,
-  not as ``confirm_tool_calls``, so a guard that reads the raw flag admits the
-  very request the local routes reject.
-* the saved-credential exception for internal workflow keys. Unsloth mints those
-  keys for more than one workflow, and the data-recipe key is handed to a
-  user-authored recipe subprocess, so "internal" alone cannot be the licence to
-  spend every saved cloud credential.
-"""
+"""Gate on permission_mode not confirm_tool_calls; internal alone cannot spend every saved credential."""
 
 import asyncio
 import threading
@@ -34,6 +21,7 @@ class FakeExternalClient:
 
     def __init__(self, **kwargs):
         FakeExternalClient.last = {"ctor": kwargs, "passthrough": None}
+        self.provider_type = kwargs.get("provider_type")
 
     def stream_chat_completion(self, **kwargs):
         FakeExternalClient.last["passthrough"] = kwargs
@@ -56,7 +44,7 @@ def _request(authorization = None):
     if authorization:
         headers["authorization"] = authorization
     return SimpleNamespace(
-        # The confirm gate can only ask over these frames.
+        # the confirm gate can only ask over these frames
         headers = headers,
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
@@ -143,21 +131,8 @@ def _run(
     return _drive(go())
 
 
-# ── the confirm gate reads the effective mode, not the raw flag ──────────────
-
-
 def test_non_streaming_ask_mode_is_rejected_like_the_local_routes(monkeypatch):
-    """``permission_mode: "ask"`` is how the UI asks for the gate.
-
-    The gate can only prompt over SSE, so a non-streaming request carrying it
-    must 400 exactly as ``/v1/chat/completions`` does for a local model. Reading
-    ``confirm_tool_calls`` alone lets it through, and the caller is then proxied
-    with its tools live and no confirmation it explicitly asked for.
-
-    The saved connection has to resolve first: the route looks the provider up
-    before it reaches this guard, so without the stub this asserts on the 404
-    and would keep passing if the guard were deleted.
-    """
+    """A non-streaming request with permission_mode ask must 400, as the local routes do."""
     inf = _install(monkeypatch, "openai")
 
     payload = _payload(stream = False, enable_tools = True, permission_mode = "ask")
@@ -170,12 +145,7 @@ def test_non_streaming_ask_mode_is_rejected_like_the_local_routes(monkeypatch):
 
 
 def test_an_explicit_confirm_flag_still_401s_the_streaming_hosted_only_request(monkeypatch):
-    """The pre-existing rejection must survive the mode-derived one.
-
-    A streaming request whose selection is purely the provider's hosted tools
-    never enters Unsloth's loop, so an explicit ``confirm_tool_calls`` cannot be
-    honoured there either.
-    """
+    """An explicit confirm_tool_calls still 401s hosted-only streams, which never enter the loop."""
     inf = _install(monkeypatch, "openai")
     payload = _payload(
         enable_tools = True,
@@ -211,6 +181,47 @@ def test_a_plain_streaming_ask_request_still_reaches_the_loop(monkeypatch):
     assert entered["policy"].confirm_calls is True
 
 
+_PNG = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4"
+    "z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+)
+
+
+def test_an_mcp_image_is_refused_when_the_tool_loop_will_not_run(monkeypatch):
+    """The direct proxy forwards no MCP image, so accepting one would drop it silently."""
+    inf = _install(monkeypatch, "openai")
+    monkeypatch.setattr(inf, "provider_model_runs_local_tools", lambda *a: False)
+    payload = _payload(enable_tools = True, mcp_enabled = True, mcp_image = _PNG)
+    with pytest.raises(HTTPException) as excinfo:
+        _run(inf, payload)
+    assert excinfo.value.status_code == 400 and "MCP" in excinfo.value.detail
+
+
+def test_an_mcp_image_is_refused_when_the_catalog_has_no_mapped_tool(monkeypatch):
+    from core.inference import tools as tools_mod
+
+    inf = _install(monkeypatch, "openai")
+    entered = _capture_loop(monkeypatch, inf)
+    monkeypatch.setattr(tools_mod, "mcp_catalog_takes_image", lambda names: False)
+    payload = _payload(enable_tools = True, permission_mode = "ask", mcp_enabled = True, mcp_image = _PNG)
+    with pytest.raises(HTTPException) as excinfo:
+        _run(inf, payload)
+    assert excinfo.value.status_code == 400 and not entered
+
+
+def test_an_mcp_image_reaches_the_tool_loop(monkeypatch):
+    from core.inference import tools as tools_mod
+
+    inf = _install(monkeypatch, "openai")
+    monkeypatch.setattr(tools_mod, "mcp_catalog_takes_image", lambda names: True)
+    entered = _capture_loop(monkeypatch, inf)
+    _run(
+        inf,
+        _payload(enable_tools = True, permission_mode = "ask", mcp_enabled = True, mcp_image = _PNG),
+    )
+    assert entered["mcp_image"].mime == "image/png"
+
+
 def test_a_non_streaming_request_without_any_confirm_intent_still_proxies(monkeypatch):
     """off/full never prompt, so they keep the legacy non-streaming passthrough."""
     inf = _install(monkeypatch, "openai")
@@ -219,16 +230,8 @@ def test_a_non_streaming_request_without_any_confirm_intent_still_proxies(monkey
     assert FakeExternalClient.last["passthrough"] is not None
 
 
-# ── the summed usage chunk keeps the model it was spent on ───────────────────
-
-
 def test_the_external_loop_is_told_which_model_the_usage_belongs_to(monkeypatch):
-    """The loop withholds the provider's usage chunks and sends one of its own.
-
-    That synthetic chunk is the only usage the client sees for the answer, so a
-    ToolLoopRun without a model reports the literal "external" and the tokens
-    cannot be attributed or priced.
-    """
+    """The loop's synthetic usage chunk must carry the real model, or tokens cannot be priced."""
     inf = _install(monkeypatch, "openai")
     entered = _capture_loop(monkeypatch, inf)
     _run(inf, _payload(enable_tools = True, external_model = "gpt-5.4"))
@@ -236,14 +239,7 @@ def test_the_external_loop_is_told_which_model_the_usage_belongs_to(monkeypatch)
 
 
 def test_the_codex_loop_keeps_its_model_and_nudge_policy(monkeypatch):
-    """The Codex adapter must preserve shared-loop policy and accounting inputs.
-
-    Before the shared loop, the Codex path relayed the provider's usage chunks
-    untouched and they named the Codex model. The shared loop replaces them, so
-    the model has to be carried across or Codex metadata moves. The request's
-    nudge setting must likewise survive the adapter instead of reverting to the
-    process default.
-    """
+    """Codex must carry its model and nudge setting through the shared loop's usage and policy."""
     from core.inference import openai_codex_tool_loop as loop_mod
 
     entered: dict = {}
@@ -291,17 +287,8 @@ def test_the_usage_chunk_falls_back_only_when_no_model_is_known():
     assert ToolLoopRun(messages = []).model is None
 
 
-# ── the saved-credential exception is scoped to the workflow that needs it ───
-
-
 def test_a_data_recipe_key_cannot_spend_a_saved_cloud_credential(monkeypatch):
-    """Recipe keys live inside a user-authored subprocess.
-
-    ``routes/data_recipe/jobs.py`` writes the minted key straight into the
-    recipe's provider block so the recipe can call this host's local ``/v1``.
-    If "internal" alone unlocked saved connections, that subprocess could name
-    any saved provider_id and bill the user's cloud account.
-    """
+    """A data-recipe key must not spend saved cloud credentials; recipes run user-authored code."""
     from auth.authentication import API_KEY_PREFIX
     from routes import inference as inf
 
@@ -354,6 +341,44 @@ def test_a_third_party_key_never_unlocks_a_saved_connection(monkeypatch):
     assert seen == [False]
 
 
+START = "Coding agents (unsloth start)"
+
+
+@pytest.mark.parametrize(
+    "record, allowed",
+    [
+        ({"role": "owner", "key_name": START, "key_purpose": "unsloth_start"}, True),
+        ({"role": "owner", "key_name": "my script", "key_purpose": None}, False),
+        # Named like the start key before the name was reserved, but never stamped.
+        ({"role": "owner", "key_name": START, "key_purpose": None}, False),
+        ({"role": "member", "key_name": START, "key_purpose": "unsloth_start"}, False),
+    ],
+)
+def test_only_the_owners_unsloth_start_key_unlocks_a_saved_connection(monkeypatch, record, allowed):
+    from auth.authentication import API_KEY_PREFIX
+    from routes import inference as inf
+
+    seen: list[bool] = []
+    inf = _install(monkeypatch, "openai", record_keys = seen)
+    monkeypatch.setattr(inf.auth_storage, "is_internal_api_key", lambda raw: False)
+    monkeypatch.setattr(
+        inf.auth_storage, "validate_api_key_account", lambda raw, touch = True: (record, "s")
+    )
+    _run(inf, _payload(), request = _request(f"Bearer {API_KEY_PREFIX}deadbeefdeadbeef"))
+    assert seen == [allowed]
+
+
+def test_a_keyless_caller_never_unlocks_a_saved_connection(monkeypatch):
+    from auth import authentication
+    from routes import inference as inf
+
+    seen: list[bool] = []
+    inf = _install(monkeypatch, "openai", record_keys = seen)
+    monkeypatch.setattr(authentication, "admitted_without_session", lambda request: True)
+    _run(inf, _payload(), request = _request())
+    assert seen == [False]
+
+
 def test_an_interactive_session_still_uses_its_saved_connection(monkeypatch):
     """Unsloth's own chat sends a session JWT and no API key at all."""
     from routes import inference as inf
@@ -364,16 +389,8 @@ def test_an_interactive_session_still_uses_its_saved_connection(monkeypatch):
     assert seen == [True]
 
 
-# ── the watcher the stream starts is joined, not just cancelled ──────────────
-
-
 def test_the_external_disconnect_watcher_is_awaited_after_cancel():
-    """A bare cancel() leaves the task's exception unretrieved.
-
-    asyncio logs "Task exception was never retrieved" for it at collection time,
-    which is why both the Codex branch and the local watcher gather the task
-    before returning. The external branch must not be the odd one out.
-    """
+    """Await the external disconnect watcher after cancel(), or asyncio logs an unretrieved exception."""
     import ast
     import pathlib
 
@@ -394,8 +411,6 @@ def test_the_external_disconnect_watcher_is_awaited_after_cancel():
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and node.id == "disconnect_task"
     ]
-    # Every cancel site must be followed by a gather of the same task; counting
-    # the bare references is enough to catch a cancel with no join next to it.
     assert len(gathers) >= len(cancels) * 3, "each disconnect_task.cancel() needs a gather"
 
 
@@ -404,6 +419,8 @@ def test_transport_cancellation_is_wired_through_the_loop():
     from core.inference.external_tool_transport import OAICompatTransport
 
     class _Stalling:
+        provider_type = "custom"
+
         def __init__(self):
             self.torn_down = False
             self.released = asyncio.Event()

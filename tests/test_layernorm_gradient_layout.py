@@ -84,7 +84,7 @@ def test_layernorm_gradient_reaches_a_live_strided_source(source_layout):
     layer.bias.uniform_(-0.5, 0.5)
 
     grad = torch.randn(2, 4, 80, device = "cuda")
-    # Snapshot up front: backward writes its result into the buffer it is handed.
+    # Backward writes its result into the buffer it is handed.
     reference_grad = grad.clone()
 
     actual_source = source.detach().requires_grad_()

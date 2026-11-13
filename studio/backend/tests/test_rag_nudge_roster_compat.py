@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The document roster on old installs, hostile file names, and every platform.
-
-The roster reads ``rag.db`` on the request path and puts what it finds in the system
-prompt, so the two ways it can go wrong are a database written by an older Unsloth that
-does not have the tables the predicate names, and a file name carrying something the
-quoting does not stop. Both are covered here, along with the async conversion and a
-proof that none of it depends on the host or the accelerator.
-"""
+"""Roster on old rag.db schemas and hostile file names, independent of host and accelerator."""
 
 import asyncio
 import os
@@ -76,12 +69,6 @@ def _doc(
     conn.commit()
 
 
-# --------------------------------------------------------------------------------------
-# A. an install that predates the tables the roster's predicate names
-# --------------------------------------------------------------------------------------
-
-# documents as it shipped before linked folders, project sources and the archive columns:
-# no linked_folder_id, no linked_folder_retired_scopes, no linked_folder_files.
 _ANCIENT_SCHEMA = """
 CREATE TABLE documents (
     id TEXT NOT NULL PRIMARY KEY,
@@ -108,19 +95,7 @@ CREATE TABLE chunks (
 
 
 def _requires_rag():
-    """Skip where the roster cannot exist at all.
-
-    Called AFTER the legacy file is written: rag_available() opens the connection that
-    creates and migrates rag.db, so checking first would leave create_document's own
-    tables in place and the legacy schema could not be laid down at all.
-
-    A migration test asserts a document gets named, and naming one needs rag_available()
-    to be True. On a host where the sqlite-vec package imports but its vec0 library does
-    not load -- the common macOS case, called out in rag_available()'s own docstring --
-    it is False by design and the roster is correctly empty. That path has its own test
-    (test_roster_is_quiet_when_the_vector_extension_is_missing); asserting the opposite
-    here would only make the suite red on macOS.
-    """
+    """Skip when vec0 will not load: rag_available() is then False by design and no roster exists."""
     from storage import rag_db
     if not rag_db.rag_available():
         pytest.skip("sqlite-vec unavailable here, so there is no roster to migrate into")
@@ -150,9 +125,7 @@ def _write_legacy_db(
 
 
 def test_roster_reads_a_database_written_before_linked_folders_existed(rag_home, fresh_process):
-    """A1. The predicate names three things this file has never heard of. The
-    rag_available() gate has to migrate it before the query runs, or every install that
-    predates linked folders silently loses the roster."""
+    """Databases from before linked folders need rag_available() to migrate first, or the roster is lost."""
     _write_legacy_db(rag_home)
     _requires_rag()
     out = _nudge({"project_id": "p1"})
@@ -160,8 +133,7 @@ def test_roster_reads_a_database_written_before_linked_folders_existed(rag_home,
 
 
 def test_roster_reads_a_database_missing_only_the_newer_columns(rag_home, fresh_process):
-    """A2/A3/A4. project_id, embedding_model and the archive columns arrive by lazy
-    ALTER. A row inserted before any of them still has to be nameable."""
+    """Lazy ALTER adds project_id, embedding_model and archive; old rows must still be nameable."""
     schema = (
         _ANCIENT_SCHEMA
         + """
@@ -196,27 +168,21 @@ def test_roster_is_quiet_when_no_database_exists_at_all(rag_home, fresh_process)
 
 
 def test_roster_degrades_rather_than_raising_when_the_gate_lies(rag_home, monkeypatch):
-    """A7. rag_db sets _extension_loaded before it ensures the schema, and
-    rag_available() short-circuits on that flag. So a process whose first _ensure_schema
-    failed reports "available" over an unmigrated file. The request still has to be
-    served: an empty roster, never a 500."""
+    """A failed schema migration can still report rag_available() True; the roster must degrade to empty."""
     from storage import rag_db
 
     _write_legacy_db(rag_home)
     from routes import inference
 
     monkeypatch.setattr(rag_db, "_extension_loaded", True)
-    monkeypatch.setattr(
-        rag_db, "_schema_ready", {rag_db.rag_db_path().resolve()}
-    )  # so nothing migrates it
+    monkeypatch.setattr(rag_db, "_schema_ready", {rag_db.rag_db_path().resolve()})
     out = _nudge({"project_id": "p1"})
     assert inference._RAG_GROUNDING_NUDGE in out
     assert _roster(out) == "" or "legacy.pdf" in _roster(out)
 
 
 def test_roster_is_quiet_when_the_vector_extension_is_missing(rag_home, monkeypatch):
-    """A8. No sqlite_vec means no retrieval, so naming documents would promise something
-    search cannot deliver."""
+    """Without sqlite_vec there is no retrieval, so the roster must stay quiet."""
     from storage import rag_db
 
     monkeypatch.setattr(rag_db, "RAG_AVAILABLE", False)
@@ -247,12 +213,7 @@ def test_roster_failure_does_not_break_the_rest_of_the_nudge(rag_home, monkeypat
     assert "attached documents are:" not in out
 
 
-# --------------------------------------------------------------------------------------
-# B. file names that carry more than a name
-# --------------------------------------------------------------------------------------
-
-# Only linked folders can produce these: routes/rag.py:_sanitize_filename runs an
-# allowlist over anything uploaded, while folder_sync stores the relative path as found.
+# Only linked folders produce these: uploads go through _sanitize_filename's allowlist.
 _HOSTILE = [
     ("esc", "a\x1b[2Kb.pdf", "\x1b"),
     ("bel", "a\x07b.pdf", "\x07"),
@@ -294,8 +255,7 @@ def test_the_whole_prompt_is_free_of_controls_for_any_name(rag_conn):
 
 
 def test_a_direction_override_cannot_be_left_unterminated_by_truncation(rag_conn):
-    """B2. The 120-character cut used to be able to land between an isolate and its pop,
-    which reflows everything after the name."""
+    """Truncation must not leave an isolate unclosed, or the rest of the prompt reflows."""
     from routes import inference
 
     name = "⁦" + "x" * (inference._RAG_ROSTER_MAX_NAME_CHARS + 40) + "⁩.pdf"
@@ -319,9 +279,7 @@ def test_windows_style_separators_survive_normalisation(rag_conn):
 
 
 def test_nfd_and_nfc_spellings_are_both_named(rag_conn):
-    """B4. macOS writes NFD, Linux NFC. The roster does not normalise, so the same file
-    copied between them is two names -- both must appear rather than one shadowing the
-    other or the pair collapsing into a wrong count."""
+    """The roster does not normalise, so NFC and NFD spellings of one file must both be listed."""
     nfc = unicodedata.normalize("NFC", "résumé.pdf")
     nfd = unicodedata.normalize("NFD", "résumé.pdf")
     assert nfc != nfd
@@ -356,8 +314,7 @@ def test_name_length_boundaries(rag_conn, n):
 
 
 def test_an_astral_character_is_not_split_by_the_cut(rag_conn):
-    """B6. Python slices by code point, so an emoji cannot be halved -- pinned so a
-    future move to bytes cannot silently start emitting lone surrogates."""
+    """Slicing is by code point, so an emoji cannot be split into lone surrogates."""
     from routes import inference
 
     _doc(rag_conn, "project_p1", "d1", "\U0001f600" * (inference._RAG_ROSTER_MAX_NAME_CHARS + 10))
@@ -394,22 +351,13 @@ def test_a_name_that_reads_as_an_order_is_marked_as_data(rag_conn):
 
 
 def test_a_name_python_cannot_encode_never_reaches_the_database(rag_conn):
-    """B10. An undecodable byte in a Linux file name becomes a lone surrogate, and the
-    roster's byte accounting would raise on one. It cannot: sqlite3 refuses the bind
-    first, and folder_sync records the file as a failure. Pinned so the roster does not
-    grow a guard for something upstream already stops."""
+    """sqlite3 rejects lone-surrogate file names before the roster sees them, so no guard is needed."""
     with pytest.raises(UnicodeEncodeError):
         _doc(rag_conn, "project_p1", "d1", "bad\udcffname.pdf")
 
 
-# --------------------------------------------------------------------------------------
-# C. the async conversion
-# --------------------------------------------------------------------------------------
-
-
 def _rag_db_fds():
-    """Descriptors open on rag.db right now. Counting all of /proc/self/fd would be
-    measuring the event loop and the threadpool, which move on their own."""
+    """Count only rag.db descriptors, since the loop and threadpool churn other fds."""
     out = 0
     for fd in os.listdir("/proc/self/fd"):
         try:
@@ -421,13 +369,7 @@ def _rag_db_fds():
 
 
 def test_many_concurrent_reads_leak_no_database_handles(rag_conn):
-    """C1. One connection per call, opened and closed in a finally on the request path.
-
-    The count does rise at first and then stops: each threadpool worker keeps a handle,
-    so it plateaus at the pool size and never passes it. That plateau is the oracle -- a
-    connection that escaped its finally would keep climbing with the number of reads, so
-    the assertion is that 400 further reads add nothing at all.
-    """
+    """Reads close their connection in finally; 400 further reads must add no open file descriptors."""
     from routes import inference
 
     if not os.path.isdir("/proc/self/fd"):
@@ -446,8 +388,7 @@ def test_many_concurrent_reads_leak_no_database_handles(rag_conn):
     for _ in range(5):
         outs = asyncio.run(_burst(200))
     assert len({*outs}) == 1 and '"f0.pdf"' in outs[0]
-    # 1000 reads. A connection that escaped its finally would be 1000 handles; the
-    # threadpool's own are capped by anyio's 40-worker default.
+    # 1000 reads: an escaped connection would show as 1000 handles; anyio caps workers at 40.
     assert _rag_db_fds() < 100, f"{_rag_db_fds()} handles open after 1000 reads"
 
 
@@ -490,8 +431,7 @@ def test_the_failure_warning_latch_clears_after_a_good_read(rag_conn, monkeypatc
 
 
 def test_the_read_does_not_run_on_the_event_loop(rag_conn, monkeypatch):
-    """C4. It walks every row of the scope, so on the loop it would stall every other
-    request rather than just this one."""
+    """The read walks every row of the scope, so it must stay off the event loop."""
     from routes import inference
 
     _doc(rag_conn, "project_p1", "d1", "f.pdf")
@@ -514,21 +454,8 @@ def test_the_read_does_not_run_on_the_event_loop(rag_conn, monkeypatch):
     assert loop_thread["read"] != loop_thread["main"]
 
 
-# --------------------------------------------------------------------------------------
-# D. portability
-# --------------------------------------------------------------------------------------
-
-
 def test_roster_strip_table_covers_every_control_and_format_character():
-    """The table is written out rather than derived, because deriving it costs ~90 ms of
-    startup. This is what keeps the two in step.
-
-    Only a MISSING codepoint is a defect. Extra ones are expected and fine: the table is
-    written against the newest Unicode, and an older interpreter's unicodedata has not
-    classified them yet -- Python 3.9 and 3.10 ship Unicode 13, which predates U+0890 and
-    the upper half of the Egyptian hieroglyph format controls. Stripping a character that
-    a later Unicode calls a format character is the safe direction to be wrong in.
-    """
+    """The strip table must cover every Cc and Cf codepoint; extra entries are fine on older Unicode."""
     from routes import inference
 
     expected = {c for c in range(0x110000) if unicodedata.category(chr(c)) in ("Cc", "Cf")}
@@ -540,17 +467,15 @@ def test_roster_strip_table_covers_every_control_and_format_character():
 
 
 def test_the_roster_still_reads_without_deterministic_functions(rag_conn, monkeypatch):
-    """D. deterministic= is refused below SQLite 3.8.3, and CPython decides that at
-    compile time, so on a Python linked against an old library the roster would be gone
-    for the life of the install rather than for one request."""
+    """deterministic= is refused below SQLite 3.8.3, decided at CPython compile time, so the roster
+    must still read without it or be gone for the install life."""
     from storage import rag_db
 
     _doc(rag_conn, "project_p1", "d1", "old-sqlite.pdf")
     real_connect = rag_db.get_metadata_connection
 
     class _OldSqlite:
-        """Everything the real connection does, except it refuses the flag the way a
-        SQLite older than 3.8.3 does."""
+        """Wraps the real connection but refuses the flag the way SQLite older than 3.8.3 does."""
 
         def __init__(self, conn):
             self._conn = conn
@@ -570,17 +495,12 @@ def test_the_roster_still_reads_without_deterministic_functions(rag_conn, monkey
 
 
 def test_the_roster_needs_nothing_newer_than_the_declared_python_floor():
-    """pyproject declares >=3.9. The roster uses PEP 585 builtin generics in its
-    annotations, which are evaluated at def time."""
+    """PEP 585 generics in roster annotations evaluate at def time, so 3.9 is the floor."""
     assert sys.version_info >= (3, 9)
     from routes import inference
 
     assert inference._roster_scopes.__annotations__["return"] == list[str]
 
-
-# --------------------------------------------------------------------------------------
-# F. the roster is not a hardware path
-# --------------------------------------------------------------------------------------
 
 _ACCELERATORS = [
     ("nvidia", {"CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": ""}),
@@ -597,10 +517,7 @@ _ACCELERATORS = [
 
 
 def test_the_roster_is_byte_identical_across_accelerators(rag_conn, monkeypatch):
-    """F. The claim is that [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU] is not a
-    real matrix for this change, because the roster is a pure function of rag.db. This is
-    that claim as an assertion rather than a comment: the sentence cannot move when the
-    accelerator does."""
+    """The roster is a pure function of rag.db, so output is byte-identical across every accelerator."""
     _doc(rag_conn, "project_p1", "d1", "syllabus.pdf")
     outs = {}
     for label, env in _ACCELERATORS:
@@ -632,18 +549,9 @@ def test_the_roster_touches_no_device_or_accelerator_code():
         assert not hit, f"{forbidden}: {src[max(0, hit.start() - 40):hit.end() + 40]!r}"
 
 
-# --------------------------------------------------------------------------------------
-# The count path and the completion path have to agree
-# --------------------------------------------------------------------------------------
-
-
 def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monkeypatch):
-    """The whole point of the count payload carrying real ids rather than a flag is that
-    the composer's context meter prices the roster the model will actually receive. If
-    the ids are dropped, or the count path stops awaiting the nudge, the meter
-    under-reports by exactly the roster and nothing else notices."""
-    # conftest puts the backend root on sys.path, not the tests directory, so reach the
-    # sibling module's count-endpoint harness the same way pytest itself found it.
+    """Count payload must carry the real ids, so the context meter prices the roster the model receives."""
+    # conftest puts the backend root on sys.path, not tests/, so import the sibling harness that way.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from test_openai_auto_switch import _count_request, _count_tokens_backend, _counted_body
 
@@ -651,15 +559,21 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
     _doc(rag_conn, "project_p1", "d2", "allotment.pdf")
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+        checkpoint_fitted = False,
+    ):
         return TOOLS
 
     from routes import inference as inference_routes
 
     monkeypatch.setattr(inference_routes, "_select_request_tools", _select)
 
-    # Ending on an assistant turn on purpose: the route refuses to price a pending turn
-    # that would retrieve, so this is the only shape where the roster reaches the meter.
+    # Ends on an assistant turn: the route refuses to price a pending retrieving turn.
     _counted_body(
         _count_request(
             [
@@ -681,32 +595,11 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
     assert MARK + expected in system, system
 
 
-# --------------------------------------------------------------------------------------
-# The list never claims to be complete when it is not
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("thread_names", [0, 1, 39, 40, 41])
 @pytest.mark.parametrize("overlap", [0, 1, 39, 40])
 @pytest.mark.parametrize("project_only", [0, 1, 60])
 def test_an_omitted_document_always_earns_and_n_more(rag_conn, thread_names, overlap, project_only):
-    """Each scope is limited separately and the dedupe is shared, so the worry is that a
-    scope clipped by its own LIMIT contributes only duplicates, leaves `truncated` false,
-    and returns a list that reads as the whole set while documents sit behind it.
-
-    It cannot happen, and the reason is the `+ 1` on the limit. Only thread names are in
-    `seen` when the project scope starts, because each query is GROUP BY name and LIMIT
-    applies after aggregation, so a scope never returns a duplicate of itself. With T
-    names taken from the thread, duplicates in the project result are at most T, so a
-    project query that returns its full MAX_NAMES + 1 rows yields at least
-    (MAX_NAMES + 1) - T new ones and the running total reaches MAX_NAMES + 1, which trips
-    the cap first. A query returning fewer rows exhausted its scope. Either way, anything
-    dropped sets `truncated` and the count query runs.
-
-    Parametrised across both sides of every boundary rather than asserted once, because
-    the argument is arithmetic on the cap and the limit and would break silently if either
-    moved.
-    """
+    """The +1 on each LIMIT makes any clipped scope set truncated, so omissions are never silent."""
     from routes import inference
 
     if overlap > thread_names:
@@ -716,7 +609,6 @@ def test_an_omitted_document_always_earns_and_n_more(rag_conn, thread_names, ove
     thread_only = [f"t{i:03d}.pdf" for i in range(thread_names - overlap)]
     for i, name in enumerate(shared + thread_only):
         _doc(rag_conn, "thread_t1", f"t{i}", name)
-    # newest in the project, so the LIMIT clips the worst case: the duplicates first
     for i, name in enumerate(shared):
         _doc(rag_conn, "project_p1", f"ps{i}", name)
     for i in range(project_only):

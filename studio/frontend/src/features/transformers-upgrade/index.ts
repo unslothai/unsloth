@@ -7,6 +7,7 @@ export {
   checkTransformersUpgrade,
   installLatestTransformers,
 } from "./api/transformers-upgrade-api";
+export { upgradeInstallVersion } from "./lib/upgrade-dialog-actions";
 export { useTransformersUpgradeDialogStore } from "./stores/transformers-upgrade-dialog-store";
 export type {
   ModelCachePin,

@@ -40,13 +40,7 @@ def _require_node():
 
 
 def _write_atomic(path: Path, text: str):
-    """Write through a unique temp file and os.replace.
-
-    register.mjs and loader.mjs are shared by every _run, and write_text truncates
-    before it writes, so rewriting one while another worker's node process is
-    importing it can hand that process an empty or partial module. Contents are
-    constant, so the rename leaves every reader a whole file.
-    """
+    """write_text truncates before writing, so a parallel worker may import an empty or partial module."""
     fd, tmp = tempfile.mkstemp(dir = str(path.parent), prefix = path.name, suffix = ".tmp")
     with os.fdopen(fd, "w", encoding = "utf-8") as handle:
         handle.write(text)
@@ -71,10 +65,8 @@ def _ensure_harness():
 def _run(script: str):
     _require_node()
     _ensure_harness()
-    # Unique per call: a shared run.mts let two xdist workers interleave write and exec, so one ran the other's script
-    # (5-6 of these 9 failed on every -n 4 run).
-    # A unique name, not a per-call dir like _node_harness.py uses: these scripts reach the sources by a path relative
-    # to TEMP, so an extra level breaks every import.
+    # Unique name: a shared run.mts let xdist workers run each other's script. Not a per-call
+    # dir: these scripts import sources by a path relative to TEMP.
     script_path = TEMP / f"run_{uuid.uuid4().hex}.mts"
     script_path.write_text(script, encoding = "utf-8")
     env = dict(os.environ, NODE_NO_WARNINGS = "1")

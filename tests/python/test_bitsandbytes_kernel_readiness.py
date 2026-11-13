@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`ALLOW_BITSANDBYTES` must follow the kernels, not the mere presence of the module.
-
-From bitsandbytes 0.46 a wheel whose native library never loaded still imports and
-resolves every ctypes handle to a `throw_on_call` closure, so a probe made of attribute
-reads alone sees a healthy wheel, the loader selects a 4bit checkpoint, and the failure
-lands inside a kernel mid-run instead of degrading to 16bit.
-"""
+"""ALLOW_BITSANDBYTES must follow the native kernels, since bitsandbytes 0.46+ imports a dead wheel."""
 
 from __future__ import annotations
 
@@ -76,7 +70,6 @@ def test_probe_covers_every_module_scope_ctypes_bind():
     xpu = set(probe.bitsandbytes_symbols("xpu"))
     cuda = set(probe.bitsandbytes_symbols("cuda"))
     assert bound == xpu | cuda, f"probe and module-scope binds differ: {bound ^ (xpu | cuda)}"
-    # xpu probes the gemv pair, every other device the naive gemm pair, never both.
     assert xpu - cuda and cuda - xpu, "the device split collapsed"
 
 
@@ -145,18 +138,14 @@ def test_device_type_gates_the_flags_on_the_kernels():
 
 
 def test_the_ctypes_binds_are_gated_on_the_same_verdict():
-    """Clearing the flag is not enough on its own: ``bnb is None`` alone let an
-    importable-but-dead wheel reach the binds, and 0.45.5 sets ``functional.lib = None``
-    on a native-load failure, so they killed ``import unsloth`` outright instead of
-    degrading to 16bit."""
+    """Binds must check native_kernels_ready: an importable but dead bnb wheel crashed import unsloth."""
     source = (REPO_ROOT / "unsloth" / "kernels" / "utils.py").read_text(encoding = "utf-8")
     assert "from ..bnb_availability import native_kernels_ready" in source
     assert (
         "if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):" in source
     ), "the ctypes bind block must take the _bnb_required branch on a dead library too"
     guarded = source.split("if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):")[1]
-    # Anchor on the symbol, not the module alias: #7580 renamed the binding from `bnb.functional.lib` to
-    # `bnb_functional.lib`, which is exactly the kind of rename this assertion should survive.
+    # Anchor on the symbol, not the module alias, which has been renamed before.
     assert "lib.cdequantize_blockwise_fp32" in guarded, "the binds must sit under that guard"
 
 

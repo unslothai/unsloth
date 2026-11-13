@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings Data tab glue: turn chat history into a fine-tuning JSONL, stage
-// it as a Data Recipe seed upload, and open a new recipe on that file.
-
 import { type FineTuneFormat, buildFineTuneJsonl } from "@/features/chat";
 import { saveRecipe } from "@/features/data-recipes/data/recipes-db";
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
@@ -23,9 +20,7 @@ function base64FromString(value: string): string {
   return btoa(binary);
 }
 
-/** Builds the JSONL, uploads it as a local recipe seed, and saves a new
- *  recipe whose seed block points at the file. Returns the recipe id, or
- *  null when there is nothing to export. */
+/** Returns the new recipe id, or null when there is nothing to export. */
 export async function createFineTuneRecipeFromChats(
   format: FineTuneFormat = "openai",
 ): Promise<string | null> {
@@ -71,9 +66,7 @@ export async function createFineTuneRecipeFromChats(
   return record.id;
 }
 
-/** Builds the JSONL, uploads it as a training dataset, and selects it in the
- *  Train tab's config store so the Train page opens with it loaded. Returns
- *  false when there is nothing to export. */
+/** Returns false when there is nothing to export. */
 export async function loadFineTuneDatasetInTrainTab(
   format: FineTuneFormat = "openai",
 ): Promise<boolean> {
@@ -91,8 +84,7 @@ export async function loadFineTuneDatasetInTrainTab(
     { type: "application/x-ndjson" },
   );
   const uploaded = await uploadTrainingDataset(file);
-  // Selecting also kicks off the dataset format check, so the Train tab
-  // shows the detected format as soon as it mounts.
+  // Selecting also starts the format check, so Train shows it on mount.
   useTrainingConfigStore.getState().selectLocalDataset(uploaded.stored_path);
   return true;
 }

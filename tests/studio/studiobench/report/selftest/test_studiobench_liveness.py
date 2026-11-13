@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""`--assert-liveness` is the gate that catches an action which never fired reading as "no effect".
-
-A gate that cannot fail is worse than no gate, because it is quoted as evidence. So every test here
-that asserts a pass is paired with one that asserts the corresponding failure, and the empty-payload
-case is tested explicitly: a check that passes over zero rows is the same false negative wearing a
-different hat.
-"""
+"""--assert-liveness must fail when an action never fired; a gate that cannot fail is worse than none."""
 
 from __future__ import annotations
 
@@ -62,18 +56,12 @@ def test_an_action_that_did_not_run_fails(tmp_path):
 
 
 def test_a_missed_slot_fails_even_though_the_action_ran(tmp_path):
-    # `ran` and `slot_missed` are different failures: the second means the film moved on without it,
-    # so its timing describes a different session than every other arm's. Default slack is 0, right
-    # for the quiet machine a measurement is taken on.
     path = write_payload(tmp_path, [cell([ran("settings", slot_missed = True)])])
     assert main(["--assert-liveness", str(path)]) == 1
 
 
 def test_slack_excuses_a_missed_slot_and_only_up_to_the_number_given(tmp_path):
-    # A missed slot is a fact about the MACHINE. The scene is a fixed-duration film on the wall clock
-    # designed to roll on through one, precisely so a slow machine does not take a different path
-    # through a different-length session. On a two-core shared runner, failing on that makes the gate
-    # a speed test of the runner.
+    # A missed slot is a machine fact; failing on it would make the gate a runner speed test.
     one = write_payload(tmp_path / "a", [cell([ran("settings", slot_missed = True)])])
     assert main(["--assert-liveness", str(one), "--allow-slot-misses", "1"]) == 0
     two = write_payload(
@@ -84,8 +72,6 @@ def test_slack_excuses_a_missed_slot_and_only_up_to_the_number_given(tmp_path):
 
 
 def test_slack_never_excuses_a_scene_problem(tmp_path):
-    # The distinction the whole split rests on: an action that was never planned, or whose button was
-    # not there, is the harness lying, and no amount of machine slack makes that acceptable.
     path = write_payload(
         tmp_path,
         [cell([{"action": "message_menu", "ran": False, "reason": "no More button in the DOM"}])],
@@ -94,8 +80,7 @@ def test_slack_never_excuses_a_scene_problem(tmp_path):
 
 
 def test_an_action_that_missed_its_slot_is_not_also_counted_as_a_scene_problem(tmp_path):
-    # A missed slot is recorded as `ran: False` WITH `slot_missed: True`, so an implementation that
-    # checks `ran` first would file every missed slot under the category slack cannot excuse.
+    # Missed slots are ran=False with slot_missed=True, so the slot must be checked before ran.
     path = write_payload(
         tmp_path,
         [
@@ -117,8 +102,6 @@ def test_an_action_that_missed_its_slot_is_not_also_counted_as_a_scene_problem(t
 
 
 def test_a_tolerated_miss_still_says_the_run_is_not_quotable(tmp_path, capsys):
-    # Exit 0 here claims only that the harness was not the cause. The payload still has a hole in it,
-    # and saying so is the difference between tolerating a miss and hiding one.
     path = write_payload(tmp_path, [cell([ran("settings", slot_missed = True)])])
     assert main(["--assert-liveness", str(path), "--allow-slot-misses", "1"]) == 0
     assert "Do not quote a number from this payload" in capsys.readouterr().out
@@ -130,11 +113,7 @@ def test_negative_slack_is_treated_as_none(tmp_path):
 
 
 def test_a_not_run_allowance_does_not_swallow_a_missed_slot(tmp_path):
-    # Where the two rules above meet. `--allow-not-run` excuses an action the fixture cannot mount at
-    # all, and a missed slot is a fact about the machine, so the slot is classified FIRST and the
-    # allowance never reaches it. Checked the other way round, a listed name would vanish from both
-    # buckets and `--allow-slot-misses` would silently stop counting exactly the actions most likely
-    # to overrun.
+    # Slots are classified before --allow-not-run applies, so the allowance never hides a missed slot.
     path = write_payload(
         tmp_path,
         [cell([{"action": "image_upload", "ran": False, "slot_missed": True, "reason": "late"}])],
@@ -156,16 +135,7 @@ def test_a_not_run_allowance_does_not_swallow_a_missed_slot(tmp_path):
 
 
 def test_an_action_whose_own_assertion_failed_fails(tmp_path):
-    """RAN IS NOT DID WHAT IT CLAIMED, and this gate is the machine that checks it.
-
-    `scoring/from_payload.py` refuses to score a timing whose `expect_ok` is False and
-    `report/payload.py` lists the cell under EXCLUDED CELLS saying its timings "must not be
-    quoted". Read raw, this gate agreed with neither: `ran = True, expect_ok = False` reached
-    neither the NOT RUN branch nor the missed-slot branch, so the CI liveness job exited 0 and
-    the report that dropped every excluded number exited 0 as well. A selector regression that
-    fails EVERY cell's assertion is precisely the "absent read as no effect" failure this gate
-    exists for.
-    """
+    """An action that ran but has expect_ok False must fail the liveness gate."""
 
     path = write_payload(
         tmp_path,
@@ -187,15 +157,11 @@ def test_an_action_whose_own_assertion_failed_fails(tmp_path):
 
 
 def test_an_action_that_passed_its_assertion_still_passes(tmp_path):
-    # The pair for the test above: `expect_ok = True` is the healthy recording, and a gate that failed
-    # on it would be unusable rather than strict.
     path = write_payload(tmp_path, [cell([ran("keystroke", expect_ok = True)])])
     assert main(["--assert-liveness", str(path)]) == 0
 
 
 def test_an_unattempted_action_reports_not_run_rather_than_its_assertion(tmp_path):
-    # `ActionResult.__post_init__` forces `expect_ok = None` when `ran` is False, so the reader is
-    # told the action never happened, not that it misbehaved.
     path = write_payload(
         tmp_path,
         [cell([{"action": "message_menu", "ran": False, "expect_ok": None, "reason": "no slot"}])],
@@ -204,8 +170,6 @@ def test_an_unattempted_action_reports_not_run_rather_than_its_assertion(tmp_pat
 
 
 def test_a_failed_assertion_is_a_scene_problem_that_slack_cannot_excuse(tmp_path):
-    # The third bucket meeting the first: an assertion that failed says the surface is broken, not
-    # that the machine was slow, so it belongs with the scene problems.
     path = write_payload(
         tmp_path,
         [cell([ran("message_menu", expect_ok = False, reason = "the menu opened with no items")])],
@@ -219,7 +183,6 @@ def test_an_incomplete_cell_fails(tmp_path):
 
 
 def test_an_empty_payload_is_refused_rather_than_passed(tmp_path):
-    # The whole point. Zero rows satisfies "no action failed" vacuously.
     path = write_payload(tmp_path, [{"row_type": "header", "tool": "studiobench"}])
     assert main(["--assert-liveness", str(path)]) == 2
 
@@ -248,8 +211,6 @@ def test_non_cell_rows_are_ignored_but_do_not_count_as_cells(tmp_path):
             cell([ran("keystroke")]),
         ],
     )
-    # The stray top-level action row must not fail the run: actions are read from inside their cell,
-    # so counting them twice would make the gate depend on payload layout.
     assert main(["--assert-liveness", str(path)]) == 0
 
 
@@ -259,8 +220,6 @@ def test_blank_lines_are_skipped(tmp_path, blank):
     path.write_text(json.dumps(cell([ran("keystroke")])) + "\n" + blank + "\n", encoding = "utf-8")
     assert main(["--assert-liveness", str(path)]) == 0
 
-
-# ── a cell that was re-run is judged on the run that finished it ─────
 
 NOW = "s-now"
 OLD = "s-before"
@@ -279,12 +238,7 @@ def attempt(
 
 
 def test_a_resumed_cell_is_not_failed_by_the_attempt_that_died(tmp_path):
-    """`--resume` appends, so both attempts at one `cell_id` are in the file forever.
-
-    The resumed run exits 0 and `--report` scores the retry. Read raw, this gate found the dead
-    attempt's `completed: false` and NOT RUN actions on every later invocation, so a payload that
-    had already been repaired could never pass again.
-    """
+    """A resumed retry supersedes the dead attempt at the same cell_id, and the gate must ignore it."""
 
     path = write_payload(
         tmp_path,
@@ -299,11 +253,7 @@ def test_a_resumed_cell_is_not_failed_by_the_attempt_that_died(tmp_path):
 
 
 def test_the_superseded_attempt_does_not_count_as_a_second_cell(tmp_path):
-    """Not merely "does not fail": the dead attempt is not a cell this payload contains.
-
-    Counting it would make `--assert-liveness` report two cells where one ran, and the count is
-    the only thing standing between this gate and an empty payload passing vacuously.
-    """
+    """The superseded attempt is not a second cell; counting it would report two cells where one ran."""
 
     rows = [
         attempt(OLD, [{"action": "message_menu", "ran": False}], completed = False),
@@ -319,12 +269,7 @@ def test_the_superseded_attempt_does_not_count_as_a_second_cell(tmp_path):
         assert main(["--assert-liveness", str(path)]) == 0
     finally:
         m._log = real
-    # The summary names scene problems and missed slots apart on this branch, so the count is asserted
-    # on its own rather than against one spelling of the rest of the line.
     assert any("1 cell(s)" in line and "0 scene problem(s)" in line for line in logged), logged
-
-
-# ── the controls: what must still fail ──────────────────────────────
 
 
 def test_a_cell_that_was_never_re_run_still_fails(tmp_path):
@@ -355,11 +300,7 @@ def test_the_latest_attempt_is_judged_on_its_own_failures(tmp_path):
 
 
 def test_a_different_cell_in_an_earlier_session_is_not_superseded(tmp_path):
-    """Only a later attempt at the SAME cell id supersedes an earlier one.
-
-    A resumed run re-runs only the cells that died; every cell the first session completed stays
-    in the payload under its own id and must still be checked.
-    """
+    """Only the same cell id is superseded; cells an earlier session completed stay checked."""
 
     path = write_payload(
         tmp_path,
@@ -374,15 +315,7 @@ def test_a_different_cell_in_an_earlier_session_is_not_superseded(tmp_path):
 
 
 def test_an_attempt_killed_before_its_cell_row_is_not_a_pass(tmp_path):
-    """A SIGKILL inside a cell must not delete that cell from the gate's answer.
-
-    `latest_attempt_rows` names the latest attempt from ANY attempt-keyed row, because the
-    Recorder flushes and fsyncs action and window rows while the terminal `cell` row is written in
-    a `finally` that a SIGKILL never reaches. The killed attempt therefore supersedes the recorded
-    one and contributes no cell row itself, so reading cell rows alone dropped the cell entirely:
-    a resume killed inside a cell whose first attempt had already recorded `completed: false` with
-    a NOT RUN action turned exit 1 into exit 0 while both facts were still in the file.
-    """
+    """A cell killed before its cell row is written is not a pass; it must not vanish from the gate."""
 
     path = write_payload(
         tmp_path,
@@ -397,7 +330,6 @@ def test_an_attempt_killed_before_its_cell_row_is_not_a_pass(tmp_path):
                 cell_id = "10K/rep0",
             ),
             attempt(OLD, [ran("keystroke")], completed = True, cell_id = "1K/rep0"),
-            # All the retry managed to flush before it was killed.
             {
                 "row_type": "action",
                 "cell_id": "10K/rep0",
@@ -412,11 +344,7 @@ def test_an_attempt_killed_before_its_cell_row_is_not_a_pass(tmp_path):
 
 
 def test_a_run_killed_during_a_later_cell_does_not_pass_on_its_earlier_ones(tmp_path):
-    """The same hole without a resume: the killed cell has no attempt behind it at all.
-
-    Earlier cells stay complete and live, so a gate that only reads cell rows reports them and
-    exits 0 over a run that stopped in the middle.
-    """
+    """A cell killed before writing any attempt row must fail the gate, not vanish from it."""
 
     path = write_payload(
         tmp_path,
@@ -435,13 +363,7 @@ def test_a_run_killed_during_a_later_cell_does_not_pass_on_its_earlier_ones(tmp_
 
 
 def test_an_allowed_action_that_ran_and_failed_its_assertion_still_fails(tmp_path):
-    """`--allow-not-run` excuses NOT RUNNING, not everything the gate checks.
-
-    The allow-list skip used to sit above all three branches, so a listed name was exempt from
-    the gate entirely. `image_upload` is listed in studiobench-ci.yml only because the fixture
-    cannot mount an upload; the day it does mount, an upload that produces no attachment has to
-    be a failure rather than an excuse inherited from a different reason.
-    """
+    """--allow-not-run excuses only NOT RUNNING, so a listed action that ran and failed still fails."""
 
     path = write_payload(
         tmp_path,
@@ -478,15 +400,7 @@ def test_an_allowed_action_that_ran_and_missed_its_slot_still_fails(tmp_path):
 
 
 def test_a_missed_slot_is_not_excused_by_a_not_run_allowance(tmp_path):
-    """`--allow-not-run` excuses an action the platform cannot perform, not one it was late for.
-
-    `scene/schedule.py` records an overrun as `ran = False, slot_missed = True`, so checking the
-    allowance first let a listed name inherit an excuse written for a different failure. The
-    action could have been performed; the machine was too slow to reach the window. On
-    `image_upload`, the only allowance this repo ships, that is the difference between a timed
-    benchmark and an untimed one, and the help text already promises a listed action is still
-    held to its slot.
-    """
+    """--allow-not-run excuses an action the platform cannot perform, not one whose slot was missed."""
 
     path = write_payload(
         tmp_path,

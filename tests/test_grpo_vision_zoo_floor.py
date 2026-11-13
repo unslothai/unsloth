@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The declared unsloth_zoo floor has to supply the helper vision GRPO refuses to run without.
-
-Both GRPO logprob paths raise when `unsloth_zoo.rl_replacements.grpo_vision_chunks` is missing,
-because a local fallback could only cover the no-grad half: the gradient half is inside the zoo's
-own `grpo_accumulated_loss`, an older copy of which ignores the keys it does not know and, for a
-model with no `image_grid_thw` to slice by, replaces `pixel_values` with `None` outright. Half a
-fallback makes the two policies disagree, which is the defect this whole path exists to remove.
-
-So the guard is only honest while the floor in pyproject.toml names a release that carries the
-helper. With the floor left at 2026.9.4 (the last release that does not export it) an otherwise
-dependency-compliant install raises for every vision batch, including the single image grid
-models that worked before. unslothai/unsloth#6960, unslothai/unsloth-zoo#1233.
-
-2026.9.5 is published, so the floor is declared rather than deferred and the assertion below is
-live again. The message assertion is live too: whatever the metadata says, the raise has to name
-the release that fixes it.
-
-Reads files only, so it runs on the Windows and macOS runners too.
-"""
+"""The unsloth_zoo floor in pyproject.toml must name a release that exports grpo_vision_chunks."""
 
 from __future__ import annotations
 
@@ -35,9 +17,7 @@ REPO = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO / "pyproject.toml"
 RL_REPLACEMENTS = REPO / "unsloth" / "models" / "rl_replacements.py"
 
-# The first unsloth_zoo release that carries grpo_vision_chunks. The same number
-# unslothai/unsloth#11137 moves the floor to for the TRL ceiling, deliberately: one floor, not
-# two, or whichever is higher silently decides what a user resolves.
+# The first unsloth_zoo with grpo_vision_chunks; deliberately the same floor as the TRL ceiling.
 ZOO_FLOOR_WITH_THE_VISION_CHUNKER = Version("2026.9.5")
 
 

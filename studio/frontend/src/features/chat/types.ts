@@ -22,9 +22,11 @@ export interface ProjectRecord {
   instructions?: string;
   rootPath?: string | null;
   sandboxPath?: string | null;
+  workingFolder?: string | null;
   archived: boolean;
   createdAt: number;
   updatedAt: number;
+  lastActivityAt?: number | null;
 }
 
 export interface ThreadRecord {
@@ -38,21 +40,18 @@ export interface ThreadRecord {
   archived: boolean;
   createdAt: number;
   updatedAt?: number;
-  /** OpenAI shell tool container id from a prior response. When set, the next turn reuses it via
-   *  `environment.type="container_reference"` so the model can read files it wrote earlier; else
-   *  auto-creates one. Containers expire after ~20 min idle; on a stale id the backend emits
-   *  `container_invalidated` and the chat-adapter clears this field. */
+  /** OpenAI shell container from a prior response; cleared on `container_invalidated`. */
   openaiCodeExecContainerId?: string | null;
-  /** Anthropic code_execution container id from a prior response. When set, the next turn sends a
-   *  top-level `container` on /v1/messages so filesystem state persists; else auto-creates one.
-   *  Containers expire after ~1 hour; on a stale id the backend emits `container_invalidated` and
-   *  the chat-adapter clears this field. */
+  /** Anthropic code_execution container from a prior response; cleared on `container_invalidated`. */
   anthropicCodeExecContainerId?: string | null;
-  /** If this thread was created via fork-from-message, points back at the source thread and
-   *  branch-point message. Null or undefined for non-fork threads. Used by the sidebar "fork" badge
-   *  and the parent thread's "N forks" indicator. */
   forkedFromThreadId?: string | null;
   forkedFromMessageId?: string | null;
+  /** Null on forks made before the column existed, which show no divider. */
+  forkBoundaryMessageId?: string | null;
+  forkTitleBase?: string | null;
+  modifiedAt?: number | null;
+  /** The scheduled task whose run made this chat (server-set). */
+  scheduledTaskId?: string | null;
   /** this chat's own settings, applied when it is opened; absent means the global ones. */
   settings?:
     | import("./utils/thread-scoped-settings").ThreadScopedSettings
@@ -70,12 +69,11 @@ export interface MessageRecord {
   createdAt: number;
 }
 
-/** One conversation parsed out of an import file, before it is written to storage. */
 export interface ParsedConversation {
   title: string;
   threadId: string;
   messages: MessageRecord[];
-  /** Open WebUI exports carry the flag; other formats leave it unset. */
   archived?: boolean;
   createdAt?: number;
+  thread?: Partial<Omit<ThreadRecord, "id" | "title" | "archived">>;
 }

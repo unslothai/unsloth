@@ -360,3 +360,46 @@ def test_settings_route_returns_the_specific_validation_error(settings_store, tm
         f"No executable {path_settings.llama_server_binary_name()} was found in that folder "
         "or its build/bin directory."
     )
+
+
+_UNKNOWN_USER = "~no-such-account-anywhere/llama.cpp"
+
+
+def test_an_unresolvable_named_user_does_not_raise_out_of_the_expansion():
+    """Path.expanduser() raises on an unknown user where os.path.expanduser returns the value unchanged."""
+    with pytest.raises(RuntimeError):
+        Path(_UNKNOWN_USER).expanduser()
+    assert path_settings.expanded_user_path(_UNKNOWN_USER) == Path(_UNKNOWN_USER)
+
+
+def test_the_resolvable_forms_still_expand(monkeypatch, tmp_path):
+    """The guard must not cost the expansion that was the point of adding it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert path_settings.expanded_user_path("~/llama.cpp") == tmp_path / "llama.cpp"
+    assert path_settings.expanded_user_path("~") == tmp_path
+    absolute = tmp_path / "elsewhere" / "llama.cpp"
+    assert path_settings.expanded_user_path(absolute) == absolute
+    assert path_settings.expanded_user_path("relative/llama.cpp") == Path("relative/llama.cpp")
+
+
+def test_the_status_payload_survives_an_unresolvable_override(settings_store, monkeypatch):
+    """The UI reads this: raising would break the settings page, not flag the pin unusable."""
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", _UNKNOWN_USER)
+    status = path_settings.custom_llama_cpp_path_status()
+    assert status["source"] == "environment"
+    assert status["path"] == _UNKNOWN_USER
+    assert status["resolved_binary"] is None
+    assert status["available"] is False
+
+
+def test_discovery_continues_past_an_unresolvable_override(monkeypatch, tmp_path):
+    """The failure the item is actually about: _find_llama_server_binary threw instead
+    of falling through, and several callers have no exception boundary, so a model
+    operation reported the expansion error rather than using another runtime."""
+    llama_cpp = pytest.importorskip("core.inference.llama_cpp")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", _UNKNOWN_USER)
+    monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+    # Which runtime is found depends on the machine; only "does not raise" is under test.
+    result = llama_cpp.LlamaCppBackend._find_llama_server_binary()
+    assert result is None or isinstance(result, (str, Path, tuple))

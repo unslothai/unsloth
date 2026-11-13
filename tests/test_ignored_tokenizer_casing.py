@@ -26,8 +26,7 @@ class _Tok:
 
 
 def _fake_auto_tokenizer():
-    # _load_correct_tokenizer loads a slow tokenizer (from_slow = True) and a fast one; return distinguishable stand-ins
-    # so we can see which one is returned.
+    # Distinguishable slow and fast stand-ins show which one is returned.
     def from_pretrained(name, **kwargs):
         return _Tok("slow" if kwargs.get("from_slow") else "fast")
 
@@ -36,7 +35,7 @@ def _fake_auto_tokenizer():
 
 def test_ignored_tokenizer_name_matched_case_insensitively():
     name = "unsloth/Qwen2.5-Coder-7B-Instruct"  # name.lower() is in IGNORED_TOKENIZER_NAMES
-    assert name.lower() in tu.IGNORED_TOKENIZER_NAMES  # guard the test's own premise
+    assert name.lower() in tu.IGNORED_TOKENIZER_NAMES
 
     with (
         patch.object(tu, "AutoTokenizer", _fake_auto_tokenizer()),

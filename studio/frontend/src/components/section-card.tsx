@@ -17,7 +17,6 @@ interface SectionCardProps {
 }
 
 const accentStyles = {
-  // Brand accent variant; follows the active palette via --control-accent.
   emerald: {
     border: "ring-control-accent/20",
     iconBox: "ring-control-accent/25 bg-control-accent/10 text-control-accent",
@@ -55,7 +54,7 @@ export function SectionCard({
   return (
     <div
       className={cn(
-        "bg-card corner-squircle rounded-3xl ring-1 ring-foreground/10 flex flex-col gap-5 p-5 relative overflow-clip transition-all duration-300 ease-in-out",
+        "bg-card corner-squircle rounded-2xl ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] flex flex-col gap-5 p-5 relative overflow-clip transition-all duration-300 ease-in-out",
         featured && styles.border,
         className,
       )}
@@ -63,11 +62,10 @@ export function SectionCard({
       {featured && (
         <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-control-accent/[0.04] to-transparent" />
       )}
-      {/* Header */}
       <div className="flex items-center gap-3">
         <div
           className={cn(
-            "rounded-xl corner-squircle p-2 ring-1 shrink-0",
+            "rounded-md corner-squircle p-2 ring-1 shrink-0",
             styles.iconBox,
           )}
         >
@@ -86,7 +84,6 @@ export function SectionCard({
         </div>
         {headerAction && <div className="shrink-0">{headerAction}</div>}
       </div>
-      {/* Content */}
       {children}
     </div>
   );

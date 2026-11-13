@@ -1,25 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""
-A forced click has to scroll first, or it clicks a point that is not on screen.
-
-`click(force = True)` turns off actionability checks, which is the point when a menu
-overlay would otherwise intercept the click. It also turns off the scroll that puts
-the element in the viewport, and Playwright refuses a point it cannot reach:
-
-    Locator.click: Element is outside of the viewport
-
-That failed `Compare tab: send to two panes` on macOS. The menu item existed and was
-found; it was simply below the fold, because a Mac runner's window is shorter than a
-Linux one and the item sits at the bottom of a long menu. The same three forced
-clicks have been in playwright_extra_ui.py since the composer redesign and have
-always worked on Linux, which is why nothing caught it until the Compare nav started
-being found reliably enough for the click to run at all.
-
-Driven against a fake locator rather than a browser: these run on browserless CI
-lanes, and the ordering is the whole contract, so a stand-in that records call order
-tests it exactly.
-"""
+"""A forced click must scroll first: force=True also skips the scroll, and off-screen clicks fail."""
 
 from __future__ import annotations
 
@@ -69,11 +50,7 @@ def test_the_click_is_still_forced() -> None:
 
 
 def test_a_scroll_that_fails_does_not_stop_the_click() -> None:
-    """
-    An element that cannot be scrolled -- fixed position, zero size -- should still
-    reach the click and fail there with Playwright's own message, rather than here
-    with a scrolling one that names the wrong problem.
-    """
+    """A failed scroll must not stop the click, so the element fails with Playwright's own error."""
     loc = _FakeLocator(scroll_raises = RuntimeError("no scrollable ancestor"))
     click_forced(loc)
     assert loc.calls == ["scroll", "click"]
@@ -93,11 +70,7 @@ def test_a_failing_click_still_propagates() -> None:
 
 
 def test_every_forced_click_in_the_suite_goes_through_the_helper() -> None:
-    """
-    The helper is only worth having if nothing bypasses it. A bare
-    `click(force = True)` is the exact shape that broke, so it fails here rather than
-    on a Mac runner twenty minutes into a job.
-    """
+    """A bare click(force = True) outside the helper fails here, not twenty minutes into a Mac CI job."""
     here = Path(__file__).resolve().parent
     offenders = []
     for path in sorted(here.glob("playwright_*.py")):

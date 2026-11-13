@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native-Windows proof for #7897. Skipped everywhere else.
-
-The Linux suite simulates Windows by injecting ntpath; this asserts the same
-properties with the real os.path on real NTFS, so the simulation cannot quietly
-diverge from the platform it models. windows-latest runners have a second drive
-letter, which makes the cross-drive case real rather than notional.
-"""
+"""Checks the GGUF path rules on real Windows NTFS, so the ntpath simulation cannot drift."""
 
 from __future__ import annotations
 
@@ -36,7 +30,6 @@ def _load_helper():
     raise AssertionError("unsloth/save.py defines no _model_basename")
 
 
-# Ground truth: the platform behaviours the Linux simulation asserts.
 def test_join_really_discards_the_prefix_for_a_drive_bearing_component():
     """The mechanism behind #7897, on the real platform."""
     assert os.path.join(r"C:\exp\_gguf", r"D:\M\X.Q5_K_M.gguf") == r"D:\M\X.Q5_K_M.gguf"
@@ -58,11 +51,10 @@ def test_posix_basename_would_not_have_fixed_it():
     """os.path.basename is correct here but wrong on the Linux CI that tests it."""
     import posixpath
 
-    assert os.path.basename(r"D:\M\MyModel") == "MyModel"  # ntpath: fine
-    assert posixpath.basename(r"D:\M\MyModel") == r"D:\M\MyModel"  # posix: broken
+    assert os.path.basename(r"D:\M\MyModel") == "MyModel"
+    assert posixpath.basename(r"D:\M\MyModel") == r"D:\M\MyModel"
 
 
-# The fix, on real paths.
 @pytest.mark.parametrize(
     "base, expected",
     [
@@ -110,7 +102,6 @@ def test_real_second_drive_end_to_end():
         out = os.path.join(gguf_dir, f"{helper(base_dir)}.Q5_K_M.gguf")
         Path(out).write_bytes(b"GGUF")
 
-        # Nothing may be written beside the base model.
         strays = [
             os.path.join(root, f)
             for root, _d, files in os.walk(r"D:\Models")

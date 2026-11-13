@@ -12,11 +12,17 @@ from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 from unsloth.registry import register_models, search_models
 from unsloth.registry._deepseek import register_deepseek_models
 from unsloth.registry._gemma import register_gemma_models
-from unsloth.registry._llama import register_llama_models
+from unsloth.registry._llama import LlamaModelInfo, register_llama_models
 from unsloth.registry._mistral import register_mistral_models
 from unsloth.registry._phi import register_phi_models
 from unsloth.registry._qwen import register_qwen_models
-from unsloth.registry.registry import MODEL_REGISTRY, QUANT_TAG_MAP, QuantType
+from unsloth.registry.registry import (
+    MODEL_REGISTRY,
+    QUANT_TAG_MAP,
+    ModelInfo,
+    QuantType,
+    register_model,
+)
 
 MODEL_NAMES = [
     "llama",
@@ -47,18 +53,7 @@ class HubUnavailable(Exception):
 
 
 def _model_is_missing(api: HfApi, model_id: str) -> bool:
-    """True when the Hub says the repo does not exist.
-
-    Only RepositoryNotFoundError means "not on the Hub". The suite runs
-    unauthenticated in CI, where the Hub answers a private/deleted repo with
-    401 "Invalid username or password" and huggingface_hub maps that to
-    RepositoryNotFoundError. A *gated* repo is not in that bucket: its metadata
-    is public, so model_info returns 200 and this returns False.
-
-    Anything else (429 rate limit, 5xx, DNS/TLS/timeouts) is a broken
-    connection to the Hub, not a broken registry, and must not be reported as
-    129 missing models.
-    """
+    """Only RepositoryNotFoundError means missing; a 429, 5xx or network error must not count as missing."""
     try:
         api.model_info(model_id, expand = ["lastModified"])
     except RepositoryNotFoundError:
@@ -103,6 +98,35 @@ def test_all_model_registration():
     assert not missing_models, f"Missing following models: {missing_models}"
 
 
+def test_unquantized_default_quant_type_is_usable():
+    assert ModelInfo.append_quant_type("Llama-3.1-8B") == "Llama-3.1-8B"
+    assert ModelInfo.append_quant_type("Llama-3.1-8B", None) == "Llama-3.1-8B"
+
+    assert ModelInfo.append_quant_type("Llama-3.1-8B", QuantType.NONE) == "Llama-3.1-8B"
+    assert (
+        ModelInfo.append_quant_type("Llama-3.1-8B", QuantType.BNB)
+        == "Llama-3.1-8B-" + QUANT_TAG_MAP[QuantType.BNB]
+    )
+
+    info = LlamaModelInfo(
+        org = "unsloth", base_name = "Llama", version = "3.1", size = 8, instruct_tag = "Instruct"
+    )
+    assert info.quant_type == QuantType.NONE
+    assert info.model_path == "unsloth/Llama-3.1-8B-Instruct"
+
+
+def test_register_model_defaults_to_no_quantization():
+    key = "unsloth/Llama-9.9-1B"
+    MODEL_REGISTRY.pop(key, None)
+    try:
+        register_model(LlamaModelInfo, org = "unsloth", base_name = "Llama", version = "9.9", size = 1)
+        assert key in MODEL_REGISTRY
+        assert MODEL_REGISTRY[key].quant_type == QuantType.NONE
+        assert key in [m.model_path for m in search_models(quant_types = [QuantType.NONE])]
+    finally:
+        MODEL_REGISTRY.pop(key, None)
+
+
 def test_quant_type():
     # NOTE: for org="unsloth" models, QuantType.NONE aliases QuantType.UNSLOTH
     dynamic_quant_models = search_models(quant_types = [QuantType.UNSLOTH])
@@ -112,15 +136,7 @@ def test_quant_type():
 
 
 def _run_registry_child(body: str) -> subprocess.CompletedProcess:
-    """Run ``body`` in a fresh interpreter that first imports this directory's
-    ``conftest`` so it inherits the same GPU-free harness the pytest session
-    uses (device_type stubs plus torch.cuda probe patches). Without it,
-    ``import unsloth.registry`` raises ``NotImplementedError`` from
-    ``unsloth_zoo.device_type`` on no-accelerator CI runners, so the child
-    would exit non-zero and the test would fail even though the registry code
-    is correct. A fresh process also keeps each check independent of any
-    ``register_models()`` calls other tests make on the shared registry.
-    """
+    """Child imports conftest first, since unsloth.registry raises NotImplementedError on CPU-only CI."""
     tests_dir = os.path.dirname(os.path.abspath(__file__))
     prelude = (
         f"import sys; sys.path.insert(0, {tests_dir!r})\n"
@@ -152,32 +168,12 @@ _REGISTRY_LIFECYCLE = (
 
 @pytest.fixture(scope = "module")
 def registry_lifecycle():
-    """One child interpreter for both questions below, shared at module scope.
-
-    They ran two children with the same argv, the same inherited environment and
-    the same prelude, differing only in what they did after the import: one read
-    ``MODEL_REGISTRY`` straight away, the other called ``register_models()`` first.
-    That is one interpreter's worth of work, because the second child's own body
-    already begins from a bare import, so reading the size BEFORE it calls
-    ``register_models()`` observes exactly what the first child observed. Each was
-    ~15s, almost all of it ``import unsloth``, or three quarters of this file.
-
-    Still a fresh interpreter, which is the property both tests need: it is
-    independent of any ``register_models()`` the in-process tests above ran
-    against the shared registry. Module-scoped, not session-scoped, because
-    nothing outside this file wants it.
-    """
+    """One module-scoped child serves both checks; nearly all its cost is import unsloth."""
     return _run_registry_child(_REGISTRY_LIFECYCLE)
 
 
 def test_importing_registry_does_not_register_models(registry_lifecycle):
-    """Importing the registry must not populate MODEL_REGISTRY on its own.
-
-    ``_deepseek`` used to call ``register_deepseek_models(...)`` at module
-    scope, so merely importing ``unsloth.registry`` registered models as an
-    import side effect, unlike every other family which only registers on
-    demand.
-    """
+    """Importing unsloth.registry must not register models; _deepseek used to do so at module scope."""
     result = registry_lifecycle
     assert result.returncode == 0, (
         f"registry import subprocess exited {result.returncode}\n"
@@ -188,27 +184,14 @@ def test_importing_registry_does_not_register_models(registry_lifecycle):
 
 
 def test_register_models_registers_no_upstream_originals(registry_lifecycle):
-    """``register_models()`` must register each family's ``unsloth``-org models
-    and must NOT leak upstream vendor "original" models.
-
-    Before the fix, ``_deepseek``'s import-time
-    ``register_deepseek_models(include_original_model = True)`` set the
-    ``_IS_DEEPSEEK_*_REGISTERED`` guards, so the later default
-    ``register_models()`` early-returned for deepseek and its 10 ``deepseek-ai``
-    originals leaked permanently (129 -> 139). This asserts the whole registry
-    is ``unsloth``-org after ``register_models()`` while deepseek is still
-    registered via the normal path. Runs in a fresh interpreter so it is
-    independent of other tests' registry mutations.
-    """
+    """register_models() must not leak upstream originals; an import-time deepseek call set its guards."""
     result = registry_lifecycle
     assert result.returncode == 0, (
         f"register_models subprocess exited {result.returncode}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     out = result.stdout
-    # Every registered model is unsloth-org: no upstream "original" leaked.
     assert "ORGS ['unsloth']" in out, out + result.stderr
-    # Deepseek is still registered via the normal path, just without originals.
     deepseek_lines = [line for line in out.splitlines() if line.startswith("NUM_DEEPSEEK")]
     assert deepseek_lines and int(deepseek_lines[0].split()[1]) > 0, out + result.stderr
 
@@ -228,13 +211,7 @@ class _FakeApi:
 
 
 def _hub_error(cls, message):
-    """Build a hub exception without calling its ``__init__``.
-
-    ``HfHubHTTPError.__init__`` takes ``response`` as an optional positional on
-    huggingface_hub 0.x and as a *required* keyword-only httpx Response on 1.x,
-    and RepositoryNotFoundError inherits it. Bypassing ``__init__`` keeps these
-    fixtures working on both, which the repo supports.
-    """
+    """Skip __init__: HfHubHTTPError's signature differs between huggingface_hub 0.x and 1.x."""
     error = cls.__new__(cls)
     Exception.__init__(error, message)
     return error
@@ -268,3 +245,13 @@ def test_unreachable_hub_skips_instead_of_reporting_missing(monkeypatch, make_er
     monkeypatch.setattr(sys.modules[__name__], "HfApi", lambda: _FakeApi(error))
     with pytest.raises(pytest.skip.Exception):
         _test_model_uploaded(["unsloth/Qwen2.5-7B"])
+
+
+def test_qwen_2_5_coder_registered_without_dynamic_quants():
+    from unsloth.registry._qwen import Qwen_2_5_CoderMeta
+    from unsloth.registry.registry import _register_models
+
+    MODEL_REGISTRY.clear()
+    _register_models(Qwen_2_5_CoderMeta)
+    assert "unsloth/Qwen2.5-Coder-7B-Instruct-bnb-4bit" in MODEL_REGISTRY
+    assert not [k for k in MODEL_REGISTRY if "Coder" in k and k.endswith("unsloth-bnb-4bit")]

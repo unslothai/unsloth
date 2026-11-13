@@ -27,6 +27,7 @@ export function useGgufVariantFetchState({
   repoId,
   hfToken,
   preferLocalCache = false,
+  includeCacheLocations = false,
   localPath = null,
   enabled = true,
   errorFallback = "Failed to load variants",
@@ -34,6 +35,7 @@ export function useGgufVariantFetchState({
   repoId: string;
   hfToken?: string | null;
   preferLocalCache?: boolean;
+  includeCacheLocations?: boolean;
   localPath?: string | null;
   enabled?: boolean;
   errorFallback?: string;
@@ -44,8 +46,8 @@ export function useGgufVariantFetchState({
     () =>
       `${repoId}::${fingerprintToken(hfToken)}::${
         preferLocalCache ? "local" : "remote"
-      }::${localVariantPath ?? ""}`,
-    [hfToken, localVariantPath, preferLocalCache, repoId],
+      }::${localVariantPath ?? ""}::${includeCacheLocations}`,
+    [hfToken, localVariantPath, preferLocalCache, includeCacheLocations, repoId],
   );
   const variantKey = useMemo(
     () => `${variantScopeKey}::${variantsVersion}`,
@@ -94,6 +96,7 @@ export function useGgufVariantFetchState({
     try {
       const response = await listGgufVariants(repoId, hfToken || undefined, {
         preferLocalCache,
+        includeCacheLocations,
         localPath: localVariantPath,
         signal: controller.signal,
       });
@@ -135,6 +138,7 @@ export function useGgufVariantFetchState({
     hfToken,
     localVariantPath,
     preferLocalCache,
+    includeCacheLocations,
     repoId,
     variantScopeKey,
     variantKey,

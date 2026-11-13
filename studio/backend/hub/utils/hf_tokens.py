@@ -6,14 +6,23 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import logging
+import os
+import re
 import threading
 import time
-from typing import Literal, MutableMapping, Optional, Union
+import urllib.error
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Iterable, Literal, MutableMapping, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 HfTokenArg = Optional[Union[str, Literal[False]]]
 
-# Anonymous-sentinel cache identity, kept apart from ``None``'s: a slot filled under the
-# ambient token must not be served to an API key denied it. Not hex, so no digest collides.
+# Anonymous sentinel kept apart from None so an ambient-token slot is not served to an API key.
+# Not hex, so no digest collides.
 ANONYMOUS_CACHE_IDENTITY = "anon"
 # Prefixes a UI session's cache identity. Kept short because it lands in dict keys.
 UI_CACHE_IDENTITY_PREFIX = "ui:"
@@ -37,9 +46,8 @@ def hf_token_arg(hf_token: Optional[str], *, allow_ambient_token: bool) -> HfTok
     return None if allow_ambient_token else False
 
 
-# Mirrors the list hub/services/download_lifecycle.py scrubs for download workers.
-# HF_OIDC_RESOURCE names a token rather than holding one: hub >= 1.23 exchanges it inside
-# get_token(), ahead of HF_TOKEN, so a scrubbed child would still resolve the operator's.
+# Mirrors download_lifecycle.py's scrub list. HF_OIDC_RESOURCE: hub >= 1.23 exchanges it in
+# get_token() ahead of HF_TOKEN, so a child left with it still resolves the operator's token.
 _HF_TOKEN_ENV_KEYS = (
     "HF_TOKEN",
     "HF_HUB_TOKEN",
@@ -54,14 +62,12 @@ _REPO_ACCESS_PROBE_TIMEOUT_S = 10.0
 
 
 def apply_token_to_child_env(env: MutableMapping[str, str], hf_token: HfTokenArg) -> None:
-    """Grant a spawned probe exactly its caller's credential.
-
-    A child env is seeded from the parent's, so not *setting* a token is not denying one.
-    Only the sentinel scrubs; ``None`` keeps the inherited env on purpose.
-    """
+    """Omitting a token does not deny one: the child inherits the parent env, so only the sentinel
+    scrubs."""
+    if isinstance(hf_token, str) and hf_token and saved_token_rejected(hf_token):
+        hf_token = False
     if isinstance(hf_token, str) and hf_token:
-        # Scrub before granting: setting HF_TOKEN alone leaves an operator credential
-        # sitting in HF_HUB_TOKEN or a legacy alias, so the child holds two.
+        # Scrub first: setting HF_TOKEN alone leaves operator creds in HF_HUB_TOKEN or aliases.
         for key in _HF_TOKEN_ENV_KEYS:
             env.pop(key, None)
         env["HF_TOKEN"] = hf_token
@@ -91,12 +97,7 @@ def is_anonymous(hf_token: HfTokenArg) -> bool:
 
 
 def qualify_cache_identity(hf_token: HfTokenArg, digest: str) -> str:
-    """Tag a token digest with the caller class that produced it.
-
-    Same token value, different authorization: a UI session is entitled to ambient, an
-    sk-unsloth API key is not. On the bare digest they collide, so a cache hands one the
-    other's verdict and a coalescer merges their scans into whichever arrived first.
-    """
+    """Keeps a UI session and an sk-unsloth key apart: the same token authorizes differently per caller."""
     return (
         f"{UI_CACHE_IDENTITY_PREFIX}{digest}"
         if isinstance(hf_token, AmbientAuthorizedToken)
@@ -109,18 +110,55 @@ _REPO_ACCESS_TTL_S = 60.0
 # Says nothing about the credential. MUST exceed the probe timeout or every caller re-stalls.
 _REPO_ACCESS_UNREACHABLE_TTL_S = 30.0
 _REPO_ACCESS_CACHE_MAX = 1024
-_repo_access_cache: dict[tuple[str, str, str], tuple[float, bool]] = {}
+# ``None`` is a THIRD value, not a miss: "the Hub could not be asked", never a denial.
+_repo_access_cache: dict[tuple[str, ...], tuple[float, Optional[bool]]] = {}
+_CACHE_MISS = object()
 _repo_access_lock = threading.Lock()
-# One probe per key: the probe runs outside _repo_access_lock, so a cold key would
-# otherwise open a connection per caller.
-_repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
+# One probe per key, run outside _repo_access_lock; else a cold key opens a connection per caller.
+_repo_access_inflight: dict[tuple[str, ...], threading.Lock] = {}
+
+# An answered NO never expires: 429/5xx are 'unaskable' and must not grant access.
+_DENIAL_MEMORY_MAX = 8192
+_denied_repo_access: dict[tuple[str, ...], float] = {}
+_denial_memory_is_complete = True
+
+
+def _remember_denial(key: tuple[str, ...], now: float) -> None:
+    global _denial_memory_is_complete
+    with _repo_access_lock:
+        _denied_repo_access.pop(key, None)
+        while len(_denied_repo_access) >= _DENIAL_MEMORY_MAX:
+            _denied_repo_access.pop(next(iter(_denied_repo_access)), None)
+            _denial_memory_is_complete = False
+        _denied_repo_access[key] = now
+
+
+def _denial_memory_lost_an_entry() -> bool:
+    with _repo_access_lock:
+        return not _denial_memory_is_complete
+
+
+def _forget_denial(key: tuple[str, ...]) -> None:
+    with _repo_access_lock:
+        _denied_repo_access.pop(key, None)
+
+
+def _denial_is_remembered(key: tuple[str, ...]) -> bool:
+    with _repo_access_lock:
+        return key in _denied_repo_access
+
+
+def _with_remembered_denial(key: tuple[str, ...], verdict: Optional[bool]) -> Optional[bool]:
+    """Once a refusal is evicted from memory, no key may claim it was never refused."""
+    if verdict is None and (_denial_is_remembered(key) or _denial_memory_lost_an_entry()):
+        return False
+    return verdict
 
 
 class _ProbeTimedOut(Exception):
     """Raised when /auth-check could not be asked at all, rather than answering."""
 
 
-# By name, so neither client is imported. A refusal or dead proxy is "could not ask" too.
 _UNREACHABLE_EXC_NAMES = frozenset(
     {
         "Timeout",
@@ -135,6 +173,19 @@ _UNREACHABLE_EXC_NAMES = frozenset(
     }
 )
 _UNREACHABLE_PACKAGES = frozenset({"requests", "httpx", "urllib3"})
+
+
+# Matched by name, not imported: a version that moves one must not turn a denial into "could not ask".
+_DENIAL_EXC_NAMES = frozenset(
+    {
+        "RepositoryNotFoundError",
+        "GatedRepoError",
+        "DisabledRepoError",
+        "RevisionNotFoundError",
+    }
+)
+# Not 404: a bare 401 covers private AND missing; 404 means no /auth-check route.
+_DENIAL_STATUSES = frozenset({401, 403, 410, 451})
 
 
 def _is_probe_timeout(exc: BaseException) -> bool:
@@ -154,10 +205,14 @@ def _is_probe_timeout(exc: BaseException) -> bool:
 
 
 def reset_repo_access_cache() -> None:
-    """Drop memoized Hub access answers. Tests only."""
+    global _denial_memory_is_complete
     with _repo_access_lock:
         _repo_access_cache.clear()
         _repo_access_inflight.clear()
+        _denied_repo_access.clear()
+        _denial_memory_is_complete = True
+    _noted_credential_identities.clear()
+    _unrecorded_fetches.clear()
 
 
 def cache_reads_authorized(
@@ -167,20 +222,7 @@ def cache_reads_authorized(
     repo_type: str = "model",
     offline: bool = False,
 ) -> bool:
-    """Whether this caller may read the host Hub disk cache for *repo_id*.
-
-    ``is_anonymous`` authenticates the caller CLASS, not the credential, so any token-shaped
-    string leaves the sentinel and takes the disk fast paths. ``repo_info`` cannot replace
-    the probe: gated public metadata still returns for an invalid token.
-
-    ``True`` does not mean the token is valid. /auth-check answers "is this repo reachable",
-    which a public repo answers 200 for any string; it discriminates on private and gated
-    repos, which is where the cached reads are.
-
-    Offline, an explicit token is denied without a memoized probe (fail closed) while ambient
-    ``None`` still reads. ``offline`` is the CALLER's own flag: without it a cache-only
-    request put its token on the wire and could stall for the probe timeout first.
-    """
+    """True does not mean the token is valid: /auth-check accepts any string on a public repo."""
     if is_anonymous(hf_token):
         return False
     # Deny by default: `not isinstance(str)` gave the ambient answer to True, 1, b"...".
@@ -197,10 +239,12 @@ def cache_reads_authorized(
     if not repo:
         return False
     if _is_local_path(repo):
-        # Unvalidated in the URL, so probing puts the caller's path on the wire with their
-        # bearer token, for an answer that can only be no.
+        # Probing would send the caller's path and bearer token on the wire for a certain no.
         return False
-    return _explicit_token_reaches_repo(repo, hf_token, repo_type, offline = offline)
+    verdict = _explicit_token_reaches_repo(repo, hf_token, repo_type, offline = offline)
+    if verdict is None:
+        return _resolve_unaskable(repo, repo_type, token = hf_token)
+    return verdict
 
 
 def public_cache_read_authorized(
@@ -209,16 +253,14 @@ def public_cache_read_authorized(
     repo_type: str = "model",
     offline: bool = False,
 ) -> bool:
-    """Whether serving *repo_id* from the cache to a caller with NO credential leaks anything.
-
-    The sentinel can never authorize itself, which is right for a private repo and wrong for
-    a public one. An unauthenticated /auth-check is exactly that difference. Fail closed when
-    it cannot be asked.
-    """
+    """The anonymous sentinel never authorizes itself, which is wrong for public repos."""
     repo = (repo_id or "").strip()
     if not repo or _is_local_path(repo):
         return False
-    return _explicit_token_reaches_repo(repo, None, repo_type, offline = offline)
+    verdict = _explicit_token_reaches_repo(repo, None, repo_type, offline = offline)
+    if verdict is None:
+        return _resolve_unaskable(repo, repo_type, token = None)
+    return verdict
 
 
 def cached_read_refused(
@@ -229,19 +271,7 @@ def cached_read_refused(
     repo_type: str = "model",
     offline: bool = False,
 ) -> bool:
-    """Refuse a read only where the operator's disk could answer it AND this caller may not.
-
-    An uncached repo has nothing to leak: refusing it protects nothing and costs a legitimate
-    caller its answer whenever the probe is merely unavailable rather than negative (a mirror
-    without the undocumented /auth-check, one transient failure). ``is_cached`` is asked FIRST
-    so nothing on disk means no probe, and must fail closed or the guard's own failure opens
-    the path it guards. Each reader passes its own predicate: a file at a revision, a dataset
-    in either cache, a repo dir.
-
-    "May not read it" is not "cannot authorize itself", which is where the sentinel sits: a
-    public repo is one it was always entitled to read. Asked here so every reader shares the
-    rule; the dataset preview used to be the only one asking.
-    """
+    """is_cached is asked first, so an uncached repo is never probed; a failed probe must fail closed."""
     if not is_cached():
         return False
     if cache_reads_authorized(hf_token, repo_id = repo_id, repo_type = repo_type, offline = offline):
@@ -261,6 +291,433 @@ def _is_local_path(repo_id: str) -> bool:
         return False
 
 
+def _env_hf_token() -> "Optional[str]":
+    import os
+    for key in _HF_TOKEN_ENV_KEYS:
+        if key == "HF_OIDC_RESOURCE":
+            # Names a token rather than holding one, so it cannot be compared to a caller's.
+            continue
+        value = os.environ.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _ambient_hf_token() -> "tuple[bool, Optional[str]]":
+    """``(False, None)`` is "could not answer"; reading it as "no credential" is a fail-open."""
+    get_token = None
+    try:
+        from huggingface_hub import get_token as _get_token
+        get_token = _get_token
+    except Exception:
+        get_token = None
+    if get_token is not None:
+        try:
+            token = get_token()
+        except Exception:
+            # If get_token raises, the environment token is still knowledge, not a guess.
+            env_token = _env_hf_token()
+            return (True, env_token) if env_token else (False, None)
+        if isinstance(token, str) and token.strip():
+            return (True, token.strip())
+        # get_token ignores HF_HUB_TOKEN and legacy aliases, so empty is not 'no credential'.
+        return (True, _env_hf_token())
+    # No reader at all: only the env is left to ask, and silence there means could not answer.
+    env_token = _env_hf_token()
+    return (True, env_token) if env_token else (False, None)
+
+
+def _saved_studio_hf_token() -> "tuple[bool, Optional[str]]":
+    """Never written to the token file, so ``_ambient_hf_token`` cannot see it; unreadable is
+    not "none"."""
+    try:
+        from storage import credential_secrets
+    except Exception:
+        return (False, None)
+    # One read: get_secret returns None for absent AND undecryptable; conflating is fail-open.
+    try:
+        token, stored = credential_secrets.get_hf_token_with_presence()
+    except Exception:
+        return (False, None)
+    if isinstance(token, str) and token.strip():
+        return (True, token.strip())
+    if stored:
+        return (False, None)
+    return (True, None)
+
+
+def _host_hf_credentials() -> "tuple[bool, tuple]":
+    """``known`` is the AND of both stores, so an unreadable one authorizes nobody."""
+    ambient_known, ambient = _ambient_hf_token()
+    saved_known, saved = _saved_studio_hf_token()
+    if not (ambient_known and saved_known):
+        return (False, ())
+    return (True, tuple(value for value in (ambient, saved) if value))
+
+
+# A one-off `X-Unsloth-HF-Token` is stored nowhere, so its fetches are recorded per repo, else an
+# empty credential set reads as "everything here was public".
+_REQUEST_TOKEN_REPOS_SETTING_KEY = "hub_repos_fetched_with_a_request_token"
+
+
+def _request_token_repo_key(repo_id: str, repo_type: Optional[str]) -> str:
+    """Case-folded: the authorization cache and `iter_repo_cache_dirs` compare ids that way."""
+    return f"{(repo_type or 'model').strip().lower()}:{repo_id.strip().lower()}"
+
+
+def _as_owner(call, *args, **kwargs):
+    from utils.account_context import OWNER, is_owner_context, run_as
+    if is_owner_context():
+        return call(*args, **kwargs)
+    return run_as(OWNER, call, *args, **kwargs)
+
+
+def note_repo_fetched_with_a_request_token(
+    token: HfTokenArg,
+    repo_id: str,
+    repo_type: Optional[str] = "model",
+) -> "Optional[dict]":
+    """Over-records on purpose: an extra record withholds bytes, a missing one leaks a private repo."""
+    if is_anonymous(token) or not repo_id:
+        return None
+    if token is not None and (not isinstance(token, str) or not token):
+        return None
+    try:
+        fetched_by: Optional[str] = None
+        if token is None:
+            known, host_tokens = _host_hf_credentials()
+            if known and not host_tokens:
+                return None
+            if known and len(set(host_tokens)) == 1:
+                fetched_by = _credential_identity(host_tokens[0])
+        else:
+            fetched_by = _credential_identity(token)
+        from storage.studio_db import upsert_app_setting_map_entry
+
+        key = _request_token_repo_key(repo_id, repo_type)
+        recorded = _recorded_request_token_repos()
+        if isinstance(recorded, dict) and key not in recorded:
+            # Bounded (caller-supplied repo id); advisory, a slight overshoot is harmless.
+            if len(recorded) >= _REQUEST_TOKEN_REPOS_MAX:
+                logger.debug("the request-token provenance map is full; not recording %s", key)
+                return None
+        # The first record stands; a second credential collapses attribution. Decided inside the
+        # write transaction, else concurrent writers both read "absent" and the last one wins.
+        entry = {"at": time.time(), "by": fetched_by}
+        stored = _as_owner(
+            upsert_app_setting_map_entry,
+            _REQUEST_TOKEN_REPOS_SETTING_KEY,
+            key,
+            entry,
+            keep_first_writer = True,
+            ambiguous_field = "by",
+        )
+        # Returned for rollback only when the stored entry is ours.
+        if isinstance(stored, dict) and stored.get(key) == entry:
+            return entry
+    except Exception:  # noqa: BLE001 -- a download must never fail on its own bookkeeping
+        logger.debug("could not record the credential a download used", exc_info = True)
+        # The read side must not take this missing record for the absence an unfetched repo leaves.
+        try:
+            _unrecorded_fetches.add(_request_token_repo_key(repo_id, repo_type))
+        except Exception:  # noqa: BLE001 -- bookkeeping about bookkeeping, still never raises
+            logger.debug("could not note the provenance write that failed", exc_info = True)
+    return None
+
+
+def forget_a_fetch_that_moved_nothing(
+    record: "Optional[dict]",
+    repo_id: str,
+    repo_type: Optional[str] = "model",
+) -> None:
+    """Taken back only if the disk shows the failed call moved nothing and it is still this call's
+    record."""
+    if not record or not repo_id:
+        return
+    try:
+        if _repo_present_on_disk(repo_id, repo_type or "model"):
+            return
+        from storage.studio_db import upsert_app_setting_map_entry
+
+        key = _request_token_repo_key(repo_id, repo_type)
+        _as_owner(
+            upsert_app_setting_map_entry,
+            _REQUEST_TOKEN_REPOS_SETTING_KEY,
+            key,
+            None,
+            delete_if_entry_equals = record,
+        )
+        _unrecorded_fetches.discard(key)
+    except Exception:  # noqa: BLE001 -- bookkeeping, and the over-broad record is the safe side
+        logger.debug("could not take back a provenance record", exc_info = True)
+
+
+@contextmanager
+def recording_a_request_token_fetch(
+    token: HfTokenArg,
+    repo_id: str,
+    repo_type: Optional[str] = "model",
+):
+    """Record the fetch around the call that performs it, and take the record back if that call
+    raised without leaving anything on disk. See ``forget_a_fetch_that_moved_nothing``."""
+    record = note_repo_fetched_with_a_request_token(token, repo_id, repo_type)
+    try:
+        yield
+    except BaseException:
+        forget_a_fetch_that_moved_nothing(record, repo_id, repo_type)
+        raise
+
+
+_REQUEST_TOKEN_REPOS_MAX = 4096
+
+# Never evicted: at the bound the whole set reads as "cannot say".
+_UNRECORDED_FETCHES_MAX = 4096
+_unrecorded_fetches: "set[str]" = set()
+
+
+def _provenance_record_is_missing(repo_id: Optional[str], repo_type: Optional[str]) -> bool:
+    """A write FAILED, as opposed to nothing having fetched it. Only one of them authorizes."""
+    if not repo_id:
+        return False
+    if len(_unrecorded_fetches) >= _UNRECORDED_FETCHES_MAX:
+        return True
+    return _request_token_repo_key(repo_id, repo_type) in _unrecorded_fetches
+
+
+def _recorded_request_token_repos() -> "Optional[dict]":
+    try:
+        from storage.studio_db import get_app_setting
+        recorded = _as_owner(get_app_setting, _REQUEST_TOKEN_REPOS_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001
+        return None
+    if recorded is None:
+        return {}
+    return recorded if isinstance(recorded, dict) else None
+
+
+# Digests of every credential ever held, so removal or rotation cannot inherit downloads.
+_HOST_CREDENTIAL_IDENTITIES_SETTING_KEY = "hub_hf_credential_identities_seen"
+_HOST_CREDENTIAL_IDENTITIES_MAX = 64
+_noted_credential_identities: "set[str]" = set()
+
+
+def _credential_identity(token: str) -> str:
+    """One-way and domain-separated: the ledger must never be readable back into a credential."""
+    return hashlib.sha256(
+        b"unsloth-hf-credential-identity:" + token.encode("utf-8", "surrogatepass")
+    ).hexdigest()
+
+
+def _host_credential_identities() -> "Optional[dict]":
+    """``{}`` when nothing was recorded, ``None`` when unreadable. Unreadable is not "empty"."""
+    try:
+        from storage.studio_db import get_app_setting
+        seen = _as_owner(get_app_setting, _HOST_CREDENTIAL_IDENTITIES_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001
+        return None
+    if seen is None:
+        return {}
+    return seen if isinstance(seen, dict) else None
+
+
+def _note_host_credential_identities(tokens: Iterable[str]) -> None:
+    """Only set the memo once the identity is in the ledger; a missing entry authorizes more."""
+    for token in tokens:
+        if not isinstance(token, str) or not token:
+            continue
+        identity = _credential_identity(token)
+        if identity in _noted_credential_identities:
+            continue
+        try:
+            from storage.studio_db import upsert_app_setting_map_entry
+
+            seen = _host_credential_identities()
+            if seen is None:
+                continue
+            if identity in seen:
+                _noted_credential_identities.add(identity)
+                continue
+            if len(seen) >= _HOST_CREDENTIAL_IDENTITIES_MAX:
+                continue
+            _as_owner(
+                upsert_app_setting_map_entry,
+                _HOST_CREDENTIAL_IDENTITIES_SETTING_KEY,
+                identity,
+                {"at": time.time()},
+            )
+            _noted_credential_identities.add(identity)
+        except Exception:  # noqa: BLE001
+            continue
+
+
+# Undecryptable credential maps to an unmatchable identity so the fallback refuses.
+_UNREADABLE_CREDENTIAL_IDENTITY = "a-credential-this-host-could-not-read"
+
+
+def note_host_credential_identity(
+    token: Optional[str], *, a_credential_was_held: bool = False
+) -> None:
+    """Records the held credential from save and delete too, since an upgraded ledger starts empty."""
+    if isinstance(token, str) and token:
+        _note_host_credential_identities((token,))
+    elif a_credential_was_held:
+        _note_host_credential_identities((_UNREADABLE_CREDENTIAL_IDENTITY,))
+
+
+def _no_other_credential_ever_held(tokens: Iterable[str]) -> Optional[bool]:
+    """``None`` when unreadable; a ledger predating a rotation cannot report what it never saw."""
+    seen = _host_credential_identities()
+    if seen is None:
+        return None
+    mine = {_credential_identity(token) for token in tokens if isinstance(token, str) and token}
+    return not (set(seen) - mine)
+
+
+def _repo_was_fetched_with_a_request_token(
+    repo_id: Optional[str], repo_type: Optional[str]
+) -> Optional[bool]:
+    if not repo_id:
+        return None
+    recorded = _recorded_request_token_repos()
+    if recorded is None:
+        return None
+    if _request_token_repo_key(repo_id, repo_type) in recorded:
+        return True
+    if len(recorded) >= _REQUEST_TOKEN_REPOS_MAX:
+        # Past the cap, "not in it" no longer means "not fetched with one". Cannot say.
+        return None
+    if _provenance_record_is_missing(repo_id, repo_type):
+        return None
+    return False
+
+
+def _repo_fetched_by_this_credential(
+    token: str, repo_id: Optional[str], repo_type: Optional[str]
+) -> bool:
+    """``True`` also when there is NO record, the case a cache older than the record exists for."""
+    if not repo_id:
+        return False
+    recorded = _recorded_request_token_repos()
+    if recorded is None:
+        return False
+    entry = recorded.get(_request_token_repo_key(repo_id, repo_type))
+    if entry is None:
+        if _provenance_record_is_missing(repo_id, repo_type):
+            return False
+        return len(recorded) < _REQUEST_TOKEN_REPOS_MAX
+    if not isinstance(entry, dict):
+        return False
+    recorded_by = entry.get("by")
+    if not isinstance(recorded_by, str) or not recorded_by:
+        return False
+    return hmac.compare_digest(recorded_by, _credential_identity(token))
+
+
+def _caller_populated_the_cache(
+    token: Optional[str],
+    *,
+    repo_id: Optional[str] = None,
+    repo_type: Optional[str] = None,
+) -> bool:
+    """Disk presence belongs to the operator, not the caller, so it must never authorize one."""
+    known, host_tokens = _host_hf_credentials()
+    if not known:
+        return False
+    _note_host_credential_identities(host_tokens)
+    if token is None:
+        if host_tokens:
+            return False
+        # Held none and never has; a credential since given up must not be inherited tokenless.
+        if _no_other_credential_ever_held(()) is not True:
+            return False
+        return _repo_was_fetched_with_a_request_token(repo_id, repo_type) is False
+    if not isinstance(token, str) or not token or not host_tokens:
+        return False
+    if len({held for held in host_tokens}) > 1:
+        # Two DIFFERENT credentials on one host: either could have filled the cache.
+        return False
+    if _no_other_credential_ever_held(host_tokens) is not True:
+        # Holding it now is not having filled the cache with it; otherwise a rotation inherits.
+        return False
+    matched = False
+    for held in host_tokens:
+        # Encoded: ``compare_digest`` raises TypeError on a non-ASCII str, and both are user text.
+        if hmac.compare_digest(
+            token.encode("utf-8", "surrogatepass"), held.encode("utf-8", "surrogatepass")
+        ):
+            matched = True
+    if not matched:
+        return False
+    # Only the record separates the host credential from a one-off token it does not hold.
+    return _repo_fetched_by_this_credential(token, repo_id, repo_type)
+
+
+def _resolve_unaskable(repo_id: str, repo_type: str, *, token: Optional[str]) -> bool:
+    """The local fact decides, but only for a caller it is about; not on disk -> refused."""
+    if not _caller_populated_the_cache(token, repo_id = repo_id, repo_type = repo_type):
+        return False
+    return _repo_present_on_disk(repo_id, repo_type)
+
+
+def _cache_provenance_is_establishable(repo_id: Optional[str], repo_type: Optional[str]) -> bool:
+    """The readers below report not knowing as a plain refusal, misleading a caller weighing one."""
+    known, _held = _host_hf_credentials()
+    if not known:
+        return False
+    if _recorded_request_token_repos() is None:
+        return False
+    return not _provenance_record_is_missing(repo_id, repo_type)
+
+
+def _denial_can_be_overturned(repo_id: str, repo_type: str, token: Optional[str]) -> bool:
+    """Remember denials only where _resolve_unaskable would say yes; caller repo ids can flood the cache."""
+    # BEFORE the rule below: a denial dropped during an unreadable store would be authorized
+    # by the next outage.
+    if not _cache_provenance_is_establishable(repo_id, repo_type):
+        return True
+    try:
+        if not _caller_populated_the_cache(token, repo_id = repo_id, repo_type = repo_type):
+            return False
+    except Exception:  # noqa: BLE001 -- could not establish it; remember, do not discard
+        return True
+    try:
+        return _repo_present_on_disk(repo_id, repo_type)
+    except Exception:  # noqa: BLE001 -- same direction
+        return True
+
+
+def _repo_present_on_disk(repo_id: str, repo_type: str) -> bool:
+    """Not memoized: a completing download must take effect at once. A dataset also counts when
+    only the ``datasets`` PREPARED cache holds it. Asked only after a readable listing FOUND a
+    cache dir, since ``repo_cache_has_usable_snapshot`` answers True for an unenumerable root."""
+    try:
+        from hub.utils.hf_cache_state import (
+            iter_repo_cache_dirs,
+            repo_cache_has_usable_snapshot,
+        )
+    except Exception:
+        return False
+    # Independent evidence: a dataset can have a good prepared cache and an unusable hub dir.
+    try:
+        if any(True for _dir in iter_repo_cache_dirs(repo_type, repo_id)):
+            if bool(repo_cache_has_usable_snapshot(repo_type, repo_id)):
+                return True
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug(
+            "Could not check the local cache for '%s'", repo_id, exc_info = True
+        )
+        if repo_type != "dataset":
+            return False
+    if repo_type != "dataset":
+        return False
+    try:
+        from hub.utils.dataset_cache import latest_processed_dataset_cache_path
+        return latest_processed_dataset_cache_path(repo_id) is not None
+    except Exception:
+        return False
+
+
 def _hub_offline() -> bool:
     try:
         from utils.utils import hf_env_offline
@@ -274,11 +731,12 @@ def _hub_offline() -> bool:
         return False
 
 
-def _cached_repo_access(key: tuple[str, str, str], now: float) -> Optional[bool]:
+def _cached_repo_access(key: tuple[str, ...], now: float):
+    """``None`` is a verdict of its own ("could not be asked"), so a miss needs its own sentinel."""
     cached = _repo_access_cache.get(key)
     if cached is not None and cached[0] > now:
         return cached[1]
-    return None
+    return _CACHE_MISS
 
 
 def _explicit_token_reaches_repo(
@@ -286,41 +744,53 @@ def _explicit_token_reaches_repo(
     token: Optional[str],
     repo_type: str,
     offline: bool = False,
-) -> bool:
-    # None asks the public question, under its own key: a public repo answers 200 for every
-    # token, so a shared key would let any string claim that verdict.
+) -> Optional[bool]:
+    # None asks the public question under its own key (a public repo answers 200 for any token, so a
+    # shared key would let any string claim it); the endpoint is part of the key too.
     key = (
         repo_id.casefold(),
         repo_type,
         hashlib.sha256(token.encode()).hexdigest()[:16] if token else "anonymous",
+        _probe_endpoint(),
     )
     cached = _cached_repo_access(key, time.monotonic())
-    if cached is not None:
-        return cached
+    if cached is not _CACHE_MISS:
+        return _with_remembered_denial(key, cached)  # type: ignore[arg-type]
     if offline or _hub_offline():
-        return False
+        # Not memoized: a memo would outlive the moment the network comes back.
+        return _with_remembered_denial(key, None)
 
     with _inflight_lock(key):
         cached = _cached_repo_access(key, time.monotonic())
-        if cached is not None:
-            return cached
-        started = time.monotonic()
+        if cached is not _CACHE_MISS:
+            return _with_remembered_denial(key, cached)  # type: ignore[arg-type]
         try:
-            allowed = _probe_repo_access(repo_id, token, repo_type)
-            timed_out = False
+            allowed = _probe_repo_access(repo_id, token, repo_type, endpoint = key[3])
         except _ProbeTimedOut:
-            allowed = False
-            timed_out = True
+            allowed = None
+        except Exception:
+            # The gate's own failure is a failure to ASK, not a denial.
+            import logging
+            logging.getLogger(__name__).debug(
+                "Repo access probe for '%s' raised", repo_id, exc_info = True
+            )
+            allowed = None
         # AFTER the probe: `start + TTL` memoizes an expired entry when the Hub stalls.
         finished = time.monotonic()
-        if not timed_out:
-            timed_out = not allowed and (finished - started) >= _REPO_ACCESS_PROBE_TIMEOUT_S
-        expiry = finished + (_REPO_ACCESS_UNREACHABLE_TTL_S if timed_out else _REPO_ACCESS_TTL_S)
+        # No elapsed-time rewrite: the budget covers the cold import, so slow is not denied.
+        expiry = finished + (
+            _REPO_ACCESS_UNREACHABLE_TTL_S if allowed is None else _REPO_ACCESS_TTL_S
+        )
         with _repo_access_lock:
             if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
                 _evict_repo_access_locked()
             _repo_access_cache[key] = (expiry, allowed)
-    return allowed
+        if allowed is False:
+            if _denial_can_be_overturned(repo_id, repo_type, token):
+                _remember_denial(key, finished)
+        elif allowed is True:
+            _forget_denial(key)
+    return _with_remembered_denial(key, allowed)
 
 
 def _evict_repo_access_locked() -> None:
@@ -332,7 +802,7 @@ def _evict_repo_access_locked() -> None:
         _repo_access_cache.clear()
 
 
-def _inflight_lock(key: tuple[str, str, str]) -> threading.Lock:
+def _inflight_lock(key: tuple[str, ...]) -> threading.Lock:
     with _repo_access_lock:
         lock = _repo_access_inflight.get(key)
         if lock is None:
@@ -344,12 +814,17 @@ def _inflight_lock(key: tuple[str, str, str]) -> threading.Lock:
 
 
 def _probe_endpoint() -> str:
-    """The endpoint the rest of the backend means, not the raw env value.
-
-    ``HfApi().endpoint`` returns ``HF_ENDPOINT`` verbatim, so a scheme-less mirror builds a
-    URL both clients reject and every probe on that machine is denied. ``hf_endpoint_url``
-    is where the backend already normalises it; falls back since this module sits beneath.
-    """
+    """Uses hf_endpoint_url, since HfApi().endpoint returns a scheme-less HF_ENDPOINT verbatim."""
+    try:
+        from utils.hub_settings import MODELSCOPE, active_source, hugging_face_endpoint
+    except Exception:
+        active_source = None
+    # The cache holds Hugging Face snapshots: ModelScope's same-named repo cannot vouch for them.
+    if active_source is not None and active_source() == MODELSCOPE:
+        try:
+            return hugging_face_endpoint()
+        except Exception:
+            return "https://huggingface.co"
     try:
         from utils.utils import hf_endpoint_url
         return hf_endpoint_url().rstrip("/")
@@ -359,11 +834,7 @@ def _probe_endpoint() -> str:
 
 
 def _same_probe_target(answered: str, asked: str) -> bool:
-    """Whether two URLs address the same endpoint, up to the spellings a client may change.
-
-    Case in the host and a default port carry no meaning; the path, query and everything
-    else do, so a redirect to ``?next=login`` on the same path is still a different target.
-    """
+    """Host case and default port are ignored; path and query are not, so ?next=login is another target."""
     from urllib.parse import urlsplit
 
     def _parts(url: str):
@@ -385,47 +856,347 @@ def _same_probe_target(answered: str, asked: str) -> bool:
         return False
 
 
-def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> bool:
+def _probe_answer_from_exception(exc: BaseException, response = None) -> Optional[bool]:
+    """A blanket ``except -> False`` cannot tell an outage from a rejected credential."""
+    if _is_probe_timeout(exc):
+        return None
+    for cls in type(exc).__mro__:
+        if cls.__name__ in _DENIAL_EXC_NAMES:
+            return False
+    status = getattr(response, "status_code", None)
+    if not isinstance(status, int):
+        # hub attaches the response to HfHubHTTPError; a plain httpx error carries it too.
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        if status in _DENIAL_STATUSES:
+            return False
+        if status == 404 and _has_hf_error_code(response):
+            # HF's own "no such repo for you"; a mirror with no /auth-check route sends a bare 404.
+            return False
+    return None
+
+
+def _has_hf_error_code(response) -> bool:
+    try:
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return False
+        return bool(headers.get("X-Error-Code"))
+    except Exception:
+        return False
+
+
+def _probe_repo_access(
+    repo_id: str,
+    token: Optional[str],
+    repo_type: str,
+    *,
+    endpoint: Optional[str] = None,
+) -> Optional[bool]:
+    response = None
     try:
         from huggingface_hub import constants
         from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
 
         if repo_type not in constants.REPO_TYPES:
             return False
-        # A raw "?" or "#" ends the path early at /api/{type}s/{id}, which answers 200 with
-        # public metadata for a gated repo.
+        # A raw '?' or '#' truncates the path to public metadata for a gated repo.
         from urllib.parse import quote
 
-        # quote keeps "/", so ".." survives and dot-segment removal probes a different repo
-        # than the one memoized.
+        # quote keeps '/', so '..' would probe a different repo than the one memoized.
         if any(segment in {".", ".."} for segment in repo_id.split("/")):
             return False
-        path = f"{_probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
+        path = f"{endpoint or _probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
         response = get_session().get(
             path,
-            # False, not None: None falls back to the ambient login, asking the public
-            # question with the operator's own credential.
+            # False, not None: None falls back to the ambient login.
             headers = build_hf_headers(token = token if token else False),
             timeout = _REPO_ACCESS_PROBE_TIMEOUT_S,
         )
-        hf_raise_for_status(response)
-        # hf_raise_for_status passes 3xx: without this a bare 307 reads as authorized.
-        if 300 <= getattr(response, "status_code", 0) < 400:
-            return False
-        # And get_session DOES follow them (httpx.Client(follow_redirects=True)), so the
-        # check above never fires: a redirect to a login page returns an approving 200 for
-        # somewhere else. Only the repo we asked about may answer for it.
+        # hf_raise_for_status passes 3xx, so a bare 307 reads as authorized. Not a denial either.
+        if 300 <= (getattr(response, "status_code", 0) or 0) < 400:
+            return None
+        # get_session follows redirects; only the repo asked about may answer.
         if getattr(response, "history", None):
-            return False
-        # Belt and braces for a client that does not record history. Compared on parts, not
-        # as strings: httpx canonicalises response.url (lower-cases the host, drops an
-        # explicit :443) while the configured HF_ENDPOINT keeps its spelling, so a raw
-        # comparison denied every mirror written as HF-MIRROR.example or with the port.
+            return None
+        # Compare URL parts: httpx canonicalises host case and drops :443.
         final_url = getattr(response, "url", None)
         if final_url is not None and not _same_probe_target(str(final_url), path):
-            return False
+            return None
+        # Last, so the checks above see the response rather than an exception built from it.
+        hf_raise_for_status(response)
         return True
     except Exception as exc:
         if _is_probe_timeout(exc):
             raise _ProbeTimedOut from exc
+        return _probe_answer_from_exception(exc, response)
+
+
+# Refused credentials 401 everywhere; accepted ones 404 for invisible repos.
+HUB_TOKEN_REJECTED_WARNING = (
+    "Hugging Face rejected the saved token (it may be expired or revoked), so this public "
+    "model was read without it. Update or clear the token in Settings to keep access to "
+    "gated and private models."
+)
+
+
+def hub_refused_cached_copy_warning(repo_id: str) -> str:
+    return (
+        f"Hugging Face refused {repo_id}, so Unsloth is running the copy already downloaded on "
+        "this machine. It will not receive updates until access is restored."
+    )
+
+
+HUB_TOKEN_REJECTED_ERROR = (
+    "Hugging Face rejected the saved token (HTTP 401); it may be expired or revoked. "
+    "Update or clear it in Settings, then try again."
+)
+
+
+class HubTokenRejections:
+    """What one request learned about its credential. Shared by the threads it hands off to."""
+
+    __slots__ = ("recovered", "refused", "served_from_cache", "_rejected", "_recovered")
+
+    def __init__(self) -> None:
+        # Repos the Hub refused that this request loaded from their downloaded copy instead.
+        self.served_from_cache: "list[str]" = []
+        self.recovered = False
+        self.refused = False
+        # Digests, never tokens: a traceback or debugger can print this.
+        self._rejected: "set[str]" = set()
+        self._recovered: "set[str]" = set()
+
+    @property
+    def rejected(self) -> bool:
+        return self.recovered or self.refused
+
+
+_hub_token_rejections: ContextVar[Optional[HubTokenRejections]] = ContextVar(
+    "hub_token_rejections", default = None
+)
+
+
+@contextmanager
+def collecting_hub_token_rejections():
+    """Scope one request's rejection notes; nested scopes share the outer one."""
+    existing = _hub_token_rejections.get()
+    if existing is not None:
+        yield existing
+        return
+    sink = HubTokenRejections()
+    reset = _hub_token_rejections.set(sink)
+    try:
+        yield sink
+    finally:
+        _hub_token_rejections.reset(reset)
+
+
+@contextmanager
+def token_rejection_scope():
+    """A fresh scope, forgotten on exit: one load's verdict must not reach the next."""
+    sink = HubTokenRejections()
+    reset = _hub_token_rejections.set(sink)
+    try:
+        yield sink
+    finally:
+        _hub_token_rejections.reset(reset)
+
+
+def hub_token_rejections() -> Optional[HubTokenRejections]:
+    return _hub_token_rejections.get()
+
+
+def _sent_credential(hf_token: HfTokenArg) -> Optional[str]:
+    """The credential a read with *hf_token* puts on the wire, or None when it sends none."""
+    if is_anonymous(hf_token):
+        return None
+    if isinstance(hf_token, str):
+        return hf_token.strip() or None
+    if hf_token is None:
+        if _implicit_token_disabled():
+            # huggingface_hub sends no ambient token then, so a 401 is about the repo.
+            return None
+        return _wire_hf_token()
+    return None
+
+
+def _wire_hf_token() -> Optional[str]:
+    """The ambient token huggingface_hub sends on a ``token=None`` read (not ``_ambient_hf_token``,
+    which also counts aliases it never sends)."""
+    try:
+        from huggingface_hub import get_token
+        token = get_token()
+    except Exception:
+        return None
+    return token.strip() if isinstance(token, str) and token.strip() else None
+
+
+def _implicit_token_disabled() -> bool:
+    # huggingface_hub reads its import-time constant, not the env the worker changes later.
+    try:
+        from huggingface_hub import constants
+    except Exception:
+        return os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    return bool(getattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False))
+
+
+# huggingface_hub's own wording (hf_raise_for_status), optionally behind "ClassName: ".
+_HUB_401_TEXT = re.compile(r"^(?:[A-Za-z]\w*: )?401 Client Error\b")
+
+
+def is_token_rejection(exc: BaseException) -> bool:
+    """A 401 anywhere in the chain counts: transports wrap Hub errors and ladders rebuild text."""
+    seen: set[int] = set()
+    pending: list[Optional[BaseException]] = [exc]
+    while pending:
+        link = pending.pop()
+        if link is None or id(link) in seen:
+            continue
+        seen.add(id(link))
+        status = getattr(getattr(link, "response", None), "status_code", None)
+        if status == 401:
+            return True
+        if isinstance(link, urllib.error.HTTPError) and link.code == 401:
+            return True
+        if status is None and _HUB_401_TEXT.match(str(link)):
+            return True
+        pending += [link.__cause__, link.__context__]
+    return False
+
+
+def is_rejected_credential_error(exc: BaseException, hf_token: HfTokenArg) -> bool:
+    """Whether *exc* is Hugging Face refusing the credential a read with *hf_token* sent."""
+    if is_anonymous(hf_token) or _is_probe_timeout(exc):
         return False
+    return is_token_rejection(exc) and _sent_credential(hf_token) is not None
+
+
+def _credential_rejected_this_request(hf_token: HfTokenArg) -> bool:
+    sink = _hub_token_rejections.get()
+    if sink is None or not sink._rejected:
+        return False
+    credential = _sent_credential(hf_token)
+    return credential is not None and _credential_identity(credential) in sink._rejected
+
+
+def note_saved_token_rejected(hf_token: HfTokenArg) -> None:
+    """Record that this request's reads with *hf_token* were refused while anonymous ones worked."""
+    sink = _hub_token_rejections.get()
+    credential = _sent_credential(hf_token)
+    if sink is None or credential is None:
+        return
+    identity = _credential_identity(credential)
+    sink._rejected.add(identity)
+    sink._recovered.add(identity)
+    sink.recovered = True
+
+
+def saved_token_rejected(hf_token: HfTokenArg) -> bool:
+    """Whether this request saw the Hub refuse *hf_token* while an anonymous read worked."""
+    sink = _hub_token_rejections.get()
+    credential = _sent_credential(hf_token)
+    if sink is None or credential is None:
+        return False
+    return _credential_identity(credential) in sink._recovered
+
+
+def _is_missing_file(exc: BaseException) -> bool:
+    """The Hub said a file is absent (not ``LocalEntryNotFoundError``, the offline cache miss)."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    return "EntryNotFoundError" in names and "LocalEntryNotFoundError" not in names
+
+
+def call_with_anonymous_retry(read, hf_token: HfTokenArg):
+    """Retries anonymously only on a rejected credential; if that fails too, the original error is
+    raised."""
+    if _credential_rejected_this_request(hf_token):
+        # Refused earlier in this request: anonymous first, the credential only if that fails.
+        try:
+            result = read(False)
+        except Exception as anonymous_exc:
+            if not is_token_rejection(anonymous_exc):
+                raise
+        else:
+            note_saved_token_rejected(hf_token)
+            return result
+        try:
+            return read(hf_token)
+        except Exception as exc:
+            if is_rejected_credential_error(exc, hf_token):
+                sink = _hub_token_rejections.get()
+                if sink is not None:
+                    sink.refused = True
+            raise
+    try:
+        return read(hf_token)
+    except Exception as exc:
+        if not is_rejected_credential_error(exc, hf_token):
+            raise
+        sink = _hub_token_rejections.get()
+        credential = _sent_credential(hf_token)
+        if sink is not None and credential is not None:
+            sink._rejected.add(_credential_identity(credential))
+        try:
+            result = read(False)
+        except Exception as anonymous_exc:
+            if _is_cancellation(anonymous_exc):
+                raise
+            if _is_missing_file(anonymous_exc):
+                # An optional file's absence is the answer callers need, not the 401.
+                note_saved_token_rejected(hf_token)
+                raise
+            logger.info(
+                "Hugging Face refused the credential (401); the anonymous retry failed too: %s",
+                type(anonymous_exc).__name__,
+            )
+            if sink is not None:
+                sink.refused = True
+            raise exc from None
+        logger.warning(
+            "Hugging Face refused the credential (401); read anonymously instead. "
+            "Update or clear the Hugging Face token."
+        )
+        note_saved_token_rejected(hf_token)
+        return result
+
+
+def _is_cancellation(exc: BaseException) -> bool:
+    """A cancelled load or download, however the transport layer spelled it."""
+    if "Cancel" in type(exc).__name__:
+        return True
+    return isinstance(exc, RuntimeError) and str(exc).startswith("Cancelled")
+
+
+def call_hub_with_anonymous_retry(fn, hf_token: HfTokenArg, *args, **kwargs):
+    """``call_with_anonymous_retry`` for a huggingface_hub-style ``fn(*args, token = ..., **kwargs)``."""
+    return call_with_anonymous_retry(lambda token: fn(*args, token = token, **kwargs), hf_token)
+
+
+def anonymous_retrying(fn):
+    """*fn* (a huggingface_hub read taking ``token=``) with the rejected-token retry built in."""
+
+    def read(
+        *args,
+        token: HfTokenArg = None,
+        **kwargs,
+    ):
+        return call_hub_with_anonymous_retry(fn, token, *args, **kwargs)
+
+    return read
+
+
+def hf_token_rejected_hint(exc: BaseException) -> str:
+    """User-facing sentence for a 401 that the anonymous retry could not recover, else ''."""
+    if not is_token_rejection(exc):
+        return ""
+    return (
+        " Hugging Face answered 401: the saved Hugging Face token may have expired or been "
+        "revoked, or the repo is private or gated. Update the token in Settings, or remove it "
+        "to read public repos."
+    )

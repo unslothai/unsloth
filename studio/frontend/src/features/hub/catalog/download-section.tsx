@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { AssetRuntime } from "./use-required-assets-download";
+import type { MediaStudioPage } from "../hooks/use-media-companion-bytes";
 import type { ModelInventoryFormat } from "../inventory";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { GgufDownloadCard } from "./gguf-download-card";
+import { MlxPrecisionCard } from "./mlx-precision-card";
 import { SafetensorsDownloadCard } from "./safetensors-download-card";
 
 export function DownloadSection({
@@ -13,6 +16,7 @@ export function DownloadSection({
   isPartial = false,
   partialTransport = null,
   partialResumable = false,
+  companionPrefetch = false,
   modelFormat,
   isActive,
   activeQuant,
@@ -22,14 +26,20 @@ export function DownloadSection({
   isLoadingThisModel,
   gpuGb,
   gpuCount,
+  audioCppCardGb,
   systemRamGb,
+  unifiedLoadBudgetGb,
   cachePath,
   knownBytes,
   onRun,
+  onRunCheckpoint,
   runPending = false,
   onChange,
   showMemoryBar = true,
-  mediaRuntime = false,
+  mediaPage,
+  assetRuntime,
+  isMlx = false,
+  onRunPrecision,
 }: {
   repoId: string;
   isGguf: boolean;
@@ -37,6 +47,7 @@ export function DownloadSection({
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
+  companionPrefetch?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   isActive: boolean;
   activeQuant: string | null;
@@ -46,16 +57,21 @@ export function DownloadSection({
   isLoadingThisModel: boolean;
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
+  unifiedLoadBudgetGb?: number | null;
   cachePath?: string | null;
   knownBytes?: number | null;
   onRun?: (selection: HubModelRunSelection) => void;
+  onRunCheckpoint?: (filename: string) => void;
   runPending?: boolean;
   onChange?: () => void;
-  /** False for diffusion / audio / video GGUFs, which do not load through
-   *  llama.cpp and so have nothing the KV estimator can say about them. */
+  /** False for diffusion/audio/video GGUFs, which do not load through llama.cpp. */
   showMemoryBar?: boolean;
-  mediaRuntime?: boolean;
+  mediaPage?: MediaStudioPage;
+  assetRuntime?: AssetRuntime;
+  isMlx?: boolean;
+  onRunPrecision?: (selection: HubModelRunSelection) => void;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -68,32 +84,48 @@ export function DownloadSection({
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
         gpuCount={gpuCount}
+        audioCppCardGb={audioCppCardGb}
         systemRamGb={systemRamGb}
+        unifiedLoadBudgetGb={unifiedLoadBudgetGb}
         cachePath={cachePath}
         isPartial={isPartial}
         onRun={onRun}
         runPending={runPending}
         onChange={onChange}
         showMemoryBar={showMemoryBar}
-        mediaRuntime={mediaRuntime}
+        mediaPage={mediaPage}
       />
     );
   }
-  return (
+  const repoCard = (
     <SafetensorsDownloadCard
+      assetRuntime={assetRuntime}
       repoId={repoId}
       isDownloaded={isDownloaded}
       isPartial={isPartial}
       partialTransport={partialTransport}
       partialResumable={partialResumable}
+      companionPrefetch={companionPrefetch}
       modelFormat={modelFormat}
       isActive={isActive}
       isLoadingThisModel={isLoadingThisModel}
       cachePath={cachePath}
       knownBytes={knownBytes}
       onRun={onRun ? () => onRun({}) : undefined}
+      onRunCheckpoint={onRunCheckpoint}
       runPending={runPending}
       onChange={onChange}
     />
+  );
+  if (!isMlx) return repoCard;
+  return (
+    <div className="flex w-full flex-col gap-2">
+      <MlxPrecisionCard
+        repoId={repoId}
+        onRun={onRunPrecision}
+        runPending={runPending}
+      />
+      {repoCard}
+    </div>
   );
 }

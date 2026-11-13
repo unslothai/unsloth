@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
+import { NATIVE_FILE_NAME_HEADER, encodeNativeFilename } from "@/lib/native-files";
+
+export type LocalCopy = { id: string; path: string };
+export type OpenWithApp = { path: string; name: string; icon: string | null; default: boolean };
+
+async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const core = await import("@tauri-apps/api/core");
+  return core.invoke<T>(command, args);
+}
+
+// By blob: a tab's bytes never change, so its copy is written once however often it is opened.
+const copies = new WeakMap<Blob, Map<string, Promise<LocalCopy>>>();
+
+export function localCopy(blob: Blob, name: string): Promise<LocalCopy> {
+  const byName = copies.get(blob) ?? new Map<string, Promise<LocalCopy>>();
+  copies.set(blob, byName);
+  const known = byName.get(name);
+  if (known) return known;
+  const pending = blob.arrayBuffer().then(async (bytes) => {
+    const core = await import("@tauri-apps/api/core");
+    return core.invoke<LocalCopy>("browser_file_local_copy", new Uint8Array(bytes), {
+      headers: { [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(name) },
+    });
+  });
+  byName.set(name, pending);
+  pending.catch(() => byName.delete(name));
+  return pending;
+}
+
+export async function withLocalCopy<T>(blob: Blob, name: string, use: (copy: LocalCopy) => Promise<T>): Promise<T> {
+  const pending = localCopy(blob, name);
+  try {
+    return await use(await pending);
+  } catch {
+    if (copies.get(blob)?.get(name) === pending) copies.get(blob)?.delete(name);
+    return use(await localCopy(blob, name));
+  }
+}
+
+export function openWithApps(id: string): Promise<OpenWithApp[]> {
+  return invoke<OpenWithApp[]>("browser_file_apps", { id });
+}
+
+export function openLocalCopy(id: string, app?: string): Promise<void> {
+  return invoke<void>("browser_file_open", { id, with: app ?? null });
+}
+
+export function localCopyPath(id: string): Promise<string> {
+  return invoke<string>("browser_file_path", { id });
+}
+
+export function revealLocalCopy(id: string): Promise<void> {
+  return invoke<void>("browser_file_reveal", { id });
+}

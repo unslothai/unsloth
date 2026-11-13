@@ -19,6 +19,8 @@ STATUS_MISSING = "missing"
 STATUS_UNREADABLE = "unreadable"
 # The folder works, but something inside it is refused.
 STATUS_PARTIAL = "partial"
+# The last scan outran its time budget: a hung network mount or a very large tree.
+STATUS_SLOW = "slow"
 # Internal only: the probe ran out of budget before it saw everything
 STATUS_UNKNOWN = "unknown"
 
@@ -29,6 +31,7 @@ _PROBE_DEPTH = 2
 _PROBE_OPEN_LIMIT = 64
 # A huggingface_hub cache keeps the weights only in <root>/models--org--name/snapshots/<commit>/, so refusing that directory leaves the folder looking healthy and empty at once.
 _HF_SNAPSHOTS_DIR = "snapshots"
+_HF_HOME_HUB_DIR = "hub"
 
 
 def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Optional[str]]:
@@ -60,6 +63,8 @@ def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Option
         if child_depth <= 0 and name == _HF_SNAPSHOTS_DIR:
             # Spend one more level here rather than raising the depth everywhere: a diffusers pipeline's component directories would otherwise burn the budget.
             child_depth = 1
+        elif depth == _PROBE_DEPTH and name == _HF_HOME_HUB_DIR:
+            child_depth = depth
         status, cause = _probe_dir(subdir, depth = child_depth, budget = budget)
         if status == STATUS_MISSING:
             # It was in the listing a moment ago and is gone now (a model being deleted, or a download renaming its temp directory), which says nothing about the folder the user registered.
@@ -94,8 +99,7 @@ _WINDOWS_MISSING = frozenset((2, 3, 15, 20, 21, 53, 55, 67, 161, 206, 267))
 
 
 def classify_scan_error(error: OSError) -> str:
-    """Map an error the scan already raised onto a status the UI can render."""
-    # Absent on POSIX, and None unless CPython set it, so this never shadows errno.
+    """winerror is absent on POSIX and None unless CPython set it, so this never shadows errno."""
     winerror = getattr(error, "winerror", None)
     if winerror is not None:
         if winerror in _WINDOWS_PERMISSION:
@@ -122,6 +126,18 @@ def _record(path: str, status: str, cause: str) -> None:
 def record_scan_failure(path: str, error: OSError) -> None:
     """Remember why a scan skipped ``path``."""
     _record(path, classify_scan_error(error), path)
+
+
+def record_scan_slow(path: str) -> None:
+    """Remember that a scan of ``path`` was abandoned for taking too long."""
+    _record(path, STATUS_SLOW, path)
+
+
+def clear_scan_slow(path: str) -> None:
+    """Forget a slow mark once the abandoned scan finishes; a failure it recorded itself stays."""
+    entry = _failed.get(path)
+    if entry is not None and entry[0] == STATUS_SLOW:
+        _failed.pop(path, None)
 
 
 def clear_scan_failure(path: str) -> None:
@@ -170,7 +186,8 @@ def refresh_failed_scan_folders(folders: list[dict]) -> None:
     for folder in folders:
         path = str(folder.get("path", ""))
         entry = _failed.get(path)
-        if entry is None:
+        # A slow folder is not probed here: the open could hang this request too. Its abandoned scan clears it on finishing.
+        if entry is None or entry[0] == STATUS_SLOW:
             continue
         previous = entry[0]
         status, cause = probe_folder(path, children = True)

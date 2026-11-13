@@ -13,6 +13,8 @@ import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 import {
   createCodePlugin,
+  LIVE_TAIL_CHARS,
+  MIN_INCREMENTAL_CHARS,
   TOKENIZE_LIMITS,
 } from "../src/components/assistant-ui/code-plugin.ts";
 
@@ -86,7 +88,6 @@ const referenceHighlighters = new Map<
   ReturnType<typeof createHighlighter>
 >();
 
-/** Tokens shiki returns for the whole string in one call. */
 async function reference(code: string, language: HighlightOptions["language"]) {
   let loading = referenceHighlighters.get(language);
   if (!loading) {
@@ -101,9 +102,7 @@ async function reference(code: string, language: HighlightOptions["language"]) {
   return highlighter.codeToTokens(code, {
     lang: language,
     themes: { light: "github-light", dark: "github-dark" },
-    // The reference must run under the plugin's own tokenizer limits, or shiki's
-    // default wall-clock bail can degrade whichever side of the comparison is
-    // unlucky on a slow runner.
+    // Use the plugin's tokenizer limits so shiki's wall-clock bail cannot skew either side.
     ...TOKENIZE_LIMITS,
   });
 }
@@ -339,17 +338,8 @@ test("a failed grammar load releases pending callbacks before retry", async () =
 });
 
 test("a transiently failed grammar load is retried under the same cache key", async () => {
-  // The test above retries under a *different* key: swapping the theme
-  // definitions builds a new `highlighters` entry whether or not the failed one
-  // was cleaned up. A transient failure is the case that needs the cleanup --
-  // the browser re-fetches a module whose previous fetch failed
-  // (whatwg/html#10327), so the same key is asked for again and has to load. If
-  // the entry that failed were left behind, every later render of that language
-  // and theme pair would keep getting its null highlighter and the block would
-  // never highlight again for the life of the page.
-  //
-  // Keeping the same theme objects keeps the key identical; mutating them in
-  // place stands in for the chunk that failed once and loaded on the retry.
+  // A failed load must not leave its entry behind: browsers re-fetch failed modules
+  // (whatwg/html#10327), so the same key is asked again.
   const light: { name: string; settings: unknown } = {
     name: "transient-light",
     settings: 42,
@@ -424,7 +414,6 @@ test("re-opening a thread answers every fence from cache", async () => {
   for (const code of blocks) {
     first.push(await highlightOnce(plugin, { code, language, themes: THEMES }));
   }
-  // A thread mounts whole: the same object back means no tokenizer was reached.
   const reused = blocks.filter(
     (code, index) =>
       plugin.highlight({ code, language, themes: THEMES }) === first[index],
@@ -464,7 +453,6 @@ test("a single line past the throttle keeps its text and settles exact", async (
       resolve,
     );
     if (immediate) {
-      // Still inside the refresh interval: the trailing refresh resolves it.
       setTimeout(() => {
         const after = plugin.highlight({ code: grown, language, themes: THEMES });
         if (after) resolve(after);
@@ -478,14 +466,12 @@ test("a single line past the throttle keeps its text and settles exact", async (
 test("a shorter prefix sibling fence keeps the longer one highlighted", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "json" as HighlightOptions["language"];
-  // Single-line, so the longer fence commits nothing and stays prefix-reachable.
   const shorter = `{"values": [${Array.from({ length: 300 }, (_, i) => `"item-${i}"`).join(", ")}`;
   const longer = `${shorter}, "only-in-the-longer-fence"]}`;
 
   await highlightOnce(plugin, { code: longer, language, themes: THEMES });
   await highlightOnce(plugin, { code: shorter, language, themes: THEMES });
 
-  // Document order renders the shorter fence next, within one refresh interval.
   let rendered: HighlightResult | null = null;
   for (let frame = 0; frame < 3; frame += 1) {
     rendered = plugin.highlight({ code: longer, language, themes: THEMES });
@@ -503,8 +489,6 @@ test("a shorter prefix sibling fence keeps the longer one highlighted", async ()
   );
 });
 
-// None of these can close a fence: whitespace carries no marker, a closing run
-// never mixes backticks with tildes, and a closer starts its own line.
 for (const suffix of ["   ", "`~", "```"]) {
   test(`a sibling ending in ${JSON.stringify(suffix)} keeps its own entry`, async () => {
     const plugin = createCodePlugin({ themes: THEMES });
@@ -533,7 +517,6 @@ test("a changed theme definition is not answered from the old theme's cache", as
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
   const code = "value = 1\n";
-  // Same names, different definitions: only the definitions tell them apart.
   const pair = (background: string): [ThemeInput, ThemeInput] =>
     (["swap-light", "swap-dark"] as const).map(
       (name) =>
@@ -560,6 +543,9 @@ test("a changed theme definition is not answered from the old theme's cache", as
   );
 });
 
+// A cached prefix more than LIVE_TAIL_CHARS short of the body, so growing to it takes the throttled path.
+const cachedHead = (body: string): string => body.slice(0, body.indexOf("\n", body.length - LIVE_TAIL_CHARS - 200) + 1);
+
 test("a shorter delimiter-like sibling cannot drop a queued refresh", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
@@ -567,7 +553,7 @@ test("a shorter delimiter-like sibling cannot drop a queued refresh", async () =
     { length: 120 },
     (_, index) => `value_${index} = ${index}  # a completed Python line`,
   ).join("\n")}\n`;
-  await highlightOnce(plugin, { code: body, language, themes: THEMES });
+  await highlightOnce(plugin, { code: cachedHead(body), language, themes: THEMES });
 
   const longer = `${body}\`\`\``;
   const arrived: HighlightResult[] = [];
@@ -595,8 +581,7 @@ test("shedding a possible closing delimiter settles before the shorter result", 
     { length: 120 },
     (_, index) => `value_${index} = ${index}  # a completed Python line`,
   ).join("\n")}\n`;
-  // Markdown reports the closing run as body until it closes the fence.
-  await highlightOnce(plugin, { code: `${body}\`\``, language, themes: THEMES });
+  await highlightOnce(plugin, { code: cachedHead(body), language, themes: THEMES });
 
   const settled: HighlightResult[] = [];
   plugin.highlight({ code: `${body}\`\`\``, language, themes: THEMES }, (result) =>
@@ -625,7 +610,6 @@ test("an unchanged fence does not cancel an identical sibling's refresh", async 
     { length: 120 },
     (_, index) => `value_${index} = ${index}  # a completed Python line`,
   ).join("\n")}\n`;
-  // Byte-identical fences cannot be told apart, so they share one entry.
   await highlightOnce(plugin, { code: body, language, themes: THEMES });
   await highlightOnce(plugin, { code: body, language, themes: THEMES });
 
@@ -651,8 +635,7 @@ test("an unchanged fence does not cancel an identical sibling's refresh", async 
 test("a block that keeps failing to tokenize does not fill the cache", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
-  // createHighlighter accepts a nameless theme, but codeToTokens cannot find it
-  // again, so tokenization throws after the grammar has loaded.
+  // createHighlighter accepts a nameless theme but codeToTokens then throws after load.
   const nameless = [{ settings: [] }, { settings: [] }] as unknown as [
     ThemeInput,
     ThemeInput,
@@ -669,21 +652,34 @@ test("a block that keeps failing to tokenize does not fill the cache", async () 
     console.error = () => {};
     for (let render = 0; render < 600; render += 1) {
       plugin.highlight({ code: "broken = 1\n", language, themes: nameless });
-      // The first render only queues; let the grammar load resolve.
       if (render === 0) await new Promise((resolve) => setTimeout(resolve, 50));
     }
   } finally {
     console.error = originalError;
   }
 
-  // A successful update runs eviction. Failed fences must not have crowded the
-  // cache past MAX_FENCES in the meantime.
   await highlightOnce(plugin, { code: "later = 2\n", language, themes: THEMES });
   assert.equal(
     plugin.highlight({ code: kept, language, themes: THEMES }),
     first,
     "a failing block evicted a healthy fence",
   );
+});
+
+test("a short growth of a large fence is coloured at once", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const initial = Array.from(
+    { length: 90 },
+    (_, index) => `value_${index} = ${index}  # a completed Python line`,
+  ).join("\n");
+  assert.ok(initial.length > MIN_INCREMENTAL_CHARS);
+  await highlightOnce(plugin, { code: initial, language, themes: THEMES });
+  for (const grown of [`${initial}\nnext_value = 100`, `${initial}\nnext_value = 100\nand_more = 101`]) {
+    const now = plugin.highlight({ code: grown, language, themes: THEMES }, () => {});
+    assert.ok(now, "answered in the same call");
+    assert.deepEqual(now.tokens, (await reference(grown, "python")).tokens, "every streamed line is coloured, none waits for the refresh");
+  }
 });
 
 test("a throttled multiline tail matches the previous plugin", async () => {
@@ -698,7 +694,7 @@ test("a throttled multiline tail matches the previous plugin", async () => {
     language,
     themes: THEMES,
   });
-  const grown = `${initial}\nnext_value = 100\nand_more = 101`;
+  const grown = `${initial}\n${Array.from({ length: 40 }, (_, index) => `next_value_${index} = ${index}  # streamed`).join("\n")}`;
   const throttled = await highlightOnce(plugin, {
     code: grown,
     language,
@@ -714,4 +710,42 @@ test("a throttled multiline tail matches the previous plugin", async () => {
     ...first.tokens.slice(0, keptLineCount),
     ...expectedTail,
   ]);
+});
+
+test("cover reports what the cache leaves untokenized, and never tokenizes", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const streamedTo = PYTHON.lastIndexOf("\n", PYTHON.length - 2) + 1;
+  await highlightOnce(plugin, { code: PYTHON.slice(0, streamedTo), language, themes: THEMES });
+  const settled = `${PYTHON}value = 1`;
+  const cover = plugin.cover({ code: settled, language, themes: THEMES });
+  assert.equal(cover.uncovered, settled.length - streamedTo, "only the text past the last line the stream committed");
+  const full = await reference(settled, "python");
+  const covered = PYTHON.slice(0, streamedTo).split("\n").length - 1;
+  assert.deepEqual(cover.result?.tokens.slice(0, covered), full.tokens.slice(0, covered), "the committed lines carry their real colours");
+  assert.deepEqual(
+    cover.result?.tokens.slice(covered).map((line) => line.map((token) => token.content).join("")),
+    settled.slice(streamedTo).split("\n"),
+    "the rest is every remaining line, plain",
+  );
+  assert.equal(cover.result?.tokens.length, full.tokens.length, "the same lines as the finished fence, so its body keeps its shape");
+  assert.equal(plugin.cached({ code: settled, language, themes: THEMES }), null, "asking created no cache entry");
+  const exact = await highlightOnce(plugin, { code: settled, language, themes: THEMES });
+  assert.deepEqual(plugin.cover({ code: settled, language, themes: THEMES }), { uncovered: 0, result: exact });
+  const other = "def unrelated():\n    return 2\n";
+  assert.deepEqual(plugin.cover({ code: other, language, themes: THEMES }), { uncovered: other.length, result: null });
+  assert.deepEqual(
+    plugin.cover({ code: settled, language: "typescript" as HighlightOptions["language"], themes: THEMES }),
+    { uncovered: settled.length, result: null },
+    "another grammar's tokens are never offered",
+  );
+});
+
+test("cover never offers a worker's seeded result as a prefix to resume from", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const seeded = await reference(PYTHON, "python");
+  plugin.seed({ code: PYTHON, language, themes: THEMES }, seeded as unknown as HighlightResult);
+  const grown = `${PYTHON}value = 1\n`;
+  assert.deepEqual(plugin.cover({ code: grown, language, themes: THEMES }), { uncovered: grown.length, result: null });
 });

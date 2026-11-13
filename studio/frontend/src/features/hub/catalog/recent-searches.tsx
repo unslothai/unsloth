@@ -4,11 +4,7 @@
 import { Cancel01Icon, Clock01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-/**
- * Recent-searches suggestion panel beneath the search field. Presentational only
- * (parent owns visibility and store). Suppresses its own mousedown so clicks fire
- * without blurring the focused input and closing the panel.
- */
+/** Suppresses its own mousedown so clicks do not blur the input and close the panel. */
 export function RecentSearches({
   searches,
   onSelect,
@@ -27,7 +23,7 @@ export function RecentSearches({
   }
   return (
     <div
-      className="hub-recent-panel menu-soft-surface absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-[16px] p-1.5"
+      className="hub-recent-panel menu-soft-surface dropdown-surface absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-lg p-1"
       style={top === undefined ? undefined : { top }}
       aria-label="Recent searches"
       onMouseDown={(event) => event.preventDefault()}
@@ -47,11 +43,11 @@ export function RecentSearches({
       <ul className="flex flex-col">
         {searches.map((query) => (
           <li key={query}>
-            <div className="hub-recent-item group/recent flex items-center rounded-[10px] pr-1.5">
+            <div className="hub-recent-item group/recent flex items-center rounded-md pr-1.5">
               <button
                 type="button"
                 onClick={() => onSelect(query)}
-                className="flex min-w-0 flex-1 items-center gap-2.5 rounded-l-[10px] py-2 pl-2.5 text-left"
+                className="flex min-w-0 flex-1 items-center gap-2.5 rounded-l-md py-2 pl-2.5 text-left"
               >
                 <HugeiconsIcon
                   icon={Clock01Icon}

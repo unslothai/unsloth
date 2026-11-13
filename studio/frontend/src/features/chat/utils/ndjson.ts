@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** jsonl body with every record newline-terminated for clean concatenation. */
 export function ndjsonBody(records: readonly string[]): string {
   return records.length > 0 ? `${records.join("\n")}\n` : "";
 }
@@ -16,7 +15,10 @@ export function exportFormatIncludesSiblings(format: string): boolean {
   return (
     format !== "jsonl-raw" &&
     format !== "jsonl-messages" &&
-    format !== "sharegpt"
+    format !== "sharegpt" &&
+    format !== "markdown" &&
+    format !== "html" &&
+    format !== "pdf"
   );
 }
 
@@ -26,6 +28,7 @@ const OPENAI_MESSAGE_ROLES = new Set([
   "user",
   "assistant",
   "tool",
+  "function",
 ]);
 
 export function isOpenAIMessageRecord(
@@ -38,7 +41,11 @@ export function isOpenAIMessageRecord(
   return (
     typeof message.role === "string" &&
     OPENAI_MESSAGE_ROLES.has(message.role) &&
-    ("content" in message || Array.isArray(message.tool_calls))
+    !Array.isArray(message.messages) &&
+    !Array.isArray(message.conversations) &&
+    ("content" in message ||
+      Array.isArray(message.tool_calls) ||
+      "function_call" in message)
   );
 }
 

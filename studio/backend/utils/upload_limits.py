@@ -15,11 +15,18 @@ MAX_UPLOAD_LIMIT_MB = 8192
 _BYTES_PER_MB = 1024 * 1024
 MULTIPART_OVERHEAD_BYTES = 10 * _BYTES_PER_MB
 STT_AUDIO_RAW_MAX_BYTES = 25 * _BYTES_PER_MB
+AUDIO_INPUT_MAX_BYTES = 200 * _BYTES_PER_MB
 VIDEO_INPUT_REFERENCE_MAX_BYTES = 32 * _BYTES_PER_MB
 STT_AUDIO_B64_MAX_CHARS = ((STT_AUDIO_RAW_MAX_BYTES + 2) // 3) * 4
 STT_AUDIO_JSON_MAX_BYTES = STT_AUDIO_B64_MAX_CHARS + 64 * 1024
 VIDEO_INPUT_REFERENCE_B64_MAX_CHARS = ((VIDEO_INPUT_REFERENCE_MAX_BYTES + 2) // 3) * 4
 VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES = VIDEO_INPUT_REFERENCE_B64_MAX_CHARS + 64 * 1024
+
+LIBRARY_UPLOAD_MAX_BYTES = 512 * _BYTES_PER_MB
+# One clip or up to 121 frames for the video restyle workflow.
+VIDEO_RESTYLE_UPLOAD_MAX_BYTES = 512 * _BYTES_PER_MB
+# One file into a chat's sandbox folder, the Library's per-file cap.
+SANDBOX_UPLOAD_MAX_BYTES = LIBRARY_UPLOAD_MAX_BYTES
 
 LOCAL_SEED_UPLOAD_MAX_BYTES = 100 * _BYTES_PER_MB
 LOCAL_SEED_UPLOAD_MAX_LABEL = "100MB"
@@ -79,6 +86,24 @@ def upload_limit_bytes(limit_mb: int | None = None) -> int:
 
 def get_upload_limit_bytes() -> int:
     return upload_limit_bytes()
+
+
+AUDIO_INPUT_MAX_UPLOAD_MB_ENV = "UNSLOTH_STUDIO_AUDIO_MAX_UPLOAD_MB"
+
+
+def audio_input_max_bytes(limit_mb: int | None = None) -> int | None:
+    """Audio page upload cap: the upload setting, never under AUDIO_INPUT_MAX_BYTES.
+    UNSLOTH_STUDIO_AUDIO_MAX_UPLOAD_MB sets it exactly; 0 means no cap (None)."""
+    raw = os.environ.get(AUDIO_INPUT_MAX_UPLOAD_MB_ENV, "").strip()
+    try:
+        env_mb = int(raw) if raw else None
+    except ValueError:
+        env_mb = None
+    if env_mb == 0:
+        return None
+    if env_mb is not None and env_mb > 0:
+        return env_mb * _BYTES_PER_MB
+    return max(AUDIO_INPUT_MAX_BYTES, upload_limit_bytes(limit_mb))
 
 
 def upload_limit_label(limit_mb: int | None = None) -> str:

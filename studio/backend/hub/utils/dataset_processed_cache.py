@@ -20,6 +20,10 @@ _CACHE_DIRNAME = "snapshot-loads"
 _METADATA_FILENAME = "metadata.json"
 
 
+class UnsafeDatasetCachePathError(OSError):
+    """Cache entry is a symlink or escapes the cache root; unlike other OSErrors, never best effort."""
+
+
 @dataclass(frozen = True)
 class AppProcessedDatasetCache:
     repo_id: str
@@ -183,10 +187,14 @@ def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -
     root = _resolved_app_processed_dataset_cache_root(create = False)
     if root is None:
         raise OSError("Dataset cache root is unavailable")
-    entry_path = entry.path.resolve(strict = True)
-    entry_path.relative_to(root)
+    # Before resolve: a dangling swapped-in symlink would otherwise surface as FileNotFoundError.
     if entry.path.is_symlink() or entry.cache_dir.is_symlink():
-        raise OSError(f"Dataset cache path is a symlink: {entry.path}")
+        raise UnsafeDatasetCachePathError(f"Dataset cache path is a symlink: {entry.path}")
+    entry_path = entry.path.resolve(strict = True)
+    if not entry_path.is_relative_to(root):
+        raise UnsafeDatasetCachePathError(
+            f"Dataset cache entry escapes the cache root: {entry.path}"
+        )
     _atomic_write_metadata(
         entry_path / _METADATA_FILENAME,
         _metadata_payload(

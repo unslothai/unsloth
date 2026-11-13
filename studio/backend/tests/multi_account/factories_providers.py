@@ -5,22 +5,25 @@ from .factory_base import Factory, seeder
 
 PROVIDER_ID = "prov-openai-config"
 MIGRATE_PROVIDER_ID = "prov-openai-migrate"
+WINDOW_PROVIDER_ID = "prov-openai-window"
+WINDOW_MODEL = "prov-window-model"
 CODEX_PROVIDER_ID = "prov-codex-config"
 CODEX_FLOW_ID = "prov-codex-flow"
 MCP_SERVER_ID = "prov-mcp-server"
 PROMPT_ENTRY_ID = "prov-prompt-entry"
 PROMPT_LIST_ID = "prov-prompt-list"
 RETIRABLE_USERNAME = "prov-retirable"
+RENAMABLE_USERNAMES = ("prov-renamable", "prov-renamed")
 
 SENTINEL = "prov-sentinel café / 日本語"
 EDITED = "prov-edited"
 SAVED_API_KEY = "prov-saved-api-key"
 MIGRATED_API_KEY = "prov-migrated-api-key"
 
-# Managed accounts may only hold a public HTTP MCP address, so the probe goes to a dead public port.
+# Managed accounts may only hold a public HTTP MCP address.
 MCP_URL = "http://8.8.8.8:9/mcp"
 
-# Filled by the migrate seeder: the key must be encrypted with this process's RSA public key.
+# Filled by the seeder: must be encrypted with this process's RSA key.
 MIGRATION_BODY: dict = {"encrypted_api_key": ""}
 
 
@@ -46,7 +49,12 @@ def _encrypt_api_key(plaintext: str) -> str:
     return base64.b64encode(ciphertext).decode("ascii")
 
 
-def _create_provider(provider_id: str, provider_type: str, display_name: str) -> None:
+def _create_provider(
+    provider_id: str,
+    provider_type: str,
+    display_name: str,
+    models: tuple[str, ...] = (),
+) -> None:
     from core.inference.providers import get_base_url
     from storage import providers_db
 
@@ -56,8 +64,8 @@ def _create_provider(provider_id: str, provider_type: str, display_name: str) ->
         provider_type = provider_type,
         display_name = display_name,
         base_url = get_base_url(provider_type),
-        models = [],
-        available_models = [],
+        models = list(models),
+        available_models = list(models),
     )
 
 
@@ -98,6 +106,15 @@ def seed_provider_without_key(account) -> dict[str, str]:
     run_as(account, _create_provider, MIGRATE_PROVIDER_ID, "openai", SENTINEL)
     MIGRATION_BODY["encrypted_api_key"] = _encrypt_api_key(MIGRATED_API_KEY)
     return {"provider_id": MIGRATE_PROVIDER_ID}
+
+
+@seeder("prov-provider-with-model")
+def seed_provider_with_model(account) -> dict[str, str]:
+    from utils.account_context import run_as
+
+    # openai reports no served window, so the route answers without a network read.
+    run_as(account, _create_provider, WINDOW_PROVIDER_ID, "openai", SENTINEL, (WINDOW_MODEL,))
+    return {"provider_id": WINDOW_PROVIDER_ID}
 
 
 @seeder("prov-codex-provider")
@@ -224,6 +241,17 @@ def seed_account(account) -> dict[str, str]:
     return {"account_id": account.account_id}
 
 
+@seeder("prov-renamable-account")
+def seed_renamable_account(account) -> dict[str, str]:
+    from auth import storage
+
+    for row in storage.list_accounts():
+        if row["username"] in RENAMABLE_USERNAMES:
+            storage.delete_account(row["account_id"], lambda _context: None)
+    issued = storage.issue_account_setup_code(username = RENAMABLE_USERNAMES[0])
+    return {"account_id": issued["account"]["account_id"]}
+
+
 @seeder("prov-retirable-account")
 def seed_retirable_account(account) -> dict[str, str]:
     """A managed account of its own, whose deletion retires a private root the matrix's unchanged-workspace assertion would misread as erased."""
@@ -236,7 +264,6 @@ def seed_retirable_account(account) -> dict[str, str]:
             storage.delete_account(row["account_id"], lambda _context: None)
     issued = storage.issue_account_setup_code(username = RETIRABLE_USERNAME)
     account_id = issued["account"]["account_id"]
-    # First database use creates the private root, so the retire has a directory to move.
     run_as(AccountContext(account_id, RETIRABLE_USERNAME, "user"), studio_db.list_prompt_entries)
     return {"account_id": account_id}
 
@@ -272,6 +299,10 @@ _ACCOUNTS_DELETE_REASON = (
     "owner administration route behind require_owner, inverted like its siblings; the target is "
     "a disposable account because a real owner delete renames the target's whole private root"
 )
+_ACCOUNTS_RENAME_REASON = (
+    "owner administration route behind require_owner, inverted like its siblings; the target is "
+    "a disposable account because a rename signs the target out"
+)
 _ACCOUNTS_SELF_REASON = (
     "owner administration route behind require_owner, so the contract inverts: the owner "
     "succeeds against alice, both managed accounts are refused, and it cannot administer itself"
@@ -291,6 +322,11 @@ FACTORIES = {
         "prov-provider-without-key",
         MIGRATION_BODY,
         fragment = '"has_api_key":true',
+    ),
+    "routes.providers:POST:/{provider_id}/served-window": Factory(
+        "prov-provider-with-model",
+        query = {"model": WINDOW_MODEL},
+        fragment = '"context_length":null',
     ),
     "routes.openai_codex_auth:GET:/{provider_id}/codex/models": Factory(
         "prov-codex-provider", fragment = '"source":"curated"'
@@ -361,6 +397,23 @@ FACTORIES = {
     ),
     "routes.accounts:POST:/{account_id}/setup-code": Factory(
         "prov-account",
+        owner = (200,),
+        right = (403,),
+        wrong = (403,),
+        self_expected = (400,),
+        reason = _ACCOUNTS_SELF_REASON,
+    ),
+    "routes.accounts:PUT:/{account_id}/username": Factory(
+        "prov-renamable-account",
+        {"username": RENAMABLE_USERNAMES[1]},
+        owner = (200,),
+        right = (403,),
+        wrong = (403,),
+        reason = _ACCOUNTS_RENAME_REASON,
+    ),
+    "routes.accounts:PUT:/{account_id}/model-access": Factory(
+        "prov-account",
+        {"model_allowlist": ["unsloth/*"]},
         owner = (200,),
         right = (403,),
         wrong = (403,),

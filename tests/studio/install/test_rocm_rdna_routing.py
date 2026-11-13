@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""RDNA 2/3/4 routing, validated on CPU-only CI with no AMD hardware.
-
-tests/_zoo_rocm_spoof.py presents torch as each Radeon gfx arch, then we assert
-unsloth_zoo routes it: device_type -> "hip", llama.cpp target -> ("rocm", gfx),
-and the per-family ROCm bundle suffix. The torch-facing checks run in a
-subprocess so the spoof never leaks into sibling tests and DEVICE_TYPE (cached
-at import) resolves from a clean process.
-"""
+"""Validates RDNA 2/3/4 routing on CPU CI; the torch spoof runs in a subprocess so it cannot leak."""
 
 from __future__ import annotations
 
@@ -22,25 +15,23 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("unsloth_zoo")
 
-_TESTS_DIR = Path(__file__).resolve().parents[2]  # tests/
+_TESTS_DIR = Path(__file__).resolve().parents[2]
 
 # gfx -> (expected llama.cpp target, expected ROCm bundle family).
 _ARCHES = {
-    "gfx1030": (("rocm", "gfx1030"), "gfx103X"),  # RDNA2
+    "gfx1030": (("rocm", "gfx1030"), "gfx103X"),
     "gfx1031": (("rocm", "gfx1031"), "gfx103X"),
     "gfx1032": (("rocm", "gfx1032"), "gfx103X"),
     "gfx1034": (("rocm", "gfx1034"), "gfx103X"),
-    "gfx1100": (("rocm", "gfx1100"), "gfx110X"),  # RDNA3
+    "gfx1100": (("rocm", "gfx1100"), "gfx110X"),
     "gfx1101": (("rocm", "gfx1101"), "gfx110X"),
     "gfx1102": (("rocm", "gfx1102"), "gfx110X"),
     "gfx1150": (("rocm", "gfx1150"), "gfx1150"),  # RDNA3.5 APU (self-family)
     "gfx1151": (("rocm", "gfx1151"), "gfx1151"),
-    "gfx1200": (("rocm", "gfx1200"), "gfx120X"),  # RDNA4
+    "gfx1200": (("rocm", "gfx1200"), "gfx120X"),
     "gfx1201": (("rocm", "gfx1201"), "gfx120X"),
 }
 
-# Child: spoof each arch, then record device_type once (fresh import) and the live llama.cpp target per arch.
-# Emits one JSON line the parent parses.
 _CHILD = """
 import json, sys
 sys.path.insert(0, {tests!r})
@@ -70,8 +61,7 @@ print("RESULT " + json.dumps({{"device_type": device_type, "targets": targets}})
 @pytest.fixture(scope = "module")
 def routed():
     code = _CHILD.format(tests = str(_TESTS_DIR), arches = list(_ARCHES))
-    # get_device_type() returns "mlx" before it ever looks at torch on Darwin arm64 with mlx installed, so the spoof
-    # would be ignored. Force the GPU path to keep the assertion live there instead of skipping it.
+    # On Darwin arm64 with mlx, get_device_type() returns 'mlx' before torch, ignoring the spoof.
     env = {**os.environ, "UNSLOTH_FORCE_GPU_PATH": "1"}
     proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = env)
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)
@@ -81,17 +71,14 @@ def routed():
 
 @pytest.mark.parametrize("gfx", list(_ARCHES))
 def test_detect_gpu_target(routed, gfx):
-    # RDNA card is routed to its ROCm gfx target (drives the llama.cpp bundle).
     assert tuple(routed["targets"][gfx]) == _ARCHES[gfx][0]
 
 
 def test_device_type_is_hip(routed):
-    # An RDNA card must resolve the compute device_type to "hip".
     assert routed["device_type"] == ["hip", True]
 
 
 @pytest.mark.parametrize("gfx", list(_ARCHES))
 def test_rocm_gfx_family(gfx):
-    # Pure mapping (no torch): each gfx picks the right per-family ROCm bundle.
     from unsloth_zoo import llama_cpp as lc
     assert lc._rocm_gfx_family(gfx) == _ARCHES[gfx][1]

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared plumbing for the ``node --experimental-strip-types`` source harnesses.
-
-``studio/frontend`` carries no JS test runner, so frontend behaviours are pinned by slicing
-the real source VERBATIM into a harness module and running it under node; only the fixtures
-the sliced code reads through are hand-written. Harness and runner go into a per-invocation
-``mkdtemp(prefix = "run")``, so concurrent tests share no file.
-"""
+"""Frontend source is sliced verbatim into node --experimental-strip-types harnesses."""
 
 from __future__ import annotations
 
@@ -39,12 +33,7 @@ def read(path: Path) -> str:
 
 
 def require_code_anchor(marker: str, role: str) -> None:
-    """Refuse a comment as a slice anchor.
-
-    Comments are prose, so rewording one moves no behaviour but still breaks the slice:
-    #10114 trimmed studio/frontend comments and failed 93 tests here over nothing it
-    changed. Anchor on the declaration the comment sits above instead.
-    """
+    """Slice anchors must be code: rewording a comment breaks the slice without changing any behaviour."""
     if marker.lstrip().startswith(("//", "/*", "{/*")):
         raise AssertionError(
             f"{role} anchor is a comment, so rewording it breaks this test: {marker!r}"
@@ -83,13 +72,7 @@ def run_harness(
     script: str,
     sources: Sequence[Path] = (),
 ) -> dict:
-    """Run ``script`` against ``harness_source`` and parse its last stdout line.
-
-    ``sources`` are the files the harness sliced from. Given them, the helpers those slices
-    reference are followed out of the studio sources and sliced in too (``_ts_deps``), so a
-    sliced function that gains a dependency does not have to be met with another hand-written
-    name in the prelude. Fixtures the harness already defines always win.
-    """
+    """Runs the harness and parses its last stdout line; given sources, helpers it needs are sliced in."""
     if sources:
         harness_source = resolve_dependencies(harness_source, tuple(sources))
     temp_root.mkdir(parents = True, exist_ok = True)

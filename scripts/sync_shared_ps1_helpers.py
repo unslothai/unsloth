@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Copy the shared Windows preflight helpers from install.ps1 into studio/setup.ps1.
-
-install.ps1 has to run standalone, before any repo exists, so it cannot dot-source
-setup.ps1 and instead carries byte-identical copies of a handful of helpers.
-tests/studio/install/test_denied_llama_cpp_preflight.py fails when the two drift.
-Editing one and running this keeps them together, rather than hand-copying and
-finding out from CI.
-
-Usage:
-    python3 scripts/sync_shared_ps1_helpers.py [--check]
-
---check exits 1 without writing when setup.ps1 is out of date, for use in CI.
-"""
+"""Syncs byte-identical helpers from install.ps1 into studio/setup.ps1; --check exits 1 on drift."""
 
 from __future__ import annotations
 
@@ -51,7 +39,7 @@ def dedented(source: str) -> str:
     """Drop the common indentation, which is the only difference allowed."""
     lines = source.splitlines()
     body = [line for line in lines if line.strip()]
-    indent = min(len(line) - len(line.lstrip(" ")) for line in body)
+    indent = min((len(line) - len(line.lstrip(" ")) for line in body), default = 0)
     return "\n".join(line[indent:] if line.strip() else "" for line in lines)
 
 
@@ -92,15 +80,12 @@ def main() -> int:
             setup_text = setup_text[:setup_start] + wanted + setup_text[setup_end:]
             previous = name
             continue
-        # New helper. Land it where install.ps1 keeps it, after the one before
-        # it, with the comment block that explains it.
+        # New helper: insert it after the one before it in install.ps1, with its comment block.
         if previous is None:
             raise SystemExit(f"{name} is new and has nothing to follow in setup.ps1")
-        # dedented() drops the trailing newline, so the comment would otherwise
-        # run into the function keyword and hide the declaration from every
-        # reader of this file, this script included.
+        # dedented() drops the trailing newline, which would glue the comment to the function keyword.
         comment = dedented(install_text[leading_comment_start(install_text, start) : start])
-        comment = comment.rstrip("\n") + "\n"
+        comment = comment.rstrip("\n") + "\n" if comment else ""
         _, after = function_span(setup_text, previous)
         setup_text = setup_text[:after] + "\n\n" + comment + wanted + setup_text[after:]
         stale.append(name)

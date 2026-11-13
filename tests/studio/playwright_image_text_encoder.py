@@ -11,9 +11,11 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import expect, sync_playwright
 
+from _playwright_robust import follow_os_reduced_motion
+
 from playwright_image_model_footprint import BASE_URL, REPO_ID, _api_payload, _json, klein_row
 
-# A refusal: value "off", status "fell_back". The only shape the echoing stub cannot produce.
+# A refusal (value "off", status "fell_back"): the only shape the echoing stub cannot produce.
 DECLINE = os.environ.get("PW_DECLINE", "0") == "1"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_text_encoder"))
 ART.mkdir(parents = True, exist_ok = True)
@@ -56,6 +58,9 @@ def main():
                 base_repo = "black-forest-labs/FLUX.2-klein-4B",
                 family = "flux.2-klein",
                 model_kind = "gguf",
+                # Status echoes the loaded checkpoint; reapplyTarget (engine-choice.ts, 14232)
+                # reloads the last pick only while it matches status.
+                gguf_filename = loads[-1].get("gguf_filename"),
                 dtype = "bfloat16",
                 text_encoder_quant = value,
                 resolved = {
@@ -83,6 +88,7 @@ def main():
         context = browser.new_context(
             viewport = {"width": 1440, "height": 1000}, reduced_motion = "reduce"
         )
+        follow_os_reduced_motion(context)
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');"
             "localStorage.setItem('unsloth_download_transport', 'http');"
@@ -157,6 +163,9 @@ def main():
                     },
                 )
             elif path == "/api/inference/images/load":
+                # A GGUF pick always names its file, and the status stub echoes it as the backend's does.
+                if not payload.get("gguf_filename"):
+                    errors.append(f"a GGUF load without gguf_filename: {payload}")
                 loads.append(payload)
                 state["loaded"] = True
                 _json(route, status())
@@ -175,6 +184,11 @@ def main():
                         "error": None,
                     },
                 )
+            elif path == "/api/system":
+                # NVFP4 options only render on a host that reports NVFP4 diffusion.
+                system = _api_payload(path, query, full_footprint = True)
+                system["nvfp4_diffusion"] = True
+                _json(route, system)
             else:
                 _json(route, _api_payload(path, query, full_footprint = True))
 
@@ -202,16 +216,16 @@ def main():
         assert not loads
         choose("INT8")
         state["complete"] = True
-        expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled(
-            timeout = 20_000
-        )
+        expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled(timeout = 20_000)
         if DECLINE:
-            # The select must show what RAN, or the page advertises a precision nothing is using.
-            expect(encoder).to_have_text("Default")
+            # The select must show what ran: an engaged "off" maps to "none" (images-page.tsx), not "auto".
+            expect(encoder).to_have_text("Dense (bf16)")
             assert loads[-1]["text_encoder_quant"] == "fp8", loads
             assert not errors, errors
             _record(page, state, loads, plans, errors)
-            print(f"Passed: a declined encoder precision reseeds to Default ({browser.version})")
+            print(
+                f"Passed: a declined encoder precision reseeds to Dense (bf16) ({browser.version})"
+            )
             context.close()
             browser.close()
             return
@@ -220,7 +234,7 @@ def main():
 
         for label, requested, displayed in [
             ("FP8 (compute)", "fp8_dynamic", "FP8 (compute)"),
-            ("NVFP4 (Blackwell)", "nvfp4", "NVFP4 (Blackwell)"),
+            ("NVFP4", "nvfp4", "NVFP4"),
             ("INT8", "int8", "FP8 (storage)"),
             ("Default", None, "Default"),
         ]:
@@ -228,15 +242,14 @@ def main():
             with page.expect_request(
                 lambda request: urlparse(request.url).path == "/api/inference/images/load"
             ):
-                page.get_by_role("button", name = "Reapply to loaded model").click()
-            expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled()
+                page.get_by_role("button", name = "Reapply", exact = True).click()
+            expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled()
             expect(encoder).to_have_text(displayed)
             assert loads[-1].get("text_encoder_quant") == requested, loads[-1]
             if requested is None:
                 assert "text_encoder_quant" not in loads[-1]
-        # A completed reload can have the same precision record as its predecessor.
         state.update(cached = False, complete = False, started = False)
-        page.get_by_role("button", name = "Reapply to loaded model").scroll_into_view_if_needed()
+        page.get_by_role("button", name = "Reapply", exact = True).scroll_into_view_if_needed()
         page.locator(".unsloth-model-selector-trigger:visible").click()
         klein_row(page).click()
         gguf = page.get_by_text("GGUF", exact = True)
@@ -256,7 +269,6 @@ def main():
             page.wait_for_timeout(50)
         assert len(held_status) == 1
         page.get_by_test_id("nav-row-hub").click()
-        # Path only: the Hub appends its own ?tab= on mount and an exact-URL assertion loses that race.
         expect(page).to_have_url(re.compile(r"/hub(\?|$)"))
         page.get_by_test_id("nav-row-images").click()
         expect(page).to_have_url(re.compile(r"/images(\?|$)"))
@@ -272,12 +284,11 @@ def main():
         for response in replies:
             _json(response, status())
         held_status.clear()
-        # The staged load carries the precision pinned when it was queued, so this one is Default.
+        # The staged load carries the precision pinned when it was queued.
         assert "text_encoder_quant" not in loads[-1], loads[-1]
-        # Either order ends the same, and the edit made while the load staged survives: the reseed
-        # follows a change of BUILD, not every completed load, and Reapply is how the user applies it.
+        # The reseed follows a change of build, not every completed load.
         expect(encoder).to_have_text("FP8 (storage)")
-        expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled()
+        expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled()
         assert not errors, errors
         _record(page, state, loads, plans, errors)
         print(

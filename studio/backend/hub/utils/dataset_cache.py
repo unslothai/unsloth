@@ -11,7 +11,10 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
+from loggers import get_logger
+
 from hub.utils.dataset_processed_cache import (
+    UnsafeDatasetCachePathError,
     mark_app_processed_dataset_cache_complete,
     normalized_commit_hash,
     prepare_app_processed_dataset_cache,
@@ -24,6 +27,7 @@ from hub.utils.hf_cache_state import (
 )
 from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
+logger = get_logger(__name__)
 
 TRAINING_DATA_EXTS = (".parquet", ".json", ".jsonl", ".csv")
 
@@ -57,8 +61,7 @@ def hf_datasets_cache_roots() -> list[Path]:
         seen.add(resolved)
         roots.append(resolved)
 
-    # Keep this stdlib-only: training validates cached datasets before activating a Transformers
-    # sidecar, and importing datasets here would cache the base huggingface_hub module first.
+    # Stdlib-only: importing datasets here would cache base huggingface_hub before the sidecar.
     env_cache = os.environ.get("HF_DATASETS_CACHE")
     if env_cache:
         add(Path(env_cache))
@@ -89,8 +92,7 @@ def _label_tokens(text: str) -> set[str]:
 
 
 def split_label_matches(text: str, split: str) -> bool:
-    """Match a split name against a file path's tokens, expanding split aliases
-    (validation/valid/val, eval) so cached and remote selection agree."""
+    """Split aliases (validation/valid/val, eval) expand so cache and remote selection agree."""
     normalized = split.strip().lower()
     if not normalized:
         return False
@@ -278,7 +280,9 @@ def resolved_dataset_snapshot_file(snapshot: str | Path, source_path: str) -> Op
     except (OSError, RuntimeError, ValueError):
         return None
     if not resolved.is_file() or not (
-        resolved.is_relative_to(snapshot_path) or resolved.is_relative_to(repo_dir / "blobs")
+        resolved.is_relative_to(snapshot_path)
+        or resolved.is_relative_to(repo_dir / "blobs")
+        or resolved.is_relative_to(repo_dir.parent / "blobs")
     ):
         return None
     try:
@@ -516,6 +520,8 @@ def load_cached_hf_dataset(
     if token:
         kwargs["token"] = token
     if stream_limited_snapshot:
+        from utils.datasets.iterable import take_rows
+
         kwargs["streaming"] = True
         with tempfile.TemporaryDirectory(prefix = "unsloth-dataset-slice-") as cache_dir:
             kwargs["cache_dir"] = cache_dir
@@ -537,7 +543,7 @@ def load_cached_hf_dataset(
                         {name: SplitInfo(name = name) for name in available_splits}
                     )
             split_identity = getattr(stream, "split", None)
-            rows = list(stream.take(row_limit))
+            rows = take_rows(stream, row_limit)
             del stream, streams
         from datasets import Dataset
 
@@ -557,7 +563,17 @@ def load_cached_hf_dataset(
         )
     dataset = load_dataset(**kwargs)
     if app_cache is not None:
-        mark_app_processed_dataset_cache_complete(app_cache)
+        # Advisory flag: a purged entry, read-only home or full disk must not discard a loaded dataset.
+        try:
+            mark_app_processed_dataset_cache_complete(app_cache)
+        except UnsafeDatasetCachePathError:
+            raise
+        except (OSError, RuntimeError, ValueError):
+            logger.warning(
+                "Could not record processed dataset cache completion for %s",
+                repo_id,
+                exc_info = True,
+            )
     return dataset
 
 
@@ -602,12 +618,7 @@ def cached_dataset_candidates(
 
 
 def dataset_cache_can_answer(repo_id: str) -> bool:
-    """True if some cached copy of *repo_id* could satisfy a preview without the Hub.
-
-    Both caches count. ``datasets`` answers a streaming load from its own PREPARED cache,
-    which is where the measured leak was, while the hub snapshot backs the file-level
-    readers.
-    """
+    """Counts both the prepared datasets cache, which streaming loads use, and the hub snapshot."""
     if not repo_id:
         return False
     try:
@@ -625,21 +636,7 @@ def refuse_unauthorized_dataset_preview(
     *,
     offline: bool = False,
 ) -> None:
-    """Raise 404 when a cached dataset preview would be served to a caller who cannot reach it.
-
-    ``datasets`` satisfies a load from its own prepared cache without consulting the
-    credential, so an explicit token that cannot reach the repo is a leak online as well as
-    off. Both preview routes spelled this out separately, and not equivalently, under
-    comments claiming they mirrored each other; stating it once removes that trap.
-
-    The anonymous sentinel was refused only under a declared offline env, which left the
-    case that matters: a Hub merely unreachable is not a Hub declared absent, and the load
-    then falls back to the prepared cache all the same. It is now refused whenever the repo
-    is not public, which ``cached_read_refused`` answers for every reader alike.
-
-    ``offline`` is the caller's own cache-only intent, forwarded so a prefer-local request
-    does not put its credential and repo id on the wire for a branch that will not use them.
-    """
+    """Raises 404 for a cached preview the caller cannot reach, since datasets ignores the credential."""
     from fastapi import HTTPException
     from hub.utils.hf_tokens import cached_read_refused
 

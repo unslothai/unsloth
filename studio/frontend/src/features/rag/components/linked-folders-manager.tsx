@@ -22,10 +22,25 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { FolderSyncIcon, MoreHorizontalIcon, RotateCwIcon } from "lucide-react";
+import { isTauri } from "@/lib/api-base";
+import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
+import { RefreshGlyph } from "@/lib/refresh-icon";
+import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderSyncIcon } from "@/lib/folder-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
-import type { FolderSyncJob, LinkedFolderScope } from "../types/rag";
+import type {
+  FolderSyncJob,
+  LinkedFolder,
+  LinkedFolderScope,
+  LinkedFolderSkipReason,
+} from "../types/rag";
 import { useLinkedFolders } from "./use-linked-folders";
+
+export const FOLDER_CARD_CLASS =
+  "overflow-hidden rounded-xl border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
+export const FOLDER_ROW_CLASS =
+  "flex min-w-0 items-center gap-3 px-3.5 py-2.5 border-t border-border/60 first:border-t-0 dark:border-[rgb(255_255_255_/_calc(0.08*var(--contrast-edge-gain,1)))]";
 
 function percent(progress?: number | null): number | null {
   if (progress == null || !Number.isFinite(progress)) return null;
@@ -47,13 +62,82 @@ function jobSummary(job: FolderSyncJob): string {
     : `${processed} of ${discovered} files`;
 }
 
+const SKIP_LABELS: Record<LinkedFolderSkipReason, (count: number) => string> = {
+  gitignored: (n) => `${n} ignored by .gitignore`,
+  build_dirs: (n) => `${n} build folder${n === 1 ? "" : "s"}`,
+  too_large: (n) => `${n} large data file${n === 1 ? "" : "s"}`,
+  over_limit: (n) => `${n} past the file limit`,
+};
+
+export function skippedSummary(folder: LinkedFolder): string | null {
+  const parts = (Object.keys(SKIP_LABELS) as LinkedFolderSkipReason[]).flatMap(
+    (reason) => {
+      const count = folder.skipped?.[reason] ?? 0;
+      return count > 0 ? [SKIP_LABELS[reason](count)] : [];
+    },
+  );
+  return parts.length > 0 ? `Skipped ${parts.join(" · ")}` : null;
+}
+
+function FolderReport({ folder }: { folder: LinkedFolder }) {
+  const [open, setOpen] = useState(false);
+  const skipped = skippedSummary(folder);
+  const failures = folder.failures ?? [];
+  const failureCount = folder.failureCount ?? failures.length;
+  if (!skipped && failureCount === 0) return null;
+  return (
+    <div className="mt-1 flex flex-col gap-1 text-ui-11 text-muted-foreground">
+      {skipped ? (
+        <p
+          className="truncate"
+          title={`${skipped}. Hidden folders, dependencies and secrets are never indexed.`}
+        >
+          {skipped}
+        </p>
+      ) : null}
+      {failureCount > 0 ? (
+        <>
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((value) => !value)}
+            className="self-start text-destructive underline-offset-2 hover:underline"
+          >
+            {open ? "Hide" : "Show"} {failureCount} file
+            {failureCount === 1 ? "" : "s"} that couldn't be indexed
+          </button>
+          {open ? (
+            <ul className="max-h-48 overflow-y-auto rounded-lg bg-muted/40 px-2.5 py-1.5">
+              {failures.map((failure) => (
+                <li key={failure.path} className="flex min-w-0 gap-2 py-0.5">
+                  <span className="min-w-0 shrink truncate font-mono" title={failure.path}>
+                    {failure.path}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate" title={failure.error}>
+                    {failure.error}
+                  </span>
+                </li>
+              ))}
+              {failureCount > failures.length ? (
+                <li className="py-0.5">and {failureCount - failures.length} more</li>
+              ) : null}
+            </ul>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 export function LinkedFoldersManager({
   scope,
   compact = false,
+  variant = "panel",
   onSourcesChanged,
 }: {
   scope?: LinkedFolderScope;
   compact?: boolean;
+  variant?: "panel" | "card";
   onSourcesChanged?: () => void;
 }) {
   const manager = useLinkedFolders(scope, onSourcesChanged);
@@ -62,17 +146,220 @@ export function LinkedFoldersManager({
     name: string;
   } | null>(null);
 
+  function runningJob(folderId: string): FolderSyncJob | undefined {
+    const job = manager.jobs[folderId];
+    return job?.status === "pending" || job?.status === "running"
+      ? job
+      : undefined;
+  }
+
+  function folderMenu(folder: (typeof manager.folders)[number], running: boolean) {
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild={true}>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            className="shrink-0 rounded-full"
+            aria-label={`Actions for ${folder.displayName}`}
+          >
+            {running ? (
+              <Spinner className="size-3.5" />
+            ) : (
+              <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            disabled={running}
+            onSelect={() => void manager.sync(folder.id)}
+          >
+            <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="size-3.5" /> Sync changes
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={running}
+            onSelect={() => void manager.rebuild(folder.id)}
+          >
+            <RefreshGlyph className="size-3.5" /> Rebuild index
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => void manager.remove(folder.id, false)}
+          >
+            Unlink and keep indexed files
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={() =>
+              setRemoveIndexFolder({
+                id: folder.id,
+                name: folder.displayName,
+              })
+            }
+          >
+            Unlink and remove indexed files
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+
+  const removeIndexConfirm = (
+    <AlertDialog
+      open={removeIndexFolder !== null}
+      onOpenChange={(open) => {
+        if (!open) setRemoveIndexFolder(null);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Unlink folder and remove indexed documents?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will unlink &quot;{removeIndexFolder?.name}&quot; and remove all
+            documents it manages from the index. The files on disk will not be
+            changed.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={() => {
+              const folder = removeIndexFolder;
+              setRemoveIndexFolder(null);
+              if (folder) void manager.remove(folder.id, true);
+            }}
+          >
+            Unlink and remove
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
+  if (variant === "card") {
+    const rowClass = FOLDER_ROW_CLASS;
+    return (
+      <section className="flex min-w-0 flex-col gap-2">
+        <div className={FOLDER_CARD_CLASS}>
+          {manager.loading && manager.folders.length === 0 ? (
+            <div className={cn(rowClass, "text-ui-13 text-muted-foreground")}>
+              <Spinner className="size-4 shrink-0" />
+              <span>Loading folders…</span>
+            </div>
+          ) : (
+            manager.folders.map((folder) => {
+              const job = manager.jobs[folder.id];
+              const running = runningJob(folder.id) !== undefined;
+              const failed =
+                folder.status === "error" || job?.status === "failed";
+              const detail = running
+                ? jobSummary(job as FolderSyncJob)
+                : failed
+                  ? (job?.status === "failed" ? job.error : folder.error) ||
+                    "Sync failed"
+                  : null;
+              return (
+                <div
+                  key={folder.id}
+                  className={rowClass}
+                  title={
+                    folder.lastSyncedAt
+                      ? `${folder.displayName}: last synced ${new Date(folder.lastSyncedAt).toLocaleString()}`
+                      : `${folder.displayName}: ${folder.documentCount ?? 0} indexed documents`
+                  }
+                >
+                  <HugeiconsIcon
+                    icon={FolderSyncIcon}
+                    strokeWidth={1.75}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <span
+                      className="block truncate text-sm"
+                      title={folder.displayName}
+                    >
+                      {folder.displayName}
+                    </span>
+                    {detail ? (
+                      <p
+                        className={cn(
+                          "truncate text-ui-11 text-muted-foreground",
+                          failed && "text-destructive",
+                        )}
+                      >
+                        {detail}
+                      </p>
+                    ) : null}
+                    {running ? (
+                      <Progress
+                        value={percent(job?.progress) ?? 0}
+                        aria-label={`Sync progress for ${folder.displayName}`}
+                        className="mt-1.5 h-1"
+                      />
+                    ) : (
+                      <FolderReport folder={folder} />
+                    )}
+                  </div>
+                  {folderMenu(folder, running)}
+                </div>
+              );
+            })
+          )}
+          {scope ? (
+            <button
+              type="button"
+              disabled={!manager.desktopSupported || manager.mutating}
+              onClick={() => void manager.link()}
+              // The title is the tooltip saying why it is disabled, which would otherwise be read as the name.
+              aria-label="Add folder"
+              title={
+                manager.desktopSupported
+                  ? "Choose a local folder"
+                  : sourceFolderUnavailableMessage(isTauri)
+              }
+              className={cn(
+                rowClass,
+                "w-full cursor-pointer py-3 text-left text-sm transition-colors hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
+              )}
+            >
+              {manager.mutating ? (
+                <Spinner className="size-4 shrink-0" />
+              ) : (
+                <HugeiconsIcon
+                  icon={FolderAddIcon}
+                  strokeWidth={1.75}
+                  className="size-4 shrink-0 text-muted-foreground"
+                />
+              )}
+              <span>Add folder</span>
+            </button>
+          ) : null}
+        </div>
+        {!manager.desktopSupported ? (
+          <p className="px-1 text-ui-11 text-muted-foreground">
+            {sourceFolderUnavailableMessage(isTauri)} Existing source folders
+            continue to sync.
+          </p>
+        ) : null}
+        {removeIndexConfirm}
+      </section>
+    );
+  }
+
   return (
     <section className={cn("flex min-w-0 flex-col gap-3", compact && "gap-2")}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-foreground">
-            Linked local folders
+            Source folders
           </h3>
           <p className="text-xs leading-snug text-muted-foreground">
             {manager.desktopSupported
-              ? "Keep supported documents indexed as this folder changes."
-              : "Existing linked folders stay synced; linking requires the managed desktop backend."}
+              ? SOURCE_FOLDER_DESCRIPTION
+              : `${sourceFolderUnavailableMessage(isTauri)} Existing source folders continue to sync.`}
           </p>
         </div>
         {scope ? (
@@ -80,21 +367,21 @@ export function LinkedFoldersManager({
             type="button"
             size="sm"
             variant="outline"
-            className="shrink-0"
+            className="mt-[var(--ui-title-cap-inset)] shrink-0"
             disabled={!manager.desktopSupported || manager.mutating}
             onClick={() => void manager.link()}
             title={
               manager.desktopSupported
                 ? "Choose a local folder"
-                : "Requires the managed desktop backend"
+                : sourceFolderUnavailableMessage(isTauri)
             }
           >
             {manager.mutating ? (
               <Spinner className="size-3.5" />
             ) : (
-              <FolderSyncIcon className="size-3.5" />
+              <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-3.5" />
             )}
-            Link folder
+            Add folder
           </Button>
         ) : null}
       </div>
@@ -104,8 +391,11 @@ export function LinkedFoldersManager({
           <Spinner />
         </div>
       ) : manager.folders.length === 0 ? (
-        <div className="rounded-xl border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
-          No linked folders.
+        <div className="rounded-lg border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
+          {/* The unscoped list has no Add: a folder is linked to one project or knowledge base. */}
+          {scope
+            ? "No source folders."
+            : "No source folders. Link one from a project or knowledge base."}
         </div>
       ) : (
         <ul className="flex flex-col gap-1.5">
@@ -117,9 +407,9 @@ export function LinkedFoldersManager({
             return (
               <li
                 key={folder.id}
-                className="flex min-w-0 items-start gap-3 rounded-xl border border-border/70 bg-background px-3 py-2.5"
+                className="flex min-w-0 items-start gap-3 rounded-lg border border-border/70 bg-background px-3 py-2.5"
               >
-                <FolderSyncIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
                     <span
@@ -161,91 +451,17 @@ export function LinkedFoldersManager({
                       aria-label={`Sync progress for ${folder.displayName}`}
                       className="mt-2 h-1.5"
                     />
-                  ) : null}
+                  ) : (
+                    <FolderReport folder={folder} />
+                  )}
                 </div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild={true}>
-                    <Button
-                      type="button"
-                      size="icon-sm"
-                      variant="ghost"
-                      className="shrink-0 rounded-full"
-                      aria-label={`Actions for ${folder.displayName}`}
-                    >
-                      {running ? (
-                        <Spinner className="size-3.5" />
-                      ) : (
-                        <MoreHorizontalIcon className="size-4" />
-                      )}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      disabled={running}
-                      onSelect={() => void manager.sync(folder.id)}
-                    >
-                      <FolderSyncIcon className="size-3.5" /> Sync changes
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={running}
-                      onSelect={() => void manager.rebuild(folder.id)}
-                    >
-                      <RotateCwIcon className="size-3.5" /> Rebuild index
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onSelect={() => void manager.remove(folder.id, false)}
-                    >
-                      Unlink and keep indexed files
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={() =>
-                        setRemoveIndexFolder({
-                          id: folder.id,
-                          name: folder.displayName,
-                        })
-                      }
-                    >
-                      Unlink and remove indexed files
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                {folderMenu(folder, running)}
               </li>
             );
           })}
         </ul>
       )}
-      <AlertDialog
-        open={removeIndexFolder !== null}
-        onOpenChange={(open) => {
-          if (!open) setRemoveIndexFolder(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Unlink folder and remove files?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will unlink &quot;{removeIndexFolder?.name}&quot; and remove
-              all documents it manages from the index. The files on disk will
-              not be changed.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                const folder = removeIndexFolder;
-                setRemoveIndexFolder(null);
-                if (folder) void manager.remove(folder.id, true);
-              }}
-            >
-              Unlink and remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {removeIndexConfirm}
     </section>
   );
 }

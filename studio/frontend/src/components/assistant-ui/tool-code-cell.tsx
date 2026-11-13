@@ -4,15 +4,18 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { escapeBidiControls } from "@/lib/escape-bidi-controls";
 import { MAX_HIGHLIGHT_CHARS, codeFence } from "@/lib/markdown-plugins";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { code as codePlugin } from "@streamdown/code";
-import { CopyIcon, DownloadIcon } from "lucide-react";
+import { IconActionButton } from "./icon-action-button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
+import { codePlugin } from "./shared-code-plugin";
 
 const COPY_RESET_MS = 2000;
 const SHIKI_THEME = ["github-light", "github-dark"] as [
@@ -45,25 +48,18 @@ export function CopyBtn({ text }: { text: string }) {
   }, [text]);
 
   return (
-    <button
-      type="button"
-      onClick={copy}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      aria-label="Copy to clipboard"
-    >
+    <IconActionButton label={copied ? "Copied" : "Copy to clipboard"} onClick={copy}>
       {copied ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
-        <CopyIcon className="size-3" />
+        <HugeiconsIcon icon={Copy01Icon} className="size-3" />
       )}
-      {copied ? "Copied" : "Copy"}
-    </button>
+    </IconActionButton>
   );
 }
 
 function DownloadBtn({ code, name }: { code: string; name: string }) {
-  // Route through the shared boundary: browsers keep the normal download, Tauri gets the native
-  // save chooser. A bare blob anchor is silently dropped by the desktop WebView2.
+  // A bare blob anchor is silently dropped by WebView2; the shared boundary gives Tauri a save chooser.
   const download = useCallback(() => {
     void downloadFile(code, name, "text/plain;charset=utf-8").catch((error) => {
       if (!isDownloadCancelled(error)) {
@@ -73,21 +69,13 @@ function DownloadBtn({ code, name }: { code: string; name: string }) {
   }, [code, name]);
 
   return (
-    <button
-      type="button"
-      onClick={download}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      aria-label="Download"
-    >
-      <DownloadIcon className="size-3" />
-      Download
-    </button>
+    <IconActionButton label="Download" onClick={download}>
+      <HugeiconsIcon icon={Download01Icon} className="size-3" />
+    </IconActionButton>
   );
 }
 
-/** Syntax-highlighted code via Streamdown + shiki. Always in the DOM as plain monospace, but
- * shiki only tokenizes once the block nears the viewport, so a long transcript does not
- * highlight every script up front. Immediate where IntersectionObserver is missing. */
+/** Shiki tokenizes only once the block nears the viewport; immediate without IntersectionObserver. */
 function HighlightedCode({
   code: source,
   language,
@@ -105,7 +93,6 @@ function HighlightedCode({
   const [nearViewport, setNearViewport] = useState(
     () => typeof IntersectionObserver === "undefined",
   );
-  // Pinned to the bottom until the reader scrolls up, so a streaming payload visibly grows.
   const pinnedToBottom = useRef(true);
   useEffect(() => {
     if (nearViewport) return;
@@ -118,7 +105,6 @@ function HighlightedCode({
           io.disconnect();
         }
       },
-      // Highlight just before the block enters view, so it is ready on arrival.
       { rootMargin: "200px" },
     );
     io.observe(el);
@@ -160,8 +146,7 @@ function HighlightedCode({
           {markdown}
         </Streamdown>
       ) : (
-        // A div, not a <pre>: the container's [&_pre]:!p-0 would strip the padding and shift
-        // the content when shiki swaps in. whitespace-pre so long lines scroll.
+        // A div, not a <pre>: the container's [&_pre]:!p-0 would shift content when shiki swaps in.
         <div className="whitespace-pre p-3 font-mono text-xs text-muted-foreground">
           {source}
         </div>
@@ -170,7 +155,6 @@ function HighlightedCode({
   );
 }
 
-/** The code a tool is about to run, in the card's collapsible content so the chevron hides code and output together. */
 export function ToolCodeCell({
   label,
   code,
@@ -195,7 +179,12 @@ export function ToolCodeCell({
           <DownloadBtn code={code} name={downloadName} />
         </div>
       </div>
-      <HighlightedCode code={code} language={language} plain={streaming} />
+      {/* Display only: Copy and Download above keep the code as it runs. */}
+      <HighlightedCode
+        code={escapeBidiControls(code)}
+        language={language}
+        plain={streaming}
+      />
     </div>
   );
 }

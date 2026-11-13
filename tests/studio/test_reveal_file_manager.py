@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Platform guards for the reveal-in-file-manager endpoint.
-
-A stock WSL distro has no Linux desktop, so the generic Linux branch
-(``xdg-open``) fails there. Under WSL the reveal must route through Windows
-interop (``wslpath -w`` + ``explorer.exe``), fall back to ``xdg-open`` when
-interop is unavailable, and leave native Linux behavior unchanged.
-"""
+"""WSL reveals go through wslpath -w and explorer.exe; stock WSL has no desktop for xdg-open."""
 
 from __future__ import annotations
 
@@ -70,11 +64,11 @@ def spawned(monkeypatch):
         calls.run.append(list(cmd))
         if calls.run_error is not None:
             raise calls.run_error
-        return types.SimpleNamespace(stdout = _WINDOWS_PATH + "\n")
+        return types.SimpleNamespace(stdout = _WINDOWS_PATH + "\n", returncode = 1)
 
     def fake_popen(cmd, **kwargs):
         calls.popen.append(list(cmd))
-        return types.SimpleNamespace()
+        return types.SimpleNamespace(wait = lambda timeout = None: 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -87,7 +81,7 @@ def test_wsl_file_is_selected_in_explorer(linux_host, spawned, monkeypatch, tmp_
     target.write_bytes(b"gguf")
     path_utils.reveal_in_file_manager(target)
     assert spawned.run == [["wslpath", "-w", str(target)]]
-    assert spawned.popen == [["explorer.exe", f"/select,{_WINDOWS_PATH}"]]
+    assert spawned.popen == [["explorer.exe", "/select,", _WINDOWS_PATH]]
 
 
 def test_wsl_directory_opens_in_explorer(linux_host, spawned, monkeypatch, tmp_path):
@@ -109,7 +103,7 @@ def test_wsl_empty_conversion_falls_back_to_xdg_open(linux_host, spawned, monkey
     monkeypatch.setattr(path_utils, "_IS_WSL", True)
 
     def empty_run(cmd, **kwargs):
-        return types.SimpleNamespace(stdout = "\n")
+        return types.SimpleNamespace(stdout = "\n", returncode = 1)
 
     monkeypatch.setattr(subprocess, "run", empty_run)
     path_utils.reveal_in_file_manager(tmp_path)
@@ -123,5 +117,5 @@ def test_native_linux_keeps_xdg_open_on_parent_directory(
     target = tmp_path / "model.gguf"
     target.write_bytes(b"gguf")
     path_utils.reveal_in_file_manager(target)
-    assert spawned.run == []
+    assert [cmd[0] for cmd in spawned.run] == ["gdbus", "dbus-send"]
     assert spawned.popen == [["xdg-open", str(tmp_path)]]

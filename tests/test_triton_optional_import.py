@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A missing `triton` must not stop `unsloth/_gpu_init.py`.
-
-The PyPI `triton` project publishes no Windows wheel (Windows is served by the separate
-`triton-windows` package), so a CPU only Windows install has no `triton` at all. The
-module level `import triton` in `unsloth/_gpu_init.py` was unconditional, so `import
-unsloth` there died with a bare `ModuleNotFoundError: No module named 'triton'` from a
-line that only exists to resolve `libcuda_dirs` on CUDA hosts.
-
-The absent module is simulated with `sys.modules["triton"] = None`, which is what the
-import system already uses to mean "blocked": `import triton` then raises `ImportError`
-without touching the filesystem, and it blocks `triton.*` submodules too.
-"""
+"""Triton has no PyPI Windows wheel, so the module-level import in _gpu_init.py must be guarded."""
 
 from __future__ import annotations
 
@@ -101,11 +90,7 @@ def _module_level_triton_imports(tree: ast.Module) -> list[ast.Import]:
 
 
 def test_the_module_level_triton_import_is_inside_a_try():
-    """Structure, so the guard cannot be removed silently.
-
-    The bare statement at module scope is the defect: nothing below it can recover,
-    because the exception escapes `unsloth/__init__.py` itself.
-    """
+    """A bare module-scope triton import escapes unsloth/__init__.py, so it must be inside a try."""
     tree = ast.parse(GPU_INIT.read_text(encoding = "utf-8"))
     bare = _module_level_triton_imports(tree)
     assert not bare, (
@@ -127,7 +112,6 @@ def test_the_guard_binds_triton_to_none_and_records_why():
     """`triton` and `TRITON_IMPORT_ERROR` are the contract the rest of the file reads."""
     source = GPU_INIT.read_text(encoding = "utf-8")
     assert "TRITON_IMPORT_ERROR" in source
-    # Every later use of `triton` in this module has to tolerate None.
     tree = ast.parse(source)
     version_calls = [
         node
@@ -141,13 +125,7 @@ def test_the_guard_binds_triton_to_none_and_records_why():
 
 
 def test_a_missing_triton_does_not_fail_in_gpu_init():
-    """The behaviour: with triton blocked, nothing raises from `unsloth/_gpu_init.py`.
-
-    This does not assert that `import unsloth` completes. The Triton kernel modules
-    under `unsloth/kernels` and the zoo's compiler import Triton for their own reasons,
-    so the import can still stop further down; what must no longer happen is stopping
-    here, on a line whose only job is CUDA library resolution.
-    """
+    """With triton blocked, _gpu_init.py must not raise; later Triton imports may still stop the import."""
     _needs_unsloth()
     result = _import_without_triton()
     combined = result.stdout + result.stderr

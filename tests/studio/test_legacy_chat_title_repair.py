@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Wiring for the legacy chat title repair, where a unit test cannot reach.
-
-The repair module pulls in the chat API, so these are source checks on the
-seams: which map it reads from, and what keeps it going page to page.
-"""
+"""Checks the repair's seams by source text, since importing the module pulls in the chat API."""
 
 from __future__ import annotations
 
@@ -25,9 +21,8 @@ def _read(path: Path) -> str:
 
 
 def test_the_repair_reads_its_own_messages_as_late_as_it_can():
-    """Not the sidebar's map. That map takes its empty-backend entries from
-    listStoredChatMessages, which merges Dexie rows the backend has pruned, and
-    it is fetched at load time rather than at write time."""
+    """The repair reads its own messages as late as it can, not the sidebar map: that map merges
+    pruned Dexie rows via listStoredChatMessages and is fetched at load time."""
     hook = _read(HOOK)
     assert "void repairLegacyChatTitles(threads).catch(() => undefined);" in hook
 
@@ -39,15 +34,11 @@ def test_the_repair_reads_its_own_messages_as_late_as_it_can():
     )
 
     storage = _read(STORAGE)
-    # Nothing hands a message map out of the shared list function.
     assert "messagesByThreadId" not in storage
 
 
 def test_the_repair_reads_only_stored_messages():
-    """Dexie keeps rows the backend has pruned, because deleting a message never
-    clears them. Reading it here could put a deleted prompt back into a title,
-    so a chat whose messages are not stored yet is left for a later refresh
-    instead."""
+    """Dexie keeps rows for deleted messages, so only stored messages may feed a title."""
     repair = _read(REPAIR)
     assert "listUnimportedChatMessages" not in repair
     assert "mergeMessagesById" not in repair
@@ -55,12 +46,10 @@ def test_the_repair_reads_only_stored_messages():
 
 
 def test_an_emptied_chat_is_not_retried_for_the_session():
-    """A chat the user deleted every message from reads back the same as one
-    still importing. Retrying it would re-read it on every refresh, since its
-    title stays clipped and keeps matching the pre-filter."""
+    """An emptied chat must not be retried for the session: it reads back like one still importing,
+    and its clipped title keeps matching the pre-filter on every refresh."""
     repair = _read(REPAIR)
     assert "const withoutMessages = threadsMissingMessages(ids, messages);" in repair
-    # Only fetched when there is something to decide.
     assert "if (withoutMessages.length > 0) {" in repair
     assert "imported = await listChatImportLedger();" in repair
     assert (
@@ -70,11 +59,9 @@ def test_an_emptied_chat_is_not_retried_for_the_session():
 
 
 def test_the_repair_never_creates_anything():
-    """updateStoredChatThread ensures the thread first, which re-imports one
-    deleted on another client from the Dexie rows still sitting here. A
-    migration patching a row that is gone has to 404, not resurrect it."""
+    """The repair must never create threads: updateStoredChatThread ensures the thread first and
+    would re-import one deleted elsewhere, so a patch to a gone row must 404."""
     repair = _read(REPAIR)
-    # The storage layer is out of the picture entirely, not just at this call.
     assert 'from "./chat-history-storage"' not in repair
     assert "await updateChatThread( repair.threadId, { title: repair.title }," in repair
 
@@ -98,9 +85,8 @@ def test_only_one_repair_pass_runs_at_a_time():
 
 
 def test_a_rename_is_left_to_the_backend_guard():
-    """The pass only runs where the guard is enforced, so re-listing the whole
-    history per page to check titles client side was both redundant and
-    quadratic: every page of 100 pulled every thread the account has."""
+    """Renames are left to the backend guard: the pass runs only where it is enforced, and
+    re-listing all threads per page client side would be redundant and quadratic."""
     repair = _read(REPAIR)
     assert "listChatThreads" not in repair
     assert "repairsStillValid" not in repair
@@ -124,16 +110,21 @@ def test_the_migration_stays_off_where_the_guard_is_not_enforced():
     answers, and anything unreadable counts as unsupported."""
     repair = _read(REPAIR)
     assert "if (!(await backendEnforcesTitleGuard())) return 0;" in repair
+    # The thread list's advertised flag decides first; only an older backend falls back to the schema.
+    assert (
+        "const probe = await resolveGuardProbe( advertisedThreadPatchGuards(), probeServedSchema, );"
+        in repair
+    )
     assert 'const response = await authFetch("/openapi.json");' in repair
     assert (
-        "probe = readGuardProbe( response.ok, response.ok ? await response.json() : null, );"
+        "return readGuardProbe( response.ok, response.ok ? await response.json() : null, );"
         in repair
     )
     # Only a settled answer is cached, or a 401 at startup parks the migration.
     assert "if (!probe.settled) guardSupport = null;" in repair
 
     backend = (BACKEND / "routes/chat_history.py").read_text(encoding = "utf-8")
-    # The probe reads the schema, so the fields have to be declared on the model.
+    # The probe reads the schema, so the fields must be declared on the model.
     assert "expectedTitle: Optional[str] = None" in backend
 
 

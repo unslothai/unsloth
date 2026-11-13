@@ -1,36 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Guard: shipping code must name an encoding on every text read and write.
+"""Runtime text reads and writes must name an encoding; the locale default is cp1252 on Windows."""
 
-`Path.read_text()`, `Path.write_text()`, `Path.open()` and builtin `open()` fall back
-to `locale.getencoding()`: UTF-8 on the Linux and macOS runners, cp1252 on a stock
-Windows install. Every file this repo reads at runtime is UTF-8 (HF `config.json` /
-`tokenizer_config.json` / `adapter_config.json`, Ollama manifests, GGUF export
-metadata), so on Windows those reads crash or, worse, succeed with mojibake: a
-DeepSeek or Qwen tokenizer_config.json carries U+FF5C and U+2581 in its chat
-template, and at utils/models/model_config.py that read sits inside a broad
-`except Exception: logger.debug(...)`, so the token-pattern check silently
-returned the wrong answer.
-
-Unlike the import-time rule in test_source_read_encoding.py this is scope agnostic:
-runtime reads live inside functions, and shipping code has no legitimate reason to
-let the operator's locale decide. No reachability analysis to get wrong, so no
-allowlist and no false positives.
-
-Binary handles are skipped (no encoding to name, and passing one is a ValueError),
-and a non-constant mode counts as unknown rather than text: demanding `encoding =`
-on a call that may resolve to "rb" would leave no compliant way to write it.
-
-Known limitation, deliberately not closed: `configparser.ConfigParser.read()` also
-defaults to the locale encoding, but cannot be matched by name without resolving the
-receiver, since `f.read(n)`, `resp.read(limit)` and `handle.read(chunk)` are spelled
-identically. Flagging it would be a false positive with no compliant fix, the exact
-failure mode this guard avoids. The one live `ConfigParser.read` (/etc/wsl.conf,
-hub/utils/paths.py) is pinned by hand; a future one has to be caught in review.
-"""
-
-# `str | None` below is evaluated at import on Python 3.9 (requires-python >= 3.9).
+# `str | None` below is evaluated at import on Python 3.9.
 from __future__ import annotations
 
 import ast
@@ -39,33 +12,44 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parent.parent
-# Everything that ships.
-# `studio/` covers the installers too: install_python_stack.py reads /sys/class/kfd, the same detection path as
-# utils/hardware/hardware.py.
-# Test trees fall under the narrower import-time rule in test_source_read_encoding.py.
+# `studio/` covers the installers too; test trees use test_source_read_encoding.py.
 ROOTS = (REPO / "unsloth", REPO / "studio", REPO / "unsloth_cli")
-# The frontend tree is TypeScript;
-# node_modules is vendored third-party code.
 SKIP_DIRS = {"build", "dist", "frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
+# Vendored laya sites pinned by sha256; laya_runtime rebinds their `open` to UTF-8.
+# Pinned by exact site so any vendor change reds this scan until re-reviewed.
+VENDORED_LOADER = REPO / "studio/backend/core/systemone/laya_runtime.py"
+VENDORED_LOADER_REBIND = ".open = _utf8_open"
+REVIEWED_VENDORED_OFFENDERS = {
+    "studio/backend/vendor/laya/agent.py:31: open()",
+    "studio/backend/vendor/laya/agent.py:47: open()",
+    "studio/backend/vendor/laya/agent.py:156: open()",
+    # Cloudflare's Clef loader (sha256 in unsloth/_vendor/clef/clef_manifest.json) reading
+    # joint_head_config.json, which json.dumps writes as ASCII, so every locale decodes it.
+    "unsloth/_vendor/clef/joint_schema_model.py:515: read_text()",
+}
+# keyed on path + expression, not line, so unrelated edits above it do not break the scan.
+REVIEWED_NON_FILE_OPEN = (
+    "studio/backend/core/inference/audio_inputs.py",
+    "stream.codec_context.open(strict=True)",
+)
 GUARDED_METHODS = {"read_text", "write_text"}
-# Path classes, so an unbound `Path.open(p)` shifts every argument one right.
+# path classes, so an unbound `Path.open(p)` shifts every argument one right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
-# Values that re-select the platform default when passed as the encoding.
+# values that re-select the platform default when passed as the encoding.
 PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
-# Calls that return the platform default, so naming one pins nothing.
+# calls that return the platform default, so naming one pins nothing.
 PLATFORM_DEFAULT_CALLS = {"getdefaultencoding", "getencoding", "getpreferredencoding"}
-# Modules whose `open` IS the builtin: same signature, same platform default.
+# modules whose `open` is the builtin: same signature, same platform default.
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
-# Take an encoding in "t" mode but default to "rb".
+# take an encoding in "t" mode but default to "rb".
 COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
-# Distinct from None so that "no mode argument at all" still means text.
+# distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
 
 
 def _mode(call: ast.Call, positional_index: int):
     """The call's mode, or UNKNOWN_MODE when it is not a literal."""
-    # A splat hides the mode, so it is unknown rather than absent: falling through to "r" would flag a call that
-    # may resolve to binary, with no compliant way to fix it.
+    # A splat hides the mode: treat as unknown, since it may resolve to binary.
     if any(isinstance(a, ast.Starred) for a in call.args):
         return UNKNOWN_MODE
     if any(kw.arg is None for kw in call.keywords):
@@ -80,12 +64,7 @@ def _mode(call: ast.Call, positional_index: int):
 
 
 def _names_encoding(call: ast.Call) -> bool:
-    """True only for an encoding that actually pins one.
-
-    `encoding = None` and `encoding = "locale"` re-select the platform default, so the
-    keyword being present is not enough. A `**kwargs` splat may carry an encoding we
-    cannot see, so it counts as named rather than as an unsatisfiable demand.
-    """
+    """Only a real encoding pins one: encoding = None or "locale" re-selects the platform default."""
     for kw in call.keywords:
         if kw.arg is None:
             return True
@@ -105,11 +84,7 @@ def _is_text(call: ast.Call, positional_index: int) -> bool:
 
 
 def _imports_at_each_call(tree: ast.Module) -> dict:
-    """The imports visible at every call, keyed by node id.
-
-    A function's own imports stay in that function: hoisting them would let one local
-    `from PIL.Image import open` turn off the builtin check for the whole file.
-    """
+    """Imports stay with their function so a local alias cannot switch off the builtin-open check."""
     visible_at = {}
 
     def walk(node, visible):
@@ -126,11 +101,7 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
 
 
 def _foreign_names(tree: ast.Module) -> set:
-    """Names bound to an object another library built.
-
-    `z = zipfile.ZipFile(p)` then `z.open(name)` is a binary member stream taking no
-    encoding, so demanding one leaves no correct edit.
-    """
+    """Names bound to an object another library built, such as a ZipFile whose open() takes no encoding."""
     modules = _imported_names(tree)
     names = set()
     for node in ast.walk(tree):
@@ -142,18 +113,13 @@ def _foreign_names(tree: ast.Module) -> set:
 
 
 def _imported_names(tree) -> dict:
-    """Names this module's imports bind, mapped to where they came from.
-
-    The name alone settles nothing: `import tarfile as tf` hides an opener that takes
-    no encoding, and `from PIL.Image import open` puts another behind the most familiar
-    name there is. Resolving the origin covers both, with no module list to maintain.
-    """
+    """Maps names bound by imports to their origin, since an alias can hide the real opener."""
     bound = {}
     stack = list(ast.iter_child_nodes(tree))
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            continue  # that function's business, not this scope's
+            continue
         if isinstance(node, ast.Import):
             for a in node.names:
                 bound[(a.asname or a.name).split(".")[0]] = a.name
@@ -209,11 +175,8 @@ def _is_path_attr(node) -> bool:
 
 
 def _foreign_receiver(node, modules) -> bool:
-    """True when the thing before `.open` is an object another library built.
-
-    `zipfile.ZipFile(p).open(name)` returns a binary member stream taking no encoding,
-    so it needs the same exemption as the bare `zipfile.open` spelling.
-    """
+    """True when .open is called on a foreign object like zipfile.ZipFile(p), which yields binary
+    streams."""
     if not isinstance(node, ast.Call):
         return False
     func = node.func
@@ -236,13 +199,11 @@ def _offender(
     func = call.func
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
-        # `Path.read_text(p)` is `p.read_text()` unbound: the instance takes slot 0, so every argument shifts
-        # one place right.
         shift = 1 if _is_path_class(receiver, modules) or _is_path_attr(func.value) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
                 first = call.args[0]
-                # Bound read_text takes encoding first, so None or "locale" there is a platform-default read.
+                # Bound read_text takes encoding first, so None or "locale" there is a platform default.
                 if isinstance(first, ast.Constant) and first.value in PLATFORM_DEFAULT_ENCODINGS:
                     return "read_text()"
                 return None
@@ -254,13 +215,11 @@ def _offender(
                 )
             compressed = _compressed_key(receiver, modules) if receiver else None
             if compressed is not None:
-                # "rb" by default, so only an explicit text mode is in scope.
                 mode = _mode(call, 1)
                 if mode is UNKNOWN_MODE or "t" not in str(mode):
                     return None
                 return None if _names_encoding(call) else f"{compressed}.open()"
-            # Any other imported receiver is somebody else's opener: tarfile takes a compression mode, Image a
-            # binary file. Neither has an encoding to name.
+            # Other imported receivers (tarfile, Image) are foreign openers with no encoding to name.
             if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
                 return None
             if _foreign_receiver(func.value, modules) or receiver in foreign:
@@ -292,26 +251,28 @@ def _is_test_path(path: Path) -> bool:
     return path.name.startswith("test_") or path.name.endswith("_test.py")
 
 
-def _offenders_in(src: str, label: str = "<snippet>"):
-    tree = ast.parse(src, filename = label)
+def _is_reviewed_non_file_open(label: str, call: ast.Call) -> bool:
+    return (label, ast.unparse(call)) == REVIEWED_NON_FILE_OPEN
+
+
+def _offenders(tree: ast.Module, label: str):
     visible_at = _imports_at_each_call(tree)
     foreign = _foreign_names(tree)
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = _offender(node, visible_at.get(id(node), {}), foreign)
-            if name is not None:
+            if name is not None and not _is_reviewed_non_file_open(label, node):
                 found.append((node.lineno, name))
     return found
 
 
-def _tracked_sources():
-    """Shipping *.py that git is actually tracking.
+def _offenders_in(src: str, label: str = "<snippet>"):
+    return _offenders(ast.parse(src, filename = label), label)
 
-    A walk also picks up whatever is lying in the checkout (a built `build/lib` copy,
-    a nested worktree, a vendored dep). None of those are ours to police, and a stale
-    artifact would fail this for everybody who has one.
-    """
+
+def _tracked_sources():
+    """scan tracked *.py files so untracked builds, worktrees, and dependencies cannot fail it."""
     listed = subprocess.run(
         ["git", "-C", str(REPO), "ls-files", "-z", "--", "*.py"],
         capture_output = True,
@@ -325,6 +286,12 @@ def _tracked_sources():
 
 def _walked_sources():
     return [p for root in ROOTS if root.is_dir() for p in sorted(root.rglob("*.py"))]
+
+
+def _loader_rebinds_open() -> bool:
+    return VENDORED_LOADER.is_file() and VENDORED_LOADER_REBIND in VENDORED_LOADER.read_text(
+        encoding = "utf-8"
+    )
 
 
 def test_shipping_code_names_an_encoding():
@@ -341,13 +308,14 @@ def test_shipping_code_names_an_encoding():
         except SyntaxError:
             continue
         rel = path.relative_to(REPO).as_posix()
-        visible_at = _imports_at_each_call(tree)
-        foreign = _foreign_names(tree)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                name = _offender(node, visible_at.get(id(node), {}), foreign)
-                if name is not None:
-                    offenders.append(f"{rel}:{node.lineno}: {name}")
+        offenders.extend(f"{rel}:{line}: {name}" for line, name in _offenders(tree, rel))
+    if _loader_rebinds_open():
+        stale = sorted(REVIEWED_VENDORED_OFFENDERS.difference(offenders))
+        assert stale == [], (
+            f"Reviewed vendored call sites no longer found, so the vendored code changed: {stale}. "
+            "Re-review the new sites and update REVIEWED_VENDORED_OFFENDERS."
+        )
+        offenders = [o for o in offenders if o not in REVIEWED_VENDORED_OFFENDERS]
     assert offenders == [], (
         f"{len(offenders)} text read/write call sites in shipping code let the "
         "operator's locale decide the encoding, so they crash or silently "
@@ -355,15 +323,13 @@ def test_shipping_code_names_an_encoding():
     )
 
 
-# The assertion above passes vacuously once the trees are clean, so it cannot tell a working detector from one that
-# always returns None. These pin the detector itself.
+# The assertion above passes vacuously on clean trees; these pin the detector itself.
 def test_detects_the_plain_cases():
     assert _offenders_in("from pathlib import Path\np = Path('x')\ns = p.read_text()\n")
     assert _offenders_in("p.write_text('hi')\n")
     assert _offenders_in("f = open('x')\n")
     assert _offenders_in("f = open('x', 'w')\n")
     assert _offenders_in("f = p.open()\n")
-    # Inside a function body too: shipping reads are not import-time.
     assert _offenders_in("def load(p):\n    return p.read_text()\n")
 
 
@@ -380,14 +346,12 @@ def test_accepts_a_pinned_encoding():
 
 
 def test_skips_binary_handles():
-    # Binary has no encoding to name; passing one is a ValueError.
     assert not _offenders_in("f = open('x', 'rb')\n")
     assert not _offenders_in("f = open('x', mode = 'wb')\n")
     assert not _offenders_in("f = p.open('rb')\n")
 
 
 def test_skips_unknown_modes():
-    # A call that may resolve to "rb" has no compliant way to name an encoding.
     assert not _offenders_in("mode = 'rb' if binary else 'r'\nf = open(path, mode)\n")
     assert not _offenders_in("f = open(path, mode = chosen)\n")
 
@@ -397,6 +361,15 @@ def test_skips_foreign_openers_and_readers():
     assert not _offenders_in("import tarfile\nt = tarfile.open(p, 'r:gz')\n")
     # importlib.metadata Distribution.read_text takes a positional filename.
     assert not _offenders_in("s = dist.read_text('direct_url.json')\n")
+
+
+def test_skips_only_the_reviewed_pyav_codec_open():
+    pyav = "\n" * 263 + "stream.codec_context.open(strict = True)\n"
+    path = "studio/backend/core/inference/audio_inputs.py"
+    assert not _offenders_in(pyav, path)
+    assert not _offenders_in("\n" + pyav, path)
+    assert _offenders_in(pyav, "studio/backend/core/inference/other.py")
+    assert _offenders_in("\n" * 263 + "config.codec_context.open(strict = True)\n", path)
 
 
 def test_test_trees_are_out_of_scope():

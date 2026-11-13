@@ -8,10 +8,8 @@ export function buildModelProvider(
   config: ModelProviderConfig,
   errors: string[],
 ): Record<string, unknown> {
-  // Local providers ignore advanced request overrides: the backend overrides
-  // endpoint/api_key/provider_type and strips extras in _inject_local_providers.
-  // Skip parsing hidden JSON inputs so stale headers/body in imported recipes
-  // can't block client-side validation.
+  // The backend overrides local providers' request settings, so skip parsing hidden JSON that
+  // could block validation with stale imported values.
   if (config.is_local === true) {
     return {
       name: config.name,

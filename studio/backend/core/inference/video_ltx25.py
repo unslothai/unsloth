@@ -1,0 +1,2164 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""LTX-2.5 pipeline, gated to the ltx-2.5 family (no other family reaches this module); Gemma 4
+encoder runs in a worker on the .venv_t5_510 transformers 5.10 sidecar"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import queue as _queue
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from loggers import get_logger
+
+logger = get_logger(__name__)
+
+# Reference recipe. Stage 1 is diffusers' DISTILLED_SIGMA_VALUES; stage 2 is the reference workflow's tail (diffusers'
+# own STAGE_2_DISTILLED_SIGMA_VALUES starts at 0.909375 instead).
+LTX25_STAGE1_SIGMAS: tuple[float, ...] = (
+    1.0,
+    0.99375,
+    0.9875,
+    0.98125,
+    0.975,
+    0.909375,
+    0.725,
+    0.421875,
+)
+LTX25_STAGE2_SIGMAS: tuple[float, ...] = (0.85, 0.725, 0.421875)
+LTX25_IMAGE_CRF = 18
+LTX25_STAGE1_IMAGE_STRENGTH = 0.7
+LTX25_STAGE2_IMAGE_STRENGTH = 1.0
+# Dev (full) DiT: the README's override of the distilled scheduler config.
+LTX25_DEV_SCHEDULER_OVERRIDES: dict[str, Any] = {
+    "use_dynamic_shifting": True,
+    "shift_terminal": 0.1,
+}
+
+# Kill switches: "0" runs one full-resolution stage on the distilled sigmas; "euler" swaps the ancestral sampler for
+# diffusers' deterministic Euler.
+TWO_STAGE_ENV = "UNSLOTH_LTX25_TWO_STAGE"
+SAMPLER_ENV = "UNSLOTH_LTX25_SAMPLER"
+_OFF = ("0", "false", "no", "off")
+_ON = ("1", "true", "yes", "on")
+
+# Pack components a load never reads: the dev DiT (single-file dev picks bring their own), the prompt enhancer and its
+# processor (Studio never enhances), the diffusion decoder (conv decode is the pipeline default), the temporal
+# upsampler (DFR only) and the duration head (Studio always passes num_frames).
+_PACK_SKIP_PREFIXES = (
+    "transformer_full/",
+    "prompt_enhancer/",
+    "processor/",
+    "diffusion_decoder/",
+    "temporal_latent_upsampler/",
+    "duration_head/",
+)
+_PACK_MARKERS = ("duration_head/config.json", "diffusion_decoder/config.json")
+# Components handed to from_pretrained as None: the Gemma 4 encoder lives in the worker, the rest is unused.
+LTX25_NONE_COMPONENTS = (
+    "text_encoder",
+    "tokenizer",
+    "processor",
+    "prompt_enhancer",
+    "duration_head",
+)
+LATENT_UPSAMPLER_SUBFOLDER = "latent_upsampler"
+TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
+# What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
+# Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
+LTX25_WORKER_RESIDENT_GB = 1.0
+# Auto takes the hosted int8 file only when confirmed, else bf16 (never quantizes at load). A100-40 LPIPS vs bf16
+# 0.133 (bf16 encoder 0.141), peak host 71 -> 52 GiB. Env =0 keeps bf16 auto, =1 makes auto an explicit int8.
+LTX25_TE_QUANT_DEFAULT = "int8"
+LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
+# Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
+LTX25_TE_INT8_GB = 13.1
+# The dense bf16 encoder (the family table's text-encoder term), what quantizing at load materializes first.
+LTX25_TE_BF16_GB = 23.9
+# The hosted build of that same at-load quantization (scripts/build_ltx25_te_int8_convrot.py): the worker loads it
+# instead of reading the 23.9 GB bf16 encoder and quantizing it, and the plan drops the dense text_encoder/ shards. A
+# file that cannot be fetched or loaded falls back to the at-load quantization of the dense encoder.
+LTX25_TE_HOSTED_REPO = "unsloth/LTX-2.5-FP8"
+LTX25_TE_HOSTED_FILE = "LTX-2.5-text_encoder-INT8-ConvRot.safetensors"
+LTX25_TE_HOSTED_FORMAT = "unsloth_ltx25_text_encoder_int8_convrot_v1"
+# The base the hosted encoder was cut from: a custom pack can keep the architecture and carry other weights.
+LTX25_TE_HOSTED_BASE = "Lightricks/LTX-2.5-Diffusers"
+# The pack's latent_upsampler/ (995,743,320 bytes), part of the family table's companions; only two-stage loads hold it.
+LTX25_LATENT_UPSAMPLER_GB = 1.0
+
+# A split single-file DiT is assembled from its companion files, with no Diffusers pack needed.
+LTX25_SINGLE_FILE_REPO = "Lightricks/LTX-2.5"
+LTX25_SINGLE_TEXT_ENCODER = "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
+LTX25_SINGLE_VIDEO_VAE = "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
+LTX25_SINGLE_AUDIO_VAE = "vae/ltx-2.5-audio-vae-bf16.safetensors"
+LTX25_SINGLE_UPSAMPLER = (
+    "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+)
+LTX25_SINGLE_COMPANIONS = (
+    LTX25_SINGLE_TEXT_ENCODER,
+    LTX25_SINGLE_VIDEO_VAE,
+    LTX25_SINGLE_AUDIO_VAE,
+    LTX25_SINGLE_UPSAMPLER,
+)
+# Encoder file keys -> Gemma4UnifiedForConditionalGeneration keys (transformers ``key_mapping`` regexes).
+LTX25_TEXT_ENCODER_KEY_MAPPING = {
+    r"^model\.(layers|embed_tokens|norm)\b": r"model.language_model.\1",
+    r"^audio_projector\.": "model.embed_audio.",
+    r"^multi_modal_projector\.": "model.embed_vision.",
+    r"^vision_model\.": "model.vision_embedder.",
+}
+LTX25_TEXT_PROJECTION_PREFIX = "text_embedding_projection."
+
+# Lightricks/LTX-2.5-Diffusers transformer/config.json, latent_upsampler/config.json and scheduler config, for
+# assembling without the pack. The connectors, conv VAE, audio VAE and vocoder configs equal the 2.3 ones in
+# video_ltx2 (checked against the pack).
+LTX25_TRANSFORMER_CONFIG: dict[str, Any] = {
+    "activation_fn": "gelu-approximate",
+    "attention_bias": True,
+    "attention_head_dim": 128,
+    "attention_out_bias": True,
+    "audio_attention_head_dim": 64,
+    "audio_cross_attention_dim": 2048,
+    "audio_cross_attn_mod": True,
+    "audio_ff_bias": True,
+    "audio_gated_attn": True,
+    "audio_hop_length": 160,
+    "audio_in_channels": 128,
+    "audio_num_attention_heads": 32,
+    "audio_out_channels": 128,
+    "audio_patch_size": 1,
+    "audio_patch_size_t": 1,
+    "audio_pos_embed_max_pos": 20,
+    "audio_sampling_rate": 16000,
+    "audio_scale_factor": 4,
+    "base_height": 2048,
+    "base_width": 2048,
+    "caption_channels": 3840,
+    "causal_offset": 1,
+    "cross_attention_dim": 4096,
+    "cross_attn_mod": True,
+    "cross_attn_timestep_scale_multiplier": 1000,
+    "ff_bias": False,
+    "gated_attn": True,
+    "in_channels": 128,
+    "norm_elementwise_affine": False,
+    "norm_eps": 1e-06,
+    "num_attention_heads": 32,
+    "num_layers": 48,
+    "out_channels": 128,
+    "patch_size": 1,
+    "patch_size_t": 1,
+    "perturbed_attn": True,
+    "pos_embed_max_pos": 20,
+    "qk_norm": "rms_norm_across_heads",
+    "rope_double_precision": True,
+    "rope_theta": 10000.0,
+    "rope_type": "split",
+    "timestep_scale_multiplier": 1000,
+    "use_keyframes_abs_pos_embedding": True,
+    "use_prompt_adaln_single": True,
+    "use_prompt_embeddings": False,
+    "vae_scale_factors": [8, 32, 32],
+}
+LTX25_UPSAMPLER_CONFIG: dict[str, Any] = {
+    "dims": 3,
+    "in_channels": 128,
+    "mid_channels": 1024,
+    "num_blocks_per_stage": 4,
+    "rational_spatial_scale": 2.0,
+    "spatial_upsample": True,
+    "temporal_upsample": False,
+    "use_rational_resampler": False,
+}
+LTX25_SCHEDULER_CONFIG: dict[str, Any] = {
+    "base_image_seq_len": 1024,
+    "base_shift": 0.95,
+    "invert_sigmas": False,
+    "max_image_seq_len": 4096,
+    "max_shift": 2.05,
+    "num_train_timesteps": 1000,
+    "shift": 1.0,
+    "shift_terminal": None,
+    "stochastic_sampling": False,
+    "time_shift_type": "exponential",
+    "use_beta_sigmas": False,
+    "use_dynamic_shifting": False,
+    "use_exponential_sigmas": False,
+    "use_karras_sigmas": False,
+}
+
+
+def two_stage_enabled() -> bool:
+    return (os.environ.get(TWO_STAGE_ENV) or "").strip().lower() not in _OFF
+
+
+def ancestral_enabled() -> bool:
+    return (os.environ.get(SAMPLER_ENV) or "").strip().lower() != "euler"
+
+
+# ── image-to-video canvas ────────────────────────────────────────────────────
+
+# "Match source" canvas: the default 1280x704 area on a 704 px short edge, 64 px units (two 32 px stages). Same shape
+# of rule as MiniMax-H3's, so the frontend's preview (canvas_short_edge / canvas_max_pixels) applies unchanged.
+LTX25_CANVAS_SHORT_EDGE = 704
+LTX25_CANVAS_MAX_PIXELS = 1280 * 704
+LTX25_CANVAS_MULTIPLE = 64
+_MIN_ASPECT, _MAX_ASPECT = 0.25, 4.0
+
+
+def ltx25_canvas_for_aspect(aspect_width: float, aspect_height: float) -> tuple[int, int]:
+    import math
+
+    if aspect_width <= 0 or aspect_height <= 0:
+        raise ValueError(
+            f"The source image has no usable aspect ratio ({aspect_width}x{aspect_height})."
+        )
+    ratio = aspect_width / aspect_height
+    if not _MIN_ASPECT <= ratio <= _MAX_ASPECT:
+        raise ValueError(
+            f"LTX-2.5 image-to-video takes aspect ratios from 1:4 to 4:1; this image is "
+            f"{aspect_width:g}x{aspect_height:g} ({ratio:.2f}:1). Crop it first or pick a resolution preset."
+        )
+    short = float(LTX25_CANVAS_SHORT_EDGE)
+    width, height = (short * ratio, short) if ratio >= 1.0 else (short, short / ratio)
+    area = width * height
+    if area > LTX25_CANVAS_MAX_PIXELS:
+        scale = math.sqrt(LTX25_CANVAS_MAX_PIXELS / area)
+        width, height = width * scale, height * scale
+
+    from .video_families import snap_canvas_within_cap
+
+    return snap_canvas_within_cap(width, height, LTX25_CANVAS_MULTIPLE, LTX25_CANVAS_MAX_PIXELS)
+
+
+# The reference image-to-video graph scales the start image's longer side to 1536 px (Lanczos) before the CRF 18 round
+# trip; LTX2ConditionPipeline then applies the CRF and fits the result to each stage's canvas (bilinear cover + centre
+# crop), in that order.
+LTX25_FIRST_FRAME_LONG_EDGE = 1536
+
+
+def prepare_ltx25_first_frame(image: Any) -> Any:
+    """The start image as the condition pipeline should receive it: longer side at ``LTX25_FIRST_FRAME_LONG_EDGE``,
+    aspect kept, not yet cropped to the canvas."""
+    from PIL import Image
+
+    source_w, source_h = image.size
+    scale = LTX25_FIRST_FRAME_LONG_EDGE / max(source_w, source_h)
+    size = (max(1, round(source_w * scale)), max(1, round(source_h * scale)))
+    return image if size == image.size else image.resize(size, Image.LANCZOS)
+
+
+# ── base-pack file selection ─────────────────────────────────────────────────
+
+
+def is_ltx25_pack(names: Any) -> bool:
+    """Whether a Diffusers repo listing is an LTX-2.5 pack (it ships a duration head / diffusion decoder)."""
+    return any(name in _PACK_MARKERS for name in names)
+
+
+def _component(name: str) -> str:
+    return name.split("/", 1)[0] if "/" in name else ""
+
+
+def _shard_set(name: str) -> Optional[str]:
+    """``-of-00008`` style shard-set key of a sharded weight file, or None."""
+    leaf = name.rsplit("/", 1)[-1]
+    if "-of-" not in leaf:
+        return None
+    return leaf.rsplit("-of-", 1)[1].split(".", 1)[0]
+
+
+def ltx25_pack_files(
+    files: list[tuple[str, int]],
+    shards: Optional[dict[str, frozenset[str]]] = None,
+    dev: bool = False,
+) -> list[tuple[str, int]]:
+    """The files of an LTX-2.5 pack a load reads.
+
+    Drops the unused components above, and the duplicate weight sets the pack ships: ``transformer/`` carries both a
+    4-shard and an 8-shard set and ``connectors/`` a sharded and an unsharded copy. With ``shards`` (component ->
+    file names its ``*.index.json`` lists) only the indexed set stays. Without it (an index that could not be read)
+    the unsharded copy goes when an index exists and the coarsest shard set is kept, the one the official indexes
+    name. A ``dev`` load (single stage) also drops the latent upsampler, which only the two-stage recipe attaches."""
+    names = {name for name, _ in files}
+    kept: list[tuple[str, int]] = []
+    by_component: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    skip = _PACK_SKIP_PREFIXES
+    if not ltx25_uses_upsampler(dev):
+        skip = skip + (f"{LATENT_UPSAMPLER_SUBFOLDER}/",)
+    for name, size in files:
+        if name.startswith(skip):
+            continue
+        component = _component(name)
+        leaf = name.rsplit("/", 1)[-1]
+        weight = leaf.endswith(".safetensors")
+        if component and weight:
+            index_name = None
+            for candidate in names:
+                if candidate.startswith(component + "/") and candidate.endswith(
+                    ".safetensors.index.json"
+                ):
+                    index_name = candidate
+                    break
+            if index_name is not None:
+                if shards is not None and component in shards:
+                    if leaf in shards[component]:
+                        kept.append((name, size))
+                    continue
+                key = _shard_set(name)
+                if key is None:
+                    # an unsharded duplicate of an indexed component
+                    continue
+                by_component.setdefault(component, {}).setdefault(key, []).append((name, size))
+                continue
+        kept.append((name, size))
+    for sets in by_component.values():
+        # No index read: one set, the coarsest split (the official pack indexes its 4-shard transformer, not the 8).
+        best = min(sets.items(), key = lambda item: (len(item[1]), item[0]))[1]
+        kept.extend(best)
+    order = {name: i for i, (name, _) in enumerate(files)}
+    return sorted(kept, key = lambda item: order.get(item[0], 0))
+
+
+def ltx25_shards_from_indexes(indexes: dict[str, Any]) -> dict[str, frozenset[str]]:
+    """component -> the shard file names its parsed ``*.index.json`` (``{path: json}``) maps weights to."""
+    out: dict[str, frozenset[str]] = {}
+    for path, payload in indexes.items():
+        weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+        if not isinstance(weight_map, dict):
+            continue
+        out[_component(path)] = frozenset(str(v) for v in weight_map.values())
+    return out
+
+
+# ── transformer from a single file / GGUF ────────────────────────────────────
+
+
+def load_ltx25_transformer(
+    checkpoint_path: Path | str,
+    *,
+    base_repo: str,
+    torch_dtype: Any,
+    is_gguf: bool,
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    device: Optional[Any] = None,
+) -> Any:
+    """The LTX-2.5 DiT of a split single file or GGUF. Only the DiT keys are read; the connectors in the file are the
+    pack's shared ``connectors/`` (loaded from the base like the VAEs). The base's ``transformer/config.json`` already
+    carries the 2.5 deltas (``ff_bias=False``, ``use_keyframes_abs_pos_embedding=True``), so no overrides; the keys
+    take the same ``prompt_adaln_single`` pre-rename the 2.3 assembly applies."""
+    import diffusers
+    from diffusers import LTX2VideoTransformer3DModel
+    from diffusers.loaders.single_file_utils import load_single_file_checkpoint
+
+    from .video_ltx2 import _ltx23_pre_convert, ltx23_is_dit_key
+
+    if is_gguf:
+        from .diffusion_gguf_exact import install_exact_dequant
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+
+        install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
+        install_exact_dequant()
+    state = load_single_file_checkpoint(str(checkpoint_path))
+    dit_state = _ltx23_pre_convert({k: v for k, v in state.items() if ltx23_is_dit_key(k)})
+    del state
+    if any(k.endswith((".weight_scale", ".input_scale")) for k in dit_state):
+        raise ValueError(
+            "This LTX-2.5 checkpoint stores scaled fp8 weights, which this loader does not dequantize. Use the bf16 "
+            "file, the int8-convrot file or a GGUF quant instead."
+        )
+    kwargs: dict[str, Any] = {
+        "config": _transformer_config_source(base_repo),
+        "subfolder": "transformer",
+        "torch_dtype": torch_dtype,
+        "token": hf_token,
+        "cache_dir": cache_dir,
+        "local_files_only": local_files_only,
+    }
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The load plan's commit for a hub-id config (none for the bundled config dir or an unpinned load).
+    kwargs.update(pinned_revision_kwargs(kwargs["config"]))
+    if is_gguf:
+        kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
+    elif device is not None:
+        kwargs["device"] = device
+    return LTX2VideoTransformer3DModel.from_single_file(dit_state, **kwargs)
+
+
+def load_ltx25_comfy_transformer(
+    checkpoint_path: Path | str,
+    scan: Any,
+    *,
+    base_repo: str,
+    torch_dtype: Any,
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    int8_backend: Optional[str] = None,
+    fp8_backend: Optional[str] = None,
+    nvfp4_backend: Optional[str] = None,
+    mxfp8_backend: Optional[str] = None,
+    fp8_storage: Optional[bool] = None,
+    fp8_widen_chosen: bool = False,
+    family: Optional[str] = None,
+    target: Any = None,
+    logger: Any = None,
+) -> Any:
+    """The DiT of an int8-convrot LTX-2.5 file (``...-int8-convrot``), keeping int8 / fp8 codes where
+    ``load_comfy_quant_transformer`` can; same key handling as ``load_ltx25_transformer``."""
+    from diffusers import LTX2VideoTransformer3DModel
+
+    from .diffusion_comfy_quant import load_comfy_quant_transformer
+    from .video_ltx2 import _ltx23_pre_convert, ltx23_is_dit_key
+
+    return load_comfy_quant_transformer(
+        LTX2VideoTransformer3DModel,
+        str(checkpoint_path),
+        scan,
+        {
+            "torch_dtype": torch_dtype,
+            "config": _transformer_config_source(base_repo),
+            "subfolder": "transformer",
+            "token": hf_token,
+            "cache_dir": cache_dir,
+            "local_files_only": local_files_only,
+        },
+        int8_backend = int8_backend,
+        fp8_backend = fp8_backend,
+        nvfp4_backend = nvfp4_backend,
+        mxfp8_backend = mxfp8_backend,
+        fp8_storage = fp8_storage,
+        fp8_widen_chosen = fp8_widen_chosen,
+        family = family,
+        target = target,
+        logger = logger,
+        keep_key = ltx23_is_dit_key,
+        pre_convert = _ltx23_pre_convert,
+    )
+
+
+def load_latent_upsampler(
+    base_repo: str,
+    *,
+    torch_dtype: Any,
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+) -> Any:
+    from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+
+    if is_ltx25_single_file_base(base_repo):
+        from safetensors.torch import load_file
+
+        from .video_ltx2 import _build_from_config
+
+        path = ltx25_companion_path(base_repo, LTX25_SINGLE_UPSAMPLER, hf_token, local_files_only)
+        return _build_from_config(
+            LTX2LatentUpsamplerModel, LTX25_UPSAMPLER_CONFIG, load_file(path), {}, torch_dtype
+        )
+    from .diffusion_families import pinned_revision_kwargs
+
+    return LTX2LatentUpsamplerModel.from_pretrained(
+        base_repo,
+        **pinned_revision_kwargs(base_repo),
+        subfolder = LATENT_UPSAMPLER_SUBFOLDER,
+        torch_dtype = torch_dtype,
+        token = hf_token,
+        cache_dir = cache_dir,
+        local_files_only = local_files_only,
+    )
+
+
+# ── the split single-file layout as its own base ────────────────────────────
+
+
+def is_ltx25_single_file_base(base: Optional[str], *, fold_mirror: bool = True) -> bool:
+    """Whether ``base`` is the split single-file release (hub id) or a local folder with its layout (the encoder file
+    and the conv VAE beside the DiTs), rather than a Diffusers pack."""
+    text = (base or "").strip()
+    if not text:
+        return False
+    path = Path(text).expanduser()
+    if path.is_dir():
+        return (path / LTX25_SINGLE_TEXT_ENCODER).is_file() and (
+            path / LTX25_SINGLE_VIDEO_VAE
+        ).is_file()
+    if not fold_mirror:
+        return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
+    # The fetch sites hand the assembly the repo carrying the release's byte-identical files (unsloth/LTX-2.5-GGUF).
+    # ``fold_mirror=False`` is for a PICK's own repo: a GGUF picked from that repo keeps the Diffusers base.
+    from .diffusion_families import canonical_base
+
+    return canonical_base(text).lower() == LTX25_SINGLE_FILE_REPO.lower()
+
+
+def is_ltx25_single_file_listing(names: Any) -> bool:
+    """Whether a repo listing is the split single-file release (it carries every companion file)."""
+    present = set(names)
+    return all(name in present for name in LTX25_SINGLE_COMPANIONS)
+
+
+def ltx25_uses_upsampler(dev: bool) -> bool:
+    """Whether a load attaches the latent upsampler: only the two-stage distilled recipe runs it."""
+    return not dev and two_stage_enabled()
+
+
+def ltx25_single_file_companions(
+    files: list[tuple[str, int]], dev: bool = False
+) -> list[tuple[str, int]]:
+    """The (rfilename, size) entries a load from the single-file release reads besides the picked DiT."""
+    wanted = set(LTX25_SINGLE_COMPANIONS)
+    if not ltx25_uses_upsampler(dev):
+        wanted.discard(LTX25_SINGLE_UPSAMPLER)
+    return [(name, size) for name, size in files if name in wanted]
+
+
+def ltx25_default_base(repo_id: Optional[str]) -> Optional[str]:
+    """A DiT picked from the single-file release (or a local copy of it) uses that release as its base."""
+    return repo_id if is_ltx25_single_file_base(repo_id, fold_mirror = False) else None
+
+
+def ltx25_companion_path(
+    base: str,
+    filename: str,
+    hf_token: Optional[str],
+    local_files_only: bool = False,
+) -> str:
+    """Local path of one companion file of a single-file base (downloaded into the hub cache when needed)."""
+    path = Path(base).expanduser()
+    if path.is_dir():
+        target = path / filename
+        if not target.is_file():
+            raise FileNotFoundError(
+                f"LTX-2.5 needs '{filename}' beside the DiT in '{base}', and it is missing."
+            )
+        return str(target)
+    from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+    from .diffusion_families import pinned_revision_kwargs
+
+    return hf_hub_download_with_xet_fallback(
+        base,
+        filename,
+        hf_token,
+        **pinned_revision_kwargs(base),
+        reuse_other_cache_root = True,
+        local_files_only = local_files_only,
+    )
+
+
+def ltx25_transformer_config_dir() -> str:
+    """A local folder holding ``transformer/config.json`` (the pack's 2.5 transformer config), for
+    ``from_single_file(config=...)`` when there is no pack to read it from."""
+    import json
+    import tempfile
+
+    from utils.paths.private_tmp import private_tmp_dir
+
+    root = private_tmp_dir("unsloth_ltx25_config")
+    target = root / "transformer" / "config.json"
+    payload = json.dumps(
+        {"_class_name": "LTX2VideoTransformer3DModel", **LTX25_TRANSFORMER_CONFIG},
+        indent = 1,
+        sort_keys = True,
+    )
+    if not target.is_file() or target.read_text(encoding = "utf-8") != payload:
+        target.parent.mkdir(parents = True, exist_ok = True)
+        # A per-call scratch name: two loads in one process (a superseded one still building) may both get here.
+        fd, scratch = tempfile.mkstemp(dir = target.parent, prefix = "config.", suffix = ".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding = "utf-8") as fh:
+                fh.write(payload)
+            os.replace(scratch, target)
+        except BaseException:
+            Path(scratch).unlink(missing_ok = True)
+            raise
+    return str(root)
+
+
+def _transformer_config_source(base_repo: str) -> str:
+    return ltx25_transformer_config_dir() if is_ltx25_single_file_base(base_repo) else base_repo
+
+
+def _read_tensors(path: str, keep: Callable[[str], bool]) -> dict[str, Any]:
+    """The tensors of ``path`` whose names pass ``keep``, read selectively (GGUF files are read whole)."""
+    if not str(path).lower().endswith(".safetensors"):
+        from diffusers.loaders.single_file_utils import load_single_file_checkpoint
+
+        from .diffusion_gguf_exact import install_exact_dequant
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+
+        install_lowbit_iq()
+        install_exact_dequant()
+        return {k: v for k, v in load_single_file_checkpoint(str(path)).items() if keep(k)}
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework = "pt", device = "cpu") as handle:
+        return {key: handle.get_tensor(key) for key in handle.keys() if keep(key)}
+
+
+def assemble_ltx25_single_file_pipeline(
+    transformer: Any,
+    checkpoint_path: Path | str,
+    *,
+    base: str,
+    torch_dtype: Any,
+    hf_token: Optional[str],
+    local_files_only: bool = False,
+) -> Any:
+    """``LTX2Pipeline`` from the split single-file release: the given DiT, the connectors of the DiT file plus the
+    encoder file's text projections, the conv VAE and the audio VAE + vocoder. Text encoder and tokenizer stay None
+    (the worker owns them); the upsampler is loaded by ``attach_to_pipeline``."""
+    from .ltx2_import_compat import ensure_ltx2_pipelines_importable
+
+    ensure_ltx2_pipelines_importable(logger)
+    from diffusers import FlowMatchEulerDiscreteScheduler, LTX2Pipeline
+    from safetensors.torch import load_file
+
+    from .video_ltx2 import (
+        _CONNECTORS_CONFIG,
+        _CONNECTORS_RENAME,
+        _build_from_config,
+        _checkpoint_group,
+        load_ltx23_audio_vae_and_vocoder,
+        load_ltx23_vae,
+    )
+    from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
+
+    connector_state = {
+        _checkpoint_group(key)[1]: value
+        for key, value in _read_tensors(
+            str(checkpoint_path), lambda key: _checkpoint_group(key)[0] == "connectors"
+        ).items()
+    }
+    if not connector_state:
+        raise ValueError(f"'{Path(str(checkpoint_path)).name}' carries no LTX-2.5 text connectors.")
+    if any(
+        name.endswith((".weight_scale", ".input_scale", ".comfy_quant")) for name in connector_state
+    ):
+        raise ValueError(
+            "This LTX-2.5 file stores its text connectors quantized, which the single-file assembly does not "
+            "dequantize. Load it on the Lightricks/LTX-2.5-Diffusers base (base_repo), or pick the bf16 DiT or a GGUF "
+            "quant."
+        )
+    encoder_path = ltx25_companion_path(base, LTX25_SINGLE_TEXT_ENCODER, hf_token, local_files_only)
+    connector_state.update(
+        _read_tensors(encoder_path, lambda key: key.startswith(LTX25_TEXT_PROJECTION_PREFIX))
+    )
+    connectors = _build_from_config(
+        LTX2TextConnectors, _CONNECTORS_CONFIG, connector_state, _CONNECTORS_RENAME, torch_dtype
+    )
+    vae = load_ltx23_vae(
+        load_file(ltx25_companion_path(base, LTX25_SINGLE_VIDEO_VAE, hf_token, local_files_only)),
+        variant = "distilled",
+        torch_dtype = torch_dtype,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+    )
+    combined = load_file(
+        ltx25_companion_path(base, LTX25_SINGLE_AUDIO_VAE, hf_token, local_files_only)
+    )
+    audio_vae, vocoder = load_ltx23_audio_vae_and_vocoder(
+        {k[len("audio_vae.") :]: v for k, v in combined.items() if k.startswith("audio_vae.")},
+        {k[len("vocoder.") :]: v for k, v in combined.items() if k.startswith("vocoder.")},
+        variant = "distilled",
+        torch_dtype = torch_dtype,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+    )
+    del combined
+    logger.info("video.ltx25_single_file: assembled from %s", base)
+    return LTX2Pipeline(
+        scheduler = FlowMatchEulerDiscreteScheduler.from_config(LTX25_SCHEDULER_CONFIG),
+        vae = vae,
+        audio_vae = audio_vae,
+        text_encoder = None,
+        tokenizer = None,
+        connectors = connectors,
+        transformer = transformer,
+        vocoder = vocoder,
+    )
+
+
+# ── the Gemma 4 encoder worker ───────────────────────────────────────────────
+
+
+def encoder_resident_for_plan(plan: Any) -> bool:
+    """Whether the encoder worker keeps Gemma 4 on the card, by the tier the memory plan budgeted.
+
+    The plan prices the family's text encoder (the table's 23.9 GB) as if it were in-process: resident under ``none``
+    and under ``group`` with resident companions, streamed under ``group`` with streamed text encoders and under
+    ``streaming`` / ``sequential``, alone on the card under ``model``. On every tier that did not budget it resident the
+    worker keeps the encoder on the host and onloads it only for an encode: whole when the card has room, else one
+    decoder layer at a time, else it encodes on the CPU (see ``video_ltx25_te_worker._encode_plan``)."""
+    from .diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
+
+    policy = getattr(plan, "offload_policy", None)
+    if policy == OFFLOAD_NONE:
+        return True
+    return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_text_encoders", False))
+
+
+def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
+    """``"int8"``, None (bf16) or ``AutoTeQuant("int8")`` for auto; other schemes raise ValueError."""
+    from .diffusion_precision import AutoTeQuant, normalize_te_quant, te_quant_is_auto
+
+    if te_quant_is_auto(text_encoder_quant):
+        env = (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower()
+        if env in _ON:
+            return LTX25_TE_QUANT_DEFAULT
+        if env in _OFF:
+            return None
+        return AutoTeQuant(LTX25_TE_QUANT_DEFAULT)
+    scheme = normalize_te_quant(text_encoder_quant)
+    if scheme is None or scheme == LTX25_TE_QUANT_DEFAULT:
+        return scheme
+    raise ValueError(
+        f"LTX-2.5's Gemma 4 text encoder runs int8 (ConvRot, as in ComfyUI's LTX-2.5 workflows) or bf16, not "
+        f"'{scheme}'. Pick int8 for int8, or leave it unset / Off for bf16."
+    )
+
+
+def ltx25_te_prequant_sources(
+    text_encoder_quant: Optional[str], base: Optional[str]
+) -> dict[str, Any]:
+    """``{"text_encoder": source}`` when this load takes the hosted int8 ConvRot encoder, else ``{}``.
+
+    The video backend's pre-cast planner asks this for LTX-2.5, so the hosted file is fetched with the load's progress
+    and cancel, and only a file that resolves drops the dense ``text_encoder/`` shards. Pack loads of the base the file
+    was cut from only: the single-file release reads its text projections out of its own encoder file, and a custom
+    pack may carry other weights. An automatic pick also needs the file confirmed. Never raises."""
+    try:
+        scheme = ltx25_te_quant_scheme(text_encoder_quant)
+        if scheme != LTX25_TE_QUANT_DEFAULT:
+            return {}
+        if not base or is_ltx25_single_file_base(base):
+            return {}
+        from .diffusion_families import canonical_base
+        from .diffusion_precision import AutoTeQuant
+        from .diffusion_te_prequant import TePrequantSource
+        from .model_ids import hf_cache_repo_id
+
+        # Exact identity only (an HF cache snapshot counts as its repo): a same-shaped pack sharing
+        # the folder name would silently lose its own encoder weights
+        identity = hf_cache_repo_id(str(base)) or str(base)
+        if canonical_base(identity).lower() != canonical_base(LTX25_TE_HOSTED_BASE).lower():
+            return {}
+        sources = {
+            "text_encoder": TePrequantSource(
+                kind = "repo", location = LTX25_TE_HOSTED_REPO, filename = LTX25_TE_HOSTED_FILE
+            )
+        }
+        if isinstance(scheme, AutoTeQuant):
+            from .diffusion_te_prequant import te_prequant_sources_confirmed
+            if not te_prequant_sources_confirmed(sources):
+                return {}
+        return sources
+    except Exception:  # noqa: BLE001 -- no hosted encoder: the worker quantizes the dense one
+        return {}
+
+
+def ltx25_resolve_te_request(
+    text_encoder_quant: Optional[str],
+    base: Optional[str],
+    failures: Optional[dict] = None,
+) -> Optional[str]:
+    """The request a load hands its plan and its worker: an automatic int8 pick becomes ``"int8"`` when the hosted
+    file serves this load, else ``"none"`` (bf16, never the at-load quantization). ``failures`` is the pre-fetch's
+    ``{component: reason}``: a hosted file that could not be fetched keeps bf16. Anything else comes back unchanged."""
+    from .diffusion_precision import AutoTeQuant
+
+    try:
+        scheme = ltx25_te_quant_scheme(text_encoder_quant)
+    except ValueError:
+        return text_encoder_quant
+    if not isinstance(scheme, AutoTeQuant):
+        return text_encoder_quant
+    if failures and "text_encoder" in failures:
+        logger.info(
+            "video.ltx25_te: hosted int8 ConvRot encoder not fetched (%s); the bf16 text encoder loads",
+            failures["text_encoder"],
+        )
+        return "none"
+    if not ltx25_te_prequant_sources(text_encoder_quant, base):
+        logger.info(
+            "video.ltx25_te: hosted int8 ConvRot encoder not available for '%s'; the bf16 text encoder loads",
+            base,
+        )
+        return "none"
+    logger.info(
+        "video.ltx25_te: int8 ConvRot encoder selected automatically (hosted %s/%s)",
+        LTX25_TE_HOSTED_REPO,
+        LTX25_TE_HOSTED_FILE,
+    )
+    return LTX25_TE_QUANT_DEFAULT
+
+
+def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
+    try:
+        scheme = ltx25_te_quant_scheme(text_encoder_quant)
+    except ValueError:
+        return 1.0
+    if scheme == LTX25_TE_QUANT_DEFAULT and bf16_gb > 0:
+        return min(1.0, LTX25_TE_INT8_GB / float(bf16_gb))
+    return 1.0
+
+
+def ltx25_te_outcome(client: Any) -> Any:
+    from .diffusion_precision import TEQuantOutcome
+
+    scheme = (getattr(client, "config", None) or {}).get("te_quant")
+    if scheme:
+        source = (getattr(client, "info", None) or {}).get("te_source")
+        detail = "int8 ConvRot weight-only Gemma 4 encoder (ComfyUI's LTX-2.5 encoder)"
+        if source == "hosted":
+            detail += f", loaded from {LTX25_TE_HOSTED_REPO}"
+        elif source == "quantized_at_load":
+            detail += ", quantized at load"
+        return TEQuantOutcome(scheme, detail)
+    return TEQuantOutcome(None)
+
+
+def sidecar_missing_message(venv_dir: str) -> str:
+    return (
+        "LTX-2.5's text encoder is a Gemma 4 model (Gemma4UnifiedForConditionalGeneration) that needs transformers "
+        f">= {TEXT_ENCODER_MIN_TRANSFORMERS}. Unsloth keeps that in its transformers 5.10 sidecar at '{venv_dir}', "
+        "which is missing and could not be installed. Re-run the Unsloth installer (or check the network so Unsloth "
+        "can rebuild the sidecar), then load LTX-2.5 again."
+    )
+
+
+def ensure_text_encoder_sidecar() -> str:
+    """The ``.venv_t5_510`` dir, created / repaired the way the chat and training workers do it; RuntimeError naming
+    the sidecar when it cannot be made usable."""
+    from utils.transformers_version import _VENV_T5_510_DIR, _ensure_venv_t5_510_exists
+
+    try:
+        ok = _ensure_venv_t5_510_exists()
+    except Exception as exc:  # noqa: BLE001 -- surface as the named sidecar failure
+        logger.warning("video.ltx25_te: sidecar check failed: %s", exc)
+        ok = False
+    if not ok:
+        raise RuntimeError(sidecar_missing_message(_VENV_T5_510_DIR))
+    return _VENV_T5_510_DIR
+
+
+# ``0``: the old path (full-width transport, connectors rerun in stage two).
+COMPACT_CONDITIONING_ENV = "UNSLOTH_LTX25_COMPACT_CONDITIONING"
+
+# Engagement counters, read by tests.
+CONDITIONING_STATS: dict[str, int] = {
+    "compact_encodes": 0,
+    "full_encodes": 0,
+    "host_bytes": 0,
+    "upload_bytes": 0,
+    "connector_runs": 0,
+    "connector_reuses": 0,
+}
+
+
+def compact_conditioning_enabled() -> bool:
+    return (os.environ.get(COMPACT_CONDITIONING_ENV) or "").strip() != "0"
+
+
+def _tensor_bytes(t: Any) -> int:
+    try:
+        return int(t.numel()) * int(t.element_size())
+    except Exception:  # noqa: BLE001 -- not a tensor
+        return 0
+
+
+def expand_valid_rows(rows: Any, mask: Any, *, device: Any, dtype: Any) -> Any:
+    """Inverse of ``compact_valid_rows`` on ``device``, padded rows zero. The connectors zero padded rows before
+    mixing tokens, so their outputs equal the full-width ones."""
+    import torch
+
+    mask = mask.to(device = device)
+    batch, seq_len = mask.shape[0], mask.shape[-1]
+    rows = rows.to(device = device, dtype = dtype)
+    full = torch.zeros((batch, seq_len, rows.shape[-1]), device = rows.device, dtype = rows.dtype)
+    full.masked_scatter_(mask.view(batch, seq_len, 1).bool(), rows)
+    return full
+
+
+def _release_cached_device_memory(device: Optional[str]) -> None:
+    kind = str(device or "").split(":", 1)[0]
+    if kind not in ("cuda", "xpu"):
+        return
+    try:
+        import torch
+        accel = getattr(torch, kind)
+        if accel.is_available():
+            accel.empty_cache()
+    except Exception:  # noqa: BLE001 -- best effort; the worker re-measures
+        pass
+
+
+def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
+    """What this (server) process holds on ``device`` right now, for the worker's budget check."""
+    kind = str(device or "").split(":", 1)[0]
+    if kind not in ("cuda", "xpu"):
+        return None
+    try:
+        import torch
+        return int(getattr(torch, kind).memory_reserved(torch.device(str(device)))) >> 20
+    except Exception:  # noqa: BLE001 -- unknown: the worker judges by free memory alone
+        return None
+
+
+def _encode_room_mib(client: Any) -> Optional[int]:
+    """The room the worker's encode plan sees now (``video_ltx25_te_worker._encode_room_mib``); None when unreadable."""
+    from .video_ltx25_te_worker import _encode_room_mib as worker_room
+
+    device = client.config.get("device")
+    return worker_room(client.config, _server_reserved_mib(device))
+
+
+# Never parked: the denoisers lend blocks instead; an in-process text encoder is the encode itself.
+_NEVER_PARKED = ("transformer", "transformer_2", "unconditional_transformer")
+# Host copy kept on a parked module between requests, refreshed from the card at every park.
+_PARK_HOST_ATTR = "_unsloth_ltx25_park_host"
+# "0" lends only resident denoiser blocks (a short card then encodes on the CPU, as before).
+PARK_COMPANIONS_ENV = "UNSLOTH_LTX25_PARK_FOR_ENCODE"
+# "0" lends the denoiser's room once per prompt encode again, so a CFG request's two misses park and restore twice.
+ONE_LEASE_ENV = "UNSLOTH_LTX25_TE_ONE_LEASE"
+
+
+def _module_tensors(module: Any) -> list:
+    """``(table, key, tensor)`` per distinct parameter / buffer (tied weights listed once)."""
+    seen: set = set()
+    out = []
+    for sub in module.modules():
+        for table in (sub._parameters, sub._buffers):
+            for key, tensor in table.items():
+                if tensor is None or id(tensor) in seen:
+                    continue
+                seen.add(id(tensor))
+                out.append((table, key, tensor))
+    return out
+
+
+def _hooked(module: Any) -> bool:
+    """An accelerate hook, or a diffusers registry holding any hook (an empty registry moves nothing)."""
+    if getattr(module, "_hf_hook", None) is not None:
+        return True
+    registry = getattr(module, "_diffusers_hook", None)
+    return registry is not None and bool(getattr(registry, "hooks", True))
+
+
+def _parkable_components(pipe: Any, device: Any) -> list:
+    """``[(name, module, MiB)]``, largest first: hook-free modules wholly on the card that the encode never runs."""
+    import torch
+
+    dev = torch.device(str(device))
+    out = []
+    for name, module in (getattr(pipe, "components", {}) or {}).items():
+        if (
+            not isinstance(module, torch.nn.Module)
+            or str(name) in _NEVER_PARKED
+            or str(name).startswith("text_encoder")
+            # The VAE decode is compiled and keeps fused weight copies, so its storage must not move under it.
+            or "vae" in str(name).lower()
+            or any(_hooked(sub) for sub in module.modules())
+        ):
+            continue
+        tensors = _module_tensors(module)
+        if not tensors:
+            continue
+        on_card = True
+        for _table, _key, tensor in tensors:
+            data = tensor.data if isinstance(tensor, torch.nn.Parameter) else tensor
+            if (
+                type(data) is not torch.Tensor
+                or data.device.type != dev.type
+                or (dev.index is not None and data.device.index != dev.index)
+            ):
+                on_card = False
+                break
+        if on_card:
+            nbytes = sum(t.numel() * t.element_size() for _tb, _k, t in tensors)
+            out.append((str(name), module, -(-nbytes // (1 << 20))))
+    out.sort(key = lambda item: -item[2])
+    return out
+
+
+def _park_host_copy(module: Any, tensors: list) -> Optional[list]:
+    """Kept host copy per tensor, pinned where the host-RAM reserve allows, else pageable; None if it cannot fit."""
+    import torch
+
+    shapes = [(tuple(t.shape), t.dtype) for _tb, _k, t in tensors]
+    kept = module.__dict__.get(_PARK_HOST_ATTR)
+    if kept is not None and kept[0] == shapes:
+        return kept[1]
+    from .diffusion_memory import (
+        _PIN_RESERVE_FRACTION,
+        _PIN_RESERVE_MIN_BYTES,
+        _available_system_memory_mib,
+        _host_ram_capacity_mib,
+        _windows_commit_headroom_mib,
+        registered_pinned_empty,
+    )
+
+    sizes = [t.numel() * t.element_size() for _tb, _k, t in tensors]
+    need = sum(sizes)
+    available, total = _available_system_memory_mib(), _host_ram_capacity_mib()
+    if available is None or total is None:
+        return None
+    commit = _windows_commit_headroom_mib()
+    if commit is not None:
+        available = min(int(available), int(commit))
+    reserve = max(_PIN_RESERVE_MIN_BYTES, int((int(total) << 20) * _PIN_RESERVE_FRACTION))
+    if (int(available) << 20) - need < reserve:
+        return None
+    slab = registered_pinned_empty(need)
+    views = []
+    offset = 0
+    for (_tb, _k, tensor), size in zip(tensors, sizes):
+        if slab is not None:
+            view = slab[offset : offset + size].view(tensor.dtype).view(tensor.shape)
+            offset += size
+        else:
+            view = torch.empty(tensor.shape, dtype = tensor.dtype, device = "cpu")
+        views.append(view)
+    module.__dict__[_PARK_HOST_ATTR] = (shapes, views)
+    return views
+
+
+def _park_for_encode(pipe: Any, device: Any, need_mib: int) -> Optional[Callable[[], None]]:
+    """Park companions on their host copy, largest first, until ``need_mib`` is freed; returns the restore or None."""
+    if (os.environ.get(PARK_COMPANIONS_ENV) or "").strip() == "0" or need_mib <= 0:
+        return None
+    import torch
+
+    parked: list = []
+
+    def restore() -> None:
+        while parked:
+            for table, key, param, home, host in parked.pop():
+                moved = host.to(home, copy = True, non_blocking = host.is_pinned())
+                if param is not None:
+                    param.data = moved
+                else:
+                    table[key] = moved
+
+    left = int(need_mib)
+    try:
+        for name, module, mib in _parkable_components(pipe, device):
+            if left <= 0:
+                break
+            tensors = _module_tensors(module)
+            hosts = _park_host_copy(module, tensors)
+            if hosts is None:
+                continue
+            for (_table, _key, tensor), host in zip(tensors, hosts):
+                host.copy_(tensor.data if isinstance(tensor, torch.nn.Parameter) else tensor)
+            # Copies must land before the card's tensors are dropped.
+            if torch.device(str(device)).type == "cuda":
+                torch.cuda.synchronize(torch.device(str(device)))
+            entries = []
+            for (table, key, tensor), host in zip(tensors, hosts):
+                is_param = isinstance(tensor, torch.nn.Parameter)
+                entries.append((table, key, tensor if is_param else None, tensor.device, host))
+                if is_param:
+                    tensor.data = host
+                else:
+                    table[key] = host
+            parked.append(entries)
+            del tensors
+            left -= mib
+            logger.info(
+                "video.ltx25_te: %s (%d MiB) steps off the card for the prompt encode", name, mib
+            )
+    except Exception as exc:  # noqa: BLE001 -- whatever moved goes back; the encode still runs, maybe on the CPU
+        logger.warning("video.ltx25_te: parking companions for the encode failed (%s)", exc)
+        restore()
+        return None
+    if not parked:
+        return None
+    if torch.device(str(device)).type == "cuda":
+        torch.cuda.empty_cache()
+    return restore
+
+
+def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..., None]]:
+    """Free card room for a non-resident encode: lend denoiser blocks, then park companions; returns the restore."""
+    config = getattr(client, "config", None) or {}
+    if (
+        not config
+        or config.get("resident")
+        or not str(config.get("device") or "").startswith("cuda")
+    ):
+        return None
+    try:
+        import torch
+
+        from .diffusion_memory import release_resident_groups
+        from .video_ltx25_te_worker import ENCODE_MARGIN_MIB
+        from .video_stream_residency import resident_mib
+
+        held = resident_mib(getattr(pipe, "transformer", None))
+        from .host_pinning import host_pinning_allowed
+
+        parkable = 0
+        # On unified memory the host copy and the card are the same RAM: parking frees nothing.
+        if (os.environ.get(PARK_COMPANIONS_ENV) or "").strip() != "0" and host_pinning_allowed(
+            config["device"]
+        ):
+            parkable = sum(mib for _n, _m, mib in _parkable_components(pipe, config["device"]))
+        if held + parkable <= 0:
+            return None
+        torch.cuda.empty_cache()
+        room = _encode_room_mib(client)
+        if room is None:
+            return None
+        info = getattr(client, "info", None) or {}
+        weights = int(info.get("weights_mib") or 0)
+        whole = weights + ENCODE_MARGIN_MIB if weights > 0 else None
+        streamed = info.get("stream_need_mib")
+        # Companions are parked only to reach the streamed need: a whole onload is worth only the blocks it frees.
+        if whole is not None and room < whole <= room + held:
+            target, parkable = whole, 0
+        elif streamed is not None and room < int(streamed) <= room + held + parkable:
+            target = int(streamed)
+        elif streamed is not None and room < int(streamed) and held > 0:
+            target, parkable = int(streamed), 0
+        else:
+            return None
+        restores: list = []
+        if held > 0:
+            restore = release_resident_groups(
+                pipe, target - room, logger, denoisers_only = True, reason = "the prompt encode"
+            )
+            if restore is not None:
+                restores.append(restore)
+                torch.cuda.empty_cache()
+                room = _encode_room_mib(client)
+        if parkable and room is not None and room < target:
+            restore = _park_for_encode(pipe, config["device"], target - room)
+            if restore is not None:
+                restores.append(restore)
+        if not restores:
+            return None
+
+        def restore_all() -> None:
+            # Companions back first (the connectors run next), then the denoiser's blocks.
+            for undo in reversed(restores):
+                undo()
+
+        return restore_all
+    except Exception as exc:  # noqa: BLE001 -- the encode still runs, maybe on the CPU
+        logger.warning("video.ltx25_te: lending resident blocks skipped (%s)", exc)
+        return None
+
+
+class TextEncoderWorkerError(RuntimeError):
+    def __init__(
+        self,
+        *args: Any,
+        cache_miss: bool = False,
+    ) -> None:
+        super().__init__(*args)
+        self.cache_miss = cache_miss
+
+
+class Ltx25TextEncoderClient:
+    """One spawned encoder worker for one loaded LTX-2.5 pipeline.
+
+    ``start`` spawns it (the Gemma 4 load overlaps the DiT load); ``wait_ready`` blocks until it has the model;
+    ``encode`` sends prompts and returns ``(prompt_embeds, attention_mask)`` on the host. A dead worker is restarted on
+    the next encode. ``close`` stops it (unload / failed load)."""
+
+    # Two recent encodes kept on the host: a re-render with the same prompt (seed sweeps) skips the worker.
+    _CACHE_ENTRIES = 2
+
+    def __init__(
+        self,
+        *,
+        repo: str,
+        hf_token: Optional[str],
+        cache_dir: Optional[str],
+        local_files_only: bool,
+        device: str,
+        dtype: str,
+        resident: bool,
+        venv_dir: str,
+        cancel_event: Optional[threading.Event] = None,
+        single_file: Optional[str] = None,
+        budget_mib: Optional[int] = None,
+        te_quant: Optional[str] = None,
+        te_prequant: Optional[dict] = None,
+        hub_repo: Optional[str] = None,
+    ) -> None:
+        self.config = {
+            "repo": repo,
+            # The single-file release's encoder file (config and tokenizer embedded) instead of pack subfolders.
+            "single_file": single_file,
+            "key_mapping": dict(LTX25_TEXT_ENCODER_KEY_MAPPING) if single_file else None,
+            "hf_token": hf_token,
+            "cache_dir": cache_dir,
+            "local_files_only": bool(local_files_only),
+            "device": device,
+            "dtype": dtype,
+            "resident": bool(resident),
+            "venv_dir": venv_dir,
+            # The load's memory budget: a non-resident encoder onloads only into what the server leaves of it.
+            "budget_mib": budget_mib,
+            "te_quant": te_quant,
+            # The hosted int8 file ({repo, filename, mirror_path}) for an int8 load, else None; and the Hub id of the
+            # pack, where the dense fallback reads when ``repo`` is a scoped snapshot that skipped its shards.
+            "te_prequant": te_prequant,
+            "hub_repo": hub_repo,
+            # A plan priced at the hosted file's size cannot cover the dense fallback's peak: the worker refuses it
+            # when free memory does not hold the dense encoder.
+            "dense_te_gb": LTX25_TE_BF16_GB if te_prequant else None,
+        }
+        self.cancel_event = cancel_event
+        self._proc: Any = None
+        self._cmd: Any = None
+        self._resp: Any = None
+        self._ready = False
+        self._ready_error: Optional[BaseException] = None
+        self._seq = 0
+        # Request the worker is still computing (a cancel abandons it).
+        self._inflight: Optional[int] = None
+        self._lock = threading.Lock()
+        self._cache: list[tuple[tuple, Any]] = []
+        self.info: dict[str, Any] = {}
+        self.last_encode: dict[str, Any] = {}
+        # encode_prompt calls, one per render: the second means a render (and the server's pins) has finished.
+        self.renders = 0
+
+    # process management
+    def start(self) -> None:
+        import multiprocessing as mp
+
+        from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
+        )
+
+        from utils.process_lifetime import is_process_shutting_down
+
+        # A quit during an LTX-2.5 load must not start an encoder worker the shutdown sweep has already passed.
+        if is_process_shutting_down():
+            raise TextEncoderWorkerError(
+                "Unsloth is shutting down; not starting the LTX-2.5 text encoder worker."
+            )
+        ctx = mp.get_context("spawn")
+        cache_env = get_hf_cache_paths().child_env({})
+        with child_environment_for_spawn(cache_env), native_path_secret_removed_for_child_start():
+            self._cmd = ctx.Queue()
+            self._resp = ctx.Queue()
+            proc = ctx.Process(
+                target = run_without_native_path_secret,
+                args = ("core.inference.video_ltx25_te_worker", "run_text_encoder_worker", cache_env),
+                kwargs = {"cmd_queue": self._cmd, "resp_queue": self._resp, "config": self.config},
+                daemon = True,
+            )
+            from utils.process_lifetime import spawn_on_lifetime_thread
+
+            # The child arms PR_SET_PDEATHSIG, which follows the spawning THREAD: a load runs on a short-lived thread,
+            # and a worker started there dies the moment the load returns.
+            spawn_on_lifetime_thread(proc.start)
+        self._proc = proc
+        self._ready = False
+        self._ready_error = None
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(proc.pid)
+        except Exception:  # noqa: BLE001 -- the daemon flag still ties it to this process
+            pass
+        # Recheck once the pid is recorded: the latch can be set between the gate above and the record.
+        if is_process_shutting_down():
+            logger.info(
+                "video.ltx25_te: shutdown began during the spawn; reaping the encoder worker"
+            )
+            self._proc = None
+            try:
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join(5)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(5)
+            except Exception:  # noqa: BLE001 -- the reap is best-effort
+                pass
+            raise TextEncoderWorkerError(
+                "Unsloth is shutting down; stopped the LTX-2.5 text encoder worker it had just started."
+            )
+        logger.info("video.ltx25_te: started the Gemma 4 encoder worker (pid %s)", proc.pid)
+
+    def alive(self) -> bool:
+        return self._proc is not None and self._proc.is_alive()
+
+    def _get(
+        self,
+        cancel: Optional[threading.Event],
+        what: str,
+        timeout: Optional[float] = None,
+        request_id: Optional[int] = None,
+    ) -> dict:
+        """The next worker reply. With ``request_id``, an error for another request (one a cancel abandoned) is skipped
+        rather than raised, so it cannot fail the encode that follows."""
+        began = time.monotonic()
+        while True:
+            if cancel is not None and cancel.is_set():
+                from .video_families import VIDEO_CANCELLED_MSG
+                raise RuntimeError(VIDEO_CANCELLED_MSG)
+            try:
+                msg = self._resp.get(timeout = 0.25)
+            except _queue.Empty:
+                if not self.alive():
+                    code = getattr(self._proc, "exitcode", None)
+                    self._proc = None
+                    raise TextEncoderWorkerError(
+                        f"The LTX-2.5 text encoder worker exited (code {code}) while {what}. Check the server log "
+                        "for its error; the next request restarts it."
+                    )
+                if timeout is not None and time.monotonic() - began > timeout:
+                    raise TextEncoderWorkerError(
+                        f"The LTX-2.5 text encoder worker timed out while {what}."
+                    )
+                continue
+            if msg.get("type") == "error":
+                if (
+                    request_id is not None
+                    and msg.get("id") is not None
+                    and msg.get("id") != request_id
+                ):
+                    continue
+                raise TextEncoderWorkerError(
+                    str(msg.get("error") or "unknown error"), cache_miss = bool(msg.get("cache_miss"))
+                )
+            return msg
+
+    def wait_ready(self, cancel: Optional[threading.Event] = None) -> dict:
+        if self._ready:
+            return self.info
+        if getattr(self, "_ready_error", None) is not None:
+            # The worker sends its load error once: a second caller (a placement preview read it first) gets the same one.
+            raise self._ready_error
+        try:
+            msg = self._get(cancel, "loading the Gemma 4 encoder")
+        except TextEncoderWorkerError as exc:
+            self._ready_error = exc
+            raise
+        if msg.get("type") != "ready":
+            raise TextEncoderWorkerError(
+                f"Unexpected reply from the text encoder worker: {msg.get('type')}"
+            )
+        self._ready = True
+        self.info = {k: v for k, v in msg.items() if k != "type"}
+        logger.info("video.ltx25_te: encoder ready %s", self.info)
+        return self.info
+
+    def close(self) -> None:
+        proc, self._proc = self._proc, None
+        self._ready = False
+        self._ready_error = None
+        self._inflight = None
+        self._cache.clear()
+        if proc is None:
+            return
+        try:
+            self._cmd.put({"type": "shutdown"})
+            proc.join(timeout = 10)
+        except Exception:  # noqa: BLE001 -- fall through to terminate
+            pass
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout = 5)
+        if proc.is_alive():
+            proc.kill()
+        logger.info("video.ltx25_te: encoder worker stopped")
+
+    # encoding
+    def stop_if_busy(self) -> bool:
+        """Stop a worker still running an abandoned encode, freeing its card memory; the next encode restarts it."""
+        if self._inflight is None or not self.alive():
+            return False
+        logger.info("video.ltx25_te: stopping the encoder worker mid-encode (request cancelled)")
+        self.close()
+        return True
+
+    def cached(
+        self,
+        prompts: list[str],
+        max_sequence_length: int,
+        *,
+        compact: Optional[bool] = None,
+    ) -> bool:
+        compact = compact_conditioning_enabled() if compact is None else bool(compact)
+        key = (tuple(prompts), int(max_sequence_length), compact)
+        with self._lock:
+            return any(cached_key == key for cached_key, _ in self._cache)
+
+    def encode(
+        self,
+        prompts: list[str],
+        max_sequence_length: int,
+        cancel: Optional[threading.Event] = None,
+        *,
+        copy: bool = True,
+        compact: Optional[bool] = None,
+    ) -> tuple[Any, Any]:
+        """``copy=False`` returns the cached host tensors themselves, for a caller that only reads them: a 385 MB host
+        clone per call is ~40 ms on a B200 host. Compact (the default) embeds are ``[valid rows, D]``."""
+        compact = compact_conditioning_enabled() if compact is None else bool(compact)
+        key = (tuple(prompts), int(max_sequence_length), compact)
+        with self._lock:
+            for i, (cached_key, value) in enumerate(self._cache):
+                if cached_key == key:
+                    # LRU: a negative prompt hit every render is never the one evicted.
+                    self._cache.append(self._cache.pop(i))
+                    return (value[0].clone(), value[1].clone()) if copy else value
+            if not self.alive():
+                logger.warning("video.ltx25_te: encoder worker not running; restarting it")
+                self.start()
+            cancel = cancel if cancel is not None else self.cancel_event
+            self.wait_ready(cancel)
+            self._seq += 1
+            seq = self._seq
+            if not self.config.get("resident"):
+                # Cached-only blocks must not count against the worker's room (it subtracts what we reserve).
+                _release_cached_device_memory(self.config.get("device"))
+            self._cmd.put(
+                {
+                    "type": "encode",
+                    "id": seq,
+                    "prompts": list(prompts),
+                    "max_sequence_length": int(max_sequence_length),
+                    "server_reserved_mib": _server_reserved_mib(self.config.get("device")),
+                    # The server pins its own host weights during the first render; the encoder's pin waits for that
+                    # so it never takes the host RAM those pins need.
+                    "pin_host": self.renders > 1,
+                    "compact": compact,
+                }
+            )
+            self._inflight = seq
+            while True:
+                try:
+                    msg = self._get(cancel, "encoding the prompt", request_id = seq)
+                except TextEncoderWorkerError:
+                    self._inflight = None
+                    raise
+                # A reply to a request a cancel abandoned arrives first; skip it.
+                if msg.get("type") == "embeds" and msg.get("id") == seq:
+                    break
+            self._inflight = None
+            embeds, mask = msg["embeds"], msg["mask"]
+            self.last_encode = {
+                k: v for k, v in msg.items() if k not in ("type", "id", "embeds", "mask")
+            }
+            # An older worker replies full width: ``_one`` reads the shape, not the request.
+            CONDITIONING_STATS[
+                "compact_encodes" if getattr(embeds, "ndim", 3) == 2 else "full_encodes"
+            ] += 1
+            CONDITIONING_STATS["host_bytes"] += _tensor_bytes(embeds) + _tensor_bytes(mask)
+            self.last_encode["host_mib"] = round(
+                (_tensor_bytes(embeds) + _tensor_bytes(mask)) / 2**20, 2
+            )
+            logger.info(
+                "video.ltx25_te: encoded on %s %s", self.last_encode.get("device"), self.last_encode
+            )
+            self._cache.append((key, (embeds, mask)))
+            del self._cache[: -self._CACHE_ENTRIES]
+            return (embeds.clone(), mask.clone()) if copy else (embeds, mask)
+
+
+def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> None:
+    """Replace ``pipe.encode_prompt`` with the worker round trip, keeping diffusers' signature and semantics (packed
+    hidden states, left padding, CFG negative, ``num_videos_per_prompt`` repeat), so Studio's prompt cache wraps it
+    like any other encoder."""
+
+    def encode_prompt(
+        prompt: Any = None,
+        negative_prompt: Any = None,
+        do_classifier_free_guidance: bool = True,
+        num_videos_per_prompt: int = 1,
+        prompt_embeds: Any = None,
+        negative_prompt_embeds: Any = None,
+        prompt_attention_mask: Any = None,
+        negative_prompt_attention_mask: Any = None,
+        max_sequence_length: int = 1024,
+        scale_factor: int = 8,
+        device: Any = None,
+        dtype: Any = None,
+    ) -> tuple[Any, Any, Any, Any]:
+        client.renders = int(getattr(client, "renders", 0) or 0) + 1
+        device = device or pipe._execution_device
+        dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
+
+        transport: dict[str, bool] = {}
+
+        def _lend(*texts: list[str]) -> Optional[Callable[..., None]]:
+            # Cache miss: lend resident DiT blocks to the worker for the encode.
+            is_cached = getattr(client, "cached", None)
+            if not callable(is_cached) or all(
+                is_cached(t, max_sequence_length, **transport) for t in texts
+            ):
+                return None
+            return lend_resident_dit_for_encode(pipe, client)
+
+        def _hosts(*texts: list[str]) -> list:
+            """Cached (read-only) tensors per prompt list, all encoded under one lease."""
+            restore = _lend(*texts)
+            try:
+                return [
+                    client.encode(t, max_sequence_length, copy = False, **transport) for t in texts
+                ]
+            except BaseException:
+                # A cancelled encode may still use the lent memory: stop it before pinning back.
+                stop = getattr(client, "stop_if_busy", None)
+                if restore is not None and callable(stop):
+                    stop()
+                raise
+            finally:
+                if restore is not None:
+                    restore()
+
+        def _one(texts: list[str], host: Optional[tuple] = None) -> tuple[Any, Any]:
+            cached, mask = host if host is not None else _hosts(texts)[0]
+            CONDITIONING_STATS["upload_bytes"] += _tensor_bytes(cached) + _tensor_bytes(mask)
+            batch = mask.shape[0]
+            if cached.ndim == 2:
+                # A fresh tensor, never an alias of the cache.
+                embeds = expand_valid_rows(cached, mask, device = device, dtype = dtype)
+            else:
+                embeds = cached.to(device = device, dtype = dtype)
+            mask = mask.to(device = device)
+            seq_len = embeds.shape[1]
+            # A ``.to`` that moved or cast already copied, so one video skips ``repeat``; a no-op ``.to`` aliases the cache.
+            if (
+                num_videos_per_prompt != 1
+                or (cached.ndim != 2 and embeds.data_ptr() == cached.data_ptr())
+                or not embeds.is_contiguous()
+            ):
+                embeds = embeds.repeat(1, num_videos_per_prompt, 1).view(
+                    batch * num_videos_per_prompt, seq_len, -1
+                )
+            mask = mask.view(batch, -1).repeat(num_videos_per_prompt, 1)
+            return embeds, mask
+
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0]
+        if num_videos_per_prompt != 1 and batch_size > 1 and compact_conditioning_enabled():
+            # diffusers repeats embeds per prompt but the mask per batch, so padded rows can count as valid there.
+            transport["compact"] = False
+        if (
+            prompt_embeds is None
+            and do_classifier_free_guidance
+            and negative_prompt_embeds is None
+            and (os.environ.get(ONE_LEASE_ENV) or "").strip() != "0"
+        ):
+            negative = negative_prompt or ""
+            negative = batch_size * [negative] if isinstance(negative, str) else negative
+            if batch_size != len(negative):
+                raise ValueError(
+                    f"`negative_prompt` has batch size {len(negative)}, but `prompt` has batch size "
+                    f"{batch_size}."
+                )
+            positive_host, negative_host = _hosts(
+                [p.strip() for p in prompt], [p.strip() for p in negative]
+            )
+            prompt_embeds, prompt_attention_mask = _one([], positive_host)
+            negative_prompt_embeds, negative_prompt_attention_mask = _one([], negative_host)
+        if prompt_embeds is None:
+            prompt_embeds, prompt_attention_mask = _one([p.strip() for p in prompt])
+        if do_classifier_free_guidance and negative_prompt_embeds is None:
+            negative_prompt = negative_prompt or ""
+            negative_prompt = (
+                batch_size * [negative_prompt]
+                if isinstance(negative_prompt, str)
+                else negative_prompt
+            )
+            if batch_size != len(negative_prompt):
+                raise ValueError(
+                    f"`negative_prompt` has batch size {len(negative_prompt)}, but `prompt` has batch size "
+                    f"{batch_size}."
+                )
+            negative_prompt_embeds, negative_prompt_attention_mask = _one(
+                [p.strip() for p in negative_prompt]
+            )
+        return (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+        )
+
+    pipe.encode_prompt = encode_prompt
+    pipe._unsloth_ltx25_encoder = client
+
+
+def close_encoder(pipe: Any) -> None:
+    client = getattr(pipe, "_unsloth_ltx25_encoder", None) if pipe is not None else None
+    if client is not None:
+        try:
+            client.close()
+        except Exception as exc:  # noqa: BLE001 -- teardown is best-effort
+            logger.warning("video.ltx25_te: could not stop the encoder worker: %s", exc)
+
+
+def start_text_encoder(
+    *,
+    repo: str,
+    revision: Optional[str] = None,
+    hf_token: Optional[str],
+    cache_dir: Optional[str],
+    local_files_only: bool,
+    device: str,
+    dtype: str,
+    resident: bool,
+    budget_mib: Optional[int] = None,
+    te_quant: Optional[str] = None,
+    base_repo: Optional[str] = None,
+    bind_device: bool = False,
+) -> Ltx25TextEncoderClient:
+    """Check the sidecar (a named refusal before any weight is read), then spawn the encoder worker so the Gemma 4
+    load overlaps the DiT load. ``base_repo`` is the upstream pack id (``repo`` may be its local snapshot); an int8
+    load of the pack the hosted encoder was cut from hands the worker that file."""
+    venv_dir = ensure_text_encoder_sidecar()
+    te_prequant = None
+    hub_repo = base_repo or repo
+    sources = ltx25_te_prequant_sources(te_quant, hub_repo) if te_quant else {}
+    source = sources.get("text_encoder")
+    if source is not None:
+        from .diffusion_te_prequant import te_prequant_mirror_path
+        te_prequant = {
+            "repo": source.location,
+            "filename": source.filename,
+            "mirror_path": te_prequant_mirror_path(source.location, source.filename),
+            "base": LTX25_TE_HOSTED_BASE,
+        }
+    client = Ltx25TextEncoderClient(
+        repo = repo,
+        hf_token = hf_token,
+        cache_dir = cache_dir,
+        local_files_only = local_files_only,
+        device = device,
+        dtype = dtype,
+        resident = resident,
+        venv_dir = venv_dir,
+        single_file = LTX25_SINGLE_TEXT_ENCODER if is_ltx25_single_file_base(repo) else None,
+        budget_mib = budget_mib,
+        te_quant = te_quant,
+        te_prequant = te_prequant,
+        hub_repo = hub_repo if hub_repo != repo else None,
+    )
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The worker is another process: the plan's commit travels in its config (absent when unpinned).
+    client.config.update({"revision": revision} if revision else pinned_revision_kwargs(repo))
+    from .diffusion_memory import user_budget_reserve_share
+
+    share = user_budget_reserve_share()
+    if share > 0:
+        client.config["vram_reserve_share"] = share
+    if bind_device:
+        # by UUID: a spawned child may enumerate cards in another order
+        client.config.update(bind_device = True, device_uuid = _cuda_device_uuid(device))
+    client.start()
+    return client
+
+
+def _cuda_device_uuid(device: str) -> Optional[str]:
+    try:
+        import torch
+
+        index = torch.device(device).index
+        if torch.device(device).type != "cuda" or index is None:
+            return None
+        return str(torch.cuda.get_device_properties(index).uuid)
+    except Exception:  # noqa: BLE001 -- the worker then binds the ordinal as given
+        return None
+
+
+def attach_to_pipeline(
+    pipe: Any,
+    client: Ltx25TextEncoderClient,
+    *,
+    dev: bool,
+    base_repo: str,
+    torch_dtype: Any,
+    hf_token: Optional[str],
+    cache_dir: Optional[str],
+    local_files_only: bool,
+) -> None:
+    """Wire a freshly built pipe for LTX-2.5: the remote ``encode_prompt``, the variant's sampler and (distilled,
+    two-stage) the latent upsampler, held beside the pipe so the memory plan leaves it alone."""
+    install_remote_encode_prompt(pipe, client)
+    pipe._unsloth_ltx25_dev = bool(dev)
+    pipe._unsloth_ltx25_sampler = prepare_scheduler(pipe, dev = dev)
+    pipe._unsloth_ltx25_upsampler = (
+        load_latent_upsampler(
+            base_repo,
+            torch_dtype = torch_dtype,
+            hf_token = hf_token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
+        if not dev and two_stage_enabled()
+        else None
+    )
+
+
+# ── sampler ──────────────────────────────────────────────────────────────────
+
+
+def make_ancestral_scheduler(base_scheduler: Any) -> Any:
+    """``FlowMatchEulerDiscreteScheduler`` stepping euler-ancestral in its rectified-flow form (eta 1, s_noise 1):
+    Euler down to ``sigma_down = sigma_next**2 / sigma``, then re-noise up to ``sigma_next``. The last step (to 0)
+    is plain Euler. Tokens named by ``keep_tokens`` (the conditioned first latent frame of an image-to-video stage)
+    take the deterministic Euler step, so the conditioning the pipeline blends in x0 space is not re-noised. Noise
+    comes from ``noise_generator`` (the request's generator) for reproducible renders."""
+    import torch
+    from diffusers import FlowMatchEulerDiscreteScheduler
+    from diffusers.utils.torch_utils import randn_tensor
+
+    class LTX25EulerAncestralScheduler(FlowMatchEulerDiscreteScheduler):
+        noise_generator: Any = None
+        # (keep, total): when a sample has ``total`` tokens, its first ``keep`` step deterministically.
+        keep_tokens: Optional[tuple[int, int]] = None
+
+        def __deepcopy__(self, memo: dict) -> Any:
+            # The pipelines deep-copy this for the audio stream; the generator is shared, not cloned, so the audio
+            # draws continue the request's stream instead of replaying the video's.
+            import copy
+
+            new = self.__class__.__new__(self.__class__)
+            memo[id(self)] = new
+            for key, value in self.__dict__.items():
+                setattr(new, key, value if key == "noise_generator" else copy.deepcopy(value, memo))
+            return new
+
+        def step(self, model_output, timestep, sample, *args: Any, **kwargs: Any):  # type: ignore[override]
+            return_dict = kwargs.get("return_dict", True)
+            if self.step_index is None:
+                self._init_step_index(timestep)
+            index = self.step_index
+            sigma = self.sigmas[index]
+            sigma_next = self.sigmas[index + 1]
+            work = sample.to(torch.float32)
+            out = model_output.to(torch.float32)
+            deterministic = work + (sigma_next - sigma) * out
+            if float(sigma_next) <= 0.0 or float(sigma) <= 0.0:
+                prev = deterministic
+            else:
+                denoised = work - sigma * out
+                sigma_down = sigma_next * sigma_next / sigma
+                ratio = sigma_down / sigma
+                x_down = ratio * work + (1.0 - ratio) * denoised
+                alpha_next = 1.0 - sigma_next
+                alpha_down = 1.0 - sigma_down
+                renoise = torch.sqrt(
+                    torch.clamp(
+                        sigma_next**2 - sigma_down**2 * alpha_next**2 / alpha_down**2, min = 0.0
+                    )
+                )
+                noise = randn_tensor(
+                    work.shape,
+                    generator = self.noise_generator,
+                    device = work.device,
+                    dtype = torch.float32,
+                )
+                prev = (alpha_next / alpha_down) * x_down + renoise * noise
+                keep = self.keep_tokens
+                if keep is not None and prev.ndim == 3 and prev.shape[1] == keep[1] and keep[0] > 0:
+                    prev[:, : keep[0]] = deterministic[:, : keep[0]]
+            self._step_index += 1
+            prev = prev.to(model_output.dtype)
+            if not return_dict:
+                return (prev,)
+            from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
+                FlowMatchEulerDiscreteSchedulerOutput,
+            )
+
+            return FlowMatchEulerDiscreteSchedulerOutput(prev_sample = prev)
+
+    return LTX25EulerAncestralScheduler.from_config(base_scheduler.config)
+
+
+def prepare_scheduler(pipe: Any, *, dev: bool) -> str:
+    """The family's sampler on the loaded pipe: dev = diffusers Euler with the README's dynamic shifting, distilled =
+    euler-ancestral (unless ``UNSLOTH_LTX25_SAMPLER=euler``). Returns its name for the status."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    scheduler = pipe.scheduler
+    if dev:
+        pipe.scheduler = FlowMatchEulerDiscreteScheduler.from_config(
+            scheduler.config, **LTX25_DEV_SCHEDULER_OVERRIDES
+        )
+        return "euler"
+    if ancestral_enabled():
+        pipe.scheduler = make_ancestral_scheduler(scheduler)
+        return "euler_ancestral"
+    return "euler"
+
+
+# ── generation ───────────────────────────────────────────────────────────────
+
+
+def condition_pipe(pipe: Any) -> Any:
+    """``LTX2ConditionPipeline`` over the loaded pipe's modules (built once), sharing its video processor so Studio's
+    frame conversion applies, and its remote ``encode_prompt``."""
+    cached = getattr(pipe, "_unsloth_ltx25_condition_pipe", None)
+    if cached is not None:
+        return cached
+    import inspect
+
+    from .ltx2_import_compat import ensure_ltx2_pipelines_importable
+
+    ensure_ltx2_pipelines_importable(logger)
+    from diffusers.pipelines.ltx2.pipeline_ltx2_condition import LTX2ConditionPipeline
+
+    params = inspect.signature(LTX2ConditionPipeline.__init__).parameters
+    components = {k: v for k, v in pipe.components.items() if k in params}
+    cond = LTX2ConditionPipeline(**components)
+    cond.video_processor = pipe.video_processor
+    cond.encode_prompt = pipe.encode_prompt
+    try:
+        cond.set_progress_bar_config(disable = True)
+    except Exception:  # noqa: BLE001 -- cosmetic
+        pass
+    pipe._unsloth_ltx25_condition_pipe = cond
+    return cond
+
+
+def _guidance_off(call_params: Any) -> dict[str, float]:
+    keys = {
+        "stg_scale": 0.0,
+        "modality_scale": 1.0,
+        "guidance_rescale": 0.0,
+        "audio_guidance_scale": 1.0,
+        "audio_stg_scale": 0.0,
+        "audio_modality_scale": 1.0,
+        "audio_guidance_rescale": 0.0,
+    }
+    return {k: v for k, v in keys.items() if k in call_params}
+
+
+def stage_steps(steps: int, *, dev: bool) -> tuple[int, int]:
+    """(stage 1, stage 2) denoise steps a request runs."""
+    if dev or not two_stage_enabled():
+        return int(steps), 0
+    return int(steps), len(LTX25_STAGE2_SIGMAS)
+
+
+def render(
+    pipe: Any,
+    kwargs: dict[str, Any],
+    *,
+    dev: bool,
+    image: Any = None,
+    upsampler: Any = None,
+    on_step: Optional[Callable[..., Any]] = None,
+    cancel: Optional[threading.Event] = None,
+    on_stage: Optional[Callable[[int, int], Any]] = None,
+) -> Any:
+    """Run one LTX-2.5 request. ``kwargs`` is the generic video call (prompt, size, frames, steps, guidance,
+    frame_rate, generator, negative_prompt, callback); returns the final pipeline output (``.frames`` / ``.audio``).
+    ``on_stage(width, height)`` runs before each denoise stage with the size that stage denoises at (live previews
+    unpack the packed latents with it)."""
+    failed = False
+    try:
+        return _render(
+            pipe,
+            kwargs,
+            dev = dev,
+            image = image,
+            upsampler = upsampler,
+            on_step = on_step,
+            cancel = cancel,
+            on_stage = on_stage,
+        )
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        if image is not None or failed:
+            # Reset pipe's offload hooks on every exit: the condition pipeline shares its modules,
+            # not hooks.
+            free = getattr(pipe, "maybe_free_model_hooks", None)
+            if callable(free):
+                try:
+                    free()
+                except Exception:  # noqa: BLE001 -- best-effort offload reset
+                    pass
+
+
+@contextlib.contextmanager
+def reuse_connector_outputs(runner: Any):
+    """Inside ``encode_once``: connectors called on exactly the tensors an ``encode_prompt`` of this span returned
+    (identity, via weak references) reuse the first such call's outputs; any other input (CFG concatenation) runs."""
+    connectors = getattr(runner, "connectors", None)
+    encode = getattr(runner, "encode_prompt", None)
+    if (
+        not compact_conditioning_enabled()
+        or connectors is None
+        or not callable(encode)
+        or not callable(getattr(connectors, "forward", None))
+    ):
+        yield
+        return
+    import weakref
+
+    import torch
+
+    returned: list[tuple[str, Any, Any]] = []
+    results: dict[tuple[str, str], tuple] = {}
+    had_encode = "encode_prompt" in getattr(runner, "__dict__", {})
+    wrapped: dict[str, Any] = {}
+
+    def arm() -> None:
+        # Again before each call: an offload reset between the calls installs a new hooked ``forward``.
+        if connectors.__dict__.get("forward") is forward:
+            return
+        wrapped["own"] = "forward" in connectors.__dict__
+        wrapped["prior"] = connectors.__dict__.get("forward")
+        wrapped["inner"] = connectors.forward
+        connectors.forward = forward
+
+    def encode_prompt(*args: Any, **kwargs: Any) -> Any:
+        out = encode(*args, **kwargs)
+        if (
+            not args
+            and not any(isinstance(v, torch.Tensor) for v in kwargs.values())
+            and isinstance(out, tuple)
+            and len(out) >= 2
+            and isinstance(out[0], torch.Tensor)
+            and isinstance(out[1], torch.Tensor)
+        ):
+            key = repr(sorted((k, repr(v)) for k, v in kwargs.items()))
+            returned.append((key, weakref.ref(out[0]), weakref.ref(out[1])))
+        arm()
+        return out
+
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        source = None
+        if len(args) >= 2:
+            source = next((k for k, e, m in returned if e() is args[0] and m() is args[1]), None)
+        key = (source, repr((args[2:], sorted(kwargs.items())))) if source is not None else None
+        if key is not None and key in results:
+            CONDITIONING_STATS["connector_reuses"] += 1
+            return results[key]
+        out = wrapped["inner"](*args, **kwargs)
+        CONDITIONING_STATS["connector_runs"] += 1
+        if key is not None and isinstance(out, tuple):
+            # A copy: stage one's denoise owns its tensors.
+            results[key] = tuple(t.clone() if isinstance(t, torch.Tensor) else t for t in out)
+        return out
+
+    runner.encode_prompt = encode_prompt
+    arm()
+    try:
+        yield
+    finally:
+        results.clear()
+        returned.clear()
+        if connectors.__dict__.get("forward") is forward:
+            if wrapped.get("own"):
+                connectors.forward = wrapped["prior"]
+            else:
+                del connectors.forward
+        if runner.__dict__.get("encode_prompt") is encode_prompt:
+            if had_encode:
+                runner.encode_prompt = encode
+            else:
+                del runner.encode_prompt
+
+
+def _render(
+    pipe: Any,
+    kwargs: dict[str, Any],
+    *,
+    dev: bool,
+    image: Any = None,
+    upsampler: Any = None,
+    on_step: Optional[Callable[..., Any]] = None,
+    cancel: Optional[threading.Event] = None,
+    on_stage: Optional[Callable[[int, int], Any]] = None,
+) -> Any:
+    import inspect
+
+    import torch
+
+    from .video_ltx2 import ltx23_verbatim_sigmas
+
+    client = getattr(pipe, "_unsloth_ltx25_encoder", None)
+    if client is not None:
+        client.cancel_event = cancel
+    runner = pipe
+    if image is not None:
+        runner = condition_pipe(pipe)
+    call_params = inspect.signature(runner.__call__).parameters
+    width, height = int(kwargs["width"]), int(kwargs["height"])
+    steps = int(kwargs.get("num_inference_steps") or 0)
+    generator = kwargs.get("generator")
+    scheduler = getattr(pipe, "scheduler", None)
+    if hasattr(scheduler, "noise_generator"):
+        scheduler.noise_generator = generator
+    if runner is not pipe:
+        runner.scheduler = scheduler
+
+    base: dict[str, Any] = {
+        k: v
+        for k, v in kwargs.items()
+        if k
+        not in (
+            "num_inference_steps",
+            "width",
+            "height",
+            "callback_on_step_end",
+            "image",
+            "last_image",
+            "sigmas",
+        )
+        and k in call_params
+    }
+
+    def _callback(offset: int) -> Optional[Callable[..., Any]]:
+        if on_step is None:
+            return None
+
+        def _cb(p: Any, step_index: int, timestep: Any, callback_kwargs: dict) -> dict:
+            result = on_step(p, offset + step_index, timestep, callback_kwargs)
+            if getattr(p, "_interrupt", False) and runner is not pipe:
+                pipe._interrupt = True
+            return result
+
+        return _cb
+
+    def _conditions(strength: float) -> dict[str, Any]:
+        if image is None:
+            return {}
+        from .ltx2_import_compat import ensure_ltx2_pipelines_importable
+
+        ensure_ltx2_pipelines_importable(logger)
+        from diffusers.pipelines.ltx2.pipeline_ltx2_condition import LTX2VideoCondition
+
+        return {
+            "conditions": [
+                LTX2VideoCondition(frames = image, index = 0, strength = strength, crf = LTX25_IMAGE_CRF)
+            ]
+        }
+
+    def _keep(stage_width: int, stage_height: int, frames: int) -> None:
+        if on_stage is not None:
+            try:
+                on_stage(stage_width, stage_height)
+            except Exception:  # noqa: BLE001 -- a preview hint must never fail a render
+                pass
+        if not hasattr(scheduler, "keep_tokens"):
+            return
+        if image is None:
+            scheduler.keep_tokens = None
+            return
+        spatial = int(getattr(runner, "vae_spatial_compression_ratio", 32) or 32)
+        temporal = int(getattr(runner, "vae_temporal_compression_ratio", 8) or 8)
+        per_frame = (stage_height // spatial) * (stage_width // spatial)
+        latent_frames = (frames - 1) // temporal + 1
+        scheduler.keep_tokens = (per_frame, per_frame * latent_frames)
+
+    frames = int(kwargs.get("num_frames") or 121)
+    if dev:
+        call = dict(base, width = width, height = height, num_inference_steps = steps)
+        call.update(_conditions(1.0))
+        cb = _callback(0)
+        if cb is not None:
+            call["callback_on_step_end"] = cb
+        _keep(width, height, frames)
+        return runner(**call)
+
+    distilled_sigmas = steps == len(LTX25_STAGE1_SIGMAS)
+    guidance_off = _guidance_off(call_params)
+    if not two_stage_enabled():
+        call = dict(base, width = width, height = height, **guidance_off)
+        if distilled_sigmas:
+            call["sigmas"] = list(LTX25_STAGE1_SIGMAS)
+        else:
+            call["num_inference_steps"] = steps
+        call.update(_conditions(1.0))
+        cb = _callback(0)
+        if cb is not None:
+            call["callback_on_step_end"] = cb
+        _keep(width, height, frames)
+        with ltx23_verbatim_sigmas(pipe):
+            return runner(**call)
+
+    if upsampler is None:
+        raise RuntimeError(
+            "LTX-2.5's two-stage recipe needs the latent upsampler (latent_upsampler/ of the base pack), which "
+            "is not loaded."
+        )
+    from .diffusion_multistage import encode_once, hold_denoiser_between_calls
+
+    with encode_once(runner), reuse_connector_outputs(runner):
+        half_w, half_h = width // 2, height // 2
+        stage1 = dict(
+            base,
+            width = half_w,
+            height = half_h,
+            output_type = "latent",
+            return_dict = False,
+            **guidance_off,
+        )
+        if distilled_sigmas:
+            stage1["sigmas"] = list(LTX25_STAGE1_SIGMAS)
+        else:
+            stage1["num_inference_steps"] = steps
+        stage1.update(_conditions(LTX25_STAGE1_IMAGE_STRENGTH))
+        cb = _callback(0)
+        if cb is not None:
+            stage1["callback_on_step_end"] = cb
+        _keep(half_w, half_h, frames)
+        # The connectors and the upsampler run before the DiT is needed again.
+        companions = (getattr(pipe, "connectors", None), upsampler)
+        with ltx23_verbatim_sigmas(pipe), hold_denoiser_between_calls(pipe, runner, companions):
+            video_latents, audio_latents = runner(**stage1)
+        if cancel is not None and cancel.is_set():
+            from .video_families import VIDEO_CANCELLED_MSG
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
+
+        with torch.inference_mode() if torch.is_inference_mode_enabled() else torch.no_grad():
+            param = next(upsampler.parameters())
+            # Saved before the move: Module.to() swaps the parameter's storage in place, so param.device follows it.
+            home = param.device
+            moved = home != video_latents.device
+            if moved:
+                upsampler.to(video_latents.device)
+            try:
+                upsampled = upsampler(video_latents.to(param.dtype))
+            finally:
+                if moved:
+                    upsampler.to(home)
+        if cancel is not None and cancel.is_set():
+            from .video_families import VIDEO_CANCELLED_MSG
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
+
+        stage2 = dict(
+            base,
+            width = half_w * 2,
+            height = half_h * 2,
+            latents = upsampled,
+            audio_latents = audio_latents,
+            sigmas = list(LTX25_STAGE2_SIGMAS),
+            noise_scale = LTX25_STAGE2_SIGMAS[0],
+            **guidance_off,
+        )
+        stage2.update(_conditions(LTX25_STAGE2_IMAGE_STRENGTH))
+        cb = _callback(steps)
+        if cb is not None:
+            stage2["callback_on_step_end"] = cb
+        _keep(half_w * 2, half_h * 2, frames)
+        with ltx23_verbatim_sigmas(pipe):
+            return runner(**stage2)

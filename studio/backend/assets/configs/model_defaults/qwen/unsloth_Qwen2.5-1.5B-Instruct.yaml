@@ -1,10 +1,7 @@
-# Model defaults for unsloth/Qwen2.5-1.5B-Instruct
-# Based on nemo_gym_sudoku.ipynb
 # Also applies to: unsloth/Qwen2.5-1.5B-Instruct-unsloth-bnb-4bit, Qwen/Qwen2.5-1.5B-Instruct, unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit
 
 training:
   max_seq_length: 4096
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 1e-5
   batch_size: 1
