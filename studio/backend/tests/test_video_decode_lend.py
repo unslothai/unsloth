@@ -148,7 +148,6 @@ def test_first_render_only_measures_the_denoise_then_the_next_lends_the_decode_r
     assert card.released == []
     assert vr.pre_decode_extra_mib(card.module, WORK) == DENOISE_PEAK
     card.fit()
-    # the fit itself keeps today's room: the prompt encode would only stream lent groups again
     assert card.held == _base_room()
     assert card.module._unsloth_video_decode_room == _base_room()
     assert card.module._unsloth_video_lend == (_lend_room(), DENOISE_PEAK)
