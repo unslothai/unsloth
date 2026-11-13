@@ -757,7 +757,8 @@ def _wheel(
         whl.writestr(
             f"{info}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
         )
-        whl.writestr(f"{info}/RECORD", "")
+        if f"{info}/RECORD" not in files:
+            whl.writestr(f"{info}/RECORD", "")
     return wheel.name
 
 
@@ -910,6 +911,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "editable_finder_module",
         "editable_finder_namespace",
         "editable_finder_virtual",
+        "editable_finder_pkgutil",
         "upgrade",
         "namespace",
         "pkgutil_namespace",
@@ -951,6 +953,15 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
             (proj / "implementation").mkdir()
             (proj / "implementation" / "__init__.py").write_text("")
             expected = str(proj / "implementation")
+        elif case == "editable_finder_pkgutil":
+            # Studio's parent is a pkgutil namespace with its own older part; the editable maps only name.part.
+            (proj / "part").mkdir()
+            (proj / "part" / "__init__.py").write_text("")
+            mapping = {f"{name}.part": str(proj / "part")}
+            init = "from pkgutil import extend_path; __path__ = extend_path(__path__, __name__)\n"
+            studio_files = {f"{name}/__init__.py": init, f"{name}/part/__init__.py": ""}
+            show = f"import {name}.part; print({name}.part.__file__)"
+            expected = str(proj / "part")
         elif case == "editable_finder_module":
             # py_modules: MAPPING holds the module path without its suffix.
             (proj / "implementation.py").write_text("")
@@ -1379,6 +1390,52 @@ def test_retirement_keeps_a_file_another_distribution_now_ships(monkeypatch, tmp
     )
     out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
     assert "feature.py" in out and "Error" not in out, out
+
+
+def test_the_stdlib_inventory_has_a_fallback_before_python_3_10():
+    """Without sys.stdlib_module_names (3.9), the interpreter's own stdlib dirs still name shutil."""
+    code = (
+        "import sys; del sys.stdlib_module_names; sys.path.insert(0, %r); "
+        "import sitecustomize as s; names = s._stdlib_names(); "
+        "print('shutil' in names, 'json' in names, 'unsloth_chat_mod' in names)"
+        % tools._SANDBOX_SITE_DIR
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH", "PYTHON"))}
+    out = subprocess.run(
+        [sys.executable, "-S", "-c", code], env = env, capture_output = True, text = True
+    )
+    assert out.stdout.split() == ["True", "True", "False"], out.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_failed_upgrade_keeps_the_old_versions_files(monkeypatch, tmp_path):
+    """pip exits 1 after unpacking a wheel that ships INSTALLER itself: the old version's files stay."""
+    name = "unsloth_failed_upgrade"
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    old = _wheel(workdir, name, {f"{name}/__init__.py": "", f"{name}/old.py": ""})
+    info = f"{name}-2.0.dist-info"
+    new = _wheel(
+        workdir,
+        name,
+        {
+            f"{name}/__init__.py": "",
+            f"{info}/INSTALLER": "pip\n",
+            f"{info}/entry_points.txt": f"[console_scripts]\n{name}_cli = {name}:main\n",
+            f"{info}/RECORD": f"{name}/__init__.py,,\n{info}/INSTALLER,,\n{info}/RECORD,,\n",
+        },
+        "2.0",
+    )
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    tools._bash_exec(f"{_PIP} {old}", None, 120, _SESSION, tool_execution_mode = "software")
+    # A non-empty folder where pip must write the console script makes the install fail late.
+    (packages / "bin" / f"{name}_cli" / "x").mkdir(parents = True)
+    out = tools._bash_exec(
+        f"{_PIP} {new}; echo rc=$?", None, 120, _SESSION, tool_execution_mode = "software"
+    )
+    assert "rc=0" not in out, out
+    assert list(packages.rglob(f"{name}/old.py")), out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")

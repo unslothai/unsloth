@@ -680,6 +680,38 @@ def _read_pth_files(entries, on_sys_path = True):
     return added, [f for f in installed if f is not None]
 
 
+_stdlib = None
+
+
+def _stdlib_names():
+    # sys.stdlib_module_names is 3.10+; before that, what the interpreter's own stdlib dirs hold.
+    global _stdlib
+    if _stdlib is None:
+        _stdlib = set(getattr(sys, "stdlib_module_names", ())) | set(sys.builtin_module_names)
+        if not hasattr(sys, "stdlib_module_names"):
+            for folder in _stdlib_paths():
+                try:
+                    names = os.listdir(folder)
+                except OSError:
+                    continue
+                _stdlib.update(n.partition(".")[0] for n in names if n.isidentifier() or "." in n)
+    return _stdlib
+
+
+def _pkgutil_namespace(origin):
+    if not origin or not origin.endswith("__init__.py"):
+        return False
+    if "ast" not in sys.modules:
+        # _extends_path imports ast: the stdlib one, never a chat-planted copy.
+        saved = sys.path[:]
+        sys.path[:] = _stdlib_paths()
+        try:
+            import ast  # noqa: F401
+        finally:
+            sys.path[:] = saved
+    return _HostPackagesFinder._extends_path(origin)
+
+
 # First on meta_path: a session dir pip creates mid-process is cached as missing, a namespace imported before an
 # install lacks the new portion, and an editable fork's concrete module wins over Studio's copy (namespaces are
 # left to the normal aggregation, which the editable finders still join from their usual place).
@@ -705,8 +737,7 @@ class _SessionPackagesFinder:
         for entry in self._entries:
             if entry in cache and cache[entry] is None and os.path.isdir(entry):
                 del cache[entry]
-        stdlib = getattr(sys, "stdlib_module_names", ())
-        for finder in () if name.partition(".")[0] in stdlib else self._editable:
+        for finder in () if name.partition(".")[0] in _stdlib_names() else self._editable:
             spec = finder.find_spec(name, path, target)
             if spec is not None and spec.loader is not None:
                 # The cwd / script dir and anything else ahead of the session dirs, and for a submodule the
@@ -718,7 +749,7 @@ class _SessionPackagesFinder:
                     origin = getattr(
                         getattr(sys.modules.get(parent), "__spec__", None), "origin", None
                     )
-                    if origin in (None, "namespace"):
+                    if origin in (None, "namespace") or _pkgutil_namespace(origin):
                         # An aggregated namespace also lists Studio's portion: only those ahead count.
                         own = {os.path.abspath(os.path.join(e, *parent.split("."))) for e in ahead}
                         ahead = [p for p in path if os.path.abspath(p) in own]
@@ -740,15 +771,7 @@ class _SessionPackagesFinder:
         listed = {os.path.abspath(p) for p in path}
         portions = [p for p in chat if os.path.abspath(p) not in listed]
         if portions and parent.origin not in (None, "namespace"):
-            if "ast" not in sys.modules:
-                # _extends_path imports ast: the stdlib one, never a chat-planted copy.
-                saved = sys.path[:]
-                sys.path[:] = _stdlib_paths()
-                try:
-                    import ast  # noqa: F401
-                finally:
-                    sys.path[:] = saved
-            if not _HostPackagesFinder._extends_path(parent.origin):
+            if not _pkgutil_namespace(parent.origin):
                 return None
         for portion in portions:
             path.append(portion)
@@ -967,13 +990,65 @@ def _retire_rewritten(snapshot):
         _remove_files(files - _claimed(root, ()), entry)
 
 
+_pip_status = []
+
+
+class _PipStatusFinder:
+    # Records what pip's main() returns, so a failed install retires nothing: its RECORD alone cannot tell
+    # (a wheel may ship INSTALLER itself). Wraps the attribute after pip's module loads; imports nothing of pip.
+    from importlib.machinery import PathFinder as _path_finder
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if name != "pip._internal.cli.main":
+            return None
+        spec = self._path_finder.find_spec(name, path, target)
+        loader = getattr(spec, "loader", None)
+        if loader is None or not hasattr(loader, "exec_module"):
+            return spec
+        run = loader.exec_module
+
+        def wrap(entry):
+            def wrapped(*args, **kwargs):
+                try:
+                    status = entry(*args, **kwargs)
+                except BaseException:
+                    _pip_status.append(1)
+                    raise
+                _pip_status.append(status or 0)
+                return status
+
+            return wrapped
+
+        def exec_module(module):
+            run(module)
+            # cli: the console scripts and python -m pip (pip >= 25.1); main: older pip.
+            for attr in ("cli", "main"):
+                if callable(getattr(module, attr, None)):
+                    setattr(module, attr, wrap(getattr(module, attr)))
+
+        loader.exec_module = exec_module
+        return spec
+
+
+def _after_pip(action, *args):
+    # Only once pip's main() returned 0: an install that failed halfway leaves the old version's files alone.
+    if _pip_status and all(s == 0 for s in _pip_status):
+        action(*args)
+
+
 if os.environ.get("PIP_PREFIX"):
     import atexit
-
     _prune_stale_dist_info()
-    atexit.register(_prune_stale_dist_info)
     if _is_pip_launch():
-        atexit.register(_retire_rewritten, _record_snapshot())
+        sys.meta_path.insert(0, _PipStatusFinder())
+        atexit.register(_after_pip, _prune_stale_dist_info)
+        atexit.register(_after_pip, _retire_rewritten, _record_snapshot())
+    else:
+        atexit.register(_prune_stale_dist_info)
 
 
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
