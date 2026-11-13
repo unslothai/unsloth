@@ -18,6 +18,7 @@ import {
   filterRows,
   findChosenRow,
   isChatTask,
+  isTestFixtureRepo,
   localSection,
   orderBySection,
   pickerAlignOffset,
@@ -944,5 +945,34 @@ test("Discover filters from one menu, in On Device's style", () => {
   assert.match(
     picker,
     /viewed !== DEVICE_TAB &&\s+viewed !== RECOMMENDED_TAB &&\s+viewed !== CONNECTED_TAB \?/,
+  );
+});
+
+test("Discover leaves out llama.cpp's stories260K test fixtures", () => {
+  for (const id of [
+    "ggml-org/stories260K",
+    "ggml-org/test-model-stories260K-infill",
+    "someone/stories260k-et3",
+  ]) {
+    assert.equal(isTestFixtureRepo(id), true, id);
+  }
+  assert.equal(isTestFixtureRepo("unsloth/Qwen3.5-4B-GGUF"), false);
+  assert.equal(isTestFixtureRepo("unsloth/stories-model"), false);
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /!isHiddenModelId\(r\.id\) &&\s*!isTestFixtureRepo\(r\.id\)/,
+  );
+});
+
+test("Enter on a row's own button is not a pick", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /if \(event\.key === "Enter"\) \{\s*if \(event\.target === event\.currentTarget\) \{\s*pick\(row\);/,
   );
 });

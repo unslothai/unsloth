@@ -38,6 +38,12 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5237"))
+# A row's arrows hand focus back to the search field, which names the option it points at
+# (the combobox pattern); a focused option names itself.
+ACTIVE_OPTION_JS = """() => {
+    const el = document.activeElement;
+    return el ? el.getAttribute("aria-activedescendant") || el.id : null;
+}"""
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip().rstrip("/")
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 LOCAL = 300
@@ -345,19 +351,19 @@ def main() -> int:
                 assert chips >= CACHED, f"only {chips} GGUF rows show their sole quant"
                 assert 0 < matches < rows, f"the search left {matches} of {rows} rows"
 
-                # The rows still work: arrows move focus and the active marker, a menu opens.
+                # The rows still work: arrows move the active option and its marker, a menu opens.
                 options = page.locator("[data-model-picker-option]")
                 options.nth(0).focus()
                 page.keyboard.press("ArrowDown")
                 page.wait_for_timeout(200)
                 second_id = options.nth(1).get_attribute("id")
-                focused = page.evaluate("() => document.activeElement && document.activeElement.id")
+                focused = page.evaluate(ACTIVE_OPTION_JS)
                 assert focused == second_id, f"ArrowDown focused {focused}, not {second_id}"
                 assert options.nth(1).get_attribute("data-model-picker-active-option") == "true"
                 page.keyboard.press("ArrowUp")
                 page.wait_for_timeout(200)
                 first_id = options.nth(0).get_attribute("id")
-                focused = page.evaluate("() => document.activeElement && document.activeElement.id")
+                focused = page.evaluate(ACTIVE_OPTION_JS)
                 assert focused == first_id, f"ArrowUp focused {focused}, not {first_id}"
                 page.get_by_role("button", name = re.compile(r"^More options for ")).first.click()
                 page.get_by_role("menuitem").first.wait_for(timeout = 10_000)

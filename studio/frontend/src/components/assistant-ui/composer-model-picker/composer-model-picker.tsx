@@ -210,6 +210,7 @@ import {
   filterRows,
   findChosenRow,
   isChatTask,
+  isTestFixtureRepo,
   localSection,
   matchesFormat,
   orderBySection,
@@ -1603,7 +1604,8 @@ export function ComposerModelPicker({
               ))) &&
           isChatTask(r.pipelineTag) &&
           !isMediaCatalogRepo(r.id) &&
-          !isHiddenModelId(r.id),
+          !isHiddenModelId(r.id) &&
+          !isTestFixtureRepo(r.id),
       )
       .map((r) => ({ id: r.id, name: r.id, isGguf: r.isGguf }));
     if (
@@ -3391,8 +3393,11 @@ export function ComposerModelPicker({
             }}
             onClick={() => pick(row)}
             onKeyDown={(event) => {
+              // Enter on a row's own button (eject, star, menu) is that button's.
               if (event.key === "Enter") {
-                pick(row);
+                if (event.target === event.currentTarget) {
+                  pick(row);
+                }
                 return;
               }
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {

@@ -416,6 +416,13 @@ export function pickerAlignOffset(
   return align === "end" ? left - clamped : clamped - left;
 }
 
+// llama.cpp's 260K-parameter test fixtures (stories260K and its uploads): Discover searches every
+// uploader, so they surface beside the probe repo the hidden-model list already covers.
+const TEST_FIXTURE = /stories\d+k/i;
+export function isTestFixtureRepo(id: string): boolean {
+  return TEST_FIXTURE.test(id);
+}
+
 /** Discover falls back to the chat list only before a search has results; else rows the Hub matched
  * without a text match would show unrelated models. */
 export function discoverUsesFallback(
