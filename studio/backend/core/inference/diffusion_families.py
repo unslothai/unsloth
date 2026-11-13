@@ -395,6 +395,21 @@ SMALL_DIT_BF16_WHEN_RESIDENT = (
     "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
     "0.103 on Z-Image-Turbo)"
 )
+# Turing (T4) AUTO int8 (``FamilyProfile.turing_auto_int8``): the same image rule against the fp16 AUTO build, plus "never
+# push a model off the card that used to stay resident unless it is faster". Colab T4, 1024^2, family defaults, 8
+# prompts, fp16 AUTO A/A bit-identical (LPIPS 0.000).
+_FLUX2_KLEIN_TURING_AUTO_INT8 = (
+    "T4: 9.71 -> 8.42 s/image against fp16 (1.15x), same placement and 13.4 GB peak, LPIPS 0.049"
+)
+_ZIMAGE_TURING_AUTO_INT8 = "T4: 29.4 -> 24.5 s/image against the streamed fp16 build (1.20x); resident int8 at 15.1 GB peak, LPIPS 0.076"
+_FLUX3_KLEIN_TURING_AUTO_INT8 = (
+    "T4: 42.6 -> 37.7 s/image against the fp16 build (1.13x), partly offloaded -> resident at 13.6 GB peak, "
+    "LPIPS 0.011 (4 prompts)"
+)
+_FLUX3_KLEIN_BASE_TURING_AUTO_INT8 = (
+    "T4: 270.9 -> 224.4 s/image against the streamed fp16 build (1.21x); resident int8 at 12.0 GB peak (LPIPS 0.023 "
+    "on an RTX PRO 6000)"
+)
 # Bases of a small-DiT family that are not small: FLUX.2 klein 9B / base 9B (18.2 GB bf16 transformer, unmeasured)
 # keep the quantized auto default. Upstream ids; mirrors fold back through ``canonical_base``.
 _SMALL_DIT_LARGE_BASES = frozenset(
@@ -576,6 +591,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
+            turing_auto_int8 = _FLUX2_KLEIN_TURING_AUTO_INT8,
             # LPIPS vs fp16 (4B, T4 W8A8, 16 renders): plain 0.103 -> ConvRot 0.037; A100 0.092 -> 0.034.
             int8_convrot = ConvRotSpec(
                 group = 256,
@@ -675,6 +691,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
+            turing_auto_int8 = _FLUX3_KLEIN_BASE_TURING_AUTO_INT8,
             int8_convrot = ConvRotSpec(group = 256, suffixes = _FLUX3_CONVROT_SUFFIXES, default_on = True),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
@@ -734,6 +751,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
+            turing_auto_int8 = _FLUX3_KLEIN_TURING_AUTO_INT8,
             int8_convrot = ConvRotSpec(
                 group = 256,
                 suffixes = _FLUX3_CONVROT_SUFFIXES,
@@ -1202,6 +1220,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 default_on = True,
             ),
             auto_prefer = _GATED_AUTO_PREFER,
+            turing_auto_int8 = _ZIMAGE_TURING_AUTO_INT8,
             preview_factors = "zimage",
         ),
         # B200 too: 1 of 4 fresh servers picked R0_BLOCK 1024 (others 4096) and rendered other latents.

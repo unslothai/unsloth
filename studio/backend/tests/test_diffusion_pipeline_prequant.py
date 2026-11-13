@@ -1993,3 +1993,58 @@ def test_denoiser_is_a_checkpoint_and_encoder_only_is_an_asset(monkeypatch, hub,
     assert entries[encoder_repo]["hosted_denoiser"] is shared_repo
     assert "text_encoder/model.safetensors" in entries[encoder_repo]["files"]
     assert entries[PREQUANT_REPO]["bytes"] == PREQUANT_BYTES + (1234 if shared_repo else 0)
+
+
+def _turing_host(monkeypatch, reason):
+    """A fp16-only Turing card: no torchao dense quant, the native int8 build only for an int8 request."""
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: False)
+    monkeypatch.setattr(tqmod, "dense_transformer_supported", lambda _t: False)
+    monkeypatch.setattr(
+        dmod,
+        "fp16_card_native_scheme",
+        lambda _t, requested, family = None: "int8" if requested == "int8" else None,
+    )
+    monkeypatch.setattr(dmod, "turing_auto_int8_reason", lambda _t, _family: reason)
+
+
+@pytest.mark.parametrize("request_", [None, "auto"])
+def test_auto_on_turing_runs_the_int8_build_for_a_measured_family(
+    fake_runtime, monkeypatch, request_
+):
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    status = _load(
+        backend,
+        transformer_quant = request_,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    # The quantiser is asked for int8 exactly as for an explicit request (the fake answers its own scheme).
+    assert spy.quantised == ["int8"]
+    assert status["resolved"]["transformer_quant"]["source"] == "auto"
+
+
+def test_auto_on_turing_keeps_fp16_without_a_measurement(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, None)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert status["transformer_quant"] in (None, "off")
+
+
+@pytest.mark.parametrize("memory_mode", ["balanced", "low_vram"])
+def test_auto_on_turing_keeps_fp16_under_an_offloading_memory_mode(
+    fake_runtime, monkeypatch, memory_mode
+):
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    _load(
+        backend,
+        memory_mode = memory_mode,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == []

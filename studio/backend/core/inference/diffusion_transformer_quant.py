@@ -1322,6 +1322,19 @@ def fp16_card_fp8_scheme(
     return TQ_FP8
 
 
+# ``FamilyProfile.turing_auto_int8``: families AUTO runs as int8 on a Turing fp16 card (measured faster than the fp16
+# AUTO build and inside the accuracy bar, see the image auto-precision rule in diffusion_families).
+_FAMILY_TURING_AUTO_INT8: dict[str, str] = _profile_table("turing_auto_int8", quant = True)
+
+
+def turing_auto_int8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Measured reason AUTO takes int8 for ``family`` on this Turing fp16 card, else None (AUTO keeps fp16)."""
+    reason = _FAMILY_TURING_AUTO_INT8.get(str(family or "").strip().lower())
+    if reason is None or fp16_card_int8_scheme(target, TQ_INT8, family) != TQ_INT8:
+        return None
+    return reason
+
+
 def fp16_card_native_host(target: Any, requested: Optional[str]) -> bool:
     scheme = normalize_transformer_quant(requested)
     if scheme == TQ_FP8 and not fp16_card_fp8_enabled():
