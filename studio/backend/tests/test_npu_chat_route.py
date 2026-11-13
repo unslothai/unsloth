@@ -175,11 +175,13 @@ class _FakeNpu:
     def __init__(self, upstream) -> None:
         self._upstream = upstream
         self.is_loaded = True
+        self.marks = 0
 
     def upstream(self):
         return self._upstream
 
     def output_mark(self, upstream) -> int:
+        self.marks += 1
         return 0
 
     def explain_failure(self, mark: int, message: str) -> str:
@@ -206,7 +208,8 @@ def flm(monkeypatch):
             supports_reasoning = caps.get("reasoning", False),
             context_length = 8192,
         )
-        monkeypatch.setattr(nb, "get_npu_backend", lambda: _FakeNpu(upstream))
+        fake = _FakeNpu(upstream)
+        monkeypatch.setattr(nb, "get_npu_backend", lambda: fake)
         return httpd.recorded
 
     yield install
@@ -665,6 +668,29 @@ def test_what_fastflowlm_would_drop_is_refused(flm, fields, message):
     assert caught.value.status_code == 400
     assert message in json.dumps(caught.value.detail)
     assert recorded == []
+    # A refused request opens no output window, which would mark a running load's as shared.
+    assert nb.get_npu_backend().marks == 0
+
+
+def test_a_request_the_proxy_refuses_opens_no_output_window(flm, monkeypatch):
+    # The proxy's own preflight (an MCP image, a video, the confirm gate) can still refuse.
+    import routes.inference as ri
+
+    flm()
+
+    async def refuse(*args, **kwargs):
+        raise HTTPException(status_code = 400, detail = "refused in preflight")
+
+    monkeypatch.setattr(ri, "_proxy_to_external_provider", refuse)
+    with pytest.raises(HTTPException, match = "refused in preflight"):
+        _call(stream = False)
+    assert nb.get_npu_backend().marks == 0
+
+
+def test_a_reply_opens_one_output_window(flm):
+    flm()
+    _call(stream = False)
+    assert nb.get_npu_backend().marks == 1
 
 
 def test_a_saved_connection_cannot_name_the_managed_type():
