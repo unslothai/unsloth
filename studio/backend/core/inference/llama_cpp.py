@@ -11184,12 +11184,10 @@ class LlamaCppBackend:
         return architecture, named, experts
 
     def _ple_path_for(self, model_path: Optional[str]) -> Optional[str]:
-        """The external Engram table this backend launches ``model_path`` with, if any."""
         launch = getattr(self, "_launch_ple", None)
         return launch[1] if launch and model_path and launch[0] == model_path else None
 
     def _gguf_files_read(self, model_path: str) -> list[str]:
-        """The GGUF files llama-server reads for ``model_path``, with its --ple table if any."""
         from core.inference.engram_tables import files_llama_reads
         from core.inference.offload_layout import split_shard_paths
 
