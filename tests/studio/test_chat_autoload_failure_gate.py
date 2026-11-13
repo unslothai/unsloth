@@ -435,6 +435,9 @@ function offloadWarning(counts: any) {
   if (total <= 0 || offloaded >= total) return null;
   return { titleSuffix: ", partly on CPU", description: `${offloaded} of ${total}` };
 }
+function expertSpillNote(_counts: any) {
+  return null;
+}
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });
   if (SCENARIO.tokenDecision === "decline") return { proceed: false, token };

@@ -20,6 +20,7 @@ import {
 } from "./download-manager-controller";
 
 export interface DownloadJobProgress {
+  scopedFiles?: readonly string[];
   variant: string | null;
   expectedBytes: number;
   downloadedBytes: number;
@@ -217,6 +218,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
       active
         ? {
             variant: active.variant,
+            scopedFiles: active.scopedFiles,
             expectedBytes: active.expectedBytes,
             downloadedBytes: active.downloadedBytes,
             fraction: active.fraction,

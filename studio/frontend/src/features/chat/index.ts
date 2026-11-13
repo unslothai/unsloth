@@ -94,6 +94,7 @@ export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/part
 export type { PlacementPool } from "./lib/partial-offload";
 export {
   betweenToolRounds,
+  runningReplyTail,
   formatLiveDecode,
   formatPrefillDetails,
   formatPrefillTimeLeft,
@@ -553,7 +554,7 @@ export {
   CONVERSATION_HTML_LABEL,
   CONVERSATION_PDF_FORMAT,
   CONVERSATION_PDF_LABEL,
-} from "./utils/conversation-html";
+} from "./utils/conversation-html-format";
 export {
   COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
@@ -668,10 +669,12 @@ export {
   effectiveSendShortcut,
   followUpSubmitIntent,
   imeKeydownBlocksComposerSubmit,
+  parkedSendSteer,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
+  type ParkedSendSteerState,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
 

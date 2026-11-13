@@ -55,6 +55,7 @@ from hub.utils.hf_tokens import (
 from routes.provider_credentials import current_credential_write, require_ui_session
 
 from storage import credential_secrets
+from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
 from core.rag.config import (
     default_gguf_repo,
     effective_gguf_repo_for_embedding_model,
@@ -283,8 +284,8 @@ class ImageGenerationPresetParams(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     negativePrompt: str = ""
-    width: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
-    height: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
+    width: int = Field(default = 1024, ge = 256, le = MAX_REQUEST_SIDE, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = MAX_REQUEST_SIDE, multiple_of = 16)
     steps: int = Field(default = 9, ge = 1, le = 100)
     guidance: float = Field(default = 0, ge = 0, le = 20)
     batchSize: int = Field(default = 1, ge = 1, le = 32)
@@ -4486,6 +4487,7 @@ class LanAccessAddressesPayload(BaseModel):
 class LanAccessAddress(BaseModel):
     address: str
     public: bool = False
+    host_only: bool = False
 
 
 class LanAccessResponse(BaseModel):
@@ -5114,7 +5116,7 @@ class PersonalizationCustomization(BaseModel):
     composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
     elementOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
-    reduceMotion: Literal["system", "on", "off"] = "off"
+    reduceMotion: Literal["system", "on", "off"] = "on"
     fontSmoothing: bool = True
     codeLineNumbers: bool = False
     codeWordWrap: bool = False
@@ -5301,6 +5303,7 @@ class BrowserPrefsPayload(BaseModel):
     saveDownloadHistory: Optional[bool] = None
     askWhereToSave: Optional[bool] = None
     askBeforeDownloading: Optional[bool] = None
+    askBeforeProgramDownloads: Optional[bool] = None
     annotationScreenshots: Optional[Literal["always", "never"]] = None
 
 
@@ -5310,6 +5313,7 @@ _DisplayVisibility = Literal["collapsed", "auto", "expanded"]
 class ChatPrefsPayload(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
+    shareComposerDraft: Optional[bool] = None
     plainTextComposer: Optional[bool] = None
     showContextWindowUsage: Optional[bool] = None
     sendShortcut: Optional[Literal["enter", "mod-enter-multiline", "mod-enter"]] = None

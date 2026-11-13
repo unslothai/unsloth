@@ -86,8 +86,8 @@ else:
         trainer = arguments.pop("trainer", None)
         return _zoo_train_on_responses_only(trainer, **arguments)
 
-# TRL trains on "messages" when present, else on "text"; "conversations" is only read without "text".
-_DATASET_CHECK_COLUMNS = ("messages", "text", "conversations")
+# Order of unsloth_zoo sft_prepare_dataset: prompt/completion, then "text", then "messages".
+_DATASET_CHECK_COLUMNS = ("text", "messages", "conversations")
 _MEDIA_TYPES = ("image", "image_url", "video", "audio", "input_audio")
 
 
@@ -129,16 +129,20 @@ def _render_dataset_row(row, tokenizer):
     if not isinstance(row, dict):
         raise _MalformedRow("row is not a dict")
     column = next((c for c in _DATASET_CHECK_COLUMNS if c in row), None)
-    if column is not None:
-        value = row[column]
-    elif "prompt" in row and "completion" in row:
+    if "prompt" in row and "completion" in row:
         prompt, completion = row["prompt"], row["completion"]
         if isinstance(prompt, str) and isinstance(completion, str):
-            text = prompt + completion
-            return text, text.strip() == "", True, _has_media(row, ())
+            empty = (prompt + completion).strip() == ""
+            text_tokenizer = tokenizer.tokenizer if isinstance(tokenizer, ProcessorMixin) else tokenizer
+            eos = getattr(text_tokenizer, "eos_token", None)
+            if eos and not completion.endswith(eos):
+                completion += eos
+            return prompt + completion, empty, True, _has_media(row, ())
         if not isinstance(prompt, list) or not isinstance(completion, list):
             raise _MalformedRow("prompt and completion are not both strings or both message lists")
         column, value = "prompt/completion", prompt + completion
+    elif column is not None:
+        value = row[column]
     elif "instruction" in row and "output" in row:
         instruction, extra, output = row["instruction"], row.get("input"), row["output"]
         extra = "" if extra is None else extra
@@ -711,9 +715,9 @@ llama31_template = \
 {%- endif %}
 
 {%- for message in messages %}
-    {%- if not (message.role == 'ipython' or message.role == 'tool' or 'tool_calls' in message) %}
+    {%- if not (message.role == 'ipython' or message.role == 'tool' or message.tool_calls) %}
         {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] + '<|eot_id|>' }}
-    {%- elif 'tool_calls' in message %}
+    {%- elif message.tool_calls %}
         {%- if not message.tool_calls|length == 1 %}
             {{- raise_exception("This model only supports single tool-calls at once!") }}
         {%- endif %}
@@ -778,7 +782,7 @@ qwen25_template = \
     {%- if messages[0][\'role\'] == \'system\' %}
         {{- messages[0][\'content\'] }}
     {%- else %}
-        {{- \'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.\' }}
+        {{- \'{system_message}\' }}
     {%- endif %}
     {{- "\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>" }}
     {%- for tool in tools %}
@@ -870,11 +874,6 @@ phi4_template = \
         "{{ '<|im_start|>assistant<|im_sep|>' }}"\
     "{% endif %}"
 
-_phi4_ollama_template = \
-    "{{ if .System }}<|im_start|><|system|><|im_sep|>{{ .System }}<|im_end|>{{ end }}"\
-    "{{ if .Prompt }}<|im_start|><|user|><|im_sep|>{{ .Prompt }}<|im_end|>{{ end }}"\
-    "<|im_start|><|assistant|><|im_sep|>{{ .Response }}<|im_end|>"
-
 # Ollama from https://www.ollama.com/library/phi4 is different
 phi4_ollama = _ollama_template("phi-4")
 
@@ -962,7 +961,7 @@ qwen3_template = \
 {%- for forward_message in messages %}
     {%- set index = (messages|length - 1) - loop.index0 %}
     {%- set message = messages[index] %}
-    {%- set current_content = message.content if message.content is not none else '' %}
+    {%- set current_content = message.content if message.content is string else '' %}
     {%- set tool_start = '<tool_response>' %}
     {%- set tool_start_length = tool_start|length %}
     {%- set start_of_message = current_content[:tool_start_length] %}
@@ -982,12 +981,12 @@ qwen3_template = \
     {%- if (message.role == "user") or (message.role == "system" and not loop.first) %}
         {{- '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>' + '\n' }}
     {%- elif message.role == "assistant" %}
-        {%- set content = message.content %}
+        {%- set content = message.content if message.content is string else '' %}
         {%- set reasoning_content = '' %}
         {%- if message.reasoning_content is defined and message.reasoning_content is not none %}
             {%- set reasoning_content = message.reasoning_content %}
         {%- else %}
-            {%- if '</think>' in message.content %}
+            {%- if '</think>' in content %}
                 {%- set content = (message.content.split('</think>')|last).lstrip('\n') %}
                 {%- set reasoning_content = (message.content.split('</think>')|first).rstrip('\n') %}
                 {%- set reasoning_content = (reasoning_content.split('<think>')|last).lstrip('\n') %}
@@ -2112,13 +2111,13 @@ gptoss_template = \
                 {{- raise_exception("You have passed a message containing <|channel|> tags in the thinking field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
             {%- endif %}
         {%- endif %}
-        {%- if "tool_calls" in message %}
+        {%- if message.tool_calls %}
             {#- We need very careful handling here - we want to drop the tool call analysis message if the model #}
             {#- has output a later <|final|> message, but otherwise we want to retain it. This is the only case #}
             {#- when we render CoT/analysis messages in inference. #}
             {%- set future_final_message = namespace(found=false) %}
             {%- for future_message in loop_messages[loop.index:] %}
-                {%- if future_message.role == 'assistant' and "tool_calls" not in future_message %}
+                {%- if future_message.role == 'assistant' and not future_message.tool_calls %}
                     {%- set future_final_message.found = true %}
                 {%- endif %}
             {%- endfor %}
@@ -2895,6 +2894,8 @@ def get_chat_template(
             "{%- endif %}" + \
             chat_template
 
+    # Only templates that bake the message in pass it on; applied after create_ollama_modelfile picks the template.
+    ollama_system_message = system_message if "{system_message}" in chat_template else None
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
 
     tokenizer.chat_template = chat_template
@@ -2918,6 +2919,7 @@ def get_chat_template(
     if _processor is not None:
         # GGUF export unwraps the processor before it builds the Ollama Modelfile.
         tokenizer._ollama_modelfile = ollama_modelfile
+        tokenizer._ollama_system_message = ollama_system_message
         _processor.tokenizer = tokenizer
         _processor.chat_template = chat_template
         for _token in ("bos_token", "eos_token", "pad_token",):
@@ -2931,6 +2933,7 @@ def get_chat_template(
         tokenizer = patch_saving_functions(tokenizer, vision = _processor is not None)
 
     tokenizer._ollama_modelfile = ollama_modelfile
+    tokenizer._ollama_system_message = ollama_system_message
     tokenizer._system_message   = system_message
     tokenizer._unsloth_chat_template_name = (
         (template_name, chat_template) if template_name is not None else None
@@ -3646,11 +3649,14 @@ extra_eos_tokens = None,
 
     tokenizer.chat_template = jinja_template
     tokenizer._ollama_modelfile = modelfile
+    # This Modelfile already holds default_system_message; drop one left by an earlier get_chat_template.
+    tokenizer._ollama_system_message = None
     tokenizer._unsloth_input_part  = input_part
     tokenizer._unsloth_output_part = output_part
     if hasattr(tokenizer, "tokenizer"):
         tokenizer.tokenizer.chat_template = jinja_template
         tokenizer.tokenizer._ollama_modelfile = modelfile
+        tokenizer.tokenizer._ollama_system_message = None
         tokenizer.tokenizer._unsloth_input_part  = input_part
         tokenizer.tokenizer._unsloth_output_part = output_part
 

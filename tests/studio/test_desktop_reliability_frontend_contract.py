@@ -813,12 +813,46 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         ), (combination, hidden[0])
 
 
+_TITLEBAR_MIRROR = re.compile(
+    r'set\(\s*"--studio-custom-titlebar-height",\s*usesCustomTitlebar\s*\?\s*'
+    r'(?P<value>"[^"]*"|[A-Za-z_]\w*)\s*:\s*null\s*,?\s*\)'
+)
+
+
+def _mirrored_titlebar_heights(provider: str) -> set[str]:
+    """The values the <html> mirror gives --studio-custom-titlebar-height for a custom titlebar.
+
+    A literal is read as is; a local (fullscreen picks `customTop`) is read from its `const`."""
+    m = _TITLEBAR_MIRROR.search(provider)
+    if m is None:
+        return set()
+    value = m.group("value")
+    if value.startswith('"'):
+        return {value.strip('"')}
+    decl = re.search(rf"const {re.escape(value)}\s*=\s*([^;]+);", provider)
+    return set(re.findall(r'"([^"]*)"', decl.group(1))) if decl else set()
+
+
+def test_the_titlebar_mirror_reader_follows_a_local():
+    assert _mirrored_titlebar_heights(
+        'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);'
+    ) == {"34px"}
+    assert _mirrored_titlebar_heights(
+        'const customTop = customTitlebarHidden ? "0px" : "34px";\n'
+        'set("--studio-custom-titlebar-height", usesCustomTitlebar ? customTop : null);'
+    ) == {"0px", "34px"}
+    assert _mirrored_titlebar_heights('set("--studio-titlebar-height", "34px");') == set()
+
+
 def test_fixed_sheets_start_below_the_custom_titlebar():
     provider = _window_chrome_source(APP_PROVIDER)
     sheet = _ui_source(SHEET)
 
-    # Portalled sheets read the height off <html>, so the mirror has to stay.
-    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
+    # Portalled sheets read the height off <html>, so the mirror has to stay, and give the 34px
+    # titlebar band whenever the titlebar shows (fullscreen hides it, so 0px is allowed too).
+    heights = _mirrored_titlebar_heights(provider)
+    assert "34px" in heights, f"the <html> titlebar-height mirror is gone or changed: {heights}"
+    assert heights <= {"34px", "0px"}, heights
 
     assert 'position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE' in sheet
     for side in ("left", "right", "top"):

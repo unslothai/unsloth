@@ -533,12 +533,12 @@ def test_a_path_made_again_right_after_an_edit_starts_fresh(client, signed_in, m
     os.link(path, os.path.join(directory, ".held"))
     replace = os.replace
 
-    def replace_then_recreate(src, dst):
-        replace(src, dst)
+    def replace_then_recreate(src, dst, **dir_fds):
+        replace(src, dst, **dir_fds)
         if os.path.basename(dst) == "report.txt":
-            other = dst + ".other"
+            other = path + ".other"
             Path(other).write_bytes(b"someone else\n")
-            replace(other, dst)
+            replace(other, path)
 
     monkeypatch.setattr(os, "replace", replace_then_recreate)
     execute_tool(

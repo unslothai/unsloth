@@ -44,8 +44,14 @@ from core.inference.llama_cpp import (  # noqa: E402
 )
 
 _message = LlamaCppBackend._metal_context_overcommit_message
+# Captured at import, before conftest stubs them per test.
+_REAL_WIRED_READERS = {
+    name: LlamaCppBackend.__dict__[name]
+    for name in ("_apple_metal_wired_ceiling_bytes", "_apple_metal_wired_headroom_bytes")
+}
 _ENV = LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV
 _REAL_POPEN = subprocess.Popen
+_REAL_RUN = subprocess.run
 
 CEILING = 8192
 NATIVE = 262144
@@ -104,6 +110,7 @@ def _launch(
     refuse_partial_gpu_fit = False,
     launches = None,
     wired_exhausted = False,
+    real_wired = False,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition).
 
@@ -128,16 +135,19 @@ def _launch(
         "_apple_metal_memory_budget_bytes",
         staticmethod(lambda: budget_bytes if metal else 0),
     )
-    monkeypatch.setattr(
-        LlamaCppBackend,
-        "_apple_metal_wired_ceiling_bytes",
-        staticmethod(lambda: wired_bytes if metal else 0),
-    )
-    monkeypatch.setattr(
-        LlamaCppBackend,
-        "_apple_metal_wired_headroom_bytes",
-        staticmethod(lambda: (0 if wired_exhausted else wired_bytes or None) if metal else None),
-    )
+    if not real_wired:
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_apple_metal_wired_ceiling_bytes",
+            staticmethod(lambda: wired_bytes if metal else 0),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_apple_metal_wired_headroom_bytes",
+            staticmethod(
+                lambda: (0 if wired_exhausted else wired_bytes or None) if metal else None
+            ),
+        )
     if paravirtual:
         import core.inference.llama_cpp as _llama_cpp
         monkeypatch.setattr(_llama_cpp, "_metal_device_is_paravirtual", lambda: True)
@@ -1909,3 +1919,93 @@ class TestAutoOnAMacWithRoomToSpare:
     def test_a_shorter_native_window_keeps_its_own_length(self, tmp_path, monkeypatch):
         cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, native = 40960, **self._ROOMY)["cmd"]
         assert _ctx_values(cmd)[-1] == "40960"
+
+
+class TestOneWiredReadingPerLoad:
+    _ROOMY = dict(real_fit = True, budget_bytes = _BUDGET, weights_bytes = 1024**3, kv_per_token = _FAT_KV)
+
+    @staticmethod
+    def _count_probes(monkeypatch, readings):
+        import core.inference.llama_cpp as _llama_cpp
+
+        calls = []
+
+        def probe():
+            calls.append(1)
+            return readings[min(len(calls), len(readings)) - 1]
+
+        monkeypatch.setattr(_llama_cpp, "_apple_wired_headroom_bytes", probe)
+        for name, reader in _REAL_WIRED_READERS.items():
+            monkeypatch.setattr(LlamaCppBackend, name, reader)
+        return calls
+
+    def _load(self, tmp_path, monkeypatch, **kwargs):
+        return _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 2048,
+            real_wired = True,
+            refuse_partial_gpu_fit = True,
+            **self._ROOMY,
+            **kwargs,
+        )
+
+    def test_a_placement_probes_once_and_the_next_load_probes_again(self, tmp_path, monkeypatch):
+        calls = self._count_probes(monkeypatch, [_WIRED])
+        first = self._load(tmp_path, monkeypatch)
+        assert len(calls) == 1
+        self._load(tmp_path, monkeypatch, backend = first["backend"])
+        assert len(calls) == 2
+
+    def test_the_reused_reading_places_the_load_the_same(self, tmp_path, monkeypatch):
+        import core.inference.llama_cpp as _llama_cpp
+
+        self._count_probes(monkeypatch, [17 * 1024**3 // 2])
+        memoised = self._load(tmp_path, monkeypatch)["cmd"]
+        monkeypatch.setattr(_llama_cpp, "_load_probe_memo_get", lambda kind, binary: None)
+        fresh = self._load(tmp_path, monkeypatch)["cmd"]
+        assert self._placement(memoised) == self._placement(fresh)
+
+    @staticmethod
+    def _placement(cmd):
+        flags = ("-c", "--ctx-size", "--fit", "--fit-target", "--fit-ctx", "-ngl", "--n-gpu-layers")
+        return [(t, cmd[i + 1]) for i, t in enumerate(cmd[:-1]) if t in flags]
+
+    def test_an_exhausted_or_unknown_reading_is_reused_as_is(self, monkeypatch):
+        import core.inference.llama_cpp as _llama_cpp
+        for reading, ceiling in ((0, 0), (None, 0)):
+            calls = self._count_probes(monkeypatch, [reading, _WIRED])
+            with _llama_cpp._load_probe_memo_scope():
+                _llama_cpp._arm_load_probe_memo()
+                assert LlamaCppBackend._apple_metal_wired_headroom_bytes() == reading
+                assert LlamaCppBackend._apple_metal_wired_ceiling_bytes() == ceiling
+                assert LlamaCppBackend._apple_metal_wired_headroom_bytes() == reading
+            assert len(calls) == 1
+
+    def test_outside_a_load_every_read_is_live(self, monkeypatch):
+        calls = self._count_probes(monkeypatch, [_WIRED, _WIRED // 2])
+        assert LlamaCppBackend._apple_metal_wired_headroom_bytes() == _WIRED
+        assert LlamaCppBackend._apple_metal_wired_ceiling_bytes() == _WIRED // 2
+        assert len(calls) == 2
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason = "spawns the real sysctl")
+    def test_on_a_mac_a_load_spawns_sysctl_once(self, monkeypatch):
+        import core.inference.llama_cpp as _llama_cpp
+
+        spawned = []
+
+        def run(argv, *args, **kwargs):
+            spawned.append(argv[0])
+            return _REAL_RUN(argv, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", run)
+        for name, reader in _REAL_WIRED_READERS.items():
+            monkeypatch.setattr(LlamaCppBackend, name, reader)
+        with _llama_cpp._load_probe_memo_scope():
+            _llama_cpp._arm_load_probe_memo()
+            first = LlamaCppBackend._apple_metal_wired_headroom_bytes()
+            for _ in range(4):
+                assert LlamaCppBackend._apple_metal_wired_headroom_bytes() == first
+        assert spawned.count("sysctl") == 1
+        LlamaCppBackend._apple_metal_wired_headroom_bytes()
+        assert spawned.count("sysctl") == 2

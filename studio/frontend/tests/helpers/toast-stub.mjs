@@ -8,6 +8,10 @@ export const toast = Object.assign(
   (title, options) => calls.push({ kind: "default", title, options }),
   {
     info: (title, options) => calls.push({ kind: "info", title, options }),
+    loading: (title, options) => {
+      calls.push({ kind: "loading", title, options });
+      return options?.id ?? `loading-${calls.length}`;
+    },
     error: (title, options) => calls.push({ kind: "error", title, options }),
     warning: (title, options) =>
       calls.push({ kind: "warning", title, options }),

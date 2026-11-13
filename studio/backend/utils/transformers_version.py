@@ -1624,6 +1624,109 @@ def _probe_cache_key(model_name: str) -> str:
     return f"{config_path}\0{st.st_size}:{st.st_mtime_ns}"
 
 
+# Spawned workers start with the dict above empty, so local-dir verdicts also persist on disk.
+_PROBE_DISK_CACHE_NAME = "transformers_tier_probe.json"
+_PROBE_DISK_CACHE_MAX = 256
+
+
+def _local_config_sha(model_name: str) -> str | None:
+    """sha256 of a local dir's config.json, or None for a Hub id / unreadable file."""
+    try:
+        path = Path(model_name)
+        if not path.is_dir():
+            return None
+        return hashlib.sha256((path / "config.json").read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return None
+
+
+def _tier_transformers_version(target_dir: str) -> str | None:
+    """Installed transformers version in a sidecar dir (dist-info), or the ambient one for
+    ``""`` (importlib.metadata, without importing transformers)."""
+    try:
+        if not target_dir:
+            import importlib.metadata as md
+            return md.version("transformers")
+        for entry in sorted(Path(target_dir).glob("transformers-*.dist-info")):
+            meta = entry / "METADATA"
+            if meta.is_file():
+                for line in meta.read_text(encoding = "utf-8", errors = "replace").splitlines():
+                    if line.startswith("Version:"):
+                        return line.split(":", 1)[1].strip()
+                    if not line.strip():
+                        break
+    except Exception:
+        return None
+    return None
+
+
+def _probe_disk_cache_path() -> Path | None:
+    try:
+        from utils.paths.storage_roots import cache_root
+        return cache_root() / _PROBE_DISK_CACHE_NAME
+    except Exception:
+        return None
+
+
+def _probe_disk_read() -> dict:
+    path = _probe_disk_cache_path()
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _probe_disk_lookup(disk_key: str, venvs: dict) -> str | None:
+    entry = _probe_disk_read().get(disk_key)
+    if not isinstance(entry, dict):
+        return None
+    tier, walked = entry.get("tier"), entry.get("walked")
+    if not isinstance(tier, str) or not isinstance(walked, list) or not walked:
+        return None
+    for item in walked:
+        if not (isinstance(item, list) and len(item) == 2 and item[0] in venvs):
+            return None
+        if _tier_transformers_version(venvs[item[0]][0]) != item[1]:
+            return None
+    return tier
+
+
+def _probe_disk_store(disk_key: str, tier: str, walked: list) -> None:
+    path = _probe_disk_cache_path()
+    if path is None:
+        return
+    tmp = None
+    try:
+        data = _probe_disk_read()
+        data.pop(disk_key, None)
+        data[disk_key] = {"tier": tier, "walked": walked}
+        while len(data) > _PROBE_DISK_CACHE_MAX:
+            data.pop(next(iter(data)))
+        path.parent.mkdir(parents = True, exist_ok = True)
+        fd, tmp = tempfile.mkstemp(prefix = ".tier_probe_", suffix = ".tmp", dir = str(path.parent))
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+        tmp = None
+    except Exception as exc:
+        logger.debug("Could not persist tier probe verdict: %s", exc)
+    finally:
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+
+
+def _cached_tier_available(venvs: dict, tier: str) -> bool:
+    """A disk hit must pass the tier's ensure_fn, as a live probe does."""
+    try:
+        return bool(venvs[tier][1]())
+    except Exception:
+        return False
+
+
 def _probe_tier(
     model_name: str,
     hf_token: str | None,
@@ -1639,25 +1742,56 @@ def _probe_tier(
     # Key by probe mode: a 'default' result must not be reused for floor='530' callers.
     if include_default or floor != "530":
         key = f"{key}\0floor={floor}:def={int(include_default)}"
-    if key in _probe_tier_cache:
-        cached = _probe_tier_cache[key]
-        # Do not reuse a cached latest if disabled, damaged or unpinned (a deleted pin drops the repair marker); else workers spawn into a failing tier. Re-probe.
-        if cached != "latest" or not (
+
+    def _latest_unusable() -> bool:
+        return (
             _latest_tier_disabled()
             or _latest_repair_requested()
             or latest_venv_pinned_version() is None
-        ):
+        )
+
+    if key in _probe_tier_cache:
+        cached = _probe_tier_cache[key]
+        # Do not reuse a cached latest if disabled, damaged or unpinned (a deleted pin drops the repair marker); else workers spawn into a failing tier. Re-probe.
+        if cached != "latest" or not _latest_unusable():
             return cached
+
+    venvs = _probe_tier_venvs()
+    sidecar_order = _probe_tier_order()
+    order = (("default",) + sidecar_order) if include_default else sidecar_order
+
+    config_sha = _local_config_sha(model_name)
+    disk_key = None
+    if config_sha is not None:
+        disk_key = f"{config_sha}:floor={floor}:def={int(include_default)}:order={','.join(order)}"
+        disk_tier = _probe_disk_lookup(disk_key, venvs)
+        if (
+            disk_tier is not None
+            and (disk_tier != "latest" or not _latest_unusable())
+            and _cached_tier_available(venvs, disk_tier)
+        ):
+            _probe_tier_cache[key] = disk_tier
+            logger.info(
+                "Transformers tier %s selected for %s (cached AutoConfig probe; %s)",
+                disk_tier,
+                model_name,
+                reason,
+            )
+            return disk_tier
+    walked: list = []
 
     def _cache(tier: str, *, skipped: bool) -> str:
         # Don't pin a result that depended on a skipped lower tier; re-probe next call.
         if not skipped:
             _probe_tier_cache[key] = tier
+            if (
+                disk_key is not None
+                and all(v is not None for _, v in walked)
+                and _local_config_sha(model_name) == config_sha
+            ):
+                _probe_disk_store(disk_key, tier, walked)
         return tier
 
-    venvs = _probe_tier_venvs()
-    sidecar_order = _probe_tier_order()
-    order = (("default",) + sidecar_order) if include_default else sidecar_order
     probed_count = 0
     skipped_any = False
     for tier in order:
@@ -1670,6 +1804,8 @@ def _probe_tier(
             skipped_any = True
             continue
         probed_count += 1
+        if disk_key is not None:
+            walked.append([tier, _tier_transformers_version(target_dir)])
         ok = _probe_autoconfig(target_dir, model_name, hf_token)
         if ok is True:
             logger.info(

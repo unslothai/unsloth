@@ -1336,3 +1336,23 @@ def test_requested_language_reaches_the_decoder(
         assert progress, "prefilled responses still need to publish transcription progress"
         assert progress[-1] == {"text": "Hello world"}
         assert all("language " not in event["text"] for event in progress)
+
+
+def test_a_one_sample_recording_never_reaches_llama_server(monkeypatch):
+    """mtmd aborts llama-server on a one-sample clip; refuse it before the sidecar loads."""
+    import numpy as np
+    from core.inference.stt_sidecar import SttAudioDecodeError
+
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(mtmd_mod, "ensure_engine_available", lambda: "/bin/llama-server")
+    monkeypatch.setattr(
+        MtmdSttSidecar, "_ensure_model_downloaded", lambda self, model_id: ("m.gguf", "p.gguf")
+    )
+    monkeypatch.setattr(
+        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: np.zeros(1, np.float32)
+    )
+    loads = []
+    monkeypatch.setattr(MtmdSttSidecar, "load", lambda self, *a, **k: loads.append(a))
+    with pytest.raises(SttAudioDecodeError, match = "too short"):
+        sidecar.transcribe(b"RIFF", model = "qwen3-asr-0.6b")
+    assert loads == []

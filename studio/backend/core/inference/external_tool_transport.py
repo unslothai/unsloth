@@ -59,12 +59,14 @@ class OAICompatTransport:
         # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
         self.tool_result_only_continuation = client.provider_type == "anthropic"
         self._initial_message_count: int | None = None
+        self.sent_messages: list[dict[str, Any]] | None = None
         self._last_tools: list[dict[str, Any]] | None = None
         # Always, as the local GGUF loop does: preserve_thinking hides earlier turns, never this turn's tool rounds.
         self.preserves_reasoning = client.provider_type in (
             "llama_cpp",
             "vllm",
             "minimax",
+            "deepseek",
         ) or _is_kimi_k3(client.provider_type, model)
 
     def stream(
@@ -115,6 +117,7 @@ class OAICompatTransport:
             request_kwargs["max_tokens"] = max_tokens
             if truncation_line:
                 yield truncation_line
+        self.sent_messages = messages
 
         # Re-derived each turn: a tool or user message at the end must not be resumed as an
         # assistant turn.

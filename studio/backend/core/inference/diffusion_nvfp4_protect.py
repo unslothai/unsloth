@@ -184,6 +184,14 @@ class NVFP4StepController:
             self.protected_steps_seen += 1
         return self.index
 
+    def restart(self) -> None:
+        """Back to step 0 of the current generation (a retried render denoises from the start)."""
+        if not self.total:
+            return
+        self.index = 0
+        self.protected = 0 in self.steps
+        self.protected_steps_seen = 1 if self.protected else 0
+
     def reset(self) -> "NVFP4StepController":
         self.total = 0
         self.steps = ()
@@ -337,6 +345,11 @@ def module_controller(module: Any) -> NVFP4StepController:
 
 
 _DENOISER_ATTRS = ("transformer", "transformer_2", "unet")
+
+
+def restart_protect_generation(pipe: Any) -> None:
+    for c in pipeline_controllers(pipe):
+        c.restart()
 
 
 def pipeline_controllers(pipe: Any) -> list:
