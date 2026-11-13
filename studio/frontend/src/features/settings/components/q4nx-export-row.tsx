@@ -11,7 +11,6 @@ import {
 } from "../api/q4nx-export";
 import { SettingsRow } from "./settings-row";
 
-/** Owner-only opt-in for Q4NX export on a machine without an AMD NPU. */
 export function Q4nxExportRow() {
   const t = useT();
   const settings = useQ4nxExportStore((s) => s.settings);

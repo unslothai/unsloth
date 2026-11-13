@@ -913,7 +913,6 @@ class Q4nxExportPayload(BaseModel):
 
 class Q4nxExportResponse(BaseModel):
     enabled: bool
-    # A supported NPU shows Q4NX export whatever the setting says.
     npu_supported: bool
     default_enabled: bool = q4nx_export_settings.DEFAULT_Q4NX_EXPORT_ENABLED
 
