@@ -111,8 +111,7 @@ class TestSetupPs1PublishesTheFlavor:
         assert "if (-not $NoTorchMode) {" in _publication_block()
 
     def test_unsetting_does_not_depend_on_the_powershell_version(self):
-        """Unset with Remove-Item: empty assignment keeps the name on PowerShell 7.5 and deletes it
-        on 5.1."""
+        """Remove-Item unsets; an empty value keeps the name on PS 7.5 but deletes it on 5.1."""
         block = _publication_block()
         for name in (
             "UNSLOTH_EXPECTED_TORCH_TAG",
@@ -289,10 +288,9 @@ def _base_total(**flags) -> int:
 
 class TestStepTotals:
     def test_windows_totals_include_torchcodec(self):
-        # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the
-        # no-torch case also gets the runtime-deps slot an update announces separately. Both also
-        # carry the diffusers main slot (11c), which is spent on every path including opting out.
-        # causal-conv1d and mamba-ssm have no slot: they install when a model needs them.
+        # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the no-torch
+        # case also gets the runtime-deps slot; both carry diffusers main (11c), spent even when
+        # opting out; causal-conv1d and mamba-ssm have no slot.
         assert _base_total(IS_WINDOWS = True) == 18
         assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 16
 
@@ -502,9 +500,8 @@ class TestTheProvenanceMarkerSurvivesAResolution:
 
 
 class TestAnUnknownMirrorPinNamesNoFlavor:
-    """The wheel came from a mirror whose leaf names no family, so nothing downstream can
-    name one for this venv: not the manifest, which describes the install the mirror
-    replaced, and not the CUDA probe, which reads the mirror's own leaf back as a flavor."""
+    """A mirror whose leaf names no family leaves nothing to name the flavor; the manifest describes
+    the replaced install and the CUDA probe reads the leaf as a flavor."""
 
     def test_the_expectation_stops_before_the_stale_manifest(self):
         body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]

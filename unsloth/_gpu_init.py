@@ -371,6 +371,7 @@ from .import_fixes import (
     fix_vllm_pdl_blackwell,
     fix_cudnn_sdpa_d256_masked_backward,
     fix_cudnn_sdpa_backward_grad_layout,
+    fix_cudnn_sdpa_known_bad_shapes,
     fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
@@ -462,6 +463,8 @@ fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_cudnn_sdpa_d256_masked_backward()
 fix_cudnn_sdpa_backward_grad_layout()
+# torch 2.11 - 2.14 cuDNN SDPA bugs fixed by cuDNN 9.26 / torch 2.15 (pytorch#193893, #196678).
+fix_cudnn_sdpa_known_bad_shapes()
 # Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
 fix_rocm_windows_fused_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
@@ -530,6 +533,7 @@ del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
 del fix_cudnn_sdpa_d256_masked_backward
 del fix_cudnn_sdpa_backward_grad_layout
+del fix_cudnn_sdpa_known_bad_shapes
 del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
@@ -787,16 +791,28 @@ del patch_bitsandbytes_optimizer_step_sync
 
 
 def _define_kernels_against_triton_stub():
-    """Unsloth's kernel modules define @triton.jit kernels at import. With no Triton package, a triton import made
-    by an unsloth.* module resolves to unsloth_zoo's triton stub (calling a kernel raises); every other importer
-    still sees no Triton, so no library mistakes the stub for a real one. Returns the undo callable."""
     try:
         from unsloth_zoo.stubs import triton_stub
     except ImportError:
         return None
     import builtins
+    import threading
+    import types
 
     real_import = builtins.__import__
+    lock = threading.Lock()
+
+    def _stub_module(name):
+        # Unknown attributes of a stub module are no-ops, not submodules, so create missing ones explicitly.
+        module = triton_stub
+        with lock:
+            for i, part in enumerate(name.split(".")[1:], start = 2):
+                child = vars(module).get(part)
+                if not isinstance(child, types.ModuleType):
+                    child = triton_stub._make_module(".".join(name.split(".")[:i]))
+                    setattr(module, part, child)
+                module = child
+        return module
 
     def _import(
         name,
@@ -812,18 +828,8 @@ def _define_kernels_against_triton_stub():
             or importer.split(".")[0] != "unsloth"
         ):
             return real_import(name, globals, locals, fromlist, level)
-        meta_path, modules = list(sys.meta_path), set(sys.modules)
-        triton_stub.inject_into_sys_modules()
-        try:
-            return real_import(name, globals, locals, fromlist, level)
-        finally:
-            sys.meta_path[:] = meta_path
-            for key in [
-                k
-                for k in sys.modules
-                if (k == "triton" or k.startswith("triton.")) and k not in modules
-            ]:
-                del sys.modules[key]
+        module = _stub_module(name)
+        return module if fromlist else triton_stub
 
     builtins.__import__ = _import
 

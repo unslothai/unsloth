@@ -954,15 +954,20 @@ export function ChatSettingsPanel({
       : trimmed;
     const next = customPresets.filter((p) => p.name !== saveName);
     const loadConfig = capturePresetLoadConfig();
+    // Live, as set() does: a number box this click blurred is not in this render's `params` yet.
+    const live = useChatRuntimeStore.getState().params;
+    const saved = seedDraft === null ? live : { ...live, seed: committedSeed };
     const merged = [
       ...next,
       {
         name: saveName,
-        params: toPresetParams(paramsWithCommittedSeed),
+        params: toPresetParams(saved),
         ...(loadConfig ? { loadConfig } : {}),
       },
     ];
     setCustomPresets(merged);
+    // As a pick does: drop the hand edits filed under the loaded model, or Default replays them.
+    setParams(saved, { fromPreset: true });
     setActivePreset(saveName);
     setActivePresetSource("custom");
     setPresetNameInput(saveName);

@@ -73,7 +73,7 @@ test("Train and Video are still the capability-gated rows", async () => {
     assert.ok(body, `no ${id} row`);
     assert.match(
       body,
-      /pending: capabilitiesUnknown,/,
+      /pending: capabilitiesUnknown && !detectionDeferred,/,
       `the ${id} row renders its disabled state before the verdict is measured`,
     );
     assert.match(

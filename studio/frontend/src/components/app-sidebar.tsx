@@ -56,6 +56,7 @@ import {
   watchApprovalWaiting,
 } from "@/features/chat/utils/approval-waiting";
 import { keepOpenedChats, touchOpenedChat } from "@/features/chat/utils/opened-chats";
+import { liveThreadBranch } from "@/features/chat/utils/live-thread-head";
 import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
   HELP_GROUPS,
@@ -95,6 +96,7 @@ import {
   type AudioWorkflowId,
 } from "@/features/audio/workflows";
 /* eslint-enable no-restricted-imports */
+import { SIDEBAR_SURFACE } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
@@ -166,41 +168,58 @@ import {
 } from "@tanstack/react-router";
 import {
   archiveChatItem,
-  ChatSearchDialog,
+  deleteChatItem,
+  renameChatItem,
+  type SidebarItem,
+} from "@/features/chat/hooks/use-chat-sidebar-items";
+import { ChatSearchDialog } from "@/features/chat/components/chat-search-dialog";
+import {
   canForkChatRow,
-  EditProjectDialog,
   forkChatRow,
+  getSidebarItemThreadIds,
+  sandboxSessionIdsHolding,
+} from "@/features/chat/components/chat-row-menu";
+import { EditProjectDialog } from "@/features/chat/components/edit-project-dialog";
+import {
   showForkCreatedToast,
   showForkFailedToast,
-  getSidebarItemThreadIds,
-  useForkInFlight,
-  sandboxSessionIdsHolding,
+} from "@/features/chat/utils/fork-toast";
+import { useForkInFlight } from "@/features/chat/utils/fork-in-flight";
+import {
   deleteChatProject,
-  deleteChatItem,
   moveChatItemToProject,
-  notifyChatHistoryUpdated,
-  renameChatItem,
-  useChatRuntimeStore,
   useChatProjects,
-  useChatSearchStore,
-  useSidebarRowPages,
-  fetchSidebarRowPage,
+} from "@/features/chat/hooks/use-chat-projects";
+import {
+  notifyChatHistoryUpdated,
   CHAT_HISTORY_UPDATED_EVENT,
   fetchSidebarThreadRows,
+} from "@/features/chat/api/chat-api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
+import {
+  useSidebarRowPages,
+  fetchSidebarRowPage,
   readAllSidebarRowIds,
   readAllSidebarRows,
   type SidebarRowSlot,
+} from "@/features/chat/hooks/use-sidebar-row-pages";
+import {
   sidebarRowQuery,
   holdRowsPastLoadedChats,
   mergeManualOrderTail,
   settledManualOrder,
   SIDEBAR_PAGE_SIZE,
-  usePinnedChatsStore,
-  usePinnedProjectsStore,
+} from "@/features/chat/utils/sidebar-row-query";
+import { usePinnedChatsStore } from "@/features/chat/stores/pinned-chats-store";
+import { usePinnedProjectsStore } from "@/features/chat/stores/pinned-projects-store";
+import {
   rangeBetween,
   toggleSelected,
-  useChatPreferencesStore,
-  usePromptQueueUI,
+} from "@/features/chat/utils/row-selection";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { usePromptQueueUI } from "@/features/chat/stores/prompt-queue-ui-store";
+import {
   useSidebarOrganizationStore,
   applyManualOrder,
   showsInRecents,
@@ -220,8 +239,9 @@ import {
   type SidebarCustomSection,
   type SidebarOrganizeBy,
   type SidebarProjectSort,
-  type ProjectRecord,
-  type SidebarItem,
+} from "@/features/chat/stores/sidebar-organization-store";
+import type { ProjectRecord } from "@/features/chat/types";
+import {
   type ChatNavigationState,
   adjacentChatItem,
   countUnreadRows,
@@ -229,12 +249,14 @@ import {
   openChatItemById,
   recentChatItemAtSlot,
   useChatNavigationStore,
-  SectionNameDialog,
-  removeCustomSectionWithUndo,
+} from "@/features/chat/stores/chat-navigation-store";
+import { SectionNameDialog } from "@/features/chat/components/section-name-dialog";
+import { removeCustomSectionWithUndo } from "@/features/chat/stores/remove-custom-section";
+import {
   sectionKeyLanding,
   useSectionDrag,
-  prefetchChatPage,
-} from "@/features/chat";
+} from "@/features/chat/hooks/use-section-drag";
+import { prefetchChatPage } from "@/features/chat/load-chat-page";
 import {
   imeOwnsInputKeydown,
   inputImeHandlers,
@@ -246,15 +268,19 @@ import { NewProjectDialog } from "@/features/chat/components/new-project-dialog"
 import {
   sidebarNavRowPinned,
   useAppearanceCustomStore,
-  useSettingsDialogStore,
-  isSurfaceBackgrounded,
-  useShortcutLabel,
-  Shortcut,
-  type ShortcutId,
-  useShortcut,
   prefersReducedMotion,
-  FullInstallDialog,
-} from "@/features/settings";
+} from "@/features/settings/stores/appearance-custom-store";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import {
+  isSurfaceBackgrounded,
+  surfaceElements,
+  useShortcutLabel,
+  useShortcut,
+} from "@/features/settings/hooks/use-shortcut";
+import { Shortcut } from "@/features/settings/components/shortcut";
+import type { ShortcutId } from "@/features/settings/lib/keyboard-shortcuts";
+import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
 import type {
   SidebarNavItemId,
   SidebarNavItemPref,
@@ -275,17 +301,21 @@ import {
 import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
 import {
   deleteTrainingRun,
+  renameTrainingRun,
+} from "@/features/training/api/history-api";
+import {
   emitTrainingRunDeleted,
   emitTrainingRunUpdated,
-  getTrainingRunDisplayTitle,
+} from "@/features/training/events";
+import { getTrainingRunDisplayTitle } from "@/features/training/lib/run-display";
+import {
   isTrainingStartPending,
-  removeTrainingUnloadGuard,
-  renameTrainingRun,
-  useDuplicateTrainingRun,
-  useTrainingCompletionWatch,
-  useTrainingHistorySidebarItems,
   useTrainingRuntimeStore,
-} from "@/features/training";
+} from "@/features/training/stores/training-runtime-store";
+import { removeTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
+import { useDuplicateTrainingRun } from "@/features/training/hooks/use-duplicate-training-run";
+import { useTrainingCompletionWatch } from "@/features/training/hooks/use-training-completion-watch";
+import { useTrainingHistorySidebarItems } from "@/features/training/hooks/use-training-history-sidebar";
 import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
 import {
@@ -303,19 +333,21 @@ import { toast } from "@/lib/toast";
 import {
   folderRingKey,
   sectionRingKey,
-  DROP_CUE_CLASS,
   SIDEBAR_TAIL_SCOPE,
-  useSidebarDrag,
   type SidebarDragItem,
   type SidebarDropContext,
   type SidebarDropEffects,
   type SidebarDropPlan,
   type SidebarSection,
-} from "@/features/chat";
+} from "@/features/chat/lib/sidebar-drag";
+import {
+  DROP_CUE_CLASS,
+  useSidebarDrag,
+} from "@/features/chat/hooks/use-sidebar-drag";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
-import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
+import { PinnedPageRow, usePinnedPages } from "@/features/browser/pinned-page-row";
+import type { PinnedPage } from "@/features/browser/pinned-pages-store";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import { translate, useT, type TranslationKey } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -389,12 +421,9 @@ const SELECT_WITH_META =
   typeof navigator !== "undefined" &&
   /mac/i.test(navigator.platform || navigator.userAgent);
 
-// Insertion line on the landing edge, drawn inside the row: a section's collapsible clips its
-// overflow, and the first and last rows are exactly where a row is dragged to. A border, not a
-// filled bar: border widths snap to whole device pixels, so the line keeps one thickness at any
-// zoom or UI scale instead of rounding differently per row.
-// DROP_CUE_CLASS: the carried row's copy covers the spot it is aimed at, so the drag draws each
-// cue's border again above it.
+// Insertion line drawn inside the row, since a collapsible's overflow clips it; a border, since
+// border widths snap to whole device pixels, keeps one thickness at any zoom. DROP_CUE_CLASS
+// redraws each cue's border above the carried row's copy, which covers the spot.
 const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-foreground before:content-['']`;
 const DROP_CUE_TOP = `${DROP_CUE_BASE} before:top-0`;
 // bottom-px: on the last row, DROP_ROW_HIT's extra pixel is clipped by the list.
@@ -535,11 +564,13 @@ const CONTEXT_ROW_MENU: RowMenuParts = {
 };
 
 // The kebab shows itself while its menu is open; the quick-action beside it was hover-only, so
-// it slid in over the title. The row reserves room for both, so reveal both.
+// it slid in over the title. The row reserves room for both, so reveal both. Row parts look at
+// the actions after them (`:has(~ ...)`), not the row at its descendants: a group-has-* puts the
+// style after the :has(), which WebKit re-checks across the whole document on every keystroke.
 const REVEAL_WITH_OPEN_MENU_PROJECT_CHAT =
-  "group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pointer-events-auto";
+  "[&:has(~.sidebar-row-action[data-state=open])]:opacity-100 [&:has(~.sidebar-row-action[data-state=open])]:pointer-events-auto";
 const REVEAL_WITH_OPEN_MENU_RECENT =
-  "group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pointer-events-auto";
+  "[&:has(~.sidebar-row-action[data-state=open])]:opacity-100 [&:has(~.sidebar-row-action[data-state=open])]:pointer-events-auto";
 
 const CHAT_SORT_OPTIONS: Array<{
   value: SidebarChatSort;
@@ -746,7 +777,7 @@ const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
 // a spinner, so it is re-read sooner than the background MLX self-heal check. A re-read outstanding
 // longer than the stall window is given up on rather than latching the poll off.
 const SELECTION_ACTION_GRACE_MS = 750;
-const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
+const SIDEBAR_SELECTOR = SIDEBAR_SURFACE;
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
@@ -1297,8 +1328,7 @@ export function AppSidebar() {
     select: (s) => ({
       pathname: s.location.pathname,
       search: s.location.search as Record<string, string | undefined>,
-      // Pathname and search as one string, so a dep can follow it without a
-      // fresh object every render.
+      // Pathname and search as one string: a dep follows it without a fresh object per render.
       href: s.location.href,
     }),
   });
@@ -1359,9 +1389,8 @@ export function AppSidebar() {
   const canRepair = repair !== null && !repair.isExternalServer;
   const fullInstall = useFullInstallUpgrade();
   const [fullInstallOpen, setFullInstallOpen] = useState(false);
-  // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
-  // Train and Video blacked out on load and only recovered once the backend reported. Gate the
-  // rows on a measured verdict and let them spin until it lands.
+  // Until /api/health answers, chatOnly is only a browser-platform guess, so Macs blacked out Train
+  // and Video on load; gate the rows on a measured verdict and spin until it lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
   const trainBlocked = trainUnavailable && !capabilitiesUnknown;
@@ -1406,9 +1435,10 @@ export function AppSidebar() {
 
   // MLX self-heal or late detection can change the verdict after first health; re-poll.
   useEffect(() => {
-    // Also while deferred: under the kill switch health settles nothing.
+    // Deferred detection starts only on demand, so there is no background verdict to poll.
+    if (detectionDeferred) return;
     const selfHealSettled =
-      !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
+      !chatOnly || chatOnlyReason !== "mlx_unavailable";
     // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded wait at
     // most once per page load, so a host that detects slower keeps the provisional reply and nothing
     // else re-reads it: the rows above would spin and /studio would hold its loading panel for the rest
@@ -1516,9 +1546,8 @@ export function AppSidebar() {
     },
     [syncFade],
   );
-  // Rail width: 0 where scrollbars overlay (macOS default) or the list fits, the platform's thin rail
-  // where they are classic. Only rows inside the scroller lose it, so the rows outside pad by it to
-  // keep one edge. Written to the DOM, and only on a change: state here would loop (React #185).
+  // Rail width is 0 where scrollbars overlay or the list fits, else the thin classic rail; outside
+  // rows pad by it. Written to the DOM only on change, since state would loop (React #185).
   const railWidthRef = useRef<number | null>(null);
   const measureScrollRail = useCallback((el: HTMLDivElement) => {
     const rail = el.offsetWidth - el.clientWidth;
@@ -1527,9 +1556,8 @@ export function AppSidebar() {
     el.parentElement?.style.setProperty("--sidebar-rail", `${rail}px`);
   }, []);
 
-  // A callback ref, not an effect: the mobile Sheet unmounts its subtree on close and the breakpoint
-  // swaps it for the desktop one, so the scroller is a new node each time and an effect keyed on a
-  // stable callback never re-runs. Still runs before paint.
+  // A callback ref, not an effect: the mobile Sheet unmounts it on close, and a breakpoint swap
+  // replaces it, so an effect on a stable callback never re-runs. Still before paint.
   const railObserverRef = useRef<ResizeObserver | null>(null);
   const sectionObserverRef = useRef<MutationObserver | null>(null);
   const attachScroller = useCallback(
@@ -1539,15 +1567,13 @@ export function AppSidebar() {
       sectionObserverRef.current?.disconnect();
       sectionObserverRef.current = null;
       scrollRef.current = el;
-      // Per node: a new parent has no variable yet even at the same rail, and
-      // the cache would otherwise skip the write.
+      // Per node: a new parent has no rail variable yet, and the cache would skip the write.
       railWidthRef.current = null;
       if (!el) return;
       measureScrollRail(el);
       syncFade(el);
-      // Watch the box, not renders: the Images disclosure and the project toggles change the row count
-      // without rendering this component, and a scrollbar appearing shrinks the content box. Safe where
-      // the earlier observer was not: it writes the DOM, never state, so nothing feeds back.
+      // Watch the box, not renders: Images and project toggles change the row count without
+      // rendering, and a scrollbar shrinks the box. Safe here since it writes the DOM, never state.
       const observer = new ResizeObserver(() => {
         measureScrollRail(el);
         syncFade(el);
@@ -1657,10 +1683,9 @@ export function AppSidebar() {
     (projects.length > 0 || projectsLoaded);
   const projectsSectionRendered =
     !isStudioRoute && !showTrainingRecents && projectsSectionConfigured;
-  // Deliberately not the rendered flag: Train and Recipes swap the section for their runs, and a
-  // row reappearing there reads as a setting turning itself back on. The icon rail is the one
-  // exception, since it hides the section in CSS without unmounting it and the row is then the
-  // only way to reach projects.
+  // Not the rendered flag: Train and Recipes swap the section for their runs, and a row reappearing
+  // there reads as a setting turning itself back on. The icon rail is the exception: it hides the
+  // section in CSS, so the row is the only way to reach projects.
   const projectsSectionShowing =
     projectsSectionConfigured && (isMobile || sidebarState !== "collapsed");
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
@@ -1873,9 +1898,8 @@ export function AppSidebar() {
     }
     return map;
   }, [allChatItems]);
-  // With the Projects section on, a project chat lives in its folder and repeating it here would be
-  // noise. With it off there are no folders, so Recents is where those chats go. Pinned chats are
-  // held back either way: the Pinned section renders those, as a custom section does its own.
+  // Project chats are left out here when the Projects section is on, since they live in their
+  // folder; with it off, Recents takes them. Pinned chats are held back either way.
   const recentChatItems = useMemo(
     () =>
       listedChatItems.filter(
@@ -1981,9 +2005,8 @@ export function AppSidebar() {
     projectActivityAt,
     projectSort,
   ]);
-  // Memoised for its identity, not for the slice. It feeds the rendered-row set the selection guard
-  // depends on, and that effect sets state: React re-renders once to find the bail-out, which would
-  // rebuild this array and schedule the effect again, without end.
+  // Memoised for identity, not the slice: it feeds the selection guard's rendered-row set, and that
+  // effect sets state, so a rebuilt array would re-trigger it without end.
   const [projectPageLimit, setProjectPageLimit] = useState(SIDEBAR_PAGE_SIZE);
   const visibleProjectRecords = useMemo(
     () =>
@@ -2077,11 +2100,9 @@ export function AppSidebar() {
       ? { id: pair.id, compare: true as const }
       : { id, compare: false as const };
   }, [runningByThreadId, approvalWaitingElsewhere, allChatItems]);
-  // A chat started from a section's header joins it when its first send gives it an id, which
-  // lands in the store while the address still names the new chat. Leaving that chat first lets
-  // the mark go, so a chat opened afterwards is never filed by mistake. Turning it into a compare
-  // chat before that first send is not leaving it: the compare chat takes the mark, and joins once
-  // its pair is listed, under the id the address gives it.
+  // A chat started from a section header joins it once its first send gives it an id; leaving that
+  // chat first drops the mark, so no later chat is filed by mistake. Turning it into a compare chat
+  // before then is not leaving: the compare chat takes the mark and joins once its pair is listed.
   useEffect(() => {
     if (!pendingNewChatSection) return;
     const { sectionId, nonce, compare } = pendingNewChatSection;
@@ -2162,8 +2183,7 @@ export function AppSidebar() {
       mode: SidebarChatSort,
     ): SidebarItem[] => {
       if (mode === "manual") {
-        // Incoming order is the list's own rule, so undragged rows keep it:
-        // newest first in Recents, pin order in Pinned.
+        // Undragged rows keep the list's order: newest first in Recents, pin order in Pinned.
         return applyManualOrder(items, displayManualOrder[scope], (item) => item.id);
       }
       return [...items].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -2191,9 +2211,8 @@ export function AppSidebar() {
       end();
     };
     window.addEventListener("keyup", onKeyUp);
-    // Losing the window ends it too: ⌘Tab away mid-walk and the release lands
-    // elsewhere, leaving the walk frozen, so the next press carries on instead
-    // of toggling back and the stack never takes the chat it landed on.
+    // Blur ends the walk too: ⌘Tab away mid-walk would leave it frozen, so the next press carries
+    // on instead of toggling back; the stack never takes the chat it landed on.
     window.addEventListener("blur", end);
     return () => {
       window.removeEventListener("keyup", onKeyUp);
@@ -2217,8 +2236,7 @@ export function AppSidebar() {
     }
     return map;
   }, [listedChatsByProjectId, sortChatItems, chatSort, pinnedIdSet, sectionByChatId]);
-  // One id array per list, shared by every row in it. Built per row, these
-  // would be N arrays of length N on each render.
+  // One id array per list shared by its rows; built per row, N arrays of length N each render.
   const recentRowIds = useMemo(
     () => sortedRecentChatItems.map((item) => item.id),
     [sortedRecentChatItems],
@@ -2433,8 +2451,7 @@ export function AppSidebar() {
   // disclosure, not the Projects one, so each section collects its own.
   const folderChatItems = useCallback(
     (open: boolean, records: ProjectRecord[]) => {
-      // Not in one list: every project chat is a Recents row there, and a folder listing them
-      // again would draw and publish each one twice.
+      // Not in one list: project chats are Recents rows, and a folder would list them twice.
       if (!chatListsOnScreen || organizeBy !== "project" || !open) return [];
       const out: SidebarItem[] = [];
       for (const project of records) {
@@ -2464,8 +2481,7 @@ export function AppSidebar() {
     () => (chatListsOnScreen && chatOpen ? sortedRecentChatItems : []),
     [chatListsOnScreen, chatOpen, sortedRecentChatItems],
   );
-  // Pinned draws folders and chats in one order, so the section's chats read in that order,
-  // each open folder's chats right under its row.
+  // Pinned draws folders and chats in one order; each open folder's chats sit under its row.
   const pinnedSectionChatItems = useMemo(
     () =>
       chatListsOnScreen && pinnedOpen
@@ -2653,11 +2669,9 @@ export function AppSidebar() {
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
 
-  // Emptying the published lists is not enough: Archive, Pin, Mark unread and Delete all prefer the
-  // selection over the open chat, and a selection shows nowhere but the rows. Carried onto Train or
-  // behind the icon rail it would be invisible and still be what the chords hit. Sections close one
-  // at a time, though, and a "show less" takes back only its own overflow, so drop what went and keep
-  // what stayed.
+  // Emptying the published lists is not enough: Archive, Pin, Mark unread and Delete prefer the
+  // selection over the open chat, and it shows only in the rows, so it is dropped when they leave.
+  // Show less takes back only its own overflow, so drop what went and keep what stayed.
   useEffect(() => {
     if (!chatRowsOnScreen) {
       clearSelection();
@@ -3378,7 +3392,7 @@ export function AppSidebar() {
         ? { label: "Install Training", onClick: () => setFullInstallOpen(true) }
         : undefined,
       spinner: trainingInProgress,
-      pending: capabilitiesUnknown,
+      pending: capabilitiesUnknown && !detectionDeferred,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
         if (trainBlocked) {
@@ -3402,7 +3416,7 @@ export function AppSidebar() {
       active: pathname === "/video" || pathname.startsWith("/video/"),
       disabled: videoDisabled,
       tooltip: videoDisabledHint,
-      pending: capabilitiesUnknown,
+      pending: capabilitiesUnknown && !detectionDeferred,
       pendingTooltip: t("shell.navigation.videoChecking"),
       onClick: () => {
         navigateFromRow({ to: "/video" });
@@ -3920,14 +3934,24 @@ export function AppSidebar() {
   }
 
   function clearChatNotifications(item: SidebarItem) {
+    // Capture the unread result before Recents clears its persistent unread marker.
+    const { ttsEnabled, autoReadAloud } = useVoiceSettingsStore.getState();
+    useUnseenScheduledRuns.getState().openThread(
+      item.type === "single" ? item.id : null,
+      ttsEnabled && autoReadAloud,
+    );
     clearThreadsUnread(getSidebarItemThreadIds(item));
   }
 
   async function copyChatItemAsMarkdown(item: SidebarItem) {
+    const liveBranch = item.type === "single" ? liveThreadBranch(item.id) : undefined;
     const empty = { value: false };
     // Read inside the write: Safari drops the gesture across an await.
     const copied = await copyToClipboardFrom(async () => {
-      const markdown = await buildChatItemMarkdown(item);
+      const { buildChatItemMarkdown } = await import(
+        "@/features/chat/prompt-storage/prompt-storage-dialog"
+      );
+      const markdown = await buildChatItemMarkdown(item, liveBranch);
       if (!markdown) {
         empty.value = true;
         throw new Error("nothing to copy");
@@ -4022,9 +4046,8 @@ export function AppSidebar() {
   useEffect(() => {
     openChatItemRef.current = openChatItem;
   });
-  // The sidebar is unmounted on the auth routes, so this is where a sign-out reaches: the store
-  // outlives the component that filled it, and the unread set and the walk belong to the account
-  // that just left.
+  // The sidebar unmounts on auth routes, so sign-out must reset here: the store outlives the
+  // component, and the unread set and walk belong to the account that left.
   useEffect(
     () => () => useChatNavigationStore.getState().resetAccountState(),
     [],
@@ -4052,10 +4075,9 @@ export function AppSidebar() {
     openChatItemById(item);
   };
 
-  // With rows selected these act on the selection, matching the context menu; otherwise on the open
-  // chat. Acting on a selection clears it, so without this latch a second press would land on the
-  // open chat, which the user never selected. Keyed by action: the press to hold back is a repeat of
-  // the one that just took the selection, not a different command chosen deliberately.
+  // With rows selected these act on the selection, otherwise on the open chat. Acting clears the
+  // selection, so without this latch a second press would hit the open chat, which was never
+  // selected. Keyed by action, so only a repeat of the same press is held back.
   const selectionActedRef = useRef<{ id: ShortcutId; at: number } | null>(null);
   const actOnSelection = (id: ShortcutId, fn: () => void) => {
     selectionActedRef.current = { id, at: Date.now() };
@@ -4076,12 +4098,11 @@ export function AppSidebar() {
   // as covered would kill these chords on the mobile drawer, which unmounts.
   const sidebarCovered = () => {
     if (isSurfaceBackgrounded(SIDEBAR_SELECTOR)) return true;
-    // With the mobile drawer closed the sidebar is unmounted, so the check above has nothing to read.
-    // The app root is always mounted and Radix aria-hides it for a modal's life. A fallback only: an
-    // open drawer is itself a dialog hiding the root, and the sidebar in it is the foreground.
+    // The mobile drawer unmounts the sidebar when closed, so this check reads the app root, which
+    // Radix aria-hides for a modal's life; an open drawer hides it and is the foreground.
     return (
       typeof document !== "undefined" &&
-      document.querySelector(SIDEBAR_SELECTOR) === null &&
+      surfaceElements(SIDEBAR_SELECTOR).length === 0 &&
       isSurfaceBackgrounded("#root")
     );
   };
@@ -4140,9 +4161,8 @@ export function AppSidebar() {
     },
     { claims: sidebarUncovered },
   );
-  // Through the dialog: the row's inline pill is rendered by the row, and the open chat may be behind
-  // a collapsed section, past a folder's "show more", or on a route with no chat list at all, where
-  // the chord would look dead and leave a rename waiting to appear when the row came back.
+  // Goes through the dialog: the open chat may be behind a collapsed section, past a folder's show
+  // more, or on a route with no chat list, where an inline row pill cannot show the rename.
   useShortcut(
     "renameChat",
     () => withActiveChat((item) => openRenameChat(item)),
@@ -4379,9 +4399,8 @@ export function AppSidebar() {
     );
   }
 
-  // The "..." on each list header, carrying only what that list is about, as ChatGPT does: Pinned
-  // sorts its pins, Projects groups the sidebar and sorts its folders, and Recents adds which
-  // sections show and a new one. A custom section's own "..." manages that section.
+  // The "..." menu on each list header carries only what that list is about, as ChatGPT does:
+  // Pinned sorts pins, Projects groups the sidebar, Recents adds which sections show.
   function renderSidebarHeaderMenu(
     options: { ariaLabel: string } & (
       | { kind: "pinned" | "projects" | "recents" }
@@ -5394,15 +5413,15 @@ export function AppSidebar() {
           ? undefined
           : // Room for the pin quick-action plus the kebab, and the same room with the menu open:
             // a narrower gutter there let the title run under them.
-            "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-14 [@media(pointer:coarse)]:pr-14"
+            "group-hover/project-chat-item:pr-14 [&:has(~.sidebar-row-action[data-state=open])]:pr-14 [@media(pointer:coarse)]:pr-14"
         : showWorkSpinner
           ? undefined
           : // A chat row carries a pin and a kebab, so reserve the room for both on hover and
             // while the menu is open.
-            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16",
+            "group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 [@media(pointer:coarse)]:pr-16",
       variant === "project"
-        ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
-        : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16",
+        ? "[&:has(~.sidebar-row-action:focus-visible)]:pr-14"
+        : "[&:has(~.sidebar-row-action:focus-visible)]:pr-16",
     );
 
     return (
@@ -5479,8 +5498,8 @@ export function AppSidebar() {
                   // behind: sit left of them instead, where this used to be.
                   "[@media(pointer:coarse)]:right-16",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
+                    : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
                 )}
               >
                 {awaitingApproval ? (
@@ -5505,8 +5524,8 @@ export function AppSidebar() {
                 className={cn(
                   "pointer-events-none absolute right-4 top-1/2 z-10 flex size-3.5 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
+                    : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
                 )}
                 aria-hidden
               >
@@ -5521,8 +5540,8 @@ export function AppSidebar() {
                 className={cn(
                   "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
+                    : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
                 )}
               >
                 <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-3.5" />
@@ -5536,8 +5555,8 @@ export function AppSidebar() {
                 className={cn(
                   "pointer-events-none absolute right-4 top-1/2 z-10 flex -translate-y-1/2 text-muted-foreground transition-opacity [@media(pointer:coarse)]:hidden",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
+                    : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
                 )}
               >
                 <GitBranchIcon aria-hidden={true} strokeWidth={1.75} className="size-3.5" />
@@ -5750,7 +5769,7 @@ export function AppSidebar() {
             if (listsChats) toggleProjectCollapsed(project.id);
             else openProject(project.id);
           }}
-            className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16"
+            className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 [@media(pointer:coarse)]:pr-16"
           >
             <HugeiconsIcon
               icon={expanded ? Folder02Icon : ProjectIcon}
@@ -5865,6 +5884,7 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}
+      data-windows-glass-frame={(pinned && usesCustomTitlebar) || undefined}
       variant="sidebar"
       className={cn(
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
@@ -5879,7 +5899,8 @@ export function AppSidebar() {
             ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-padding-top,11px))]"
             : usesNativeMacTitlebar
               ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
-              : "pl-3 pr-3 pt-[calc(14px*var(--ui-space-scale,1))] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
+              : // The chat header's top padding, so the two rows line up.
+                "pl-3 pr-3 pt-[var(--studio-chat-header-padding-top,11px)] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
         )}
       >
         {showSidebarBrand && (
@@ -5927,7 +5948,13 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    className={cn(
+                      "relative top-px -left-px shrink-0 rounded-full object-cover",
+                      // Web Studio only; the desktop header keeps its own sizes.
+                      usesDesktopTitlebar
+                        ? "h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))]"
+                        : "h-[calc(20.5px+0.5rem*var(--ui-font-scale,1))] w-[calc(20.5px+0.5rem*var(--ui-font-scale,1))]",
+                    )}
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
                     unsloth
@@ -5945,10 +5972,17 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className={cn(
+                        "inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                        usesDesktopTitlebar && "relative top-px",
+                      )}
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
+                      <HugeiconsIcon
+                        icon={Search01Icon}
+                        strokeWidth={1.75}
+                        className={usesDesktopTitlebar ? "size-4" : "size-icon"}
+                      />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
@@ -6020,7 +6054,7 @@ export function AppSidebar() {
         className={cn(
           "group-data-[collapsible=icon]:px-0 shrink-0 transition-[padding]",
           rowPadding,
-          usesDesktopTitlebar ? "pt-[calc(11px*var(--ui-space-scale,1))]" : "pt-[calc(7px*var(--ui-space-scale,1))]",
+          usesDesktopTitlebar ? "pt-[calc(11px*var(--ui-space-scale,1))]" : "pt-[calc(5px*var(--ui-space-scale,1))]",
           scrolled ? "pb-[calc(5px*var(--ui-space-scale,1))]" : "pb-px",
         )}
       >
@@ -6601,6 +6635,7 @@ export function AppSidebar() {
             travel in this band and a full-width gradient washed it out. */}
         <div
           ref={attachFade}
+          data-slot="sidebar-footer-fade"
           aria-hidden="true"
           className={cn(
             // from-[8px] holds the fade opaque across the hard clip, matching the list's pb-2.
@@ -6722,7 +6757,7 @@ export function AppSidebar() {
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
                         <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
-                        <span>{t("shell.navigation.api")}</span>
+                        <span>{t("settings.tabs.apiKeys")}</span>
                       </DropdownMenuItem>
                     );
                   }

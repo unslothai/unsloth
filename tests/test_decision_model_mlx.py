@@ -200,6 +200,14 @@ def test_decision_helpers_are_one_torch_free_module_for_both_backends():
     assert [a.name for n in taken for a in n.names] == ["*"]
 
 
+@pytest.mark.parametrize("clef", [False, True])
+def test_rows_problem_checks_rows_without_a_model(clef):
+    assert FastDecisionModel.rows_problem([{"state": "s"}, _row(0)], clef) is None
+    assert FastDecisionModel.rows_problem([{"state": "s"}], clef) == (
+        "row 1 needs state, questions and gold"
+    )
+
+
 @pytest.fixture
 def clef_checkpoint(tmp_path, monkeypatch):
     from types import SimpleNamespace
@@ -403,6 +411,27 @@ def test_predict_answers_at_the_calibrated_temperatures(checkpoint, monkeypatch)
     assert picked == [True, "billing", 2] and answers["team"]["choice"] == "billing"
     with pytest.raises(unsloth._decision_mlx.DecisionDataError, match = "non-empty"):
         FastDecisionModel.predict(model, tokenizer, "s", {})
+
+
+@pytest.mark.parametrize("instructions", [None, ""])
+def test_a_question_without_instructions_is_read_by_its_id(checkpoint, instructions):
+    model, tokenizer = FastDecisionModel.from_pretrained(str(checkpoint))
+    state = "the server is down again"
+    blank = {"type": "noul", "instructions": instructions}
+    named = {name: {"type": "noul", "instructions": name} for name in ("outage", "billing")}
+
+    answers = FastDecisionModel.predict(model, tokenizer, state, dict.fromkeys(named, blank))
+    assert answers == FastDecisionModel.predict(model, tokenizer, state, named)
+
+    def tokens(questions):
+        gold = dict.fromkeys(questions, "true")
+        row = {"state": state, "questions": questions, "gold": gold}
+        return [
+            item["input_ids"]
+            for item in FastDecisionModel.build_dataset([row], tokenizer, model)[0]
+        ]
+
+    assert tokens(dict.fromkeys(named, blank)) == tokens(named)
 
 
 def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(

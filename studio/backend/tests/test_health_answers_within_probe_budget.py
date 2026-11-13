@@ -61,8 +61,7 @@ def _main_constant(name: str) -> float:
 
 
 def test_the_budget_stays_under_the_desktop_probe_timeout():
-    """Cross-language guard: the budget is only correct relative to the Rust one, and
-    either side can be changed without the other."""
+    """The health budget must stay under the Rust probe timeout; either side can drift."""
     probe_timeout = _desktop_probe_timeout_s()
     budget = _main_constant("_HEALTH_DETECT_BUDGET_S")
     assert budget < probe_timeout, (
@@ -87,6 +86,7 @@ import asyncio, contextlib, json, os, sys, threading, time
 os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
 
 import main
+main._startup_ml_warmup_features = frozenset({"hardware"})
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -206,6 +206,7 @@ import json, os, threading, time
 os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
 
 import main
+main._startup_ml_warmup_features = frozenset({"hardware"})
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -305,6 +306,7 @@ import asyncio, json, os, time
 os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
 
 import main
+main._startup_ml_warmup_features = frozenset({"hardware"})
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -364,9 +366,7 @@ def test_the_ceiling_still_catches_an_unbounded_wait():
 
 
 def test_health_still_waits_when_detection_finishes_inside_the_budget():
-    """The budget is a ceiling, not a floor. The wait exists so a GPU host is not
-    published as chat-only for a second; bounding it must not make every early health
-    call provisional."""
+    """A ceiling, not a floor: bounding the wait must not make early health calls provisional."""
     result = _probe(0.3)
 
     assert result["status"] == 200

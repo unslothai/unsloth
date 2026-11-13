@@ -126,6 +126,7 @@ export function GlassControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.glassTheme")}
+			badge={<Badge variant="accent">{t("shell.beta")}</Badge>}
 			action={
 				<Switch
 					aria-label={t("chatBackground.glassTheme")}
@@ -137,12 +138,36 @@ export function GlassControls() {
 			{on && (
 				<>
 					<GlassStyleRow />
+					<GlassScopeRow />
 					<MaterialStrengthRow />
 					<LensRow />
 					<MaterialMenusRow />
 				</>
 			)}
 		</SettingsSection>
+	);
+}
+function GlassScopeRow() {
+	const t = useT();
+	const { scope, setScope } = useMaterialStore();
+	return (
+		<SettingsRow label={t("chatBackground.scope")}>
+			<Select
+				value={scope}
+				onValueChange={(next) => setScope(next as BackgroundScope)}
+			>
+				<SelectTrigger aria-label={t("chatBackground.scope")} className="w-52">
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{SCOPES.map((option) => (
+						<SelectItem key={option} value={option}>
+							{t(scopeLabels[option])}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</SettingsRow>
 	);
 }
 function MaterialMenusRow() {
@@ -225,7 +250,7 @@ function LensRow() {
 	);
 }
 const SLIDERS: {
-	key: "visibility" | "conversation" | "blur" | "zoom" | "outline";
+	key: "visibility" | "conversation" | "blur" | "zoom";
 	label: TranslationKey;
 	min: number;
 	max: number;
@@ -235,7 +260,6 @@ const SLIDERS: {
 	{ key: "conversation", label: "chatBackground.conversationVisibility", min: 0, max: 100, unit: "%" },
 	{ key: "blur", label: "chatBackground.blur", min: 0, max: 20, unit: "px" },
 	{ key: "zoom", label: "chatBackground.zoom", min: 100, max: 300, unit: "%" },
-	{ key: "outline", label: "chatBackground.outline", min: 0, max: 100, unit: "%" },
 ];
 const errors = {
 	storage: "chatBackground.storageError",

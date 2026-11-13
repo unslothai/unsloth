@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useKeyboardShortcutsStore } from "@/features/settings";
+import { useKeyboardShortcutsStore } from "@/features/settings/stores/keyboard-shortcuts-store";
 import { isMacPlatform } from "@/features/settings/lib/keyboard-shortcuts";
 import { isTauri } from "@/lib/api-base";
 import { useEffect, useMemo, useRef } from "react";

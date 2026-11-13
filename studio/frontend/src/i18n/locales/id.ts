@@ -206,12 +206,16 @@ export const id = {
         history: "Membaca riwayat penjelajahan Anda",
         move: "Menggerakkan mouse",
         drag: "Menyeret",
+        tabs: "Melihat tab",
+        readFile: "Membaca file",
+        editFile: "Mengedit file",
       },
     },
     title: "Browser",
     tabs: "Tab browser",
     newTab: "Tab baru",
     newTabFullView: "Tab baru dalam tampilan penuh",
+    newTabFloating: "Tab baru di jendela mengambang",
     closeTab: "Tutup tab",
     close: "Tutup browser",
     show: "Tampilkan browser",
@@ -361,6 +365,8 @@ export const id = {
     askBeforeDownloadingSetting: "Tanya sebelum mengunduh",
     askBeforeDownloadingSettingDescription:
       "Konfirmasi file dari situs web sebelum disimpan.",
+    askBeforeProgramDownloadsSetting: "Tanya sebelum mengunduh program",
+    askBeforeProgramDownloadsSettingDescription: "Konfirmasi file yang dapat menjalankan program, seperti .exe atau .dmg, meskipun unduhan lain tidak bertanya.",
     downloadSitesSetting: "Izin unduhan situs",
     downloadSitesSettingDescription:
       "Situs yang Anda pilih untuk selalu diizinkan atau diblokir unduhannya.",
@@ -369,6 +375,7 @@ export const id = {
     downloadSitesFor: "Unduhan dari {host}",
     downloadSitesRemove: "Lupakan {host}",
     downloadSiteAllow: "Selalu izinkan",
+    downloadSiteAllowAll: "Izinkan program juga",
     downloadSiteBlock: "Selalu blokir",
     downloadPrompt: {
       title: "Unduh file ini?",
@@ -376,6 +383,9 @@ export const id = {
       dangerous:
         "File seperti ini dapat menjalankan program di komputer Anda. Unduh hanya jika Anda memercayai {host}.",
       remember: "Ingat untuk lain kali",
+      once: "Tanya lain kali",
+      site: "Selalu untuk {host}",
+      all: "Selalu unduh, dari semua situs",
       cancel: "Batal",
       download: "Unduh",
       blocked: "Unduhan dari {host} diblokir.",
@@ -424,6 +434,12 @@ export const id = {
       openChat: "Buka dalam tampilan penuh",
       moveLeft: "Pindahkan ke panel kiri",
       moveRight: "Pindahkan ke panel kanan",
+    },
+    floating: {
+      enter: "Jendela mengambang",
+      dock: "Sematkan ke samping",
+      close: "Tutup jendela mengambang",
+      handle: "Pindahkan jendela. Tombol panah memindahkannya; Shift dan tombol panah mengubah ukurannya.",
     },
     annotate: {
       countOne: "1 anotasi",
@@ -730,10 +746,14 @@ export const id = {
       "Menutup ini tidak menghentikan penyiapan. Hasilnya ditampilkan di Pengaturan > Keamanan.",
   },
   composerSettings: {
+    shareDraft: "Bagikan draf antarobrolan",
+    shareDraftDescription: "Gunakan satu draf untuk obrolan dan perbandingan. Nonaktif secara default; setiap obrolan menyimpan drafnya sendiri.",
     title: "Kolom pesan",
     plainText: "Kolom pesan teks biasa",
     plainTextDescription:
       "Pertahankan kode, Markdown, dan tautan sebagai teks literal. Nonaktifkan untuk menampilkan pratinjau berformat.",
+    richPaste: "Tempel teks berformat",
+    richPasteDescription: "Menempel tautan, tabel, dan format sebagai Markdown. {shortcut} menempel teks biasa. Composer teks kaya lengkap segera hadir.",
     showContext: "Penggunaan jendela konteks",
     sendShortcut: "Pintasan kirim",
     sendMultiline: "{mod} + Enter untuk prompt multibaris",
@@ -873,6 +893,9 @@ export const id = {
     unifiedTightFit: "Pas-pasan",
     unifiedTightFitHint:
       "Mungkin dimuat dengan konteks lebih pendek atau berjalan lebih lambat di Mac ini.",
+    residentToRun: "untuk menjalankan",
+    residentToRunHint:
+      "Memori GPU yang dibutuhkan pemeriksaan pemuatan saat berjalan",
     onDevice: "Di Perangkat",
     huggingFace: "Hugging Face",
     retry: "Coba lagi",
@@ -1007,7 +1030,7 @@ export const id = {
       showMore: "Tampilkan lebih banyak",
       showLess: "Tampilkan lebih sedikit",
       settings: "Pengaturan",
-      api: "API",
+      api: "Monitor API",
       lightMode: "Mode Terang",
       darkMode: "Mode Gelap",
       guidedTour: "Tur Terpandu",
@@ -1162,6 +1185,7 @@ export const id = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Tetapkan kata sandi pemilik instalasi sebelum menambahkan akun lain. Anda akan menggunakannya untuk masuk setelah instalasi ini memiliki beberapa akun.",
       signsInAs: "Masuk sebagai {username}",
       signsInAsOwner: "Masuk sebagai {alias} atau {username}",
       signInName: "Nama masuk Anda",
@@ -1193,6 +1217,9 @@ export const id = {
         "Satu model per baris, misalnya unsloth/Qwen3-4B-GGUF, atau unsloth/* untuk seluruh organisasi. Biarkan kosong untuk mengizinkan semua model.",
       modelAccessSave: "Simpan",
       modelAccessLimited: "Akses model terbatas",
+      rename: "Ganti nama",
+      renameTitle: "Ganti nama {username}",
+      renameDescription: "Pilih nama yang digunakan akun ini untuk masuk. Chat, file, dan kunci API tetap berada di akun ini. Pengguna akan dikeluarkan dan masuk lagi dengan nama baru serta kata sandi yang sekarang.",
       empty: "Belum ada akun lain",
       setupCode: "Kode penyiapan",
       setupFor: "Kode penyiapan untuk {username}",
@@ -1805,6 +1832,13 @@ export const id = {
         audioUploadCancel: "Batalkan transkripsi",
         audioUploadTranscribing: "Mentranskripsikan audio…",
         sectionTitle: "Dikte",
+        micTargetLabel: "Tombol mikrofon",
+        micTargetAsr: "Transkripsi dengan ASR",
+        micTargetModel: "Kirim audio ke model",
+        micTargetAsrDescription: "Tombol mikrofon mengetik ucapan Anda ke kotak pesan.",
+        micTargetModelDescription: "Saat model dengan input audio dimuat, mikrofon merekam klip dan melampirkannya ke pesan Anda. Model lain tetap menggunakan dikte.",
+        micTargetModelUnavailable: "Muat model yang menerima input audio (misalnya LFM3-Omni) untuk mengirim suara Anda.",
+        micRecordForModel: "Rekam audio untuk model",
         engineLabel: "Engine dikte",
         engineBrowser: "Browser",
         engineBrowserDescription:
@@ -1830,6 +1864,13 @@ export const id = {
         sttQuantDescription:
           "Pilih atau cari model STT untuk dijalankan secara lokal, lalu kuantisasinya.",
         sttDeviceLabel: "Muat ke",
+        sttContextLabel: "Konteks suara",
+        sttContextAuto: "Otomatis (disarankan)",
+        sttContextAutoDescription:
+          "Menyesuaikan dengan setiap rekaman, dengan lebih banyak memori untuk audio yang lebih panjang. Runtime lama mungkin memerlukan ukuran tetap untuk mengurangi memori. Berlaku untuk Qwen3-ASR di Suara dan Transkripsikan.",
+        sttContextFixedDescription:
+          "Batas yang lebih kecil menggunakan lebih sedikit memori. Rekaman yang tidak muat memerlukan batas lebih tinggi atau Otomatis. Berlaku untuk Qwen3-ASR di Suara dan Transkripsikan.",
+        sttContextTokens: "{count} token",
         sttDeviceAuto: "GPU jika tersedia",
         sttDeviceCpu: "RAM CPU",
         sttDeviceAutoDescription: "Gunakan GPU jika ada, dan CPU jika tidak.",
@@ -2038,6 +2079,26 @@ export const id = {
       chatDefaults: "Default chat",
       autoTitleNewChats: "Beri judul chat baru secara otomatis",
       autoTitleNewChatsDescription: "Buat judul dari pesan pertama.",
+      mlWarmup: {
+        sectionTitle: "Performa startup",
+        description: "Siapkan fitur yang dipilih agar lebih cepat saat pertama kali digunakan. Semua opsi nonaktif secara default. Mengaktifkannya dapat memuat dependensi bersama dan menambah penggunaan RAM saat tidak ada aktivitas.",
+        restartRequired: "Perubahan berlaku setelah Unsloth dimulai ulang.",
+        hardwareLabel: "Deteksi perangkat keras",
+        hardwareDescription: "Deteksi GPU dan siapkan PyTorch.",
+        textLabel: "Model teks",
+        textDescription: "Siapkan dukungan model teks Transformers.",
+        datasetsLabel: "Persiapan dataset",
+        datasetsDescription: "Siapkan Datasets dan dependensinya untuk pratinjau dan pemrosesan.",
+        mediaLabel: "Model gambar dan video",
+        mediaDescription: "Siapkan Diffusers dan dependensi yang digunakan bersama oleh model.",
+        advanced: "Lanjutan",
+        quantizationLabel: "Pemeriksaan awal kuantisasi gambar",
+        quantizationDescription: "Periksa dukungan sebelum pertama kali memuat model gambar terkuantisasi. Dapat meningkatkan penggunaan RAM untuk sementara.",
+        requiredBySelections: "Diperlukan oleh pilihan Anda.",
+        disabledByEnv: "Dinonaktifkan oleh UNSLOTH_STUDIO_DISABLE_TORCH_WARM di lingkungan backend.",
+        loadError: "Gagal memuat pengaturan persiapan saat startup.",
+        saveError: "Gagal menyimpan pengaturan persiapan saat startup.",
+      },
       helperLlm: {
         sectionTitle: "LLM Pembantu",
         preloadOnStartup: "Cache LLM Pembantu saat startup",
@@ -2102,6 +2163,7 @@ export const id = {
         loadError: "Gagal memuat pengaturan peralihan model otomatis.",
         saveError: "Gagal menyimpan pengaturan peralihan model otomatis.",
         idleError: "Masukkan 0 agar model tetap dimuat, atau minimal 60 detik.",
+        idleUnsaved: "Belum disimpan.",
         keepKv: "Pertahankan konteks chat saat model dilepas",
         keepKvDescription:
           "Simpan cache KV sebelum pelepasan karena tidak aktif, atau sebelum model gambar atau video mengambil alih GPU, agar chat yang dilanjutkan tidak perlu membaca ulang riwayat. Hingga 10 GB di disk.",
@@ -2256,6 +2318,12 @@ export const id = {
           "Memilih per mesin dan beralih ke HTTPS jika Xet macet atau gagal di sini.",
         autoCurrently: "Otomatis menggunakan {transport} di mesin ini.",
         xetMissing: "Xet tidak tersedia karena hf_xet tidak terinstal.",
+        speedLimit: "Batas kecepatan unduhan",
+        speedLimitDescription:
+          "Tanpa batas kecuali ada angka yang diatur. Unduhan yang dibatasi memakai HTTPS.",
+        speedLimitNoLimit: "Tanpa batas",
+        speedLimitInvalid: "Masukkan angka dalam Mbit/s, atau biarkan kolom kosong.",
+        speedLimitUsesHttps: "Unduhan menggunakan HTTPS selama batas kecepatan diatur. File di atas 50 GB tetap menggunakan Xet, tanpa batas.",
       },
       uploads: {
         sectionTitle: "Unggahan",
@@ -2546,6 +2614,9 @@ export const id = {
         standard: "Standar",
         moreThemes: "Tema lainnya",
       },
+      composer: {
+        title: "Penyusun pesan",
+      },
       code: {
         title: "Kode",
         fontDescription: "Blok kode di chat, pratinjau file, dan contoh API.",
@@ -2646,6 +2717,10 @@ export const id = {
         contrast: {
           label: "Kontras",
         },
+        elementOutline: {
+          label: "Garis tepi elemen",
+          description: "Kekuatan garis tepi tombol, kolom, kartu, dan menu.",
+        },
         reduceMotion: {
           label: "Kurangi gerakan",
           description: "Kurangi animasi atau ikuti sistem Anda.",
@@ -2706,7 +2781,22 @@ export const id = {
           "Lihat apa yang dikirim aplikasi lain ke API server ini saat tiba.",
         summary: "Permintaan, kesalahan, dan penggunaan token secara langsung",
         status: "{active} aktif · {recent} terbaru · {model}",
-        noModelLoaded: "tidak ada model yang dimuat",
+        noModelLoaded: "Tidak ada model yang dimuat",
+        memory: "Memori",
+        gpuInUse: "GPU terpakai",
+        availableForModels: "Tersedia untuk model",
+        refreshRate: "Laju penyegaran",
+        refreshRateDescription: "Seberapa sering monitor mengambang membaca penggunaan memori dan GPU saat terbuka.",
+        refreshEvery: "Setiap {seconds} dtk",
+        unsloth: "Unsloth",
+        otherApps: "Aplikasi lain",
+        otherInUse: "Penggunaan lain",
+        freeLabel: "Kosong",
+        unslothApp: "Aplikasi Unsloth",
+        unslothShare: "Tampilkan bagian Unsloth",
+        unslothShareDescription: "Bagi memori menjadi yang dipakai Unsloth, yang dipakai aplikasi lain, dan yang kosong.",
+        modelBreakdown: "Rinci per model",
+        modelBreakdownDescription: "Bagi bagian Unsloth di bilah memori menjadi tiap model yang dimuat dan sisa aplikasi.",
         autoOpen: "Pemantau mengambang terbuka otomatis",
         autoOpenDescription: "Membuka panel kecil saat ada lalu lintas API.",
         cpu: "CPU",
@@ -2723,8 +2813,7 @@ export const id = {
           "Terdeteksi, tetapi PyTorch tidak dapat menggunakannya",
         detailedView: "Tampilan terperinci",
         detailedViewDescription:
-          "Tampilkan beban CPU serta beban, suhu, dan daya setiap GPU di jendela mengambang.",
-        cpuLoad: "Beban CPU",
+          "Tampilkan beban, suhu, dan daya setiap GPU di jendela mengambang.",
         gpuLoad: "Beban GPU",
         temperature: "Suhu",
         power: "Daya",
@@ -2741,7 +2830,7 @@ export const id = {
         detecting: "Memeriksa GPU...",
         unreadable: "Tidak dapat membaca perangkat keras server ini.",
         noGpu:
-          "Tidak ada GPU yang terdeteksi. Sumber daya khusus CPU ditampilkan di atas.",
+          "Tidak ada GPU khusus yang terdeteksi.",
         noUsableGpu:
           "Tidak ada GPU di mesin ini yang dapat digunakan oleh PyTorch.",
         mismatchCpuBuild:
@@ -2830,7 +2919,7 @@ export const id = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary inferensi akselerator alihkan kustom jalur direktori",
       },
       modelMemory: {
-        title: "Memori model",
+        title: "Pemuatan model",
         keepResident: "Simpan model di memori GPU",
         keepResidentDescription: "Tetap di VRAM di antara prompt.",
         keepResidentHint:
@@ -3029,7 +3118,7 @@ export const id = {
       configurationDocs: "dokumentasi",
       configurationFlagsSuffix: "untuk flag.",
       modelNote:
-        "Codex memerlukan model GGUF yang dilayani oleh llama-server. Agen lain juga dapat menggunakan model berbasis transformer; hapus --model untuk menggunakan model yang sudah dimuat di Unsloth.",
+        "Claude Code dan Codex memerlukan model GGUF yang dilayani oleh llama-server, atau model MLX. Agen lain juga dapat menggunakan model berbasis transformer; hapus --model untuk menggunakan model yang sudah dimuat di Unsloth.",
       subagent: {
         title: "Gunakan model lokal sebagai subagen",
         description:
@@ -3103,6 +3192,8 @@ export const id = {
     },
     chat: {
       groups: {
+        replies: { title: "Balasan" },
+        thinkingTools: { title: "Penalaran dan alat" },
         conversations: {
           title: "Percakapan",
         },
@@ -3191,6 +3282,8 @@ export const id = {
         "Notifikasi diblokir. Izinkan notifikasi untuk Unsloth di pengaturan browser atau sistem Anda, lalu coba lagi.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound notifikasi pemberitahuan selesai balasan latar belakang suara",
+      showLinkPreviews: "Pratinjau tautan",
+      showLinkPreviewsDescription: "Tampilkan pratinjau saat mengarahkan kursor ke tautan sumber.",
       showResponseModel: "Model respons",
       showResponseModelDescription:
         "Tampilkan detail model di respons asisten.",
@@ -3199,19 +3292,27 @@ export const id = {
         "Tampilkan kapan setiap balasan selesai, di bawah balasan.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message waktu jam tanggal balasan pesan",
-      showGenerationDetails: "Detail pembuatan",
+      showGenerationDetails: "Info kecepatan terperinci",
       showGenerationDetailsDescription:
-        "Tampilkan kecepatan prompt dan balasan secara langsung beserta jumlah token, serta tempat lapisan model dimuat.",
+        "Menambahkan kecepatan membaca prompt, jumlah token, dan penerimaan draf ke tampilan langsung.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts statistik kecepatan lapisan",
+        "verbose developer stats speed tok/s prefill decode statistik kecepatan",
+      generationStatsUpdates: "Statistik kecepatan dan konteks",
+      generationStatsUpdatesDescription:
+        "Waktu nyata menghitung token per detik dan penggunaan konteks saat balasan sedang dialirkan. Setelah selesai memperbaruinya saat setiap balasan selesai.",
+      generationStatsUpdatesHint:
+        "Waktu nyata menyegarkan penunjuk token per detik di bawah balasan dan bilah konteks di atas chat beberapa kali per detik saat balasan ditulis. Setelah selesai memperbaruinya sekali, setelah setiap balasan selesai. Waktu nyata dapat menyebabkan lag atau kinerja lebih lambat, terutama pada perangkat lama atau sibuk.",
+      generationStatsUpdatesSettled: "Setelah selesai",
+      generationStatsUpdatesRealtime: "Waktu nyata",
+      generationStatsUpdatesKeywords:
+        "waktu nyata langsung perbarui kecepatan konteks statistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edit respons pada respons",
       inlineEditResponseDescription:
         "Tampilkan Edit respons di setiap respons, alih-alih di menu Lainnya.",
       turnNavigation: "Navigasi giliran",
       turnNavigationDescription: "Tampilkan prompt Anda sebagai bilah di tepi kiri chat panjang. Arahkan kursor untuk pratinjau giliran, klik untuk melompat ke sana, dan tandai giliran agar mudah ditemukan lagi.",
-      composerAtBottom: "Kolom pesan di bagian bawah",
-      composerAtBottomDescription:
-        "Mulai chat baru dengan kolom pesan di bagian bawah halaman, bukan di tengah.",
+      composerPosition: "Posisi kolom pesan",
+      composerPositionDescription: "Letak kolom pesan saat memulai chat baru, dari atas halaman hingga ke bawah.",
       projectAttachments: "Bagikan file di seluruh proyek",
       projectAttachmentsDescription:
         "Jadikan lampiran chat baru tersedia untuk setiap chat dalam proyek.",
@@ -3354,12 +3455,10 @@ export const id = {
       exportingAction: "Mengekspor...",
       exportConversations: "Ekspor Terbaru dan Proyek",
       exportConversationsDescription:
-        "Unduh Terbaru atau Terbaru beserta chat proyek sebagai Training JSONL, CSV, ShareGPT JSONL, atau Markdown, digabung atau per chat. Message JSONL tersedia per chat.",
+        "Unduh Terbaru atau Terbaru beserta chat proyek sebagai Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML, atau PDF, digabung atau per chat. Message JSONL tersedia per chat.",
       exportConversationsAction: "Ekspor",
       exportScopeRecents: "Terbaru",
       exportScopeAll: "Terbaru + Proyek",
-      exportCombinedSuffix: "(digabung)",
-      exportPerChatSuffix: "(setiap chat)",
       importChats: "Impor chat",
       importChatsDescription:
         "Impor file JSON, JSONL, NDJSON, CSV, atau Markdown ke Terbaru.",
@@ -3724,6 +3823,9 @@ export const id = {
         docsLabel: "Buka dokumentasi API Keputusan",
         description:
           "Jawab pertanyaan ya/tidak, pilihan ganda, dan skor tentang teks dengan model di mesin ini atau model keputusan dari Koneksi. Berfungsi dengan SDK TypeSafe.",
+        codeTitle: "Panggil dari kode",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Klien MCP lain terhubung ke sini dengan token yang sama.",
         enable: "Layani permintaan",
         enableDescription:
           "Melayani /v1/systemone. Mengaktifkannya akan mengunduh model.",
@@ -3781,7 +3883,7 @@ export const id = {
       mcp: {
         title: "Akses agen (MCP)",
         description:
-          "Izinkan agen coding seperti Claude Code dan Codex menggunakan Unsloth melalui MCP. Agen masuk dengan kunci API Unsloth dari halaman ini.",
+          "Izinkan agen coding seperti Claude Code dan Codex menggunakan Unsloth melalui MCP.",
         enable: "Izinkan koneksi agen",
         enableDescription:
           "Melayani /mcp/ untuk permintaan yang membawa kunci API Unsloth.",
@@ -3790,10 +3892,93 @@ export const id = {
         saveError: "Tidak dapat menyimpan pengaturan akses agen.",
         agent: "Agen",
         exportKeyHint:
-          "Atur {name} ke kunci API Unsloth dari halaman ini sebelum Anda memulai agen.",
+          "Atur {name} ke kunci API Unsloth sebelum Anda memulai agen.",
         configFileHint: "Tambahkan ini ke {path}.",
         keywords:
           "mcp model context protocol agents claude codex tools agen alat",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "Agen masuk dengan kunci API Unsloth.",
+      createKey: "Buat kunci API",
+      tools: {
+        title: "Alat",
+        count: "{on} dari {total} aktif",
+        choose: "Pilih alat",
+        dialogTitle: "Alat Unsloth MCP",
+        allTools: "Semua alat",
+        selectAll: "Pilih semua",
+        selectNone: "Jangan pilih apa pun",
+        description:
+          "Setiap alat yang aktif menambah apa yang dibaca agen sebelum mulai, jadi nonaktifkan yang tidak Anda perlukan. Agen tidak pernah melihat alat yang nonaktif, dan panggilan ke alat itu ditolak. Agen yang sudah terhubung melihat perubahannya saat terhubung ulang.",
+        saveError: "Tidak dapat menyimpan pengaturan alat Unsloth MCP.",
+        chatNote: "Chat tidak pernah mendapatkan {tools}.",
+        groups: {
+          models: "Model",
+          generate: "Hasilkan",
+          training: "Pelatihan dan ekspor",
+          library: "Data dan pustaka",
+          jobs: "Tugas",
+          other: "Lainnya",
+        },
+      },
+      status: {
+        on: "Aktif",
+        off: "Nonaktif",
+      },
+      apiKeysRow: {
+        open: "Buka di Agen",
+      },
+      toolLabels: {
+        studioStatus: "Status",
+        listModels: "Daftar model",
+        loadModel: "Muat model",
+        unloadModel: "Lepas model",
+        planLoad: "Rencanakan pemuatan",
+        downloadModel: "Unduh model",
+        chat: "Chat",
+        embed: "Sematkan teks",
+        systemOne: "Model keputusan",
+        generateImage: "Hasilkan gambar",
+        generateAudio: "Hasilkan audio",
+        transcribe: "Transkripsikan",
+        analyzeAudio: "Analisis audio",
+        generateVideo: "Hasilkan video",
+        runRecipe: "Jalankan Data Recipe",
+        getJob: "Status tugas",
+        datasets: "Dataset",
+        startTraining: "Mulai pelatihan",
+        listTrainingRuns: "Riwayat pelatihan",
+        exportModel: "Ekspor model",
+        listMedia: "Media tersimpan",
+        voices: "Suara",
+        cancel: "Batalkan pekerjaan",
+      },
+      toolDescriptions: {
+        studioStatus: "Lihat apa yang dimuat, berjalan, dan kosong di komputer ini.",
+        listModels: "Tampilkan model yang bisa dimuat agen.",
+        loadModel: "Muat model agar agen bisa chat atau membuat konten dengannya.",
+        unloadModel: "Lepas model untuk mengosongkan memori.",
+        planLoad: "Lihat ukuran unduhan dan memori sebelum memuat.",
+        downloadModel: "Unduh model dari Hugging Face.",
+        chat: "Chat dengan model yang dimuat.",
+        embed: "Ubah teks menjadi vektor, atau urutkan teks berdasarkan kemiripan.",
+        systemOne: "Ajukan pertanyaan ya/tidak, pilihan, atau skor ke model keputusan.",
+        generateImage: "Buat gambar dan simpan ke galeri.",
+        generateAudio: "Buat suara atau audio lain.",
+        transcribe: "Ubah ucapan menjadi teks.",
+        analyzeAudio: "Periksa pembicara, waktu, dan kecocokan klip dengan naskah.",
+        generateVideo: "Buat video.",
+        runRecipe: "Jalankan Data Recipe untuk membuat dataset.",
+        getJob: "Ikuti pekerjaan panjang sampai selesai.",
+        datasets: "Tampilkan dan unggah dataset.",
+        startTraining: "Mulai fine-tuning.",
+        listTrainingRuns: "Tampilkan proses pelatihan dan hasilnya.",
+        exportModel: "Ekspor model terlatih, misalnya ke GGUF.",
+        listMedia: "Jelajahi gambar, audio, dan video yang tersimpan.",
+        voices: "Tampilkan, simpan, ganti nama, atau hapus suara.",
+        cancel: "Hentikan pekerjaan yang berjalan, seperti pelatihan atau ekspor.",
       },
     },
     about: {
@@ -3884,7 +4069,7 @@ export const id = {
         desktopAvailableDescription:
           "Perbarui sekarang dan aplikasi desktop akan dimulai ulang setelah selesai.",
         desktopExternalServer:
-          "Aplikasi terhubung ke server Unsloth yang sudah berjalan dan tidak dapat memperbaruinya. Hentikan server tersebut, lalu tutup dan buka kembali aplikasi desktop untuk memperbarui.",
+          "Terhubung ke server Unsloth di port {port} yang tidak dijalankan oleh aplikasi ini, seperti `unsloth studio` di terminal. Hentikan server itu di tempat ia dijalankan, lalu tutup dan buka kembali aplikasi untuk memperbarui.",
         desktopManualInstall:
           "Buka halaman rilis untuk menginstal paket Linux terbaru.",
         desktopCheckFailed: "Tidak dapat memeriksa pembaruan",
@@ -4198,7 +4383,6 @@ export const id = {
             "Dataset ini tampaknya berupa gambar, yang tidak dapat di-streaming.",
           audioDataset:
             "Dataset ini tampaknya berupa audio, yang tidak dapat di-streaming.",
-          appleSilicon: "Streaming belum didukung di Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "hanya completion asisten",
@@ -5463,6 +5647,8 @@ export const id = {
     removeLevel: "Hapus tingkat {n}",
     addLevel: "Tambah tingkat",
     jsonHelp: "Isi permintaan. Jalankan akan mengirimnya apa adanya.",
+    copyBody: "Salin body",
+    copyCurl: "Salin sebagai cURL",
     examples: "Contoh",
     presetToolApproval: "Setujui panggilan alat agen",
     presetPromptInjection: "Deteksi injeksi prompt",
@@ -5524,6 +5710,7 @@ export const id = {
     monitor: {
       dragHandleLabel:
         "Pindahkan pemantau langsung. Tombol panah menggesernya sedikit, klik dua kali untuk mengatur ulang.",
+      resizeHint: "Seret sisi atau sudut untuk mengubah lebar. Klik dua kali untuk mengatur ulang.",
       reconnecting: "Menyambungkan kembali...",
     },
   },
@@ -5839,8 +6026,7 @@ export const id = {
     skippedVersion: "{component} {version} dilewati untuk saat ini",
     skippedUpdate: "Pembaruan {component} dilewati untuk saat ini",
     skippedUpdates: "Pembaruan {components} dilewati untuk saat ini",
-    vulkanFaster:
-      "Vulkan >10% lebih cepat daripada ROCM. Tidak perlu memulai ulang",
+    vulkanFaster: "Lebih dari 10% lebih cepat",
     noRestart: "Tidak perlu memulai ulang",
     downloadSize: "Unduhan {size}",
     backendChange: "Backend {change}",
@@ -5849,8 +6035,8 @@ export const id = {
     installingPhase: "Menginstal {component} ({current} dari {total})...",
     installingCount: "Menginstal {count} pembaruan...",
     bundleTitle: "{count} pembaruan runtime",
-    newBackend: "Backend {component} baru",
-    newUpdate: "Pembaruan {component} baru",
+    newBackend: "Backend runtime baru",
+    newUpdate: "Pembaruan runtime baru",
     hideUpdate:
       "Sembunyikan pembaruan {component} hingga Unsloth dibuka kembali",
     hideUpdates:
@@ -5860,5 +6046,61 @@ export const id = {
     later: "Nanti",
     update: "Perbarui",
     undo: "Urungkan",
+  },
+  generationStats: {
+    working: "Memproses...",
+    processingPrompt: "Memproses prompt {percent}%",
+    compactingContext: "Memadatkan konteks...",
+    timeLeft: "{eta} lagi",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "draf {accepted}/{drafted} diterima ({percent}%)",
+    timing: {
+      trigger: "Waktu pesan",
+      firstToken: "Token pertama",
+      speedInStep: "Kecepatan (dalam langkah)",
+      effective: "Efektif",
+      output: "Output",
+      denoising: "Denoising",
+      stepsOne: "{count} langkah",
+      steps: "{count} langkah",
+      blocksOne: "{count} blok",
+      blocks: "{count} blok",
+      canvas: "Kanvas",
+      generation: "Pembuatan",
+      answerTokens: "Token jawaban",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Potongan",
+      promptEval: "Evaluasi prompt",
+      promptSpeed: "Kecepatan prompt",
+      speed: "Kecepatan",
+      tokens: "Token",
+      draftAccepted: "Draf diterima",
+      denoisingSteps: "Langkah denoising",
+      blocksLabel: "Blok",
+      cacheHits: "Cache hit",
+      cacheWrites: "Penulisan cache",
+      stopReason: "Alasan berhenti",
+      stoppedByYou: "Dihentikan oleh Anda",
+      endOfTurn: "Akhir giliran",
+      lengthLimit: "Batas panjang",
+      toolCall: "Panggilan alat",
+      contentFilter: "Filter konten",
+    },
+    placement: {
+      title: "Penempatan bobot",
+      allOnCpu: "Semua {total} lapisan di CPU",
+      split: "{gpu} dari {total} lapisan di GPU, {cpu} di CPU",
+      allOnGpu: "Semua {total} lapisan di GPU",
+      expertCache: "Semua {total} lapisan di GPU, semua expert di RAM (cache expert {amount} di GPU)",
+      expertSpillOne: "Semua {total} lapisan di GPU, bobot expert dari {count} lapisan di RAM",
+      expertSpill: "Semua {total} lapisan di GPU, bobot expert dari {count} lapisan di RAM",
+      inUnifiedMemory: "{amount} di memori terpadu",
+      inSharedMemory: "{amount} di memori bersama",
+      inVram: "{amount} di VRAM",
+      inRam: "{amount} di RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

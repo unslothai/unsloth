@@ -435,10 +435,7 @@ _PRERELEASE_ORDER = {
 
 
 def _prerelease_key(version: str) -> tuple[int, int]:
-    """How a version's prerelease suffix sorts: the release itself is above every one.
-
-    Reading the suffix's digits as another component put `0.12.0rc1` above `0.12.0`, so a floor the
-    cell upgrades past looked already met."""
+    """Prerelease sorts below its release; its suffix digits must not count as an extra component."""
     core, is_pre = _split_prerelease(version)
     if not is_pre:
         return (len(_PRERELEASE_ORDER) + 1, 0)
@@ -1289,10 +1286,7 @@ def _fold_and_or(assured: list[bool], prev_ops: list[str], piece_is_pip: bool) -
 
 
 def _fold_status(left: bool | None, op: str, right: bool | None) -> bool | None:
-    """The exit status of `left OP right`, or None when it cannot be known.
-
-    Left-associative: the left operand of `a || b && c` is the whole `(a || b)` list, and its
-    folded status, not the piece nearest the operator, decides whether `c` runs."""
+    """Exit status of left OP right; operators are left-associative, so the folded left list decides."""
     if op == "&&":
         if left is None:
             return False if right is False else None  # `? && false` fails either way
@@ -1310,10 +1304,7 @@ def _left_hand_status(
     notebook_bang: bool = True,
     spoken_for: bool = False,
 ) -> bool | None:
-    """Fold the piece in hand into its level's running status and return the result.
-
-    Called at each `&&`/`||` so the operator sees the status of everything to its left, not just
-    the piece beside it."""
+    """Folds the piece into the level's running status, so each operator sees everything to its left."""
     if spoken_for or not _unwrap_shell_group(pending)[0].strip():
         # A group just closed; the level already carries its status.
         return models[-1]
@@ -1345,10 +1336,7 @@ def _for_list_is_nonempty(text: str) -> bool:
 
 
 def _word_may_vanish(word: str) -> bool:
-    """Could this loop word expand to something other than itself, nothing included?
-
-    Single quotes make every character literal; double quotes still expand `$` and a backquote but
-    never a glob. Only what is left unquoted can be a glob."""
+    """Can this word expand, given quotes? Only unquoted text can glob; double quotes still expand $."""
     i = 0
     while i < len(word):
         ch = word[i]
@@ -1368,11 +1356,7 @@ def _word_may_vanish(word: str) -> bool:
 
 
 def _invoked_name(piece: str) -> str:
-    """The word this piece runs, read WITHOUT stripping execution prefixes.
-
-    `env f`, `nohup f` and `command f` look for an executable named f, so none reaches a shell
-    function and stripping them made every wrapper look like a call. Brackets, a function header
-    and the body keywords do come off: they precede the command rather than replace it."""
+    """Word a piece runs, keeping env/nohup/command prefixes: they look up executables, not functions."""
     text = piece.lstrip("!").strip()
     while text[:1] in ("(", "{"):
         text = text[1:].lstrip()
@@ -1394,10 +1378,7 @@ def _invoked_name(piece: str) -> str:
 
 
 def _behind_keywords(text: str) -> str:
-    """`then f(` -> `f(`. The words a compound statement opens with are not the command.
-
-    A definition can sit behind them, and `then f` matched no header, so the body was tracked as a
-    plain group."""
+    """Strip compound-statement keywords like then so a function definition behind them is still seen."""
     text = text.lstrip("!").strip().lstrip("({").lstrip()
     while True:
         parts = text.split(maxsplit = 1)
@@ -1518,8 +1499,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf.append(line[i + 1])
             i += 2
         elif ch == "`" and quote != "'":
-            # Backticks expand inside double quotes as well, so this is checked before the
-            # quote branch; only single quotes make them literal.
+            # Backticks expand in double quotes too, so check them before the quote branch.
             in_backtick = not in_backtick
             buf.append(ch)
             i += 1
@@ -2367,9 +2347,7 @@ def _install_cell_lower_bound(
 
 
 def _compatible_release_ceiling(version: str) -> str | None:
-    """The exclusive ceiling `~=version` implies: `~=2.10.0` allows `<2.11`, `~=2.10` `<3`.
-
-    PEP 440 drops the last component and increments what is then last."""
+    """Upper bound of ~=version: drop the last component and increment what remains (PEP 440)."""
     parts = normalise_version(version).split(".")
     if len(parts) < 2:
         return None
@@ -2414,10 +2392,7 @@ def _archive_requirement(argument: str) -> tuple[str, str | None] | None:
 
 
 def cmp_releases(a: str, b: str) -> int:
-    """`cmp_versions` with the release segments padded, as PEP 440 compares them.
-
-    Stopping at the shorter tuple reads `0.11.0` as above `0.11`, which is harmless for ordering
-    and wrong wherever the question is whether two spellings name the same release."""
+    """Pads release segments as PEP 440 does, so 0.11.0 equals 0.11 rather than sorting above it."""
     left = [int(part) for part in re.findall(r"\d+", normalise_version(a))]
     right = [int(part) for part in re.findall(r"\d+", normalise_version(b))]
     width = max(len(left), len(right))
@@ -2427,10 +2402,7 @@ def cmp_releases(a: str, b: str) -> int:
 
 
 def _exclusion_covers_minor(version: str, exclusion: str) -> bool:
-    """True when `!=exclusion` rules out every release in `version`'s minor.
-
-    Only a wildcard can: `!=0.11.*` takes the whole 0.11 line, while `!=0.11` and `!=0.11.1.*` each
-    remove one release or one patch line and leave the minor reachable."""
+    """Only a wildcard exclusion like !=0.11.* rules out a whole minor; !=0.11 or !=0.11.1.* do not."""
     wanted = normalise_version(exclusion).split(".")
     if not wanted or wanted[-1] != "*":
         return False
@@ -2516,10 +2488,7 @@ def _is_dry_run(inv: "PipInvocation") -> bool:
 
 
 def _forces_resolution(flags: set[str]) -> bool:
-    """True when any flag makes pip re-resolve rather than keep what is installed.
-
-    Short options bundle: pip takes `-Uq` and parse_pip_line keeps it as one token, so the letters
-    are compared rather than the token."""
+    """Any flag that forces pip to re-resolve; short options bundle (-Uq), so compare letters."""
     if flags & _RESOLVE_ANYWAY_LONG:
         return True
     return any(

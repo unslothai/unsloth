@@ -13,19 +13,21 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { useIsAccountOwner } from "@/features/auth";
-import { useChatSearchStore } from "@/features/chat";
+import { useChatSearchStore } from "@/features/chat/stores/chat-search-store";
+import { DIALOG_SETTINGS_SEARCH_INDEX } from "@/features/settings/dialog-search-index";
 import {
-  DIALOG_SETTINGS_SEARCH_INDEX,
   SETTINGS_TABS,
   type SettingsTab,
-  type ShortcutId,
-  settingsTabVisible,
-  triggerShortcut,
   useSettingsDialogStore,
+} from "@/features/settings/stores/settings-dialog-store";
+import type { ShortcutId } from "@/features/settings/lib/keyboard-shortcuts";
+import { settingsTabVisible } from "@/features/settings/settings-tab-visibility";
+import {
+  triggerShortcut,
   useShortcut,
   useShortcutAvailable,
   useShortcutLabel,
-} from "@/features/settings";
+} from "@/features/settings/hooks/use-shortcut";
 import { useT, type TranslationKey } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useCommandPaletteStore } from "@/stores/command-palette";

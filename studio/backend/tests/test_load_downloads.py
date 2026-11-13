@@ -167,6 +167,10 @@ def test_the_worker_reports_the_repos_a_lora_load_fetches(monkeypatch):
     loader_utils.get_model_name = (
         lambda name, load_in_4bit = True: "unsloth/base-bnb-4bit" if load_in_4bit else name
     )
+    loader_utils.FLOAT_TO_INT_MAPPER = {"owner/base": "unsloth/base-bnb-4bit"}
+    loader_utils.INT_TO_FLOAT_MAPPER = {}
+    loader_utils.MAP_TO_UNSLOTH_16bit = {}
+    loader_utils.BAD_MAPPINGS = {}
     loader = types.ModuleType("unsloth.models.loader")
     loader.ALLOW_PREQUANTIZED_MODELS = True
     loader.ALLOW_BITSANDBYTES = True

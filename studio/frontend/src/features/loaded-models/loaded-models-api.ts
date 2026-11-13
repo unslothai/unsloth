@@ -5,15 +5,12 @@
 // imported directly because their indexes re-export pages kept out of the eager bundle.
 
 import { authFetch, isAccountOwner } from "@/features/auth";
-import {
-  confirmStopRunningChatsIfNeeded,
-  getInferenceStatus,
-  isExternalModelId,
-  requestScopedLocalPromptQueueStop,
-  resolveInferenceCheckpointId,
-  unloadModel,
-  useChatRuntimeStore,
-} from "@/features/chat";
+import { confirmStopRunningChatsIfNeeded } from "@/features/chat/utils/confirm-stop-running-chats";
+import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
+import { isExternalModelId } from "@/features/chat/external-providers";
+import { requestScopedLocalPromptQueueStop } from "@/features/chat/utils/prompt-queue-boundary";
+import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import {
@@ -40,6 +37,7 @@ import {
   mergeLoadedModels,
   sttEngineStatus,
   verifyResident,
+  withServingResident,
 } from "./loaded-models-sources";
 
 type InferenceStatus = NonNullable<
@@ -48,8 +46,10 @@ type InferenceStatus = NonNullable<
 
 async function readInferenceStatus(
   signal?: AbortSignal,
+  model?: string,
 ): Promise<InferenceStatus | null> {
-  const response = await authFetch("/api/inference/status", { signal });
+  const query = model ? `?model=${encodeURIComponent(model)}` : "";
+  const response = await authFetch(`/api/inference/status${query}`, { signal });
   if (!response.ok) return null;
   return (await response.json()) as InferenceStatus;
 }
@@ -123,7 +123,7 @@ export async function readLoadedModels(
 ): Promise<LoadedModelsRead> {
   const owner = isAccountOwner();
   const [inference, diffusion, video, stt, embedding] = await Promise.all([
-    settled(readInferenceStatus),
+    settled((signal) => readInferenceStatus(signal)),
     settled(getDiffusionStatus),
     settled(getVideoStatus),
     settled(readSttStatus),
@@ -141,8 +141,21 @@ export async function readLoadedModels(
     unreadable.push(source);
     return kept(source);
   };
+  // /status sizes only the primary slot; each kept model is asked for on its own.
+  const chat = await Promise.all(
+    group("chat", inference, describeInferenceStatus).map(async (entry) =>
+      entry.servingCheckpoint
+        ? withServingResident(
+            entry,
+            await settled((signal) =>
+              readInferenceStatus(signal, entry.servingCheckpoint),
+            ),
+          )
+        : entry,
+    ),
+  );
   const entries = mergeLoadedModels([
-    group("chat", inference, describeInferenceStatus),
+    chat,
     group("image", diffusion, describeDiffusionStatus),
     group("video", video, describeVideoStatus),
     group("stt", stt, describeSttStatus),
