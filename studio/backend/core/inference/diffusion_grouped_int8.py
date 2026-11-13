@@ -13,12 +13,10 @@ Storage of one Linear ``L`` (``N`` outputs, ``K`` inputs, ``b`` = 4 or 6 bits, g
 - ``L.weight_codebook`` float32 ``[16]``, 4-bit only and optional: the level of each code. Without it a 4-bit code
   ``c`` means ``c - 8`` and a 6-bit code ``c - 32``.
 - ``L.comfy_quant``: JSON ``{"format": "asym_w4a8_int8" | "w6a8_int8", "group_size": g, "convrot": true,
-  "convrot_groupsize": 256}`` (``group_size`` defaults to 16, the rotation group to 256; the rotation is always on).
+  "convrot_groupsize": 256}`` (defaults 16 / 256; the rotation is always on).
 
-Decode: ``q8 = clamp(rint(level(code) * s_rel), -127, 127)`` as int8, rounded in float32 (half to even). The weight in
-the rotated basis is ``q8 * s_channel`` and the original weight is that times ``blockdiag(H)`` (``H`` the normalized
-regular Hadamard of ConvRot), so once ``q8`` is formed a layer is exactly an int8 ConvRot layer with a per-row scale:
-every int8 runtime and the dense fallback serve it unchanged. The GEMM runs on ``q8`` with int8 activations.
+Decode: ``q8 = clamp(rint(level(code) * s_rel), -127, 127)`` int8, rounded in float32 (half to even); a layer is then
+exactly an int8 ConvRot layer with a per-row scale, so every int8 runtime and the dense fallback serve it unchanged.
 """
 
 from __future__ import annotations
@@ -33,7 +31,6 @@ DEFAULT_GROUP = 16
 DEFAULT_ROTATION = 256
 GROUPED_SUFFIXES = (".weight_s_rel", ".weight_s_channel", ".weight_codebook")
 _E4M3_MAX = 448.0
-# Weights per decode chunk: bounds the int32 / float32 temporaries of the torch decode (about 20 bytes per weight).
 _DECODE_CHUNK_ELEMS = 1 << 22
 _DECODE_SCRATCH_BYTES = 24
 
@@ -229,11 +226,6 @@ def dequant_grouped(
     return (w.reshape(rows, k // rotation, rotation) @ h).reshape(rows, k).to(dtype)
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# Round-to-nearest writer: the stored layout above, from a floating weight.
-# ---------------------------------------------------------------------------------------------------------------
-
-
 def _nearest_grid(target: Any, lo_level: int, hi_level: int, table: Any, s_rel32: Any) -> Any:
     """Per weight, the code whose decoded int8 value is nearest ``target`` (``W_rot / s_channel``), for a uniform
     level table (``table[c] = c - offset``): round, then check both neighbours on the decoded grid."""
@@ -306,11 +298,8 @@ def quantize_grouped(
     rotation: int = DEFAULT_ROTATION,
     codebook: Any = None,
 ) -> dict:
-    """Round-to-nearest W4A8 / W6A8 storage of a floating ``[N, K]`` weight: rotate by ConvRot, one step per group
-    from its absolute max, the channel scale from the reconstructed row max, fp8 steps, then each code the nearest
-    level on the decoded int8 grid. ``codebook`` (4-bit only): 16 sorted levels in [-1, 1] the group max scales;
-    without it 4-bit codes are uniform (-8..7, step ``max / 7``). Returns the state-dict tensors by suffix
-    (``""`` is the packed weight)."""
+    """Round-to-nearest W4A8 / W6A8 storage of a floating ``[N, K]`` weight, each code the nearest level on the
+    decoded int8 grid. ``codebook`` (4-bit only): 16 sorted levels in [-1, 1]. Returns tensors by suffix."""
     import torch
 
     from .diffusion_convrot import build_convrot_hadamard
@@ -379,24 +368,14 @@ def declaration_tensor(conf: dict) -> Any:
     return torch.tensor(list(json.dumps(conf).encode("utf-8")), dtype = torch.uint8)
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# Resident packed tier: the codes stay packed on the device, each forward decodes them to the int8 grid and runs
-# the int8 GEMM (int8 activations), or widens them for a dense GEMM, whichever the per-shape race found faster.
-# ---------------------------------------------------------------------------------------------------------------
-
 import os  # noqa: E402
 import threading  # noqa: E402
 
-# Keep W4A8 / W6A8 codes packed on the device. ``auto`` (unset): a video denoiser on a CUDA / ROCm target whose int8
-# runtime runs, an image denoiser only where its placement is memory tight (the plan streams / offloads it); every other
-# image load decodes the file to int8 at load (the smaller download, INT8 speed). ``1``: packed on any device (a CPU /
-# MPS forward widens per layer); ``0``: decode to int8 at load (int8 bytes resident).
+# Keep codes packed on device: unset = auto (``grouped_packed_choice``), ``1`` = any device, ``0`` = decode to int8 at load.
 GROUPED_PACKED_ENV = "UNSLOTH_DIFFUSION_GROUPED_PACKED"
-# GEMM of a packed layer: ``auto`` races the int8 GEMM against the dense widen per shape; ``1`` always the int8
-# GEMM; ``0`` always the dense widen (the kill switch).
+# unset = race int8 vs dense widen per shape, ``1`` = int8 GEMM, ``0`` = dense widen (kill switch).
 GROUPED_GEMM_ENV = "UNSLOTH_DIFFUSION_GROUPED_INT8_GEMM"
 GROUPED_PACKED_ATTR = "_unsloth_grouped_packed"
-# Which form a load gave its W4A8 / W6A8 layers, and why (``grouped_form_status``).
 GROUPED_FORM_ATTR = "_unsloth_grouped_form"
 _OFF = ("0", "off", "false", "no")
 _ON = ("1", "on", "true", "yes", "force")
@@ -406,11 +385,9 @@ _RACE_LOCK = threading.Lock()
 # (device, N, K, bits, rows bucket) -> "int8" | "dense"
 _RACE: dict = {}
 _CALLS = {"int8": 0, "int8r": 0, "fused": 0, "dense": 0}
-# card index -> whether Studio's tuned int8 GEMM op runs there (probed once, in eager)
 _TUNED: dict = {}
-# card index -> whether the fused ConvRot rotation + act quant kernel passed its bit-exact probe there
 _ROTQ: dict = {}
-# card index -> the fused unpack-in-mainloop GEMM's tile there, None = not covered (probed once, in eager)
+# per-card probes, decided once in eager (a compiled forward never probes)
 _FUSED: dict = {}
 # A route the race adds on top of the incumbent (int8 / dense) wins only by more than this fraction.
 _RACE_MARGIN = 0.02
@@ -429,10 +406,8 @@ def grouped_packed_choice(
     tight: bool = False,
 ) -> tuple:
     """``(keep packed, reason)`` for the W4A8 / W6A8 layers of a load (``GROUPED_PACKED_ENV``). Never under a LoRA
-    (dense Linears). ``image``: an image denoiser, packed only when ``tight`` (its placement streams / offloads the
-    denoiser, where 18 to 25% fewer bytes move per forward and stay resident) on a card with Studio's tuned int8 GEMM;
-    a video denoiser keeps packed codes (measured:
-    bf16 speed at half the memory)."""
+    (dense Linears). An image denoiser stays packed only when ``tight`` (streamed / offloaded) on a card with Studio's
+    tuned int8 GEMM; a video denoiser keeps packed codes (measured: bf16 speed at half the memory)."""
     raw = _env(GROUPED_PACKED_ENV)
     if lora:
         return False, "lora"
@@ -450,8 +425,7 @@ def grouped_packed_choice(
         return True, "video"
     if tight:
         if not _tuned_arch(device):
-            # measured on L4 (Triton 3.8, no tuned int8 GEMM): streamed packed moves 18% fewer bytes but runs 9%
-            # slower than the streamed int8 grid (the per-forward decode and the stock int8 route cost more)
+            # L4 measured: streamed packed moves 18% fewer bytes but runs 9% slower than streamed int8
             return False, "memory_tight_untuned_arch"
         return True, "memory_tight"
     return False, "image_resident"
@@ -669,18 +643,14 @@ def grouped_linear_class():
             self.register_buffer("bias", bias)
             h = build_convrot_hadamard(self.rot_group, device = qdata.device, dtype = torch.float32)
             self.register_buffer("rot_h", h.to(self.compute_dtype, copy = True), persistent = False)
-            # the last eager race verdict, read (not raced) by a compiled forward
             self._route = None
             try:  # registered here, in eager, so a compiled forward only reads the handle
                 from .diffusion_grouped_int8_triton import decode_int8_op
                 self._decode_op = decode_int8_op()
             except Exception:  # noqa: BLE001 -- no custom ops on this torch: a trace runs the torch decode
                 self._decode_op = None
-            # read once: a traced forward never reads the environment
             self._mode = grouped_gemm_mode()
-            # whether Studio's tuned int8 GEMM runs here (decided in eager, per card)
             self._tuned = None
-            # whether the fused rotation + act quant kernel / the fused unpack GEMM run here (eager, per card)
             self._rotq = None
             self._fused_ok = None
 
@@ -749,7 +719,6 @@ def grouped_linear_class():
             return (grouped @ self.rot_h.to(x.dtype)).reshape(x.shape)
 
         def _dense(self, x: Any) -> Any:
-            # rotated activation times the rotated-basis weight: no per-forward weight rotation
             w = (
                 self.decoded_int8().to(torch.float32)
                 * self.weight_s_channel.view(torch.float32)[:, None]
@@ -763,7 +732,6 @@ def grouped_linear_class():
             the shape) into Studio's int8 GEMM with the fused dequant epilogue (its probed tile for this card)."""
             from .diffusion_convrot_quant import convrot_act_quant
 
-            # the dense rotation kernel in eager (bit-identical to the stock rotation + quant)
             q = convrot_act_quant(x2, self.rot_group, True, True)
             if q is not None:
                 xq, xs = q
@@ -886,7 +854,6 @@ def grouped_linear_class():
             x2 = x.reshape(-1, self.in_features)
             q8 = self.decoded_int8()
             if x.dtype == torch.bfloat16 and self._tuned:
-                # the fused epilogue writes bf16 directly: no [rows, N] float32 temporaries to bound
                 return self._tuned_int8(x2, q8).reshape(*x.shape[:-1], self.out_features)
             bias = self.bias
             fn = None
@@ -956,7 +923,6 @@ def grouped_linear_class():
                 self._placed(x)
                 errors: dict = {}
                 for route, run in self._routes(x):
-                    # each candidate on its own: one that cannot run (or runs out of memory) here just loses
                     try:
                         run(x)  # warm-up (and the compiled linear's first build)
                         start = torch.cuda.Event(enable_timing = True)
@@ -997,8 +963,7 @@ def grouped_linear_class():
                 if mode == "int8":
                     route = "int8"
                 elif torch.compiler.is_compiling():
-                    # no eager race before the trace (compiled image loads): where the tuned GEMM is off but the
-                    # rotation kernel is armed, its codes into torch._int_mm (the compiled INT8 load's maths)
+                    # no eager race before a trace: rotation kernel codes into torch._int_mm
                     route = self._route or (
                         "int8r"
                         if not self._tuned and self._rotq and x.dtype == torch.bfloat16
@@ -1015,8 +980,7 @@ def grouped_linear_class():
                     if route == "fused" and not (
                         bf16 and self._fused_ok and self._rotq and eager and self._fused_covers(x)
                     ):
-                        # raced in eager only (a trace keeps the int8 route); the verdict is per rows bucket, the
-                        # tiles per row count
+                        # raced in eager only (a trace keeps the int8 route)
                         route = "int8"
                     if route == "int8r" and not (bf16 and self._rotq):
                         route = "int8"
@@ -1045,11 +1009,6 @@ def is_grouped_linear(module: Any) -> bool:
     return type(module).__name__ == "GroupedInt8Linear" and hasattr(module, "weight_packed")
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# Writer: a whole single file (any original-layout checkpoint) in the packed layout, round to nearest.
-# ---------------------------------------------------------------------------------------------------------------
-
-
 def _declared_layers(path: str) -> list:
     """Names of the quantized layers a reference file declares (its keep-list), header only."""
     from .diffusion_comfy_quant import scan_comfy_quant
@@ -1076,8 +1035,7 @@ def export_grouped_file(
 ) -> dict:
     """Write ``src`` (a floating safetensors single file, original key names) to ``out`` with the chosen Linears in
     ``fmt``: ``like`` takes the layer set a reference quantized file declares, ``layers`` an explicit list of layer
-    names (no ``.weight``) or a predicate on them. A chosen layer whose shape the format cannot hold stays as it is.
-    Every other tensor is copied unchanged. ``record`` lands in the header as ``unsloth_comfy_conversion``.
+    names (no ``.weight``) or a predicate on them. Other tensors and unfit layers are copied unchanged.
     Returns ``{"quantized": n, "kept": [...], "bytes": size}``."""
     import torch
     from safetensors import safe_open
@@ -1098,7 +1056,6 @@ def export_grouped_file(
     skipped: list = []
     count = 0
     with safe_open(str(src), framework = "pt", device = "cpu") as handle:
-        # the source's own header metadata (model config, distillation markers) carries over unchanged
         source_metadata = dict(handle.metadata() or {})
         for key in handle.keys():
             value = handle.get_tensor(key)

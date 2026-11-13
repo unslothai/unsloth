@@ -133,7 +133,6 @@ def test_the_triton_decode_on_the_gpu_matches_the_torch_decode():
         )
         assert got is not None, gt._STATE.get("error")
         assert torch.equal(got.cpu(), want), (bits, group, book is not None)
-        # the torch decode on the GPU agrees too (float32 maths only)
         dev = gi.decode_int8_torch(
             q.cuda(), raw.cuda(), None if book is None else book.cuda(), group, bits
         )

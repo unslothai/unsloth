@@ -3,11 +3,8 @@
 
 """Triton decode of packed W4A8 / W6A8 rows to the int8 grid, bit-identical to ``decode_int8_torch``.
 
-One program writes a ``BLOCK_R x BLOCK_C`` tile of int8 outputs: each column gathers its nibble (and at 6 bits its
-two top bits from the high plane), maps the code to a level (16-entry codebook load, else ``code - 2 ** (bits - 1)``),
-decodes its group's e4m3 step by integer ops (no fp8 convert below sm_89), multiplies in float32 and rounds half to
-even by integer ops. The launch disables fp fusion, so the product is rounded once before the rounding decision, as
-in torch. The kernel lives in ``diffusion_grouped_int8_kernels``; torch / triton import lazily."""
+The e4m3 step is decoded by integer ops (no fp8 convert below sm_89); the launch disables fp fusion so the float32
+product rounds before the half-even decision, as in torch."""
 
 from __future__ import annotations
 

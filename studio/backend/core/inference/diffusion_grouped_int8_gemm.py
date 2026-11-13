@@ -3,12 +3,9 @@
 
 """Fused GEMM for packed W4A8 / W6A8 layers: int8 activations times the packed weight, decoded to the int8 grid in
 registers inside the K loop (never written to memory), int8 tensor-core MMA into int32, then Studio's int8 GEMM
-epilogue. Output is bit-identical to ``decode_int8_torch`` followed by ``diffusion_int8_gemm.reference`` (int32
-accumulation is exact, the decode and the epilogue keep every rounding), which a per-card probe checks before use.
-
-Per card (``fused_config``): a measured tile set for sm80 / sm89 / sm90 / sm120, a bit-exact probe on that card, and on
-sm8x under Triton >= 3.8 (triton-lang/triton#12486, int8 tiles spill there) only tiles whose compiled kernel reports
-zero spills. Anything else returns None and the caller keeps decode + int8 GEMM.
+epilogue. Output is bit-identical to ``decode_int8_torch`` + ``diffusion_int8_gemm.reference``, checked by a per-card probe.
+On sm8x under Triton >= 3.8 (triton-lang/triton#12486, int8 tiles spill) only zero-spill tiles are accepted; anything
+else returns None and the caller keeps decode + int8 GEMM.
 ``UNSLOTH_DIFFUSION_GROUPED_FUSED=0`` disables, ``=1`` also probes unlisted sm80+ archs with the fallback tiles."""
 
 from __future__ import annotations
@@ -29,16 +26,13 @@ _CALLS = [0]
 _MIN_ROWS = 17
 
 # (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, num_warps, num_stages, loop, split): loop 2 = column phases (split-K over
-# an int32 buffer when the output tiles leave the card idle; split 0 = automatic), 0 = byte tiles + join, 1 = per-weight
-# byte gathers. Measured on DiT shapes against decode + Studio's int8 GEMM (outputs/packed_v2/fused_bench): the fused
-# GEMM decodes every weight once per M tile, so it only pays at small row counts; larger batches keep decode + GEMM.
+# an int32 buffer; split 0 = automatic), 0 = byte tiles + join, 1 = per-weight byte gathers. The fused GEMM decodes
+# every weight once per M tile, so it only pays at small row counts.
 _PHASE = (64, 64, 128, 8, 4, 3, 2, 0)
 _JOIN = (128, 64, 64, 8, 4, 3, 0)
 # (major, minor) -> ((rows upper bound inclusive, tile, bit depths), ...); first match wins, larger batches decode.
-# Measured (outputs/packed_v2/fused_bench, run5 / run6): sm120 wins only at <= 64 rows and 6 bits (the 4-bit codebook
-# lookup per weight loses there); sm89 _JOIN beats decode + int8 GEMM at <= 128 rows on most DiT shapes at both
-# depths, and compiled with 0 spills on an L4 (_PHASE spills there and fails the spill rule). sm80: every measured tile
-# spills under Triton 3.8 (A100: _JOIN 8, _PHASE 228), so it is not listed; nor is sm90 (not measured).
+# Measured: sm120 wins only at <= 64 rows and 6 bits; sm89 _JOIN at <= 128 rows (0 spills on L4). sm80 is not listed:
+# every tile spills under Triton 3.8; sm90 not measured.
 _ARCH_TILES: dict = {
     (8, 9): ((128, _JOIN, (4, 6)),),
     (12, 0): ((64, _PHASE, (6,)),),
@@ -416,7 +410,6 @@ def fused_config(index: int) -> Optional[tuple]:
                         ok, spills = False, None
                     ok_tiles[tile] = ok
                     _SPILLS[(index, tile)] = spills
-            # a rule whose tile failed drops out; its rows keep decode + int8 GEMM
             kept = [rule for rule in cands if ok_tiles.get(rule[1])]
             rules = tuple(kept) or None
     except Exception:  # noqa: BLE001

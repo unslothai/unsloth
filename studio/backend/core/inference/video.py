@@ -11909,7 +11909,6 @@ class VideoBackend:
         if comfy_scan is not None:
             counts = comfy_scan.counts()
             comfy_scheme = (
-                # packed W4A8 / W6A8 layers run as int8 ConvRot
                 TQ_INT8
                 if any(k.startswith("int8") or k in ("w6a8_int8", "asym_w4a8_int8") for k in counts)
                 else TQ_FP8
@@ -15695,7 +15694,6 @@ class VideoBackend:
                 and state.engine != "sd_cpp",
             },
             "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
-            # W4A8 / W6A8 file: kept packed or decoded to int8 at load, and why
             "packed_weights": _grouped_form_status(getattr(state, "pipe", None)),
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),

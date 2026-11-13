@@ -99,7 +99,6 @@ def test_decode_matches_the_format_reference_bit_for_bit(bits, group, book):
     packed = gi.pack_codes(codes, bits)
     got = gi.decode_int8_torch(packed, raw_steps.view(torch.float8_e4m3fn), book, group, bits)
     assert torch.equal(got, _reference_int8(packed, raw_steps, book, group, bits))
-    # raw step bytes (a ``U8`` file entry) decode the same
     assert torch.equal(got, gi.decode_int8_torch(packed, raw_steps, book, group, bits))
 
 
@@ -168,7 +167,6 @@ def test_dequant_equals_the_int8_convrot_dequant_of_the_decoded_grid():
     assert torch.equal(a, b)
 
 
-# ------------------------------------------------------------------------------------- header scan
 def _grouped_file(
     tmp_path,
     fmt,
@@ -250,7 +248,6 @@ def test_scan_refuses_a_malformed_grouped_layer(tmp_path, mutate, match):
         cq.refuse_comfy_quant(path)
 
 
-# ------------------------------------------------------------------------------------- loading
 @pytest.fixture
 def grouped_file(tmp_path, monkeypatch):
     """``_Tiny`` as a W6A8 file (fused qkv, as single files store it) plus the dense model it came from."""
@@ -448,7 +445,6 @@ def test_text_encoder_loader_decodes_grouped_layers(tmp_path):
 
 
 def test_forced_packed_keep_without_an_int8_runtime(grouped_file):
-    # UNSLOTH_DIFFUSION_GROUPED_PACKED=1 on CPU / MPS: the same layers stay packed and widen per forward
     path, _dense, tensors = grouped_file
     model = _load(path, int8_backend = None, grouped_packed = True)
     assert model._unsloth_comfy_quant["grouped_packed"] == 8

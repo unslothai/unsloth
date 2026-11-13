@@ -470,7 +470,6 @@ def resident_bytes(
         dtype = str(entry.get("dtype", ""))
         layer = layers.get(key[: -len(".weight")]) if key.endswith(".weight") else None
         if layer is not None and layer.convrot and layer.format == "int8_tensorwise":
-            # a packed W4A8 / W6A8 layer loads as the int8 grid it decodes to
             total += _numel(_logical_shape(layer, shape)) + int(shape[0]) * 4
         elif layer is not None:
             total += _numel(_logical_shape(layer, shape)) * dtype_itemsize

@@ -76,8 +76,7 @@ class ComfyQuantLayer:
     group: int = 0
     # ``.weight`` holds packed int4 (K / 2 columns), unpacked on load.
     packed_int4: bool = False
-    # Grouped-scale packed codes (``diffusion_grouped_int8``): their width (4 / 6), group and file format. Decoded
-    # to the int8 grid an int8 ConvRot layer with the channel scale, unless kept packed (``grouped_packed_wanted``).
+    # Grouped packed codes (``diffusion_grouped_int8``): decoded to int8 ConvRot unless kept packed.
     packed_bits: int = 0
     group_size: int = 0
     packed_format: str = ""
@@ -532,7 +531,6 @@ def comfy_resident_mib(
     packed = {name + ".weight" for name, layer in scan.layers.items() if layer.format == NVFP4}
     # Packed int4 is half the int8 the loader unpacks it to, kept or dequantized.
     packed_int4 = {name + ".weight" for name, layer in scan.layers.items() if layer.packed_int4}
-    # W4A8 / W6A8: 8 / bits int8 elements per stored byte, unless kept packed
     grouped = {
         name + ".weight": 8 / layer.packed_bits
         for name, layer in scan.layers.items()
@@ -1563,7 +1561,6 @@ def load_comfy_quant_transformer(
             packed_parts = (codes, s_rel.view(torch.uint8), codebook)
             from .diffusion_grouped_int8 import decode_host_bytes
 
-            # the int8 grid plus one decode chunk's int32 / float32 scratch
             charge_host_ram(
                 decode_host_bytes(int(codes.shape[0]), int(s_rel.shape[1]) * layer.group_size)
             )
@@ -2116,9 +2113,7 @@ def load_comfy_quant_transformer(
         if grouped_any:
             from .diffusion_grouped_int8 import GROUPED_FORM_ATTR
 
-            # which form the W4A8 / W6A8 layers took (status), and why
             form = {
-                # decoded: int8 ConvRot layers where the int8 runtime runs, else bf16 weights
                 "form": "packed"
                 if grouped_keep
                 else "decoded_at_load"

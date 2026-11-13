@@ -4,11 +4,8 @@
 """Triton kernel behind ``diffusion_grouped_int8_gemm``: int8 activations times packed W4A8 / W6A8 weights, the
 weight tile decoded to int8 in registers inside the K loop. Imported only once Triton is known to import.
 
-Layout (see ``diffusion_grouped_int8``): per row, a ``K / 2``-byte nibble plane (byte ``j`` = columns ``2j`` low and
-``2j + 1`` high), then at 6 bits a ``K / 4``-byte plane (byte ``j`` = columns ``4j .. 4j + 3``, two bits each from
-bit 0). The sum over K is order free, so the phase loop splits each K block into the four column phases
-``c = 4j + t``: phase ``t`` reads nibble byte ``2j + t // 2`` (shift ``4 * (t % 2)``) and top-plane byte ``j``
-(shift ``2t``), and the activations at columns ``4j + t``: no unpacked tile is interleaved or gathered."""
+Layout: see ``diffusion_grouped_int8``. The sum over K is order free, so the phase loop splits each K block into the
+four column phases ``c = 4j + t``: no unpacked tile is interleaved or gathered."""
 
 import triton
 import triton.language as tl
@@ -165,7 +162,6 @@ def _phase_loop(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    # K blocks k_first .. k_first + k_steps - 1
     Q: tl.constexpr = BLOCK_K // 4
     om = pid_m * BLOCK_M
     on = pid_n * BLOCK_N

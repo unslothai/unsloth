@@ -10265,8 +10265,7 @@ class DiffusionBackend:
                                 )
                                 from .diffusion_grouped_int8 import grouped_packed_choice
 
-                                # W4A8 / W6A8: decoded to int8 at load (INT8 speed) unless the placement streams /
-                                # offloads the denoiser, where packed codes move and hold 25% fewer bytes
+                                # W4A8 / W6A8: decoded to int8 unless the placement streams / offloads the denoiser
                                 _grouped_packed, _grouped_reason = grouped_packed_choice(
                                     target,
                                     _comfy_int8,
@@ -16478,7 +16477,6 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
-            # W4A8 / W6A8 file: kept packed or decoded to int8 at load, and why
             "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(
                 tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
