@@ -212,6 +212,15 @@ def _failed(response) -> bool:
     return isinstance(body, dict) and ("error" in body or body.get("status") == "error")
 
 
+def _already_said(message: str, reason: str) -> bool:
+    # lemond wraps one failure in prefixes ("Backend load failed: FLM pull failed ...").
+    while reason:
+        if reason in message or message in reason:
+            return True
+        reason = reason.partition(": ")[2]
+    return False
+
+
 def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], message: str) -> str:
     """``message`` plus the first error lemond printed in ``window`` that it does not already
     say. Logs that output at warning, since lemond's lines are otherwise debug-only, and notes the
@@ -222,7 +231,7 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
     for line in [] if shared else lines:
         match = _LEMOND_ERROR.search(line)
         reason = match.group(1).strip() if match else ""
-        if reason and not reason.endswith(":") and reason not in message and message not in reason:
+        if reason and not reason.endswith(":") and not _already_said(message, reason):
             explained = f"{message} ({reason[:300]})"
             break
     log_name = server.log_path.name if server is not None and server.log_path else None
