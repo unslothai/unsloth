@@ -429,6 +429,8 @@ def _stdlib_paths():
 def _config_chooses_location():
     # pip's config files (PIP_CONFIG_FILE, the chat HOME's user files, the interpreter's site file) can set
     # install.target / prefix / root / user too; PIP_PREFIX would then conflict with them.
+    if os.environ.get("PIP_CONFIG_FILE") == os.devnull:
+        return False  # pip then loads no configuration file at all
     home = os.path.expanduser("~")
     files = [
         os.environ.get("PIP_CONFIG_FILE", ""),
@@ -719,7 +721,8 @@ class _SessionPackagesFinder:
                 return None
         for portion in portions:
             path.append(portion)
-        return None
+        # Appended last, yet the session dirs precede Studio's on sys.path: their child wins, as on a fresh start.
+        return self._path_finder.find_spec(name, portions, target)
 
 
 _entries = _session_entries()
