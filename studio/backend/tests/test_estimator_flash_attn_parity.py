@@ -141,8 +141,7 @@ def test_a_quantized_cache_shrinks_both_axes_not_only_k(qwen3_shaped_gguf, cache
 
 
 def test_the_measured_llama_cpp_reservations_are_reproduced(qwen3_shaped_gguf):
-    """The four cells from the docstring, as figures rather than as a ratio. These
-    are what llama-server b10632 actually allocated for this model shape."""
+    """Figures llama-server b10632 actually allocated for this model shape, not a ratio."""
     mib = 1024 * 1024
     for n_ctx, cache_type, allocated_mib in (
         (4096, "q8_0", 238.0),
@@ -158,9 +157,8 @@ def test_the_measured_llama_cpp_reservations_are_reproduced(qwen3_shaped_gguf):
 
 
 def test_an_f16_cache_is_unchanged_by_the_flash_attn_rule(qwen3_shaped_gguf):
-    """The fix must not move the unquantized path. f16 leaves flash attention to
-    llama.cpp's own auto-detection, so the padded-V arm still applies and these
-    figures are the ones the guard has always used."""
+    """The fix must not move the f16 path: flash attention stays on llama.cpp auto-detection, so the
+    padded-V arm still applies and these figures hold."""
     mib = 1024 * 1024
     assert _kv_bytes(qwen3_shaped_gguf, 4096, "f16") / mib == pytest.approx(448.0)
     assert _kv_bytes(qwen3_shaped_gguf, 32768, "f16") / mib == pytest.approx(3584.0)
@@ -265,8 +263,7 @@ def test_an_inherited_gpu_layer_count_is_read_in_auto(monkeypatch, qwen3_shaped_
 def test_an_explicit_ngl_in_the_extras_still_beats_the_inherited_count(
     monkeypatch, qwen3_shaped_gguf
 ):
-    """argv is parsed after the environment and wins, so an extras -ngl is the answer
-    whatever the env says."""
+    """argv is parsed after the env and wins, so an extras -ngl beats LLAMA_ARG_N_GPU_LAYERS."""
     monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "0")
     assert ri._gguf_offloaded_layer_fraction("auto", None, 27, ["-ngl", "999"]) == 1.0
 

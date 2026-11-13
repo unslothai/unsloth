@@ -18,13 +18,16 @@ from typing import Optional
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.paths.storage_roots import account_path
 
+from .diffusion_content import ROLE_LORA, inspect_checkpoint
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
+from .sd_cpp_args import strip_lora_tags
 from utils.paths.path_utils import is_appledouble_metadata
 
 _ALL_EXTS = (".safetensors", ".gguf")
 # ``kind`` in a ``<stem>.json`` sidecar marking the weight beside it as an image LoRA, not model weights.
 LORA_SIDECAR_KIND = "diffusion-lora"
 _MAX_SCAN_FOLDER_SUBDIRS = 200
+_HUB_REPO_PREFIXES = ("models--", "datasets--", "spaces--")
 _EXPORT_LOCK = threading.Lock()
 # ``<stem>.json`` with these stems marks a model or pipeline folder to the model scanners.
 _MODEL_SENTINEL_STEMS = frozenset(
@@ -134,24 +137,36 @@ def _is_dir(p: Path) -> bool:
 
 
 def _scan_folder_roots() -> list[Path]:
-    """Registered custom model folders plus their direct sub-folders (where an export lands)."""
+    """The Models folder, its cache home and registered custom folders, each with its direct
+    sub-folders (where an export lands; hub repo folders skipped) and any ComfyUI ``loras`` folders."""
+    from hub.utils.comfy_models import comfy_lora_scan_roots
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    cache = get_hf_cache_paths()
     try:
         from storage.studio_db import list_scan_folders
         folders = list_scan_folders()
     except Exception:  # noqa: BLE001 -- discovery never fails on the scan-folder table
-        return []
+        folders = []
     roots: list[Path] = []
-    for folder in folders:
-        root = Path(folder.get("path") or "")
+    for path in (
+        cache.hub_cache,
+        cache.cache_home,
+        *(folder.get("path") or "" for folder in folders),
+    ):
+        root = Path(path)
         if not _is_dir(root):
             continue
         try:
             children = list(root.iterdir())
         except OSError:
             children = []
-        subdirs = sorted(c for c in children if not c.name.startswith(".") and _is_dir(c))
+        subdirs = sorted(
+            c for c in children if not c.name.startswith((".", *_HUB_REPO_PREFIXES)) and _is_dir(c)
+        )
         roots.append(root)
         roots.extend(subdirs[:_MAX_SCAN_FOLDER_SUBDIRS])
+        roots.extend(comfy_lora_scan_roots(root))
     return roots
 
 
@@ -208,7 +223,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
     found = [(p, p.name if stem_counts.get(p.stem, 0) > 1 else p.stem) for p in files]
     used = {entry_id for _, entry_id in found}
     seen = {os.path.normcase(os.path.realpath(p)) for p in files}
-    # Custom models folders contribute only sidecar-marked image LoRAs, so model weights never show up here.
+    # Custom models folders contribute only image LoRAs, so model weights never show up here.
     for root in _scan_folder_roots():
         for p in _weight_files(root):
             key = os.path.normcase(os.path.realpath(p))
@@ -286,14 +301,26 @@ def _sidecar_data(weight_path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def is_image_lora_file(path: Path) -> bool:
-    """A .safetensors/.gguf whose sidecar marks it as an image LoRA (``kind``, or a trainer sidecar
-    from before the marker). Model scanners use this to keep image LoRAs out of model listings."""
-    if path.suffix.lower() not in _ALL_EXTS:
-        return False
+def _has_lora_sidecar(path: Path) -> bool:
     data = _sidecar_data(path)
     return data is not None and (
         data.get("kind") == LORA_SIDECAR_KIND or data.get("source") == "studio-trained"
+    )
+
+
+def is_image_lora_file(path: Path) -> bool:
+    """Sidecar-marked image LoRA, or a .safetensors of LoRA tensors not beside a model marker (a chat
+    adapter has the same keys). Model scanners use this to keep image LoRAs out of model listings."""
+    if path.suffix.lower() not in _ALL_EXTS:
+        return False
+    if _has_lora_sidecar(path):
+        return True
+    return (
+        path.suffix.lower() == ".safetensors"
+        and not any(
+            os.path.lexists(path.with_name(f"{stem}.json")) for stem in _MODEL_SENTINEL_STEMS
+        )
+        and inspect_checkpoint(str(path)).role == ROLE_LORA
     )
 
 
@@ -320,11 +347,8 @@ def _read_lora_sidecar(weight_path: Path) -> tuple[tuple[str, ...], float]:
 def list_loras(
     *, family: Optional[str] = None, include_copies: bool = False
 ) -> list[LoraCatalogEntry]:
-    """The merged catalog (curated + local), optionally family-filtered.
-
-    Cheap: one directory scan plus the in-memory curated list. Network is only touched on
-    resolve(), when a hub adapter is selected.
-    """
+    """Merged curated and local catalog, optionally family-filtered; cheap (one directory scan plus
+    the in-memory curated list), with network touched only by resolve() for a hub adapter."""
     merged = [e for e in list(_CURATED) + _scan_local() if include_copies or not e.copy_of]
     if family:
         fam = family.strip().lower()
@@ -345,11 +369,9 @@ def _staging_name(dest_dir: Path, stem: str) -> str:
 
 
 def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
-    """Copy a local adapter into ``dest_dir`` with a ``<stem>.json`` sidecar carrying the image LoRA marker.
-
-    Takes a catalog id, never a path, so only listed image LoRAs can be read. Returns the copied weight
-    file; a stem already used by other bytes, another weight format or a foreign ``.json`` gets a suffix.
-    """
+    """Copy a listed local adapter (by catalog id, never a path) into dest_dir with an image LoRA
+    <stem>.json sidecar; returns the weight file; a stem used by other bytes, another weight
+    format or a foreign .json gets a suffix."""
     import filecmp
     import shutil
 
@@ -375,7 +397,7 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
         if not out.exists():
             return not out.with_suffix(".json").exists()
         return filecmp.cmp(src, out, shallow = False) and (
-            not out.with_suffix(".json").exists() or is_image_lora_file(out)
+            not out.with_suffix(".json").exists() or _has_lora_sidecar(out)
         )
 
     with _EXPORT_LOCK:
@@ -607,13 +629,9 @@ def materialize_native_dir(
     return out
 
 
-_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
-
-
 def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
     """Strips all user <lora:...> tags first so the validated weight wins over any typed weight."""
-    cleaned = _TAG_RE.sub("", prompt)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    cleaned = re.sub(r"[ \t]{2,}", " ", strip_lora_tags(prompt)).strip()
     tags = [f"<lora:{r.alias}:{_fmt_weight(r.weight)}>" for r in resolved]
     if not tags:
         return cleaned
@@ -644,7 +662,7 @@ _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
 # In-tree pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights).
-_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES = ("moss-image",)
+_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ()
 
 
 def diffusers_lora_family_supported(family: Optional[str]) -> bool:

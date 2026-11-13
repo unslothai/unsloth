@@ -196,6 +196,7 @@ from hub.utils.host_paths import (
     resolve_host_path_reference,
     scrub_paths,
 )
+from hub.utils.mlx_variants import looks_like_mlx_repo
 from utils.utils import anonymous_and_offline
 
 
@@ -246,7 +247,7 @@ try:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -280,7 +281,7 @@ except ImportError:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -318,7 +319,7 @@ from models.responses import (
     VisionCheckResponse,
     EmbeddingCheckResponse,
 )
-from utils.paths.path_utils import is_appledouble_metadata
+from utils.paths.path_utils import is_appledouble_metadata, is_network_or_device_path
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -1825,6 +1826,16 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
         seen_roots.add(key)
         resolved_roots.append(resolved)
 
+    if not any(_browse_relative_parts(requested_path, root) is not None for root in resolved_roots):
+        # Spelled through a symlinked root (moved install, linked $HOME): matches only once resolved.
+        if not is_network_or_device_path(requested_path):
+            try:
+                real = os.path.realpath(requested_path)
+            except (OSError, ValueError):
+                real = requested_path
+            if not is_network_or_device_path(real):
+                requested_path = real
+
     for root in resolved_roots:
         parts = _browse_relative_parts(requested_path, root)
         if parts is None:
@@ -2097,23 +2108,19 @@ def browse_folders(
     )
 
 
-def _looks_like_mlx_repo(model_id: str) -> bool:
-    """Name heuristic for unloaded models (mirrors the -GGUF suffix check);
-    tokenized so MLX only matches as a whole name segment."""
-    if model_id.lower().startswith("mlx-community/"):
-        return True
-    tail = model_id.split("/")[-1]
-    return "MLX" in _re.split(r"[-_.]", tail.upper())
-
-
 @router.get("/list")
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        # Off-loop: building the singleton calls get_device(), which would freeze on the torch import.
-        inference_backend = await asyncio.to_thread(get_inference_backend)
+        from core.inference.defaults import get_default_models
 
-        default_models = inference_backend.default_models
+        # Chat reads this on first paint: listing suggestions must not construct the runtime or probe hardware.
+        inference_backend = peek_inference_backend()
+        default_models = await asyncio.to_thread(
+            lambda: inference_backend.default_models
+            if inference_backend is not None
+            else get_default_models(detect_hardware = False)
+        )
         if account_access.managed_account():
             default_models = [
                 m
@@ -2156,6 +2163,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     is_vision = llama_backend.is_vision,
                     is_audio = getattr(llama_backend, "_is_audio", False),
                     audio_type = getattr(llama_backend, "_audio_type", None),
+                    has_audio_input = bool(getattr(llama_backend, "_has_audio_input", False)),
                 )
             ]
 
@@ -2163,7 +2171,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         hide_resident = account_access.resident_hidden(
             "chat", getattr(inference_backend, "active_model_name", None)
         )
-        if not hide_resident:
+        if not hide_resident and inference_backend is not None:
             loaded_models += _orchestrator_models(inference_backend)
 
         llama_backend = get_llama_cpp_backend()
@@ -2187,7 +2195,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     id = model_id,
                     name = display_model_name(model_id),
                     is_gguf = model_id.upper().endswith("-GGUF"),
-                    is_mlx = _looks_like_mlx_repo(model_id),
+                    is_mlx = looks_like_mlx_repo(model_id),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)
@@ -2762,7 +2770,7 @@ async def scan_model_remote_code(
             _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[_target], *_subdirs)))
             consent_load_subdirs[_target] = _subdirs
         # Record repos our scan first pulls in, computed before preflight, so decline purges only those.
-        from utils.security.remote_code_scan import external_auto_map_repos
+        from utils.security.remote_code_scan import external_auto_map_repos, shared_config_reads
 
         scan_created_repos: list = []
         _seen_created: set = set()
@@ -2783,33 +2791,35 @@ async def scan_model_remote_code(
                 pass
 
         external_refs: list = []
-        for _target in security_targets:
-            # Use the pre-base-resolution snapshot for the primary (see above).
-            _mark_scan_created(
-                _target,
-                preexisting = _primary_preexisting if _target == primary_cache_target else None,
-            )
-            for _ext in external_auto_map_repos(
-                _target,
-                hf_token,
-                load_subdirs = consent_load_subdirs[_target],
-            ):
-                # Found after authorization: refuse like the base, else its cached Python leaks as source snippets
-                if not is_local_path(_ext) and cached_read_refused(
-                    hf_token, repo_id = _ext, is_cached = lambda e = _ext: _repo_maybe_cached(e)
+        # One advisory scan: its passes share each config read; the load-time gates re-read fresh.
+        with shared_config_reads():
+            for _target in security_targets:
+                # Use the pre-base-resolution snapshot for the primary (see above).
+                _mark_scan_created(
+                    _target,
+                    preexisting = _primary_preexisting if _target == primary_cache_target else None,
+                )
+                for _ext in external_auto_map_repos(
+                    _target,
+                    hf_token,
+                    load_subdirs = consent_load_subdirs[_target],
                 ):
-                    raise HTTPException(
-                        status_code = 404,
-                        detail = _UNAUTHORIZED_CACHED_MODEL,
-                    )
-                external_refs.append(_ext)
-                _mark_scan_created(_ext)
-        decision = preflight_remote_code_consent_for_targets(
-            security_targets,
-            hf_token = hf_token,
-            subject = current_subject,
-            load_subdirs_by_target = consent_load_subdirs,
-        )
+                    # Found after authorization: refuse like the base, else its cached Python leaks as source snippets
+                    if not is_local_path(_ext) and cached_read_refused(
+                        hf_token, repo_id = _ext, is_cached = lambda e = _ext: _repo_maybe_cached(e)
+                    ):
+                        raise HTTPException(
+                            status_code = 404,
+                            detail = _UNAUTHORIZED_CACHED_MODEL,
+                        )
+                    external_refs.append(_ext)
+                    _mark_scan_created(_ext)
+            decision = preflight_remote_code_consent_for_targets(
+                security_targets,
+                hf_token = hf_token,
+                subject = current_subject,
+                load_subdirs_by_target = consent_load_subdirs,
+            )
         payload = decision.response_payload()
         blocks = (
             [(payload.get("block_cause"), payload.get("model_name"))]
@@ -4663,6 +4673,7 @@ async def get_gguf_variants(
                         download_size_bytes = int(
                             getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                         ),
+                        estimated_resident_gb = getattr(v, "estimated_resident_gb", None),
                         lookup_table_bytes = int(getattr(v, "lookup_table_bytes", 0) or 0),
                         pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
                         pending_drafter_size_bytes = int(
@@ -4672,6 +4683,8 @@ async def get_gguf_variants(
                         update_available = bool(getattr(v, "update_available", False)),
                         partial = bool(getattr(v, "partial", False)),
                         cleanable = bool(getattr(v, "cleanable", False)),
+                        engram_precision = getattr(v, "engram_precision", None),
+                        engram_ready = list(getattr(v, "engram_ready", None) or ()),
                     )
                     for v in response.variants
                 ],
@@ -4683,6 +4696,10 @@ async def get_gguf_variants(
                 loadable_variants = getattr(response, "loadable_variants", None),
                 loadable = getattr(response, "loadable", None),
                 variant_format = getattr(response, "variant_format", None),
+                engram_tables = [
+                    table.model_dump() for table in getattr(response, "engram_tables", None) or ()
+                ],
+                engram_supported = getattr(response, "engram_supported", None),
             ),
             via_api_key = via_api_key,
         )
@@ -4701,6 +4718,9 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    engram_precision: str = Query(
+        "", max_length = 32, description = "Standalone Engram table the load fetches, if any"
+    ),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -4713,6 +4733,7 @@ async def get_gguf_download_progress(
             variant = variant,
             expected_bytes = expected_bytes,
             hf_token = hf_token,
+            engram_precision = engram_precision.strip(),
         ),
         via_api_key = via_api_key,
     )

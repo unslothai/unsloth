@@ -62,3 +62,14 @@ export const useUserProfileStore = create<UserProfileState>()(
     { name: "unsloth_user_profile" },
   ),
 );
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (
+      event.key === useUserProfileStore.persist.getOptions().name &&
+      event.newValue !== null
+    ) {
+      void useUserProfileStore.persist.rehydrate();
+    }
+  });
+}

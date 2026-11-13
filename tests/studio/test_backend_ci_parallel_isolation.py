@@ -187,6 +187,10 @@ BENIGN_TIMING = {
     ),
     # A poll deadline with a 30s budget.
     ("test_gpu_query_cache.py", "wait_for_call"),
+    # 10 to 20 s poll deadlines for a child to reach its transfer barrier: descheduling only delays the poll.
+    ("test_hf_download_fallback_and_kill.py", "_wait_for_transfer"),
+    ("test_hf_download_reclaim_race.py", "test_gguf_reclaim_preserves_publication_and_active_peer"),
+    ("test_hf_download_ref_concurrency.py", "test_peer_completion_survives_an_older_process"),
 }
 
 
@@ -338,20 +342,20 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 12, (
-        f"expected twelve parallel pytest runs, three shards of the backend matrix and nine "
+    assert len(parallel) == 14, (
+        f"expected fourteen parallel pytest runs, four shards of the backend matrix and ten "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
     )
     root = [command for command in parallel if _over_the_repo_tests(command)]
-    assert len(root) == 9, (
-        f"expected the nine repo-root shards, got {root}. The isolation checks above apply "
+    assert len(root) == 10, (
+        f"expected the ten repo-root shards, got {root}. The isolation checks above apply "
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]
-    assert len(backend) == 3, (
-        f"expected the three backend shards, got {backend}. Same reason: the backend "
+    assert len(backend) == 4, (
+        f"expected the four backend shards, got {backend}. Same reason: the backend "
         f"isolation checks apply to those."
     )
     # The two jobs' sets must be disjoint or each job's isolation rules apply to the other.
@@ -366,7 +370,7 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     assert all("${{" not in command for command in root + backend)
     assert any("--ignore=" in command for command in root)
     assert {command for command in root} == set(root), "a shard selection appears twice"
-    assert len(set(backend)) == 3, "a backend shard selection appears twice"
+    assert len(set(backend)) == 4, "a backend shard selection appears twice"
     # Non-vacuous for the backend side too.
     assert any(_collects(command, "tests/test_account_contract.py") for command in backend)
     # Non-vacuous for the repo root too.

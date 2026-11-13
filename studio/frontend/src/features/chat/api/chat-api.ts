@@ -607,6 +607,8 @@ export async function getGgufDownloadProgress(
   variant: string,
   expectedBytes: number,
   hfToken?: string | null,
+  /** The standalone Engram table the load fetches, so the bar counts it. */
+  engramPrecision?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -617,6 +619,9 @@ export async function getGgufDownloadProgress(
     variant,
     expected_bytes: String(expectedBytes),
   });
+  if (engramPrecision) {
+    params.set("engram_precision", engramPrecision);
+  }
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
     { headers: hubTokenHeader(hfToken) },
@@ -1540,7 +1545,11 @@ export async function buildBackendChatExport(): Promise<{
   messages: MessageRecord[];
 }> {
   const response = await authFetch("/api/chat/export");
-  return parseJsonOrThrow(response);
+  const data = await parseJsonOrThrow<Awaited<
+    ReturnType<typeof buildBackendChatExport>
+  > | null>(response);
+  if (!data) throw new Error("The chat export did not download completely.");
+  return data;
 }
 
 // Server-side legacy-Dexie import ledger, so a studio.db wipe keeps the import recoverable.

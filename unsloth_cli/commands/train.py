@@ -57,14 +57,9 @@ def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
 
 
 def _optimizer_for_host(requested: Optional[str] = None) -> str:
-    """The CLI exposes no --optim, so trainer.py would fall back to its own `adamw_8bit`
-    literal, which cannot complete a step on Intel XPU. Resolve the same device policy the
-    Studio route and worker config use, so `unsloth train` lands on the same optimizer a
-    Studio run on this host would. Non-XPU hosts keep `adamw_8bit` exactly as before.
-
-    Takes `requested` rather than only filling a default, so a future --optim carrying a
-    bitsandbytes name is normalized too instead of reaching the trainer unchanged.
-    """
+    """The CLI has no --optim, so trainer.py's adamw_8bit default cannot finish a step on Intel XPU;
+    resolve the Studio device policy here, keep adamw_8bit elsewhere, and normalize any requested
+    name."""
     ensure_studio_backend_path()
     with studio_backend_imports("unsloth train"):
         from studio.backend.core.training.training import (
@@ -335,6 +330,15 @@ def train(
         cfg.apply_overrides(**config_overrides)
     except (FileNotFoundError, ConfigError) as e:
         typer.echo(f"Error: {e}", err = True)
+        raise typer.Exit(code = 2)
+
+    # Otherwise it trains 0 steps, saves an untrained adapter and exits 0 (Studio refuses this too).
+    if cfg.training.num_epochs <= 0 and cfg.training.max_steps <= 0:
+        typer.echo(
+            "Error: num_epochs (--num-epochs) or max_steps (--max-steps) must be > 0; "
+            f"got num_epochs={cfg.training.num_epochs}, max_steps={cfg.training.max_steps}.",
+            err = True,
+        )
         raise typer.Exit(code = 2)
 
     # CLI/env tokens take precedence; guard against unresolved typer.Option.

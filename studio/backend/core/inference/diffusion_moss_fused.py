@@ -174,8 +174,8 @@ def _qk_rope_kernel() -> Any:
         c2,
         s2,
         mask,
-        EPS: tl.constexpr,
-        D: tl.constexpr,
+        EPS: tl.constexpr,  # norm epsilon, per model
+        D: tl.constexpr,  # hd
     ):
         # rotate(x) = [-x2, x1]; each product and sum rounded to bf16 like eager
         x1 = tl.load(x_ptr + base + h * D + j, mask = mask, other = 0.0).to(tl.float32)
@@ -190,7 +190,7 @@ def _qk_rope_kernel() -> Any:
         tl.store(o_ptr + out + j, o1.to(tl.bfloat16), mask = mask)
         tl.store(o_ptr + out + D // 2 + j, o2.to(tl.bfloat16), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["S"])
     def kernel(
         q_ptr,
         k_ptr,
@@ -211,9 +211,9 @@ def _qk_rope_kernel() -> Any:
         svb,
         svs,
         scs,
-        EPS: tl.constexpr,
-        D: tl.constexpr,
-        HB: tl.constexpr,
+        EPS: tl.constexpr,  # norm epsilon, per model
+        D: tl.constexpr,  # hd
+        HB: tl.constexpr,  # heads per program
     ):
         row = tl.program_id(0)
         b = row // S
@@ -249,33 +249,39 @@ def _launch_qk_rope(q, k, v, qw, kw, cos, sin, heads):
     ok = torch_empty_like(oq)
     ov = torch_empty_like(oq)
     grid = (batch * seq, triton.cdiv(heads, _HEADS_PER_PROGRAM))
-    _qk_rope_kernel()[grid](
-        q,
-        k,
-        v,
-        qw,
-        kw,
-        cos,
-        sin,
-        oq,
-        ok,
-        ov,
-        seq,
-        heads,
-        q.stride(0),
-        q.stride(1),
-        k.stride(0),
-        k.stride(1),
-        v.stride(0),
-        v.stride(1),
-        cos.stride(1),
-        EPS = 1e-6,
-        D = dim,
-        HB = _HEADS_PER_PROGRAM,
-        # ptxas otherwise FMA-fuses the rounded products into the sum on sm_100
-        enable_fp_fusion = False,
-    )
+    with _on_card(q):
+        _qk_rope_kernel()[grid](
+            q,
+            k,
+            v,
+            qw,
+            kw,
+            cos,
+            sin,
+            oq,
+            ok,
+            ov,
+            seq,
+            heads,
+            q.stride(0),
+            q.stride(1),
+            k.stride(0),
+            k.stride(1),
+            v.stride(0),
+            v.stride(1),
+            cos.stride(1),
+            EPS = 1e-6,
+            D = dim,
+            HB = _HEADS_PER_PROGRAM,
+            # ptxas otherwise FMA-fuses the rounded products into the sum on sm_100
+            enable_fp_fusion = False,
+        )
     return oq, ok, ov
+
+
+def _on_card(t):
+    from .diffusion_vae_fused import _on_card as on_card
+    return on_card(t)
 
 
 def torch_empty_like(t):
@@ -336,9 +342,8 @@ def qk_rope_op() -> Any:
 
 @functools.lru_cache(maxsize = 8)
 def qk_rope_device_ok(index: int) -> bool:
-    """The kernel runs and matches the port's eager ops on this device: every element within two bf16 ulps of its
-    rotated pair's magnitude, and at
-    most 0.5% of them off at all (the reduction order of the sum of squares), over ragged lengths and big values."""
+    """Kernel matches eager ops: every element within two bf16 ulps of its rotated pair magnitude,
+    at most 0.5% off at all, over ragged lengths and big values."""
     try:
         import torch
 

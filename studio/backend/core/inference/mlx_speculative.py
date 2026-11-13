@@ -37,7 +37,6 @@ DRAFTER_NOT_FOUND = "drafter_not_found"
 DRAFTER_INCOMPATIBLE = "drafter_incompatible"
 DRAFTER_NO_MEMORY = "drafter_no_memory"
 RUNTIME_ERROR = "runtime_error"
-KV_QUANT = "kv_quant"
 AUTO_CONTEXT_COST = "auto_context_cost"
 
 
@@ -319,10 +318,8 @@ _MAX_COPY = 16
 _EXACT_HEAD_DEPTH = 3  # MTP heads and assistants chain a forward per drafted token
 
 
-def speculation_refusal(*, kv_quant: bool, distributed: bool, lora: bool) -> Optional[str]:
+def speculation_refusal(*, distributed: bool, lora: bool) -> Optional[str]:
     """The reason an MLX load cannot speculate at all, or None."""
-    if kv_quant:
-        return KV_QUANT
     if distributed or lora:
         return RUNTIME_ERROR
     try:

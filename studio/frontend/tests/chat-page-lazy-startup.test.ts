@@ -144,10 +144,8 @@ test("a failed chat page load stays inside the chat area and retries", () => {
 
 test("a crash inside the chat page is not caught as a load failure", () => {
   const root = readSrc("app/routes/__root.tsx");
-  const page = root.slice(
-    root.indexOf("function ChatPage("),
-    root.indexOf("// Mounted persistently below"),
-  );
+  const page = root.match(/function ChatPage\([^]*?\n\}/)?.[0];
+  assert.ok(page, "ChatPage declaration must be present");
   assert.doesNotMatch(page, /Boundary/);
 });
 

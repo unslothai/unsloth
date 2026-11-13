@@ -1176,9 +1176,8 @@ def test_pad_and_exclude_sets_never_overlap():
 
 
 def test_only_minimax_h3_pads_today(monkeypatch):
-    """Only MiniMax-H3 pads its own tokens: other published int8 checkpoints bake the exclusion set into metadata.
-    A streamed qwen-image build pads exactly the text stream it quantises on top of its artifacts; resident builds and
-    the kill switch pad nothing new."""
+    """Only MiniMax-H3 pads its own tokens; streamed qwen-image builds pad the text stream they
+    quantise, while resident builds and the kill switch pad nothing."""
     from core.inference.diffusion_transformer_quant import (
         INT8_TEXT_STREAM_ENV,
         TQ_INT8,
@@ -1212,9 +1211,8 @@ def test_only_int8_pads():
 
 
 def test_quantize_transformer_pads_after_quantising(monkeypatch):
-    """The padding runs on the RUNTIME dense-quantise path too, not only on the prequant one,
-    and it runs AFTER quantize_ (it reparents Linears that must already hold quantized weights).
-    """
+    """Padding also runs on the runtime dense-quantise path, after quantize_, since it reparents
+    Linears that must already hold quantized weights."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_INT8})
     order = []
@@ -1237,9 +1235,8 @@ def test_quantize_transformer_pads_after_quantising(monkeypatch):
 
 
 def test_quantize_transformer_refuses_when_padding_cannot_be_proven(monkeypatch):
-    """A half-padded transformer compiles on the modules that were wrapped and crashes inside
-    ``_int_mm`` on the ones that were not, so a raise from the padding must fail the whole
-    quantise and send the caller to GGUF -- not be swallowed into a partially padded model."""
+    """A half-padded transformer crashes inside _int_mm, so a padding failure must fail the whole
+    quantise and fall back to GGUF, not be swallowed."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_INT8})
     tqz = types.ModuleType("torchao.quantization")

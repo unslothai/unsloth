@@ -18,9 +18,35 @@ function tokenCount(count: number, t: Translate, locale?: string): string {
   });
 }
 
+/** The newest part is a finished tool call, so the next pass has not streamed yet. Sources trail a recovered reply. */
+export function betweenToolRounds(
+  running: boolean,
+  content: readonly { type: string; result?: unknown }[],
+): boolean {
+  if (!running) return false;
+  for (let i = content.length - 1; i >= 0; i--) {
+    const part = content[i];
+    if (part.type === "source") continue;
+    return part.type === "tool-call" && part.result !== undefined;
+  }
+  return false;
+}
+
+/** After a running reply's parts: 0 nothing, 1 assistant-ui's empty text part, 2 that and the next-round status. */
+export function runningReplyTail(
+  running: boolean,
+  content: readonly { type: string; result?: unknown }[],
+): 0 | 1 | 2 {
+  if (!running || content.length === 0) return 0;
+  const last = content[content.length - 1].type;
+  if (last === "text" || last === "reasoning") return 0;
+  return betweenToolRounds(running, content) ? 2 : 1;
+}
+
 export type GenerationProgressUpdate =
   | { phase: "prefill"; prefill: LivePrefillProgress }
-  | { phase: "decode"; decode: LiveDecodeProgress };
+  | { phase: "decode"; decode: LiveDecodeProgress }
+  | { phase: "compacting" };
 
 function count(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
@@ -40,6 +66,7 @@ export function readGenerationProgress(
 ): GenerationProgressUpdate | null {
   if (frame === null || typeof frame !== "object") return null;
   const f = frame as Record<string, unknown>;
+  if (f.phase === "compacting") return { phase: "compacting" };
   if (f.phase === "prefill") {
     const processed = count(f.processed);
     if (processed === null) return null;
@@ -75,8 +102,7 @@ export function readGenerationProgress(
   return null;
 }
 
-/** "9,216 / 23,700 tokens · 1,326 tok/s" for the Generation details setting, counted past the
- *  cached prefix like the percent. */
+/** Counted past the cached prefix, like the percent. */
 export function formatPrefillDetails(
   prefill: LivePrefillProgress,
   t: Translate,

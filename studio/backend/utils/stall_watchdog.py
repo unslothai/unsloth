@@ -30,16 +30,19 @@ DEAD_MAN_TIMEOUT_S = 8.0
 DUMP_COOLDOWN_S = 600.0
 
 
-def stand_down_for_the_warm() -> bool:
-    """True from process start until the warm is over: a switch armed before the warm's
-    GIL-holding ``import torch`` cannot be disarmed and would dump a known stall."""
+def stand_down_for_the_warm(*, warm_expected: bool = True) -> bool:
+    """Suppress an expected or active warm; a cold launch has no warm to wait for.
+
+    A switch armed before a selected warm's GIL-holding ``import torch`` cannot be
+    disarmed and would dump a known stall. Capture warm_expected for the lifespan.
+    """
     from utils.torch_warmup import DISABLE_ENV_VAR as _WARM_DISABLED
     from utils.torch_warmup import warm_status
 
     status = warm_status()
     if status["started"]:
         return bool(status["alive"] and not status["finished"])
-    return os.environ.get(_WARM_DISABLED) != "1"
+    return warm_expected and os.environ.get(_WARM_DISABLED) != "1"
 
 
 async def _noop() -> None:

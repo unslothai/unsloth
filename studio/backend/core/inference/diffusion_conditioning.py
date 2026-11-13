@@ -15,6 +15,8 @@ LOCALIZED_EDIT_MODES = ("annotate", "paint", "mask")
 MAX_CONDITION_SOURCE_PIXELS = 64_000_000
 
 MIN_OUTPUT_SIDE = 256
+# Largest family max_output_side; per-family bounds live in check_output_size.
+MAX_REQUEST_SIDE = 6272
 
 # Upstream QwenImage21Pipeline's own ``output_resolution`` default.
 DEFAULT_REFERENCE_RESOLUTION = 1024
@@ -127,6 +129,17 @@ def effective_reference_resolution(fam: Any, requested: Optional[int]) -> Option
             + f" for this model (got {requested})."
         )
     return int(requested)
+
+
+def reference_request_pixels(ref_resolution: Optional[int], extra_images: int = 0) -> int:
+    """Shared by the load's edit placement and the render-time guard, so both price the same pixels."""
+    if not ref_resolution:
+        return 0
+    return int((1 + max(0, int(extra_images))) * int(ref_resolution) * int(ref_resolution))
+
+
+def default_reference_pixels(fam: Any) -> int:
+    return reference_request_pixels(effective_reference_resolution(fam, None))
 
 
 def _decode_bounded(data: str, mode: str, budget: list[int], what: str) -> Any:

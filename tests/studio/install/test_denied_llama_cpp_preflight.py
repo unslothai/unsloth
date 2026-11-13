@@ -341,9 +341,8 @@ def test_setup_sh_reports_a_denied_default_home_cache() -> None:
 
 
 def test_the_denial_detail_survives_a_directory_it_cannot_open() -> None:
-    """Get-Item returns nothing for a directory whose ACL denies read, which is the
-    one case this detail exists for, so the attributes have to come through an API
-    that needs only FILE_READ_ATTRIBUTES."""
+    """Get-Item returns nothing for a directory whose ACL denies read, so attributes must come
+    through an API needing only FILE_READ_ATTRIBUTES, such as [System.IO.File]::GetAttributes."""
     for text in (INSTALL_PS1, SETUP_PS1):
         body = _function_source(text, "Get-PathDenialDetail")
         assert "[System.IO.File]::GetAttributes($Path)" in body

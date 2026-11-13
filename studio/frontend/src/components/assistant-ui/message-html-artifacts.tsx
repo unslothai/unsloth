@@ -3,12 +3,9 @@
 
 "use client";
 
-// Once an assistant message finishes, append one browser card per fenced ```html
-// block in its text. No render_html tool call, no extra message. Defers to the
-// other paths to avoid duplicates: skips the message when a render_html tool
-// already rendered it, and skips full documents the in-place collapse handles.
-// React components (```jsx / ```tsx) get a card after the HTML ones; their code
-// stays in place, and nothing else renders them.
+// After an assistant message finishes, one browser card per fenced html block is appended, skipping
+// messages a render_html tool already rendered and full documents the in-place collapse handles;
+// React jsx and tsx blocks get a card after the HTML ones, code staying in place.
 
 import {
   memoOnArray,
@@ -49,9 +46,8 @@ export const MessageHtmlArtifacts: FC = () => {
   const loadedIsDiffusion = useChatRuntimeStore(
     (state) => state.loadedIsDiffusion,
   );
-  // Full docs already shown by the in-place collapse; excluded for diffusion,
-  // which keeps its code inline instead. This picks which path renders a full
-  // document, not whether fenced HTML renders at all.
+  // Full documents are already shown by the in-place collapse, except for diffusion (code stays
+  // inline there); this picks the path, not whether fenced HTML renders.
   const collapsesFullDocs = collapseHtmlArtifacts && !loadedIsDiffusion;
 
   const fences = useMemo(() => {
