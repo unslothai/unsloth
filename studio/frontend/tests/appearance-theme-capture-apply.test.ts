@@ -278,3 +278,20 @@ test("undo restores a font the theme overwrote, even after an unrelated font was
   assert.equal(brand?.dataUrl, mine.dataUrl);
   assert.ok(undone.customization.importedFonts.some((f) => f.name === "Extra"));
 });
+
+test("undo drops a theme font that only shares a name with the restored local family", () => {
+  const before = { ...BASE, customization: sanitizeCustomization({ uiFont: "Brand Sans" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "Brand Sans" }, assets: { fonts: [font("Brand Sans")] } })));
+  const applied = apply(before, theme);
+  const now = { ...before, palette: applied.palette, glass: applied.glass, customization: applied.customization };
+  const undone = planUndo(before, applied, now);
+  assert.deepEqual(undone.customization.importedFonts, []);
+  assert.equal(undone.customization.uiFont, "Brand Sans");
+});
+
+test("a theme font replaces an imported one whose name differs only in case", () => {
+  const current = withFonts([font("Brand Sans"), font("Old"), font("Keep")]);
+  const theme = parseOk(JSON.stringify(file({ assets: { fonts: [font("brand sans")] } })));
+  const names = apply(current, theme).customization.importedFonts.map((f) => f.name);
+  assert.deepEqual(names, ["brand sans", "Old", "Keep"]);
+});

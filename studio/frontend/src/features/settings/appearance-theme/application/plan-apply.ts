@@ -82,8 +82,9 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 function mergeFonts(themeFonts: ImportedFont[], currentFonts: ImportedFont[]): ImportedFont[] {
-  const names = new Set(themeFonts.map((font) => font.name));
-  return [...themeFonts, ...currentFonts.filter((font) => !names.has(font.name))];
+  // Case-insensitive like CSS family matching and the font uploader.
+  const names = new Set(themeFonts.map((font) => font.name.toLowerCase()));
+  return [...themeFonts, ...currentFonts.filter((font) => !names.has(font.name.toLowerCase()))];
 }
 
 const glassKey = ({ material, strength, lens, menus }: GlassSettings) =>
@@ -173,7 +174,11 @@ export function planUndo(
   const was = byName(before.customization.importedFonts);
   const set = byName(applied.customization.importedFonts);
   const is = byName(now.customization.importedFonts);
-  const selected = new Set(FONT_FIELDS.map((field) => customization[field]));
+  // Only selections made after Apply keep a theme-added face; a restored local family does not.
+  const selected = new Set(
+    FONT_FIELDS.filter((field) => now.customization[field] !== applied.customization[field])
+      .map((field) => now.customization[field]),
+  );
   const fonts: ImportedFont[] = [];
   for (const font of now.customization.importedFonts) {
     if (set.get(font.name)?.dataUrl !== font.dataUrl) fonts.push(font);
@@ -194,8 +199,14 @@ export function planUndo(
   };
   const reverted = sanitizeCustomization(customization);
   // Every imported name seen, so a restored selection whose font was since deleted is cleared.
+  // A family that was local (not imported) before Apply stays selectable after Undo.
+  const localBefore = new Set(
+    FONT_FIELDS.map((field) => before.customization[field])
+      .filter((name) => name && !was.has(name)),
+  );
   const knownNames = new Set(
-    [before, applied, now].flatMap((s) => s.customization.importedFonts.map((font) => font.name)),
+    [before, applied, now].flatMap((s) => s.customization.importedFonts.map((font) => font.name))
+      .filter((name) => !localBefore.has(name)),
   );
   return {
     palette: revert(before.palette, applied.palette, now.palette),
