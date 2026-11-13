@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { formatDate as formatCachedDate } from "@/lib/intl-cache";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
@@ -15,6 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   BulkExportItems,
+  ExportFormatItems,
   type ConvExportFormat,
   type ConversationExportFormat,
   chatExportOptions,
@@ -35,23 +38,22 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, Settings01Icon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   LayerIcon,
+  LayoutTwoColumnIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
   Refresh01Icon,
-  Settings02Icon,
   Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
@@ -63,7 +65,6 @@ import { ForkIcon } from "@/lib/fork-icon";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  Columns2Icon,
   GitBranchIcon,
 } from "lucide-react";
 import { type ReactNode, createContext, useContext } from "react";
@@ -223,13 +224,16 @@ export function ExportSubmenu({
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className={cn(MENU, bulk ? "w-56" : "w-48")}>
         {bulk ? (
-          <BulkExportItems onExport={(format, merged) => onExport({ kind: "bulk", format, merged })} />
+          <BulkExportItems
+            onExport={(format, merged) => onExport({ kind: "bulk", format, merged })}
+            subContentClassName={cn(MENU, "w-48")}
+          />
         ) : (
-          chatExportOptions().map(({ label, format }) => (
-            <DropdownMenuItem key={format} onSelect={() => onExport({ kind: "chat", format })}>
-              {label}
-            </DropdownMenuItem>
-          ))
+          <ExportFormatItems
+            options={chatExportOptions().map(({ label, format }) => ({ key: format, label }))}
+            onSelect={(format) => onExport({ kind: "chat", format })}
+            subContentClassName={cn(MENU, "w-48")}
+          />
         )}
       </DropdownMenuSubContent>
     </DropdownMenuSub>
@@ -542,13 +546,13 @@ function ChatMenu({
             />
           ) : (
             <MenuItem
-              icon={Archive03Icon}
+              icon={ArchiveIcon}
               label={t("settings.data.library.archive")}
               onSelect={() => actions.archive([chat])}
             />
           )}
           <MenuItem
-            icon={Delete02Icon}
+            icon={TrashIcon}
             label={t("common.delete")}
             destructive
             onSelect={() => actions.remove([chat])}
@@ -577,7 +581,7 @@ function ChatTile({
   const iconClass = bare ? CARD_ICON : TILE_ICON;
   const icon =
     chat.type === "compare" ? (
-      <Columns2Icon strokeWidth={1.75} className={iconClass} />
+      <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={1.75} className={iconClass} />
     ) : chat.isFork ? (
       <GitBranchIcon strokeWidth={1.75} className={iconClass} />
     ) : (
@@ -743,6 +747,7 @@ export type CollectionRowLayout = "own" | "files" | { showLocation: boolean };
 
 function FileColumns({ modified }: { modified: number }) {
   const locale = useLocale();
+  useTimeFormat();
   return (
     <>
       <span className={cn(FILE_LIST_COLUMNS.modified, FILE_LIST_COLUMNS.cell)}>
@@ -768,15 +773,16 @@ function groupedTime(
 ): string {
   const date = new Date(ts);
   if (bucket === "today" || bucket === "yesterday") {
-    return date.toLocaleTimeString(locale, {
-      hour: "numeric",
-      minute: "2-digit",
-    });
+    return formatCachedDate(
+      date,
+      locale,
+      withTimeFormat({ hour: "numeric", minute: "2-digit" }, locale),
+    );
   }
   if (bucket === "week") {
-    return date.toLocaleDateString(locale, { weekday: "long" });
+    return formatCachedDate(date, locale, { weekday: "long" });
   }
-  return date.toLocaleDateString(locale, {
+  return formatCachedDate(date, locale, {
     month: "short",
     day: "numeric",
     year:
@@ -1072,6 +1078,7 @@ export function ChatRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   const selected = actions.selection.has(chat.id);
   const model = modelLabel(chat, actions.models);
@@ -1167,6 +1174,7 @@ export function ChatCard({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   const selected = actions.selection.has(chat.id);
   const selecting = actions.selection.size > 0;
@@ -1235,14 +1243,21 @@ export function GroupHeading({
   children,
   count,
   countLabel,
+  divider = true,
 }: {
   children: ReactNode;
   count: number;
   countLabel?: string;
+  divider?: boolean;
 }) {
   const t = useT();
   return (
-    <h3 className="mb-2 mt-3 flex items-baseline gap-2 border-b border-border pb-2 pl-4 font-sans text-ui-12">
+    <h3
+      className={cn(
+        "mb-2 mt-3 flex items-baseline gap-2 pb-2 pl-4 font-sans text-ui-12",
+        divider && "border-b border-border",
+      )}
+    >
       <span className="font-medium text-muted-foreground">{children}</span>
       <span className="text-ui-11 text-muted-foreground/70">
         {countLabel ?? chatCount(count, t)}
@@ -1349,7 +1364,7 @@ function ProjectMenu({
           <OpenProjectFolderItem projectId={project.id} />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
-            icon={Settings02Icon}
+            icon={Settings01Icon}
             label={t("library.chats.menu.edit")}
             onSelect={() => actions.editProject(project)}
           />
@@ -1384,7 +1399,7 @@ function ProjectMenu({
           />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
-            icon={Delete02Icon}
+            icon={TrashIcon}
             label={t("library.chats.menu.deleteProject")}
             destructive
             onSelect={() => actions.deleteProject(project)}
@@ -1412,6 +1427,7 @@ export function ProjectCard({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   const pinned = actions.pinnedProjects.has(project.id);
   return (
@@ -1457,6 +1473,7 @@ export function ProjectRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   const pinned = actions.pinnedProjects.has(project.id);
   const sectionId = actions.projectSectionOf.get(project.id);
@@ -1590,7 +1607,7 @@ export function SectionMenuItems({
         </>
       )}
       <MenuItem
-        icon={Settings02Icon}
+        icon={Settings01Icon}
         label={t("shell.sections.edit")}
         onSelect={() => actions.renameSection(section)}
       />
@@ -1612,7 +1629,7 @@ export function SectionMenuItems({
       />
       <DropdownMenuSeparator className="mx-3" />
       <MenuItem
-        icon={Delete02Icon}
+        icon={TrashIcon}
         label={t("shell.sections.remove")}
         destructive
         onSelect={() => actions.removeSection(section)}
@@ -1642,6 +1659,7 @@ export function SectionCard({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
@@ -1685,6 +1703,7 @@ export function SectionRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const actions = useChatsActions();
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
@@ -1774,6 +1793,7 @@ function FavoriteTile({
   menu: ReactNode;
 }) {
   const locale = useLocale();
+  useTimeFormat();
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
   return (
     <div className="group/library-card group/chat relative">
@@ -1808,7 +1828,7 @@ export function FavoriteChatTile({ chat }: { chat: SidebarItem }) {
   const actions = useChatsActions();
   const icon =
     chat.type === "compare" ? (
-      <Columns2Icon strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
+      <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
     ) : chat.isFork ? (
       <GitBranchIcon strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
     ) : (

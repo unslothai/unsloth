@@ -31,25 +31,21 @@ class GatedConnection(sqlite3.Connection):
 
 
 def connect(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
-    """sqlite3.connect with opens and closes serialized process-wide."""
+    """sqlite3.connect with opens and closes serialized process-wide. A ``factory`` must subclass
+    GatedConnection so its close stays gated."""
+    kwargs.setdefault("factory", GatedConnection)
     with _CONNECTION_GATE:
-        return sqlite3.connect(str(database), factory = GatedConnection, **kwargs)
+        return sqlite3.connect(str(database), **kwargs)
 
 
 def is_busy_error(exc: sqlite3.OperationalError) -> bool:
-    """Is this the writer lock being held elsewhere, rather than a real fault? sqlite reports it as
-    plain OperationalError, so the message is the only signal."""
+    """Writer lock held elsewhere, not a fault; the message is the only signal."""
     message = str(exc).lower()
     return "locked" in message or "busy" in message
 
 
 def apply_wal_synchronous(conn: sqlite3.Connection) -> None:
-    """synchronous=NORMAL, only while the file is really in WAL mode (per connection).
-
-    FULL fsyncs every commit under the writer lock (one busy-disk commit blocked 37s); NORMAL is
-    sqlite's recommended WAL pairing, durable across app crashes. journal_mode=WAL silently declines
-    on filesystems without shared memory, and NORMAL on a rollback journal drops the fsync that
-    keeps it consistent, so this reads the mode in force and those installs keep FULL."""
+    """Use synchronous=NORMAL only if WAL is really in force; journal_mode=WAL can silently decline."""
     try:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     except (sqlite3.Error, TypeError, IndexError):

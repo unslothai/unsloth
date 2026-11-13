@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Offload layers in the start payload: off by default, a full finetune always sends it off,
-// and the VRAM budget goes out only with "auto", the one mode that sizes to it, per card when
-// training sees several GPUs.
+// Offload layers are off by default and always off for a full finetune; the VRAM budget is sent
+// only with "auto", the one mode that sizes to it, per card on multi-GPU runs.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -123,6 +122,8 @@ test("offload goes out off wherever the run cannot offload", () => {
     assert.equal(offloadPayload({ ...on, ...blocked }).offload_vram_gb, null);
   }
   assert.equal(offloadSupported(on), true);
+  // Gemma 3n/4 take audio input on a decoder that streams like any other.
+  assert.equal(offloadSupported({ ...on, isAudioModel: true, isVisionModel: true }), true);
 });
 
 test("a count above the backend limit is clamped instead of failing the start", () => {

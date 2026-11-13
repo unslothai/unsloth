@@ -63,6 +63,7 @@ function mlxStatus(over: Record<string, unknown>) {
     chat_template_override_reason: null,
     mlx_int8_prefill_requested: false,
     mlx_ane_prefill_requested: false,
+    mlx_fast_verify_requested: false,
     ...over,
   };
 }
@@ -160,6 +161,42 @@ test("a same-model MLX reload keeps a value this tab staged but advances the bas
   const s = useChatRuntimeStore.getState();
   assert.equal(s.mlxKvQuant, "4");
   assert.equal(s.loadedMlxKvQuantRequested, null);
+});
+
+test("a same-model MLX reload moves a clean Fast Verify both ways, and a poll leaves a staged one alone", () => {
+  useChatRuntimeStore.setState({ activeGgufVariant: null });
+  hydrate(mlxStatus({}), MLX);
+  const pair = ({ mlxFastVerify: on, loadedMlxFastVerifyRequested: loaded } = useChatRuntimeStore.getState()) => [on, loaded];
+  reload(mlxStatus({ mlx_fast_verify_requested: true }), MLX);
+  assert.deepEqual(pair(), [true, true]);
+  reload(mlxStatus({ mlx_fast_verify_requested: false }), MLX);
+  assert.deepEqual(pair(), [false, false]);
+  useChatRuntimeStore.setState({ mlxFastVerify: true });
+  reload(mlxStatus({ mlx_fast_verify_requested: false }), MLX);
+  assert.deepEqual(pair(), [true, false]);
+});
+
+test("a same-model GGUF reload moves a clean Engram table both ways, and a poll leaves a staged one alone", () => {
+  useChatRuntimeStore.setState({ activeGgufVariant: "Q8_0" });
+  hydrate(ggufStatus({ engram_precision: null }), GGUF);
+  const pair = ({ engramPrecision: on, loadedEngramPrecision: loaded } = useChatRuntimeStore.getState()) => [on, loaded];
+  assert.deepEqual(pair(), [null, null]);
+  reload(ggufStatus({ engram_precision: "MXFP8" }), GGUF);
+  assert.deepEqual(pair(), ["MXFP8", "MXFP8"]);
+  reload(ggufStatus({ engram_precision: null }), GGUF);
+  assert.deepEqual(pair(), [null, null]);
+  useChatRuntimeStore.setState({ engramPrecision: "BF16" });
+  reload(ggufStatus({ engram_precision: null }), GGUF);
+  assert.deepEqual(pair(), ["BF16", null]);
+});
+
+test("an MLX or diffusion status never seeds an Engram table", () => {
+  useChatRuntimeStore.setState({ activeGgufVariant: null });
+  hydrate(mlxStatus({ engram_precision: "Q8_0" }), MLX);
+  assert.equal(useChatRuntimeStore.getState().engramPrecision, null);
+  useChatRuntimeStore.setState({ activeGgufVariant: "Q8_0" });
+  hydrate(ggufStatus({ is_diffusion: true, engram_precision: "Q8_0" }), GGUF);
+  assert.equal(useChatRuntimeStore.getState().loadedEngramPrecision, null);
 });
 
 for (const staged of ["int8", "ane"] as const) {

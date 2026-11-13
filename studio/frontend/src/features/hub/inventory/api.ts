@@ -200,6 +200,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  estimated_resident_gb?: number | null;
   /** Streamed lookup-table bytes inside `size_bytes`; 0 when none or on an older backend. */
   lookup_table_bytes?: number;
   pending_drafter_filename?: string | null;
@@ -212,6 +213,18 @@ export interface GgufVariantDetail {
   partial_resumable?: boolean;
   /** Variants sharing this key share one companion download footprint. */
   dependency_key?: string | null;
+  /** Precision of the Engram table this quant ships with, when the repo publishes others. */
+  engram_precision?: string | null;
+  /** Engram precisions this quant loads with without downloading anything. */
+  engram_ready?: string[];
+}
+
+/** A standalone Engram table a GGUF repo publishes. */
+export interface EngramTableDetail {
+  precision: string;
+  filename: string;
+  size_bytes: number;
+  downloaded: boolean;
 }
 
 export interface GgufVariantsResponse {
@@ -222,6 +235,10 @@ export interface GgufVariantsResponse {
   dependencies_resolved?: boolean;
   /** "mlx" for precision folders of an MLX repo. */
   variant_format?: string | null;
+  /** Standalone Engram tables, most precise first; absent or empty when the repo has none. */
+  engram_tables?: EngramTableDetail[];
+  /** Whether this server's llama.cpp takes --ple; null when there are no tables or no probe. */
+  engram_supported?: boolean | null;
 }
 
 async function parseJsonOrThrow<T>(

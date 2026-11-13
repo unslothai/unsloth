@@ -3,7 +3,11 @@
 
 """FLUX.3 Klein Base conditioning blocks run once per render, bit-identical; cache cleared at start
 and end of each pipeline call; installed only on matching diffusers forward hash, else stock;
-UNSLOTH_DIFFUSION_COND_BLOCKS=0 disables"""
+UNSLOTH_DIFFUSION_COND_BLOCKS=0 disables. Offloaded (CUDA): computed inside the hooked forward,
+UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE=0 keeps stock. Modulation heads project one row per sample,
+not per token (any FLUX.3), UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD=0 restores per-token rows. With reference
+images the joint blocks take one row per span (image, references) instead of a per-token copy, bit-identical;
+UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD=0 restores the per-token rows"""
 
 from __future__ import annotations
 
@@ -13,18 +17,49 @@ import os
 import weakref
 from typing import Any, Optional
 
+from .rocm_bf16 import is_rocm_torch
+
 COND_BLOCKS_ENV = "UNSLOTH_DIFFUSION_COND_BLOCKS"
+OFFLOAD_COND_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE"
+COMPACT_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD"
+SPAN_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD"
+SPAN_KWARG = "unsloth_cond_mod"
+SPAN_LEN_KWARG = "unsloth_cond_span"
 COND_KWARG = "unsloth_cond"
+_COMPACT_ATTR = "_unsloth_compact_mod"
+_SPAN_ATTR = "_unsloth_span_mod"
+_OFFLOADED_ATTR = "_unsloth_cond_offloaded"
 
 # sha256[:16] of inspect.getsource(Flux3Transformer2DModel.forward) the replacement mirrors (d42ebf9c and 0.42.1).
 _FLUX3_FORWARD_SHA = frozenset({"f2f7c836416cfd58"})
+# Same, for Flux3SingleTransformerBlock.forward (the span-modulated joint block mirrors it).
+_FLUX3_SINGLE_SHA = frozenset({"92269bb072da8335"})
 
 _PATCHED: dict[type, Any] = {}
+_PATCHED_SINGLE: dict[type, Any] = {}
+# (attention output, MLP output) of a joint block on its combined input, bit-identical to ``self.attn`` / ``self.ff``,
+# or None for the modules: set by diffusion_flux_convrot_fused (one shared int8 ConvRot quant) while installed.
+JOINT_ATTN_FF: Any = None
+
+
+def _switch(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
 def enabled() -> bool:
-    raw = (os.environ.get(COND_BLOCKS_ENV) or "").strip().lower()
-    return raw not in ("0", "off", "false", "no")
+    return _switch(COND_BLOCKS_ENV)
+
+
+def offload_cache_enabled() -> bool:
+    return _switch(OFFLOAD_COND_ENV)
+
+
+def compact_enabled() -> bool:
+    return _switch(COMPACT_MOD_ENV)
+
+
+def span_enabled() -> bool:
+    return _switch(SPAN_MOD_ENV)
 
 
 def _forward_sha(cls: type) -> Optional[str]:
@@ -57,7 +92,7 @@ class _Entry:
 
 
 def _offloaded(module: Any) -> Optional[str]:
-    """Offloaded weights keep the stock path: running conditioning blocks outside the forward reorders prefetch."""
+    """Why ``module`` is offloaded (None: resident); its conditioning then runs only inside the hooked forward."""
     for name, sub in module.named_modules():
         if getattr(sub, "_hf_hook", None) is not None:
             return f"{name or '<root>'} carries an accelerate hook"
@@ -66,6 +101,26 @@ def _offloaded(module: Any) -> Optional[str]:
         if any("offload" in str(k).lower() for k in hooks):
             return f"{name or '<root>'} is group offloaded"
     return None
+
+
+def _fixed_prefetch_chain(module: Any) -> Optional[str]:
+    """diffusers' fixed next-group prefetch chain would leave a skipped block on the device."""
+    for name, sub in module.named_modules():
+        hooks = getattr(getattr(sub, "_diffusers_hook", None), "hooks", None) or {}
+        for key, hook in hooks.items():
+            if "lazy_prefetch" in str(key).lower() or getattr(hook, "next_group", None) is not None:
+                return f"{name or '<root>'} streams with diffusers' prefetch chain"
+    return None
+
+
+def _offload_device_ok(t: Any) -> bool:
+    """Offload cache: CUDA only for now (ROCm, XPU, MPS, CPU keep stock)."""
+    import torch
+    return bool(t.is_cuda) and not is_rocm_torch(torch)
+
+
+def _rows(t: Any, batch_size: int, n: int) -> Any:
+    return t if t.shape[1] == n else t.expand(batch_size, n, -1)
 
 
 def flux3_conditioning(
@@ -78,17 +133,25 @@ def flux3_conditioning(
     batch_size: int,
     dtype: Any,
     device: Any,
+    compact: bool = False,
+    target_temb: Any = None,
 ) -> dict:
-    """The conditioning-only part of ``Flux3Transformer2DModel.forward`` for a non-flow-map transformer, op for op:
-    the timestep-0 embedding, the text and reference modulations, projections and RoPE, and their per-mode blocks."""
+    """The conditioning part of ``Flux3Transformer2DModel.forward``, op for op. ``compact``: one modulation row per
+    sample (every token of a mode shares its timestep), broadcast by the blocks."""
     import torch
     import torch.nn.functional as F
 
     zero_temb = module.time_proj(torch.zeros(batch_size, device = device, dtype = dtype))
     zero_temb = module.timestep_embedder(zero_temb.to(dtype))[:, None, :]
+    if target_temb is not None:
+        zero_temb = zero_temb + target_temb
     zero_temb_act = F.silu(zero_temb)
 
-    txt_temb_act = zero_temb_act.expand(batch_size, encoder_hidden_states.shape[1], -1)
+    txt_temb_act = (
+        zero_temb_act
+        if compact
+        else zero_temb_act.expand(batch_size, encoder_hidden_states.shape[1], -1)
+    )
     txt_early_mod = module.early_stream_modulations["txt"](txt_temb_act)
     txt_single_mod = module.single_stream_modulations["txt"](txt_temb_act)
     txt_states = module.context_embedder(encoder_hidden_states)
@@ -96,7 +159,11 @@ def flux3_conditioning(
 
     out: dict = {}
     if image_cond_hidden_states is not None:
-        cond_temb_act = zero_temb_act.expand(batch_size, image_cond_hidden_states.shape[1], -1)
+        cond_temb_act = (
+            zero_temb_act
+            if compact
+            else zero_temb_act.expand(batch_size, image_cond_hidden_states.shape[1], -1)
+        )
         cond_early_mod = module.early_stream_modulations["image_cond"](cond_temb_act)
         cond_single_mod = module.single_stream_modulations["image_cond"](cond_temb_act)
         cond_states = module.x_embedders["image_cond"](image_cond_hidden_states)
@@ -119,6 +186,57 @@ def flux3_conditioning(
     return out
 
 
+def _compact_call(module: Any, attention_kwargs: Any) -> bool:
+    """Inference without a per-call LoRA scale (stock ``apply_lora_scale`` handles it)."""
+    import torch
+
+    if not module.__dict__.get(_COMPACT_ATTR) or torch.is_grad_enabled():
+        return False
+    return not (attention_kwargs and "scale" in attention_kwargs)
+
+
+class Pending:
+    """An offloaded miss passed as ``unsloth_cond``: a non-tensor, so a CUDA graph runs this call eager and a CFG
+    router records no template from it (``pending``)."""
+
+    __slots__ = ("key", "sources")
+    pending = True
+
+    def __init__(self, key: tuple, sources: tuple) -> None:
+        self.key = key
+        self.sources = sources
+
+
+def _claim_pending(
+    module: Any, hidden_states: Any, pending: Pending, sources: tuple
+) -> Optional[dict]:
+    """Offloaded miss: compute and cache inside the hooked forward, only for the exact call it was recorded for."""
+    import torch
+
+    key, recorded = pending.key, pending.sources
+    if key[1] != int(hidden_states.shape[0]) or any(a is not b for a, b in zip(sources, recorded)):
+        return None
+    if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
+        return None
+    ehs, txt_ids, ich, iid = sources
+    states = flux3_conditioning(
+        module,
+        encoder_hidden_states = ehs,
+        txt_ids = txt_ids,
+        image_cond_hidden_states = ich,
+        image_cond_ids = iid,
+        batch_size = int(hidden_states.shape[0]),
+        dtype = hidden_states.dtype,
+        device = hidden_states.device,
+        compact = bool(module.__dict__.get(_COMPACT_ATTR)),
+    )
+    module.__dict__.setdefault("_unsloth_cond_cache", {})[key] = _Entry(sources, states)
+    stats = _stats(module)
+    stats["misses"] += 1
+    stats["in_forward"] = stats.get("in_forward", 0) + 1
+    return states
+
+
 def _flux3_cached_forward(
     self: Any,
     hidden_states: Any,
@@ -133,10 +251,16 @@ def _flux3_cached_forward(
     return_dict: bool = True,
     unsloth_cond: Optional[dict] = None,
 ) -> Any:
-    """Stock forward op for op, taking precomputed ``unsloth_cond``; without it, it IS the stock forward."""
-    stock = _stock_forward(self)
-    if unsloth_cond is None:
-        return stock(
+    """Stock forward op for op, with precomputed ``unsloth_cond`` and / or compact modulation; else stock."""
+    if isinstance(unsloth_cond, Pending):
+        unsloth_cond = _claim_pending(
+            self,
+            hidden_states,
+            unsloth_cond,
+            (encoder_hidden_states, txt_ids, image_cond_hidden_states, image_cond_ids),
+        )
+    if unsloth_cond is None and not _compact_call(self, attention_kwargs):
+        return _stock_forward(self)(
             self,
             hidden_states = hidden_states,
             encoder_hidden_states = encoder_hidden_states,
@@ -153,15 +277,49 @@ def _flux3_cached_forward(
     import torch.nn.functional as F
     from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
-    if target_timestep is not None or bool(self.config.flow_map):
-        raise ValueError("cached conditioning states are only valid for a non-flow-map transformer")
-
     batch_size, image_seq_len = hidden_states.shape[:2]
     dtype = hidden_states.dtype
+    compact = bool(self.__dict__.get(_COMPACT_ATTR))
 
     image_temb = self.time_proj(timestep.to(dtype) * 1000)
     image_temb = self.timestep_embedder(image_temb.to(dtype))[:, None, :]
-    image_temb = image_temb.expand(batch_size, image_seq_len, -1)
+    if unsloth_cond is not None:
+        if target_timestep is not None or bool(self.config.flow_map):
+            raise ValueError(
+                "cached conditioning states are only valid for a non-flow-map transformer"
+            )
+    else:
+        if image_cond_hidden_states is not None and image_cond_ids is None:
+            raise ValueError("`image_cond_hidden_states` requires `image_cond_ids`.")
+        if image_cond_hidden_states is None and image_cond_ids is not None:
+            raise ValueError("`image_cond_ids` was passed without `image_cond_hidden_states`.")
+        if (target_timestep is not None) != bool(self.config.flow_map):
+            raise ValueError(
+                "`target_timestep` is required by, and only by, a flow-map transformer (`flow_map=True`)."
+            )
+        target_temb = None
+        if target_timestep is not None:
+            target_temb = self.time_proj(target_timestep.to(dtype) * 1000)
+            target_temb = self.target_timestep_embedder(target_temb.to(dtype))[:, None, :]
+            image_temb = image_temb + target_temb
+        unsloth_cond = flux3_conditioning(
+            self,
+            encoder_hidden_states = encoder_hidden_states,
+            txt_ids = txt_ids,
+            image_cond_hidden_states = image_cond_hidden_states,
+            image_cond_ids = image_cond_ids,
+            batch_size = batch_size,
+            dtype = dtype,
+            device = hidden_states.device,
+            compact = True,
+            target_temb = target_temb,
+        )
+        if (
+            not torch.compiler.is_compiling()
+        ):  # a module int Dynamo would guard on: one recompile per call
+            _stats(self)["compact"] = _stats(self).get("compact", 0) + 1
+    if not compact:
+        image_temb = image_temb.expand(batch_size, image_seq_len, -1)
 
     encoder_hidden_states = unsloth_cond["txt_states"]
     txt_single_mod = unsloth_cond["txt_single_mod"]
@@ -177,10 +335,30 @@ def _flux3_cached_forward(
     for block in self.mode_blocks["image"]:
         hidden_states = block(hidden_states, image_early_mod, image_rotary_emb)
 
+    block_kwargs: dict = {}
     if has_cond:
+        cond_states = unsloth_cond["cond_states"]
         cond_rotary_emb = (unsloth_cond["cond_cos"], unsloth_cond["cond_sin"])
-        content_states = torch.cat([hidden_states, unsloth_cond["cond_states"]], dim = 1)
-        content_mod = torch.cat([image_single_mod, unsloth_cond["cond_single_mod"]], dim = 1)
+        content_states = torch.cat([hidden_states, cond_states], dim = 1)
+        cond_single_mod = unsloth_cond["cond_single_mod"]
+        if (
+            self.__dict__.get(_SPAN_ATTR)
+            and image_single_mod.shape[1] == 1
+            and cond_single_mod.shape[1] == 1
+        ):
+            # one row per span; the span length rides on a storage-free tensor so block graphs can copy every input
+            content_mod = image_single_mod
+            block_kwargs[SPAN_KWARG] = cond_single_mod
+            block_kwargs[SPAN_LEN_KWARG] = cond_states.new_empty((cond_states.shape[1], 0))
+        else:
+            # image and reference spans carry different timesteps: per token here
+            content_mod = torch.cat(
+                [
+                    _rows(image_single_mod, batch_size, image_seq_len),
+                    _rows(cond_single_mod, batch_size, cond_states.shape[1]),
+                ],
+                dim = 1,
+            )
         joint_rotary_emb = (
             torch.cat([txt_rotary_emb[0], image_rotary_emb[0], cond_rotary_emb[0]], dim = 0),
             torch.cat([txt_rotary_emb[1], image_rotary_emb[1], cond_rotary_emb[1]], dim = 0),
@@ -200,6 +378,7 @@ def _flux3_cached_forward(
             temb_mod = content_mod,
             temb_mod_context = txt_single_mod,
             image_rotary_emb = joint_rotary_emb,
+            **block_kwargs,
         )
 
     hidden_states = content_states[:, :image_seq_len]
@@ -209,6 +388,100 @@ def _flux3_cached_forward(
     if not return_dict:
         return (output,)
     return Transformer2DModelOutput(sample = output)
+
+
+def _flux3_span_single_forward(
+    self: Any,
+    hidden_states: Any,
+    encoder_hidden_states: Any,
+    temb_mod: Any,
+    temb_mod_context: Any,
+    image_rotary_emb: Any,
+    unsloth_cond_mod: Any = None,
+    unsloth_cond_span: Any = None,
+) -> Any:
+    """Stock joint block, op for op, with one ``[B, 1, 3D]`` modulation row per span: ``temb_mod`` (image),
+    ``unsloth_cond_mod`` (reference, length = ``unsloth_cond_span``'s ``[reference_tokens, 0]`` shape)."""
+    if unsloth_cond_mod is None or unsloth_cond_span is None:
+        return _stock_single_forward(self)(
+            self,
+            hidden_states = hidden_states,
+            encoder_hidden_states = encoder_hidden_states,
+            temb_mod = temb_mod,
+            temb_mod_context = temb_mod_context,
+            image_rotary_emb = image_rotary_emb,
+        )
+    import torch
+
+    n_cond = unsloth_cond_span.shape[0]
+    n_image = hidden_states.shape[1] - n_cond
+    mod_shift, mod_scale, mod_gate = torch.chunk(temb_mod, 3, dim = -1)
+    r_shift, r_scale, r_gate = torch.chunk(unsloth_cond_mod, 3, dim = -1)
+    c_mod_shift, c_mod_scale, c_mod_gate = torch.chunk(temb_mod_context, 3, dim = -1)
+
+    norm_hidden_states = self.norm(hidden_states)
+    norm_image, norm_cond = torch.split(norm_hidden_states, [n_image, n_cond], dim = 1)
+    norm_hidden_states = torch.cat(
+        [(1 + mod_scale) * norm_image + mod_shift, (1 + r_scale) * norm_cond + r_shift], dim = 1
+    )
+
+    norm_encoder_hidden_states = self.norm(encoder_hidden_states)
+    norm_encoder_hidden_states = (1 + c_mod_scale) * norm_encoder_hidden_states + c_mod_shift
+
+    combined = torch.cat([norm_encoder_hidden_states, norm_hidden_states], dim = 1)
+
+    both = JOINT_ATTN_FF(self, combined, image_rotary_emb) if JOINT_ATTN_FF is not None else None
+    if both is None:
+        attn_output = self.attn(hidden_states = combined, image_rotary_emb = image_rotary_emb)
+        ff_output = self.ff(combined)
+    else:
+        attn_output, ff_output = both
+    output = attn_output + ff_output
+
+    context_output, image_output, cond_output = torch.split(
+        output, [encoder_hidden_states.shape[1], n_image, n_cond], dim = 1
+    )
+    encoder_hidden_states = encoder_hidden_states + c_mod_gate * context_output
+    image_states, cond_states = torch.split(hidden_states, [n_image, n_cond], dim = 1)
+    hidden_states = torch.cat(
+        [image_states + mod_gate * image_output, cond_states + r_gate * cond_output], dim = 1
+    )
+
+    return encoder_hidden_states, hidden_states
+
+
+def _stock_single_forward(module: Any) -> Any:
+    for cls in type(module).__mro__:
+        stock = _PATCHED_SINGLE.get(cls)
+        if stock is not None:
+            return stock
+    raise RuntimeError(f"{type(module).__name__} has no stock forward recorded")
+
+
+def patch_single_class(cls: type) -> Optional[str]:
+    """Install the span-aware joint block forward on ``cls`` (at load, before compile or a hook binds it)."""
+    if any(c in _PATCHED_SINGLE for c in cls.__mro__):
+        return None
+    sha = _forward_sha(cls)
+    if sha not in _FLUX3_SINGLE_SHA:
+        return f"diffusers joint block changed (source {sha})"
+    _PATCHED_SINGLE[cls] = cls.forward
+    cls.forward = _flux3_span_single_forward
+    return None
+
+
+def _span_ready(transformer: Any) -> Optional[str]:
+    """None when every joint block runs the span-aware forward; else why the per-token rows stay."""
+    blocks = list(getattr(transformer, "single_transformer_blocks", None) or ())
+    if not blocks:
+        return "no joint blocks"
+    for block in blocks:
+        why = patch_single_class(type(block))
+        if why is not None:
+            return why
+        if type(block).forward is not _flux3_span_single_forward:
+            return "the joint block forward is not the patched one"
+    return None
 
 
 def _stock_forward(module: Any) -> Any:
@@ -241,10 +514,30 @@ def _stats(module: Any) -> dict:
     return stats
 
 
+def _conditioning_blocks(module: Any, has_cond: bool) -> list:
+    blocks = list(module.txt_mode_blocks)
+    if has_cond:
+        blocks += list(module.mode_blocks["image_cond"])
+    return blocks
+
+
+def _match_prefetch_order(module: Any, has_cond: bool, *, skipping: bool) -> None:
+    """Keep the streamed prefetch on order when a hit skips (or a miss runs) the conditioning blocks."""
+    from .diffusion_offload_prefetch import match_skipped_order
+    try:
+        match_skipped_order(module, _conditioning_blocks(module, has_cond), skipping = skipping)
+    except Exception:  # noqa: BLE001 - speed hint only
+        pass
+
+
 def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     import torch
 
     if args or kwargs.get(COND_KWARG) is not None or not module.__dict__.get("_unsloth_cond_live"):
+        return None
+    if (
+        torch.compiler.is_compiling()
+    ):  # a whole-model compile: identity cache and counters stay out of the graph
         return None
     if torch.is_grad_enabled() or kwargs.get("target_timestep") is not None:
         return None
@@ -266,6 +559,13 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
         return None
     if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
         return None
+    offloaded = bool(module.__dict__.get(_OFFLOADED_ATTR))
+    if offloaded and not _offload_device_ok(hidden_states):
+        stats["skipped"] += 1
+        stats["reason"] = (
+            f"offloaded on {hidden_states.device.type} (the offload cache is CUDA only)"
+        )
+        return None
     sources = (ehs, txt_ids, ich, iid)
     key = (
         tuple(_tkey(t) for t in sources),
@@ -276,6 +576,11 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     cache = module.__dict__.setdefault("_unsloth_cond_cache", {})
     entry = cache.get(key)
     if entry is None or not entry.matches(sources):
+        if offloaded:
+            _match_prefetch_order(module, ich is not None, skipping = False)
+            new_kwargs = dict(kwargs)
+            new_kwargs[COND_KWARG] = Pending(key, sources)
+            return args, new_kwargs
         states = flux3_conditioning(
             module,
             encoder_hidden_states = ehs,
@@ -285,12 +590,15 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
             batch_size = int(hidden_states.shape[0]),
             dtype = hidden_states.dtype,
             device = hidden_states.device,
+            compact = bool(module.__dict__.get(_COMPACT_ATTR)),
         )
         cache[key] = _Entry(sources, states)
         stats["misses"] += 1
     else:
         states = entry.states
         stats["hits"] += 1
+        if offloaded:
+            _match_prefetch_order(module, ich is not None, skipping = True)
     new_kwargs = dict(kwargs)
     new_kwargs[COND_KWARG] = states
     return args, new_kwargs
@@ -305,14 +613,40 @@ def _applies(transformer: Any) -> Optional[str]:
 
 
 def prepare(transformer: Any, logger: Any = None) -> bool:
-    """Call at load, before the speed layer binds the class forward. True when the cache can arm."""
-    if transformer is None or not enabled():
+    """Call at load, before the speed layer binds the class forward. True when the conditioning cache can arm."""
+    cond_on = enabled()
+    compact = compact_enabled()
+    if transformer is None or not (cond_on or compact):
         return False
-    why = _applies(transformer) or patch_class(type(transformer))
+    applies = _applies(transformer)
+    if applies is not None and (not compact or "not a FLUX.3" in applies):
+        if cond_on:
+            _stats(transformer)["reason"] = applies
+            if logger is not None and "not a FLUX.3" not in applies:
+                logger.info("diffusion.cond_blocks: off (%s)", applies)
+        return False
+    why = patch_class(type(transformer))
     if why is not None:
         _stats(transformer)["reason"] = why
-        if logger is not None and "not a FLUX.3" not in why:
+        if logger is not None:
             logger.info("diffusion.cond_blocks: off (%s)", why)
+        return False
+    transformer.__dict__[_COMPACT_ATTR] = compact
+    if compact and logger is not None:
+        logger.info("diffusion.cond_blocks: FLUX.3 modulation heads project one row per sample")
+    span = False
+    if compact and span_enabled():
+        why = _span_ready(transformer)
+        span = why is None
+        if why is not None and logger is not None:
+            logger.info("diffusion.cond_blocks: reference modulation stays per token (%s)", why)
+    transformer.__dict__[_SPAN_ATTR] = span
+    if not cond_on:
+        return False
+    if applies is not None:
+        _stats(transformer)["reason"] = applies
+        if logger is not None:
+            logger.info("diffusion.cond_blocks: off (%s)", applies)
         return False
     return True
 
@@ -333,9 +667,10 @@ def begin_render(transformer: Any, logger: Any = None) -> bool:
         _stats(transformer)["reason"] = "the class forward was not patched at load"
         return False
     why = _offloaded(transformer)
-    if why is not None:
-        _stats(transformer)["reason"] = why
+    if why is not None and (not offload_cache_enabled() or _fixed_prefetch_chain(transformer)):
+        _stats(transformer)["reason"] = _fixed_prefetch_chain(transformer) or why
         return False
+    transformer.__dict__[_OFFLOADED_ATTR] = why is not None
     handle = transformer.__dict__.get("_unsloth_cond_hook")
     hooks = transformer._forward_pre_hooks
     if handle is None or handle.id not in hooks:

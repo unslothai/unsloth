@@ -92,6 +92,12 @@ const MUTE_SCRIPT: &str = r#"((muted) => {
   window[key](muted);
 })"#;
 
+/// Pages are child webviews too, so they type the same stray key text (mac-stray-key-text.ts).
+#[cfg(target_os = "macos")]
+const STRAY_KEY_TEXT_SCRIPT: &str = r#"window.addEventListener("beforeinput", (event) => {
+  if (event.inputType === "insertText" && /^[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/.test(event.data ?? "")) event.preventDefault();
+}, true);"#;
+
 /// Pages get every plugin's init script too, but their commands are refused there (opener eats `_blank`
 /// clicks, dialog/notification stub `alert`/`confirm`/`Notification`); `PAGE_RESTORE_SCRIPT` undoes them.
 const PAGE_GUARD_SCRIPT: &str = r#"(() => {
@@ -116,6 +122,23 @@ const PAGE_GUARD_SCRIPT: &str = r#"(() => {
 })();"#;
 
 const PAGE_RESTORE_SCRIPT: &str = "window.__unslothPageGuard?.();";
+
+/// Studio's scrollbar in pages; first in the document, so a page's own scrollbar styles win.
+const PAGE_SCROLLBAR_SCRIPT: &str = r#"(() => {
+  const css = "::-webkit-scrollbar{width:8px;height:8px;background:transparent}"
+    + "::-webkit-scrollbar-track,::-webkit-scrollbar-track-piece,::-webkit-scrollbar-corner{background:transparent;border:none;box-shadow:none}"
+    + "::-webkit-scrollbar-thumb{background:rgb(99 99 99 / 0.54);border-radius:9999px;border:none;box-shadow:none}"
+    + "::-webkit-scrollbar-button{display:none;width:0;height:0}";
+  const add = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    const style = document.createElement("style");
+    style.textContent = css;
+    root.prepend(style);
+    return true;
+  };
+  if (!add()) new MutationObserver((_, seen) => add() && seen.disconnect()).observe(document, { childList: true });
+})();"#;
 
 /// Registered before the opener, dialog and notification plugins (`PAGE_GUARD_SCRIPT`).
 pub fn page_guard_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
@@ -497,6 +520,10 @@ const BLOCKED_HOST_PREFIXES: &[&str] = &[
     r"localhost[:/]",
     r"[^/@]*\.localhost[:/]",
     r"[^/@]*\.local[:/]",
+    // A trailing dot is the same name to the resolver.
+    r"localhost\.[:/]",
+    r"[^/@]*\.localhost\.[:/]",
+    r"[^/@]*\.local\.[:/]",
     r"127\.",
     r"0\.",
     r"10\.",
@@ -1463,9 +1490,12 @@ async fn create_view<R: Runtime>(
             _ => false,
         })
         .initialization_script(PAGE_RESTORE_SCRIPT)
+        .initialization_script(PAGE_SCROLLBAR_SCRIPT)
         .zoom_hotkeys_enabled(false)
         .devtools(cfg!(debug_assertions))
         .focused(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder.initialization_script_for_all_frames(STRAY_KEY_TEXT_SCRIPT);
     let builder = with_page_profile(builder, &app, local.as_ref())?;
 
     let (position, size) = logical_rect(caller, bounds);
@@ -2741,6 +2771,43 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pages_drop_the_stray_key_text_studio_drops() {
+        let frontend = include_str!("../../frontend/src/lib/mac-stray-key-text.ts");
+        let pattern = frontend
+            .lines()
+            .find_map(|line| line.strip_prefix("const STRAY_KEY_TEXT = "))
+            .unwrap()
+            .trim_end_matches(';');
+        assert!(STRAY_KEY_TEXT_SCRIPT.contains(&format!("{pattern}.test(")));
+        assert!(STRAY_KEY_TEXT_SCRIPT.contains(r#"addEventListener("beforeinput""#));
+        assert!(STRAY_KEY_TEXT_SCRIPT.ends_with("}, true);"));
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        let restore = code
+            .find(".initialization_script(PAGE_RESTORE_SCRIPT)")
+            .unwrap();
+        let guard = code
+            .find(".initialization_script_for_all_frames(STRAY_KEY_TEXT_SCRIPT)")
+            .expect("page webviews must drop stray key text in every frame");
+        assert!(
+            guard > restore,
+            "PAGE_RESTORE_SCRIPT would remove the listener"
+        );
+    }
+
+    #[test]
+    fn pages_get_the_studio_scrollbar_first_in_the_document() {
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(code.contains(".initialization_script(PAGE_SCROLLBAR_SCRIPT)"));
+        assert!(PAGE_SCROLLBAR_SCRIPT.contains("root.prepend(style)"));
+        assert!(PAGE_SCROLLBAR_SCRIPT.contains("border-radius:9999px"));
+        let studio = include_str!("../../frontend/src/index.css");
+        assert!(studio.contains("::-webkit-scrollbar {\n\twidth: 8px;"));
+    }
+
     #[test]
     fn the_internet_mark_keeps_where_not_secrets() {
         let source = |url: &str| sanitized_source(&Url::parse(url).unwrap());
@@ -3177,6 +3244,9 @@ mod tests {
             "ws://127.0.0.1:8080/",
             "https://user:pw@127.0.0.1/",
             "http://studio.localhost/",
+            "http://localhost.:8888/api/health",
+            "ws://studio.localhost./",
+            "http://printer.local./",
             "http://172.20.0.1/",
             "http://[::1]:8888/",
             "tauri://localhost/index.html",

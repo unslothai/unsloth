@@ -10,7 +10,8 @@ from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.orchestrator import InferenceOrchestrator
 from core.inference.passthrough_healing import nudge_enabled
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
-from core.inference.studio_tool_loop import ToolLoopPolicy, stream_with_studio_tools
+from core.inference import studio_tool_loop
+from core.inference.studio_tool_loop import ToolLoopPolicy
 
 
 _CHAT_ADAPTER_SOURCE = (
@@ -62,7 +63,8 @@ def test_delegating_backends_forward_the_flag_to_the_shared_loop():
 def test_gguf_and_external_loops_use_the_shared_nudge_normalizer():
     gguf_src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
     assert "_nudge_enabled(nudge_tool_calls)" in gguf_src
-    external_src = inspect.getsource(stream_with_studio_tools)
+    # The public generator wraps the loop body, which is where the nudge is read.
+    external_src = inspect.getsource(studio_tool_loop._stream_with_studio_tools)
     assert "nudge_enabled(policy.nudge_tool_calls)" in external_src
     assert "nudge_tool_calls" in ToolLoopPolicy.__dataclass_fields__
 

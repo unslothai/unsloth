@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-store";
 import { hasAuthToken, mustChangePassword } from "@/features/auth";
-import { useSettingsDialogStore } from "@/features/settings";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -26,8 +26,8 @@ import {
   DatabaseIcon,
   DragDropVerticalIcon,
   FlimSlateIcon,
-  Image01Icon,
-  LockIcon,
+  ImageIcon,
+  LockKeyIcon,
   RemoveCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { Volume02Icon } from "@/lib/volume-icons";
@@ -62,7 +62,7 @@ const KIND_ICONS: Record<
 > = {
   text: MessageCircleIcon,
   tts: Volume02Icon,
-  image: Image01Icon,
+  image: ImageIcon,
   video: FlimSlateIcon,
   embedding: DatabaseIcon,
 };
@@ -249,11 +249,9 @@ export function LoadedModelsIndicator({
   const dismissed = useLoadedModelsDismissed();
   const reachable = canShowIndicator(pathname);
   const enabled = showIndicator && !dismissed && reachable;
-  // Dismissal is not part of this: a card the user closed must still hear the
-  // load that brings it back. Reachability is, because it carries the auth gate
-  // -- tracking on /login polls four protected endpoints every 5s, and each 401
-  // runs authFetch's refresh-then-redirect ladder against a session that does
-  // not exist yet.
+  // Dismissal is not part of this (a closed card must still hear the load that brings it back), but
+  // reachability is: tracking on /login polls four protected endpoints every 5s before any session
+  // exists, and each 401 runs authFetch's refresh-then-redirect ladder.
   const { entries, polledEntries, ejecting, heldByOther, eject } =
     useLoadedModels(enabled, showIndicator && reachable);
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
@@ -339,7 +337,8 @@ export function LoadedModelsIndicator({
     <div
       ref={panelRef}
       className={cn(
-        "pointer-events-none",
+        // See floating-monitor.tsx: a drop must not flash at the start spot under reduce motion.
+        "pointer-events-none transition-none",
         position && "fixed z-[9999] w-fit",
         !position &&
           (positioned
@@ -374,7 +373,7 @@ export function LoadedModelsIndicator({
               className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
-                icon={cardState === "otherAccount" ? LockIcon : SparkleIcon}
+                icon={cardState === "otherAccount" ? LockKeyIcon : SparkleIcon}
                 strokeWidth={1.75}
                 className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
@@ -472,7 +471,7 @@ export function LoadedModelsIndicator({
           <div className="flex max-h-[min(272px,42dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto">
             {cardState === "otherAccount" && (
               <NoteRow
-                icon={LockIcon}
+                icon={LockKeyIcon}
                 title={t("floatingPanels.loadedModels.otherAccount")}
                 detail={t("floatingPanels.loadedModels.otherAccountDetail")}
               />

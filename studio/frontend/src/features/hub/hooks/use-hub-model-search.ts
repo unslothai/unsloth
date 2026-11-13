@@ -109,6 +109,8 @@ export interface HfModelResult {
   gated?: false | "auto" | "manual";
   totalParams?: number;
   estimatedSizeBytes?: number;
+  estimatedResidentGb?: number;
+  smallestResidentGb?: number;
   curatedSizeBytes?: number;
   isGguf: boolean;
   baseModel?: string | null;

@@ -15,14 +15,13 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   ArrowTurnBackwardIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { Folder01Icon, FolderAddIcon, FolderClosedIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { useMemo, useState } from "react";
 import type { LibraryFolder } from "../api";
 import { hasImagePreview, isDeletable, isFileItem, isModelItem } from "../file-kind";
@@ -186,7 +185,7 @@ export function LibraryActionsMenu({
         </DropdownMenuSub>
         {(!item || isDeletable(item)) && (
           <DropdownMenuItem variant="destructive" onSelect={() => actions.remove(target)}>
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className={ICON} />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className={ICON} />
             {target.kind === "folder" ? t("library.menu.deleteFolder") : t("common.delete")}
           </DropdownMenuItem>
         )}

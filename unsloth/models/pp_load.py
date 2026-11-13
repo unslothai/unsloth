@@ -140,7 +140,7 @@ def _split_for(model, mesh, schedule, config):
     for p, _ in flags:
         p.requires_grad_(False)
     try:
-        _refuse_unsupported(model, parts)
+        _refuse_unsupported(model, parts, allow_moe = False)
     finally:
         for p, flag in flags:
             p.requires_grad_(flag)

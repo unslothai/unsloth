@@ -12,7 +12,11 @@ const picker = readSrc(
 
 test("every quant list and cached GGUF row marks the quant each loaded model runs", () => {
   const expanders = picker.match(/<GgufVariantExpander\b/g)?.length ?? 0;
-  assert.equal(picker.match(/loadedQuants=\{/g)?.length ?? 0, expanders);
+  // Plus the three memoized On Device rows, which take the list for their expander.
+  assert.equal(picker.match(/loadedQuants=\{/g)?.length ?? 0, expanders + 3);
+  assert.match(picker, /<DownloadedGgufDeviceRow[\s\S]*?loadedQuants=\{loadedQuantsFor\(c\.repo_id\)\}/);
+  assert.match(picker, /<SoleQuantGgufDeviceRow[\s\S]*?loadedQuants=\{loadedQuantsFor\(c\.repo_id\)\}/);
+  assert.match(picker, /<LocalModelDeviceRow[\s\S]*?loadedQuants=\{\s*isGguf && !directGguf \? loadedQuantsFor\(m\.id\) : EMPTY_LOADED_QUANTS\s*\}/);
   assert.match(
     picker,
     /loadedQuants\?\.some\(\(q\) => ggufVariantsMatchForPicker\(q, v\.quant\)\) \? \(\s*<span[^>]*>\s*loaded\s*<\/span>/,
@@ -77,12 +81,14 @@ test("a loaded LoRA adapter keeps its classification in the row's metadata", () 
 });
 
 test("an On Device GGUF row with several quants shows a right/down chevron its gutter toggles", () => {
-  const start = picker.indexOf("const renderDownloadedGgufRow = (");
+  const render = picker.slice(picker.indexOf("const renderDownloadedGgufRow = ("));
+  assert.match(render, /if \(soleQuant\) return renderSoleQuantGgufRow\(c, soleQuant\);/);
+  assert.match(render, /soleQuantPending=\{soleQuants\.pending\.has\(c\.repo_id\)\}/);
+  const start = picker.indexOf("const DownloadedGgufDeviceRow = memo(");
   const row = picker.slice(start, picker.indexOf("<GgufVariantExpander", start));
-  assert.match(row, /if \(soleQuant\) return renderSoleQuantGgufRow\(c, soleQuant\);/);
   assert.match(
     row,
-    /\{soleQuants\.pending\.has\(c\.repo_id\) \? null : \(\s*<button[\s\S]*?onClick=\{\(\) => toggleGgufExpanded\(c\.repo_id, expanderOpen\)\}/,
+    /\{soleQuantPending \? null : \(\s*<button[\s\S]*?onClick=\{\(\) =>\s*actions\.get\(\)\.toggleGgufExpanded\(c\.repo_id, expanderOpen\)\s*\}/,
   );
   assert.match(row, /expanderOpen\s*\?\s*ChevronDownStandardIcon\s*:\s*ChevronRightStandardIcon/);
   assert.match(row, /<span className=\{cn\(ROW_ACTIONS_PINNED_CLASS, "h-6"\)\}>/);
