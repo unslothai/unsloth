@@ -47,7 +47,6 @@ def test_the_switches(budget, monkeypatch):
     monkeypatch.setenv(dm.PARTIAL_ENCODER_PIN_ENV, "0")
     assert not dm._late_denoiser_pin_enabled(module, True)
     monkeypatch.delenv(dm.PARTIAL_ENCODER_PIN_ENV)
-    # torchao weights need their up-front pin
     monkeypatch.setattr(dm, "_torchao_weight_classes", lambda m: {"Int8Tensor"})
     assert not dm._late_denoiser_pin_enabled(module, True)
 
@@ -195,7 +194,6 @@ def test_routing_the_small_host_route_defers_the_denoiser_with_the_late_cap(budg
     budget["mib"] = 2500
     assert kw["byte_cap"]() == 2500 << 20
     assert waits
-    # the apply itself is unchanged: pageable host copies, as before
     assert all(a.get("low_cpu_mem_usage") for a in applied)
 
 
@@ -321,7 +319,6 @@ def test_streaming_route_kill_switches(budget, monkeypatch):
 
 
 def test_streaming_route_whole_pins_small_host_and_video_are_unchanged(budget, monkeypatch):
-    # the plan pins both whole: no late caps
     pipe, _applied, deferred, _waits = _stream_route(monkeypatch, plan = (True, True))
     assert [(m, kw["byte_cap"]) for m, kw in deferred] == [(pipe.text_encoder, None)]
     # small host: the encoder keeps its memory-mapped bytes out of host RAM; the denoiser prefix still pins late
