@@ -9342,8 +9342,7 @@ class VideoBackend:
     def _plan_partials(
         plan: dict[str, "_PlannedFetch"], known: Optional[dict[str, "_PlannedFetch"]] = None
     ) -> dict[str, int]:
-        """``{path: bytes}`` of the process-unique partials of ``plan``'s files right now, leaving out the files
-        ``known`` (an earlier plan of the same load) already had. Never raises."""
+        """``{path: bytes}`` of the process-unique partials of ``plan``'s files not already in ``known``."""
         skip = VideoBackend._plan_blob_keys(known or {})
         out: dict[str, int] = {}
         for root in VideoBackend._plan_cache_roots():

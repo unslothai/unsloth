@@ -810,8 +810,7 @@ def _keyed_partial_load(monkeypatch, tmp_path, key, size):
 
 
 def test_a_process_unique_partial_counts_while_a_dead_attempts_does_not(monkeypatch, tmp_path):
-    """huggingface_hub >= 1.18 writes each attempt to a fresh ``<blob key>.<8 hex>.incomplete``. The planned file's
-    live partial counts as it grows; one a cancelled attempt left before the load started never does."""
+    """The planned file's live ``<key>.<8 hex>.incomplete`` counts as it grows; a dead attempt's never does."""
     key = "a1" * 32
     blobs, start = _keyed_partial_load(monkeypatch, tmp_path, key, 10_000)
     (blobs / f"{key}.0badf00d.incomplete").write_bytes(b"\0" * 4_000)  # a cancelled attempt's
@@ -827,8 +826,7 @@ def test_a_process_unique_partial_counts_while_a_dead_attempts_does_not(monkeypa
 
 
 def test_a_preallocated_partial_counts_only_its_written_bytes(monkeypatch, tmp_path):
-    """A writer that sets the partial to its final length first must not read as a finished download, or the
-    progress latches at finalizing for the rest of the transfer."""
+    """A partial preallocated to its final length must not latch progress at finalizing."""
     key = "b2" * 32
     blobs, start = _keyed_partial_load(monkeypatch, tmp_path, key, 1 << 22)
     backend = DiffusionBackend()

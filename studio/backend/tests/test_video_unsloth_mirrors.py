@@ -741,8 +741,7 @@ def test_progress_reads_planned_files_by_blob_key_in_the_plan_repo(empty_cache, 
 
 
 def test_progress_counts_a_process_unique_partial_past_the_load_baseline(empty_cache, monkeypatch):
-    """huggingface_hub >= 1.18 writes each attempt to a fresh ``<key>.<8 hex>.incomplete``: the planned shard's live
-    partial counts as it grows, while one a cancelled attempt left before the plan settled never does."""
+    """The planned shard's live ``<key>.<8 hex>.incomplete`` counts as it grows; a dead attempt's never does."""
     mirror, key = "unsloth/LTX-2-FP8", "c3" * 32
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
     _blob(
@@ -1339,8 +1338,7 @@ def test_roles_sharing_a_repo_share_one_commit(empty_cache, monkeypatch, te_fetc
 def test_a_dead_partial_of_a_file_the_encoder_fallback_adds_is_not_progress(
     empty_cache, monkeypatch
 ):
-    """The hosted encoder fetch fell back, so the re-plan adds the dense encoder weights. A partial a cancelled attempt
-    left for them before the load started is a dead attempt's, not this load's progress."""
+    """A dead partial of the dense encoder an encoder-fallback re-plan adds is not this load's progress."""
     monkeypatch.setattr(_HubRecorder, "hex_keys", True)
     key = _lfs_key("text_encoder/model.safetensors")
     for repo in (_WAN_UP, _WAN_MIRROR):
