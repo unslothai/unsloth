@@ -75,12 +75,6 @@ export function packsDirectly(quant: string, architecture?: string | null): bool
 
 const PACKING_ORDER: Q4nxPacking[] = ["direct", "by-architecture", "requantized"];
 
-/** A 4xx from the convert endpoint: the same request gets the same answer. 5xx and network drops do not count. */
-export function q4nxIsRefusal(error: unknown): boolean {
-  const status = (error as { status?: unknown } | null)?.status;
-  return typeof status === "number" && status >= 400 && status < 500;
-}
-
 // A split GGUF is listed as one variant named by its first shard; the converter reads one file.
 const SPLIT_SHARD = /-\d{3,}-of-\d{3,}\.gguf$/i;
 

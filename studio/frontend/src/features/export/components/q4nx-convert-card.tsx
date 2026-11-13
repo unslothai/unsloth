@@ -61,7 +61,6 @@ import {
   q4nxBaseModel,
   q4nxIsExpanded,
   q4nxConvertibleFiles,
-  q4nxIsRefusal,
   q4nxMemoryWarning,
   q4nxNpuMemory,
   q4nxPacking,
@@ -236,8 +235,6 @@ export function Q4nxConvertCard({
   const [result, setResult] = useState<{
     ok: boolean;
     text: string;
-    /** The request the backend refused; asking again would get the same answer. */
-    refused?: string;
   } | null>(null);
 
   const debouncedHubQuery = useDebouncedValue(hubQuery);
@@ -494,16 +491,9 @@ export function Q4nxConvertCard({
         : null;
   const sourceReady =
     source === "hub" ? !!(repoId && selectedVariant) : !!ggufPath;
-  const request = JSON.stringify([
-    source === "hub" ? [repoId, filename] : ggufPath,
-    effectiveBase.trim(),
-    saveDirectory.trim(),
-    accessToken ?? null,
-  ]);
   const canConvert =
     !running &&
     sourceReady &&
-    result?.refused !== request &&
     archFit?.status !== "unsupported" &&
     !!effectiveBase.trim() &&
     !!saveDirectory.trim();
@@ -599,8 +589,6 @@ export function Q4nxConvertCard({
       setResult({
         ok: false,
         text: error instanceof Error ? error.message : String(error),
-        // A server fault or dropped connection can be retried as is; a refusal needs a different file or setting.
-        refused: q4nxIsRefusal(error) ? request : undefined,
       });
     } finally {
       setRunning(false);

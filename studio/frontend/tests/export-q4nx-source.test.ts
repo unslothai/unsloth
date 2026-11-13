@@ -23,7 +23,6 @@ import {
   q4nxVariantLookup,
   q4nxWeights,
   q4nxConvertibleFiles,
-  q4nxIsRefusal,
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
 
@@ -417,15 +416,4 @@ test("an empty leftover quant folder and a split GGUF are not offered as a file 
     q4nxConvertibleFiles(files).map((v) => v.quant),
     ["Q4_0", "Q4_1"],
   );
-});
-
-test("only a 4xx answer counts as a refusal; server faults and network drops stay retryable", () => {
-  const failed = (status: number | null) => Object.assign(new Error("x"), { status });
-  assert.equal(q4nxIsRefusal(failed(400)), true);
-  assert.equal(q4nxIsRefusal(failed(422)), true);
-  for (const status of [500, 501, 502, 524, null]) {
-    assert.equal(q4nxIsRefusal(failed(status)), false, String(status));
-  }
-  assert.equal(q4nxIsRefusal(new TypeError("Failed to fetch")), false);
-  assert.equal(q4nxIsRefusal(null), false);
 });
