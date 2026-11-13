@@ -349,10 +349,21 @@ def _route_pip():
         if key(sys.prefix) == key(owner):
             os.environ["PIP_PREFIX"] = prefix
             os.environ["PIP_IGNORE_INSTALLED"] = "1"
-        elif os.environ.get("PIP_PREFIX") == prefix:
-            # Inherited from a Studio-interpreter parent: this venv's pip installs into this venv.
-            os.environ.pop("PIP_PREFIX", None)
-            os.environ.pop("PIP_IGNORE_INSTALLED", None)
+        else:
+            # Another venv neither installs into nor sees the chat folder: its pip would count those packages as installed.
+            if os.environ.get("PIP_PREFIX") == prefix:
+                os.environ.pop("PIP_PREFIX", None)
+                os.environ.pop("PIP_IGNORE_INSTALLED", None)
+            root = os.path.join(key(prefix), "")
+
+            def chat(entry):
+                return bool(entry) and key(entry).startswith(root)
+
+            sys.path[:] = [e for e in sys.path if not chat(e)]
+            if "PYTHONPATH" in os.environ:
+                os.environ["PYTHONPATH"] = os.pathsep.join(
+                    e for e in os.environ["PYTHONPATH"].split(os.pathsep) if not chat(e)
+                )
     except Exception:  # noqa: BLE001
         pass
 

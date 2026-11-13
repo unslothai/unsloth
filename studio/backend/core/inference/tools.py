@@ -9471,13 +9471,14 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
             env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(private)
         argv = tuple(plan.argv)
         packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+        # Served by sitecustomize's last-resort finder, not sys.path, so plugin discovery never sees them.
+        # Set even before the folder exists: this call's pip may create it.
         env.update(os_sandbox.studio_pip_prefix(packages))
+        env["_UNSLOTH_HOST_SESSION_PACKAGES"] = os.pathsep.join(
+            os_sandbox.session_package_paths(packages)
+        )
+        env["PYTHONNOUSERSITE"] = "1"
         if os.path.isdir(packages):
-            # Served by sitecustomize's last-resort finder, not sys.path, so plugin discovery never sees them.
-            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = os.pathsep.join(
-                os_sandbox.session_package_paths(packages)
-            )
-            env["PYTHONNOUSERSITE"] = "1"
             # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
             # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
             requested = None

@@ -755,7 +755,9 @@ def _wheel(workdir, name, files):
 _PIP = "python -m pip install -q --no-index --no-deps"
 
 
-@pytest.mark.parametrize("case", ["chat", "same_process", "editable", "project_venv"])
+@pytest.mark.parametrize(
+    "case", ["chat", "same_process", "editable", "project_venv", "host_access"]
+)
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp_path, case):
     """Studio's interpreter installs into the chat folder; another venv's pip still installs into that venv."""
@@ -772,30 +774,40 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
     show = f"python -c 'import {name}; print({name}.__file__)'"
     command = {
         "chat": f"{_PIP} {wheel} && {show}",
+        "host_access": f"ls /srv/pr-approved >/dev/null 2>&1; {_PIP} {wheel} && {show}",
         "editable": f"{_PIP} {wheel} && {show}",
         # Python caches the session dirs as missing at startup, before pip creates them.
         "same_process": 'python -c "import subprocess, sys; subprocess.check_call(sys.argv[1:]); '
         f'import {name}; print({name}.__file__)" python -m pip install -q --no-index --no-deps {wheel}',
-        "project_venv": f"python -m venv venv && venv/bin/{_PIP} {wheel} && "
+        # The chat's copy must not satisfy the venv's pip.
+        "project_venv": f"{_PIP} {wheel} && python -m venv venv && venv/bin/{_PIP} {wheel} && "
         f"env -u PYTHONPATH venv/bin/{show}",
     }[case]
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
     try:
-        out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
+        out = tools._bash_exec(
+            command,
+            None,
+            120,
+            _SESSION,
+            tool_execution_mode = "auto" if case == "host_access" else "software",
+            host_access_approved = case == "host_access",
+        )
     finally:
         subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "-q", name], capture_output = True
         )
-    assert tools._last_tool_execution_record.os_isolation is False
+    record = tools._last_tool_execution_record
+    assert record.os_isolation is False
+    assert ("user_approved_host_access" in record.limitations) is (case == "host_access")
     expected = {
         "chat": packages,
+        "host_access": packages,
         "same_process": packages,
         "editable": str(workdir / "src"),
         "project_venv": str(workdir / "venv"),
     }[case]
     assert f"{expected}{os.sep}" in out, out
-    if case == "project_venv":
-        assert not os.path.exists(packages)
 
 
 def test_only_studios_interpreter_gets_the_chat_pip_prefix(tmp_path):
