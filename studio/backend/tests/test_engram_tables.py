@@ -295,7 +295,7 @@ class TestRequestAndOverrides:
         with pytest.raises(ValueError):
             LoadRequest(model_path = REPO, engram_precision = "../x")
         with pytest.raises(ValueError):
-            LoadRequest(model_path = REPO, engram_precision = 5)
+            LoadRequest(model_path = REPO, engram_precision = 0)
 
     def test_the_override_store_keeps_it_for_gguf_loads_only(self):
         entry = normalize_model_override({"engram_precision": "Q8_0"})
