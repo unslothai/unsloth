@@ -254,3 +254,14 @@ test("undo reverts light and dark glass strength on their own", () => {
   const undone = planUndo(BASE, applied, now);
   assert.deepEqual(undone.glass.strength, { light: 40, dark: 25 });
 });
+
+test("undo brings back a font the theme's cap evicted, even after the theme's font was removed", () => {
+  const before = { ...BASE, customization: sanitizeCustomization({ importedFonts: [font("A"), font("B"), font("C")], codeFont: "C" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { codeFont: "T" }, assets: { fonts: [font("T")] } })));
+  const applied = apply(before, theme);
+  assert.ok(!applied.customization.importedFonts.some((f) => f.name === "C"));
+  const now = { ...before, palette: applied.palette, glass: applied.glass, customization: { ...applied.customization,
+    importedFonts: applied.customization.importedFonts.filter((f) => f.name !== "T"), codeFont: null } };
+  const undone = planUndo(before, applied, now);
+  assert.ok(undone.customization.importedFonts.some((f) => f.name === "C"));
+});

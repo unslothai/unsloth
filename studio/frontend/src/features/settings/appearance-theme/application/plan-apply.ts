@@ -169,13 +169,18 @@ export function planUndo(
   customization.colors = colors;
   // A font the user picked after applying keeps its imported file, even if the list itself reverts.
   const fonts = customization.importedFonts as ImportedFont[];
+  // Fonts Apply pushed out under the cap come back even when the font list changed since.
+  const appliedNames = new Set(applied.customization.importedFonts.map((font) => font.name));
+  const evicted = before.customization.importedFonts.filter(
+    (font) => !appliedNames.has(font.name) && !fonts.some((kept) => kept.name === font.name),
+  );
   const selected = new Set(FONT_FIELDS.map((field) => customization[field]));
   const stillNeeded = now.customization.importedFonts.filter(
     (font) => selected.has(font.name) && !fonts.some((kept) => kept.name === font.name),
   );
   customization.importedFonts = selectedFirst(
     customization as AppearanceCustomization,
-    [...stillNeeded, ...fonts],
+    [...stillNeeded, ...fonts, ...evicted],
   );
   const glass = { ...now.glass } as Record<string, unknown>;
   for (const key of Object.keys(now.glass) as (keyof AppearanceSnapshot["glass"])[]) {
@@ -192,7 +197,7 @@ export function planUndo(
   );
   return {
     palette: revert(before.palette, applied.palette, now.palette),
-    customization: reconcileFonts(reverted, knownNames, now.customization.importedFonts),
+    customization: reconcileFonts(reverted, knownNames, [...now.customization.importedFonts, ...evicted]),
     glass: glass as AppearanceSnapshot["glass"],
   };
 }
