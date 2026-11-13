@@ -752,3 +752,16 @@ def test_compiled_default_route_without_a_race(monkeypatch):
     calls.clear()
     layer(x)
     assert calls == ["_int8"]
+
+
+def test_int8r_epilogue_follows_the_native_gate_and_its_failure(monkeypatch):
+    import core.inference.diffusion_native_quant as nq
+
+    gi._EPILOGUE.clear()
+    monkeypatch.setattr(nq, "_fused_w8a8", lambda device = None: None)
+    assert gi._int8r_epilogue(None) is None  # no compiled native linear here: the eager reference
+    monkeypatch.setattr(nq, "_fused_w8a8", lambda device = None: object())
+    assert gi._int8r_epilogue(None) is not None
+    gi._EPILOGUE["failed"] = True
+    assert gi._int8r_epilogue(None) is None
+    gi._EPILOGUE.clear()

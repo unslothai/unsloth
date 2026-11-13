@@ -549,6 +549,35 @@ def _fused_on(index: Any) -> bool:
     return _FUSED[index] is not None
 
 
+# the int8r route's torch._int_mm + torchao epilogue as one compiled function (eager forwards), or False once it failed
+_EPILOGUE: dict = {}
+
+
+def _int8r_epilogue(device: Any) -> Any:
+    """``diffusion_int8_gemm.reference`` compiled (its four float32 passes over [rows, N] fused into one), under the
+    native int8 linear's own gate (inductor runtime, arch, not failed, not in a generation whose compile is in
+    flight); None keeps the eager reference (same maths)."""
+    if _EPILOGUE.get("failed"):
+        return None
+    try:
+        from .diffusion_bg_compile import eager_forced
+        from .diffusion_native_quant import _fused_w8a8
+
+        if eager_forced() or _fused_w8a8(device) is None:
+            return None
+        fn = _EPILOGUE.get("fn")
+        if fn is None:
+            import torch
+
+            from .diffusion_int8_gemm import reference
+
+            fn = torch.compile(reference, dynamic = True, fullgraph = True)
+            _EPILOGUE["fn"] = fn
+        return fn
+    except Exception:  # noqa: BLE001 -- the eager reference
+        return None
+
+
 def race_winner(times: dict) -> str:
     """The race verdict: the faster incumbent (``int8`` / ``dense``) unless an added route (``fused``, ``int8r``) beats
     it by more than ``_RACE_MARGIN``; with no incumbent timed, the fastest route."""
@@ -816,6 +845,7 @@ def grouped_linear_class():
                 return out.reshape(*x.shape[:-1], self.out_features)
             chunk = max(_MIN_ROWS, _INT_MM_CHUNK_ELEMS // max(self.in_features, self.out_features))
             out = x2.new_empty((rows, self.out_features))
+            epilogue = _int8r_epilogue(x.device) or reference
             for start in range(0, rows, chunk):
                 part = x2[
                     start : start + chunk
@@ -824,9 +854,18 @@ def grouped_linear_class():
                 if q is None:
                     return self._int8(x)
                 xq, xs = q
-                out[start : start + part.shape[0]] = reference(
-                    xq, q8, xs.reshape(-1).to(torch.float32), ws, bias
-                )
+                args = (xq, q8, xs.reshape(-1).to(torch.float32), ws, bias)
+                try:
+                    got = epilogue(*args)
+                except torch.cuda.OutOfMemoryError:
+                    raise
+                except Exception:  # noqa: BLE001 -- a compiled epilogue that fails here: the eager one from now on
+                    if epilogue is reference:
+                        raise
+                    _EPILOGUE["failed"] = True
+                    epilogue = reference
+                    got = reference(*args)
+                out[start : start + part.shape[0]] = got
             return out.reshape(*x.shape[:-1], self.out_features)
 
         def _fused_covers(self, x: Any) -> bool:
