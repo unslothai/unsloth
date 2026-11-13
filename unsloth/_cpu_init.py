@@ -97,6 +97,11 @@ def train_on_responses_only(*args, **kwargs):
     return _train_on_responses_only(*args, **kwargs)
 
 
+def check_dataset(*args, **kwargs):
+    from .chat_templates import check_dataset as _check_dataset
+    return _check_dataset(*args, **kwargs)
+
+
 try:
     from trl import SFTConfig as _SFTConfig, SFTTrainer as _SFTTrainer
 except ImportError:
@@ -333,6 +338,7 @@ __all__ = [
     "standardize_data_formats",
     "standardize_sharegpt",
     "train_on_responses_only",
+    "check_dataset",
     "UnslothTrainer",
     "UnslothTrainingArguments",
     "UnslothVisionDataCollator",

@@ -45,12 +45,17 @@ def recorder(monkeypatch, fresh):
         calls.append(("key", threading.current_thread().name))
         return True
 
+    def inductor_key(logger = None):
+        calls.append(("inductor_key", threading.current_thread().name))
+        return True
+
     def imports(logger = None):
         calls.append(("imports", threading.current_thread().name))
         return 3
 
     monkeypatch.setattr(bg, "warm_compile_pool", pool)
     monkeypatch.setattr(bg, "warm_triton_key", key)
+    monkeypatch.setattr(bg, "warm_inductor_key", inductor_key)
     monkeypatch.setattr(bg, "warm_engage_imports", imports)
     return calls, release
 
@@ -62,7 +67,7 @@ def test_prewarm_runs_off_the_calling_thread_and_never_blocks_it(recorder):
     assert ("key", "unsloth-deferred-prewarm") not in calls
     release.set()
     assert bg.wait_prewarm(10) is True
-    assert [c[0] for c in calls] == ["pool", "key", "imports"]
+    assert [c[0] for c in calls] == ["pool", "key", "inductor_key", "imports"]
     assert {c[1] for c in calls} == {"unsloth-deferred-prewarm"}
     assert threading.current_thread().name not in {c[1] for c in calls}
 
@@ -73,7 +78,7 @@ def test_prewarm_starts_once(recorder):
     assert bg.start_deferred_prewarm(LOG) is True
     assert bg.start_deferred_prewarm(LOG) is False
     assert bg.wait_prewarm(10) is True
-    assert [c[0] for c in calls] == ["pool", "key", "imports"]
+    assert [c[0] for c in calls] == ["pool", "key", "inductor_key", "imports"]
 
 
 @pytest.mark.parametrize("raw", ["0", "off", "false", "no"])
@@ -225,3 +230,44 @@ def test_engagement_joins_the_warm_up_before_patching():
         and sub.func.attr == "install_patches"
     ]
     assert waits and patches and min(waits) < min(patches)
+
+
+def test_warm_inductor_key_fills_the_key(monkeypatch):
+    codecache = pytest.importorskip("torch._inductor.codecache")
+    calls: list = []
+    monkeypatch.setattr(codecache, "torch_key", lambda: calls.append(1) or b"key")
+    assert bg.warm_inductor_key(LOG) is True
+    assert calls == [1]
+
+
+def test_warm_inductor_key_real_torch_is_cached():
+    codecache = pytest.importorskip("torch._inductor.codecache")
+    assert bg.warm_inductor_key(LOG) is True
+    assert codecache.torch_key() == codecache.torch_key()
+
+
+def test_warm_inductor_key_never_raises(monkeypatch):
+    codecache = pytest.importorskip("torch._inductor.codecache")
+
+    def boom():
+        raise RuntimeError("no sources")
+
+    monkeypatch.setattr(codecache, "torch_key", boom)
+    assert bg.warm_inductor_key(LOG) is False
+
+
+def test_a_load_that_compiles_inline_starts_the_side_warm_up_after_the_cache_begins():
+    """The first render compiles inline: workers and keys warm while the rest of the load runs."""
+    tree = ast.parse(DIFFUSION.read_text(encoding = "utf-8"))
+    load = _function(tree, "DiffusionBackend", "load_pipeline")
+    starts = [line for n, line in _bg_calls(load) if n == "start_deferred_prewarm"]
+    begins = [
+        sub.lineno
+        for sub in ast.walk(load)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and isinstance(sub.func.value, ast.Name)
+        and sub.func.value.id == "compile_cache"
+        and sub.func.attr == "begin"
+    ]
+    assert starts and begins and min(begins) < min(starts)

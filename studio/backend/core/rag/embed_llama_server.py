@@ -534,12 +534,9 @@ class LlamaServerBackend:
                 return self._adopt_model_path(cached, desired)
             # Typed: the same condition the ST path raises, and /v1/embeddings answers it
             # with a 409. Bare, it fell into the catch-all as a 502 naming nothing.
-            from .embeddings import EmbeddingModelDownloadRequiredError
+            from .embeddings import EmbeddingModelDownloadRequiredError, download_required_message
 
-            raise EmbeddingModelDownloadRequiredError(
-                f"Embedding model {model!r} is not downloaded yet. "
-                "Finish its Settings download before indexing documents."
-            )
+            raise EmbeddingModelDownloadRequiredError(download_required_message(model))
         return self._resolve_uncached_model_path(desired, candidates)
 
     @staticmethod

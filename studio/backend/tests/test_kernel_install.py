@@ -156,8 +156,7 @@ def _nothing_installed_and_online(monkeypatch, tmp_path):
     )
     # Every copy of the module (and any child process) uses the test's folder too.
     monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", str(tmp_path / "locks"))
-    # Tests that need an installed distribution say so; the host's own packages and offline
-    # switches must not decide them.
+    # Tests stub the installed version, so host packages and offline switches cannot decide them.
     monkeypatch.setattr(kernel_install, "_installed_version", lambda distribution: None)
     for name in ("UV_OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
         monkeypatch.delenv(name, raising = False)
@@ -1021,12 +1020,8 @@ def test_install_wheel_never_falls_back_to_pip_under_uv_offline(monkeypatch):
 
 
 def _process_gone(pid):
-    """True once ``pid`` has exited: no such process, or a zombie waiting to be reaped.
-
-    Reaped by init once killed; a zombie still answers kill(0) briefly, so its /proc state is read too.
-    The process can be reaped between opening /proc/<pid>/stat and reading it, and that read then
-    raises ProcessLookupError (ESRCH) rather than FileNotFoundError: both mean it is gone.
-    """
+    """True once pid exits or is a zombie; a zombie still answers kill(0), so its /proc state is
+    read too; a ProcessLookupError mid-read also means gone."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

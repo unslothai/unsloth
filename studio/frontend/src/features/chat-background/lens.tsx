@@ -3,7 +3,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useMaterialStore } from "./material";
+import { useAppliedMaterial, useMaterialStore } from "./material";
 import { LENS_SCALE, lensDrawn } from "./model";
 
 const COMPOSER = ".unsloth-composer-surface";
@@ -14,7 +14,7 @@ export function ComposerGlassLenses({
 }: {
   wallpaper: HTMLElement | null;
 }) {
-  const material = useMaterialStore((s) => s.material);
+  const material = useAppliedMaterial();
   const lens = useMaterialStore((s) => s.lens);
   const [hosts, setHosts] = useState<HTMLElement[]>([]);
   const workspace = wallpaper?.parentElement ?? null;

@@ -69,15 +69,36 @@ def _now() -> str:
 
 
 _TOKEN = re.compile(r"\w+", re.UNICODE)
+_CJK_RUN = re.compile(f"([{rag_db.CJK}]+)")
 # Quotes mark a word being named rather than used; non-greedy and single-line so an unclosed quote spans nothing.
 _QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([^`\n]+)`")
+
+
+def _terms(token: str) -> list[str]:
+    terms = []
+    for i, part in enumerate(_CJK_RUN.split(token)):
+        if i % 2:
+            terms.extend(" ".join(part[j : j + 2]) for j in range(max(1, len(part) - 1)))
+        elif part:
+            terms.append(part)
+    return terms
+
+
+def _or_terms(tokens) -> str:
+    # Dedupe CJK phrases only: a repeated plain word keeps its bm25 weight.
+    seen = set()
+    return " OR ".join(
+        f'"{t}"'
+        for token in tokens
+        for t in _terms(token)
+        if " " not in t or not (t in seen or seen.add(t))
+    )
 
 
 def _match_query(query: str) -> str:
     """User text -> safe FTS5 OR-of-quoted-terms query; quoting defuses FTS5
     operators. "" (no tokens) means no lexical results."""
-    toks = _TOKEN.findall(query.lower())
-    return " OR ".join(f'"{t}"' for t in toks)
+    return _or_terms(_TOKEN.findall(query.lower()))
 
 
 # Fixed list for reproducibility; 'no'/'not' deliberately excluded (they carry meaning).
@@ -120,10 +141,10 @@ def conversation_match_queries(query: str) -> list[str]:
         for token in _TOKEN.findall("".join(match))
     )
     content = [t for t in tokens if t not in _ARCHIVE_STOPWORDS or t in quoted] or tokens
-    permissive = " OR ".join(f'"{t}"' for t in content)
+    permissive = _or_terms(content)
     if not identifiers:
         return [permissive]
-    focused = " OR ".join(f'"{t}"' for t in identifiers)
+    focused = " OR ".join('"' + " ".join(rag_db.fts_text(t).split()) + '"' for t in identifiers)
     return [focused] if focused == permissive else [focused, permissive]
 
 
@@ -392,6 +413,40 @@ def failed_documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) 
     return [dict(r) for r in rows]
 
 
+def _insert_chunk(
+    conn: sqlite3.Connection, scope: str, document_id: str, chunk, regions_json
+) -> int:
+    """Writes one chunks row and its FTS5 row; returns the chunks rowid."""
+    chunk_id = f"{document_id}:{chunk.chunk_index}"
+    cur = conn.execute(
+        "INSERT OR REPLACE INTO chunks("
+        "id, document_id, scope, chunk_index, text, page_number, "
+        "source_page_index, page_char_start, page_char_end, token_count, "
+        "whole_document_token_count, kind, pdf_regions_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            chunk_id,
+            document_id,
+            scope,
+            chunk.chunk_index,
+            chunk.text,
+            chunk.page_number,
+            chunk.source_page_index,
+            getattr(chunk, "page_char_start", None),
+            getattr(chunk, "page_char_end", None),
+            chunk.token_count,
+            getattr(chunk, "whole_document_token_count", None),
+            getattr(chunk, "kind", "text"),
+            regions_json,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
+        (rag_db.fts_text(chunk.text), chunk_id, scope),
+    )
+    return cur.lastrowid
+
+
 def add_chunks(
     conn: sqlite3.Connection,
     scope: str,
@@ -416,33 +471,14 @@ def add_chunks(
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
         chunk_regions = regions[i] if regions and i < len(regions) else None
-        regions_json = json.dumps(chunk_regions) if chunk_regions else None
-        cur = conn.execute(
-            "INSERT OR REPLACE INTO chunks("
-            "id, document_id, scope, chunk_index, text, page_number, "
-            "source_page_index, page_char_start, page_char_end, token_count, "
-            "whole_document_token_count, kind, pdf_regions_json) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                chunk_id,
-                document_id,
+        chunk_rowids.append(
+            _insert_chunk(
+                conn,
                 scope,
-                chunk.chunk_index,
-                chunk.text,
-                chunk.page_number,
-                chunk.source_page_index,
-                getattr(chunk, "page_char_start", None),
-                getattr(chunk, "page_char_end", None),
-                chunk.token_count,
-                getattr(chunk, "whole_document_token_count", None),
-                getattr(chunk, "kind", "text"),
-                regions_json,
-            ),
-        )
-        chunk_rowids.append(cur.lastrowid)
-        conn.execute(
-            "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
-            (chunk.text, chunk_id, scope),
+                document_id,
+                chunk,
+                json.dumps(chunk_regions) if chunk_regions else None,
+            )
         )
         vec_rowids.append(
             conn.execute(
@@ -472,6 +508,12 @@ def add_chunks(
             vectors[: len(vec_rowids)],
             chunk_rowids = chunk_rowids,
         )
+
+
+def add_lexical_chunks(conn: sqlite3.Connection, scope: str, document_id: str, chunks) -> None:
+    """chunks + FTS5 rows only, no vec0 row: keyword search finds them, dense search never does. Uncommitted."""
+    for chunk in chunks:
+        _insert_chunk(conn, scope, document_id, chunk, None)
 
 
 def replace_document_vectors(
@@ -548,8 +590,20 @@ def delete_document(
     commit: bool = True,
 ) -> None:
     """Remove a document and all its chunks (+ fts + vec rows)."""
-    rag_db._delete_document_chunks(conn, document_id)
-    conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
+    delete_documents(conn, [document_id], commit = commit)
+
+
+def delete_documents(
+    conn: sqlite3.Connection,
+    document_ids,
+    *,
+    commit: bool = True,
+    vec: bool = True,
+) -> None:
+    ids = list(document_ids)
+    rag_db._delete_documents_chunks(conn, ids, vec = vec)
+    for batch, marks in rag_db._id_batches(ids):
+        conn.execute(f"DELETE FROM documents WHERE id IN ({marks})", batch)
     if commit:
         conn.commit()
 
@@ -574,10 +628,14 @@ def _copy_chunk_rows(
         "FROM chunks WHERE document_id=?",
         (target_id, target_id, scope, source_id),
     )
-    conn.execute(
-        "INSERT INTO chunks_fts(text, chunk_id, scope) "
-        "SELECT text, id, scope FROM chunks WHERE document_id=?",
-        (target_id,),
+    conn.executemany(
+        "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
+        [
+            (rag_db.fts_text(r["text"]), r["id"], r["scope"])
+            for r in conn.execute(
+                "SELECT text, id, scope FROM chunks WHERE document_id=?", (target_id,)
+            ).fetchall()
+        ],
     )
     return chunk_ids
 

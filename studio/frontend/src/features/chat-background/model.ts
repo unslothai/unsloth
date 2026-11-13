@@ -4,6 +4,20 @@
 // On "all" the sidebar stays solid.
 export const SCOPES = ["newChat", "chats", "all"] as const;
 export type BackgroundScope = (typeof SCOPES)[number];
+export type BackgroundRoute = "newChat" | "chat" | "page";
+export function sanitizeScope(
+	value: unknown,
+	fallback: BackgroundScope,
+): BackgroundScope {
+	return SCOPES.includes(value as BackgroundScope)
+		? (value as BackgroundScope)
+		: fallback;
+}
+export function inScope(scope: BackgroundScope, route: BackgroundRoute): boolean {
+	if (scope === "all") return true;
+	if (scope === "chats") return route !== "page";
+	return route === "newChat";
+}
 
 export const EFFECTS = [
 	"None",

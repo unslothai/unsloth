@@ -26,6 +26,23 @@ H3_AUDIO_VAE = "vae/official/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
 H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 
+# diffusers' H3 grid of n points (terminal 0 included) runs n - 1 evaluations; SGLang/ComfyUI/sd.cpp run n. "0" = old grid.
+H3_STEP_EVALUATIONS_ENV = "UNSLOTH_H3_STEP_EVALUATIONS"
+
+
+def h3_step_evaluations_enabled() -> bool:
+    return os.environ.get(H3_STEP_EVALUATIONS_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def h3_num_inference_steps(steps: int) -> int:
+    return int(steps) + 1 if h3_step_evaluations_enabled() else int(steps)
+
+
 # Measured (Diffusers T2VA, component CPU offload, 960x544..1344x768, 124-345 frames); base is largest component plus overhead; margin = allocator variance.
 H3_DIFFUSERS_VRAM_BASE_GB = 68.5
 H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME = 0.08
@@ -46,8 +63,7 @@ H3_TRANSFORMER_PREQUANT_GB: dict[str, float] = {"int8": 20.3, "fp8": 20.3}
 
 
 def h3_transformer_resident_gb(scheme: Optional[str]) -> float:
-    """Resident decimal GB of the denoiser this load holds: the hosted pre-quantized size for an
-    ENGAGED scheme, else the released bfloat16 one."""
+    """Resident GB: the hosted pre-quantized size for an engaged scheme, else the bf16 size."""
     return H3_TRANSFORMER_PREQUANT_GB.get(scheme or "", H3_TRANSFORMER_BF16_GB)
 
 
@@ -1391,8 +1407,7 @@ def amdgpu_gtt_reading(
 def amdgpu_vram_free_bytes(
     pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
 ) -> Optional[int]:
-    """Free VRAM of the amdgpu card at ``pci_slot``, or of the only amdgpu card when no slot is given. None when no
-    such single card reports both readings."""
+    """Free VRAM of the amdgpu card at pci_slot, or the sole one; None without both readings."""
     want = pci_slot.lower() if pci_slot else None
     found: list[int] = []
     for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_vram_total"):
@@ -2247,10 +2262,8 @@ def _full_scale_constant(samples: Any) -> Optional[float]:
 
 
 def h3_native_clip_is_nan_render(path: Path) -> bool:
-    """True when a clip is an sd.cpp NaN render: every frame one flat 0 or 255 AND a constant full-scale PCM soundtrack.
-
-    ggml's clamp maps NaN to 0 on CUDA and to the max on CPU. A flat frame alone is not enough (lossy encode flattens
-    near-black clips). A clip without audio, or one that cannot be read, is never flagged."""
+    """True for an sd.cpp NaN render: flat 0/255 frames AND constant full-scale PCM, since frames
+    alone false-flag lossy near-black clips; no audio or unreadable is never flagged"""
     import av
 
     with av.open(str(path)) as container:

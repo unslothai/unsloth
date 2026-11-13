@@ -22,6 +22,15 @@ they are, and the selectors responsible with their cost per key; selectors tried
 DOM are marked as likely victims of a whole-page restyle. It then pins the trigger down by
 removing :has() rules from the stylesheet before fresh page loads (a bisection, time-boxed) and
 names the rule whose removal makes typing cheap, with the CSS file and line it probably comes from.
+
+Then, on Linux, the area matrix (_area_matrix.py): the real chat page from the same build, its API
+answered in-process, a SHORT and a LONG agent chat, and every interactive area (typing, scrolling,
+each menu, dialog, picker and pane, the sidebar, the message controls) run under the default
+appearance and every appearance mode enumerated from the app (each window material incl.
+Transparent, lens modes, glass menus off, dark). Chromium trace counters per area. It fails when an
+area costs more as the chat grows (elements restyled / layout objects) or when a mode makes an area
+cost more than LONG_THREAD_AREAS_MAX_RATIO times the default (CPU of all browser threads), and when
+a popup trigger on the chat page belongs to no area.
 """
 
 from __future__ import annotations
@@ -40,6 +49,9 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _area_matrix as areas  # noqa: E402
+import _has_lint as has_lint  # noqa: E402
+import _webkit_leg as webkit_leg  # noqa: E402
 from _css_culprit import explain, has_descendant, thread_anchor  # noqa: E402
 from _playwright_robust import chromium_launch_args  # noqa: E402
 
@@ -52,11 +64,27 @@ LARGE = int(os.environ.get("LONG_THREAD_LARGE", "200"))
 # 423-472 ms (5.3-6.0x) and :has() 74-84 ms; healthy, 0.7-0.9 -> 0.7-1.0 ms (1.00x) and 0.2 ms.
 MAX_MATCH_RATIO = float(os.environ.get("LONG_THREAD_MAX_MATCH_RATIO", "2.0"))
 MAX_HAS_MS = float(os.environ.get("LONG_THREAD_MAX_HAS_MS", "5.0"))
+# Style recalc for one open or close of a modal layer (Radix writes pointer-events: none on <body>,
+# an inherited property). Healthy: 1-5 ms at 200 turns; when the thread inherits it, every message
+# restyles and this is hundreds of ms in Chromium and seconds in WebKit.
+MAX_LOCK_MS = float(os.environ.get("LONG_THREAD_MAX_LOCK_MS", "30.0"))
+LOCK_TOGGLES = 4
 # A ratio inside this band gets a second interleaved repeat before the verdict; outside it, one
 # measurement is decisive (healthy runs read 1.00x, the regression 5.3-6.0x).
 RECHECK_BAND = (1.5, 3.0)
 # Keeps sub-millisecond noise from becoming a large ratio.
 MATCH_FLOOR_MS = 2.0
+# Area matrix (tests/studio/_area_matrix.py). "auto" runs it on Linux: the Windows and macOS lanes
+# keep the quick long-chat checks.
+AREAS = os.environ.get("LONG_THREAD_AREAS", "auto")
+# Skip the long-chat checks and run only the area matrix (local A/A and noise studies).
+ONLY_AREAS = os.environ.get("LONG_THREAD_ONLY_AREAS") == "1"
+# Static lint of the built CSS for new non-subject :has() rules (tests/studio/_has_lint.py).
+HAS_LINT = os.environ.get("LONG_THREAD_HAS_LINT", "1") != "0"
+# The WebKit leg (_webkit_leg.py): surface open/close time and longest frame, short vs long chat, in
+# Playwright WebKit with a macOS and a Linux user agent. Opt-in (one Linux CI lane sets it), as it
+# needs the WebKit browser installed.
+WEBKIT = os.environ.get("LONG_THREAD_WEBKIT", "0") == "1"
 HEALTHY = "healthy reference: 0.7-1.0 ms/key selector matching, 1.00x, 0.2 ms/key :has()"
 KEYS = "the quick "
 PRECHECK_KEYS = "ab"
@@ -191,6 +219,23 @@ def style_per_key(cdp, page, keys: str) -> float:
     return 1000 * (metrics(cdp)["RecalcStyleDuration"] - m0["RecalcStyleDuration"]) / len(keys)
 
 
+def lock_style_ms(cdp, page) -> float:
+    """Untraced style recalc per open/close of a modal layer's body pointer-events lock."""
+    m0 = metrics(cdp)
+    for _ in range(LOCK_TOGGLES):
+        for value in ("none", ""):
+            page.evaluate(
+                "(v) => { document.body.style.pointerEvents = v; return getComputedStyle(document.body).color; }",
+                value,
+            )
+            page.wait_for_timeout(30)
+    return (
+        1000
+        * (metrics(cdp)["RecalcStyleDuration"] - m0["RecalcStyleDuration"])
+        / (2 * LOCK_TOGGLES)
+    )
+
+
 def measure(browser, base: str, turns: int) -> dict:
     ctx, page, cdp = open_thread(browser, base, turns)
     shape = page.evaluate("""() => ({
@@ -250,6 +295,7 @@ def measure(browser, base: str, turns: int) -> dict:
     typing_s = time.perf_counter() - t0
     m1 = metrics(cdp)
     typed_ok = page.evaluate("() => window.__threadWeight.composerText()") == PRECHECK_KEYS + keys
+    lock_ms = lock_style_ms(cdp, page)
     ctx.close()
     n = len(keys)
     selectors: dict[str, dict] = {}
@@ -270,6 +316,7 @@ def measure(browser, base: str, turns: int) -> dict:
         "match_ms": sum(r["ms"] for r in selectors.values()),
         "has_ms": sum(r["ms"] for s, r in selectors.items() if ":has(" in s),
         "style_ms": 1000 * (m1["RecalcStyleDuration"] - m0["RecalcStyleDuration"]) / n,
+        "lock_ms": lock_ms,
         "selectors": selectors,
     }
 
@@ -465,7 +512,11 @@ def growth(small: dict, large: dict) -> list[str]:
 
 
 def report(
-    runs: dict[int, list[dict]], failures: list[str], details: list[str], started: float
+    runs: dict[int, list[dict]],
+    failures: list[str],
+    details: list[str],
+    started: float,
+    extra: list[str] | None = None,
 ) -> int:
     def med(turns: int, key: str):
         vals = [r[key] for r in runs.get(turns, [])]
@@ -485,9 +536,10 @@ def report(
                 f"{med(turns, 'has_ms'):.2f} ms/key, style recalc {med(turns, 'style_ms'):.1f} ms/key "
                 f"(tracing on; {runs[turns][-1]['precheck_style_ms']:.1f} ms/key untraced), "
                 f"{runs[turns][0]['shape']['nodes']:,} DOM nodes, {runs[turns][-1]['keys']} keys traced "
-                f"in {runs[turns][-1]['typing_s']} s"
+                f"in {runs[turns][-1]['typing_s']} s, dialog/menu open or close "
+                f"{med(turns, 'lock_ms'):.1f} ms style recalc"
             )
-    print("\n".join(lines))
+    print("\n".join(lines + (extra or [])))
     if failures:
         for f in failures:
             print(f"FAIL: {f}")
@@ -495,7 +547,11 @@ def report(
             print(d)
         print(f"  {HEALTHY}")
         return 1
-    print("PASS: selector work per keystroke does not grow with the chat")
+    print(
+        "PASS: selector work per keystroke does not grow with the chat, opening a dialog or menu does not "
+        "restyle it, no area costs more as the chat grows, and no appearance mode makes an area cost more "
+        "than its limit"
+    )
     return 0
 
 
@@ -512,6 +568,11 @@ def main() -> int:
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(args = chromium_launch_args())
+            if HAS_LINT:
+                lint_has(browser, failures, details)
+            if ONLY_AREAS:
+                browser.close()
+                return finish_areas(runs, failures, details, started)
             # Large first: a blown :has() budget is decisive on its own and stops the run here.
             large = measure(browser, base, LARGE)
             runs[LARGE].append(large)
@@ -540,6 +601,25 @@ def main() -> int:
                 details += top_selectors(large, only_has = True)
                 details += pin_down(browser, base)
                 details.append("  " + HINT)
+            if not failures and large.get("lock_ms", 0.0) > MAX_LOCK_MS:
+                # One reading on a shared runner can catch the page mid-settle (a Windows leg read 125 ms
+                # where the same build reads 14 ms on every other leg); a real regression reads high twice.
+                again = measure(browser, base, LARGE)
+                print(
+                    f"  dialog/menu lock {large['lock_ms']:.0f} ms is over budget; measured again on a fresh "
+                    f"page: {again.get('lock_ms', float('nan')):.0f} ms",
+                    flush = True,
+                )
+                if again.get("lock_ms") is not None:
+                    large["lock_ms"] = min(large["lock_ms"], again["lock_ms"])
+            if not failures and large.get("lock_ms", 0.0) > MAX_LOCK_MS:
+                failures.append(
+                    f"opening or closing a dialog or menu costs {large['lock_ms']:.0f} ms of style recalc at "
+                    f"{LARGE} turns, budget {MAX_LOCK_MS:.0f} ms ({large['lock_ms'] / MAX_LOCK_MS:.1f}x over). "
+                    "Radix writes pointer-events: none on <body> and the thread inherits it, so every message "
+                    "restyles. It is possible the explicit pointer-events on .aui-thread-viewport in index.css "
+                    "(the modal-layer cover rules) was removed or overridden, but we cannot be sure"
+                )
             if not failures:
                 small = measure(browser, base, SMALL)
                 runs[SMALL].append(small)
@@ -574,9 +654,97 @@ def main() -> int:
                     details += pin_down(browser, base)
                     details.append("  " + HINT)
             browser.close()
+            return finish_areas(runs, failures, details, started)
     finally:
         server.shutdown()
-    return report(runs, failures, details, started)
+
+
+def lint_has(browser, failures: list[str], details: list[str]) -> None:
+    """Static: no non-subject :has() rule in the built CSS beyond the allowlisted ones (_has_lint.py)."""
+    scratch = browser.new_context()
+    try:
+        page = scratch.new_page()
+        selectors: list[str] = []
+        for css in sorted((DIST / "assets").glob("*.css")):
+            text = css.read_text(encoding = "utf-8", errors = "replace")
+            if ":has(" in text:
+                selectors += page.evaluate(has_lint.SELECTORS_JS, text)
+    finally:
+        scratch.close()
+    found = has_lint.offenders(selectors)
+    if os.environ.get("LONG_THREAD_HAS_LINT_WRITE") == "1":
+        has_lint.write_allowlist(found)
+        print(f":has() lint: wrote {len(found)} selectors to {has_lint.ALLOWLIST}", flush = True)
+        return
+    new, stale = has_lint.check(found)
+    print(
+        f":has() lint: {len(selectors)} :has() rules in the build, {len(found)} non-subject "
+        f"({len(found) - len(new)} allowlisted, {len(new)} new)"
+        + (
+            f"; {len(stale)} allowlisted rules are gone, prune them with LONG_THREAD_HAS_LINT_WRITE=1"
+            if stale
+            else ""
+        ),
+        flush = True,
+    )
+    if new:
+        failures.append(
+            f"{len(new)} new CSS rule(s) put :has() before a combinator (`X:has(...) Y` / `X:has(...) > Y`). "
+            "Chromium and WebKit then restyle every element matching the right-hand side whenever anything "
+            "changes under an ancestor of the chat, so opening the sidebar, a menu or a pane restyles the "
+            "whole thread. Keep :has() in the last compound (`X:has(...)`), or set a data attribute on the "
+            "anchor from a layout effect and select on that; a Tailwind group-has-* variant compiles to this "
+            "shape too"
+        )
+        for sel in new[:8]:
+            details.append(f"  new non-subject :has(): {short(sel, 200)}")
+            details += suspects_for(sel)
+
+
+def areas_enabled() -> bool:
+    if AREAS == "auto":
+        return sys.platform.startswith("linux")
+    return AREAS not in ("0", "", "off")
+
+
+def finish_areas(runs, failures, details, started) -> int:
+    """Run the area matrix after the long-chat checks; independent of their verdict."""
+    extra: list[str] = []
+    if not areas_enabled():
+        extra.append(f"  area matrix: off (LONG_THREAD_AREAS={AREAS})")
+    elif not (DIST / "index.html").exists():
+        failures.append(f"no app build at {DIST / 'index.html'} for the area matrix")
+    else:
+        lines, fails, more, result = areas.run(DIST, chromium_launch_args())
+        extra += lines
+        failures += fails
+        details += more
+        dump = os.environ.get("LONG_THREAD_AREAS_JSON")
+        if dump:
+            Path(dump).write_text(
+                json.dumps(
+                    {
+                        "pages": {f"{t}|{m}": v for (t, m), v in result["result"]["pages"].items()},
+                        "verdicts": result["verdicts"],
+                        "seconds": result["result"]["seconds"],
+                    },
+                    default = str,
+                )
+            )
+    if WEBKIT:
+        if not (DIST / "index.html").exists():
+            failures.append(f"no app build at {DIST / 'index.html'} for the WebKit leg")
+        else:
+            try:
+                lines, fails, _ = webkit_leg.run(DIST)
+            except Exception as exc:  # noqa: BLE001 - a leg that cannot start is a failure, not a pass
+                lines, fails = (
+                    [],
+                    [f"the WebKit leg did not run: {type(exc).__name__}: {str(exc)[:300]}"],
+                )
+            extra += lines
+            failures += fails
+    return report(runs, failures, details, started, extra)
 
 
 if __name__ == "__main__":

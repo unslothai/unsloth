@@ -3,7 +3,11 @@
 
 """Encodes a Wan or MiniMax-H3 clip while its VAE decodes; the streamed mp4 is used only if its
 frames equal the final frames bit for bit, else re-encoded; H3 declares audio up front (as
-encode_x264) and muxes it last; UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0 disables."""
+encode_x264) and muxes it last; UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0 disables.
+
+Each encoded chunk is spooled to an unlinked temp file and its host (often pinned) copy dropped, so the raw frames
+held for the final compare stay bounded by the queue instead of growing to a second full clip;
+UNSLOTH_VIDEO_STREAM_SHARED_OUTPUT=0 keeps every chunk in memory as before."""
 
 from __future__ import annotations
 
@@ -27,6 +31,8 @@ _STOP = object()
 STREAM_COMPARE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_COMPARE_SLICED"
 # 128 KiB bool scratch stays under numpy's 4 MiB hugepage madvise threshold.
 _COMPARE_WORDS = 1 << 17
+SHARED_OUTPUT_ENV = "UNSLOTH_VIDEO_STREAM_SHARED_OUTPUT"
+_SPOOL_READ = _COMPARE_WORDS * 8
 
 STATS = {"streamed": 0, "fallback": 0, "last": ""}
 
@@ -37,6 +43,29 @@ def stream_encode_enabled() -> bool:
 
 def _sliced_compare_enabled() -> bool:
     return os.environ.get(STREAM_COMPARE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _spool_enabled() -> bool:
+    return os.environ.get(SHARED_OUTPUT_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+class _Chunk:
+    """One streamed range of frames: ``host`` until the encoder spooled it (then ``offset`` into the spool)."""
+
+    __slots__ = ("host", "done", "frames", "offset", "spool")
+
+    def __init__(
+        self,
+        host: Any,
+        done: Any,
+        frames: int,
+        spool: bool = True,
+    ) -> None:
+        self.host = host
+        self.done = done
+        self.frames = frames
+        self.offset = None
+        self.spool = spool
 
 
 def _frames_equal(a: Any, b: Any, scratch: Any) -> bool:
@@ -115,6 +144,9 @@ class StreamEncode:
         )
         self._side = None
         self.chunks: list = []
+        self._spool: Any = None
+        self._spool_on = _spool_enabled()
+        self._spool_lock = threading.Lock()
         self.reason = ""
         self.valid = True
         self._decoding = False
@@ -180,13 +212,14 @@ class StreamEncode:
             x.record_stream(self._side)
         else:
             host = x.cpu() if device.type != "cpu" else x
-        self.chunks.append((host, done))
+        chunk = _Chunk(host, done, int(x.shape[0]))
+        self.chunks.append(chunk)
         if self._thread is None:
             self._thread = threading.Thread(
                 target = self._encode, name = "video-stream-encode", daemon = True
             )
             self._thread.start()
-        self._queue.put((host, done))
+        self._queue.put(chunk)
 
     @contextlib.contextmanager
     def hooks(self) -> Iterator[None]:
@@ -264,7 +297,7 @@ class StreamEncode:
                     break
                 if self._failed or not self.valid:
                     continue
-                host, done = item
+                host, done = item.host, item.done
                 if done is not None:
                     done.synchronize()
                 frames = host.numpy()
@@ -281,6 +314,10 @@ class StreamEncode:
                 for frame in frames:
                     for packet in stream.encode(av.VideoFrame.from_ndarray(frame, format = "rgb24")):
                         container.mux(packet)
+                # the last ``frame`` is a view that would pin the whole chunk
+                frames = host = frame = None
+                if item.spool:
+                    self._spool_chunk(item)
             if container is not None and self.valid and not self._failed:
                 for packet in stream.encode():
                     container.mux(packet)
@@ -298,6 +335,61 @@ class StreamEncode:
                         container.close()
                     except Exception:  # noqa: BLE001
                         self._failed = True
+
+    def _spool_chunk(self, chunk: "_Chunk") -> None:
+        """Move an encoded chunk's frames to the spool and drop the host copy; on any failure keep it in memory."""
+        if not self._spool_on:
+            return
+        try:
+            frames = chunk.host.numpy()
+            with self._spool_lock:
+                if self._spool is None:
+                    # unlinked at once on POSIX, deleted on close on Windows
+                    self._spool = tempfile.TemporaryFile(dir = os.path.dirname(self.path) or None)
+                spool = self._spool
+                spool.seek(0, os.SEEK_END)
+                offset = spool.tell()
+                spool.write(memoryview(frames.reshape(-1)))
+                # a full disk must fail here, while the chunk is still in memory, not at the compare's seek
+                spool.flush()
+                chunk.offset = offset
+                chunk.host = None
+                chunk.done = None
+        except Exception:  # noqa: BLE001 - a full disk keeps the chunks in memory, the old way
+            self._spool_on = False
+
+    def _spool_equal(self, offset: int, theirs: Any, scratch: Any) -> bool:
+        """The spooled bytes at ``offset`` equal ``theirs`` (uint8 frames), read back 1 MiB at a time."""
+        import numpy as np
+
+        size = theirs.size
+        window = np.empty(min(size, _SPOOL_READ), dtype = np.uint8)
+        frame = int(np.prod(theirs.shape[1:])) if theirs.ndim > 1 else 1
+        flat = theirs.reshape(-1) if theirs.flags.c_contiguous else None
+        pos = 0
+        with self._spool_lock:
+            spool = self._spool
+            spool.seek(offset)
+            while pos < size:
+                part = window[: min(size - pos, window.size)]
+                if spool.readinto(memoryview(part)) != part.size:
+                    return False
+                if flat is not None:
+                    want = flat[pos : pos + part.size]
+                else:
+                    # strided clip: copy only this window's frames
+                    first, last = pos // frame, (pos + part.size - 1) // frame
+                    span = np.ascontiguousarray(theirs[first : last + 1]).reshape(-1)
+                    want = span[pos - first * frame : pos - first * frame + part.size]
+                same = (
+                    np.array_equal(part, want)
+                    if scratch is None
+                    else _frames_equal(part, want, scratch)
+                )
+                if not same:
+                    return False
+                pos += part.size
+        return True
 
     def _join(self) -> None:
         if self._thread is not None:
@@ -321,11 +413,7 @@ class StreamEncode:
         if not self.chunks:
             self.invalidate("no chunks")
             return False
-        for _, done in self.chunks:
-            if done is not None:
-                done.synchronize()
-        streamed = [host for host, _ in self.chunks]
-        count = sum(len(h) for h in streamed)
+        count = sum(chunk.frames for chunk in self.chunks)
         if count > len(video_frames) or (count != len(video_frames) and not self._tail_ok):
             self.invalidate("frame count differs")
             return False
@@ -334,18 +422,32 @@ class StreamEncode:
         final = video_frames.numpy()
         scratch = np.empty(_COMPARE_WORDS, dtype = np.bool_) if _sliced_compare_enabled() else None
         start = 0
-        for host in streamed:
-            # numpy, not torch.equal: torch's parallel compare costs seconds on a loaded many-core host.
-            ours, theirs = host.numpy(), final[start : start + len(host)]
-            same = (
-                np.array_equal(ours, theirs)
-                if scratch is None
-                else _frames_equal(ours, theirs, scratch)
-            )
+        for chunk in self.chunks:
+            with self._spool_lock:
+                # local refs: the encoder may spool the chunk meanwhile
+                host, done, offset = chunk.host, chunk.done, chunk.offset
+            theirs = final[start : start + chunk.frames]
+            if host is None:
+                try:
+                    same = self._spool_equal(offset, theirs, scratch)
+                except Exception:  # noqa: BLE001 - an unreadable spool: encode the clip normally
+                    self.invalidate("spool unreadable")
+                    return False
+            else:
+                if done is not None:
+                    done.synchronize()
+                # numpy, not torch.equal: torch's parallel compare costs seconds on a loaded many-core host.
+                ours = host.numpy()
+                same = (
+                    np.array_equal(ours, theirs)
+                    if scratch is None
+                    else _frames_equal(ours, theirs, scratch)
+                )
+            del host
             if not same:
                 self.invalidate("frames differ")
                 return False
-            start += len(host)
+            start += chunk.frames
         return True
 
     def take(
@@ -371,9 +473,11 @@ class StreamEncode:
             if self.valid and not self._decoded:
                 self.invalidate("no decode")
             if self.valid and self._matches(video_frames):
-                streamed = sum(len(host) for host, _ in self.chunks)
+                streamed = sum(chunk.frames for chunk in self.chunks)
                 if streamed < len(video_frames):
-                    self._queue.put((video_frames[streamed:], None))
+                    # the caller's frames: never spooled
+                    tail = video_frames[streamed:]
+                    self._queue.put(_Chunk(tail, None, len(tail), spool = False))
                 self._join()
                 if audio is not None and not self._failed and self.valid:
                     try:
@@ -407,6 +511,13 @@ class StreamEncode:
         self._join()
         self._close_container()
         self.chunks = []
+        with self._spool_lock:
+            spool, self._spool = self._spool, None
+        if spool is not None:
+            try:
+                spool.close()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             os.unlink(self.path)
         except OSError:
