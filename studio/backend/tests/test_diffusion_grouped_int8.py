@@ -685,3 +685,17 @@ def test_card_decisions_are_cached_and_honour_the_kill_switches(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_grouped_int8_gemm", fake)
     assert gi._fused_on(0) is True and gi._fused_on(3) is False
     gi._FUSED.clear()
+
+
+def test_load_time_card_decision_arms_every_route(monkeypatch):
+    # the loader decides at load (a compiled forward never probes): all three, not only the tuned GEMM
+    monkeypatch.setattr(gi, "_tuned_on", lambda i: True)
+    monkeypatch.setattr(gi, "_rotq_on", lambda i: True)
+    monkeypatch.setattr(gi, "_fused_on", lambda i: False)
+    layer = _cpu_layer()
+    assert (layer._tuned, layer._rotq, layer._fused_ok) == (None, None, None)
+    gi.decide_on_card(layer, 0)
+    assert (layer._tuned, layer._rotq, layer._fused_ok) == (True, True, False)
+    monkeypatch.setattr(gi, "_rotq_on", lambda i: False)
+    gi.decide_on_card(layer, 0)  # made once: a later call keeps the decision
+    assert layer._rotq is True

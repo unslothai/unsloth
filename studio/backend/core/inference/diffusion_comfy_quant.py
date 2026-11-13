@@ -1922,8 +1922,7 @@ def load_comfy_quant_transformer(
                 converted[f"{fqn}.{buffer_name}"] = buffer
         tuned_index = None
         if grouped_keep:
-            from .diffusion_grouped_int8 import _tuned_on as tuned_on
-            from .diffusion_grouped_int8 import grouped_linear_class
+            from .diffusion_grouped_int8 import decide_on_card, grouped_linear_class
 
             grouped_cls = grouped_linear_class()
             place = (
@@ -1962,7 +1961,7 @@ def load_comfy_quant_transformer(
             )
             if tuned_index is not None:
                 # decided now, in eager: an offloaded / streamed load may never move the layer with ``.to()``
-                layer._tuned = tuned_on(tuned_index)
+                decide_on_card(layer, tuned_index)
             setattr(parent, leaf, layer)
             for buffer_name, buffer in layer.named_buffers(recurse = False):
                 if buffer_name != "rot_h":

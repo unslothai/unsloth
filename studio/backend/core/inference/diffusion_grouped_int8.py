@@ -564,6 +564,18 @@ def race_winner(times: dict) -> str:
     return best
 
 
+def decide_on_card(layer: Any, index: Any) -> None:
+    """Eager, at load or placement: card ``index``'s tuned GEMM, fused rotation + act quant and fused unpack GEMM
+    decisions for a packed layer (a compiled forward only reads them; an offloaded / streamed load may never move the
+    layer with ``.to()``)."""
+    if getattr(layer, "_tuned", None) is None:
+        layer._tuned = _tuned_on(index)
+    if getattr(layer, "_rotq", None) is None:
+        layer._rotq = _rotq_on(index)
+    if getattr(layer, "_fused_ok", None) is None:
+        layer._fused_ok = _fused_on(index)
+
+
 def _rows_bucket(rows: int) -> int:
     return 0 if rows < 256 else 1 if rows < 2048 else 2
 
@@ -654,12 +666,9 @@ def grouped_linear_class():
 
         def _apply(self, fn, *args, **kwargs):
             out = super()._apply(fn, *args, **kwargs)
-            if self._tuned is None and self.weight_packed.is_cuda:
-                # placed on a card, in eager: decide the tuned GEMM now, since a compiled forward never probes
-                index = self.weight_packed.device.index
-                self._tuned = _tuned_on(index)
-                self._rotq = _rotq_on(index)
-                self._fused_ok = _fused_on(index)
+            if self.weight_packed.is_cuda and None in (self._tuned, self._rotq, self._fused_ok):
+                # placed on a card, in eager: decide now, since a compiled forward never probes
+                decide_on_card(self, self.weight_packed.device.index)
             probe = fn(torch.empty(0, dtype = self.compute_dtype, device = self.weight_packed.device))
             if isinstance(probe, torch.Tensor) and probe.dtype in (
                 torch.bfloat16,
@@ -753,13 +762,9 @@ def grouped_linear_class():
 
         def _placed(self, x: Any) -> None:
             """Eager: the per-card decisions a layer built off the card (or before a move) has not made yet."""
-            index = x.device.index
             if self._tuned is None:
                 self._tuned = self._tuned_ready(x)
-            if self._rotq is None:
-                self._rotq = _rotq_on(index)
-            if self._fused_ok is None:
-                self._fused_ok = _fused_on(index)
+            decide_on_card(self, x.device.index)
 
         def _fused(self, x: Any) -> Any:
             """bf16: the fused rotation + act quant codes into the unpack-in-mainloop GEMM (the packed codes are decoded
