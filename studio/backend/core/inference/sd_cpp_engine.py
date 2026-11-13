@@ -28,7 +28,10 @@ from utils.process_lifetime import (
     is_process_shutting_down,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
-from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs,
+    windows_loader_error_boxes_suppressed,
+)
 from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
@@ -243,8 +246,7 @@ class SdCppCancelled(RuntimeError):
 
 
 def _terminate(proc: "subprocess.Popen") -> None:
-    """Hard-stop an sd-cli process (and children). On POSIX it's a session leader, so kill the
-    whole group; else kill just the process."""
+    """Hard-stop sd-cli and its children: POSIX kills the session group, else just the process."""
     if proc.poll() is not None:
         return
     try:
@@ -360,8 +362,8 @@ def host_cuda_runtime_dirs() -> list[str]:
         return []
 
 
-def host_cuda_runtime_major() -> Optional[str]:
-    """CUDA major the installed llama.cpp links, else torch's."""
+def llama_cpp_cuda_major() -> Optional[str]:
+    """CUDA major the installed llama.cpp links, None when it is not a CUDA build (or unreadable)."""
     binary = _llama_server_binary()
     if binary:
         try:
@@ -373,6 +375,14 @@ def host_cuda_runtime_major() -> Optional[str]:
                 return match.group(1)
         except Exception:  # noqa: BLE001
             pass
+    return None
+
+
+def host_cuda_runtime_major() -> Optional[str]:
+    """CUDA major the installed llama.cpp links, else torch's."""
+    major = llama_cpp_cuda_major()
+    if major:
+        return major
     version = getattr(getattr(sys.modules.get("torch"), "version", None), "cuda", None)
     return version.split(".")[0] if isinstance(version, str) and version else None
 
@@ -447,17 +457,18 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
             return cached[0]
     returncode = None
     try:
-        result = subprocess.run(
-            [binary, "--help"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
-            check = False,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            result = subprocess.run(
+                [binary, "--help"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                check = False,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
         help_text = (result.stdout or "") + "\n" + (result.stderr or "")
         returncode = result.returncode
     except (OSError, subprocess.SubprocessError):
@@ -652,16 +663,18 @@ class SdCppEngine:
         if self._version is not None:
             return self._version
         try:
-            res = subprocess.run(
-                [self.binary, "--version"],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = timeout,
-                check = False,
-                env = runtime_env(self.binary),
-            )
+            with windows_loader_error_boxes_suppressed():
+                res = subprocess.run(
+                    [self.binary, "--version"],
+                    capture_output = True,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    timeout = timeout,
+                    check = False,
+                    env = runtime_env(self.binary),
+                    **windows_hidden_subprocess_kwargs(),
+                )
         except (OSError, subprocess.SubprocessError):
             return None
         if res.returncode != 0:

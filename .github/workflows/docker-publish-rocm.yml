@@ -91,11 +91,12 @@ jobs:
               SHA="$REF"
           else
               # ls-remote exits 0 even with no match, so non-zero means the remote was unreachable.
-              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth "$REF")"; then
+              # Prefer the peeled ^{} line: an annotated tag's own sha is not a commit.
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth "$REF" "${REF}^{}")"; then
                   echo "::error::unslothai/unsloth unreachable; cannot freeze ref '${REF}' to a sha"
                   exit 1
               fi
-              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{s=$1; r=$2} $2==r"^{}"{s=$1} END{print s}')"
               [ -n "$SHA" ] || SHA="$REF"
           fi
           echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
@@ -126,11 +127,11 @@ jobs:
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
               SHA="$REF"
           else
-              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF")"; then
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF" "${REF}^{}")"; then
                   echo "::error::unslothai/unsloth-zoo unreachable; cannot freeze ref '${REF}' to a sha"
                   exit 1
               fi
-              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{s=$1; r=$2} $2==r"^{}"{s=$1} END{print s}')"
               [ -n "$SHA" ] || SHA="$REF"
           fi
           echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
@@ -146,11 +147,11 @@ jobs:
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
               SHA="$REF"
           else
-              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/notebooks "$REF")"; then
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/notebooks "$REF" "${REF}^{}")"; then
                   echo "::error::unslothai/notebooks unreachable; cannot freeze ref '${REF}' to a sha"
                   exit 1
               fi
-              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{s=$1; r=$2} $2==r"^{}"{s=$1} END{print s}')"
               [ -n "$SHA" ] || SHA="$REF"
           fi
           echo "commit=${SHA}" >> "$GITHUB_OUTPUT"
@@ -226,7 +227,7 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
@@ -270,7 +271,7 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
@@ -280,6 +281,8 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest=auto would tag :latest on a v* push, and tag-studio runs last
+          flavor: latest=false
           # Override builds' sha tags carry the run id so two experiments at one commit do not collide.
           tags: |
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
@@ -327,7 +330,7 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
@@ -377,7 +380,7 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
@@ -387,6 +390,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
           # format(), not a bare ${{ }}-studio: tests/python/test_docker_rocm.py matches the raw gfx line
           # by name and it must stay unique to the base.
           tags: |

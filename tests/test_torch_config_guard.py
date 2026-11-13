@@ -40,6 +40,15 @@ def test_a_deleted_entry_is_found_named_and_restored(monkeypatch):
     assert guard.hidden_entries() == []
 
 
+def test_a_scoped_override_survives_the_restore():
+    # config.patch values live only in the ContextVar on torch 2.12+, unlike plain writes Unsloth mirrors into the default.
+    assert guard.install_delete_recorder()
+    with torch._dynamo.config.patch(**{_LIMIT: 37}):
+        delattr(torch._dynamo.config, _LIMIT)
+        guard.restore(guard.hidden_entries())
+        assert getattr(torch._dynamo.config, _LIMIT) == 37
+
+
 def test_check_after_test_raises_and_leaves_the_process_clean():
     guard.install_delete_recorder()
     before = torch._inductor.config.emulate_precision_casts

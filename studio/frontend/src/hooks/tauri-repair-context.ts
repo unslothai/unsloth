@@ -20,7 +20,7 @@ export function useTauriRepairController(): TauriRepairController | null {
   return useContext(TauriRepairContext);
 }
 
-/** Off Mac the backend reports `no_torch` only with a usable GPU; `chat_only_hint` marks a Mac the MLX wheels skip. */
+/** Off Mac the full install trains on the GPU, or on the CPU when there is none (`cpu_training`); `chat_only_hint` marks a Mac the MLX wheels skip. */
 export function canUpgradeToFullInstall(
   chatOnlyReason: string | null,
   chatOnlyHint: string | null,

@@ -7,7 +7,9 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { flushSync } from "react-dom"
 
 import { cn } from "@/lib/utils"
-import { prefersReducedMotion, setTheme } from "@/features/settings"
+import { prefersReducedMotion } from "@/features/settings/stores/appearance-custom-store"
+import { setTheme } from "@/features/settings/stores/theme-store"
+import { isWebKitGTK } from "./theme-view-transition"
 
 interface AnimatedThemeTogglerProps extends React.ComponentPropsWithoutRef<"button"> {
   duration?: number
@@ -46,7 +48,12 @@ export function useAnimatedThemeToggle(duration = 400) {
     }
 
     // Reduced motion cannot reach the view transition's Web Animations clip-path, so skip it.
-    if (!document.startViewTransition || prefersReducedMotion()) {
+    // WebKitGTK skips it too: the call itself can crash the page.
+    if (
+      !document.startViewTransition ||
+      prefersReducedMotion() ||
+      isWebKitGTK(navigator.platform, navigator.userAgent)
+    ) {
       applyTheme()
       return
     }

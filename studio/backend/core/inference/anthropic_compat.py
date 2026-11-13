@@ -26,8 +26,7 @@ def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> st
 
 
 def anthropic_tool_use_id(upstream_id = None, prefix = "toolu_") -> str:
-    """Return an Anthropic tool id: the upstream id if it already starts with
-    ``prefix``, else a fresh '<prefix><24 hex>'."""
+    """Upstream tool id if it starts with prefix, else a fresh prefix plus 24 hex digits."""
     if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith(prefix):
         return upstream_id
     return f"{prefix}{uuid.uuid4().hex[:24]}"
@@ -1256,7 +1255,7 @@ class AnthropicPassthroughEmitter:
             events.extend(self._emit_text_delta("</think>"))
         if self._healer is not None:
             # Last-chance heal of any held residue (e.g. an unclosed tool block).
-            for kind, value in self._healer.finalize():
+            for kind, value in self._healer.finalize(promote = self._stop_reason != "max_tokens"):
                 if kind == "text" and value:
                     events.extend(self._emit_text_delta(value))
                 elif kind == "tool_call":

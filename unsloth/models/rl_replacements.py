@@ -52,6 +52,71 @@ from ..device_type import (
 )
 import textwrap
 from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
+import ast
+import sys
+
+
+def _class_source(cls):
+    """inspect.getsource(cls) without the per-call whole-module ast.parse of Python < 3.13;
+    anything ambiguous falls back to inspect.getsource."""
+    if sys.version_info >= (3, 13):
+        return inspect.getsource(cls)
+    try:
+        name = cls.__name__
+        if not isinstance(cls, type) or cls.__qualname__ != name or hasattr(cls, "__wrapped__"):
+            return inspect.getsource(cls)
+        module = sys.modules.get(cls.__module__)
+        if module is None or not getattr(module, "__file__", None):
+            return inspect.getsource(cls)
+        lines, _ = inspect.findsource(module)
+        # Indented hits count too: inspect returns the first one (e.g. a TYPE_CHECKING stub).
+        pattern = re.compile(r"[ \t]*class\s+" + re.escape(name) + r"\b")
+        hits = [i for i, line in enumerate(lines) if pattern.match(line)]
+        if len(hits) != 1 or lines[hits[0]][:1] in (" ", "\t"):
+            return inspect.getsource(cls)
+        start = hits[0]
+        decorator = re.compile(r"@[A-Za-z_][\w.]*(\([^()\[\]{}#'\"\\]*\))?[ \t]*\r?\n?$")
+        while start > 0 and decorator.match(lines[start - 1]):
+            start -= 1
+        # The code above must compile as complete statements, else a multi-line or separated
+        # decorator may still belong to the class.
+        prev = start
+        for attempt in range(8):
+            prev -= 1
+            while prev >= 0 and lines[prev][:1] in ("", " ", "\t", "\n", "\r", "#", "\f"):
+                prev -= 1
+            if prev < 0:
+                if attempt:
+                    return inspect.getsource(cls)
+                break
+            if lines[prev].startswith("@"):
+                return inspect.getsource(cls)
+            try:
+                ast.parse("".join(lines[prev:start]), "<unsloth_class_source>", "exec")
+                break
+            except SyntaxError:
+                continue
+        else:
+            return inspect.getsource(cls)
+        block = inspect.getblock(lines[start:])
+        end = start + len(block)
+        # At least one own method, all inside the block: rules out a match inside a string.
+        filename = inspect.getsourcefile(cls)
+        verified = False
+        for value in vars(cls).values():
+            func = getattr(value, "__func__", value)
+            code = getattr(func, "__code__", None)
+            if code is None or code.co_filename != filename:
+                continue
+            if not (start < code.co_firstlineno <= end):
+                return inspect.getsource(cls)
+            verified = True
+        if not verified:
+            return inspect.getsource(cls)
+        return "".join(block)
+    except Exception:
+        return inspect.getsource(cls)
+
 
 # One-time GRPO sequence-packing gates; mirrored into the generated trainer cache via RL_PRE_ITEMS.
 UNSLOTH_GRPO_SEQ_PACKING_ON = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
@@ -285,16 +350,13 @@ _PPO_FUSED_BLOCKS = (
         ("for update in range(1, args.num_total_batches + 1):",),
         _PPO_FUSED_IMPORT + ("for update in range(1, args.num_total_batches + 1):",),
     ),
-    # Rollouts without the stacked float32 generation scores.
     (
         ("query_responses, logitss = batch_generation(",),
         (
-            "query_responses, logitss = (",
-            "    batch_generation if _unsloth_ppo_route is None else _unsloth_ppo_batch_generation",
-            ")(",
+            "query_responses, logitss = _unsloth_ppo_batch_generation(",
+            "    _unsloth_ppo_route, batch_generation,",
         ),
     ),
-    # Rollout (old) log-probs: the policy forward + fused scorer the training pass uses.
     (
         (
             "logits = logitss[i : i + args.local_rollout_forward_batch_size]",
@@ -302,7 +364,7 @@ _PPO_FUSED_BLOCKS = (
             "del logits",
         ),
         (
-            "if _unsloth_ppo_route is not None:",
+            "if _unsloth_ppo_route is not None and logitss is None:",
             "    logprob = _unsloth_ppo_policy_logprobs(",
             "        _unsloth_ppo_route, forward, selective_log_softmax, model, query_response, response,",
             "        context_length, processing_class.pad_token_id, args.temperature + 1e-7,",
@@ -1402,9 +1464,8 @@ def sft_trainer_compute_loss(function_name, function):
         return_outputs = False,
         num_items_in_batch = None,
     ):
-        # TRL >= 1.15 computes loss_type="dft" only in the compute_loss this replaces (else it trains as NLL):
-        # run it on TRL's fused LM head. Older TRL routes DFT through compute_loss_func.
-        # TRL label smoothing applies only to "nll", so label_smoother must not opt dft out.
+        # Runs DFT on the TRL fused LM head (TRL >= 1.15 computes it only in compute_loss; older TRL
+        # routes it via compute_loss_func); label smoothing must not opt dft out.
         if getattr(self.args, "loss_type", None) == "dft" and self.compute_loss_func is None:
             import trl.trainer.utils as _trl_utils
             if hasattr(_trl_utils, "add_fused_lm_head"):
@@ -1665,6 +1726,28 @@ def _unsloth_grpo_autocast_forced_float32(self):
     if forced is None:
         forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
     return forced
+
+
+def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
+    """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
+    recurrences mix packed rows (packing_boundary_blocker). Their leak (~0.1 nats) passes the 0.7 packed
+    self-verify. Zoo's grad PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
+    try:
+        unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+        if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
+            return
+        unwrapped._unsloth_packing_boundary_checked = True
+        from unsloth.utils.packing import packing_boundary_blocker
+
+        config = getattr(unwrapped, "config", None)
+        blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
+    except Exception:
+        return
+    if blocker is None:
+        return
+    unwrapped._unsloth_seq_packing_nograd_ok = False
+    unwrapped._unsloth_seq_packing_grad_ok = False
+    unwrapped._unsloth_prefix_grouper_nograd_disabled = True
 
 
 def _unsloth_grpo_autocast(self):
@@ -2310,15 +2393,95 @@ def grpo_trainer__generate_single_turn(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_single_turn)
 
 
+def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad):
+    """Completions cut by a length limit, not ended by EOS or a stop string (no EOS either).
+    vLLM also caps prompt + completion at max_model_len (= max_seq_length), so that counts too."""
+    limit = getattr(trainer, "max_completion_length", None)
+    max_model_len = None
+    if getattr(trainer, "use_vllm", False):
+        llm = getattr(trainer, "llm", None)
+        if llm is None:
+            llm = getattr(getattr(trainer, "vllm_generation", None), "llm", None)
+        engine = getattr(llm, "llm_engine", None)
+        model_config = getattr(engine, "model_config", None)
+        if model_config is None:
+            model_config = getattr(getattr(engine, "vllm_config", None), "model_config", None)
+        max_model_len = getattr(model_config, "max_model_len", None)
+        if model_config is None:
+            # Server mode: ask the server once per rank (only rank 0 holds a client, so use the args URL).
+            # vLLM's /v1/models has it (TRL 1.16+ runs `vllm serve`); older TRL servers lack it, so fall
+            # back to vllm_max_model_length, then max_position_embeddings (what TRL's tool loop uses).
+            args = getattr(trainer, "args", None)
+            max_model_len = getattr(trainer, "_unsloth_server_max_model_len", False)
+            if max_model_len is False:
+                max_model_len = None
+                try:
+                    import requests
+
+                    url = getattr(args, "vllm_server_base_url", None) or (
+                        f"http://{args.vllm_server_host}:{args.vllm_server_port}"
+                    )
+                    response = requests.get(f"{url.rstrip('/')}/v1/models", timeout = 10)
+                    if response.status_code == 200:
+                        max_model_len = response.json()["data"][0]["max_model_len"]
+                except Exception:
+                    pass
+                trainer._unsloth_server_max_model_len = max_model_len
+            if not isinstance(max_model_len, int) or max_model_len <= 0:
+                max_model_len = getattr(args, "vllm_max_model_length", None)
+            # vLLM reads -1 as "auto"; the resolved server value is unknown here.
+            if not isinstance(max_model_len, int) or max_model_len <= 0:
+                config = getattr(getattr(trainer, "model", None), "config", None)
+                get_text_config = getattr(config, "get_text_config", None)
+                if callable(get_text_config):
+                    config = get_text_config()
+                elif getattr(config, "text_config", None) is not None:
+                    config = config.text_config
+                max_model_len = getattr(config, "max_position_embeddings", None)
+        if not isinstance(max_model_len, int) or isinstance(max_model_len, bool):
+            max_model_len = None
+    if (
+        max_model_len is not None
+        and isinstance(prompt_ids, (list, tuple))
+        and len(prompt_ids) == len(completion_ids)
+    ):
+        prompt_lengths = [len(ids) for ids in prompt_ids]
+    else:
+        prompt_lengths = None
+    is_truncated = []
+    for i, ids in enumerate(completion_ids):
+        if ids[-1] in eos_and_pad:
+            is_truncated.append(False)
+        elif limit is None or len(ids) >= limit:
+            is_truncated.append(True)
+        else:
+            is_truncated.append(
+                prompt_lengths is not None and prompt_lengths[i] + len(ids) >= max_model_len
+            )
+    return is_truncated
+
+
+def _unsloth_patch_grpo_truncation_check(function):
+    # TRL 0.24+ marks any non-EOS / pad ending as truncated. `_generate` has `prompt_ids`,
+    # `_generate_and_score_completions` has `prompt_ids_list` (0.24.0 to 1.17).
+    def _replace(match):
+        completions = match.group(1)
+        prompts = "prompt_ids_list" if completions.endswith("_list") else "prompt_ids"
+        return f"_unsloth_grpo_is_truncated(self, {completions}, {prompts}, eos_and_pad)"
+
+    return re.sub(
+        r"\[ids\[-1\] not in eos_and_pad for ids in (completion_ids(?:_list)?)\]",
+        _replace,
+        function,
+    )
+
+
 def grpo_trainer__generate(function_name, function):
     if function_name != "_generate":
         return function
 
     # A stop string can terminate a completion before the limit without an EOS token.
-    function = function.replace(
-        "ids[-1] not in eos_and_pad",
-        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
-    )
+    function = _unsloth_patch_grpo_truncation_check(function)
     return _guard_vllm_sync_reload_for_shared_weights(function)
 
 
@@ -2330,10 +2493,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
         return function
 
-    function = function.replace(
-        "ids[-1] not in eos_and_pad",
-        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
-    )
+    function = _unsloth_patch_grpo_truncation_check(function)
     function = function.replace(
         "prompt_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False",
         "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
@@ -3097,8 +3257,7 @@ def _unsloth_vllm_peft_unsupported(model):
             problems.append(f"LoRA on MultiheadAttention at {module_name}")
             break
     for module_name, module in model.named_modules():
-        # A custom tuner layer on a composite base: its weights live in child modules the copy
-        # merge does not see, so the merged weights would never be sent.
+        # Custom tuner on a composite base: weights sit in child modules the merge never sees.
         if getattr(module, "base_layer", None) is None or not hasattr(module, "get_base_layer"):
             continue
         base = module.get_base_layer()
@@ -3213,11 +3372,9 @@ def _unsloth_vllm_sync_kind(trainer):
     problems.extend(
         f"one base weight shared by {names}" for names in _unsloth_vllm_shared_targets(model)
     )
-    # Unsharded: every mergeable PEFT setup is merged out of place, so the frozen base never moves.
-    # ZeRO-3: TRL merges inside GatheredParameters(modifier_rank = None), which discards in-place edits
-    # of the gathered copy on exit, so its merge / unmerge cannot drift the stored base either.
-    # FSDP: TRL calls merge_adapter before it gathers the sharded parameters, so PEFT's full-size
-    # deltas meet sharded base weights (and the in-place round trip would drift a 16-bit base).
+    # Unsharded merges out of place so the frozen base never moves; ZeRO-3 merges inside
+    # GatheredParameters, which discards in-place edits on exit; FSDP is refused since TRL merges
+    # before gathering shards.
     kind = "peft_merged" if not sharded else "trl"
     if getattr(trainer, "is_fsdp_enabled", False):
         problems.append(
@@ -3276,11 +3433,16 @@ def _unsloth_vllm_merged_weight(module, weight):
                 delta = module.get_delta_weight(adapter).float()
             else:
                 continue
-            delta = delta.to(weight.device).reshape(weight.shape)
-            merged = delta if merged is None else merged + delta
+            device = weight.device if weight.device.type != "cpu" else delta.device
+            delta = delta.to(device).reshape(weight.shape)
+            merged = delta if merged is None else merged + delta.to(merged.device)
     if merged is None:
+        base = getattr(module, "base_layer", None)
+        state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+        if state is not None and weight.device != state.device:
+            return weight.data.to(state.device)
         return weight.data
-    return (weight.float() + merged).to(weight.dtype)
+    return (weight.to(merged.device).float() + merged).to(weight.dtype)
 
 
 def _unsloth_vllm_tuner_groups(model):
@@ -3304,6 +3466,8 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
     the base tensors and return {id(param): merged tensor}; the live parameters keep their exact bytes."""
     params = list(base.parameters(recurse = False))
     originals = [param.data for param in params]
+    fp8 = base.__dict__.get("_unsloth_fp8_lora")
+    fp8_saved = dict(fp8.__dict__) if fp8 is not None else None
     states = [
         (layer, list(getattr(layer, "merged_adapters", [])), dict(getattr(layer, "_caches", {})))
         for layer in layers
@@ -3326,6 +3490,9 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
             module.training = training
         for param, data in zip(params, originals):
             param.data = data
+        if fp8 is not None:
+            fp8.__dict__.clear()
+            fp8.__dict__.update(fp8_saved)
         for layer, merged_adapters, caches in states:
             if hasattr(layer, "merged_adapters"):
                 layer.merged_adapters[:] = merged_adapters
@@ -3645,6 +3812,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 vision_inputs["mm_token_type_ids"] = mm_token_type_ids
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+            # A hooked output head must run as a module: score the real logits its own call returns.
+            _unsloth_head_hooked = _unsloth_grpo_head_hooked(unwrapped_model)
+            _unsloth_grpo_refuse_boundary_blind_packing(self, model)
 
             from unsloth_zoo.rl_replacements import (
                 chunked_hidden_states_selective_log_softmax,
@@ -3703,8 +3873,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             def chunked_hidden_states_selective_log_softmax(
                 hidden_states, _lm_head, *args, **kwargs
             ):
-                # FSDP2's forward hooks replace Parameters. Read the current head
-                # at projection time, including the bias, instead of retaining a shard.
+                # FSDP2 replaces Parameters; read the head at projection, not a saved shard.
                 if _zero3_head is not None:
                     head_weight, head_bias = _zero3_head
                 else:
@@ -3844,7 +4013,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 attention_mask_chunks,
                 vision_chunks,
             )
-            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0" if _unsloth_head_hooked else "1"
 
             # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen [1, sum L] forward replaces the padded [B, Lmax] loop and fixes the left-pad RoPE error. Self-verified against the per-row forward, re-checked as T grows, and falls back if a backend ignores packed_seq_lengths.
             logprobs = None
@@ -3859,6 +4028,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _pg_engage = (
                 UNSLOTH_GRPO_PREFIX_GROUPER_ON
                 and not getattr(self, "use_vllm", False)
+                # Its extract_logps always projects with lm_head.weight.
+                and not _unsloth_head_hooked
                 and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
             )
             if _pg_engage:
@@ -3866,7 +4037,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     # Skip softcap models (the flex kernel never applies attn_logit_softcapping) and hybrid SSM / MoE models: only the threaded attention forwards get shared-prefix isolation, so a decoder that does not forward prefix_seg_info leaks suffixes across completions. PG also rides on sequence packing, so it needs the same zoo masked-column guard.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
                     _pg_engage = (
-                        _pg_enabled_fn()
+                        # Given the model, also requires prefix_seg_info_applied(model).
+                        _pg_enabled_fn(unwrapped_model)
                         and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
                         and pixel_values is None
                         and token_type_ids is None
@@ -3978,7 +4150,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
                     if isinstance(_pg_err, torch.cuda.OutOfMemoryError):
                         torch.cuda.empty_cache()
-                    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+                    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
+                        "0" if _unsloth_head_hooked else "1"
+                    )
                     if UNSLOTH_ENABLE_LOGGING:
                         print(
                             f"[Unsloth] GRPO PrefixGrouper (no-grad) disabled (fell back to packed): {_pg_err!r}",
@@ -4286,7 +4460,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pg_use = False
                         if isinstance(_pg_err3, torch.cuda.OutOfMemoryError):
                             torch.cuda.empty_cache()
-                        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+                        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
+                            "0" if _unsloth_head_hooked else "1"
+                        )
                         if UNSLOTH_ENABLE_LOGGING:
                             print(
                                 f"[Unsloth] GRPO PrefixGrouper (no-grad) verify failed (fell back to packed): {_pg_err3!r}",
@@ -4508,6 +4684,45 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
     return _unsloth_grpo_hidden_states_signal(model) is not False
 
 
+def _unsloth_grpo_head_hooked(model):
+    """True when GRPO must score real logits from the head's own call: hidden-states scorers read ``lm_head.weight``
+    and bypass its hooks / patched ``forward``. Unsloth, ZeRO-3, FSDP2 and accelerate ``_hf_hook`` hooks are already
+    handled. A square head keeps hidden states: the width dispatch could not tell them from logits."""
+    try:
+        head = model.get_output_embeddings()
+    except Exception:
+        return False
+    if not isinstance(head, torch.nn.Module):
+        return False
+    weight = getattr(head, "weight", None)
+    if (
+        isinstance(weight, torch.Tensor)
+        and weight.dim() == 2
+        and weight.shape[0] == weight.shape[1]
+    ):
+        return False
+    from torch.nn.modules import module as _module
+
+    if (
+        getattr(_module, "_global_forward_hooks", None)
+        or getattr(_module, "_global_forward_pre_hooks", None)
+        or getattr(_module, "_global_backward_hooks", None)
+        or getattr(_module, "_global_backward_pre_hooks", None)
+    ):
+        return True
+    if "forward" in vars(head) and not hasattr(head, "_hf_hook"):
+        return True
+    for _name in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks"):
+        for _hook in (getattr(head, _name, None) or {}).values():
+            _fn = getattr(_hook, "func", _hook)  # functools.partial
+            _owner = getattr(_fn, "__module__", None) or ""
+            if not _owner.startswith(
+                ("unsloth.", "unsloth_zoo.", "deepspeed.", "torch.distributed.")
+            ):
+                return True
+    return False
+
+
 def _unsloth_pref_returns_hidden_states(model, tensor, lm_head):
     """``_unsloth_grpo_returns_hidden_states`` for the preference routes, which need a zoo that writes the hidden-state
     markers: a square head with no signal is a forward that ignored the flag, so its output is real logits."""
@@ -4607,6 +4822,47 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
             f"{len(unpatched)} still decide on width alone "
             f"({', '.join(line.strip() for line in unpatched)}). "
             "Please upgrade unsloth_zoo."
+        )
+    return source
+
+
+_GRPO_PREFIX_GROUPER_GATE = re.compile(r"\b_pg_enabled_fn\(\s*\)")
+
+
+def _patch_grpo_accumulated_loss_prefix_grouper_gate(source):
+    """Pass the model to zoo's ``_pg_enabled_fn()`` so the gradient PrefixGrouper checks ``prefix_seg_info_applied``: a forward ignoring ``prefix_seg_info`` leaks completions across a group yet passes the 0.7-nat self-verify. Fails at generation if zoo has the feature but not this gate."""
+    if "prefix_seg_info" not in source:
+        return source
+    source, replacements = _GRPO_PREFIX_GROUPER_GATE.subn("_pg_enabled_fn(unwrapped_model)", source)
+    if replacements == 0 and "_pg_enabled_fn(unwrapped_model)" not in source:
+        raise RuntimeError(
+            "Unsloth: could not find the GRPO gradient PrefixGrouper gate in this "
+            "unsloth_zoo version. Please upgrade unsloth_zoo."
+        )
+    return source
+
+
+_GRPO_HIDDEN_STATES_REQUEST = re.compile(
+    r"""os\.environ\[\s*(["'])UNSLOTH_RETURN_HIDDEN_STATES\1\s*\]\s*=\s*(["'])1\2"""
+)
+
+
+def _patch_grpo_accumulated_loss_head_hooks(source):
+    """In ``grpo_accumulated_loss``, request real logits instead of hidden states while ``_unsloth_grpo_head_hooked``."""
+    if re.search(r"def grpo_accumulated_loss\(\s*trainer\s*,", source) is None:
+        raise RuntimeError(
+            "Unsloth: grpo_accumulated_loss in this unsloth_zoo version does not take "
+            "`trainer` first. Please upgrade unsloth_zoo."
+        )
+    source, requests = _GRPO_HIDDEN_STATES_REQUEST.subn(
+        'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = '
+        '"0" if _unsloth_grpo_head_hooked(trainer.model) else "1"',
+        source,
+    )
+    if requests == 0:
+        raise RuntimeError(
+            "Unsloth: could not find where grpo_accumulated_loss requests hidden states "
+            "in this unsloth_zoo version. Please upgrade unsloth_zoo."
         )
     return source
 
@@ -4903,6 +5159,7 @@ UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
@@ -4912,9 +5169,11 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_text_configs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_resolve_logit_scales))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidden_states))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_head_hooked))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_truncated))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
@@ -4939,9 +5198,13 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_image_cell))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_reject_grpo_image_list))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
+RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_prefix_grouper_gate(
+        _patch_grpo_accumulated_loss_head_hooks(
+            _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+        )
+    )
 )
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
@@ -5021,6 +5284,8 @@ def grpo_trainer_compute_loss(function_name, function):
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
+        # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
+        _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _loss_delta = getattr(self.args, "delta", None)
         if _rollout_logps_as_old and _loss_delta is None:
             # verl's dual-clip default (clip_ratio_c = 3.0).
@@ -5389,7 +5654,7 @@ def grpo_trainer_compute_loss(function_name, function):
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
 
-        if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo"]:
+        if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"]:
             is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
             is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)
             is_region_clipped = is_low_clipped | is_high_clipped
@@ -6026,6 +6291,31 @@ def _unsloth_gkd_layout(source):
     return {"shift": "prompt" if is_prompt else "shift", "num_items_in_batch": bool(calls[0])}
 
 
+def _unsloth_global_module_hooks():
+    # torch's register_module_*_hook globals apply to every module, the head included.
+    from torch.nn.modules import module as _module
+    return bool(
+        getattr(_module, "_global_forward_hooks", None)
+        or getattr(_module, "_global_forward_pre_hooks", None)
+        or getattr(_module, "_global_backward_hooks", None)
+        or getattr(_module, "_global_backward_pre_hooks", None)
+    )
+
+
+def _unsloth_gkd_head_hooks(head):
+    # TRL activation_offloading puts a pre / post forward pair on lm_head that only pauses offloading around
+    # the logits; skipping both is safe and keeps the chunked JSD on, so only other hooks count.
+    forward = (*head._forward_hooks.values(), *head._forward_pre_hooks.values())
+    return bool(
+        any(
+            getattr(hook, "__module__", None) != "trl.models.activation_offloading"
+            for hook in forward
+        )
+        or head._backward_hooks
+        or getattr(head, "_backward_pre_hooks", None)
+    )
+
+
 def _unsloth_gkd_dense_head(model):
     """The output head when it is a plain dense ``[vocab, hidden]`` projection the chunked loss can read directly.
     Rejects bnb heads (``nn.Linear`` subclasses with packed weights), PEFT heads and ZeRO-3 partitioned weights.
@@ -6262,6 +6552,11 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
     if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
         return _unsloth_gkd_note_fallback(self, "vocab mismatch")
+    # The JSD bypasses head calls, so head / global hooks would not fire; accelerate's _hf_hook is fine.
+    if _unsloth_global_module_hooks() or any(
+        _unsloth_gkd_head_hooks(head) for head in (student_head, teacher_head)
+    ):
+        return _unsloth_gkd_note_fallback(self, "output head has forward / backward hooks")
     # MiniCPM3 divides hidden states by logits_scaling before lm_head; a wrapped forward's hidden_states[-1] predates it.
     for unwrapped in (unwrapped_student, unwrapped_teacher):
         for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
@@ -6366,11 +6661,12 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
             scaling = scaler.get_scale() if scaler is not None and scaler.is_enabled() else None,
             rows_per_chunk = int(rows) if rows.strip().isdigit() else None,
         )
-        try:
-            self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
-            self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
-        except Exception:
-            pass
+        if not torch.compiler.is_compiling():
+            try:
+                self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
+                self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
+            except Exception:
+                pass
         return loss
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
         student_states,
@@ -6391,10 +6687,11 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         temperature = 1.0,
         **jsd_kwargs,
     )
-    try:
-        self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
+        except Exception:
+            pass
     return loss
 
 
@@ -6443,6 +6740,8 @@ for _gkd_item in (
     _unsloth_gkd_jsd_supported,
     _unsloth_gkd_note_fallback,
     _unsloth_gkd_dense_head,
+    _unsloth_gkd_head_hooks,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_gkd_project,
     _unsloth_gkd_chunk_size,
@@ -6538,7 +6837,8 @@ def _unsloth_pref_chunked_head(self, model):
     head = _unsloth_gkd_dense_head(unwrapped)
     if head is None:
         return None
-    # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+    # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward
+    # hooks, torch's global module hooks) is not
     # F.linear(h, W, b), and its backward hooks would never see the gradient.
     if (
         hasattr(head, "_hf_hook")
@@ -6547,6 +6847,7 @@ def _unsloth_pref_chunked_head(self, model):
         or head._forward_pre_hooks
         or head._backward_hooks
         or getattr(head, "_backward_pre_hooks", None)
+        or _unsloth_global_module_hooks()
     ):
         return None
     # MiniCPM3 divides hidden states by logits_scaling before the head.
@@ -6675,10 +6976,11 @@ def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_cho
         nll_loss = torch.tensor(0.0).to(self.accelerator.device)
     else:
         nll_loss = -(nll_per_token * chosen_nll_mask).sum() / chosen_nll_mask.sum()
-    try:
-        self._unsloth_pref_chunked_calls = getattr(self, "_unsloth_pref_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_pref_chunked_calls = getattr(self, "_unsloth_pref_chunked_calls", 0) + 1
+        except Exception:
+            pass
     # Stand-ins: TRL only reads chosen/rejected logits as .detach().mean().
     return (
         all_logps[:len_chosen],
@@ -6779,6 +7081,7 @@ for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
+        _unsloth_global_module_hooks,
         _unsloth_stock_logps_hook,
         _unsloth_pref_chunked_head,
         _unsloth_gkd_logit_transforms,
@@ -6862,7 +7165,8 @@ def _unsloth_dpo_chunked_head(
         head = _unsloth_gkd_dense_head(unwrapped)
         if head is None:
             reason = "output head is not a dense nn.Linear"
-        # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+        # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward
+        # hooks, torch's global module hooks) is not
         # F.linear(h, W, b), and its backward hooks would never see the gradient.
         elif (
             hasattr(head, "_hf_hook")
@@ -6871,6 +7175,7 @@ def _unsloth_dpo_chunked_head(
             or head._forward_pre_hooks
             or head._backward_hooks
             or getattr(head, "_backward_pre_hooks", None)
+            or _unsloth_global_module_hooks()
         ):
             reason = "output head has hooks or a patched forward"
     if reason is None:
@@ -6932,10 +7237,11 @@ def _unsloth_dpo_hidden_logps(self, chunked, hidden_states, labels, loss_mask):
         lm_head_bias = head.bias,
         return_mean_logits = True,
     )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     return per_token_logps.to(labels.device), mean_logits.unsqueeze(-1).to(labels.device)
 
 
@@ -7098,10 +7404,11 @@ def _unsloth_dpo_loss_stats(
             return_is_top1 = not ref,
             entropy_requires_grad = False,
         )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     if ref:
         return out
     logps, entropy, mean_logits, is_top1 = out
@@ -7286,6 +7593,7 @@ for _dpo_item in (
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,
     _unsloth_stock_logps_hook,
@@ -7372,10 +7680,11 @@ def _unsloth_kto_hidden_logps(self, chunked, hidden_states, labels, label_pad_to
             return_mean_logits = True,
         )
         per_token_logps = per_token_logps[:, :-1]
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     completion_logps = (per_token_logps * mask).sum(-1)
     logits_sum = (mean_logits * head.weight.shape[0]).unsqueeze(-1)
     return completion_logps.to(out_device), logits_sum.to(out_device)
@@ -7509,6 +7818,7 @@ for _kto_item in (
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,
     _unsloth_stock_logps_hook,
@@ -7593,10 +7903,11 @@ def _unsloth_fused_pass_logps(
             return_mean_logits = stats,
             entropy_requires_grad = False,
         )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     out = out if isinstance(out, tuple) else (out,)
     out = tuple(torch.nn.functional.pad(x, (0, width - n)) if n != width else x for x in out)
     if not stats:
@@ -8299,10 +8610,11 @@ def _unsloth_odpo_hidden_logps(
         logit_scale_divide = divide,
         logit_softcapping = softcap,
     )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     return logps.to(completion_ids.device)
 
 
@@ -8435,6 +8747,7 @@ for _odpo_trainer in ("bco_trainer", "online_dpo_trainer", "xpo_trainer", "nash_
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
+        _unsloth_global_module_hooks,
         _unsloth_gkd_logit_transforms,
         _unsloth_pref_logit_transforms,
         _unsloth_stock_logps_hook,

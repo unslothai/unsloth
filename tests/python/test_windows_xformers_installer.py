@@ -178,9 +178,8 @@ def test_the_index_fallback_hides_the_machine_level_indexes():
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_the_url_join_keeps_a_tokenized_mirrors_query():
-    """Executed, not read: a private mirror may authenticate by query string, and appending
-    after the query put the wheel path inside the token value -- request path still /whl,
-    token unusable. Same rule as the Python side's join_wheel_url."""
+    """Executed, not read: a mirror may authenticate by query string, and appending the wheel path
+    after it put the path inside the token; same rule as join_wheel_url on the Python side."""
     joiner = _extract(r"^    function Join-UrlPath \{.*?^    \}", _source())
     out = _run_pwsh(
         f"{joiner}\n"
@@ -196,9 +195,8 @@ def test_the_url_join_keeps_a_tokenized_mirrors_query():
 
 
 def test_installer_never_installs_an_unpinned_xformers():
-    """A bare `xformers` resolves to whatever the index serves newest, which is not
-    necessarily built for the CUDA family the resident torch came from. The installer
-    picks the exact version for (torch, cuda) instead, so every spec must be pinned."""
+    """A bare xformers resolves to the newest build the index serves, which may not match the CUDA
+    family of the resident torch; every spec must be pinned to the exact (torch, cuda) version."""
     source = _source()
     # The WoA drop list names packages to REMOVE, so a bare name must match the requirement line exactly.
     drop_list = re.search(r"\$WoaDropCandidates = @\(.*?\n\s*\)\n", source, re.DOTALL)
@@ -284,10 +282,9 @@ def test_both_selectors_agree_outside_the_exact_tables(torch_version, cuda_versi
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_the_already_installed_check_uses_the_wheels_own_build_target():
-    """A resident 0.0.35 records the torch it was COMPILED against (the stable-ABI floor),
-    not the torch it is running under. Comparing against the resident torch made every
-    correct install look mismatched, so each run force-reinstalled a good wheel -- and
-    warned about a failed xFormers install whenever the index was unreachable."""
+    """A resident 0.0.35 records the torch it was compiled against (the stable-ABI floor), not the
+    torch it runs under; comparing to the resident torch forced reinstalls and a false failure
+    warning when the index was unreachable."""
     out = _run_pwsh(
         f"{_selector_harness()}\n"
         "Write-Output \"[$(Get-XformersExpectedTorchBuild -Version '0.0.35' "

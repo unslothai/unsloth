@@ -41,6 +41,12 @@ export function bothEdgesGutterMisplaced(doc: Document = document): boolean {
   return misplacedCache ?? false;
 }
 
+const gutterSyncs = new WeakMap<HTMLElement, () => void>();
+
+export function syncThreadGutter(viewport: HTMLElement): void {
+  gutterSyncs.get(viewport)?.();
+}
+
 export function watchThreadGutter(viewport: HTMLElement): () => void {
   if (typeof ResizeObserver === "undefined") {
     return () => undefined;
@@ -74,9 +80,11 @@ export function watchThreadGutter(viewport: HTMLElement): () => void {
   };
   const observer = new ResizeObserver(sync);
   observer.observe(viewport);
+  gutterSyncs.set(viewport, sync);
   sync();
   return () => {
     observer.disconnect();
+    gutterSyncs.delete(viewport);
     viewport.removeAttribute(THREAD_GUTTER_SHIFT_ATTRIBUTE);
     viewport.style.removeProperty(THREAD_GUTTER_SHIFT_PROPERTY);
   };

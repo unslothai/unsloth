@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Video page seeds steps and guidance from a repo-id substring table before the backend status
-// answers. The table and its matcher live inside the page component, so this lifts both out of the
-// source and runs them on real checkpoint names, including separator spellings the backend's family
-// matcher already folds together.
+// The Video page seeds steps and guidance from a repo-id substring table before backend status
+// answers; the test lifts the table and matcher out of the page and runs them on real checkpoint
+// names, including separator spellings the backend family matcher already folds.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -65,8 +64,8 @@ test("the other families keep their recipes", () => {
   const cases: Array<[string, number, number]> = [
     ["Wan-AI/Wan2.2-T2V-A14B-Diffusers", 20, 3.5],
     ["Wan-AI/Wan2.2-TI2V-5B-Diffusers", 20, 5],
-    ["MiniMaxAI/MiniMax-H3", 30, 1],
-    ["MiniMaxAI/MiniMax_H3", 30, 1],
+    ["MiniMaxAI/MiniMax-H3", 20, 1],
+    ["MiniMaxAI/MiniMax_H3", 20, 1],
     ["Lightricks/LTX-2.3", 40, 4],
     ["Lightricks/LTX-2.3/ltx-2.3-22b-distilled.safetensors", 8, 1],
     ["Lightricks/LTX-2.5-Diffusers", 8, 1],

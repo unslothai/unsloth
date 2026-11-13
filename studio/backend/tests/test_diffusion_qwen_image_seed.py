@@ -20,7 +20,10 @@ LOADED = {
 FLAT = dict(model_dense_mib = 30603, companion_dense_mib = 9151, text_encoder_dense_mib = 8864)
 WINDOW = 1620  # "streams 60 offload groups with event-fenced prefetch (2 ahead, 1620 MiB window)"
 RESIDENT_HEADROOM = 7168  # seed x 1.15, rounded up to 256 MiB
-STREAMED_HEADROOM = 4608
+STREAMED_HEADROOM = (
+    3072  # Qwen-Image t2i's own streamed figure (2560) x 1.15, rounded up to 256 MiB
+)
+EDIT_STREAMED_HEADROOM = 4608  # the Qwen-Image-Edit figure (3824), which t2i borrowed before
 BUDGETS = [(9550, 12288), (13638, 16376)]
 ENVS = (
     "MEASURED_ACTIVATION_ENV",
@@ -30,6 +33,7 @@ ENVS = (
     "MEASURED_ACTIVATION_STREAMED_ENV",
     "STREAMED_RESIDENCY_ENV",
     "RESIDENT_DIT_ENV",
+    "QWEN_IMAGE_STREAMED_SEED_ENV",
 )
 
 
@@ -101,7 +105,7 @@ def test_seed_values(monkeypatch):
     # GGUF / packed denoisers (no static seed) still answer from a learned peak alone
     assert m("qwen-image", "default", static_seed = False) is None
     assert m("qwen-image-edit", "default") == RESIDENT_HEADROOM
-    assert m("qwen-image-edit", "default", streamed = True) == STREAMED_HEADROOM
+    assert m("qwen-image-edit", "default", streamed = True) == EDIT_STREAMED_HEADROOM
 
 
 @pytest.mark.parametrize("budget,total", BUDGETS)
@@ -121,7 +125,7 @@ def test_budget_keeps_part_of_the_denoiser_resident(pipe, budget, total):
     assert new.estimates["measured_runtime_headroom_mib"] == RESIDENT_HEADROOM
     # the encode streams the resident groups back out (the 16 GiB Edit overrun)
     assert new.estimates["encode_resident_transformer_mib"] == 0
-    assert resident + 3824 + WINDOW + LOADED["vae"][0] + dm._resident_dit_slack_mib(memory) <= int(
+    assert resident + 2560 + WINDOW + LOADED["vae"][0] + dm._resident_dit_slack_mib(memory) <= int(
         memory.free_mib
     )
     assert new.offload_policy == plan.offload_policy
@@ -156,3 +160,61 @@ def test_dense_bf16_denoiser_is_not_placed_from_the_int8_seed(pipe, monkeypatch)
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda p: False)
     plan = _plan(13638, 16376)
     assert _refine(pipe, plan) is plan
+
+
+def test_t2i_streamed_figure_is_its_own_and_below_the_edit_figure(monkeypatch):
+    _clear(monkeypatch)
+    assert dm._MEASURED_STREAMED_IMAGE_PEAK_MIB["qwen-image"] == 2560
+    assert dm._MEASURED_STREAMED_IMAGE_PEAK_MIB["qwen-image-edit"] == 3824
+    m = dm.measured_image_runtime_mib
+    assert m("qwen-image", "default", streamed = True, width = 1328, height = 1328) > STREAMED_HEADROOM
+    assert m("qwen-image", "default", streamed = True, width = 1328, height = 1328) < m(
+        "qwen-image-edit", "default", streamed = True, width = 1328, height = 1328
+    )
+    assert m("qwen-image", "default") == RESIDENT_HEADROOM
+
+
+def test_t2i_streamed_kill_switch_restores_the_borrowed_figure(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv(dm.QWEN_IMAGE_STREAMED_SEED_ENV, "0")
+    m = dm.measured_image_runtime_mib
+    assert m("qwen-image", "default", streamed = True) == EDIT_STREAMED_HEADROOM
+    assert m("qwen-image", "default") == RESIDENT_HEADROOM
+    assert m("qwen-image-edit", "default", streamed = True) == EDIT_STREAMED_HEADROOM
+    monkeypatch.setenv(dm.MEASURED_ACTIVATION_STREAMED_ENV, "0")
+    assert m("qwen-image", "default", streamed = True) == RESIDENT_HEADROOM
+    monkeypatch.setenv(dm.MEASURED_ACTIVATION_QWEN_IMAGE_ENV, "0")
+    assert m("qwen-image", "default", streamed = True) is None
+
+
+@pytest.mark.parametrize("budget,total", BUDGETS)
+def test_t2i_figure_keeps_more_resident_than_the_borrowed_one(pipe, monkeypatch, budget, total):
+    plan = _plan(budget, total)
+    new = _refine(pipe, plan)
+    monkeypatch.setenv(dm.QWEN_IMAGE_STREAMED_SEED_ENV, "0")
+    old = _refine(pipe, plan)
+    memory = plan.device_memory
+    # kill switch == the placement before this change, byte for byte
+    assert old.resident_transformer_mib == _wide_room(memory, EDIT_STREAMED_HEADROOM)
+    assert old.estimates["measured_streamed_headroom_mib"] == EDIT_STREAMED_HEADROOM
+    gained = new.resident_transformer_mib - old.resident_transformer_mib
+    assert gained == EDIT_STREAMED_HEADROOM - STREAMED_HEADROOM
+    assert new.resident_transformer_mib + STREAMED_HEADROOM + WINDOW + LOADED["vae"][
+        0
+    ] + dm._resident_dit_slack_mib(memory) == int(memory.free_mib)
+    assert new.estimates["encode_resident_transformer_mib"] == 0
+
+
+def test_learned_peak_above_the_t2i_figure_still_raises_it(monkeypatch):
+    _clear(monkeypatch)
+    import core.inference.diffusion_measured_peaks as mp
+
+    monkeypatch.setattr(mp, "lookup", lambda **kw: 4000)
+    assert dm.measured_image_runtime_mib("qwen-image", "default", quant = "q", streamed = True) == 4608
+    monkeypatch.setattr(
+        mp, "lookup", lambda **kw: 1907
+    )  # the learned 16 GiB render: never lowers the figure
+    assert (
+        dm.measured_image_runtime_mib("qwen-image", "default", quant = "q", streamed = True)
+        == STREAMED_HEADROOM
+    )

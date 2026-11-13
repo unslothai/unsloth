@@ -14,9 +14,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -63,9 +61,9 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import { NewProjectDialog } from "./components/new-project-dialog";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Archive03Icon,
-  Delete02Icon,
+  ArchiveIcon,
   Download01Icon,
   Edit03Icon,
   PencilEdit02Icon,
@@ -85,12 +83,12 @@ import { ArrowDownIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  COMBINED_EXPORT_FORMATS_LIST,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
-  EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
+import { BulkExportItems } from "./components/bulk-export-items";
+import { ExportFormatItems } from "./components/export-format-items";
 import {
   fileImportSource,
   nativeImportSource,
@@ -564,8 +562,6 @@ export function ProjectsPage({
   }
 
   // Split around {name} so the name can be emphasised.
-  const deleteChatText = t("projectsPage.deleteChatDescription").split("{name}");
-  const deleteProjectText = t("projectsPage.deleteProjectDescription").split("{name}");
   const importText = t("projectsPage.importDestination").split("{name}");
 
   const Shell = embedded ? "div" : "main";
@@ -636,53 +632,13 @@ export function ProjectsPage({
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>{t("projectsPage.exportAllProjects")}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      {t("projectsPage.combined")}
-                    </DropdownMenuLabel>
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      {t("projectsPage.perChat")}
-                    </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`ap-s-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, false)}>
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
+                  <BulkExportItems onExport={(fmt, merged) => void handleBulkProjectExport("projects", fmt, merged)} />
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>{t("projectsPage.exportProjectsAndRecents")}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      {t("projectsPage.combined")}
-                    </DropdownMenuLabel>
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      {t("projectsPage.perChat")}
-                    </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`all-s-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, false)}>
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
+                  <BulkExportItems onExport={(fmt, merged) => void handleBulkProjectExport("all", fmt, merged)} />
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             </DropdownMenuContent>
@@ -1008,17 +964,13 @@ export function ProjectsPage({
                                   <span>{t("common.export")}</span>
                                 </DropdownMenuSubTrigger>
                                 <DropdownMenuSubContent className="w-52">
-                                  {chatExportOptions().map(({ label, format }) => (
-                                    <DropdownMenuItem
-                                      key={`${chat.id}-${label}`}
-                                      onSelect={(e) => {
-                                        e.stopPropagation();
-                                        void handleChatExport(chat, format);
-                                      }}
-                                    >
-                                      {label}
-                                    </DropdownMenuItem>
-                                  ))}
+                                  <ExportFormatItems
+                                    options={chatExportOptions().map(({ label, format }) => ({ key: format, label }))}
+                                    onSelect={(format, e) => {
+                                      e.stopPropagation();
+                                      void handleChatExport(chat, format);
+                                    }}
+                                  />
                                   <DropdownMenuSeparator />
                                   <DropdownMenuItem
                                     onSelect={() =>
@@ -1034,7 +986,7 @@ export function ProjectsPage({
                               <OpenChatFolderItem item={chat} />
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
-                                <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
                                 <span>{t("projectsPage.archive")}</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
@@ -1045,7 +997,7 @@ export function ProjectsPage({
                                     : void deleteChat(chat, alwaysDeleteChatFiles)
                                 }
                               >
-                                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
                                 <span>{t("common.delete")}</span>
                               </DropdownMenuItem>
                             </DropdownMenuContent>
@@ -1153,9 +1105,9 @@ export function ProjectsPage({
             <DialogTitle>{t("projectsPage.deleteChat")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            {deleteChatText[0]}
-            <em>{deletingChat?.title}</em>
-            {deleteChatText[1]}
+            {t("projectsPage.deleteChatDescription", {
+              name: deletingChat?.title ?? "",
+            })}
           </p>
           <DeleteChatFilesSwitch
             id="projects-delete-chat-files"
@@ -1224,9 +1176,9 @@ export function ProjectsPage({
             <DialogTitle>{t("projectsPage.deleteProject")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            {deleteProjectText[0]}
-            <em>{deleting?.name}</em>
-            {deleteProjectText[1]}
+            {t("projectsPage.deleteProjectDescription", {
+              name: deleting?.name ?? "",
+            })}
           </p>
           <DeleteChatFilesSwitch
             id="projects-delete-project-files"

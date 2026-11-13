@@ -15,29 +15,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
         "display_name": "ChatGPT / Codex subscription",
         "base_url": "https://chatgpt.com/backend-api",
-        # Only seeds the picker; /codex/models is the truth once connected.
-        "default_models": [
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.5",
-            "gpt-5.6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-6-astra",
-            "gpt-6-luna",
-            "gpt-6-sol",
-        ],
-        "model_capabilities": {
-            "gpt-5.4": {"vision": True, "studio_tools": True},
-            "gpt-5.4-mini": {"vision": True, "studio_tools": True},
-            "gpt-5.5": {"vision": True, "studio_tools": True},
-            "gpt-5.6-luna": {"vision": True, "studio_tools": True},
-            "gpt-5.6-sol": {"vision": True, "studio_tools": True},
-            "gpt-5.6-terra": {"vision": True, "studio_tools": True},
-            "gpt-6-astra": {"vision": True, "studio_tools": True},
-            "gpt-6-luna": {"vision": True, "studio_tools": True},
-            "gpt-6-sol": {"vision": True, "studio_tools": True},
-        },
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -51,15 +28,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai": {
         "display_name": "OpenAI",
         "base_url": "https://api.openai.com/v1",
-        "default_models": [
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "o3",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -96,18 +64,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "anthropic": {
         "display_name": "Anthropic",
         "base_url": "https://api.anthropic.com/v1",
-        "default_models": [
-            "claude-opus-5",
-            "claude-sonnet-5",
-            "claude-fable-5",
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-opus-4-5-20251101",
-            "claude-sonnet-4-5-20250929",
-            "claude-haiku-4-5-20251001",
-        ],
         # No denylist: `-YYYYMMDD` ids are canonical for pre-4.6 Claude models.
         "supports_streaming": True,
         "supports_vision": True,
@@ -127,24 +83,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "Google Gemini",
         # Native Gemini REST, not OpenAI-compatible; translated in `_stream_gemini`.
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
-        # Excludes retired gemini-2.0-flash* and gemini-3-pro-preview (redirects to 3.1).
-        "default_models": [
-            "gemini-3.1-pro-preview",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-3-flash-preview",
-            "gemini-pro-latest",
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-3-pro-image-preview",
-            "gemini-3.1-flash-image-preview",
-            "gemini-2.5-flash-image",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -162,29 +100,16 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         ),
         # Shut down and auto-aliased to gemini-3.1-pro-preview; deny the old id so users see one card.
         "model_id_deny_exact": ("gemini-3-pro-preview",),
-        # `-preview` optional on image ids so a GA rollover does not drop them.
-        "model_id_allowlist": re.compile(
-            r"^("
-            r"gemini-3\.6-(?:flash|pro)(?:-preview)?|"
-            r"gemini-3\.5-(?:flash|pro|flash-lite)(?:-preview)?|"
-            r"gemini-3\.1-(?:flash|pro|flash-lite)(?:-preview)?(?:-customtools)?|"
-            r"gemini-3\.1-flash-image(?:-preview)?|"
-            r"gemini-3-(?:flash|pro)(?:-preview)?|"
-            r"gemini-3-pro-image(?:-preview)?|"
-            r"nano-banana-pro-preview|"
-            r"gemini-2\.5-pro|gemini-2\.5-flash|gemini-2\.5-flash-lite|"
-            r"gemini-2\.5-flash-image|"
-            r"gemini-pro-latest|gemini-flash-latest|gemini-flash-lite-latest"
-            r")$"
+        "model_id_allowlist": re.compile(r"^(?:gemini|nano-banana)-"),
+        "model_id_denylist": re.compile(
+            r"(?:^|-)(?:tts|transcribe|embedding|live|native-audio|robotics|computer-use|aqa|omni)(?:-|$)"
+            r"|^gemini-(?:1\.\d|2\.0|exp)(?:-|$)"
+            r"|-\d{2}-(?:\d{2}|\d{4})$"
         ),
     },
     "deepseek": {
         "display_name": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
-        "default_models": [
-            "deepseek-flash",
-            "deepseek-v4-pro",
-        ],
         "supports_streaming": True,
         "supports_vision": False,
         "supports_tool_calling": True,
@@ -193,75 +118,26 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "OpenAI-compatible API. deepseek-flash and deepseek-v4-pro take thinking on/off plus reasoning_effort low/high/max.",
     },
-    "mistral": {
-        "display_name": "Mistral AI",
-        "base_url": "https://api.mistral.ai/v1",
-        "default_models": [
-            "codestral-latest",
-            "devstral-latest",
-            "devstral-medium-latest",
-            "magistral-medium-latest",
-            "ministral-14b-latest",
-            "ministral-3b-latest",
-            "ministral-8b-latest",
-            "mistral-large-latest",
-            "mistral-medium-latest",
-            "mistral-small-latest",
-            "mistral-tiny-latest",
-            "mistral-vibe-cli-latest",
-        ],
+    "openrouter": {
+        "display_name": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "model_id_allowlist": re.compile(
-            r"^(codestral-latest|devstral-latest|devstral-medium-latest|"
-            r"magistral-medium-latest|ministral-(?:14b|3b|8b)-latest|"
-            r"mistral-(?:large|medium|small|tiny)-latest|"
-            r"mistral-vibe-cli-latest)$"
-        ),
-    },
-    "kimi": {
-        "display_name": "Kimi",
-        "base_url": "https://api.moonshot.ai/v1",
-        # Surface only the SoTA multimodal models (kimi-k3, kimi-k2.6/k2.5);
-        # moonshot-v1-* and dated k2 previews are filtered by the allowlist.
-        # Docs: https://platform.kimi.ai/docs/models
-        # Listing/overview: https://platform.kimi.ai/docs/api/list-models
-        #                   https://platform.kimi.ai/docs/api/overview
-        "default_models": [
-            "kimi-k3",
-            "kimi-k2.6",
-            "kimi-k2.5",
-        ],
-        "supports_streaming": True,
-        "supports_vision": True,
-        "supports_tool_calling": True,
-        "studio_tools": True,
-        # `$web_search` builtin_function, driven by `_stream_kimi_web_search`.
+        # The router's universal web plugin (`plugins: [{id: "web"}]`).
         "hosted_tools": ("web_search",),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
-        "model_id_allowlist": re.compile(r"^kimi-(?:k3|k2\.[56])$"),
-        # Reasoning-class: the API rejects custom temperature/top_p ("only 1
-        # is allowed"). Strip both so the server uses its required defaults.
-        "body_omit": ("temperature", "top_p"),
+        "extra_headers": {
+            "HTTP-Referer": "https://unsloth.ai",
+            "X-Title": "Unsloth Studio",
+        },
+        "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
     },
     "zai": {
         "display_name": "Z.ai",
         "base_url": "https://api.z.ai/api/paas/v4",
-        "default_models": [
-            "glm-5.3",
-            "glm-5.3-flash",
-            "glm-5.3-flashx",
-            "glm-5.2",
-            "glm-4.7-flash",
-            "glm-4.5-flash",
-            "glm-4.6v-flash",
-        ],
         "model_capabilities": {
             "glm-5.3": {"vision": False},
             "glm-5.3-flash": {"vision": True},
@@ -286,15 +162,91 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Z.ai API key. China mainland: use base URL https://open.bigmodel.cn/api/paas/v4",
         "body_omit": ("presence_penalty",),
     },
+    "kimi": {
+        "display_name": "Kimi",
+        "base_url": "https://api.moonshot.ai/v1",
+        # Docs: https://platform.kimi.ai/docs/models
+        # Listing/overview: https://platform.kimi.ai/docs/api/list-models
+        #                   https://platform.kimi.ai/docs/api/overview
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        # `$web_search` builtin_function, driven by `_stream_kimi_web_search`.
+        "hosted_tools": ("web_search",),
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
+        "model_id_allowlist": re.compile(r"^kimi-k\d"),
+        "model_id_denylist": re.compile(r"-preview$|^kimi-k2-thinking"),
+        # Reasoning-class: the API rejects custom temperature/top_p ("only 1
+        # is allowed"). Strip both so the server uses its required defaults.
+        "body_omit": ("temperature", "top_p"),
+    },
+    "mistral": {
+        "display_name": "Mistral AI",
+        "base_url": "https://api.mistral.ai/v1",
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "model_id_allowlist": re.compile(
+            r"^(codestral-latest|devstral-latest|devstral-medium-latest|"
+            r"magistral-medium-latest|ministral-(?:14b|3b|8b)-latest|"
+            r"mistral-(?:large|medium|small|tiny)-latest|"
+            r"mistral-vibe-cli-latest)$"
+        ),
+    },
+    "minimax": {
+        "display_name": "MiniMax",
+        "base_url": "https://api.minimax.io/v1",
+        "model_capabilities": {
+            "MiniMax-M3.1-Flash": {"vision": True},
+            "MiniMax-M3": {"vision": True},
+        },
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "MiniMax API key. China: use base URL https://api.minimaxi.com/v1",
+        # /v1/models lists every model on the account, retired M2.x (404) included; keep M3 and up.
+        "model_id_allowlist": re.compile(r"^MiniMax-M(?:[3-9]|\d\d)", re.IGNORECASE),
+        # Fixed at 1 / 0.95 server-side (https://platform.minimax.io/docs/api-reference/text-openai-api).
+        "body_omit": ("temperature", "top_p", "presence_penalty"),
+    },
+    # Console is pay as you go, Go a subscription; both translate every text model to /chat/completions.
+    "opencode": {
+        "display_name": "OpenCode Console",
+        "base_url": "https://opencode.ai/inference/v1",
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "extra_headers": {"User-Agent": "unsloth-studio"},
+        # Free tier ids only work from the OpenCode client; jev is a decision model.
+        "model_id_denylist": re.compile(r"-free$|^big-pickle$|^jev-"),
+    },
+    "opencode_go": {
+        "display_name": "OpenCode Go",
+        # _chat_headers adds the x-opencode-session header Go requires.
+        "base_url": "https://opencode.ai/inference/go/v1",
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "model_id_denylist": re.compile(r"-free$"),
+    },
     "qwen": {
         "display_name": "Qwen",
         "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        "default_models": [
-            "qwen-plus",
-            "qwen-turbo",
-            "qwen-max",
-            "qwen2.5-72b-instruct",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -306,16 +258,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "qwencloud": {
         "display_name": "QwenCloud",
         "base_url": "https://maas.qwencloudapi.com/compatible-mode/v1",
-        "default_models": [
-            "qwen3.8-max",
-            "qwen3.7-plus",
-            "qwen3.8-flash",
-        ],
-        "model_capabilities": {
-            "qwen3.8-max": {"vision": True, "studio_tools": True},
-            "qwen3.7-plus": {"vision": True, "studio_tools": True},
-            "qwen3.8-flash": {"vision": True, "studio_tools": True},
-        },
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -332,13 +274,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "huggingface": {
         "display_name": "Hugging Face",
         "base_url": "https://router.huggingface.co/v1",
-        # Seed defaults before the live /v1/models call; the remote list (model_list_mode) wins.
-        "default_models": [
-            "openai/gpt-oss-120b",
-            "deepseek-ai/DeepSeek-V3",
-            "meta-llama/Llama-3.3-70B-Instruct",
-            "Qwen/Qwen2.5-72B-Instruct",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -357,7 +292,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "model_id_allowlist": re.compile(
             r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|mistralai|zai-org)/"
         ),
-        # Cap matches at N, as the server does not sort; default_models keeps flagship ids on top.
         "model_id_limit": 15,
     },
     "vllm": {
@@ -450,65 +384,22 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "hidden": True,
         "managed": True,
     },
-    "openrouter": {
-        "display_name": "OpenRouter",
-        "base_url": "https://openrouter.ai/api/v1",
-        # Curated picker list (locked, not live /models).
-        "default_models": [
-            "openrouter/free",
-            "openai/gpt-4o",
-            "anthropic/claude-sonnet-4-5",
-            "google/gemini-2.5-flash",
-            "mistralai/mistral-large-2411",
-            "deepseek/deepseek-r1",
-            "mistralai/mistral-small-3.1-24b-instruct",
-            "perceptron/perceptron-mk1",
-            "inclusionai/ring-2.6-1t:free",
-            "google/gemini-3.1-flash-lite",
-            "baidu/cobuddy:free",
-            "openai/gpt-chat-latest",
-            "x-ai/grok-4.3",
-            "ibm-granite/granite-4.1-8b",
-            "openrouter/owl-alpha",
-            "poolside/laguna-xs.2:free",
-            "~google/gemini-pro-latest",
-            "~moonshotai/kimi-latest",
-        ],
-        "supports_streaming": True,
-        "supports_vision": True,
-        "supports_tool_calling": True,
-        "studio_tools": True,
-        # The router's universal web plugin (`plugins: [{id: "web"}]`).
-        "hosted_tools": ("web_search",),
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "extra_headers": {
-            "HTTP-Referer": "https://unsloth.ai",
-            "X-Title": "Unsloth Studio",
-        },
-        "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
-        "model_list_mode": "curated",
-    },
     "typesafe": {
         "display_name": "TypeSafe",
         "base_url": "https://api.typesafe.ai/v1",
-        "default_models": ["jev-latest", "jev-1.13"],
         "supports_streaming": False,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "System One decision models. Used by the Decision API, never by chat.",
-        "model_list_mode": "curated",
         "decisions_only": True,
     },
     "liquid": {
         "display_name": "Liquid AI",
         "base_url": "https://api.liquid.ai/decisions/v1",
-        "default_models": ["d1:free"],
         "supports_streaming": False,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "System One decision models. Used by the Decision API, never by chat.",
-        "model_list_mode": "curated",
         "decisions_only": True,
     },
 }
@@ -516,6 +407,27 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
 
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
     return PROVIDER_REGISTRY.get(provider_type)
+
+
+def provider_default_models(
+    provider_type: str, catalog_models: dict[str, list[str]] | None = None
+) -> list[str]:
+    info = PROVIDER_REGISTRY[provider_type]
+    if "default_models" in info:
+        return info["default_models"]
+    from core.inference.provider_model_snapshot import PROVIDER_MODEL_SNAPSHOT
+
+    models = (catalog_models or {}).get(provider_type) or PROVIDER_MODEL_SNAPSHOT.get(
+        provider_type, []
+    )
+    allowlist = info.get("model_id_allowlist")
+    if allowlist is not None:
+        models = [m for m in models if allowlist.match(m)]
+    deny_exact = info.get("model_id_deny_exact") or ()
+    denylist = info.get("model_id_denylist")
+    models = [m for m in models if m not in deny_exact and not (denylist and denylist.search(m))]
+    limit = info.get("model_id_limit")
+    return models[:limit] if limit else models
 
 
 def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
@@ -1001,7 +913,9 @@ def validate_provider_base_url(base_url: str) -> str:
 
 
 def list_available_providers(
-    include_hidden: bool = False, include_oauth: bool = False
+    include_hidden: bool = False,
+    include_oauth: bool = False,
+    catalog_models: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Hidden rows need include_hidden (old cached bundles would duplicate presets); OAuth rows are opt-in too (pre-OAuth bundles break); either flag opts in."""
     result = []
@@ -1015,7 +929,7 @@ def list_available_providers(
                 "provider_type": provider_type,
                 "display_name": info["display_name"],
                 "base_url": info["base_url"],
-                "default_models": info["default_models"],
+                "default_models": provider_default_models(provider_type, catalog_models),
                 "model_capabilities": info.get("model_capabilities", {}),
                 "supports_streaming": info["supports_streaming"],
                 "supports_vision": info.get("supports_vision", False),

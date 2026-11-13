@@ -30,8 +30,6 @@ export function mlxSpecFallbackMessage(
       return `The drafter could not be confirmed to fit in memory beside this model, ${outcome}. When memory is the limit, a shorter context length or a smaller drafter can help.`;
     case "runtime_error":
       return `Speculative decoding could not start for this load, ${outcome}.`;
-    case "kv_quant":
-      return "Speculative decoding cannot run with KV cache quantization, which this load asked for. Setting KV Cache Dtype to Auto in this model's settings removes that obstacle.";
     case "auto_context_cost":
       return `Auto left out a drafter that does not fit beside this model at its full context length, ${outcome}. To try it anyway, choose its mode in this model's settings, with a shorter or automatic context length.`;
     default:

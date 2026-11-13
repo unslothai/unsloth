@@ -345,6 +345,13 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
     assert "cache_implementation" not in captured
     assert captured["past_key_values"] is cache
 
+    # LFM3's custom generate lists cache_implementation as unsupported and raises on any value (#16054).
+    class CustomGenerateModel(Model):
+        _generation_fields_unsupported = {"cache_implementation": None}
+
+    fast_generate(CustomGenerateModel(), input_ids = input_ids)
+    assert "cache_implementation" not in captured
+
 
 if __name__ == "__main__":
     tests = [

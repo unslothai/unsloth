@@ -4,7 +4,8 @@
 """MiniMax-H3 attention fast paths, each off with its env var set to 0: UNSLOTH_H3_STRIDED_ATTN
 (permuted SDPA views, no copies), UNSLOTH_H3_FUSED_QKV (one row-concatenated int8 to_qkv),
 UNSLOTH_H3_SHARED_QKV_QUANT (unfused Q / K / V on one rotation + act quant), UNSLOTH_H3_ATTN_ARCH
-(flash only on H3_FLASH_FASTER_ARCHS); all but the last are bit-identical."""
+(flash only on H3_FLASH_FASTER_ARCHS when flash SDPA is available), UNSLOTH_H3_STRIDED_SAGE (a SageAttention
+backend runs inside the strided processor instead of the stock one); all but the arch pick are bit-identical."""
 
 from __future__ import annotations
 
@@ -17,12 +18,25 @@ STRIDED_ATTN_ENV = "UNSLOTH_H3_STRIDED_ATTN"
 FUSED_QKV_ENV = "UNSLOTH_H3_FUSED_QKV"
 SHARED_QKV_ENV = "UNSLOTH_H3_SHARED_QKV_QUANT"
 ATTN_ARCH_ENV = "UNSLOTH_H3_ATTN_ARCH"
+STRIDED_SAGE_ENV = "UNSLOTH_H3_STRIDED_SAGE"
 
 # Measured at H3's shape (torch 2.11): flash beats cuDNN on sm80 / sm89, ties or loses on sm120; unmeasured keep cuDNN.
 H3_FLASH_FASTER_ARCHS = frozenset({(8, 0), (8, 9)})
 
 _CUDNN = "_native_cudnn"
 _FLASH = "_native_flash"
+# Studio's guarded SageAttention backends (pip SageAttention 2, kernels-hub build): both take the NHD layout the
+# strided processor already holds, so they run there with the fused q/k norm + RoPE and the shared QKV quant.
+STRIDED_SAGE_BACKENDS = frozenset({"sage", "sage_hub"})
+
+
+def strided_install_backend(backend: Any) -> bool:
+    """Whether a load that engaged ``backend`` should install the strided processor: cuDNN / flash SDPA, or a Sage
+    backend unless UNSLOTH_H3_STRIDED_SAGE=0."""
+    value = _backend_value(backend)
+    if value in (_CUDNN, _FLASH):
+        return True
+    return value in STRIDED_SAGE_BACKENDS and _enabled(STRIDED_SAGE_ENV)
 
 
 def _enabled(env: str) -> bool:
@@ -39,13 +53,35 @@ def _capability(device: Any = None) -> Optional[tuple[int, int]]:
         return None
 
 
+def _flash_sdpa_ready(target: Any = None) -> bool:
+    """Whether this torch build can actually run flash SDPA. Empty / failed probes refuse the upgrade (#16294)."""
+    if target is not None:
+        try:
+            from .diffusion_attention import SDPA_FLASH, available_sdpa_kernels
+            kernels = available_sdpa_kernels(target)
+            # Empty means unanswerable, not "flash works".
+            return bool(kernels) and SDPA_FLASH in kernels
+        except Exception:  # noqa: BLE001 -- a probe failure must not force flash
+            return False
+    try:
+        import torch
+        check = getattr(torch.backends.cuda, "is_flash_attention_available", None)
+        if callable(check):
+            return bool(check())
+    except Exception:  # noqa: BLE001
+        return False
+    # No target and no torch flag: keep the measured arch upgrade for builds that never expose the check.
+    return True
+
+
 def h3_attention_backend(
     selected: Optional[str],
     capability: Optional[tuple[int, int]] = None,
     requested: Optional[str] = None,
+    target: Any = None,
 ) -> Optional[str]:
-    """Moves only the automatic cuDNN pick (``requested`` auto / unset), and only to flash on a measured-faster arch;
-    anything else unchanged."""
+    """Moves only the automatic cuDNN pick (``requested`` auto / unset), and only to flash on a measured-faster arch
+    whose torch build actually has flash SDPA; anything else unchanged (keep ``selected`` so ``_AutoCudnn`` survives)."""
     if selected != _CUDNN or not _enabled(ATTN_ARCH_ENV):
         return selected
     try:
@@ -57,6 +93,8 @@ def h3_attention_backend(
     cap = capability if capability is not None else _capability()
     if cap is None or tuple(cap) not in H3_FLASH_FASTER_ARCHS:
         return selected
+    if not _flash_sdpa_ready(target):
+        return selected
     return _FLASH
 
 
@@ -66,19 +104,34 @@ def _backend_value(backend: Any) -> Optional[str]:
     return str(getattr(backend, "value", backend))
 
 
+def _diffusers_h3_processor() -> Any:
+    from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3AttnProcessor
+    return MiniMaxH3AttnProcessor
+
+
+def strided_processor_class(base: Any = None) -> Any:
+    """Strided subclass of the H3-layout processor ``base`` (diffusers' when None). One cached class per base: dynamo
+    guards on the class id, so a class per call would retrace every block."""
+    return _strided_processor_for(_diffusers_h3_processor() if base is None else base)
+
+
 @lru_cache(maxsize = None)
-def strided_processor_class() -> Any:
-    """Strided ``MiniMaxH3AttnProcessor`` subclass. Built once: dynamo guards on the class id, so a class per call
-    would retrace every block. Masks, context parallelism and other backends take the stock ``__call__``."""
+def _strided_processor_for(base: Any) -> Any:
+    import sys
+
     import torch
     import torch.nn.functional as F
-    from diffusers.models.transformers.transformer_minimax_h3 import (
-        MiniMaxH3AttnProcessor,
-        _apply_rotary_emb,
-    )
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
+    MiniMaxH3AttnProcessor = base
+    _apply_rotary_emb = getattr(sys.modules.get(base.__module__), "_apply_rotary_emb", None)
+    if not callable(_apply_rotary_emb):
+        raise TypeError(f"{base.__name__}: its module has no _apply_rotary_emb")
+
     from . import diffusion_int8_gemm as int8_gemm
+
+    # the stock processor's module: its dispatcher runs the Sage backends (the vendored H3-Image one imports diffusers')
+    base_module = sys.modules.get(base.__module__)
 
     def _fusable_norm(norm: Any) -> bool:
         return (
@@ -101,6 +154,8 @@ def strided_processor_class() -> Any:
     class UnslothH3StridedAttnProcessor(MiniMaxH3AttnProcessor):
         _unsloth_qk_rope = False
         _unsloth_shared_qkv = False
+        # set from UNSLOTH_H3_STRIDED_SAGE at install: a sage backend runs here, not in the stock processor
+        _unsloth_sage = False
 
         def __call__(
             self,
@@ -109,8 +164,17 @@ def strided_processor_class() -> Any:
             rotary_emb: Any = None,
             attention_mask: Any = None,
         ) -> Any:
-            kernel = kernels.get(_backend_value(self._attention_backend))
-            if kernel is None or attention_mask is not None or self._parallel_config is not None:
+            name = _backend_value(self._attention_backend)
+            kernel = kernels.get(name)
+            dispatch = None
+            if kernel is None and self._unsloth_sage and name in STRIDED_SAGE_BACKENDS:
+                dispatch = getattr(base_module, "dispatch_attention_fn", None)
+            sage = dispatch is not None
+            if (
+                (kernel is None and not sage)
+                or attention_mask is not None
+                or self._parallel_config is not None
+            ):
                 return super().__call__(attn, hidden_states, rotary_emb, attention_mask)
             qkv = None
             if attn.fused_projections:
@@ -149,15 +213,30 @@ def strided_processor_class() -> Any:
                     query = _apply_rotary_emb(query, *rotary_emb)
                     key = _apply_rotary_emb(key, *rotary_emb)
 
-            with sdpa_kernel(kernel):
-                out = F.scaled_dot_product_attention(
-                    query.permute(0, 2, 1, 3),
-                    key.permute(0, 2, 1, 3),
-                    value.permute(0, 2, 1, 3),
+            if sage:
+                # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot
+                # take still run native there)
+                hidden_states = dispatch(
+                    query,
+                    key,
+                    value,
+                    attn_mask = None,
                     dropout_p = 0.0,
                     is_causal = False,
+                    backend = self._attention_backend,
+                    parallel_config = None,
                 )
-            hidden_states = out.permute(0, 2, 1, 3).flatten(2, 3).type_as(query)
+                hidden_states = hidden_states.flatten(2, 3).type_as(query)
+            else:
+                with sdpa_kernel(kernel):
+                    out = F.scaled_dot_product_attention(
+                        query.permute(0, 2, 1, 3),
+                        key.permute(0, 2, 1, 3),
+                        value.permute(0, 2, 1, 3),
+                        dropout_p = 0.0,
+                        is_causal = False,
+                    )
+                hidden_states = out.permute(0, 2, 1, 3).flatten(2, 3).type_as(query)
             hidden_states = attn.to_out[0](hidden_states)
             hidden_states = attn.to_out[1](hidden_states)
             return hidden_states
@@ -165,30 +244,72 @@ def strided_processor_class() -> Any:
     return UnslothH3StridedAttnProcessor
 
 
-def _h3_attention_modules(transformer: Any) -> list:
+_H3_ATTN_FORWARD = ("self", "hidden_states", "rotary_emb", "attention_mask")
+_H3_PROC_CALL = ("self", "attn", "hidden_states", "rotary_emb", "attention_mask")
+
+
+@lru_cache(maxsize = None)
+def _params(fn: Any) -> tuple:
+    import inspect
     try:
-        from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3Attention
-    except Exception:  # noqa: BLE001
-        return []
+        return tuple(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        return ()
+
+
+def h3_processor_base(module: Any) -> Any:
+    """The stock H3-layout processor class of ``module``, or None. Gated on structure (forward signature, norms, QKV,
+    a processor module defining ``_apply_rotary_emb``), not class, so the vendored H3-Image attention matches too."""
+    import sys
+
+    from torch import nn
+
+    cls = type(module)
+    base = getattr(cls, "_default_processor_cls", None)
+    if not isinstance(module, nn.Module) or not isinstance(base, type):
+        return None
+    if _params(cls.forward) != _H3_ATTN_FORWARD or _params(base.__call__) != _H3_PROC_CALL:
+        return None
+    if not callable(getattr(sys.modules.get(base.__module__), "_apply_rotary_emb", None)):
+        return None
+    if not all(isinstance(getattr(module, n, None), nn.RMSNorm) for n in ("norm_q", "norm_k")):
+        return None
+    if not isinstance(getattr(module, "to_out", None), nn.ModuleList) or not callable(
+        getattr(module, "set_processor", None)
+    ):
+        return None
+    fused = getattr(module, "fused_projections", False)
+    if not (fused and hasattr(module, "to_qkv")) and not all(
+        hasattr(module, n) for n in ("to_q", "to_k", "to_v")
+    ):
+        return None
+    if not isinstance(getattr(module, "processor", None), base):
+        return None
+    return base
+
+
+def _h3_attention_modules(transformer: Any) -> list:
     modules = getattr(transformer, "modules", None)
     if not callable(modules):
         return []
-    return [m for m in modules() if isinstance(m, MiniMaxH3Attention)]
+    return [m for m in modules() if h3_processor_base(m) is not None]
 
 
-def install_strided_attention(transformer: Any, logger: Any = None) -> int:
-    """Swap every H3 attention processor for the strided one, keeping its backend. Returns the count."""
+def install_strided_attention(
+    transformer: Any,
+    logger: Any = None,
+    qk_rope: Optional[bool] = None,
+) -> int:
+    """Swap every H3 attention processor for the strided one, keeping its backend. Returns the count.
+    ``qk_rope=False`` keeps the stock q/k norm + rope; ``None`` follows UNSLOTH_H3_QK_ROPE."""
     if not _enabled(STRIDED_ATTN_ENV):
         return 0
-    try:
-        cls = strided_processor_class()
-    except Exception as exc:  # noqa: BLE001 -- older diffusers without the H3 processor
-        if logger is not None:
-            logger.info("video.h3_attn: strided processor unavailable, keeping stock: %s", exc)
+    modules = _h3_attention_modules(transformer)
+    if not modules:
         return 0
     from .video_minimax_h3_qknorm import qk_norm_rope_op, qk_rope_enabled
 
-    qk_rope_on = qk_rope_enabled()
+    qk_rope_on = qk_rope_enabled() and qk_rope is not False
     if qk_rope_on:
         try:
             qk_norm_rope_op()
@@ -197,13 +318,20 @@ def install_strided_attention(transformer: Any, logger: Any = None) -> int:
             if logger is not None:
                 logger.info("video.h3_attn: fused q/k norm+rope unavailable: %s", exc)
     swapped = 0
-    for module in _h3_attention_modules(transformer):
+    for module in modules:
         old = getattr(module, "processor", None)
+        try:
+            cls = strided_processor_class(h3_processor_base(module))
+        except Exception as exc:  # noqa: BLE001 -- older diffusers without the H3 processor
+            if logger is not None:
+                logger.info("video.h3_attn: strided processor unavailable, keeping stock: %s", exc)
+            return swapped
         if old is None or isinstance(old, cls):
             continue
         new = cls()
         new._unsloth_qk_rope = qk_rope_on
         new._unsloth_shared_qkv = _enabled(SHARED_QKV_ENV)
+        new._unsloth_sage = _enabled(STRIDED_SAGE_ENV)
         new._attention_backend = getattr(old, "_attention_backend", None)
         new._parallel_config = getattr(old, "_parallel_config", None)
         module.set_processor(new)
@@ -215,15 +343,26 @@ def install_strided_attention(transformer: Any, logger: Any = None) -> int:
 
 def strided_attention_count(transformer: Any) -> int:
     """Engagement census."""
-    try:
-        cls = strided_processor_class()
-    except Exception:  # noqa: BLE001
-        return 0
-    return sum(
-        1
-        for m in _h3_attention_modules(transformer)
-        if isinstance(getattr(m, "processor", None), cls)
-    )
+    count = 0
+    for m in _h3_attention_modules(transformer):
+        try:
+            cls = strided_processor_class(h3_processor_base(m))
+        except Exception:  # noqa: BLE001
+            return 0
+        count += isinstance(getattr(m, "processor", None), cls)
+    return count
+
+
+def strided_sage_count(transformer: Any) -> int:
+    """Engagement census: strided processors that run a Sage backend themselves."""
+    count = 0
+    for m in _h3_attention_modules(transformer):
+        proc = getattr(m, "processor", None)
+        count += bool(
+            getattr(proc, "_unsloth_sage", False)
+            and _backend_value(getattr(proc, "_attention_backend", None)) in STRIDED_SAGE_BACKENDS
+        )
+    return count
 
 
 def shared_qkv_count(transformer: Any) -> int:

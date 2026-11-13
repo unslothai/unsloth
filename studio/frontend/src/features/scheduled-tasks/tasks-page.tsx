@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Edit03Icon,
   FilterMailIcon,
   MoreHorizontalIcon,
@@ -118,12 +119,24 @@ function repeatsText(
   t: (key: TranslationKey, values?: InterpolationValues) => string,
 ): string {
   const summary = summarizeRepeats(schedule, locale);
+  if (summary.key === "everyHours") {
+    return t("scheduledTasks.schedule.everyHours", { hours: summary.hours });
+  }
   if (summary.key === "weekly") return summary.days;
   if (summary.key === "monthly") return t("scheduledTasks.monthlyDay", { day: summary.day });
   return t(`scheduledTasks.form.${summary.key}`);
 }
 
-function clockText(schedule: TaskSchedule, locale: string): string {
+function clockText(task: ScheduledTask, locale: string): string {
+  const { schedule } = task;
+  if (schedule.kind === "hourly") {
+    return task.nextRunAt === null
+      ? "—"
+      : new Intl.DateTimeFormat(
+          locale,
+          withTimeFormat({ hour: "numeric", minute: "2-digit", timeZone: task.timezone }, locale),
+        ).format(task.nextRunAt);
+  }
   return formatClock(schedule.kind === "once" ? schedule.at.split("T")[1] : schedule.time, locale);
 }
 
@@ -159,6 +172,7 @@ function TaskRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const navigate = useNavigate();
   const update = useScheduledTasksStore((state) => state.update);
   const runNow = useScheduledTasksStore((state) => state.runNow);
@@ -183,7 +197,7 @@ function TaskRow({
     formatRelativeTime(locale, ...relativeTimeParts(Math.min(at, now - 1_000), now));
   const finishedAt = run?.finishedAt ?? null;
   const repeats = repeatsText(task.schedule, locale, t);
-  const clock = clockText(task.schedule, locale);
+  const clock = clockText(task, locale);
   const nextDay = task.nextRunAt === null ? "—" : formatRunDay(task.nextRunAt, now, locale, task.timezone);
 
   return (
@@ -305,7 +319,7 @@ function TaskRow({
               </DropdownMenuItem>
             )}
             <DropdownMenuItem variant="destructive" onSelect={onDelete}>
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
               {t("common.delete")}
             </DropdownMenuItem>
           </DropdownMenuContent>
