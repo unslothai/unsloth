@@ -7659,9 +7659,7 @@ def _late_encoder_pin_cap(
     return cap
 
 
-# "0": an image load whose streamed text encoders miss the pin budget at plan time pins only that plan-time prefix.
-# The plan runs while the load still holds the denoiser's host copy: on a 12 GB host the prefix was 0 and the
-# encoder re-read its memory-mapped weights from disk on every prompt.
+# "0": pin only the plan-time encoder prefix (0 on a 12 GB host, since the denoiser host copy is still held).
 LATE_IMAGE_ENCODER_PIN_ENV = "UNSLOTH_DIFFUSION_LATE_IMAGE_ENCODER_PIN"
 
 
@@ -7678,8 +7676,7 @@ def _late_image_encoder_pin_cap(
     module: Any,
     device: Any = None,
 ) -> Callable[[], int]:
-    """``_late_encoder_pin_cap`` that first returns the load's freed heap to the OS, so the budget it reads counts
-    the denoiser host copy the load has dropped by then."""
+    """``_late_encoder_pin_cap`` after trimming the heap, so the dropped denoiser host copy counts as free."""
     late = _late_encoder_pin_cap(pipe, module, device)
 
     def cap() -> int:
@@ -7689,15 +7686,11 @@ def _late_image_encoder_pin_cap(
     return cap
 
 
-# "0": an image load whose streamed denoiser misses the pin budget at plan time (the small-host route, or a
-# streaming plan on a small host) streams every non-resident group from its pageable or memory-mapped host copy on
-# each step. On a 12 GB host that set is larger than the page cache left, so every step re-read it from disk
-# (Qwen-Image-2.1 int8 on a T4: 5.4 GB per step, 23 s per step).
+# "0": no late denoiser pin; on a 12 GB host every step re-reads streamed groups from disk (Qwen-Image int8 T4: 23 s/step).
 LATE_DENOISER_PIN_ENV = "UNSLOTH_DIFFUSION_LATE_DENOISER_PIN"
 
 
 def _late_denoiser_pin_enabled(module: Any, use_stream: bool) -> bool:
-    """Pin the leading streamed denoiser groups that fit the host RAM free once the load returns."""
     return (
         bool(use_stream)
         and not _env_off(LATE_DENOISER_PIN_ENV)
@@ -7707,7 +7700,6 @@ def _late_denoiser_pin_enabled(module: Any, use_stream: bool) -> bool:
 
 
 def _defer_late_denoiser_pin(pipe: Any, module: Any, device: Any, logger: Any) -> bool:
-    """Queue the late prefix pin of a streamed denoiser; an optimisation, so a failure only leaves it unpinned."""
     try:
         return bool(
             _defer_pinning(
@@ -9714,8 +9706,7 @@ def _apply_streaming_offload(
             )
         encoder_left_mib = 0
         small_host = bool(getattr(pipe, "_unsloth_small_host", None))
-        # image loads (no video background pin): a plan-time miss reads the budget again when the pinner starts,
-        # after the load has dropped its host copies; the denoiser's prefix first, then the encoders'
+        # image loads: a plan-time miss re-reads the budget at pin start; denoiser prefix first, then encoders
         late_dits = prefetch and not defer and not pin_dits
         late_image = False
         if encoders_defer and not pin_encoders:

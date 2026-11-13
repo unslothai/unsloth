@@ -178,10 +178,8 @@ def apply_manual_cast_(module: Any, compute_dtype: Any) -> int:
 
 
 def undo_same_width_manual_cast_(module: Any) -> int:
-    """Turn every manual-cast Linear / Embedding whose compute dtype is as wide as its stored dtype (bf16 kept for a
-    float16 compute) back into a plain module holding compute-dtype weights; returns the bytes converted. Such a
-    cast saves no memory, only adds one per call, and the converted weights are exactly what a load at the compute
-    dtype holds. Called once a quant has rebuilt the big Linears from the stored weights."""
+    """Revert same-width manual-cast Linear / Embedding (bf16 for fp16 compute) to plain compute-dtype modules,
+    since that cast saves no memory; returns bytes converted. Call after a quant rebuilt the big Linears."""
     import torch
 
     if not _CLASSES:
@@ -216,7 +214,6 @@ def undo_same_width_manual_cast_(module: Any) -> int:
         if any(type(sub) in plain for sub in module.modules()):
             info["kept_bytes"] = max(0, int(info.get("kept_bytes", 0)) - converted)
         else:
-            # Nothing is cast per call any more: the module is what a compute-dtype load builds, marker included.
             delattr(module, MANUAL_CAST_ATTR)
     return converted
 

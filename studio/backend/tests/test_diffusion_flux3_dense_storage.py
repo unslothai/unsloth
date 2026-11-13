@@ -46,7 +46,6 @@ def _scaled(host, stored_mib):
 
 
 def test_a_widened_copy_that_does_not_fit_reads_as_stored(host, monkeypatch):
-    # standard Colab T4: 11.1 GB stored, about 9 GB available when the transformer loads
     monkeypatch.setattr(f3, "_WIDEN_PEAK", 1.6 * _scaled(host, 11_100))
     why = f3.widened_transformer_exceeds_host("repo", None, True)
     assert why is not None and "9000 MiB available" in why
@@ -54,7 +53,6 @@ def test_a_widened_copy_that_does_not_fit_reads_as_stored(host, monkeypatch):
 
 
 def test_a_widened_copy_that_fits_keeps_the_widened_load(host, monkeypatch):
-    # high-RAM T4: 51 GB
     monkeypatch.setattr(f3, "_WIDEN_PEAK", 1.6 * _scaled(host, 11_100))
     host["total"], host["available"] = 51_000, 48_000
     assert f3.widened_transformer_exceeds_host("repo", None, True) is None

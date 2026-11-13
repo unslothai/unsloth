@@ -599,10 +599,8 @@ def half_storage_disabled() -> bool:
 
 
 def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
-    """bf16 when a CUDA load computes FLUX.3 in float32 or float16: keep the stored bf16 weights (memory-mapped,
-    never copied) and cast per op instead of converting the whole load on the host. float32 would double the load
-    (about 40 GB for klein); a float16 conversion is a second private host copy of each component (about 20 GB for
-    klein, enough to kill a 12 GB host). The cast is exact either way. None otherwise."""
+    """bf16 for a CUDA float32/float16 load: keep stored bf16 mmapped and cast per op (exact); a host conversion
+    costs ~20-40 GB for klein. None otherwise."""
     from .diffusion_manual_cast import manual_cast_disabled
 
     if manual_cast_disabled() or getattr(target, "device", None) != "cuda":
@@ -619,7 +617,6 @@ def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
 
 
 def storage_saves_memory(storage_dtype: Any, dtype: Any) -> bool:
-    """Whether computing in ``dtype`` would need more bytes than ``storage_dtype`` holds (float32 over bf16)."""
     try:
         import torch
         return (
@@ -633,8 +630,7 @@ def storage_saves_memory(storage_dtype: Any, dtype: Any) -> bool:
 def transformer_storage_dtype(
     storage_dtype: Any, dtype: Any, transformer_storage: Optional[bool]
 ) -> Any:
-    """The dtype the FLUX.3 transformer loads at (``load_flux3_pipeline``'s ``transformer_storage``): the storage dtype
-    when asked (True), or by default (None) only when computing in ``dtype`` would take more memory."""
+    """Transformer load dtype: storage when True, or (None) only when it saves memory."""
     if storage_dtype is None or transformer_storage is False:
         return None
     if transformer_storage or storage_saves_memory(storage_dtype, dtype):
@@ -642,9 +638,7 @@ def transformer_storage_dtype(
     return None
 
 
-# "0": a dense float16 FLUX.3 transformer always loads widened on the host. A from_pretrained conversion peaks at
-# about 1.6x the stored bytes (CPU repro on the real klein config), so klein's 11.1 GB transformer needs ~18 GB and
-# hung or was killed on a 12.7 GB Colab T4.
+# "0": always widen a dense fp16 transformer on host. Conversion peaks ~1.6x stored (klein ~18 GB, killed a 12.7 GB T4).
 DENSE_STORAGE_ENV = "UNSLOTH_DIFFUSION_FLUX3_DENSE_STORAGE"
 _WIDEN_PEAK = 1.6
 _FLOAT_KEYS = frozenset({"bfloat16", "float16", "float32", "f8_e4m3", "f8_e5m2"})
@@ -669,8 +663,7 @@ def _stored_float_mib(files: list) -> int:
 def widened_transformer_exceeds_host(
     repo_id: str, hf_token: Optional[str], local_files_only: bool
 ) -> Optional[str]:
-    """Why a same-width widened transformer load would not fit host RAM (the reason to log), else None. Unreadable
-    sizes or host readings keep the widened load."""
+    """Reason a widened transformer load would not fit host RAM, else None (unreadable sizes keep widening)."""
     if dense_storage_disabled():
         return None
     from .diffusion_small_host import host_ram_check_disabled, host_ram_mib, host_reserve_mib
@@ -698,8 +691,7 @@ def transformer_load_storage(
     hf_token: Optional[str],
     local_files_only: bool,
 ) -> Any:
-    """``transformer_storage_dtype``, except that by default (None) a dense same-width transformer widens on the host
-    only when that copy fits; else it reads as stored and casts per op (the same float16 weights at call time)."""
+    """``transformer_storage_dtype``, but by default a same-width transformer reads as stored when widening won't fit."""
     picked = transformer_storage_dtype(storage_dtype, dtype, transformer_storage)
     if picked is not None or transformer_storage is not None or storage_dtype is None:
         return picked
