@@ -1879,12 +1879,13 @@ export function ChatSettingsPanel({
   if (isCompact) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
+        <SheetContent side="right" data-chat-settings-sheet="" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
-          <div data-tour="chat-settings" className="flex h-full flex-col">
+          {/* The docked panel's slot, so the sheet gets its glass. */}
+          <div data-tour="chat-settings" data-slot="chat-settings-panel" className="relative flex h-full flex-col">
             {settingsContent}
           </div>
         </SheetContent>
