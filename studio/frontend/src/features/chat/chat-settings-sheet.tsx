@@ -996,7 +996,6 @@ export function ChatSettingsPanel({
       BUILTIN_PRESETS.find((preset) => preset.name === "Default") ?? null;
     const next = customPresets.filter((preset) => preset.name !== name);
     setCustomPresets(next);
-    // A later preset saved under this name must not inherit the links.
     for (const [modelId, linkedName] of Object.entries(modelPresets)) {
       if (linkedName === name) setModelPreset(modelId, null);
     }

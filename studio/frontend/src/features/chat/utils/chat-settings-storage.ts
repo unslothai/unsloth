@@ -230,7 +230,7 @@ function sanitizeCustomPresets(
   );
 }
 
-/** Keeps null, since outgoing patches pass through here too and null is how a link is removed. */
+/** Keeps null: outgoing patches pass through here and null removes a link. */
 function sanitizeModelPresets(
   value: unknown,
 ): Record<string, string | null> | undefined {

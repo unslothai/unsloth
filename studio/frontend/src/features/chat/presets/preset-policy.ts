@@ -176,8 +176,7 @@ export function applyPresetForProvider(
   };
 }
 
-/** The saved preset `modelId` is linked to, or null when it has none or that preset is gone.
- *  Only custom presets link: Default already follows each model's own recommendation. */
+/** Only custom presets link: Default already follows each model's recommendation. */
 export function getLinkedPreset(
   modelId: string | null | undefined,
   modelPresets: Record<string, string>,
