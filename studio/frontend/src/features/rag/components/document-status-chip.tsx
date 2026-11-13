@@ -9,6 +9,7 @@ import { Folder02Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
 import type { DocumentStatus } from "../types/rag";
+import { chipProgressPercent } from "./source-folder-progress";
 
 export const STAGE_LABELS: Record<string, string> = {
   parsing: "Reading document",
@@ -25,6 +26,7 @@ export function DocumentStatusChip({
   progress,
   stage,
   error,
+  title: titleOverride,
   onRemove,
   onOpen,
   openTrigger,
@@ -36,6 +38,8 @@ export function DocumentStatusChip({
   progress?: number | null;
   stage?: string | null;
   error?: string | null;
+  /** Overrides the default hover text when the caller already explained the chip. */
+  title?: string;
   onRemove?: () => void;
   /** Makes the name a button that opens the source. */
   onOpen?: () => void;
@@ -48,6 +52,7 @@ export function DocumentStatusChip({
 }) {
   const processing = status === "pending" || status === "running";
   const openable = status === "completed" && (onOpen || openTrigger);
+  const progressLabel = chipProgressPercent(progress, processing);
   const nameButton = openable ? (
     <button
       type="button"
@@ -63,6 +68,7 @@ export function DocumentStatusChip({
       variant="outline"
       size="sm"
       title={
+        titleOverride ??
         error ??
         (processing && stage && STAGE_LABELS[stage]
           ? `${filename} — ${STAGE_LABELS[stage]}`
@@ -102,9 +108,7 @@ export function DocumentStatusChip({
       {/* spinner while indexing, else close button */}
       {processing ? (
         <span className="flex shrink-0 items-center gap-1 text-ui-10 text-muted-foreground">
-          {progress != null
-            ? `${Math.round(progress <= 1 ? progress * 100 : progress)}%`
-            : null}
+          {progressLabel != null ? `${progressLabel}%` : null}
           <Spinner className="size-3.5" />
         </span>
       ) : onRemove ? (

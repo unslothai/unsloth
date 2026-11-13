@@ -24,6 +24,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
+import { folderSyncJobSummary } from "./source-folder-progress";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { FolderAddIcon, FolderSyncIcon } from "@/lib/folder-icons";
@@ -45,21 +46,6 @@ export const FOLDER_ROW_CLASS =
 function percent(progress?: number | null): number | null {
   if (progress == null || !Number.isFinite(progress)) return null;
   return Math.max(0, Math.min(100, progress <= 1 ? progress * 100 : progress));
-}
-
-function jobSummary(job: FolderSyncJob): string {
-  if (job.status === "failed") return job.error ?? "Sync failed";
-  if (job.status === "completed") {
-    const indexed = job.indexedFiles ?? job.processedFiles;
-    return indexed == null
-      ? "Sync complete"
-      : `${indexed} file${indexed === 1 ? "" : "s"} indexed`;
-  }
-  const processed = job.processedFiles ?? 0;
-  const discovered = job.discoveredFiles;
-  return discovered == null
-    ? job.stage || "Scanning folder"
-    : `${processed} of ${discovered} files`;
 }
 
 const SKIP_LABELS: Record<LinkedFolderSkipReason, (count: number) => string> = {
@@ -255,8 +241,10 @@ export function LinkedFoldersManager({
               const running = runningJob(folder.id) !== undefined;
               const failed =
                 folder.status === "error" || job?.status === "failed";
-              const detail = running
-                ? jobSummary(job as FolderSyncJob)
+              const summary =
+                running && job ? folderSyncJobSummary(job) : null;
+              const detail = summary
+                ? summary.text
                 : failed
                   ? (job?.status === "failed" ? job.error : folder.error) ||
                     "Sync failed"
@@ -266,9 +254,10 @@ export function LinkedFoldersManager({
                   key={folder.id}
                   className={rowClass}
                   title={
-                    folder.lastSyncedAt
+                    summary?.title ??
+                    (folder.lastSyncedAt
                       ? `${folder.displayName}: last synced ${new Date(folder.lastSyncedAt).toLocaleString()}`
-                      : `${folder.displayName}: ${folder.documentCount ?? 0} indexed documents`
+                      : `${folder.displayName}: ${folder.documentCount ?? 0} indexed documents`)
                   }
                 >
                   <HugeiconsIcon
@@ -289,13 +278,18 @@ export function LinkedFoldersManager({
                           "truncate text-ui-11 text-muted-foreground",
                           failed && "text-destructive",
                         )}
+                        title={summary?.title}
                       >
                         {detail}
                       </p>
                     ) : null}
                     {running ? (
                       <Progress
-                        value={percent(job?.progress) ?? 0}
+                        value={
+                          percent(summary?.progressPercent) ??
+                          percent(job?.progress) ??
+                          0
+                        }
                         aria-label={`Sync progress for ${folder.displayName}`}
                         className="mt-1.5 h-1"
                       />
@@ -403,7 +397,10 @@ export function LinkedFoldersManager({
             const job = manager.jobs[folder.id];
             const running =
               job?.status === "pending" || job?.status === "running";
-            const progress = percent(job?.progress);
+            const summary = job ? folderSyncJobSummary(job) : null;
+            const progress = percent(
+              summary?.progressPercent ?? job?.progress,
+            );
             return (
               <li
                 key={folder.id}
@@ -437,9 +434,10 @@ export function LinkedFoldersManager({
                       (folder.status === "error" || job?.status === "failed") &&
                         "text-destructive",
                     )}
+                    title={summary?.title}
                   >
-                    {job
-                      ? jobSummary(job)
+                    {summary
+                      ? summary.text
                       : folder.error ||
                         (folder.lastSyncedAt
                           ? `Last synced ${new Date(folder.lastSyncedAt).toLocaleString()}`
