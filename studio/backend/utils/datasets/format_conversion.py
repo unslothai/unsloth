@@ -282,8 +282,9 @@ def convert_chatml_to_alpaca(
     batch_size = 1000,
     num_proc = None,
     chat_column: str | None = None,
+    stats: dict | None = None,
 ):
-    """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys."""
+    """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys. ``stats`` receives {"conversations", "dropped"} counts for non-streaming datasets."""
     is_iterable = is_streaming_dataset(dataset)
     roles = {
         "system": "system",
@@ -294,6 +295,46 @@ def convert_chatml_to_alpaca(
         "gpt": "assistant",
         "output": "assistant",
     }
+
+    def _convo_rows(convo, column_system):
+        turns = []
+        for msg in convo or []:
+            role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
+            content = _content_text(msg.get("content") or msg.get("value"))
+            if role is None or not content:
+                continue
+            if turns and turns[-1][0] == role:
+                turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
+            else:
+                turns.append([role, content])
+        # A separate system column fills in only when the conversation has no leading system turn.
+        if (
+            isinstance(column_system, str)
+            and column_system.strip()
+            and not (turns and turns[0][0] == "system")
+        ):
+            turns.insert(0, ["system", column_system])
+
+        rows = []
+        system = ""
+        context = []
+        instruction = None
+        for role, content in turns:
+            if role == "system":
+                system = f"{system}\n\n{content}" if system else content
+            elif role == "user":
+                instruction = content
+            elif instruction is not None:
+                rows.append(
+                    (
+                        instruction,
+                        "\n\n".join(part for part in (system, "\n".join(context)) if part),
+                        content,
+                    )
+                )
+                context += [f"User: {instruction}", f"Assistant: {content}"]
+                instruction = None
+        return rows
 
     def _convert(examples):
         chatml_data = examples.get(chat_column) if chat_column else None
@@ -311,40 +352,10 @@ def convert_chatml_to_alpaca(
         column_systems = examples.get("system") or [None] * len(chatml_data)
 
         for convo, column_system in zip(chatml_data, column_systems):
-            turns = []
-            for msg in convo or []:
-                role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
-                content = _content_text(msg.get("content") or msg.get("value"))
-                if role is None or not content:
-                    continue
-                if turns and turns[-1][0] == role:
-                    turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
-                else:
-                    turns.append([role, content])
-            # A separate system column fills in only when the conversation has no leading system turn.
-            if (
-                isinstance(column_system, str)
-                and column_system.strip()
-                and not (turns and turns[0][0] == "system")
-            ):
-                turns.insert(0, ["system", column_system])
-
-            system = ""
-            context = []
-            instruction = None
-            for role, content in turns:
-                if role == "system":
-                    system = f"{system}\n\n{content}" if system else content
-                elif role == "user":
-                    instruction = content
-                elif instruction is not None:
-                    instructions.append(instruction)
-                    inputs.append(
-                        "\n\n".join(part for part in (system, "\n".join(context)) if part)
-                    )
-                    outputs.append(content)
-                    context += [f"User: {instruction}", f"Assistant: {content}"]
-                    instruction = None
+            for instruction, input_text, output in _convo_rows(convo, column_system):
+                instructions.append(instruction)
+                inputs.append(input_text)
+                outputs.append(output)
 
         return {"instruction": instructions, "input": inputs, "output": outputs}
 
@@ -372,6 +383,27 @@ def convert_chatml_to_alpaca(
             raise ValueError(
                 f"Streaming ChatML-to-Alpaca conversion failed on the first row: {exc}"
             ) from exc
+
+    if stats is not None and not is_iterable:
+        count_column = chat_column or next(
+            (
+                name
+                for name in ("messages", "conversations", "texts")
+                if name in (dataset.column_names or [])
+            ),
+            None,
+        )
+        if count_column is not None:
+            stats["conversations"] = 0
+            stats["dropped"] = 0
+            for start in range(0, len(dataset), batch_size):
+                chunk = dataset[start : start + batch_size]
+                convos = chunk[count_column]
+                column_systems = chunk.get("system") or [None] * len(convos)
+                for convo, column_system in zip(convos, column_systems):
+                    stats["conversations"] += 1
+                    if not _convo_rows(convo, column_system):
+                        stats["dropped"] += 1
 
     return result
 

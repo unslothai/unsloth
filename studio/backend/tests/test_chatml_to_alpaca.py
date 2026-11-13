@@ -5,6 +5,7 @@ import pytest
 from datasets import Dataset, IterableDataset
 
 from utils.datasets import convert_chatml_to_alpaca, format_and_template_dataset
+from utils.datasets.dataset_utils import format_dataset
 
 SHAREGPT_ROLES = {"system": "system", "user": "human", "assistant": "gpt"}
 
@@ -207,4 +208,26 @@ def test_alpaca_format_trains_on_every_sharegpt_exchange():
     assert texts[5].endswith(
         "### Instruction:\nQ3-2\n\n### Input:\nSYS-2\n\nUser: Q1-2\nAssistant: A1-2\n"
         "User: Q2-2\nAssistant: A2-2\n\n### Response:\nA3-2</s>"
+    )
+
+
+def test_unanswered_conversations_report_a_drop_warning():
+    dataset = Dataset.from_dict(
+        {
+            "messages": [
+                [
+                    {"role": "user", "content": "Q1"},
+                    {"role": "assistant", "content": "A1"},
+                ],
+                [{"role": "user", "content": "no answer yet"}],
+            ]
+        }
+    )
+
+    info = format_dataset(dataset, format_type = "alpaca")
+
+    assert [row["instruction"] for row in info["dataset"]] == ["Q1"]
+    assert any(
+        "Dropped 1 of 2 conversations with no assistant response" in warning
+        for warning in info["warnings"]
     )

@@ -729,12 +729,19 @@ def _format_dataset(
                         chat_column = detected["chat_column"],
                     )
 
+                conversion_stats = {}
                 converted = convert_chatml_to_alpaca(
                     dataset,
                     batch_size,
                     num_proc,
                     chat_column = detected["chat_column"],
+                    stats = conversion_stats,
                 )
+                if conversion_stats.get("dropped"):
+                    warnings.append(
+                        f"Dropped {conversion_stats['dropped']:,} of "
+                        f"{conversion_stats['conversations']:,} conversations with no assistant response"
+                    )
                 return {
                     "dataset": converted,
                     "detected_format": detected["format"],
@@ -744,7 +751,7 @@ def _format_dataset(
                     "requires_manual_mapping": False,
                     "is_image": multimodal_info["is_image"],
                     "multimodal_info": multimodal_info,
-                    "warnings": [],
+                    "warnings": warnings,
                 }
             except Exception as e:
                 warnings.append(f"Failed to convert chat dataset to Alpaca: {e}")
