@@ -1674,6 +1674,8 @@ def test_disabling_monitor_during_new_entry_prevents_recording(monkeypatch):
     assert not worker.is_alive()
     assert result == [""]
     assert monitor.snapshot() == []
+
+
 def test_mistral_reasoning_stream_reaches_the_client_and_the_monitor(monkeypatch):
     import asyncio
     from types import SimpleNamespace
