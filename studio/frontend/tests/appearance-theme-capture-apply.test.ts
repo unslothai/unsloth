@@ -265,3 +265,16 @@ test("undo brings back a font the theme's cap evicted, even after the theme's fo
   const undone = planUndo(before, applied, now);
   assert.ok(undone.customization.importedFonts.some((f) => f.name === "C"));
 });
+
+test("undo restores a font the theme overwrote, even after an unrelated font was added", () => {
+  const mine = font("Brand", "TUlORQ==");
+  const before = { ...BASE, customization: sanitizeCustomization({ importedFonts: [mine], uiFont: "Brand" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "Brand" }, assets: { fonts: [font("Brand", "VEhFSVJT")] } })));
+  const applied = apply(before, theme);
+  const now = { ...before, palette: applied.palette, glass: applied.glass, customization: { ...applied.customization,
+    importedFonts: [...applied.customization.importedFonts, font("Extra")] } };
+  const undone = planUndo(before, applied, now);
+  const brand = undone.customization.importedFonts.find((f) => f.name === "Brand");
+  assert.equal(brand?.dataUrl, mine.dataUrl);
+  assert.ok(undone.customization.importedFonts.some((f) => f.name === "Extra"));
+});

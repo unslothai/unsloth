@@ -167,21 +167,23 @@ export function planUndo(
     }
   }
   customization.colors = colors;
-  // A font the user picked after applying keeps its imported file, even if the list itself reverts.
-  const fonts = customization.importedFonts as ImportedFont[];
-  // Fonts Apply pushed out under the cap come back even when the font list changed since.
-  const appliedNames = new Set(applied.customization.importedFonts.map((font) => font.name));
-  const evicted = before.customization.importedFonts.filter(
-    (font) => !appliedNames.has(font.name) && !fonts.some((kept) => kept.name === font.name),
-  );
+  // Per font: entries untouched since Apply go back to their pre-Apply bytes (or away if Apply
+  // added them and nothing selects them); fonts Apply evicted under the cap come back.
+  const byName = (list: ImportedFont[]) => new Map(list.map((font) => [font.name, font]));
+  const was = byName(before.customization.importedFonts);
+  const set = byName(applied.customization.importedFonts);
+  const is = byName(now.customization.importedFonts);
   const selected = new Set(FONT_FIELDS.map((field) => customization[field]));
-  const stillNeeded = now.customization.importedFonts.filter(
-    (font) => selected.has(font.name) && !fonts.some((kept) => kept.name === font.name),
-  );
-  customization.importedFonts = selectedFirst(
-    customization as AppearanceCustomization,
-    [...stillNeeded, ...fonts, ...evicted],
-  );
+  const fonts: ImportedFont[] = [];
+  for (const font of now.customization.importedFonts) {
+    if (set.get(font.name)?.dataUrl !== font.dataUrl) fonts.push(font);
+    else if (was.has(font.name)) fonts.push(was.get(font.name)!);
+    else if (selected.has(font.name)) fonts.push(font);
+  }
+  for (const font of before.customization.importedFonts) {
+    if (!set.has(font.name) && !is.has(font.name)) fonts.push(font);
+  }
+  customization.importedFonts = selectedFirst(customization as AppearanceCustomization, fonts);
   const glass = { ...now.glass } as Record<string, unknown>;
   for (const key of Object.keys(now.glass) as (keyof AppearanceSnapshot["glass"])[]) {
     glass[key] = revert(before.glass[key], applied.glass[key], now.glass[key]);
@@ -197,7 +199,7 @@ export function planUndo(
   );
   return {
     palette: revert(before.palette, applied.palette, now.palette),
-    customization: reconcileFonts(reverted, knownNames, [...now.customization.importedFonts, ...evicted]),
+    customization: reconcileFonts(reverted, knownNames, fonts),
     glass: glass as AppearanceSnapshot["glass"],
   };
 }
