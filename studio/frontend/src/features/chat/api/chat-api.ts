@@ -682,6 +682,7 @@ export async function getLoadProgress(): Promise<LoadProgressResponse> {
 
 export interface LocalModelInfo {
   id: string;
+  inventory_id?: string;
   display_name: string;
   path: string;
   source: "models_dir" | "hf_cache" | "lmstudio" | "omlx" | "ollama" | "hermes" | "custom";
