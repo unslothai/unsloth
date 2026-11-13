@@ -858,8 +858,8 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
     assert f"{expected}{os.sep}" in out, out
 
 
-def test_only_studios_interpreter_gets_the_chat_pip_prefix(tmp_path):
-    """Every OS: the shim routes Studio's own pip and leaves another venv's pip alone."""
+def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
+    """Every OS: Studio's pip installs into the chat folder; nothing else it starts, nor another venv, inherits that."""
     packages = str(tmp_path / os_sandbox.SESSION_PACKAGES_RELPATH)
     env = {
         **os.environ,
@@ -872,10 +872,14 @@ def test_only_studios_interpreter_gets_the_chat_pip_prefix(tmp_path):
         [sys.executable, "-m", "venv", "--without-pip", str(tmp_path / "venv")], check = True
     )
     venv_python = tmp_path / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    studio = subprocess.run([sys.executable, *probe], env = env, capture_output = True, text = True)
-    other = subprocess.run([str(venv_python), *probe], env = env, capture_output = True, text = True)
-    assert studio.stdout.strip() == packages, studio.stderr
-    assert other.stdout.strip() == "None", other.stderr
+
+    def run(*argv):
+        result = subprocess.run(argv, env = env, capture_output = True, text = True)
+        return result.stdout + result.stderr
+
+    assert f"PIP_PREFIX='{packages}'" in run(sys.executable, "-m", "pip", "config", "debug")
+    assert run(sys.executable, *probe).strip() == "None"
+    assert run(str(venv_python), *probe).strip() == "None"
 
 
 def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):

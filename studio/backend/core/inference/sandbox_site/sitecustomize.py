@@ -339,6 +339,9 @@ class _HostPackagesFinder:
 _PIP_LOCATION_FLAGS = frozenset(("-t", "--target", "--prefix", "--root", "--home", "--user"))
 
 
+_chat_prefix = None
+
+
 def _route_pip():
     try:
         prefix = os.environ.get("_UNSLOTH_PIP_PREFIX")
@@ -350,12 +353,20 @@ def _route_pip():
             return os.path.normcase(os.path.realpath(path))
 
         if key(sys.prefix) == key(owner):
+            global _chat_prefix
+            _chat_prefix = prefix
+            # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
+            argv = list(getattr(sys, "orig_argv", None) or ())
+            module = argv[argv.index("-m") + 1] if "-m" in argv[:-1] else ""
+            is_pip = module in ("pip", "pip.__main__") or (
+                not module and os.path.basename(sys.argv[0]).lower().startswith("pip")
+            )
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             placed = any(
                 a.split("=", 1)[0] in _PIP_LOCATION_FLAGS or (a.startswith("-t") and a != "-t")
                 for a in sys.argv[1:]
             )
-            if not placed:
+            if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
             elif os.environ.get("PIP_PREFIX") == prefix:
@@ -384,7 +395,7 @@ _route_pip()
 
 
 def _session_entries():
-    prefix = os.environ.get("PIP_PREFIX")
+    prefix = _chat_prefix or os.environ.get("PIP_PREFIX")
     if not prefix:
         return []
     root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
