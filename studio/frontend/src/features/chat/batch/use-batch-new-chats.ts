@@ -25,6 +25,7 @@ import {
   BATCH_SEND_TIMEOUT_MS,
   type BatchFinish,
   type ThreadListLike,
+  batchNewChatsRunning,
   batchTargetKey,
   batchThreadReader,
   claimBatchStep,
@@ -49,6 +50,14 @@ function newChatNonce(): string {
 
 function chatCount(count: number): string {
   return count === 1 ? "1 chat" : `${count} chats`;
+}
+
+// The history generation the running batch started under; a clear after it ends the batch.
+let batchClearedAt = 0;
+
+// Image normalization can change the extension (picture.bmp -> picture.png), never the stem.
+function fileStem(name: string): string {
+  return name.replace(/\.[^.]*$/, "");
 }
 
 const notify = {
@@ -107,6 +116,7 @@ export function pickFilesForNewChats(aui: Aui, navigate: Navigate, accept: strin
   }
   openFilePicker(accept, (files) => {
     const clearedAt = chatHistoryClearBoundary.capture();
+    if (!batchNewChatsRunning()) batchClearedAt = clearedAt;
     const started = startBatchNewChats(prompt, files, {
       newNonce: newChatNonce,
       openNewChat: (nonce) => {
@@ -190,7 +200,6 @@ export function useBatchNewChatsComposer(
       if (!claim) return;
       stopPoll();
       const draftId = aui.threadListItem().getState().id;
-      const clearedAt = chatHistoryClearBoundary.capture();
       void (async () => {
         try {
           let prepTimer: ReturnType<typeof setTimeout> | undefined;
@@ -225,11 +234,11 @@ export function useBatchNewChatsComposer(
             aui.threadListItem().getState().id !== draftId ||
             draft.text.trim() !== claim.prompt ||
             draft.attachments.length !== 1 ||
-            draft.attachments[0].name !== claim.file.name
+            fileStem(draft.attachments[0].name) !== fileStem(claim.file.name)
           ) {
             throw new Error("The chat changed before the message was sent.");
           }
-          if (chatHistoryClearBoundary.capture() !== clearedAt) {
+          if (chatHistoryClearBoundary.capture() !== batchClearedAt) {
             throw new Error("Chat history was cleared.");
           }
           if (draft.attachments.some((a) => a.status.type === "incomplete")) {
