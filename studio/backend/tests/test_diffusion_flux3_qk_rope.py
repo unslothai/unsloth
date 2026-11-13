@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU checks for diffusion_flux3_qk_rope: the probe's reference is the stock chain, the swapped processor is stock
-math wherever the kernel is not proven, and every gate (kill switch, verdict, compile, layout, failure) holds. The
-kernel's bit-exactness itself is proven on the card by ``verdict``."""
+"""CPU checks for diffusion_flux3_qk_rope gates; kernel bit-exactness is proven on the card by ``verdict``."""
 
 from __future__ import annotations
 
@@ -162,7 +160,6 @@ def test_unproven_or_slower_or_unprobed_card_takes_the_stock_chain(monkeypatch, 
 @pytest.mark.parametrize("env", ["QK_NORM_ROPE_ENV", "PATCH_ENV"])
 @pytest.mark.parametrize("value", ["0", "off", "false", "no"])
 def test_kill_switch(monkeypatch, value, env):
-    """Either switch (the op's own, or the load-patch registry's) restores the stock chain on every path."""
     attn = _attn(torch.float16)
     q, k = _qk(attn)
     calls = _fake_card(monkeypatch)
@@ -217,7 +214,7 @@ def test_a_failed_launch_falls_back_and_stays_stock(monkeypatch):
         got = qr.qk_norm_rope(attn, q, k, torch.float16, rope, tf3.apply_rotary_emb)
         qr.qk_norm_rope(attn, q, k, torch.float16, rope, tf3.apply_rotary_emb)
         want = _stock_qk(attn, q, k, rope, torch.float16)
-    assert len(calls) == 1  # never retried
+    assert len(calls) == 1
     assert all(torch.equal(a, b) for a, b in zip(got, want))
     assert qr.STATS == {"fused": 0, "stock": 2}
 
@@ -243,14 +240,14 @@ def test_eligibility_rules():
     w = torch.ones(16)
     cos, sin = _rope(9)
     x = torch.zeros(1, 9, 4, 16, dtype = torch.float16)
-    assert not qr.eligible(x, w, cos, sin, torch.float16)  # CPU
+    assert not qr.eligible(x, w, cos, sin, torch.float16)
     assert not qr.eligible(x.float(), w, cos, sin, torch.float32)
 
 
 def test_install_swaps_stock_processors_and_uninstall_restores(monkeypatch):
     model = _tiny()
     pipe = SimpleNamespace(transformer = model)
-    assert qr.install_for_pipe(pipe, "cpu") == 0  # not a CUDA card
+    assert qr.install_for_pipe(pipe, "cpu") == 0
     monkeypatch.setattr(qr, "wanted", lambda device = "cuda": True)
     mods = [m for m in model.modules() if isinstance(m, tf3.Flux3Attention)]
     for m in mods:
@@ -296,9 +293,7 @@ def test_whole_transformer_forward_is_unchanged_on_cpu(monkeypatch):
     try:
         with torch.no_grad():
             want = model(**kw).sample
-    except (
-        TypeError
-    ) as exc:  # a diffusers whose forward signature moved: covered by the processor test above
+    except TypeError as exc:
         pytest.skip(f"forward signature: {exc}")
     monkeypatch.setattr(qr, "wanted", lambda device = "cuda": True)
     assert qr.install_for_pipe(SimpleNamespace(transformer = model), "cuda") > 0

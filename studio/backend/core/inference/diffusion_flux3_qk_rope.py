@@ -1,23 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 attention's Q / K prologue in one Triton kernel, bit-identical to the stock eager chain
-``norm_q(query.float())`` -> ``apply_rotary_emb(..., sequence_dim=1)`` -> ``.to(value.dtype)`` (and the same for K).
-Off with ``UNSLOTH_DIFFUSION_FLUX3_QK_NORM_ROPE=0``.
+"""FLUX.3 Q / K prologue (float32 RMSNorm, RoPE, downcast) in one Triton kernel, bit-identical to the stock chain.
 
-Stock runs five kernels per tensor (upcast copy, float32 RMSNorm, two-pass RoPE, downcast) and moves the activation
-through float32 three times; on Turing (fp16 only, eager blocks) that was the costliest norm in a FLUX.3 render. The
-kernel reads the fp16 / bf16 projection once and writes the attention input once, all math in float32:
-
-* the norm reproduces torch's CUDA ``_fused_rms_norm`` row kernel on a float32 row (thread ``l`` sums the squares of
-  elements ``4 l .. 4 l + 3`` in order, the warp folds by shuffles, ``rsqrt(sum / D + eps)``, ``w * (rstd * x)``);
-  an fp16 / bf16 value squared is exact in float32, so the order alone fixes the sum;
-* the rotation is diffusers' interleaved ``x * cos + rot * sin`` with each product and the sum rounded to float32
-  (no FMA contraction), then one rounding to the activation dtype.
-
-Engaged per (card, activation dtype, weight dtype, head dim) only after it matched the stock chain bit for bit on
-probes spanning six decades of row scale, and only when it beat the stock chain on a timed probe. Anything else (a
-compiling frame, grad, odd strides or shapes, a failed launch) runs the stock lines.
+The norm mirrors torch's CUDA ``_fused_rms_norm`` reduction order (fp16 / bf16 squares are exact in float32, so order
+alone fixes the sum); RoPE rounds each product and the sum to float32 (no FMA). Engaged per key only after a bitwise
+probe match and a timed win; anything else runs the stock lines. Off with ``UNSLOTH_DIFFUSION_FLUX3_QK_NORM_ROPE=0``.
 """
 
 from __future__ import annotations
@@ -31,11 +19,10 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 QK_NORM_ROPE_ENV = "UNSLOTH_DIFFUSION_FLUX3_QK_NORM_ROPE"
-# the load-patch registry's switch for this op; the strided and ConvRot paths call the helper without the swap
+# registry switch; strided and ConvRot paths call the helper without the swap
 PATCH_ENV = "UNSLOTH_DIFFUSION_PATCH_FLUX3_QK_ROPE"
 _MODULE = "diffusers.models.transformers.transformer_flux3"
 _LOCK = threading.Lock()
-# (device index, activation dtype, weight dtype, head dim, eps) -> {"exact": bool, "faster": bool, "ms": {...}}
 _VERDICTS: dict = {}
 STATS = {"fused": 0, "stock": 0}
 _FAILED = [False]
@@ -53,7 +40,6 @@ def enabled() -> bool:
 
 
 def reference_rope(x: Any, cos: Any, sin: Any) -> Any:
-    """diffusers' ``apply_rotary_emb(x, (cos, sin), use_real=True, use_real_unbind_dim=-1, sequence_dim=1)``."""
     import torch
 
     cos = cos[None, :, None, :].to(x.device)
@@ -64,9 +50,7 @@ def reference_rope(x: Any, cos: Any, sin: Any) -> Any:
 
 
 def reference_qk(x: Any, weight: Any, eps: float, cos: Any, sin: Any, out_dtype: Any) -> Any:
-    """The stock chain on one of Q / K: float32 RMSNorm (as ``nn.RMSNorm``), RoPE, cast to the attention dtype."""
     import torch.nn.functional as F
-
     normed = F.rms_norm(x.float(), (x.shape[-1],), weight, eps)
     return reference_rope(normed, cos, sin).to(out_dtype)
 
@@ -120,8 +104,7 @@ def _kernel() -> Any:
         mask = row_ok[:, None]
         x = tl.load(x_ptr + base[:, None] + cols[None, :], mask = mask, other = 0.0).to(tl.float32)
         xp = tl.load(x_ptr + base[:, None] + partner[None, :], mask = mask, other = 0.0).to(tl.float32)
-        # Vector v = 32 g + l (elements 4v .. 4v + 3) is lane l of warp g: its 4 squares summed in element order,
-        # then the warp's 32 lanes by tl.sum over a [ROWS, 32] tile, then the warps in order (the probe proves it).
+        # torch's order: lane l of warp g sums elements 4(32g+l)..+3, then lanes, then warps (probe-proven)
         lane = tl.arange(0, 32)
         for g in tl.static_range(G):
             vec = 32 * g + lane
@@ -142,7 +125,6 @@ def _kernel() -> Any:
         pn = wp[None, :] * (rstd[:, None] * xp)
         c = tl.load(cos_ptr + s[:, None] * cos_stride + cols[None, :], mask = mask, other = 0.0)
         sn = tl.load(sin_ptr + s[:, None] * sin_stride + cols[None, :], mask = mask, other = 0.0)
-        # even column: x_e * cos - x_o * sin; odd column: x_o * cos + x_e * sin (each product rounded on its own)
         sign = tl.where((cols % 2) == 0, -1.0, 1.0)
         y = xn * c.to(tl.float32) + (pn * sign[None, :]) * sn.to(tl.float32)
         tl.store(out_ptr + rows[:, None] * D + cols[None, :], y.to(odt), mask = mask)
@@ -218,7 +200,6 @@ def eligible(x: Any, weight: Any, cos: Any, sin: Any, out_dtype: Any) -> bool:
             return False
         if f.device != x.device or f.stride(1) != 1 or f.dtype != torch.float32:
             return False
-    # int64 offsets in the kernel; keep the output allocation sane
     return x.numel() < 2**31
 
 
@@ -229,14 +210,12 @@ def _probe_inputs(device: Any, dtype: Any, wdtype: Any, dim: int, eps: float, se
     out = []
     for seq, heads, strided in ((257, 6, True), (96, 3, False)):
         base = torch.randn(1, seq, heads, dim, generator = g)
-        # per-row scales from 1e-3 to 1e3, DC offsets, a few outliers: every rounding branch of the sum
         scale = 10.0 ** torch.randint(-3, 4, (1, seq, heads, 1), generator = g).float()
         base.mul_(scale).add_(torch.randn(1, seq, heads, 1, generator = g) * scale * 0.5)
         base[..., :3] *= 40
         cap = torch.finfo(dtype).max / 8
         base.clamp_(-cap, cap)
         if strided:
-            # Q / K as the projection leaves them: a head-split view of a wider row
             wide = torch.zeros(1, seq, 3 * heads * dim)
             wide[..., heads * dim : 2 * heads * dim] = base.flatten(2)
             x = (
@@ -309,7 +288,7 @@ def _check(device: Any, dtype: Any, wdtype: Any, dim: int, eps: float) -> dict:
 
 
 def verdict(x: Any, weight: Any, eps: float) -> Optional[dict]:
-    """``_check`` cached per (card, dtypes, head dim, eps); None while capturing a CUDA graph before it ran."""
+    """Cached ``_check``; None while capturing a CUDA graph before it ran."""
     import torch
 
     index = x.device.index if x.device.index is not None else torch.cuda.current_device()
@@ -385,7 +364,6 @@ def _fused_one(norm: Any, x: Any, rotary: Any, out_dtype: Any) -> Optional[Any]:
         _FAILED[0] = True
         return None
     if not found.get("real_checked"):
-        # The first real activation of each key is compared once against the stock chain (outside a capture).
         if _capturing(x):
             return None
         with _LOCK:
@@ -403,8 +381,6 @@ def _fused_one(norm: Any, x: Any, rotary: Any, out_dtype: Any) -> Optional[Any]:
 def qk_norm_rope(
     attn: Any, query: Any, key: Any, value_dtype: Any, image_rotary_emb: Any, rope_fn: Any
 ) -> tuple:
-    """Q / K ready for attention, exactly as the stock processor builds them. ``rope_fn``: the module-level
-    ``apply_rotary_emb`` the stock lines would call (looked up per call: the fused RoPE install patches it)."""
     import torch
 
     if not torch.compiler.is_compiling():
@@ -426,8 +402,7 @@ def qk_norm_rope(
 
 @lru_cache(maxsize = None)
 def processor_class() -> Any:
-    """Built once (dynamo guards on the class): diffusers' ``Flux3AttnProcessor.__call__`` with the Q / K prologue
-    through ``qk_norm_rope``; masks and context parallelism keep the stock call."""
+    """Built once: dynamo guards on the class."""
     from diffusers.models.transformers import transformer_flux3 as tf3
 
     class UnslothFlux3QkProcessor(tf3.Flux3AttnProcessor):
@@ -467,7 +442,7 @@ def processor_class() -> Any:
 
 
 def is_qk_processor(proc: Any) -> bool:
-    """The swapped processor. Plain reads only (traced inside compiled blocks); no diffusers import."""
+    """Plain reads only (traced inside compiled blocks); no diffusers import."""
     cls = _CLS_REF[0]
     return cls is not None and type(proc) is cls
 
@@ -480,8 +455,7 @@ def install_for_pipe(
     device: Any = "cuda",
     logger: Any = None,
 ) -> int:
-    """Swap stock FLUX.3 processors for ``UnslothFlux3QkProcessor``. Returns the count; idempotent; never raises.
-    Each call still proves exactness per card on first use (``verdict``), so a swap alone changes no math."""
+    """Swap stock FLUX.3 processors; returns the count, never raises. Math changes only after ``verdict``."""
     try:
         return _install(pipe, device, logger)
     except Exception as exc:  # noqa: BLE001 - stock processors stay
@@ -530,7 +504,6 @@ def _install(pipe: Any, device: Any, logger: Any) -> int:
 
 
 def uninstall() -> None:
-    """Swapped processors back to stock (strided ones were built from ours and keep the helper, which is exact)."""
     try:
         from diffusers.models.transformers import transformer_flux3 as tf3
     except Exception:  # noqa: BLE001
