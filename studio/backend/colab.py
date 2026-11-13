@@ -195,11 +195,11 @@ def _colab_login_html(username: str, password: str) -> str:
             Unsloth Studio Login (Colab)
         </h2>
         <p style="color: #333333; margin: 0 0 12px 0; font-size: 14px; font-weight: bold;">
-            Log in as <code>{username}</code> with this password. This cell is visible only in
+            Log in as <code style="color: #000000 !important; background: #f3f3f3 !important;">{username}</code> with this password. This cell is visible only in
             your notebook session.
         </p>
         <p style="color: #333333; margin: 0; font-size: 14px; font-family: monospace; font-weight: bold;">
-            Password: <code>{password}</code>
+            Password: <code style="color: #000000 !important; background: #fff176 !important; border: 2px solid #000000; padding: 2px 6px; border-radius: 4px; user-select: all;">{password}</code>
         </p>
     </div>
     """
@@ -400,10 +400,10 @@ def _shareable_link_html(
             Password
         </p>
         <p style="margin: 6px 0 0 0;"><code style="display: inline-block; font-size: 24px;
-            font-weight: 800; text-decoration: underline; background: #f3f3f3;
-            padding: 4px 10px; border-radius: 6px;">{password}</code></p>
+            font-weight: 800; color: #000000 !important; background: #fff176 !important; border: 2px solid #000000;
+            padding: 4px 10px; border-radius: 6px; user-select: all;">{password}</code></p>
         <p style="color: #666666; margin: 6px 0 0 0; font-size: 12px;">
-            Log in as <code>{username}</code> with this password. Shown only in your
+            Log in as <code style="color: #000000 !important; background: #f3f3f3 !important;">{username}</code> with this password. Shown only in your
             notebook session, and never included in the shared link.
         </p>"""
     return f"""
