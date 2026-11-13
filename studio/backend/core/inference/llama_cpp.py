@@ -21835,8 +21835,7 @@ class LlamaCppBackend:
                 secrets,
             )
 
-        # The output cannot tell whose template it was: a custom one that passes llama-server's
-        # model-less argument check fails later, exactly like an embedded one. Blame neither.
+        # Blame neither owner: a custom template can pass the arg check and fail like an embedded one.
         if LlamaCppBackend._is_chat_template_rejection(output or ""):
             template_error = re.search(
                 r"common_chat_templates_init: error:[ \t]*([^\r\n]+)", scan_tail
