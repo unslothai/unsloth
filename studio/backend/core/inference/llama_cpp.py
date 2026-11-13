@@ -21436,6 +21436,30 @@ class LlamaCppBackend:
             )
         return None
 
+    # Printed by common_chat_templates_init, the server's init, and argument parsing in turn.
+    _CHAT_TEMPLATE_REJECTION_MARKERS = (
+        "failed to initialize chat template",
+        "chat template parsing error",
+        "the supplied chat template is not supported",
+    )
+
+    @staticmethod
+    def _is_chat_template_rejection(output: str) -> bool:
+        """True when llama.cpp's Jinja engine refused the chat template, embedded or passed in."""
+        lowered = (output or "").lower()
+        return any(m in lowered for m in LlamaCppBackend._CHAT_TEMPLATE_REJECTION_MARKERS)
+
+    def _start_failure_output(self) -> str:
+        """The output a start failure is classified from: the last 50 lines, or the whole attempt
+        when llama-server echoed a rejected chat template past them."""
+        lines = self._stdout_lines
+        tail = "\n".join(lines[-50:])
+        if len(lines) > 50 and not self._is_chat_template_rejection(tail):
+            whole = "\n".join(lines)
+            if self._is_chat_template_rejection(whole):
+                return whole
+        return tail
+
     # The shell's EBADARCH message; never reaches dyld, so matched on its own.
     _BAD_CPU_TYPE_RE = re.compile(r"(?im)^.*:[ \t]*bad cpu type in executable[ \t]*$")
 
@@ -21806,6 +21830,21 @@ class LlamaCppBackend:
                 "another quant of this model, or use the llama.cpp build the "
                 "model card names. If the model card says it runs on stock llama.cpp, "
                 "the file may be damaged: download it again.",
+                output,
+                log_path,
+                secrets,
+            )
+
+        # Blame neither owner: a custom template can pass the arg check and fail like an embedded one.
+        if LlamaCppBackend._is_chat_template_rejection(output or ""):
+            template_error = re.search(
+                r"common_chat_templates_init: error:[ \t]*([^\r\n]+)", scan_tail
+            )
+            why = f" ({_short(template_error.group(1))})" if template_error else ""
+            return LlamaCppBackend._with_startup_diagnostics(
+                f"llama-server rejected this model's chat template{why}. Fix it under Chat "
+                "Template in the model's settings, or update llama.cpp if the template is the "
+                "GGUF's own.",
                 output,
                 log_path,
                 secrets,
@@ -31771,7 +31810,7 @@ class LlamaCppBackend:
                         _proc_snap1 = self._process  # snapshot: re-reading races the teardown
                         cpu_rc = _proc_snap1.poll() if _proc_snap1 is not None else None
                         detail = self._classify_llama_start_failure(
-                            "\n".join(self._stdout_lines[-50:]),
+                            self._start_failure_output(),
                             gguf_path,
                             self._model_identifier,
                             cpu_rc,
@@ -32970,7 +33009,7 @@ class LlamaCppBackend:
                 # placement fails. llama.cpp owns mmproj offload separately from
                 # --gpu-layers, so retry it on CPU before removing --mmproj.
                 if not healthy:
-                    out = "\n".join(self._stdout_lines[-50:])
+                    out = self._start_failure_output()
                     # Read the crash code before _kill_process() clears _process.
                     _proc_snap5 = self._process  # snapshot: re-reading races the teardown
                     _crash_rc = _proc_snap5.poll() if _proc_snap5 is not None else None
@@ -33043,7 +33082,7 @@ class LlamaCppBackend:
                                     "failed; image input remains available for this session."
                                 )
                             else:
-                                _cpu_projector_out = "\n".join(self._stdout_lines[-50:])
+                                _cpu_projector_out = self._start_failure_output()
                                 # Snapshot: re-reading races the teardown.
                                 _proc_snap6 = self._process
                                 _cpu_projector_rc = (
@@ -33210,7 +33249,7 @@ class LlamaCppBackend:
                                         )
                                 if not healthy:
                                     _retry_detail = self._classify_llama_start_failure(
-                                        "\n".join(self._stdout_lines[-50:]),
+                                        self._start_failure_output(),
                                         gguf_path,
                                         self._model_identifier,
                                         _retry_rc,
