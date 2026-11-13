@@ -118,6 +118,9 @@ def checked_portrait(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
         return None
     from PIL import Image
 
+    if media_type == "image/png":
+        # Dropped before decoding: a large card's compressed text passes Pillow's text chunk limit.
+        data = strip_png_text(data)
     try:
         with Image.open(io.BytesIO(data), formats = tuple(_PORTRAIT_FORMATS)) as image:
             width, height = image.size
@@ -128,7 +131,7 @@ def checked_portrait(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
             image.load()
     except Exception:
         return None
-    return (strip_png_text(data) if media_type == "image/png" else data), media_type
+    return data, media_type
 
 
 def character_fields(parsed: "ParsedCard") -> dict:

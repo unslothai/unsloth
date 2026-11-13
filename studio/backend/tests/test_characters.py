@@ -874,3 +874,12 @@ def test_a_phone_jpeg_with_extra_pictures_is_a_portrait(client):
     created = client.post("/api/characters", json = {"name": "Rowan"}).json()
     response = client.put(f"/api/characters/{created['id']}/avatar", content = buffer.getvalue())
     assert response.status_code == 200 and response.json()["avatarType"] == "image/jpeg"
+
+
+def test_a_large_compressed_card_keeps_its_picture():
+    # Past 1 MB of compressed card text, Pillow refuses to open the PNG unless the text chunks are dropped first.
+    entries = [{"keys": [f"k{i}"], "content": f"entry {i} " * 500} for i in range(300)]
+    big = {**V2, "data": {**V2["data"], "character_book": {"entries": entries}}}
+    parsed = cards.parse_card_file(_with_text(_png(), "chara", big, b"zTXt"), "big.png")
+    assert len(parsed.fields["character_book"]["entries"]) == 300
+    assert parsed.avatar is not None and not parsed.warnings
