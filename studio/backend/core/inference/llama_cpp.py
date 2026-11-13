@@ -1248,6 +1248,21 @@ _METAL_HOST_ONLY_WEIGHT_TYPES = ("nvfp4", "tq1_0", "f8_e4m3")
 _USING_METAL_RE = re.compile(r"using device (?:MTL|Metal)", re.IGNORECASE)
 
 
+def _main_load_offloads_every_layer(lines: "list[str]") -> bool:
+    """The count heading the first block that allocated weights (as parse_weight_placement picks it):
+    a no-alloc sizing pass can log N/N before the real load settles on a split."""
+    counts = None
+    for line in lines:
+        match = _OFFLOADED_LAYERS_RE.search(line)
+        if match is not None:
+            counts = match
+            continue
+        buffer = _MODEL_BUFFER_RE.search(line)
+        if buffer is not None and float(buffer.group(2)) > 0:
+            return counts is not None and counts.group(1) == counts.group(2)
+    return False
+
+
 def metal_unsupported_weight_types(
     lines: "list[str]", placement: "Optional[dict]"
 ) -> "Optional[list[str]]":
@@ -1258,9 +1273,7 @@ def metal_unsupported_weight_types(
         return None
     if placement.get("overflow_layers") or placement.get("all_experts_in_ram"):
         return None
-    # A partial layer split fills host buffers on any build.
-    counts = next(filter(None, map(_OFFLOADED_LAYERS_RE.search, lines)), None)
-    if counts is None or counts.group(1) != counts.group(2):
+    if not _main_load_offloads_every_layer(lines):
         return None
     on_metal = False
     after_header = False

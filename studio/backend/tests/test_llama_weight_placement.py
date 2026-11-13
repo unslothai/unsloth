@@ -454,6 +454,16 @@ def test_weights_put_in_ram_on_purpose_are_not_blamed_on_metal():
         assert metal_unsupported_weight_types(_METAL_NVFP4_LOG, {**placement, **spill}) is None
     split = [line.replace("61/61", "10/61") for line in _METAL_NVFP4_LOG]
     assert metal_unsupported_weight_types(split, parse_weight_placement(split)) is None
+    # A no-alloc sizing pass logs a full count before the real load settles on a split.
+    dry = (
+        _METAL_NVFP4_LOG[:-2]
+        + [
+            "load_tensors:   CPU_Mapped model buffer size =     0.00 MiB",
+            "load_tensors:  MTL0_Mapped model buffer size =     0.00 MiB",
+        ]
+        + split[-3:]
+    )
+    assert metal_unsupported_weight_types(dry, parse_weight_placement(dry)) is None
     f8 = [line.replace("nvfp4", "f8_e4m3") for line in _METAL_NVFP4_LOG]
     assert metal_unsupported_weight_types(f8, placement) == ["f8_e4m3"]
 
