@@ -502,7 +502,9 @@ def begin_denoise(pipe: Any, *, logger: Any = None) -> int:
             module._unsloth_video_decode_room = None
             return 0
         before = resident_bytes(module)
-        _keep_groups_resident(module, room, dev, logger)
+        # inside the render's inference_mode: plain tensors, or compiled blocks would guard-fail on the new weights
+        with torch.inference_mode(False), torch.no_grad():
+            _keep_groups_resident(module, room, dev, logger)
         promoted = max(0, resident_bytes(module) - before)
         if promoted <= 0:
             module._unsloth_video_decode_room = None

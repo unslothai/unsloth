@@ -323,3 +323,20 @@ def test_the_video_denoise_hook_promotes_lent_groups():
         and any(getattr(a, "id", None) == "_on_denoise_entry" for a in n.args)
         for n in ast.walk(tree)
     )
+
+
+def test_lent_groups_are_plain_tensors_inside_the_renders_inference_mode(monkeypatch):
+    card = _Card(monkeypatch)
+    card.fit()
+    card.render()
+    card.fit()
+    seen = []
+    keep = card._keep
+    monkeypatch.setattr(
+        dm,
+        "_keep_groups_resident",
+        lambda *a, **k: seen.append(torch.is_inference_mode_enabled()) or keep(*a, **k),
+    )
+    with torch.inference_mode():
+        vr.begin_denoise(card.pipe)
+    assert seen == [False]
