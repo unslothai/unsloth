@@ -214,6 +214,18 @@ def test_a_voice_load_keeps_its_slot_with_multi_model_off(backends, monkeypatch)
     assert _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)) is None
 
 
+def test_a_voice_load_never_replaces_a_managed_engine_chat(backends, monkeypatch):
+    _, extra = backends
+    managed = FakeOrchestrator("org/V")
+    managed._managed_engine = object()
+    monkeypatch.setattr(orchestrator, "_inference_backend", managed)
+    with pytest.raises(HTTPException) as excinfo:
+        _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True))
+    assert excinfo.value.status_code == 409 and managed._managed_engine is not None
+    assert _selected(LoadRequest(model_path = "org/C-GGUF", alongside = True)) is None
+    assert model_slots.slots == [extra]
+
+
 def test_a_second_voice_replaces_the_first_of_its_role(backends, monkeypatch):
     import core.inference.audio_cpp_models as audio_cpp_models
 

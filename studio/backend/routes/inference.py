@@ -18822,6 +18822,13 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
         return None
     orchestrator = _peek_inference_backend()
     if getattr(orchestrator, "_managed_engine", None) is not None:
+        if request.voice:
+            # As the primary it would stop the vLLM / SGLang chat it is meant to speak for.
+            raise HTTPException(
+                status_code = 409,
+                detail = "Voice mode cannot load a voice beside a vLLM or SGLang chat model. "
+                "Load the chat model with the default engine to use Voice.",
+            )
         return None
     occupied = _llama_cpp_backend.is_active or getattr(orchestrator, "active_model_name", None)
     if not occupied or await asyncio.to_thread(_loaded_satisfies, requested):
