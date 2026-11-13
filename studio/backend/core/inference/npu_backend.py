@@ -20,6 +20,7 @@ from core.inference.flm_files import (
     FlmDownloadError,
     FlmModelFiles,
     download_files,
+    folder_checkpoints,
     model_folder_checkpoints,
     read_model_files,
 )
@@ -758,16 +759,19 @@ class LemonadeNpuBackend:
     ) -> str:
         """Settings > Storage lists folders by checkpoint, chat models or not; lemond deletes by id.
         reserve(model_ids) keeps pulls of those ids out of the folder until the delete ends."""
+        # A twin left registered would read as downloaded once its shared folder is gone.
+        checkpoints = folder_checkpoints(self._flm_binary(), checkpoint)
         try:
-            model_ids = [
-                str(row.get("id"))
-                for row in self._flm_rows()
-                if row.get("checkpoint") == checkpoint
-            ]
+            rows = [row for row in self._flm_rows() if row.get("checkpoint") in checkpoints]
+            rows.sort(key = lambda row: row.get("checkpoint") != checkpoint)
+            model_ids = [str(row.get("id")) for row in rows]
         except LemonadeUnavailable as exc:
             raise NpuError(str(exc)) from exc
         if not model_ids:
             raise NpuError(f"Lemonade has no FastFlowLM model for {checkpoint}.")
+        resident = self.resident()
+        if resident is not None and resident.model.id in model_ids:
+            raise NpuError(f"Unload {resident.model.id} before deleting this folder.")
         with reserve(model_ids):
             for model_id in model_ids:
                 self.delete(model_id)

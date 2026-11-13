@@ -296,3 +296,31 @@ def test_a_pull_asked_for_during_a_storage_delete_is_refused_without_waiting(npu
     )
     assert npu_routes._deleting == []
     assert start("qwen3-4b-FLM") == "started"
+
+
+def test_a_folder_shared_by_a_flash_twin_deletes_both_lemond_models(npu_home, monkeypatch):
+    listing = npu_home._flm_binary().parent / "model_list.json"
+    data = json.loads(listing.read_text(encoding = "utf-8"))
+    data["models"]["gemma4-it"] = {"e2b": {"name": "Gemma4-E2B-IT-NPU2"}}
+    data["models"]["gemma4e-flash"] = {"e2b": {"name": "Gemma4-E2B-IT-NPU2"}}
+    listing.write_text(json.dumps(data), encoding = "utf-8")
+    _write(npu_home._flm_model_dir / "models" / "Gemma4-E2B-IT-NPU2" / "model.q4nx", 70).parent
+    npu_home.models += [
+        _model("gemma4-it-e2b-FLM", "gemma4-it:e2b"),
+        _model("gemma4e-flash-FLM", "gemma4e-flash:e2b"),
+    ]
+    deleted = []
+    monkeypatch.setattr(npu_home, "delete", deleted.append)
+
+    assert npu_home.delete_checkpoint("gemma4-it:e2b") == "gemma4-it-e2b-FLM"
+    assert sorted(deleted) == ["gemma4-it-e2b-FLM", "gemma4e-flash-FLM"]
+
+    deleted.clear()
+    monkeypatch.setattr(
+        npu_home,
+        "resident",
+        lambda: type("R", (), {"model": type("M", (), {"id": "gemma4e-flash-FLM"})})(),
+    )
+    with pytest.raises(NpuError, match = "Unload gemma4e-flash-FLM"):
+        npu_home.delete_checkpoint("gemma4-it:e2b")
+    assert deleted == []
