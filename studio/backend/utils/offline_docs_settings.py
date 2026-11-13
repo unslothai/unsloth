@@ -142,6 +142,27 @@ def _current_release() -> str:
         return "dev"
 
 
+def _package_version() -> Optional[str]:
+    try:
+        from importlib.metadata import version
+        return version("unsloth")
+    except Exception:
+        return None
+
+
+def _current_build() -> str:
+    """Freshness key: Docker and source installs only report ``dev`` or a branch, so add the package version."""
+    release = _current_release()
+    try:
+        from utils.studio_version import is_valid_studio_release_version
+        if is_valid_studio_release_version(release):
+            return release
+    except Exception:
+        pass
+    package = _package_version()
+    return f"{release} {package}" if package else release
+
+
 def offline_docs_status() -> dict[str, Any]:
     directory = get_offline_docs_dir()
     state = _get_state()
@@ -178,8 +199,9 @@ def fetch_docs_text(client: Any = None) -> str:
         total = 0
         url: Optional[str] = DOCS_URL
         while url is not None:
+            # A partial copy would replace the complete one and suppress retries.
             if url in seen or len(parts) >= MAX_DOCS_PARTS:
-                break
+                raise ValueError("The Unsloth docs pagination did not end; not saving them.")
             seen.add(url)
             response = client.get(url)
             response.raise_for_status()
@@ -250,6 +272,7 @@ def refresh_offline_docs(
                     "dir": str(directory),
                     "file": target.name,
                     "release": _current_release(),
+                    "build": _current_build(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "error": None,
                 }
@@ -286,7 +309,7 @@ def offline_docs_refresh_due() -> bool:
         return True
     if not (directory / str(state["file"])).is_file():
         return True
-    return state.get("release") != _current_release()
+    return state.get("build") != _current_build()
 
 
 def refresh_offline_docs_if_due() -> bool:

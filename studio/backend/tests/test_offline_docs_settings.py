@@ -63,20 +63,31 @@ def test_fetch_follows_every_next_page_link():
     assert text.endswith("\n")
 
 
-def test_fetch_ignores_links_to_other_hosts_and_stops_on_a_loop():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            text = (
-                "# Docs\n[Next Page](https://example.com/llms-full.txt/1)\n"
-                f"[Next Page]({docs.DOCS_URL})"
-            ),
-        )
+def _same_page_client(text: str) -> httpx.Client:
+    return httpx.Client(
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, text = text))
+    )
 
-    client = httpx.Client(transport = httpx.MockTransport(handler))
 
-    # The only matching link points back at the first page, so one request is made.
-    assert docs.fetch_docs_text(client).startswith("# Docs")
+def test_fetch_ignores_links_to_other_hosts():
+    client = _same_page_client("# Docs\n[Next Page](https://example.com/llms-full.txt/1)")
+    assert (
+        docs.fetch_docs_text(client) == "# Docs\n[Next Page](https://example.com/llms-full.txt/1)\n"
+    )
+
+
+def test_fetch_refuses_a_pagination_loop():
+    # Every part links to /1, so /1 links to itself: refused, never saved as complete.
+    client = _same_page_client(f"# Docs\n[Next Page]({docs.DOCS_URL}/1)")
+    with pytest.raises(ValueError, match = "pagination"):
+        docs.fetch_docs_text(client)
+
+
+def test_fetch_refuses_more_parts_than_the_cap(monkeypatch):
+    monkeypatch.setattr(docs, "MAX_DOCS_PARTS", 2)
+    with pytest.raises(ValueError, match = "pagination"):
+        docs.fetch_docs_text(_pages("# One", "# Two", "# Three"))
+    assert docs.fetch_docs_text(_pages("# One", "# Two")).startswith("# One")
 
 
 def test_fetch_raises_on_http_errors():
@@ -175,6 +186,20 @@ def test_refresh_is_due_once_per_release(settings_store, tmp_path, monkeypatch):
     # Deleting the copy, or pointing at another folder, also asks for a fresh one.
     monkeypatch.setattr(docs, "_current_release", lambda: "2026.10.1")
     Path(docs.offline_docs_status()["file"]).unlink()
+    assert docs.offline_docs_refresh_due() is True
+
+
+def test_unstamped_build_is_due_again_when_the_package_changes(
+    settings_store, tmp_path, monkeypatch
+):
+    # Docker images and source checkouts report only "dev" or a branch name.
+    monkeypatch.setattr(docs, "_current_release", lambda: "dev")
+    monkeypatch.setattr(docs, "_package_version", lambda: "2026.10.1")
+    docs.set_offline_docs_settings(path = str(tmp_path), auto_update = True)
+    docs.refresh_offline_docs(fetch = lambda: "# docs\n")
+    assert docs.offline_docs_refresh_due() is False
+
+    monkeypatch.setattr(docs, "_package_version", lambda: "2026.11.1")
     assert docs.offline_docs_refresh_due() is True
 
 
