@@ -30,7 +30,9 @@ export {
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
-export type { CapabilityKey } from "./lib/model-capabilities";
+export type { Capability, CapabilityKey } from "./lib/model-capabilities";
+export { detectCapabilities as detectHubCapabilities } from "./lib/model-capabilities";
+export { CapabilityGlyph } from "./catalog/shared";
 export {
   HUB_CAPABILITY_FILTERS,
   type HubCapabilityFilter,
@@ -164,9 +166,16 @@ export { DotTag } from "./catalog/dot-tag";
 export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";
 export { TrainIcon } from "./components/train-icon";
 export { isHiddenModelId } from "./lib/hidden-models";
-export { classifyUnslothSupport, studioPageForTask } from "./lib/unsloth-support";
+export {
+  classifyUnslothSupport,
+  studioPageForTask,
+} from "./lib/unsloth-support";
 export {
   INVENTORY_FRESHNESS_WINDOW_MS,
   isInventoryStampFresh,
 } from "./inventory/inventory-freshness";
 export { withAbort } from "./lib/abort-signals";
+export { OwnerAvatar } from "./catalog/owner-avatar";
+export { resolveOwnerProviderLogo } from "./lib/provider-logos";
+export { matchesRecommendedBrowse } from "./lib/recommended-browse";
+export { formatParamCount } from "./lib/view-models";

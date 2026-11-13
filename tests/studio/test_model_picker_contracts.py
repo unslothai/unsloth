@@ -768,7 +768,8 @@ def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
     assert '<span data-pill-tab-label className="min-w-0 truncate">' in tabs
 
     selector = _read("features/model-picker/components/model-selector.tsx")
-    assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector
+    # Recommended wears Sparkles: the star now means Favorite in both pickers.
+    assert 'icon={SparklesIcon} className="size-3.5 shrink-0"' in selector
     assert 'icon={Download01Icon} className="size-3.5 shrink-0"' in selector
     assert 'icon={CloudIcon} className="size-3.5 shrink-0"' in selector
 
@@ -3149,9 +3150,11 @@ def test_picker_rows_keep_their_automation_attributes():
 
 def test_picker_popover_and_trigger_keep_their_tour_hooks():
     """Match tour props exactly: the trigger's value is a prefix of the popover's, so substrings mislead."""
-    chat = _read("features/chat/chat-page.tsx")
-    assert 'triggerDataTour="chat-model-selector"' in chat
-    assert 'contentDataTour="chat-model-selector-popover"' in chat
+    # Chat's picker is the composer chip now; the tour and drivers still find it by these hooks.
+    composer = _read("components/assistant-ui/composer-model-picker/composer-model-picker.tsx")
+    # Only Chat's own chip: a Compare pane's would take the tour's model step.
+    assert composer.count('data-tour={pane ? undefined : "chat-model-selector"}') >= 1
+    assert 'data-tour="chat-model-selector-popover"' in composer
 
 
 def test_run_settings_gear_label_names_its_model():

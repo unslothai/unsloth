@@ -4,6 +4,7 @@
 """Permission modes in the tool loop: only high-risk calls pause in auto; full never pauses."""
 
 import os
+import shlex
 import time
 import uuid
 
@@ -1620,6 +1621,264 @@ def test_file_delete_function_passed_by_reference_is_high_risk(code, high_risk):
 )
 def test_terminal_python_file_delete_by_reference_is_high_risk(command, high_risk):
     assert is_high_risk_tool_call("terminal", {"command": command}) is high_risk
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git reset --hard && git clean -fdx",
+        "git push --force",
+        "crontab -r",
+        "truncate -s 0 notes.txt",
+        "shred notes.txt",
+        "find . -name '*.log' -delete",
+        "docker system prune -af",
+        "pip uninstall -y numpy",
+    ],
+)
+@pytest.mark.parametrize(
+    "template",
+    [
+        "import os\nos.system({cmd!r})",
+        "import subprocess\nsubprocess.run({cmd!r}, shell=True)",
+        "import subprocess\nsubprocess.check_output(['sh', '-c', {cmd!r}])",
+        "import subprocess\nsubprocess.run({argv!r})",
+        "import asyncio\nasyncio.run(asyncio.create_subprocess_exec(*{argv!r}))",
+        "import psutil\npsutil.Popen({cmd!r}, shell=True)",
+    ],
+)
+def test_python_shell_command_terminal_asks_about_is_high_risk(command, template):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is True
+    code = template.format(cmd = command, argv = shlex.split(command))
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+@pytest.mark.parametrize(
+    "code, high_risk",
+    [
+        (
+            "import timeit\ntimeit.timeit(\"import os; os.system('git push --force')\", number=1)",
+            True,
+        ),
+        (
+            "from timeit import timeit\ntimeit(\"__import__('shutil').rmtree('junk_dir')\", number=1)",
+            True,
+        ),
+        ("import timeit\ntimeit.Timer(\"os.remove('x')\", setup='import os').timeit(1)", True),
+        ("import cProfile\ncProfile.run(\"import os; os.system('rm -rf junk_dir')\")", True),
+        ("import pdb\npdb.run(\"import shutil; shutil.rmtree('junk_dir')\")", True),
+        ("import anyio\nanyio.run(anyio.run_process, 'rm -rf junk_dir')", True),
+        (
+            "import timeit as t\nt.timeit(\"import os; os.system('git push --force')\", number=1)",
+            True,
+        ),
+        ("from cProfile import run\nrun(\"import shutil; shutil.rmtree('junk_dir')\")", True),
+        (
+            "import timeit\ns = \"import os; os.system('git push --force')\"\ntimeit.timeit(s, number=1)",
+            True,
+        ),
+        ("import os\nos.execlp('git', 'git', 'push', '--force')", True),
+        ("import os\nos.spawnlp(os.P_WAIT, 'git', 'git', 'push', '--force')", True),
+        (
+            "import asyncio\nasyncio.run(asyncio.create_subprocess_exec('find', 'src', '-name', '*.py'))",
+            False,
+        ),
+        (
+            "import asyncio\nasyncio.run(asyncio.create_subprocess_exec('git', 'commit', '-m', \"it's done\"))",
+            False,
+        ),
+        ("import os\nos.execlp('git', 'git', 'status')", False),
+        ("import subprocess\nsubprocess.run(['truncate -s 0 notes.txt'], shell=True)", True),
+        ("import subprocess\nsubprocess.run(['git status --short'], shell=True)", False),
+        (
+            "import timeit\ntimeit.timeit('import shutil; ' + \"shutil.rmtree('junk_dir')\", number=1)",
+            True,
+        ),
+        ("from timeit import *\ntimeit(\"import os; os.system('git push --force')\")", True),
+        ("from itertools import repeat\nlist(repeat('os.remove(\"x\")', 3))", False),
+        ("from psutil import *\nPopen('git push --force', shell=True)", True),
+        (
+            "import cProfile\ncProfile.Profile().run(\"import os; os.system('git push --force')\")",
+            True,
+        ),
+        (
+            "import cProfile\np = cProfile.Profile()\np.runctx(\"import shutil; shutil.rmtree('d')\", {}, {})",
+            True,
+        ),
+        ("from pdb import Pdb\nPdb().run(\"import shutil; shutil.rmtree('d')\")", True),
+        ("import cProfile\ndef f(job):\n    cProfile.run(job)", True),
+        ("import cProfile\np = cProfile.Profile()\np.runcall(sorted, [3, 1])", False),
+        ("profile = load_profile()\nprofile.run(job)", False),
+        ("import os\nos.execlp('truncate', 'worker', '-s', '0', 'notes.txt')", True),
+        ("import os\nos.execlp('git', 'worker', 'status')", False),
+        (
+            "import timeit\ntimeit.timeit(\"rmtree('junk_dir')\", setup='from shutil import rmtree', number=1)",
+            True,
+        ),
+        (
+            "import cProfile\nsource = \"import shutil; shutil.rmtree('d')\"\ncProfile.run(source)\nsource = 'pass'",
+            True,
+        ),
+        (
+            "import timeit\ns = \"import shutil; shutil.rmtree('d')\"\ntimeit.timeit(s)\ns = 'pass'",
+            True,
+        ),
+        ("import timeit\ntimeit.timeit('sorted(x)', setup='x = [3, 1, 2]', number=10)", False),
+        (
+            "import os, asyncio\nf = asyncio.create_subprocess_exec\nf = os.system\nf('git reset --hard')",
+            True,
+        ),
+        (
+            "import timeit\ns: str = \"import shutil; shutil.rmtree('d')\"\ntimeit.timeit(s, number=1)",
+            True,
+        ),
+        ("import timeit\ns = 'sum(range(9))'\ntimeit.timeit(s)", False),
+        (
+            "import timeit\ntimeit.timeit(\"import shutil; shutil.rmtree('junk_dir')\".strip(), number=1)",
+            True,
+        ),
+        ("import timeit\ndef f():\n    return 1\ntimeit.timeit(f, number=10)", False),
+        ("import timeit\ndef bench(fn):\n    return timeit.timeit(fn, number=10)", False),
+        ("import os\nos.execvp('git', ['worker', 'push', '--force'])", True),
+        ("import os\nos.execvp('git', ['git', 'status'])", False),
+        (
+            "import os, subprocess\nsubprocess.run(['truncate -s 0 notes.txt'], shell=(os.name == 'posix'))",
+            True,
+        ),
+        (
+            "import timeit\ntimeit.timeit(**{'stmt': \"import shutil; shutil.rmtree('junk_dir')\", 'number': 1})",
+            True,
+        ),
+        ("import timeit\ntimeit.timeit(**{'stmt': 'sum(range(9))', 'number': 1})", False),
+        (
+            "import timeit\nbench = timeit.timeit\nbench(\"import shutil; shutil.rmtree('junk_dir')\", number=1)",
+            True,
+        ),
+        (
+            "import timeit\nsource = \"import shutil; shutil.rmtree('junk_dir')\"\nstmt = source\n"
+            "timeit.timeit(stmt, number=1)\nsource = 'pass'",
+            True,
+        ),
+        (
+            "import timeit\nsetup = 'from shutil import rmtree as delete'\n"
+            "timeit.timeit(\"delete('junk_dir')\", setup=setup, number=1)\nsetup = 'x ='",
+            True,
+        ),
+        ("import timeit\nbench = timeit.timeit\nbench('sorted([3, 1])', number=10)", False),
+        ("import subprocess\nsubprocess.run(['echo', 'reset', '--hard'], executable='git')", True),
+        (
+            "import subprocess\nsubprocess.run(['python', '-V'], executable='/usr/bin/python3')",
+            False,
+        ),
+        (
+            "import cProfile\ncProfile.run(**{**{'statement': \"import shutil; shutil.rmtree('junk_dir')\"}})",
+            True,
+        ),
+        ("import cProfile\nopts = {}\ncProfile.run('sum(range(9))', **{**opts})", True),
+        ("from timeit import timeit\ntimeit(\"__import__('os').remove('x')\", number=1)", True),
+        ("import timeit as t\nt.timeit('sum(range(100))', number=1000)", False),
+        ("import timeit\ns = 'sum(range(100))'\ntimeit.timeit(s, number=1000)", False),
+        ("import timeit\nprint(timeit.timeit('sum(range(100))', number=1000))", False),
+        ("import timeit\nprint(timeit.timeit(lambda: sorted([3, 1, 2]), number=10))", False),
+        ("import cProfile\ncProfile.run('sum(range(100))')", False),
+        ("import psutil\nprint(psutil.cpu_percent())", False),
+        ("import subprocess\nsubprocess.run(['git', 'status', '--short'])", False),
+        ("import subprocess\nsubprocess.run('git log --oneline -5', shell=True)", False),
+        ("import os\nos.system('pip install numpy')", False),
+    ],
+)
+def test_python_code_string_and_spawn_apis_are_screened(code, high_risk):
+    assert is_high_risk_tool_call("python", {"code": code}) is high_risk
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import os\nos.spawnlp(*(os.P_WAIT, 'echo', 'echo', 'ok'))",
+        "import os\nos.execlp()",
+        "import os\nos.spawnlp(0)",
+    ],
+)
+def test_malformed_spawn_arguments_do_not_crash_the_classifier(code):
+    assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
+
+
+def test_rebound_runner_alias_keeps_the_builtin_import_check():
+    code = "from cProfile import run as __import__\nfrom builtins import __import__\n__import__('ctypes')"
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+def test_self_reproducing_runner_source_asks_instead_of_recursing():
+    code = "import timeit;s='import timeit;s={0!r};timeit.timeit(s.format(s))';timeit.timeit(s.format(s))"
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+def test_many_timeit_calls_over_many_bindings_stay_fast():
+    lines = [f"stmt = 'x = {i}'\ntimeit.timeit(stmt, number=1)" for i in range(80)]
+    code = "import timeit\n" + "\n".join(lines)
+    started = time.perf_counter()
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+    assert time.perf_counter() - started < 5
+
+
+def test_runner_alias_bound_to_two_modules_converges():
+    code = "import timeit, cProfile\nbench = timeit.timeit\nbench = cProfile.run\nbench('sum(range(9))')"
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+
+
+def test_many_bindings_over_many_calls_parse_each_program_once():
+    lines = [f"stmt = 'x = {i}'" for i in range(200)] + ["timeit.timeit(stmt, number=1)"] * 200
+    code = "import timeit\n" + "\n".join(lines)
+    started = time.perf_counter()
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+    assert time.perf_counter() - started < 5
+
+
+def test_long_source_alias_chain_does_not_exhaust_the_stack():
+    chain = [f"s{i + 1} = s{i}" for i in range(1100)]
+    code = (
+        "import timeit\ns0 = 'sum(range(9))'\n"
+        + "\n".join(chain)
+        + "\ntimeit.timeit(s1100, number=1)"
+    )
+    assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import timeit\ntimeit.timeit('pass # \\ud800', number=1)",
+        "import cProfile\ncProfile.run('pass # \\ud800')",
+    ],
+)
+def test_unencodable_runner_source_asks_instead_of_raising(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+def test_deep_runner_source_asks_instead_of_raising():
+    source = "x = " + "+".join(["1"] * 550)
+    code = f"import timeit\ntimeit.timeit({source!r}, number=1)"
+    assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
+
+
+def test_reverse_ordered_runner_aliases_resolve_in_linear_time():
+    lines = [f"a{i} = None" for i in range(2001)]
+    lines += [f"a{i} = a{i - 1}" for i in range(2000, 0, -1)]
+    lines += ["a0 = timeit.timeit", "a2000(\"import shutil; shutil.rmtree('d')\", number=1)"]
+    started = time.perf_counter()
+    assert is_high_risk_tool_call("python", {"code": "import timeit\n" + "\n".join(lines)}) is True
+    assert time.perf_counter() - started < 5
+
+
+def test_repeated_timeit_bindings_are_screened_linearly():
+    code = (
+        "import timeit\n"
+        + "stmt = 'pass'\nsetup = 'pass'\n" * 300
+        + "timeit.timeit(stmt, setup, number=1)"
+    )
+    started = time.perf_counter()
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+    assert time.perf_counter() - started < 5
 
 
 @pytest.mark.parametrize("code", ["value = " + "+".join(["1"] * 400), "value = data" + "[0]" * 400])
