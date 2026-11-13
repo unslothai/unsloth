@@ -11190,7 +11190,6 @@ class LlamaCppBackend:
     def _gguf_files_read(self, model_path: str) -> list[str]:
         from core.inference.engram_tables import files_llama_reads
         from core.inference.offload_layout import split_shard_paths
-
         return files_llama_reads(
             split_shard_paths(model_path) or [model_path], self._ple_path_for(model_path)
         )
