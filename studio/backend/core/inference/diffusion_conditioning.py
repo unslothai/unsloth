@@ -15,6 +15,8 @@ LOCALIZED_EDIT_MODES = ("annotate", "paint", "mask")
 MAX_CONDITION_SOURCE_PIXELS = 64_000_000
 
 MIN_OUTPUT_SIDE = 256
+# Largest family max_output_side; per-family bounds live in check_output_size.
+MAX_REQUEST_SIDE = 6272
 
 # Upstream QwenImage21Pipeline's own ``output_resolution`` default.
 DEFAULT_REFERENCE_RESOLUTION = 1024

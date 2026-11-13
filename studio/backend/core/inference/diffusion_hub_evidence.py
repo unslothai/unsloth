@@ -86,6 +86,27 @@ def cached_family(repo_id: Optional[str], filename: Optional[str] = None) -> Opt
     return _dit_family(inspect_checkpoint(local))
 
 
+def read_hub_checkpoint_family(
+    repo_id: str,
+    filename: str,
+    hf_token: Any,
+    revision: Optional[str] = None,
+) -> Optional[str]:
+    """Identify a bundled pipeline by its tensor header, independent of the repo and file names."""
+    from huggingface_hub import HfApi
+
+    from .diffusion_content import classify_tensors
+
+    from hub.utils.hf_tokens import normalize_token
+
+    token = normalize_token(hf_token)
+    meta = HfApi().parse_safetensors_file_metadata(
+        repo_id, filename, token = token, revision = revision
+    )
+    shapes = {name: list(info.shape) for name, info in meta.tensors.items()}
+    return _dit_family(classify_tensors(shapes, meta.metadata))
+
+
 def prefetch_for_pick(
     repo_id: Optional[str],
     filename: Optional[str],
@@ -114,19 +135,31 @@ def prefetch_for_pick(
             and _family_from_hub_evidence(repo_id, filename) is None
         ):
             return
-        from huggingface_hub import HfApi
-
-        from .diffusion_content import classify_tensors
-
-        from hub.utils.hf_tokens import normalize_token
-
-        token = normalize_token(hf_token)
-        meta = HfApi().parse_safetensors_file_metadata(repo_id, filename, token = token)
-        shapes = {name: list(info.shape) for name, info in meta.tensors.items()}
-        family = _dit_family(classify_tensors(shapes, meta.metadata))
+        family = read_hub_checkpoint_family(repo_id, filename, hf_token)
     except Exception:  # noqa: BLE001 - evidence is best effort; validation and the load still decide
         return
+    _remember(repo_id, filename, family)
+
+
+def _remember(repo_id: str, filename: str, family: Optional[str]) -> None:
     with _LOCK:
         if len(_HEADER_VERDICTS) >= _MAX_VERDICTS:
             _HEADER_VERDICTS.clear()
         _HEADER_VERDICTS[_key(repo_id, filename)] = (time.monotonic(), family)
+
+
+def hub_checkpoint_loads_as_sdxl(
+    repo_id: str,
+    filename: str,
+    hf_token: Any,
+    revision: Optional[str] = None,
+) -> bool:
+    """A whole-SDXL header AND the loader's own verdict, so name-vetoed variants (inpaint, edit) are not offered."""
+    from .diffusion_families import detect_family_for_pick
+
+    family = read_hub_checkpoint_family(repo_id, filename, hf_token, revision)
+    if family != "sdxl":
+        return False
+    _remember(repo_id, filename, family)
+    fam = detect_family_for_pick(repo_id, filename, None)
+    return fam is not None and fam.name == "sdxl"
