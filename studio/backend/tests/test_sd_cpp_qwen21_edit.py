@@ -160,6 +160,22 @@ def test_edit_is_advertised_only_with_the_projector_and_an_edit_capable_build(tm
             assert any("raise Guidance above 1" in n for n in c["notes"])
 
 
+@pytest.mark.parametrize(
+    "lib", ["stable-diffusion.dll", "libstable-diffusion.so", "libstable-diffusion.dylib"]
+)
+def test_a_shared_library_build_advertises_edit(tmp_path, lib):
+    binary = tmp_path / "sd-server"
+    binary.write_bytes(b"qwen_image_2_1")
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state = _state(
+        mode = "server",
+        server = types.SimpleNamespace(binary = str(binary), is_alive = lambda: True),
+    )
+    assert "edit" not in b.status()["workflows"]
+    (tmp_path / lib).write_bytes(b"xx" + FAM.sd_cpp_edit_marker.encode() + b"yy")
+    assert "edit" in b.status()["workflows"]
+
+
 def test_an_unreadable_build_advertises_no_edit_and_no_fidelity(tmp_path):
     binary = tmp_path / "sd-server"
     binary.write_bytes(

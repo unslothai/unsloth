@@ -2464,6 +2464,35 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
 _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
 
 
+def _file_carries_marker(path: str, marker: str) -> Optional[bool]:
+    try:
+        st = os.stat(path)
+        key = (str(path), int(st.st_size), int(st.st_mtime_ns), marker)
+    except OSError:
+        return None
+    hit = _ARCH_MARKER_CACHE.get(key)
+    if hit is not None:
+        return hit
+    needle = marker.encode()
+    chunk = 8 << 20
+    found = False
+    try:
+        with open(path, "rb") as fh:
+            tail = b""
+            while True:
+                block = fh.read(chunk)
+                if not block:
+                    break
+                if needle in tail + block:
+                    found = True
+                    break
+                tail = block[-(len(needle) - 1) :] if len(needle) > 1 else b""
+    except OSError:
+        return None
+    _ARCH_MARKER_CACHE[key] = found
+    return found
+
+
 def binary_carries_marker(
     binary: Optional[str],
     marker: Optional[str],
@@ -2475,32 +2504,17 @@ def binary_carries_marker(
         return True
     if not binary:
         return False
-    try:
-        st = os.stat(binary)
-        key = (str(binary), int(st.st_size), int(st.st_mtime_ns), marker)
-    except OSError:
+    found = _file_carries_marker(binary, marker)
+    if found is None:
         return unreadable
-    hit = _ARCH_MARKER_CACHE.get(key)
-    if hit is not None:
-        return hit
-    needle = marker.encode()
-    chunk = 8 << 20
-    found = False
-    try:
-        with open(binary, "rb") as fh:
-            tail = b""
-            while True:
-                block = fh.read(chunk)
-                if not block:
-                    break
-                if needle in tail + block:
-                    found = True
-                    break
-                tail = block[-(len(needle) - 1) :] if len(needle) > 1 else b""
-    except OSError:
-        return unreadable
-    _ARCH_MARKER_CACHE[key] = found
-    return found
+    if found:
+        return True
+    path = Path(binary)
+    return any(
+        lib.is_file() and _file_carries_marker(str(lib), marker)
+        for lib in sorted(path.parent.glob("*stable-diffusion*"))
+        if lib != path
+    )
 
 
 def _native_output_image(fam: Any, im: Any) -> Any:
