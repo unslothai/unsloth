@@ -12,15 +12,20 @@ import {
   dictationProducedClip,
   markDictationClip,
 } from "../src/features/chat/adapters/dictation-outcome.ts";
-import { shouldSubmitDictation } from "../src/features/chat/utils/dictation-send.ts";
+import {
+  clipStillAttached,
+  shouldSubmitDictation,
+} from "../src/features/chat/utils/dictation-send.ts";
 import {
   micClipFilename,
   MIN_MIC_CLIP_BYTES,
   micClipRoom,
   micSendsAudioToModel,
+  pickAudioForModel,
 } from "../src/features/chat/utils/mic-target.ts";
-import { MAX_AUDIO_SIZE } from "../src/lib/audio-utils.ts";
+import { AUDIO_ATTACHMENT_ACCEPT, MAX_AUDIO_SIZE } from "../src/lib/audio-utils.ts";
 import * as sttModelCatalog from "../src/features/settings/stores/stt-model-catalog.ts";
+import * as sttContext from "../src/features/settings/stores/stt-context.ts";
 import * as voiceOrbOverlayPrefs from "../src/features/settings/stores/voice-orb-overlay-prefs.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -38,8 +43,9 @@ const { useVoiceSettingsStore } = loadWithStubs<
     zustand,
     "zustand/middleware": zustandMiddleware,
     "./stt-model-catalog": sttModelCatalog,
-    "../api/stt-device": { syncSttDevicePreference: () => undefined },
+    "./stt-context": sttContext,
     "./voice-orb-overlay-prefs": voiceOrbOverlayPrefs,
+    "../api/stt-device": { syncSttDevicePreference: () => undefined },
   },
 );
 
@@ -92,7 +98,10 @@ test("Compare and the adapter route only through the gate", () => {
   assert.match(
     source,
     /if \(clipTarget && micRecordsForModel\(this\.chatId\)\) \{[\s\S]*?listenForAudioClip\(clipTarget\.add, room\);\s*discardClipWhenModelChanges\(session, useChatRuntimeStore\)/,
-  );
+  );  assert.match(source, /discardClipOnRelease\(session, clipTarget\.onRelease\)/);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const register = thread.slice(thread.indexOf("setMicAudioClipTarget({"));
+  assert.match(register.slice(0, 700), /\[aui, composerIdentity\]/);
 });
 
 test("a recorded clip is a WAV named for the attachment chip", () => {
@@ -104,11 +113,28 @@ test("a recorded clip is a WAV named for the attachment chip", () => {
 
 test("a clip marks the session and resets on the next one", () => {
   beginDictationSession();
-  assert.equal(dictationProducedClip(), false);
-  markDictationClip();
-  assert.equal(dictationProducedClip(), true);
+  assert.equal(dictationProducedClip(), null);
+  const clip = new File([new Uint8Array(4)], "recording.wav", { type: "audio/wav" });
+  markDictationClip(clip);
+  assert.equal(dictationProducedClip(), clip);
   beginDictationSession();
-  assert.equal(dictationProducedClip(), false);
+  assert.equal(dictationProducedClip(), null);
+});
+
+test("a held stop-and-send drops the clip once it is removed from the composer", () => {
+  const clip = new File([new Uint8Array(4)], "recording.wav", { type: "audio/wav" });
+  const other = new File([new Uint8Array(4)], "recording.wav", { type: "audio/wav" });
+  assert.equal(clipStillAttached(clip, [{ file: clip }]), true);
+  assert.equal(clipStillAttached(clip, [{ file: other }, {}]), false);
+  assert.equal(clipStillAttached(clip, []), false);
+  assert.equal(clipStillAttached(null, [{ file: clip }]), false);
+  const base = { originComposer: "a", currentComposer: "a", producedTranscript: false, baseText: "", text: "hi" };
+  assert.equal(shouldSubmitDictation({ ...base, producedClip: clipStillAttached(clip, []) }), false);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(
+    thread,
+    /producedClip: clipStillAttached\(\s*dictationProducedClip\(\),\s*aui\.composer\(\)\.getState\(\)\.attachments,\s*\)/,
+  );
 });
 
 test("stop-and-send submits an attached clip with no new text", () => {
@@ -127,8 +153,7 @@ test("stop-and-send submits an attached clip with no new text", () => {
   );
 });
 
-// The gate keys on hasAudioInput alone, so every way a model reaches the store must carry it:
-// the models list row (GGUF, safetensors, MLX alike), the load response, and the status adoption.
+// Every route into the store must carry hasAudioInput: list row, load response, status adoption.
 test("the gate is family-agnostic: no model names in the routing", () => {
   const gate = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
   const routing = gate.slice(gate.indexOf("export function micRecordsForModel"));
@@ -147,7 +172,6 @@ test("every route into the chat store carries has_audio_input", () => {
 
 test("a recording gets the whole audio limit when nothing else is attached", () => {
   assert.deepEqual(micClipRoom([], 8, false), { maxBytes: MAX_AUDIO_SIZE });
-  // Images do not count against the audio budget.
   const image = { name: "a.png", type: "image/png", size: 5_000_000 };
   assert.deepEqual(micClipRoom([image], 8, false), { maxBytes: MAX_AUDIO_SIZE });
 });
@@ -206,5 +230,52 @@ test("the model clip path gates on PCM support, not MediaRecorder", () => {
   assert.match(
     source,
     /if \(clipTarget && micRecordsForModel\(this\.chatId\)\) \{\s*if \(!PcmRecorder\.isSupported\(\)\)/,
+  );
+});
+
+test("over plain HTTP the model mic picks recording files and attaches them", async () => {
+  const listeners = new Map<string, () => void>();
+  const input = {
+    type: "",
+    accept: "",
+    multiple: false,
+    hidden: false,
+    files: null as File[] | null,
+    removed: false,
+    clicked: false,
+    addEventListener: (type: string, listener: () => void) => listeners.set(type, listener),
+    remove() {
+      this.removed = true;
+    },
+    click() {
+      this.clicked = true;
+    },
+  };
+  let appended: unknown = null;
+  const doc = {
+    createElement: () => input,
+    body: { append: (node: unknown) => (appended = node) },
+  } as unknown as Document;
+  const added: File[] = [];
+  const clip = new File([new Uint8Array(4)], "note.m4a", { type: "" });
+  const refused = new File([new Uint8Array(4)], "big.wav", { type: "audio/wav" });
+  pickAudioForModel(async (file) => {
+    added.push(file);
+    if (file === refused) throw new Error("too big");
+  }, doc);
+  assert.equal(input.type, "file");
+  assert.equal(input.accept, AUDIO_ATTACHMENT_ACCEPT);
+  assert.equal(appended, input);
+  assert.equal(input.clicked, true);
+  input.files = [clip, refused];
+  listeners.get("change")?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(added, [clip, refused]);
+  assert.equal(input.removed, true);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const fallback = thread.slice(thread.indexOf('currentDictationEntryMode() === "recording-file"'));
+  assert.match(
+    fallback.slice(0, 400),
+    /if \(micRecordsForModel\(\)\) \{\s*pickAudioForModel\(\(file\) => aui\.composer\(\)\.addAttachment\(file\)\);\s*\} else \{\s*audioUpload\.openDialog\(\);/,
   );
 });

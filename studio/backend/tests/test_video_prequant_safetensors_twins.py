@@ -6,6 +6,7 @@ a new user fetches only the twin, a cached .pt is kept, an unreadable twin is sk
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import types
 
@@ -13,6 +14,7 @@ import huggingface_hub
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
+import core.inference.cached_weight_sha as cws
 import core.inference.diffusion_prequant as pq
 from core.inference import video_families as vf
 
@@ -260,6 +262,14 @@ def _setup(
     hub = FakeHub(tmp_path, src.location, hosted)
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", hub.try_to_load_from_cache)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", hub.hf_hub_download)
+    # The Hub records the sha256 of the bytes the fake cache writes: a cached pickle is a verified copy.
+    monkeypatch.setattr(
+        cws,
+        "hub_sha256s",
+        lambda repo_id, names, **_: {n: hashlib.sha256(b"x").hexdigest() for n in names},
+    )
+    monkeypatch.setattr(cws, "_store_path", lambda: tmp_path / "weight_sha256.json")
+    monkeypatch.setattr(cws, "_persisted", None)
     monkeypatch.setattr(
         pq,
         "restricted_prequant_load_supported",

@@ -65,7 +65,8 @@ Object.defineProperty(globalThis, "navigator", {
   configurable: true,
 });
 
-const { discardClipWhenModelChanges, listenForAudioClip } = loadWithStubs<
+const { discardClipOnRelease, discardClipWhenModelChanges, listenForAudioClip } =
+  loadWithStubs<
   typeof import("../src/features/chat/adapters/studio-audio-clip-adapter.ts")
 >(
   new URL("../src/features/chat/adapters/studio-audio-clip-adapter.ts", import.meta.url),
@@ -110,7 +111,7 @@ test("a recording stops itself at the audio attachment limit and keeps the clip"
     assert.equal(clips.length, 1);
     assert.equal(clips[0].type, "audio/wav");
     assert.equal(session.status.type, "ended");
-    assert.equal(dictationOutcome.dictationProducedClip(), true);
+    assert.equal(dictationOutcome.dictationProducedClip(), clips[0]);
     assert.deepEqual(toasts, ["Recording stopped at the 25MB audio limit."]);
   } finally {
     mock.timers.reset();
@@ -182,7 +183,6 @@ test("other audio is held off while recording, and the clip is capped at the roo
   await flush();
   assert.equal(lastRecorder?.maxBytes, 500_000);
   await session.stop();
-  // The clip itself must get through the attachment adapter.
   assert.equal(recordingAtClip, false);
   assert.equal(micClipState.micClipRecording(), false);
 });
@@ -249,6 +249,38 @@ test("a cancel during the saved-mic request skips the default-mic fallback", asy
   } finally {
     nav.mediaDevices.getUserMedia = original;
     micDeviceId = "default";
+  }
+});
+
+test("a cancelled session's late mic error leaves the next session's outcome alone", async () => {
+  const nav = globalThis.navigator as unknown as {
+    mediaDevices: { getUserMedia: () => Promise<unknown> };
+  };
+  const original = nav.mediaDevices.getUserMedia;
+  let rejectFirst: (error: Error) => void = () => {};
+  let requests = 0;
+  nav.mediaDevices.getUserMedia = () => {
+    requests += 1;
+    return requests === 1
+      ? new Promise((_resolve, reject) => {
+          rejectFirst = reject;
+        })
+      : Promise.resolve(stream);
+  };
+  toasts.length = 0;
+  try {
+    const first = listenForAudioClip(() => {});
+    first.cancel();
+    const second = listenForAudioClip(() => {});
+    await flush();
+    assert.equal(second.status.type, "running");
+    rejectFirst(Object.assign(new Error("busy"), { name: "NotReadableError" }));
+    await flush();
+    assert.equal(dictationOutcome.dictationFailed(), false);
+    assert.deepEqual(toasts, []);
+    second.cancel();
+  } finally {
+    nav.mediaDevices.getUserMedia = original;
   }
 });
 
@@ -345,4 +377,34 @@ test("the same room is enough at 16 kHz", async () => {
   await flush();
   assert.equal(session.status.type, "running");
   session.cancel();
+});
+
+test("switching chats mid-recording discards the clip instead of attaching it elsewhere", async () => {
+  toasts.length = 0;
+  const clips: File[] = [];
+  const onRelease = new Set<() => void>();
+  const session = listenForAudioClip((file) => clips.push(file));
+  discardClipOnRelease(session, onRelease);
+  await flush();
+  assert.equal(session.status.type, "running");
+  for (const listener of [...onRelease]) listener();
+  await flush();
+  assert.deepEqual(session.status, { type: "ended", reason: "cancelled" });
+  assert.equal(lastRecorder?.discarded, true);
+  assert.equal(clips.length, 0);
+  assert.deepEqual(toasts, ["Recording discarded because the chat changed."]);
+  assert.equal(onRelease.size, 0);
+});
+
+test("a finished recording is not discarded by a later chat switch", async () => {
+  toasts.length = 0;
+  const clips: File[] = [];
+  const onRelease = new Set<() => void>();
+  const session = listenForAudioClip((file) => clips.push(file));
+  discardClipOnRelease(session, onRelease);
+  await flush();
+  await session.stop();
+  assert.equal(clips.length, 1);
+  assert.equal(onRelease.size, 0);
+  assert.deepEqual(toasts, []);
 });

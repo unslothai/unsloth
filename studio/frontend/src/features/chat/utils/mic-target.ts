@@ -3,12 +3,12 @@
 
 import type { MicTarget } from "@/features/settings/stores/voice-settings-store";
 import {
+  AUDIO_ATTACHMENT_ACCEPT,
   MAX_AUDIO_SIZE,
   getAudioAddError,
   isAudioAttachmentFile,
 } from "../../../lib/audio-utils.ts";
 
-/** The mic reaches the model only while the loaded one takes audio; otherwise it transcribes. */
 export function micSendsAudioToModel(
   micTarget: MicTarget,
   modelHearsAudio: boolean,
@@ -21,12 +21,10 @@ export function micClipFilename(now: Date = new Date()): string {
   return `recording-${stamp}.wav`;
 }
 
-// One second at the recorder's preferred 16 kHz; less would hold no usable clip.
 export const MIN_MIC_CLIP_BYTES = 44 + 16_000 * 2;
 
 export type MicClipRoom = { maxBytes: number } | { reason: string };
 
-/** What the composer can still take for one more clip, by the audio attachment adapter's own limits. */
 export function micClipRoom(
   attached: readonly { name: string; type: string; size: number }[],
   maxFiles: number,
@@ -46,4 +44,28 @@ export function micClipRoom(
     maxFiles,
   );
   return reason ? { reason } : { maxBytes: MAX_AUDIO_SIZE - totalSize };
+}
+
+export function pickAudioForModel(
+  add: (file: File) => Promise<unknown>,
+  doc: Document = document,
+): void {
+  const input = doc.createElement("input");
+  input.type = "file";
+  input.accept = AUDIO_ATTACHMENT_ACCEPT;
+  input.multiple = true;
+  input.hidden = true;
+  const done = () => input.remove();
+  input.addEventListener(
+    "change",
+    () => {
+      // The attachment adapter toasts its own refusals.
+      for (const file of Array.from(input.files ?? [])) void add(file).catch(() => {});
+      done();
+    },
+    { once: true },
+  );
+  input.addEventListener("cancel", done, { once: true });
+  doc.body.append(input);
+  input.click();
 }

@@ -269,8 +269,7 @@ class TestAutoIsNotAnAnswer:
         )
 
     def test_tensor_split_decides_auto_rather_than_leaving_it_open(self):
-        """llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR, so pricing the
-        padded V there charges a cache the child never allocates."""
+        """Tensor split turns AUTO into ENABLED, so pricing the padded V there overcharges."""
         assert _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = True) is True
         assert _planned_flash_attn_state(["-fa", "auto", "--split-mode", "tensor"], env = {}) is True
         assert (
@@ -392,8 +391,7 @@ class TestTheDowngradesRePlanTheAttention:
         assert getattr(call.args[0], "id", None) == "extra_args"
 
     def test_no_sizing_closure_freezes_the_plan_in_a_default_argument(self):
-        """A default argument freezes the plan when written, so the MTP draft reserve misses later
-        downgrades."""
+        """A default argument freezes the plan, so the MTP draft reserve misses later downgrades."""
         import ast
 
         func = self._load_model_body()
@@ -421,8 +419,7 @@ class TestTheDowngradesRePlanTheAttention:
 
 
 class TestTheReserveWhenTheFitterIsOff:
-    """The reserve has to survive the respawn too, and a user's own `--fit off` is what
-    takes the re-placement away."""
+    """The reserve must survive the respawn; a user's `--fit off` skips the re-placement."""
 
     def test_a_user_fit_off_keeps_the_conservative_reserve(self):
         from core.inference.llama_cpp import _reserved_flash_attn_state
@@ -438,8 +435,7 @@ class TestTheReserveWhenTheFitterIsOff:
         )
 
     def test_tensor_mode_keeps_its_answer(self):
-        """No no-flash respawn to reserve for under SPLIT_MODE_TENSOR, and pricing the
-        padded layout would refuse loads that fit."""
+        """SPLIT_MODE_TENSOR needs no reserve, and padded pricing would refuse loads that fit."""
         from core.inference.llama_cpp import _reserved_flash_attn_state
 
         assert (

@@ -6,6 +6,10 @@ import { isAudioCppFolderId } from "../../audio/audio-cpp-catalog";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
+  DEFAULT_STT_CONTEXT_LENGTH,
+  normalizeSttContextLength,
+} from "./stt-context";
+import {
   DEFAULT_STT_MODEL,
   type DefaultSttModel,
   STT_MODELS,
@@ -23,6 +27,7 @@ import {
 } from "./voice-orb-overlay-prefs";
 
 export * from "./stt-model-catalog";
+export * from "./stt-context";
 
 // Adapters read these at call time, so changes apply without reloading the chat runtime.
 
@@ -86,8 +91,7 @@ export function isSttModelLanguageCompatible(
 
 export type DictationEngine = "browser" | "model" | "custom";
 
-/** What the composer mic does: "asr" transcribes into the box, "model" attaches the clip
- *  for an audio-input chat model (falls back to "asr" when the loaded model has none). */
+/** "model" attaches a clip for an audio-input model, else falls back to "asr". */
 export type MicTarget = "asr" | "model";
 
 /** Mirrors the backend `SttLoadRequest.device`; "gpu" is not offered since it adds nothing. */
@@ -132,6 +136,10 @@ export interface VoiceSettingsState extends VoiceOrbOverlayPrefs {
   /** "cpu" keeps the model in system RAM; loads and transcriptions apply the current value. */
   sttDevice: SttDevice;
   setSttDevice: (value: SttDevice) => void;
+
+  /** Qwen3-ASR context: zero fits each recording; a positive value is a fixed limit. */
+  sttContextLength: number;
+  setSttContextLength: (value: number) => void;
 
   sttProviderId: string;
   setSttProviderId: (value: string) => void;
@@ -275,6 +283,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         // Server default for cold /v1/audio/transcriptions loads (#15280).
         syncSttDevicePreference(sttDevice);
       },
+
+      sttContextLength: DEFAULT_STT_CONTEXT_LENGTH,
+      setSttContextLength: (value) =>
+        set({ sttContextLength: normalizeSttContextLength(value) }),
 
       sttProviderId: "",
       setSttProviderId: (sttProviderId) => set({ sttProviderId }),
@@ -464,6 +476,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
               ? asString(saved?.sttGgufVariant, "")
               : "",
           sttDevice: normalizeSttDevice(saved?.sttDevice),
+          sttContextLength: normalizeSttContextLength(saved?.sttContextLength),
           sttProviderId: asString(saved?.sttProviderId, ""),
           sttProviderModel: asString(saved?.sttProviderModel, ""),
           dictationLanguage,

@@ -163,6 +163,45 @@ class eager_scope:
         return False
 
 
+class plan_scope:
+    """Per-thread: the decode plan ("graph" / "eager") Unsloth's generate() chose for the call it runs."""
+
+    __slots__ = ("plan", "_saved")
+
+    def __init__(self, plan):
+        self.plan = plan
+
+    def __enter__(self):
+        self._saved = getattr(_TLS, "plan", None)
+        _TLS.plan = self.plan
+        return self
+
+    def __exit__(self, *exc):
+        _TLS.plan = self._saved
+        return False
+
+
+def call_plan():
+    """ "graph" / "eager" for the generate() call running on this thread, None outside Unsloth's
+    generate(). Per-call policies (the 16-bit LoRA fold threshold) read this, not enabled(), which only
+    says graphs are allowed."""
+    if torch.compiler.is_compiling():
+        return None
+    if getattr(_TLS, "eager", 0):
+        return "eager"
+    return getattr(_TLS, "plan", None)
+
+
+# Bumped by code that rewrites weights in place without a version bump (the 16-bit LoRA fold writes
+# W.data): every captured decode graph is fingerprinted with it, so none outlives such a rewrite.
+WEIGHTS_EPOCH = 0
+
+
+def weights_changed():
+    global WEIGHTS_EPOCH
+    WEIGHTS_EPOCH += 1
+
+
 # Need = CALIB_WORK x (KV + prefill work) + CALIB_GRAPH_KV x KV. Calibrated on Qwen3-4B QLoRA bs16 x 2048,
 # T4: eager peaked 1.14x the estimate; graph capture OOMed at ~12 GiB free (~0.26 x KV extra).
 CALIB_WORK = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_WORK", "1.15"))
@@ -694,6 +733,10 @@ def invalidate(model):
     global BUFFER_EPOCH
     for state in _states(model):
         state.clear()
+    for module in model.modules():
+        generic = module.__dict__.get("_unsloth_generic_decode_graphs")
+        if generic is not None:
+            generic.invalidate()
     BUFFER_EPOCH += 1
 
 
@@ -709,6 +752,9 @@ def release(model):
             found = True
             state.clear()
             state.statics.clear()
+        generic = d.get("_unsloth_generic_decode_graphs")
+        if generic is not None:
+            generic.invalidate()
         if "_unsloth_graph_buffers" in d:
             found = True
             del d["_unsloth_graph_buffers"]
@@ -787,6 +833,18 @@ def _fingerprint(model, layers, rope_len):
             items.append((cos.data_ptr(), sin.data_ptr(), cos.shape[0]))
     # Every adapter-aware module outside the projections too (embeddings, lm_head, modules_to_save):
     # their enabled / active / merged state picks the branch a captured step baked in.
+    adapters = _adapter_state(model)
+    if adapters is None:
+        return None
+    items.extend(adapters)
+    items.append(K._OPTIMIZER_STEPS)
+    items.append(WEIGHTS_EPOCH)
+    return tuple(items)
+
+
+def _adapter_state(model):
+    """(module, disabled, active adapters, merged) of every adapter-aware module; None if unreadable."""
+    items = []
     for module in model.modules():
         if hasattr(module, "disable_adapters") or hasattr(module, "active_adapter"):
             try:
@@ -805,8 +863,7 @@ def _fingerprint(model, layers, rope_len):
                 )
             except Exception:
                 return None
-    items.append(K._OPTIMIZER_STEPS)
-    return tuple(items)
+    return items
 
 
 def _eligible(model, layers):

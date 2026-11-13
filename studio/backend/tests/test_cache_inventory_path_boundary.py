@@ -477,8 +477,7 @@ def test_orphan_companions_keep_their_repo_ids(monkeypatch):
 def test_download_progress_hides_the_cache_dir_it_measured(
     monkeypatch, client, route, reader, answers_with_a_reference
 ):
-    """The measurement is taken FROM the cache directory, so both compat aliases must drop it
-    on the way out too."""
+    """Progress measures the cache dir, so both compat aliases must hide it too."""
 
     async def _progress(repo_id, **_kwargs):
         return {
@@ -503,6 +502,7 @@ def test_download_progress_hides_the_cache_dir_it_measured(
 _ROUTES_WITHOUT_HOST_PATHS = {
     "remove_scan_folder_endpoint": "status and id only",
     "get_gguf_variants": "filenames and quant labels, no directory",
+    "is_sdxl_checkpoint": "a boolean; repo_id must be a Hub id",
     "download_model": "job id and status",
     "cancel_download_model": "job id and status",
     "get_active_downloads": "repo ids and byte counts",
@@ -1710,8 +1710,7 @@ def test_a_hub_companion_base_is_not_a_path_and_is_left_alone(kind):
 
 
 def test_a_media_load_that_raises_redacts_the_path_it_resolved():
-    """A load that RAISES skips the route's restore+redact wrappers, and the inner loader only
-    redacted NATIVE paths, which do not know inventory handles."""
+    """A raising load skips route wrappers, and the inner loader redacts only native paths."""
     from hub.utils.host_paths import raised_inventory_detail
 
     detail = f"[Errno 2] No such file or directory: '{REPO_DIR}/model.safetensors'"

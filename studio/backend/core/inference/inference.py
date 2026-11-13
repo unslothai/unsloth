@@ -1084,8 +1084,7 @@ class _OcrNeedsImageError(ValueError):
 
 
 def _without_image_parts(messages) -> list[dict]:
-    """The same conversation with every image placeholder dropped, collapsing a
-    turn back to its text when that is all it held."""
+    """Drops image parts; a turn left with only text collapses back to that text."""
     out = []
     for message in messages:
         content = message.get("content")
@@ -1171,8 +1170,7 @@ def _diffusion_frame_relay(
     stop = None,
     eos_ids = (),
 ):
-    """on_frame for the core sampler: one frame per interval to ``sink``, cut where the final reply is.
-    Never raises into the sampler."""
+    """Core-sampler on_frame: one frame per interval to sink; never raises into the sampler."""
     import time
 
     last = [float("-inf")]
@@ -1919,6 +1917,17 @@ class InferenceBackend:
             else:
                 logger.warning(f"use_adapter='{use_adapter}' but model is not a PeftModel")
 
+    @contextlib.contextmanager
+    def _adapter_scope(self, use_adapter: Optional[Union[bool, str]]):
+        """Must hold _generation_lock. A base-model (False) request re-enables the LoRA on exit: plain requests keep the adapter state."""
+        try:
+            self._apply_adapter_state(use_adapter)
+            yield
+        finally:
+            model = (self.models.get(self.active_model_name) or {}).get("model")
+            if use_adapter is False and isinstance(model, PeftModel):
+                model.base_model.enable_adapter_layers()
+
     def generate_with_adapter_control(
         self,
         use_adapter: Optional[Union[bool, str]] = None,
@@ -2373,10 +2382,13 @@ class InferenceBackend:
                 kwargs["stopping_criteria"] = stopping_criteria
             return generate(*args, **kwargs)
 
-        with tempfile.TemporaryDirectory() as tmp, self._generation_lock:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            self._generation_lock,
+            self._adapter_scope(_adapter_state),
+        ):
             path = str(Path(tmp) / "image.png")
             picture.convert("RGB").save(path)
-            self._apply_adapter_state(_adapter_state)
             owner.generate = bounded_generate
             try:
                 # Gundam preset from each model card: 640 px tiles for v1, 768 for OCR-2.
@@ -2691,9 +2703,8 @@ class InferenceBackend:
             gen_outputs: dict = {}
 
             def generate_fn():
-                with self._generation_lock:
+                with self._generation_lock, self._adapter_scope(_adapter_state):
                     try:
-                        self._apply_adapter_state(_adapter_state)
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
@@ -2901,10 +2912,8 @@ class InferenceBackend:
             gen_outputs: dict = {}
 
             def generate_fn():
-                with self._generation_lock:
+                with self._generation_lock, self._adapter_scope(use_adapter):
                     try:
-                        # Apply under the lock so Base-vs-LoRA compare does not run the adapter on both sides.
-                        self._apply_adapter_state(use_adapter)
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
@@ -3169,10 +3178,9 @@ class InferenceBackend:
             stopper = _speech_stop_streamer(cancel_event)
             kwargs.update(streamer = stopper, audio_streamer = stopper)
         timer = GenerationTimer()
-        with self._generation_lock:
+        with self._generation_lock, self._adapter_scope(use_adapter):
             if cancel_event is not None and cancel_event.is_set():
                 return None
-            self._apply_adapter_state(use_adapter)
             timer.start()
             try:
                 out = model.generate(**kwargs)
@@ -3209,8 +3217,7 @@ class InferenceBackend:
         cancel_event = None,
         extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
-        """Whisper ASR: takes an audio numpy array, yields transcribed text through the pipeline
-        built at model load."""
+        """Whisper ASR over an audio array; yields text from the pipeline built at model load."""
         # No token counts here; clear so gen_done does not ship a previous turn's stats.
         self.last_generation_stats = None
 
@@ -3225,14 +3232,8 @@ class InferenceBackend:
             for index, clip in enumerate(clips):
                 if cancel_event is not None and cancel_event.is_set():
                     return
-                with self._generation_lock:
-                    self._apply_adapter_state(use_adapter)
-                    try:
-                        result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
-                    finally:
-                        # Plain requests keep the adapter state, so turn the LoRA back on.
-                        if use_adapter is False and isinstance(model_info.get("model"), PeftModel):
-                            model_info["model"].base_model.enable_adapter_layers()
+                with self._generation_lock, self._adapter_scope(use_adapter):
+                    result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
 
                 text = result.get("text", "") if isinstance(result, dict) else str(result)
                 if text:
@@ -3380,9 +3381,7 @@ class InferenceBackend:
                     model_info["model"], model_info["tokenizer"], messages is not None
                 ),
             )
-        with self._generation_lock:
-            if _adapter_state is not None:
-                self._apply_adapter_state(_adapter_state)
+        with self._generation_lock, self._adapter_scope(_adapter_state):
             try:
                 text = generate_text(
                     model_info["model"],
@@ -3522,10 +3521,8 @@ class InferenceBackend:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
 
             def generate_fn():
-                with self._generation_lock:
+                with self._generation_lock, self._adapter_scope(_adapter_state):
                     try:
-                        if _adapter_state is not None:
-                            self._apply_adapter_state(_adapter_state)
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count.
@@ -3664,19 +3661,16 @@ class InferenceBackend:
             )
 
         top_k = self._normalize_top_k(top_k)
-        # Every codec below concatenates its prompt instead of templating it, so this
-        # is the one choke point for all four (#7066).
+        # All four codecs concatenate prompts, not templates; this is their one choke point.
         text = tts_prompt_with_voice(
             neutralize_tts_prompt_text(text, audio_type), audio_type, audio_options
         )
 
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")
-        with self._generation_lock:
+        with self._generation_lock, self._adapter_scope(use_adapter):
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Audio generation cancelled")
-            if use_adapter is not None:
-                self._apply_adapter_state(use_adapter)
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
             self.last_generation_stats = None
 
@@ -3963,9 +3957,8 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
     ) -> str:
-        """Render the chat prompt, peeling kwargs the template does not understand. Delegates to the
-        dependency-light helper module so the fallback chain is unit-testable without pulling
-        unsloth / torch into the test sandbox."""
+        """Peels kwargs the template does not understand; delegates to a dependency-light helper for
+        testing."""
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
         )
@@ -4022,13 +4015,8 @@ class InferenceBackend:
                     continue
 
                 if role == "user":
-                    import re
-                    clean_content = re.sub(r"<[^>]+>", "", content).strip()
-                    if clean_content:
-                        chat_messages.append(
-                            named_turn({"role": role, "content": clean_content}, msg)
-                        )
-                        last_role = role
+                    chat_messages.append(named_turn({"role": role, "content": content}, msg))
+                    last_role = role
                 elif role == "assistant":
                     assistant_message = named_turn({"role": role, "content": content}, msg)
                     if has_reasoning_content:

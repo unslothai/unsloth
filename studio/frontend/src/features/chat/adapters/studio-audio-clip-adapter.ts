@@ -19,8 +19,7 @@ import {
   isMissingDeviceError,
 } from "./studio-web-speech-dictation-adapter";
 
-/** Records one clip and hands it to `onClip` as a WAV file instead of transcribing it.
- *  WAV because the audio attachment path takes it as is; MediaRecorder's webm reads as video. */
+// WAV, not MediaRecorder webm: the attachment path routes webm as video.
 export function listenForAudioClip(
   onClip: (file: File) => Promise<unknown> | unknown,
   room: MicClipRoom = { maxBytes: MAX_AUDIO_SIZE },
@@ -82,7 +81,7 @@ export function listenForAudioClip(
           void Promise.resolve()
             .then(() => onClip(file))
             .then(
-              () => markDictationClip(),
+              () => markDictationClip(file),
               (error: unknown) => {
                 // The attachment adapter already toasts its own refusals.
                 console.error("Could not attach the recording:", error);
@@ -94,14 +93,12 @@ export function listenForAudioClip(
         { once: true },
       );
       active.stop();
-      // A tap shorter than one buffer yields no clip.
       if (!delivering) finish("stopped");
       return endedPromise;
     },
     cancel: () => {
       const active = recorder;
       recorder = null;
-      // Discard, not stop: stop() encodes the whole WAV just to drop it.
       active?.discard();
       finish("cancelled");
     },
@@ -121,7 +118,6 @@ export function listenForAudioClip(
   };
 
   if ("reason" in room) {
-    // Refuse before recording rather than after: the attachment adapter would drop the clip.
     toast.error(room.reason);
     markDictationFailed();
     queueMicrotask(() => finish("error"));
@@ -145,11 +141,9 @@ export function listenForAudioClip(
               : audio,
         });
       } catch (error) {
-        // Saved mic may be unplugged; fall back to the default.
         if (micDeviceId === "default" || !isMissingDeviceError(error)) {
           throw error;
         }
-        // Cancelled while the saved device was asked for: open no second mic.
         if (ended) return;
         stream = await navigator.mediaDevices.getUserMedia({ audio });
       }
@@ -169,10 +163,8 @@ export function listenForAudioClip(
         finish("error");
         return;
       }
-      // The timer leaves a second of slack, but on a small room that slack is the whole clip.
       recorder.maxBytes = maxBytes;
       recorder.start();
-      // The attachment refuses a clip over what is left of the audio limit, so stop just under it.
       limitTimer = setTimeout(() => {
         toast.info(`Recording stopped at the ${MAX_AUDIO_SIZE_LABEL} audio limit.`);
         void session.stop();
@@ -181,6 +173,8 @@ export function listenForAudioClip(
       session.status = { type: "running" };
       for (const callback of speechStartCallbacks) callback();
     } catch (error) {
+      // Cancelled already: the outcome flags now belong to the next session.
+      if (ended) return;
       console.error("Microphone error:", error);
       toast.error(
         isMissingDeviceError(error)
@@ -205,8 +199,7 @@ type CheckpointStore = {
   subscribe: (listener: (state: ModelState) => void) => () => void;
 };
 
-/** The clip was sized and gated for the model it started on; the attachment adapter checks the one active at Stop.
- *  A local load only moves `checkpoint` once it succeeds, so a load starting counts as a change too. */
+/** A load starting counts as a change: `checkpoint` only moves once the load succeeds. */
 export function discardClipWhenModelChanges(
   session: StudioDictationSession,
   store: CheckpointStore,
@@ -224,4 +217,17 @@ export function discardClipWhenModelChanges(
     session.cancel();
   });
   session.onEnd?.(unsubscribe);
+}
+
+export function discardClipOnRelease(
+  session: StudioDictationSession,
+  onRelease: Set<() => void>,
+): void {
+  const release = () => {
+    if (session.status.type === "ended") return;
+    toast.info("Recording discarded because the chat changed.");
+    session.cancel();
+  };
+  onRelease.add(release);
+  session.onEnd?.(() => onRelease.delete(release));
 }

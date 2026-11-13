@@ -7,6 +7,7 @@ import * as zustand from "zustand";
 import * as zustandMiddleware from "zustand/middleware";
 
 import * as audioCppCatalog from "../src/features/audio/audio-cpp-catalog.ts";
+import * as sttContext from "../src/features/settings/stores/stt-context.ts";
 import * as sttModelCatalog from "../src/features/settings/stores/stt-model-catalog.ts";
 import * as voiceOrbOverlayPrefs from "../src/features/settings/stores/voice-orb-overlay-prefs.ts";
 import { installLocalStorageFake } from "./helpers/kit.ts";
@@ -26,6 +27,7 @@ const { useVoiceSettingsStore } = loadWithStubs<
     "zustand/middleware": zustandMiddleware,
     "./stt-model-catalog": sttModelCatalog,
     "./voice-orb-overlay-prefs": voiceOrbOverlayPrefs,
+    "./stt-context": sttContext,
     "../api/stt-device": { syncSttDevicePreference: () => undefined },
   },
 );

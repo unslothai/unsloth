@@ -107,7 +107,6 @@ export class PcmRecorder implements SegmentRecorder {
   readonly mimeType = "audio/wav";
   readonly sampleRate: number;
 
-  /** Web Audio and a secure mic; MediaRecorder is not needed. */
   static isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
@@ -159,7 +158,6 @@ export class PcmRecorder implements SegmentRecorder {
     return this.recordingState;
   }
 
-  /** WAV size of `seconds` at this recorder's actual rate. */
   bytesFor(seconds: number): number {
     return WAV_HEADER_BYTES + Math.ceil(seconds * this.sampleRate) * BYTES_PER_SAMPLE;
   }
@@ -238,7 +236,6 @@ export class PcmRecorder implements SegmentRecorder {
     for (const entry of listeners) entry.listener(stopEvent);
   }
 
-  /** Ends the recording without encoding it or firing any event; also closes a recorder never started. */
   discard(): void {
     if (this.tornDown) return;
     this.recordingState = "inactive";
