@@ -20,6 +20,10 @@ import threading
 from typing import Any, Optional
 
 NATIVE_ROTQ_ENV = "UNSLOTH_NATIVE_INT8_ROTQ"
+# Inductor post-grad pass: Linears reading one input (Q / K / V) share one fused quant. =0 keeps one per Linear.
+NATIVE_ROTQ_SHARE_ENV = "UNSLOTH_NATIVE_INT8_ROTQ_SHARE"
+_INDUCTOR = "torch._inductor.config"
+_PASS_KNOB = "post_grad_custom_pre_pass"
 _NS = "unsloth_studio"
 _OP = "native_cuda_rotq"
 _GROUP = 256
@@ -276,6 +280,97 @@ def candidates(transformer: Any) -> int:
         return 0
 
 
+def share_enabled() -> bool:
+    raw = (os.environ.get(NATIVE_ROTQ_SHARE_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def _view_root(node: Any) -> tuple:
+    """(the tensor a chain of views / reshapes starts from, the outermost requested shape or None)."""
+    import torch
+
+    viewish = (
+        torch.ops.aten.view.default,
+        torch.ops.aten.reshape.default,
+        torch.ops.aten._unsafe_view.default,
+    )
+    shape = None
+    while getattr(node, "op", None) == "call_function" and node.target in viewish:
+        if shape is None:
+            shape = tuple(node.args[1])
+        node = node.args[0]
+    return node, shape
+
+
+def share_rotq(graph: Any) -> int:
+    """Merge every fused-quant call on the same input (same root tensor, view shape and group) into the first one. The
+    op is pure, so the merged calls read the same codes and scales. Returns the calls removed."""
+    import torch
+
+    ns = getattr(torch.ops, _NS, None)
+    packet = getattr(ns, _OP, None) if ns is not None else None
+    if packet is None:
+        return 0
+    targets = (packet, packet.default)
+    seen: dict = {}
+    merged = 0
+    for node in list(graph.nodes):
+        if node.op != "call_function" or node.target not in targets or len(node.args) < 2:
+            continue
+        root, shape = _view_root(node.args[0])
+        try:
+            first = seen.setdefault((root, shape, int(node.args[1])), node)
+        except TypeError:  # an unhashable (symbolic) shape: keep the call
+            continue
+        if first is node:
+            continue
+        node.replace_all_uses_with(first)
+        graph.erase_node(node)
+        merged += 1
+    if merged:
+        _STATE["shared"] = _STATE.get("shared", 0) + merged
+    return merged
+
+
+try:
+    from torch._inductor.custom_graph_pass import CustomGraphPass as _CustomGraphPass
+except Exception:  # noqa: BLE001 - no Inductor custom passes on this torch: no sharing
+    _CustomGraphPass = None
+
+if _CustomGraphPass is not None:
+
+    class ShareRotqPass(_CustomGraphPass):
+        """``share_rotq`` as an Inductor post-grad pass (module level: compile configs are pickled)."""
+
+        def __call__(self, graph: Any) -> None:
+            share_rotq(graph)
+
+        def uuid(self) -> Any:
+            return f"unsloth_studio.{_OP}.share.v1"
+
+else:
+    ShareRotqPass = None
+
+
+def _install_share_pass(logger: Any = None) -> bool:
+    """Set the post-grad pass unless sharing is off or another pass already holds the slot."""
+    if not share_enabled() or ShareRotqPass is None:
+        return False
+    try:
+        from . import diffusion_compile_config as compile_config
+
+        current = compile_config.get_knob(_INDUCTOR, _PASS_KNOB)
+        if isinstance(current, ShareRotqPass):
+            return True
+        if current is not None:
+            return False
+        return bool(compile_config.set_knob(_INDUCTOR, _PASS_KNOB, ShareRotqPass()))
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        if logger is not None:
+            logger.info("diffusion.native_rotq: shared quant pass not installed (%s)", exc)
+        return False
+
+
 def install(
     transformer: Any,
     logger: Any = None,
@@ -300,10 +395,12 @@ def install(
             return 0
     except Exception:  # noqa: BLE001
         return 0
+    shared = _install_share_pass(logger)
     if logger is not None:
         logger.info(
-            "diffusion.native_rotq: %d int8 W8A8 ConvRot Linear(s) take the fused rotation + act quant "
+            "diffusion.native_rotq: %d int8 W8A8 ConvRot Linear(s) take the fused rotation + act quant%s "
             "(UNSLOTH_NATIVE_INT8_ROTQ=0 keeps the stock rotation GEMM + quant)",
             n,
+            ", one per shared input" if shared else "",
         )
     return n

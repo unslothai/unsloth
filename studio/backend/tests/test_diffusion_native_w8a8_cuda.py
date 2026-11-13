@@ -194,9 +194,10 @@ def test_candidates_and_install_without_cuda(cr, monkeypatch):
 def test_install_probes_the_compute_card_and_reports_the_count(cr, monkeypatch):
     seen = []
     monkeypatch.setattr(cr, "prepare", lambda device = None: seen.append(device) or True)
+    monkeypatch.setattr(cr, "_install_share_pass", lambda logger = None: seen.append("share") or True)
     t = _wrap(_linear(), _linear())
     assert cr.install(t, device = "cuda:1") == 2
-    assert seen == ["cuda:1"]
+    assert seen == ["cuda:1", "share"]
 
 
 def test_launch_falls_back_to_the_reference_off_card(cr):
@@ -266,3 +267,69 @@ def test_speed_installs_the_route_before_the_compile():
     names = [n for _, n in order]
     assert "install_native_rotq" in names and "compile_repeated_blocks" in names
     assert names.index("install_native_rotq") < names.index("compile_repeated_blocks")
+
+
+def _rotq_graph(cr):
+    import torch
+    from torch.fx.experimental.proxy_tensor import make_fx
+
+    op = cr._op()
+
+    def f(h):
+        a = op(h.view(-1, 512), 256)[0]  # Q
+        b = op(h.view(-1, 512), 256)[0]  # K: same input
+        c = op(h.reshape(-1, 512), 256)[1]  # V: same input, reshape
+        d = op(h.view(-1, 512) * 2, 256)[0]  # another tensor
+        e = op(h.view(-1, 256), 256)[0]  # another view shape
+        return a, b, c, d, e
+
+    h = _x(40, 512).reshape(2, 20, 512)
+    return f, make_fx(f)(h), h
+
+
+def _rotq_calls(g):
+    return sum(1 for n in g.graph.nodes if "native_cuda_rotq" in str(n.target))
+
+
+def test_share_pass_merges_calls_on_one_input_only(cr):
+    import torch
+
+    f, g, h = _rotq_graph(cr)
+    assert _rotq_calls(g) == 5
+    assert cr.share_rotq(g.graph) == 2
+    g.recompile()
+    assert _rotq_calls(g) == 3
+    for got, ref in zip(g(h), f(h)):
+        assert torch.equal(got, ref)
+
+
+def test_share_pass_install_respects_switch_and_an_existing_pass(cr, monkeypatch):
+    from core.inference import diffusion_compile_config as compile_config
+
+    knobs = {}
+    monkeypatch.setattr(compile_config, "get_knob", lambda m, a, d = None: knobs.get((m, a), d))
+    monkeypatch.setattr(
+        compile_config, "set_knob", lambda m, a, v: knobs.__setitem__((m, a), v) or True
+    )
+    monkeypatch.setenv("UNSLOTH_NATIVE_INT8_ROTQ_SHARE", "0")
+    assert cr._install_share_pass() is False and not knobs
+    monkeypatch.delenv("UNSLOTH_NATIVE_INT8_ROTQ_SHARE")
+    assert cr._install_share_pass() is True
+    assert isinstance(
+        knobs[("torch._inductor.config", "post_grad_custom_pre_pass")], cr.ShareRotqPass
+    )
+    assert cr._install_share_pass() is True  # idempotent
+    other = object()
+    knobs[("torch._inductor.config", "post_grad_custom_pre_pass")] = other
+    assert cr._install_share_pass() is False  # never replaces another pass
+    assert knobs[("torch._inductor.config", "post_grad_custom_pre_pass")] is other
+    assert isinstance(cr.ShareRotqPass().uuid(), str)
+
+
+def test_share_pass_pickles():
+    import pickle
+
+    from core.inference import diffusion_native_w8a8_cuda as mod
+
+    p = pickle.loads(pickle.dumps(mod.ShareRotqPass()))
+    assert p.uuid() == mod.ShareRotqPass().uuid()
