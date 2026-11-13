@@ -728,3 +728,27 @@ def test_fused_route_only_where_a_tile_covers_the_rows(monkeypatch):
     assert not layer._fused_covers(small)
     monkeypatch.setitem(gi._FUSED, None, None)
     assert not layer._fused_covers(small)
+
+
+def test_compiled_default_route_without_a_race(monkeypatch):
+    layer = _cpu_layer()
+    calls = []
+    for name in ("_int8", "_int8r", "_fused", "_dense"):
+        monkeypatch.setattr(layer, name, lambda x, name = name: calls.append(name) or x[..., :64])
+    monkeypatch.setattr(layer, "_int8_ok", lambda x: True)
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    x = torch.randn(32, 512, dtype = torch.bfloat16)
+    layer._route = None
+    for tuned, rotq, want in (
+        (False, True, "_int8r"),
+        (True, True, "_int8"),
+        (False, False, "_int8"),
+    ):
+        layer._tuned, layer._rotq, layer._fused_ok = tuned, rotq, True
+        calls.clear()
+        layer(x)
+        assert calls == [want], (tuned, rotq)
+    layer._tuned, layer._rotq, layer._route = False, True, "fused"  # a fused verdict is eager-only
+    calls.clear()
+    layer(x)
+    assert calls == ["_int8"]

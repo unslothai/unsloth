@@ -805,6 +805,15 @@ def grouped_linear_class():
             ws = self.weight_s_channel.view(torch.float32)
             bias = None if self.bias is None else self.bias.to(torch.bfloat16)
             rows = x2.shape[0]
+            if (
+                torch.compiler.is_compiling()
+            ):  # one graph: the compiler bounds the temporaries, no row loop
+                q = convrot_act_quant(x2, self.rot_group, True)
+                if q is None:
+                    return self._int8(x)
+                xq, xs = q
+                out = reference(xq, q8, xs.reshape(-1).to(torch.float32), ws, bias)
+                return out.reshape(*x.shape[:-1], self.out_features)
             chunk = max(_MIN_ROWS, _INT_MM_CHUNK_ELEMS // max(self.in_features, self.out_features))
             out = x2.new_empty((rows, self.out_features))
             for start in range(0, rows, chunk):
@@ -962,7 +971,13 @@ def grouped_linear_class():
                 if mode == "int8":
                     route = "int8"
                 elif torch.compiler.is_compiling():
-                    route = self._route or "int8"
+                    # no eager race before the trace (compiled image loads): where the tuned GEMM is off but the
+                    # rotation kernel is armed, its codes into torch._int_mm (the compiled INT8 load's maths)
+                    route = self._route or (
+                        "int8r"
+                        if not self._tuned and self._rotq and x.dtype == torch.bfloat16
+                        else "int8"
+                    )
                 else:
                     route = self._race(x)
                     self._route = route
