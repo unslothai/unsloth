@@ -17,6 +17,8 @@ export const REPLY_SETTLE_MS = 3_000;
 
 let sequence = 0;
 let pending: ReturnType<typeof setTimeout> | null = null;
+// The chat the latest reply ran in, so a click on the notification can open it.
+let pendingThreadId: string | null = null;
 
 function browserNotificationApi(): typeof Notification | null {
   if (typeof window === "undefined" || !("Notification" in window)) {
@@ -40,9 +42,19 @@ export function cancelReplyFinishedNotification(): void {
     clearTimeout(pending);
     pending = null;
   }
+  pendingThreadId = null;
 }
 
-export function notifyReplyFinished(): void {
+async function openFinishedChat(threadId: string | null): Promise<void> {
+  if (!threadId) {
+    return;
+  }
+  // The router pulls in the whole app, so load it only when a notification is clicked.
+  const { router } = await import("@/app/router");
+  await router.navigate({ to: "/chat", search: { thread: threadId } });
+}
+
+export function notifyReplyFinished(threadId?: string | null): void {
   if (!useChatPreferencesStore.getState().notifyWhenReplyFinishes) {
     return;
   }
@@ -51,13 +63,15 @@ export function notifyReplyFinished(): void {
   if (!windowIsInBackground()) {
     return;
   }
+  pendingThreadId = threadId ?? null;
   pending = setTimeout(() => {
     pending = null;
-    sendReplyFinished();
+    sendReplyFinished(pendingThreadId);
+    pendingThreadId = null;
   }, REPLY_SETTLE_MS);
 }
 
-function sendReplyFinished(): void {
+function sendReplyFinished(threadId: string | null): void {
   if (
     !useChatPreferencesStore.getState().notifyWhenReplyFinishes ||
     !windowIsInBackground()
@@ -84,6 +98,7 @@ function sendReplyFinished(): void {
     notification.onclick = () => {
       window.focus();
       notification.close();
+      openFinishedChat(threadId).catch(() => undefined);
     };
   } catch {
     // Some browsers only allow notifications from a service worker.
