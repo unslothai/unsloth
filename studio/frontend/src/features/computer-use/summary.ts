@@ -60,17 +60,30 @@ function one(raw: Raw): string {
   }
 }
 
-/** One line per action, in the order they run; empty when the arguments are still streaming in. */
-export function describeComputerCall(argsText: string | undefined): string[] {
-  if (!argsText) return [];
+function parseCall(argsText: string | undefined): Raw | null {
+  if (!argsText) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(argsText);
   } catch {
-    return [];
+    return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-  const raw = parsed as Raw;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Raw) : null;
+}
+
+const WHY_CHARS = 80;
+
+/** The model's own few words on what a call is for, as one short line, or "". It is the model's
+ *  claim, so a card waiting on Allow shows the steps instead. */
+export function computerCallWhy(argsText: string | undefined): string {
+  const why = text(parseCall(argsText)?.why).replace(/\s+/g, " ").trim();
+  return why.length > WHY_CHARS ? `${why.slice(0, WHY_CHARS - 1)}…` : why;
+}
+
+/** One line per action, in the order they run; empty when the arguments are still streaming in. */
+export function describeComputerCall(argsText: string | undefined): string[] {
+  const raw = parseCall(argsText);
+  if (!raw) return [];
   const chain = [raw.then, raw.actions, raw.steps].find(Array.isArray) as unknown[] | undefined;
   const first = raw.action || raw.type ? [raw] : [];
   const rest = (chain ?? []).filter((item): item is Raw => !!item && typeof item === "object" && !Array.isArray(item));

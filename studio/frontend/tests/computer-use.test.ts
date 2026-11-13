@@ -8,6 +8,7 @@ import { normalizePlusMenuOrder } from "../src/features/chat/stores/plus-menu-pr
 import {
   COMPUTER_USE_TOOL,
   alwaysAllowableApp,
+  computerCallWhy,
   computerUseAsk,
   describeComputerCall,
   plainComputerResult,
@@ -38,6 +39,15 @@ test("other dialects still read as steps", () => {
   assert.deepEqual(describe({ action: "drag", x: 1, y: 2, to_x: 30, to_y: 40 }), ["Drag from (1, 2) to (30, 40)"]);
   assert.deepEqual(describe({ action: "scroll", direction: "up" }), ["Scroll up"]);
   assert.deepEqual(describe({ action: "fly" }), ["Do: fly"]);
+});
+
+test("the model's note on a call is one short line, and never a step", () => {
+  const args = { action: "click", x: 1, y: 2, why: "  Open the\n Downloads folder " };
+  assert.equal(computerCallWhy(JSON.stringify(args)), "Open the Downloads folder");
+  assert.deepEqual(describe(args), ["Click at (1, 2)"]);
+  assert.equal(computerCallWhy(JSON.stringify({ action: "click", why: "y".repeat(200) })).length, 80);
+  assert.equal(computerCallWhy(JSON.stringify({ action: "click", why: 7 })), "");
+  assert.equal(computerCallWhy('{"action": "cli'), "");
 });
 
 test("arguments that are still streaming in or are not an object describe nothing", () => {

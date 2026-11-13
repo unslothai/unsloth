@@ -30,6 +30,10 @@ _FENCE = "untrusted_screen_text"
 _DRAG_STEPS = 12
 _CORNER = 2.0
 _OPEN_APP_WAIT_S = 0.8
+_BLOCKED_APP = (
+    "{app} is blocked in Unsloth's settings, so nothing is done in it. Do not try again; tell "
+    "the user."
+)
 
 
 def is_computer_tool(name: Any) -> bool:
@@ -85,6 +89,10 @@ def computer_tool(mode: str = "pixels", backend: Optional[Backend] = None) -> di
                     },
                     "name": {"type": "string", "description": "For open_app: the application."},
                     "seconds": {"type": "number", "description": "For wait."},
+                    "why": {
+                        "type": "string",
+                        "description": "A few words on what this call is for, shown to the user.",
+                    },
                     "then": {
                         "type": "array",
                         # Spelled out, without the notes: some providers reject a bare object.
@@ -182,8 +190,11 @@ class _Run:
         self.shown: Any = None
         self.before: Any = self.session.frame
         self.before_pointer = self._cursor()
+        self.halts = state.halts()
 
     def _stopped(self) -> bool:
+        if self.state.halts() != self.halts:
+            return True
         return self.cancel_event is not None and self.cancel_event.is_set()
 
     def _sleep(self, seconds: float) -> bool:
@@ -220,7 +231,7 @@ class _Run:
             at_side = x <= display.x + _CORNER or x >= display.x + display.width - 1 - _CORNER
             at_end = y <= display.y + _CORNER or y >= display.y + display.height - 1 - _CORNER
             if at_side and at_end:
-                self.state.revoke(self.key)
+                self.state.stop(self.key)
                 raise _Halt(
                     "the user moved the pointer into a corner of the screen to take back "
                     "control, so computer use has stopped. Do not try again; tell the user."
@@ -273,11 +284,19 @@ class _Run:
         under = self.backend.window_at(x, y) or (front if front.contains(x, y) else None)
         return under is not None and policy.is_own_window(under)
 
+    def _use(self, window: FrontWindow) -> None:
+        blocked = policy.blocked_window(window)
+        if blocked:
+            raise _Halt(_BLOCKED_APP.format(app = blocked))
+        self._use_app(window.app)
+
     def _use_app(self, name: str) -> None:
         """Input is about to go to this app. A call the user answered opens the app to the rest
         of the chat; any other call may only use apps already allowed."""
         if not name:
             return
+        if policy.is_blocked(name):
+            raise _Halt(_BLOCKED_APP.format(app = name))
         if self.allowed:
             self.session.apps.add(name.casefold())
         elif policy.asks_every_time(name) or not policy.app_allowed(name, self.session):
@@ -347,13 +366,14 @@ class _Run:
             self._use_app(action["name"])
             action["name"] = backend.open_app(action["name"])
             self._sleep(_OPEN_APP_WAIT_S)
-            if self.allowed:
-                # The system may know it by another name than the one asked for.
-                self._use_app(backend.front_window().app)
+            # The system may know it by another name than the one asked for.
+            opened = backend.front_window()
+            if self.allowed or policy.blocked_window(opened):
+                self._use(opened)
         elif op == "click":
             front = self._front(action)
             x, y = self._target(action["x"], action["y"], front)
-            self._use_app(self._under(x, y, front).app)
+            self._use(self._under(x, y, front))
             backend.click(x, y, action["button"], action["count"], action["mods"])
             self._moved(x, y)
         elif op == "move":
@@ -366,7 +386,7 @@ class _Run:
             front = self._front(action)
             start = self._target(action["x"], action["y"], front)
             end = self._target(action["to_x"], action["to_y"], front)
-            self._use_app(self._under(*start, front).app)
+            self._use(self._under(*start, front))
             points = [
                 (
                     start[0] + (end[0] - start[0]) * step / _DRAG_STEPS,
@@ -380,7 +400,7 @@ class _Run:
             front = self._front(action)
             if "x" in action:
                 x, y = self._target(action["x"], action["y"], front)
-                self._use_app(self._under(x, y, front).app)
+                self._use(self._under(x, y, front))
                 backend.move(x, y)
                 self._moved(x, y)
             elif self._on_own_window(*backend.cursor(), front):
@@ -389,10 +409,10 @@ class _Run:
                     "scroll."
                 )
             else:
-                self._use_app(self._under(*backend.cursor(), front).app)
+                self._use(self._under(*backend.cursor(), front))
             backend.scroll(action["dx"], action["dy"])
         elif op == "type":
-            self._use_app(self._front(action).app)
+            self._use(self._front(action))
             if action["text"]:
                 backend.type_text(action["text"])
             if action["submit"]:
@@ -404,7 +424,7 @@ class _Run:
                         f"{chord_text(chord)} locks the screen or ends the session, so it is "
                         "never sent."
                     )
-            self._use_app(self._front(action).app)
+            self._use(self._front(action))
             for _ in range(action["repeat"]):
                 for mods, key in action["chords"]:
                     backend.key(mods, key)
@@ -564,7 +584,15 @@ def execute_computer_tool(
     except ValueError as exc:
         return f"Error: {exc}"
     key = state.session_key(session_id)
+    if state.is_stopped(key) and not approved:
+        # Full access asks nothing, so without this the model could carry on after the stop.
+        return (
+            "Error: the user stopped computer use in this chat, so nothing was done. Do not try "
+            "again; tell the user they can allow it again in Settings > Computer use."
+        )
     allowed = bool(approved or full_access)
+    if approved:
+        state.resume(key)
     if not state.is_granted(key):
         if not allowed:
             return (

@@ -21,6 +21,10 @@ export type ComputerUseStatus = {
   permissions: Record<ComputerUsePermission, boolean | null>;
   /** Apps a model may act in without asking, in every chat. */
   allowedApps: string[];
+  /** Apps no model may act in. */
+  blockedApps: string[];
+  /** Chats the user stopped with the pointer; they stay stopped until allowed again. */
+  stoppedChats: number;
 };
 
 function fromApi(body: unknown): ComputerUseStatus {
@@ -30,6 +34,8 @@ function fromApi(body: unknown): ComputerUseStatus {
     unknown
   >;
   const grant = (value: unknown) => (typeof value === "boolean" ? value : null);
+  const names = (value: unknown) =>
+    Array.isArray(value) ? value.filter((app): app is string => typeof app === "string") : [];
   return {
     available: raw.available === true,
     reason: typeof raw.reason === "string" ? raw.reason : null,
@@ -37,9 +43,9 @@ function fromApi(body: unknown): ComputerUseStatus {
     coordinates: raw.coordinates === "pixels" || raw.coordinates === "grid" ? raw.coordinates : "auto",
     platform: typeof raw.platform === "string" ? raw.platform : "none",
     permissions: { screen: grant(grants.screen), input: grant(grants.input) },
-    allowedApps: Array.isArray(raw.allowed_apps)
-      ? raw.allowed_apps.filter((app): app is string => typeof app === "string")
-      : [],
+    allowedApps: names(raw.allowed_apps),
+    blockedApps: names(raw.blocked_apps),
+    stoppedChats: typeof raw.stopped_chats === "number" && raw.stopped_chats > 0 ? raw.stopped_chats : 0,
   };
 }
 
@@ -88,7 +94,28 @@ export async function removeComputerUseApp(name: string): Promise<ComputerUseSta
   return checked(res, "Could not remove the app.");
 }
 
-/** Every chat asks again before it next touches the computer. */
+/** Block: no model acts in this app, in any chat or permission mode. */
+export async function blockComputerUseApp(name: string): Promise<ComputerUseStatus> {
+  const res = await authFetch(`${ROUTE}/blocked-apps`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return checked(res, "Could not block the app.");
+}
+
+export async function unblockComputerUseApp(name: string): Promise<ComputerUseStatus> {
+  const res = await authFetch(`${ROUTE}/blocked-apps?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+  return checked(res, "Could not remove the app.");
+}
+
+/** Allow again: the chats stopped with the pointer may use the computer once more. */
+export async function resumeComputerUse(): Promise<ComputerUseStatus> {
+  const res = await authFetch(`${ROUTE}/resume`, { method: "POST" });
+  return checked(res, "Could not allow computer use again.");
+}
+
+/** Every chat asks again before it next touches the computer, and what is running ends. */
 export async function revokeComputerUse(): Promise<void> {
   await authFetch(`${ROUTE}/revoke`, { method: "POST" });
 }

@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
@@ -20,22 +21,64 @@ import {
   type ComputerUseCoordinates,
   type ComputerUsePermission,
   type ComputerUseStatus,
+  blockComputerUseApp,
   removeComputerUseApp,
   requestComputerUsePermission,
+  resumeComputerUse,
+  unblockComputerUseApp,
   updateComputerUseSettings,
 } from "@/features/computer-use/api";
 import { refreshComputerUseStatus, useComputerUseStore } from "@/features/computer-use/store";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
-import { MousePointer01Icon } from "@hugeicons/core-free-icons";
+import { MousePointer01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
 const GRANTS: ComputerUsePermission[] = ["screen", "input"];
 const ROW_ICON_CLASS = "me-1.5 size-7";
+
+/** Apps by name, each with Remove: the bordered list of Settings > Browser's site permissions. */
+function AppList({
+  apps,
+  disabled,
+  onRemove,
+  children,
+}: {
+  apps: string[];
+  disabled: boolean;
+  onRemove: (app: string) => void;
+  /** The row a new name is typed into, when the list takes one. */
+  children?: ReactNode;
+}) {
+  const t = useT();
+  return (
+    <div className="mt-2 flex flex-col divide-y divide-border/60 rounded-2xl border border-border/80 px-4">
+      {apps.length === 0 && !children ? (
+        <p className="py-3 text-sm text-muted-foreground">{t("computerUse.settings.noApps")}</p>
+      ) : (
+        apps.map((app) => (
+          <div key={app} data-settings-label={app} className="flex items-center justify-between gap-4 py-2">
+            <span className="min-w-0 truncate text-sm font-medium text-foreground">{app}</span>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={disabled}
+              aria-label={t("computerUse.settings.removeApp", { app })}
+              onClick={() => onRemove(app)}
+            >
+              {t("computerUse.settings.remove")}
+            </Button>
+          </div>
+        ))
+      )}
+      {children}
+    </div>
+  );
+}
 
 /** Settings > Computer use: which apps models may control on this computer, the system grants
  *  that takes, and the apps they may use without asking. */
@@ -46,6 +89,8 @@ export function ComputerUseTab() {
   const browserUse = useBrowserAgentStore((state) => state.enabled);
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // The name being typed into Blocked apps, or null while that row is closed.
+  const [draft, setDraft] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshComputerUseStatus();
@@ -67,6 +112,12 @@ export function ComputerUseTab() {
   };
   const on = !!status && status.available && status.enabled;
   const locked = busy || !isOwner;
+  const block = () => {
+    const name = draft?.trim();
+    if (!name) return;
+    setDraft(null);
+    void run(() => blockComputerUseApp(name));
+  };
 
   return (
     <div className="settings-page">
@@ -152,6 +203,16 @@ export function ComputerUseTab() {
             </Select>
           </SettingsRow>
         ) : null}
+        {on && status.stoppedChats > 0 ? (
+          <SettingsRow
+            label={t("computerUse.settings.stopped")}
+            description={t("computerUse.settings.stoppedDescription", { count: status.stoppedChats })}
+          >
+            <Button size="sm" variant="secondary" disabled={locked} onClick={() => void run(resumeComputerUse)}>
+              {t("computerUse.settings.allowAgain")}
+            </Button>
+          </SettingsRow>
+        ) : null}
         {status?.available ? (
           <p className="mt-2 text-xs text-muted-foreground">
             {on && GRANTS.some((kind) => status.permissions[kind] === false)
@@ -165,27 +226,58 @@ export function ComputerUseTab() {
           title={t("computerUse.settings.allowedApps")}
           description={t("computerUse.settings.allowedAppsDescription")}
         >
-          {/* The bordered list of Settings > Browser's site permissions. */}
-          <div className="mt-2 flex flex-col divide-y divide-border/60 rounded-2xl border border-border/80 px-4">
-            {status.allowedApps.length === 0 ? (
-              <p className="py-3 text-sm text-muted-foreground">{t("computerUse.settings.noApps")}</p>
-            ) : (
-              status.allowedApps.map((app) => (
-                <div key={app} data-settings-label={app} className="flex items-center justify-between gap-4 py-2">
-                  <span className="min-w-0 truncate text-sm font-medium text-foreground">{app}</span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={locked}
-                    aria-label={t("computerUse.settings.removeApp", { app })}
-                    onClick={() => void run(() => removeComputerUseApp(app))}
-                  >
-                    {t("computerUse.settings.remove")}
-                  </Button>
-                </div>
-              ))
-            )}
-          </div>
+          <AppList
+            apps={status.allowedApps}
+            disabled={locked}
+            onRemove={(app) => void run(() => removeComputerUseApp(app))}
+          />
+        </SettingsSection>
+      ) : null}
+      {status?.available ? (
+        <SettingsSection
+          title={t("computerUse.settings.blockedApps")}
+          description={t("computerUse.settings.blockedAppsDescription")}
+          action={
+            <Button variant="outline" size="sm" onClick={() => setDraft("")} disabled={locked || draft !== null}>
+              <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+              {t("computerUse.settings.blockApp")}
+            </Button>
+          }
+        >
+          <AppList
+            apps={status.blockedApps}
+            disabled={locked}
+            onRemove={(app) => void run(() => unblockComputerUseApp(app))}
+          >
+            {draft !== null ? (
+              <form
+                className="flex items-center gap-2 py-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  block();
+                }}
+              >
+                <Input
+                  autoFocus={true}
+                  value={draft}
+                  maxLength={80}
+                  aria-label={t("computerUse.settings.appName")}
+                  placeholder={t("computerUse.settings.appNamePlaceholder")}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") setDraft(null);
+                  }}
+                  className="h-8 flex-1"
+                />
+                <Button variant="secondary" type="submit" size="sm" disabled={!draft.trim()}>
+                  {t("computerUse.settings.block")}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)}>
+                  {t("computerUse.settings.cancel")}
+                </Button>
+              </form>
+            ) : null}
+          </AppList>
         </SettingsSection>
       ) : null}
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>

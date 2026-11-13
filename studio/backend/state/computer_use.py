@@ -36,6 +36,9 @@ class Session:
     display: Optional[int] = None
     # Where the last action left the pointer, to tell the user's own move to a corner from ours.
     pointer: Optional[tuple[float, float]] = None
+    # The user took back control with the pointer. Only they can lift it (an answered approval,
+    # or Settings), so a chat with Full access can't simply carry on.
+    stopped: bool = False
 
 
 _lock = threading.RLock()
@@ -43,6 +46,8 @@ _sessions: "OrderedDict[Key, Session]" = OrderedDict()
 _control = threading.Lock()
 _holder: Optional[Key] = None
 _held_at = 0.0
+# Bumped to end every chain of actions that is running now.
+_halts = 0
 
 
 def session_key(session_id: Optional[str]) -> Key:
@@ -95,8 +100,61 @@ def revoke(key: Key) -> None:
             found.frame = None
 
 
+def stop(key: Key) -> None:
+    """The user took back control of this chat: its go-ahead goes, and it stays stopped."""
+    with _lock:
+        revoke(key)
+        session(key).stopped = True
+
+
+def is_stopped(key: Key) -> bool:
+    with _lock:
+        found = _sessions.get(key)
+        return found is not None and found.stopped
+
+
+def resume(key: Key) -> None:
+    with _lock:
+        found = _sessions.get(key)
+        if found is not None:
+            found.stopped = False
+
+
+def stopped_count(account_id: str) -> int:
+    with _lock:
+        return sum(
+            1
+            for (account, _session), found in _sessions.items()
+            if account == (account_id or "") and found.stopped
+        )
+
+
+def resume_account(account_id: str) -> int:
+    """Settings' "Allow again": stopped chats may ask again. Their go-ahead stays withdrawn."""
+    with _lock:
+        count = 0
+        for (account, _session), found in _sessions.items():
+            if account == (account_id or "") and found.stopped:
+                found.stopped = False
+                count += 1
+        return count
+
+
+def halts() -> int:
+    return _halts
+
+
+def halt_running() -> None:
+    """End the chain of actions that is running now, between two of its actions."""
+    global _halts
+    with _lock:
+        _halts += 1
+
+
 def revoke_account(account_id: str) -> int:
-    """Every chat of this account asks again; the composer switch going off calls this."""
+    """Every chat of this account asks again, and what is running ends; the composer switch and
+    the setting going off call this."""
+    halt_running()
     with _lock:
         count = 0
         for (account, _session), found in _sessions.items():
@@ -150,7 +208,7 @@ def control(
 
 def reset() -> None:
     """Test hook."""
-    global _holder, _held_at
+    global _holder, _held_at, _halts
     with _lock:
         _sessions.clear()
-        _holder, _held_at = None, 0.0
+        _holder, _held_at, _halts = None, 0.0, 0

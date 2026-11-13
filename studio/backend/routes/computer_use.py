@@ -34,6 +34,10 @@ class ComputerUseStatus(BaseModel):
     permissions: ComputerUsePermissions
     # Apps a model may act in without asking, in every chat.
     allowed_apps: list[str] = []
+    # Apps no model may act in.
+    blocked_apps: list[str] = []
+    # Chats the user stopped with the pointer, which stay stopped until allowed again.
+    stopped_chats: int = 0
 
 
 class ComputerUseAppRequest(BaseModel):
@@ -61,6 +65,9 @@ def _status() -> ComputerUseStatus:
             permissions = backend.permissions()
         except Exception:  # noqa: BLE001 - the page still loads without the grants' state
             logger.warning("computer use permissions could not be read", exc_info = True)
+    from state import computer_use as state
+    from utils.account_context import current_account_id
+
     current = policy.settings()
     return ComputerUseStatus(
         available = reason is None,
@@ -70,6 +77,8 @@ def _status() -> ComputerUseStatus:
         platform = backend.name,
         permissions = ComputerUsePermissions(**permissions),
         allowed_apps = current["allowed_apps"],
+        blocked_apps = current["blocked_apps"],
+        stopped_chats = state.stopped_count(current_account_id()),
     )
 
 
@@ -151,9 +160,56 @@ async def remove_computer_use_app(name: str, current_subject: str = Depends(get_
     return await asyncio.to_thread(_status)
 
 
+@router.post("/blocked-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+async def block_computer_use_app(
+    payload: ComputerUseAppRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Block: no model acts in this app, in any chat or permission mode."""
+    from core.inference.computer_use import policy
+
+    try:
+        policy.block_app(payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    logger.info(
+        "settings.computer_use_app_blocked subject=%s app=%s", current_subject, payload.name
+    )
+    return await asyncio.to_thread(_status)
+
+
+@router.delete("/blocked-apps", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+async def unblock_computer_use_app(name: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference.computer_use import policy
+
+    # Loosening is the UI's to do, on the machine it controls.
+    problem = policy.host_problem()
+    if problem:
+        raise HTTPException(status_code = 403, detail = problem)
+    policy.unblock_app(name)
+    logger.info("settings.computer_use_app_unblocked subject=%s app=%s", current_subject, name)
+    return await asyncio.to_thread(_status)
+
+
+@router.post("/resume", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
+async def resume_computer_use(current_subject: str = Depends(get_current_subject)):
+    """Allow again: the chats the user stopped with the pointer may use the computer once more,
+    each on the terms of its permission mode."""
+    from core.inference.computer_use import policy
+    from state import computer_use as state
+    from utils.account_context import current_account_id
+
+    problem = policy.host_problem()
+    if problem:
+        raise HTTPException(status_code = 403, detail = problem)
+    resumed = state.resume_account(current_account_id())
+    logger.info("settings.computer_use_resumed subject=%s chats=%s", current_subject, resumed)
+    return await asyncio.to_thread(_status)
+
+
 @router.post("/revoke")
 async def revoke_computer_use(current_subject: str = Depends(get_current_subject)):
-    """Every chat of this account asks again before it next touches the computer."""
+    """Every chat of this account asks again before it next touches the computer, and the
+    actions running now end."""
     from state import computer_use as state
     from utils.account_context import current_account_id
 

@@ -46,6 +46,7 @@ import {
 } from "@assistant-ui/react";
 import {
   COMPUTER_USE_TOOL,
+  computerCallWhy,
   describeComputerCall,
   plainComputerResult,
 } from "@/features/computer-use/summary";
@@ -556,7 +557,12 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         mcpServer={mcpServerFromProvenance(provenance)}
         mcpTool={mcpToolFromProvenance(provenance)}
         status={status}
-        detail={computerSteps.length > 0 ? computerSteps.join(", ") : undefined}
+        detail={
+          computerSteps.length > 0
+            ? // The model's word for it once it runs; the steps themselves while it asks.
+              (!awaitingApproval && computerCallWhy(argsText)) || computerSteps.join(", ")
+            : undefined
+        }
         singleLine={computerSteps.length > 0}
       />
       {!isCancelled && widget && (

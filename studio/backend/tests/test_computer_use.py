@@ -31,14 +31,15 @@ def desktop(monkeypatch):
     state.reset()
     host_policy._reset_loopback_default_state()
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
-    chosen = {"enabled": True, "coordinates": "auto", "allowed_apps": []}
+    chosen = {"enabled": True, "coordinates": "auto", "allowed_apps": [], "blocked_apps": []}
     monkeypatch.setattr(policy, "settings", lambda: dict(chosen))
 
-    def save_apps(names):
-        chosen["allowed_apps"] = policy._app_names(names)
+    def save_apps(**lists):
+        for kind, names in lists.items():
+            chosen[f"{kind}_apps"] = policy._app_names(names)
         return dict(chosen)
 
-    monkeypatch.setattr(policy, "_save_allowed_apps", save_apps)
+    monkeypatch.setattr(policy, "_save_apps", save_apps)
     monkeypatch.setattr(screen, "_SETTLE_FIRST_S", 0.0)
     monkeypatch.setattr(screen, "_SETTLE_STEP_S", 0.0)
     monkeypatch.setattr(computer_use.tool, "_OPEN_APP_WAIT_S", 0.0)
@@ -205,6 +206,13 @@ def test_other_models_dialects_normalise(arguments, expected):
     (parsed,) = actions_mod.parse_actions(arguments)
     for key, value in expected.items():
         assert parsed[key] == value, (key, parsed)
+
+
+def test_a_note_on_what_the_call_is_for_changes_nothing():
+    assert "why" in computer_use.computer_tool()["function"]["parameters"]["properties"]
+    plain = actions_mod.parse_actions({"action": "click", "x": 1, "y": 2})
+    noted = {"action": "click", "x": 1, "y": 2, "why": "Open the menu"}
+    assert actions_mod.parse_actions(noted) == plain
 
 
 def test_a_batch_without_a_first_action_and_its_limit():
@@ -535,8 +543,48 @@ def test_the_pointer_in_a_corner_stops_computer_use(desktop):
     stopped = run({"action": "click", **at(*BUTTON)})
     assert stopped.startswith("Error:") and "corner" in stopped
     assert desktop.presses == 0
-    # And the chat has to be allowed again.
+    # And the chat stays stopped, with Full access too, where nothing would ask.
+    desktop.pointer = (640.0, 400.0)
+    for kwargs in ({}, {"full_access": True}):
+        again = run({"action": "screenshot"}, **kwargs)
+        assert again.startswith("Error:") and "stopped computer use in this chat" in again
+    assert _asks("auto", {"action": "screenshot"})
+    asks = policy.call_asks({"action": "screenshot"}, SESSION)
+    assert asks["risks"] == ["you stopped computer use in this chat"]
+    # Only the user lifts it: by answering the chat's next question ...
+    assert run({"action": "screenshot"}, approved = True).startswith("Done:")
+    assert not state.is_stopped(state.session_key(SESSION))
+
+
+def test_allow_again_in_settings_lifts_a_stop(client):
+    client.put("/api/computer-use/settings", json = {"enabled": True})
+    look()
+    key = state.session_key(SESSION)
+    state.stop(key)
+    assert client.get("/api/computer-use/status").json()["stopped_chats"] == 1
+    assert "stopped computer use" in run({"action": "screenshot"}, full_access = True)
+    resumed = client.post("/api/computer-use/resume")
+    assert resumed.status_code == 200 and resumed.json()["stopped_chats"] == 0
+    # The go-ahead is still gone, so a chat without Full access asks again.
     assert "go-ahead" in run({"action": "screenshot"})
+    assert run({"action": "screenshot"}, full_access = True).startswith("Done:")
+    host_policy.set_remote_connector_active(True)
+    assert client.post("/api/computer-use/resume").status_code == 403
+
+
+def test_switching_off_ends_the_actions_running_now(desktop):
+    look()
+    original = desktop.click
+
+    def click(*args):
+        original(*args)
+        # The owner turns the switch off (or the composer's) while the chain runs.
+        state.revoke_account("")
+
+    desktop.click = click
+    result = run({"action": "click", **at(*FIELD), "then": [{"action": "type", "text": "late"}]})
+    assert "was not done: it was stopped." in result
+    assert ("type", "late") not in desktop.events
 
 
 def test_the_models_own_corner_click_is_not_the_stop_gesture(desktop):
@@ -676,6 +724,79 @@ def test_opening_an_app_asks_and_then_covers_what_follows(desktop):
     assert run(open_and_type, approved = True).startswith("Done:")
     assert not _asks("auto", {"action": "type", "text": "="})
     assert run({"action": "type", "text": "="}).startswith("Done:")
+
+
+def test_a_blocked_app_is_never_used(desktop):
+    look()
+    assert policy.block_app(" notes ")["blocked_apps"] == ["notes"]
+    click = {"action": "click", **at(*BUTTON)}
+    # Nothing to ask: the call is refused when it runs, whoever allowed it.
+    assert policy.call_asks(click, SESSION) == {"risks": [], "apps": []}
+    for kwargs in ({}, {"approved": True}, {"full_access": True}):
+        refused = run(click, **kwargs)
+        assert refused.startswith("Error:") and "Notes is blocked" in refused
+        assert "Notes is blocked" in run({"action": "type", "text": "x"}, **kwargs)
+    assert desktop.presses == 0 and desktop.text == ""
+    assert "notes is blocked" in run({"action": "open_app", "name": "notes"}, approved = True)
+    assert ("open_app", "notes") not in desktop.events
+    # Looking is not acting.
+    assert run({"action": "screenshot"}).startswith("Done:")
+    assert policy.unblock_app("NOTES")["blocked_apps"] == []
+    assert run(click).startswith("Done:")
+
+
+def test_blocking_wins_over_always_allowed(desktop):
+    policy.allow_app("Mail")
+    assert policy.block_app("Mail") == {
+        **desktop.chosen,
+        "allowed_apps": [],
+        "blocked_apps": ["Mail"],
+    }
+    with pytest.raises(ValueError, match = "blocked"):
+        policy.allow_app("mail")
+    with pytest.raises(ValueError):
+        policy.block_app("  ")
+
+
+@pytest.mark.parametrize(
+    ("blocked", "app", "expected"),
+    [
+        ("Chrome", "Google Chrome", True),
+        ("chrome", "chrome.exe", True),
+        ("Messages", "Messages", True),
+        ("Arc", "Search", False),
+        ("Mail", "Mailspring", False),
+        ("com.apple.mail", "Mail", False),
+    ],
+)
+def test_a_blocked_name_matches_whole_words(desktop, blocked, app, expected):
+    policy.block_app(blocked)
+    assert policy.is_blocked(app) is expected
+
+
+def test_a_blocked_app_is_known_by_its_identifier_too(desktop):
+    policy.block_app("com.apple.mail")
+    assert policy.blocked_window(FrontWindow(app = "Mail", app_id = "com.apple.mail")) == "Mail"
+    assert policy.blocked_window(FrontWindow(app = "Notes", app_id = "com.apple.Notes")) is None
+
+
+def test_the_blocked_apps_routes(client):
+    client.put("/api/computer-use/settings", json = {"enabled": True})
+    client.post("/api/computer-use/allowed-apps", json = {"name": "Safari"})
+    added = client.post("/api/computer-use/blocked-apps", json = {"name": "Safari"})
+    assert added.status_code == 200
+    assert added.json()["blocked_apps"] == ["Safari"] and added.json()["allowed_apps"] == []
+    assert client.post("/api/computer-use/allowed-apps", json = {"name": "Safari"}).status_code == 400
+    assert client.post("/api/computer-use/blocked-apps", json = {"name": ""}).status_code == 422
+    host_policy.set_remote_connector_active(True)
+    # Blocking only tightens, so it is always allowed; unblocking is not.
+    assert client.post("/api/computer-use/blocked-apps", json = {"name": "Mail"}).status_code == 200
+    assert (
+        client.delete("/api/computer-use/blocked-apps", params = {"name": "Mail"}).status_code == 403
+    )
+    host_policy.set_remote_connector_active(False)
+    removed = client.delete("/api/computer-use/blocked-apps", params = {"name": "safari"})
+    assert removed.status_code == 200 and removed.json()["blocked_apps"] == ["Mail"]
 
 
 def test_the_allowed_apps_routes(client):
@@ -918,6 +1039,8 @@ def test_the_status_route_reports_the_switch_and_the_machine(client):
         "platform": "virtual",
         "permissions": {"screen": None, "input": None},
         "allowed_apps": [],
+        "blocked_apps": [],
+        "stopped_chats": 0,
     }
     on = client.put("/api/computer-use/settings", json = {"enabled": True, "coordinates": "grid"})
     assert on.status_code == 200 and on.json()["enabled"] is True

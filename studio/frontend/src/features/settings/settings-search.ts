@@ -381,6 +381,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "computerUse.settings.anyApp",
     "computerUse.settings.browser",
     "computerUse.settings.allowedApps",
+    "computerUse.settings.blockedApps",
   ],
   debugging: [
     "settings.debugging.logSection",

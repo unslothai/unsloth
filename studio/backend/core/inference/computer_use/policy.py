@@ -18,6 +18,7 @@ from .keys import Chord, chord_text
 ENABLED_SETTING_KEY = "computer_use_enabled"
 COORDINATES_SETTING_KEY = "computer_use_coordinates"
 ALLOWED_APPS_SETTING_KEY = "computer_use_allowed_apps"
+BLOCKED_APPS_SETTING_KEY = "computer_use_blocked_apps"
 COORDINATE_SETTINGS = ("auto", "pixels", "grid")
 MAX_ALLOWED_APPS = 100
 _MAX_APP_NAME_CHARS = 80
@@ -87,7 +88,12 @@ def settings() -> dict:
     try:
         from storage.studio_db import get_app_settings
         stored = get_app_settings(
-            [ENABLED_SETTING_KEY, COORDINATES_SETTING_KEY, ALLOWED_APPS_SETTING_KEY]
+            [
+                ENABLED_SETTING_KEY,
+                COORDINATES_SETTING_KEY,
+                ALLOWED_APPS_SETTING_KEY,
+                BLOCKED_APPS_SETTING_KEY,
+            ]
         )
     except Exception:  # noqa: BLE001
         stored = {}
@@ -96,6 +102,7 @@ def settings() -> dict:
         "enabled": stored.get(ENABLED_SETTING_KEY) is True,
         "coordinates": coordinates if coordinates in COORDINATE_SETTINGS else "auto",
         "allowed_apps": _app_names(stored.get(ALLOWED_APPS_SETTING_KEY)),
+        "blocked_apps": _app_names(stored.get(BLOCKED_APPS_SETTING_KEY)),
     }
 
 
@@ -109,10 +116,19 @@ def _app_names(value: Any) -> list[str]:
     return list(names.values())[:MAX_ALLOWED_APPS]
 
 
-def _save_allowed_apps(names: list[str]) -> dict:
+def _save_apps(**lists: list[str]) -> dict:
     from storage.studio_db import upsert_app_settings
-    upsert_app_settings({ALLOWED_APPS_SETTING_KEY: _app_names(names)}, read_back = False)
+
+    keys = {"allowed": ALLOWED_APPS_SETTING_KEY, "blocked": BLOCKED_APPS_SETTING_KEY}
+    upsert_app_settings(
+        {keys[kind]: _app_names(names) for kind, names in lists.items()}, read_back = False
+    )
     return settings()
+
+
+def _without(names: list[str], name: str) -> list[str]:
+    folded = name.casefold()
+    return [app for app in names if app.casefold() != folded]
 
 
 def allow_app(name: Any) -> dict:
@@ -127,16 +143,58 @@ def allow_app(name: Any) -> dict:
         raise ValueError(f"{cleaned[0]} is {kind}, so it asks every time.")
     if is_own_window(FrontWindow(app = cleaned[0], title = "-")):
         raise ValueError("Unsloth's own window is never controlled.")
-    current = settings()["allowed_apps"]
-    if len(current) >= MAX_ALLOWED_APPS:
+    current = settings()
+    if is_blocked(cleaned[0], current):
+        raise ValueError(f"{cleaned[0]} is blocked. Remove it from the blocked apps first.")
+    if len(current["allowed_apps"]) >= MAX_ALLOWED_APPS:
         raise ValueError("The list is full. Remove an app first.")
-    return _save_allowed_apps([*current, cleaned[0]])
+    return _save_apps(allowed = [*current["allowed_apps"], cleaned[0]])
 
 
 def remove_allowed_app(name: Any) -> dict:
-    folded = name.casefold() if isinstance(name, str) else ""
-    current = settings()["allowed_apps"]
-    return _save_allowed_apps([app for app in current if app.casefold() != folded])
+    name = name if isinstance(name, str) else ""
+    return _save_apps(allowed = _without(settings()["allowed_apps"], name))
+
+
+def block_app(name: Any) -> dict:
+    """Add an app no model may act in, in any chat or mode. Blocking wins, so the app also
+    leaves the always-allowed list."""
+    cleaned = _app_names([name])
+    if not cleaned:
+        raise ValueError("Give the application's name.")
+    current = settings()
+    if len(current["blocked_apps"]) >= MAX_ALLOWED_APPS:
+        raise ValueError("The list is full. Remove an app first.")
+    return _save_apps(
+        blocked = [*current["blocked_apps"], cleaned[0]],
+        allowed = _without(current["allowed_apps"], cleaned[0]),
+    )
+
+
+def unblock_app(name: Any) -> dict:
+    name = name if isinstance(name, str) else ""
+    return _save_apps(blocked = _without(settings()["blocked_apps"], name))
+
+
+def is_blocked(name: str, current: Optional[dict] = None) -> bool:
+    """Whether the owner blocked this app. A blocked name matches as whole words, so "Chrome"
+    covers "Google Chrome": missing an app here is worse than covering one too many."""
+    folded = name.casefold()
+    if not folded:
+        return False
+    return any(
+        re.search(rf"(?<!\w){re.escape(app.casefold())}(?!\w)", folded)
+        for app in (current or settings())["blocked_apps"]
+    )
+
+
+def blocked_window(window: FrontWindow) -> Optional[str]:
+    """The blocked app this window belongs to, as the owner named it, or None."""
+    current = settings()
+    for name in (window.app, window.app_id):
+        if is_blocked(name, current):
+            return window.app or name
+    return None
 
 
 def update_settings(*, enabled: Optional[bool] = None, coordinates: Optional[str] = None) -> dict:
@@ -280,11 +338,14 @@ def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontW
 def new_apps(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
     """Apps this call would act in that the user has not allowed, here or always. The ones that
     ask every time are `risks`' to report, and Unsloth's own window is refused outright."""
+    current = settings()
     return [
         name
         for name in apps_used(actions, session, backend, front)
         if not asks_every_time(name)
         and not is_own_window(FrontWindow(app = name, title = "-"))
+        # A blocked app is refused when the call runs, so there is nothing to ask.
+        and not is_blocked(name, current)
         and not app_allowed(name, session)
     ]
 
@@ -342,11 +403,12 @@ def call_asks(arguments: Any, session_id: Optional[str]) -> dict:
     try:
         backend = get_backend()
         front = backend.front_window()
-        session = state.session(state.session_key(session_id))
-        return {
-            "risks": risks(actions, front, tuple(apps_used(actions, session, backend, front))),
-            "apps": new_apps(actions, session, backend, front),
-        }
+        key = state.session_key(session_id)
+        session = state.session(key)
+        found = risks(actions, front, tuple(apps_used(actions, session, backend, front)))
+        if state.is_stopped(key):
+            found.insert(0, "you stopped computer use in this chat")
+        return {"risks": found, "apps": new_apps(actions, session, backend, front)}
     except Exception:  # noqa: BLE001 - display only
         return {"risks": [], "apps": []}
 
