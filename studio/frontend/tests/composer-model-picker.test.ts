@@ -1008,3 +1008,13 @@ test("Only models that fit judges MLX and safetensors results by the checkpoint 
     /const checkpointFits = hubCheckpointFits\.get\(row\.id\.toLowerCase\(\)\);\s*if \(checkpointFits !== undefined\) \{\s*return checkpointFits;/,
   );
 });
+
+test("a standalone resident GGUF opens Run settings under its bare path", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /isStandaloneGgufPath\(row\.id\)\s*\? \{ \.\.\.residentMeta\(row\), ggufVariant: undefined, isGguf: true \}\s*: residentMeta\(row\);/,
+  );
+});

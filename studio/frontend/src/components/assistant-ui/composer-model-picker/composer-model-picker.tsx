@@ -72,6 +72,7 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
+import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
 import {
   AUDIO_CATALOG,
   ConnectedModelInfoDialog,
@@ -3061,7 +3062,11 @@ export function ComposerModelPicker({
       return cachedMeta(row);
     }
     if (row.kind === "loaded") {
-      return residentMeta(row);
+      // As residentModelConfigTarget: a standalone .gguf keys its settings by the bare path, its
+      // quant only a label from the filename.
+      return isStandaloneGgufPath(row.id)
+        ? { ...residentMeta(row), ggufVariant: undefined, isGguf: true }
+        : residentMeta(row);
     }
     if (row.kind === "hub") {
       return {
