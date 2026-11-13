@@ -1652,7 +1652,6 @@ class TestCustomCodeRouting:
 
     def test_upgrade_offered_when_pypi_is_new_enough(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
-        # Highest installed tier below the saving version, as before the 5.13.1 sidecar.
         monkeypatch.setattr("utils.transformers_version.TRANSFORMERS_510_VERSION", "5.10.2")
         result = check_upgrade_for_model(_custom_code_model(tmp_path, "5.12.0.dev0"))
         assert result is not None

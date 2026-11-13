@@ -73,7 +73,6 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False, raising = False)
-    # The kernels-package path is under test here; the direct hub loader has its own tests (test_diffusion_sage_hub.py).
     monkeypatch.setattr(
         att, "_load_sage_hub_direct", lambda: (None, "direct loader stubbed"), raising = False
     )
