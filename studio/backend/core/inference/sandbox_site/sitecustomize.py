@@ -366,7 +366,15 @@ def _route_pip():
             placed = any(
                 a.split("=", 1)[0] in _PIP_LOCATION_FLAGS or (a.startswith("-t") and a != "-t")
                 for a in sys.argv[1:]
-            ) or any(os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT", "PIP_USER", "PIP_HOME"))
+            ) or any(os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT", "PIP_HOME"))
+            placed = placed or os.environ.get("PIP_USER", "").strip().lower() in (
+                "y",
+                "yes",
+                "t",
+                "true",
+                "on",
+                "1",
+            )
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
@@ -421,13 +429,15 @@ _finder_template = []
 
 
 def _install_editable_finder(entry, module):
-    # setuptools' editable finder, built from Studio's own setuptools template with the chat file's literal
-    # MAPPING / NAMESPACES: the chat-written module itself never runs. Read as text: importing setuptools is slow.
+    # setuptools' editable finder, built from the template of the setuptools in Studio's own site-packages (never
+    # one the chat folder could shadow) with the chat file's literal MAPPING / NAMESPACES: the chat-written module
+    # never runs. Read as text: importing setuptools is slow. Without setuptools there (torch ships it from 3.12)
+    # such installs import only from their project folder, as under OS isolation.
     if not _finder_template:
-        import importlib.util
-
-        spec = importlib.util.find_spec("setuptools")
-        source = os.path.join(spec.submodule_search_locations[0], "command", "editable_wheel.py")
+        import sysconfig
+        source = os.path.join(
+            sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
+        )
         _finder_template.append(_literal(source, {"_FINDER_TEMPLATE"})["_FINDER_TEMPLATE"])
     data = _literal(os.path.join(entry, module + ".py"), {"MAPPING", "NAMESPACES"})
     mapping, namespaces = data.get("MAPPING", {}), data.get("NAMESPACES", {})

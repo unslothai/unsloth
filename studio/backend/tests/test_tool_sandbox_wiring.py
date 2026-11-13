@@ -14,6 +14,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import sysconfig
 import textwrap
 import time
 import zipfile
@@ -756,7 +757,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
 
 
 @pytest.mark.parametrize(
-    "case", ["chat", "same_process", "editable", "project_venv", "target", "env_target"]
+    "case",
+    ["chat", "same_process", "editable", "project_venv", "target", "env_target", "pip_user_off"],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp_path, case):
@@ -777,6 +779,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # An explicit --target keeps its own location.
         "target": f"{_PIP} --target vendor {wheel} && PYTHONPATH=vendor {show}",
         "env_target": f"PIP_TARGET=vendor {_PIP} {wheel} && PYTHONPATH=vendor {show}",
+        "pip_user_off": f"PIP_USER=0 {_PIP} {wheel} && {show}",
         "editable": f"{_PIP} {wheel} && {show}",
         # Python caches the session dirs as missing at startup, before pip creates them.
         "same_process": 'python -c "import subprocess, sys; subprocess.check_call(sys.argv[1:]); '
@@ -803,6 +806,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "chat": packages,
         "target": str(workdir / "vendor"),
         "env_target": str(workdir / "vendor"),
+        "pip_user_off": packages,
         "same_process": packages,
         "editable": str(workdir / "src"),
         "project_venv": str(workdir / "venv"),
@@ -826,6 +830,11 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path, case):
     """Editable forks, an upgrade imported in the installing process, and a new namespace portion all load."""
+    template = os.path.join(
+        sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
+    )
+    if case.startswith("editable_finder") and not os.path.exists(template):
+        pytest.skip("finder-based editable installs need setuptools in Studio's environment")
     name = f"unsloth_chat_shadow_{case}"
     workdir = tmp_path / "chat"
     workdir.mkdir()
