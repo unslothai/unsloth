@@ -1776,10 +1776,8 @@ class _LoadingState:
     # ``{incomplete blob path: size}`` in the planned repos when this load claimed them: a cancelled sibling download
     # leaves ``*.incomplete`` blobs behind, and only growth past this snapshot is this load's own bytes.
     incomplete_baseline: dict[str, int] = field(default_factory = dict)
-    # ``{(repo_lower, filename): blob key}`` for the planned files whose listing named one. huggingface_hub writes a
-    # download to ``blobs/<key>.incomplete`` (<= 1.17) or ``blobs/<key>.<8 hex>.incomplete`` (>= 1.18), so an
-    # in-flight blob with a planned key IS that file, and every other ``.incomplete`` (a cancelled sibling's) is
-    # ignored outright.
+    # ``{(repo_lower, filename): blob key}`` for the planned files whose listing named one. A
+    # ``<key>[.<8 hex>].incomplete`` with a planned key IS that file; any other (a cancelled sibling's) is ignored.
     planned_blob_keys: dict[tuple[str, str], str] = field(default_factory = dict)
     # (expected_bytes, downloaded) once every expected byte was on disk.
     finalized_scan: Optional[tuple[int, int]] = None
@@ -7896,8 +7894,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _incomplete_blob_sizes(repos) -> dict[str, int]:
-        """``{path: bytes written}`` of every ``blobs/*.incomplete`` of ``repos`` across cache roots. Never raises.
-        Sparse-aware, since a partial may already report its full length before its bytes land."""
+        """``{path: bytes written}`` (sparse-aware) of every ``blobs/*.incomplete`` of ``repos`` across cache roots."""
         out: dict[str, int] = {}
         for repo in repos:
             for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo):
@@ -7929,11 +7926,9 @@ class DiffusionBackend:
                 name: (min(size, DiffusionBackend._cache_file_bytes(repo, name)) if size else 0)
                 for name, size in files
             }
-            # A planned file's in-flight blob is ``<its blob key>.incomplete``, counted in full since a resume appends
-            # to it, or ``<its blob key>.<8 hex>.incomplete``, a fresh file per attempt, so one already there when the
-            # load claimed its repos is a dead attempt's and only growth past the baseline counts. One partial per
-            # file, up to what the file still lacks. Any other ``.incomplete`` belongs to some other download and is
-            # ignored, unless a planned file's key is unknown: only then does growth past the baseline stand in for it.
+            # ``<key>.incomplete`` counts in full (a resume appends to it); ``<key>.<8 hex>.incomplete`` is a fresh file
+            # per attempt (huggingface_hub >= 1.18), so only growth past the baseline counts. One partial per file, up
+            # to what it still lacks. Other partials count (as baseline growth) only when a planned key is unknown.
             remaining_by_key: dict[str, int] = {}
             unkeyed = False
             for name, size in files:

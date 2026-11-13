@@ -1747,9 +1747,8 @@ class _VideoLoadingState:
     # that owns this state (under the load-token check), replaced whole by a re-estimate, never patched by a fetch site.
     # The fetch sites read their repo + revision from it, and load_progress reads nothing else.
     fetch_plan: dict[str, "_PlannedFetch"] = field(default_factory = dict)
-    # ``{partial path: bytes}`` of each planned file's process-unique partials when a plan first named that file:
-    # huggingface_hub >= 1.18 writes every attempt to a fresh ``<key>.<8 hex>.incomplete``, so one already there is a
-    # dead attempt's. A re-plan adds its new files and never rewrites an entry, since by then this load may be writing.
+    # ``{partial path: bytes}`` of each planned file's ``<key>.<8 hex>.incomplete`` (a dead attempt's) when a plan first
+    # named it. A re-plan only adds entries: by then this load may be writing the existing ones.
     incomplete_baseline: dict[str, int] = field(default_factory = dict)
 
 
@@ -9332,7 +9331,6 @@ class VideoBackend:
 
     @staticmethod
     def _plan_blob_keys(plan: dict[str, "_PlannedFetch"]) -> set[tuple[str, str]]:
-        """``(repo lower, blob key)`` of every keyed file in ``plan``."""
         return {
             ((entry.repo or "").strip().lower(), etag)
             for entry in plan.values()
@@ -9372,11 +9370,9 @@ class VideoBackend:
 
         A blob is named by its content key, so this counts exactly the planned file whichever revision it lands under
         (a superseded snapshot's same-named file has another key), never a carrier's other checkpoints or an unrelated
-        partial, and the in-flight partial while it downloads: ``<key>.incomplete`` in full, since a resume appends to
-        it, or ``<key>.<8 hex>.incomplete`` past ``baseline``, since that is a fresh file per attempt and one already
-        there is a dead attempt's. Both cache roots are read, as every fetch passes ``reuse_other_cache_root``. A file
-        with no key falls back to its entry in the pinned revision (else ``refs/main``). Each file is capped at its
-        listed size and counted once."""
+        partial, and the in-flight partial while it downloads: ``<key>.incomplete`` in full (a resume appends to it),
+        ``<key>.<8 hex>.incomplete`` only past ``baseline``. Both cache roots are read. A file with no key falls back
+        to its entry in the pinned revision (else ``refs/main``). Each file is capped at its size and counted once."""
         import os
 
         roots = VideoBackend._plan_cache_roots()
