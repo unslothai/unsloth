@@ -7,6 +7,7 @@ import {
 } from "@/features/credentials/reconciliation";
 
 import {
+  type ModelCatalogResponse,
   type ProviderRegistryEntry,
   fetchModelCatalog,
   listProviderConfigs,
@@ -348,23 +349,33 @@ function usesProviderCatalogEndpoint(provider: ExternalProviderConfig): boolean 
   return baseUrl === "" || baseUrl === expected;
 }
 
+let modelsDevRefresh: Promise<ModelCatalogResponse> | null = null;
+
+export async function refreshModelsDevCatalog(isCurrent?: () => boolean): Promise<boolean> {
+  const modelsDevAge = modelsDevCatalogFetchedAt();
+  if (modelsDevAge != null && Date.now() - modelsDevAge * 1000 < MODEL_CATALOG_TTL_MS) {
+    return false;
+  }
+  try {
+    modelsDevRefresh ??= fetchModelCatalog().finally(() => {
+      modelsDevRefresh = null;
+    });
+    const catalog = await modelsDevRefresh;
+    if (isCurrent && !isCurrent()) return false;
+    setModelsDevCatalog(catalog);
+    return true;
+  } catch {
+    // Offline: the bundled snapshot answers until the next sync.
+    return false;
+  }
+}
+
 export async function refreshProviderModelCatalogs(
   providers: readonly ExternalProviderConfig[],
   isCurrent?: () => boolean,
 ): Promise<void> {
-  const modelsDevAge = modelsDevCatalogFetchedAt();
-  if (
-    providers.length > 0 &&
-    (modelsDevAge == null || Date.now() - modelsDevAge * 1000 >= MODEL_CATALOG_TTL_MS)
-  ) {
-    try {
-      const catalog = await fetchModelCatalog();
-      if (isCurrent && !isCurrent()) return;
-      setModelsDevCatalog(catalog);
-    } catch {
-      // Offline: the bundled snapshot answers until the next sync.
-    }
-  }
+  if (providers.length > 0) await refreshModelsDevCatalog(isCurrent);
+  if (isCurrent && !isCurrent()) return;
   for (const provider of providers) {
     const providerType = provider.providerType;
     if (!usesProviderCatalogEndpoint(provider)) continue;
