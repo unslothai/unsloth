@@ -158,7 +158,6 @@ test("NPU rows: downloaded ones on device, all of them to browse, by query", () 
   assert.deepEqual(ids(true, "gemma"), []);
   assert.deepEqual(api.npuRowsFor(null, { onDevice: false, query: "" }), []);
 
-  // Lemonade's order, with real FastFlowLM checkpoints.
   const backendOrder = [
     ["d3-edge-FLM", "d3:edge"],
     ["gemma3-4b-FLM", "gemma3:4b"],
