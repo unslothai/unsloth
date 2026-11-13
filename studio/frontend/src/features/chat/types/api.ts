@@ -93,7 +93,6 @@ export interface LoadModelRequest {
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlx_ple_offload?: "off" | number | null;
   mlx_expert_offload?: "off" | number | null;
-  /** AMD NPU only: FastFlowLM flags; omitted leaves its default. */
   npu_power_mode?: "powersaver" | "balanced" | "performance" | "turbo";
   npu_prefill_chunk_len?: number;
   npu_img_pre_resize?: number;

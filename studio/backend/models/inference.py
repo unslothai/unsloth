@@ -266,8 +266,7 @@ class LoadRequest(BaseModel):
     _mlx_offload_amounts = field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")(
         _mlx_offload_amount
     )
-    # Checked by the NPU load (core/inference/npu_flm_args.py), which answers a bad value with a 400.
-    # Untyped so pydantic can't coerce JSON true to 1 first.
+    # Untyped so pydantic can't coerce JSON true to 1; npu_flm_args.py validates (400).
     npu_power_mode: Optional[str] = Field(
         None,
         description = (

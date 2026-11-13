@@ -742,8 +742,7 @@ class LemonadeNpuBackend:
                 replaced = True
                 self._loaded = None
                 self._raise_if_load_cancelled(model_id)
-                # lemond answers a load of the model it holds with the same options without
-                # restarting FastFlowLM, so a Reload model would leave the old process serving.
+                # lemond reuses a resident with the same options, so Reload model unloads first.
                 if self._resident_context(server, model.id) is not None:
                     response = server.request(
                         "POST", "/v1/unload", json_body = {"model_name": model.id}, timeout = 60.0

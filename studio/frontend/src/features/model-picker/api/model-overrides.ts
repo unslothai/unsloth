@@ -416,7 +416,6 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     mlx_expert_offload: config.mlxExpertOffload ?? null,
     // Null clears a stored table; travels with mirrors_engram_precision.
     engram_precision: config.engramPrecision ?? null,
-    // The row uses the load request's keys.
     npu_power_mode: null,
     npu_prefill_chunk_len: null,
     npu_img_pre_resize: null,

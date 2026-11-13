@@ -11219,7 +11219,6 @@ async def _auto_switch_npu_model(
 
     if await asyncio.to_thread(_loaded_satisfies, named_model):
         return
-    # The context length and FastFlowLM settings saved for the model, as a picker load sends them.
     override = get_model_override(named_model)
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = False)
     flm_fields = {key: override[key] for key in NPU_FLM_FIELDS if override.get(key) is not None}

@@ -2675,8 +2675,7 @@ export function ModelConfigPage({
   const npuCatalogVision = useNpuCatalogStore(
     (s) => s.models?.some((m) => m.model_path === target.id && m.supports_vision) ?? false,
   );
-  // The catalog is otherwise filled by the picker, so a chat opened straight onto an NPU
-  // model would not know it reads images and hide Image Pre-resize.
+  // List the catalog here too: a chat opened straight onto an NPU model needs its vision flag.
   const npuCatalogListed = useNpuCatalogStore((s) => s.models != null);
   const [npuStatus] = useNpuStatus(targetIsNpu && !npuCatalogListed);
   useEffect(() => {

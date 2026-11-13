@@ -12,7 +12,6 @@ from typing import Any, Optional
 
 NPU_POWER_MODES = ("powersaver", "balanced", "performance", "turbo")
 NPU_IMG_PRE_RESIZE_MAX = 4
-# LoadRequest field -> FastFlowLM flag.
 NPU_FLM_FIELDS = {
     "npu_power_mode": "--pmode",
     "npu_prefill_chunk_len": "--prefill-chunk-len",

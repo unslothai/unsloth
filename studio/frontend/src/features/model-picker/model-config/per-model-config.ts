@@ -411,7 +411,6 @@ export function normalizeNpuImgPreResize(value: unknown): number | null {
   return wholeNumberIn(value, 0, NPU_IMG_PRE_RESIZE_MAX);
 }
 
-/** The /load fields an NPU load sends; unset ones are left out. */
 export function npuLoadFields(
   config: Pick<PerModelConfig, "npuPowerMode" | "npuPrefillChunkLen" | "npuImgPreResize">,
 ): Pick<LoadModelRequest, "npu_power_mode" | "npu_prefill_chunk_len" | "npu_img_pre_resize"> {
