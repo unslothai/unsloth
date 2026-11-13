@@ -171,9 +171,7 @@ def test_plain_generate_on_by_default_bitwise_and_released(runtime):
 
 
 def test_release_rearms_a_disabled_model():
-    """A capture failure (an OOM mid-GRPO) or a parameter on another device disables graphs on the
-    model; release() / invalidate() drop what that decision was made against, so the next decode
-    re-checks instead of the model staying eager for its life."""
+    """A capture failure (e.g. an OOM mid-GRPO) must not keep the model eager for life."""
     model = torch.nn.Linear(2, 2)
     state = G._state(model)
     for drop in (G.release, G.invalidate):

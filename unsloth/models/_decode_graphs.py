@@ -753,8 +753,7 @@ def release(model):
             found = True
             state.clear()
             state.statics.clear()
-            # The reason graphs were given up on (a capture OOM, parameters on another device) was
-            # decided against buffers and a pool this call just dropped: the next decode re-checks.
+            # Decided against the buffers / pool just dropped: the next decode re-checks.
             state.disabled = None
         generic = d.get("_unsloth_generic_decode_graphs")
         if generic is not None:
