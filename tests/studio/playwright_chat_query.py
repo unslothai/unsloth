@@ -173,6 +173,27 @@ def run(browser):
     context.close()
     print("PASS query survives sign-in and stays unsent", flush = True)
 
+    context, posts = fixture(browser)
+    page = context.new_page()
+    page.goto(BASE + "/chat?q=reopened+query", wait_until = "domcontentloaded")
+    expect(composer(page)).to_have_value("reopened query", timeout = 20000)
+    composer(page).fill("reopened edit")
+    page.wait_for_function(
+        "Object.entries(sessionStorage).some(([k, v]) => k.includes(':query-') && v === 'reopened edit')"
+    )
+    page.evaluate(
+        "Object.keys(localStorage).filter(k => k.includes('auth_token') || k.includes('refresh_token')).forEach(k => localStorage.removeItem(k))"
+    )
+    page.reload(wait_until = "domcontentloaded")
+    expect(page.get_by_label("Password", exact = True)).to_be_visible(timeout = 20000)
+    assert "q=reopened%20edit" in page.url, page.url
+    page.get_by_label("Password", exact = True).fill("test-password")
+    page.get_by_role("button", name = "Login", exact = True).click()
+    expect(composer(page)).to_have_value("reopened edit", timeout = 20000)
+    assert_unsent(posts)
+    context.close()
+    print("PASS a reopened query chat keeps its text through sign-in", flush = True)
+
     context, posts = fixture(browser, authenticated = False, password_change = True)
     page = context.new_page()
     page.goto(BASE + "/chat?q=password+change+query", wait_until = "domcontentloaded")
