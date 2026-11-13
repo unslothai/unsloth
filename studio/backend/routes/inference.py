@@ -7847,7 +7847,10 @@ def _monitor_anthropic_payload(
         delta = data.get("delta") or {}
         text = delta.get("text") if isinstance(delta, dict) else None
         if isinstance(delta, dict) and delta.get("type") == "thinking_delta":
-            api_monitor.mark_first_token(monitor_id)
+            thinking = delta.get("thinking")
+            api_monitor.mark_first_token(
+                monitor_id, output_chars = len(thinking) if isinstance(thinking, str) else 0
+            )
         if isinstance(text, str) and text:
             api_monitor.append_reply(monitor_id, text)
         elif isinstance(delta, dict) and delta.get("type") == "input_json_delta":

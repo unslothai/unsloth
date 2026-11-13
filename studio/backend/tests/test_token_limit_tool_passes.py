@@ -213,3 +213,76 @@ def test_reported_input_keeps_its_count_while_missing_output_is_estimated():
         100,
         110,
     )
+
+
+def test_output_after_the_last_usage_report_is_still_charged():
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    entry = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "",
+        subject = "o",
+        via_api_key = True,
+    )
+    monitor.append_reply(entry, "a" * 40)
+    monitor.set_usage(entry, prompt_tokens = 90, completion_tokens = 10, total_tokens = 100)
+    monitor.append_reply(entry, "b" * 400)
+    monitor.finish(entry, "cancelled")
+    [receipt] = receipts
+    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (
+        90,
+        110,
+        200,
+    )
+
+
+def test_a_finished_stream_adds_nothing_to_its_reported_usage():
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    entry = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "",
+        subject = "o",
+        via_api_key = True,
+    )
+    monitor.append_reply(entry, "a" * 400)
+    monitor.set_usage(entry, prompt_tokens = 90, completion_tokens = 7, total_tokens = 97)
+    monitor.finish(entry)
+    [receipt] = receipts
+    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (90, 7, 97)
+
+
+def test_anthropic_thinking_counts_toward_an_interrupted_estimate():
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    entry = monitor.start(
+        endpoint = "/v1/messages",
+        method = "POST",
+        model = "m",
+        prompt = "",
+        subject = "o",
+        via_api_key = True,
+    )
+    monitor.set_usage(entry, prompt_tokens = 10)
+    monitor_before = inference_route.api_monitor
+    inference_route.api_monitor = monitor
+    try:
+        inference_route._monitor_anthropic_payload(
+            entry,
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "t" * 400},
+            },
+        )
+    finally:
+        inference_route.api_monitor = monitor_before
+    monitor.finish(entry, "cancelled")
+    [receipt] = receipts
+    assert (receipt.prompt_tokens, receipt.completion_tokens) == (10, 100)

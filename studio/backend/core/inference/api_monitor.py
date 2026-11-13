@@ -216,6 +216,8 @@ class ApiMonitorEntry:
     reply: str = ""
     # reply is a display buffer capped at _MAX_REPLY_CHARS; usage estimates need the full length.
     reply_chars: int = 0
+    # reply_chars when output usage was last reported; only text after it is unaccounted.
+    reported_reply_chars: int = 0
     finished_at: Optional[float] = None
     context_length: Optional[int] = None
     prompt_tokens: Optional[int] = None
@@ -866,6 +868,7 @@ class ApiMonitor:
                 entry.prompt_tokens = prompt_tokens
             if completion_tokens is not None:
                 entry.completion_tokens = completion_tokens
+                entry.reported_reply_chars = entry.reply_chars
             if total_tokens is not None:
                 entry.total_tokens = total_tokens
                 entry.total_tokens_authoritative = True
@@ -980,15 +983,19 @@ class ApiMonitor:
             entry.completion_tokens or 0,
             entry.total_tokens or 0,
         )
-        if (
-            (entry.temporary_usage or entry.via_api_key)
-            and not completion_tokens
-            and entry.reply_chars
-        ):
-            # Stopped before its output usage arrived: estimate only the side that was never
-            # reported (an Anthropic stream reports input at message_start).
+        # A completed request's reported usage stands (its full reply may be set after it); a
+        # stopped one adds what streamed after its last report (a tool pass reports mid-request).
+        unreported = (
+            entry.reply_chars
+            if not completion_tokens
+            else 0
+            if entry.status == "completed"
+            else entry.reply_chars - entry.reported_reply_chars
+        )
+        if (entry.temporary_usage or entry.via_api_key) and unreported > 0:
+            # Anthropic streams report input at message_start, so keep a reported prompt.
             prompt_tokens = prompt_tokens or -(-len(entry.prompt) // 4)
-            completion_tokens = -(-entry.reply_chars // 4)
+            completion_tokens += -(-unreported // 4)
             total_tokens = prompt_tokens + completion_tokens
         return (
             callback_owner,
