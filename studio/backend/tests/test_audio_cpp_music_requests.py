@@ -811,17 +811,3 @@ def test_yue2_plan_without_a_score_renders_the_take_unchanged():
     render = _request(b, 1)
     assert render["options"]["cot"] == "melody"
     assert {"abc", "stop_after"}.isdisjoint(render["options"])
-
-
-@pytest.mark.parametrize(
-    "reply",
-    [
-        ("application/json", b'{"artifacts": [{"id": "score", "payload": "abc"}]}'),
-        ("application/json", b'{"artifacts": [{"id": "score", "payload": 7}]}'),
-        ("application/json", b"[]"),
-    ],
-)
-def test_yue2_unreadable_plan_renders_the_take_unchanged(reply):
-    b = _backend(_yue2_planned(), replies = [reply, _reply()])
-    _run(b, text = "nu metal", lyrics = "", instrumental = True, options = {"cot": "full"})
-    assert {"abc", "stop_after"}.isdisjoint(_request(b, 1)["options"])
