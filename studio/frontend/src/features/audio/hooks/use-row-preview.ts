@@ -20,7 +20,9 @@ export function useRowPreview(
     const onEnded = () => setPlayingId(null);
     // The preview player (or any other on the page) starting stops the row.
     const onOtherPlay = (event: Event) => {
-      if (event.target === audio || audio.paused) return;
+      if (event.target === audio) return;
+      requestRef.current += 1;
+      if (audio.paused) return;
       audio.pause();
       setPlayingId(null);
     };
@@ -56,8 +58,19 @@ export function useRowPreview(
       audio.pause();
       setPlayingId(id);
       try {
-        const src = srcById[id] ?? (await fetchGalleryAudioSignedUrl(id));
-        // A later click (or leaving the page) during the URL fetch wins.
+        // A later click, another player or leaving the page during a fetch wins.
+        const cached = srcById[id];
+        if (cached) {
+          audio.src = cached;
+          try {
+            await audio.play();
+            return;
+          } catch {
+            // A cached signed URL can expire; remint once below.
+            if (request !== requestRef.current) return;
+          }
+        }
+        const src = await fetchGalleryAudioSignedUrl(id);
         if (request !== requestRef.current) return;
         audio.src = src;
         await audio.play();
