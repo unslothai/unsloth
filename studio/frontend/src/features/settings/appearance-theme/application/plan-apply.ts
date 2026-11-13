@@ -75,10 +75,13 @@ function reconcileFonts(
     ...customization,
     importedFonts: selectedFirst(customization, [...restored, ...customization.importedFonts]),
   });
-  const kept = new Set(next.importedFonts.map((font) => key(font.name)));
+  // Selections take the imported font's own spelling, so exact-name removal still finds them.
+  const kept = new Map(next.importedFonts.map((font) => [key(font.name), font.name]));
   for (const field of FONT_FIELDS) {
     const name = next[field];
-    if (name && imported.has(key(name)) && !kept.has(key(name))) next[field] = null;
+    if (!name) continue;
+    if (kept.has(key(name))) next[field] = kept.get(key(name))!;
+    else if (imported.has(key(name))) next[field] = null;
   }
   return next;
 }

@@ -299,14 +299,14 @@ test("a theme font replaces an imported one whose name differs only in case", ()
 test("a theme selection matches an imported font that differs only in case", () => {
   const current = { ...BASE, customization: sanitizeCustomization({ importedFonts: [font("Brand Sans")] }) };
   const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "brand sans" }, assets: { fonts: [font("brand sans")] } })));
-  assert.equal(apply(current, theme, true, false).customization.uiFont, "brand sans");
+  assert.equal(apply(current, theme, true, false).customization.uiFont, "Brand Sans");
 });
 
 test("the cap keeps a selected font whose name differs only in case", () => {
   const current = withFonts([font("First"), font("Second"), font("Brand Sans")]);
   const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "brand sans" }, assets: { fonts: [font("New")] } })));
   const plan = apply(current, theme);
-  assert.equal(plan.customization.uiFont, "brand sans");
+  assert.equal(plan.customization.uiFont, "Brand Sans");
   assert.ok(plan.customization.importedFonts.some((f) => f.name === "Brand Sans"));
 });
 
@@ -340,4 +340,9 @@ test("a theme's case-duplicate font is dropped with a warning, so Undo restores 
   const applied = apply(before, result.theme);
   const now = { ...before, palette: applied.palette, glass: applied.glass, customization: applied.customization };
   assert.deepEqual(planUndo(before, applied, now).customization.importedFonts, before.customization.importedFonts);
+});
+
+test("a case-variant selection takes the imported font's spelling, so removing the font clears it", () => {
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "brand sans" }, assets: { fonts: [font("Brand Sans")] } })));
+  assert.equal(apply(BASE, theme).customization.uiFont, "Brand Sans");
 });
