@@ -77,6 +77,14 @@ test("reasoning never reaches the translation, finished or still streaming", () 
   assert.equal(cleanTranslation("plan it</think>Hello"), "Hello");
   assert.equal(cleanTranslation("<think>still thinking"), "");
   assert.equal(
+    cleanTranslation("<think>a</think>Use <think>...</think> tags here"),
+    "Use <think>...</think> tags here",
+  );
+  assert.equal(
+    cleanTranslation("Wrap it in <think> and </think>."),
+    "Wrap it in <think> and </think>.",
+  );
+  assert.equal(
     cleanTranslation("  Line one\nLine two  "),
     "Line one\nLine two",
   );

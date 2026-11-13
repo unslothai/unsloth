@@ -138,13 +138,18 @@ export function buildTranslateSystemPrompt(options: TranslateOptions): string {
   ].join("\n");
 }
 
-// Reasoning may be closed, still streaming, or opened by the chat template.
+// Only a leading reasoning block is dropped (closed, still streaming, or opened by the chat
+// template); tags later in the text are the translation's own.
 export function cleanTranslation(raw: string): string {
-  return raw
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/^[\s\S]*<\/think>/i, "")
-    .replace(/<think>[\s\S]*$/i, "")
-    .trim();
+  const text = raw.trimStart();
+  const close = text.search(/<\/think>/i);
+  if (/^<think>/i.test(text)) {
+    return close < 0 ? "" : text.slice(close + "</think>".length).trim();
+  }
+  if (close >= 0 && !/<think>/i.test(text.slice(0, close))) {
+    return text.slice(close + "</think>".length).trim();
+  }
+  return text.trim();
 }
 
 function entryLabel(entry: TranslationEntry): string {
