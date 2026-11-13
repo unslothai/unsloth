@@ -125,3 +125,68 @@ def test_a_long_interrupted_temporary_reply_is_estimated_in_full():
     monitor.finish(entry, "cancelled")
     [receipt] = receipts
     assert receipt.completion_tokens == 12_000
+
+
+def test_closing_a_temporary_stream_closes_the_stream_it_wraps():
+    import asyncio
+
+    from core.inference.api_monitor import TemporaryUsage
+
+    events = []
+
+    async def inner():
+        try:
+            yield b"one"
+            yield b"two"
+        finally:
+            events.append("inner closed")
+
+    async def run():
+        outer = inference_route._scoped_stream(inner(), TemporaryUsage("t", "local"))
+        assert await outer.__anext__() == b"one"
+        await outer.aclose()
+        events.append("outer closed")
+
+    asyncio.run(run())
+    assert events == ["inner closed", "outer closed"]
+
+
+def test_a_cancelled_api_key_stream_settles_an_estimate():
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    entry = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "p" * 40,
+        subject = "owner",
+        via_api_key = True,
+    )
+    monitor.append_reply(entry, "r" * 40)
+    monitor.finish(entry, "cancelled")
+    [receipt] = receipts
+    assert (receipt.prompt_tokens, receipt.completion_tokens) == (10, 10)
+
+
+def test_reasoning_counts_toward_an_interrupted_estimate():
+    from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
+
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    with temporary_usage_scope(TemporaryUsage("thread", "local", "message")):
+        entry = monitor.start(
+            endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "", subject = "o"
+        )
+    monitor_before = inference_route.api_monitor
+    inference_route.api_monitor = monitor
+    try:
+        chunk = {"choices": [{"index": 0, "delta": {"reasoning_content": "t" * 400}}]}
+        inference_route._monitor_openai_chunk(entry, chunk, None)
+    finally:
+        inference_route.api_monitor = monitor_before
+    monitor.finish(entry, "cancelled")
+    [receipt] = receipts
+    assert receipt.completion_tokens == 100
+    assert monitor.get(entry)["reply"] == ""

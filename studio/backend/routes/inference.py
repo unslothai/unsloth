@@ -7623,7 +7623,19 @@ def _monitor_openai_chunk(
                 )
             )
         ):
-            api_monitor.mark_first_token(monitor_id)
+            reasoning = delta.get("reasoning_content")
+            api_monitor.mark_first_token(
+                monitor_id,
+                output_chars = len(reasoning)
+                if isinstance(reasoning, str)
+                else sum(
+                    len(_delta_text(part.get("thinking")) or "")
+                    for part in raw_content
+                    if isinstance(part, dict) and part.get("type") == "thinking"
+                )
+                if isinstance(raw_content, list)
+                else 0,
+            )
 
         streamed_tool_delta = False
         if streaming and isinstance(delta, dict):
@@ -31506,14 +31518,7 @@ async def openai_chat_completions(
             cancel_on_disconnect = True,
         )
     if temporary and isinstance(response, StreamingResponse):
-        iterator = response.body_iterator
-
-        async def tracked():
-            with temporary_usage_scope(temporary):
-                async for chunk in iterator:
-                    yield chunk
-
-        response.body_iterator = tracked()
+        response.body_iterator = _scoped_stream(response.body_iterator, temporary)
     if connection is None or not isinstance(response, StreamingResponse):
         return response
     response.body_iterator = _relay_split_thinking(
@@ -31525,6 +31530,19 @@ async def openai_chat_completions(
     if collect:
         return await _chat_completion_from_connection_stream(response, payload.model)
     return response
+
+
+async def _scoped_stream(iterator, temporary):
+    # async for does not close its source: forward teardown so the inner stream's cancellation,
+    # slot release and accounting run in the serving task, not at garbage collection.
+    try:
+        with temporary_usage_scope(temporary):
+            async for chunk in iterator:
+                yield chunk
+    finally:
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 async def produce_openai_chat_completions(

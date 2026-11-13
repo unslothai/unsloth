@@ -755,9 +755,10 @@ class ApiMonitor:
         entry_id: Optional[str],
         *,
         decoded: bool = True,
+        output_chars: int = 0,
     ) -> None:
         """``decoded=False`` is for output the model did not generate: starts TTFT, not the token-
-        rate clock."""
+        rate clock. ``output_chars`` counts generated text the reply buffer never shows (reasoning)."""
         if not entry_id:
             return
         now = time.monotonic()
@@ -765,6 +766,7 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            entry.reply_chars += output_chars
             if entry.first_token_monotonic is None:
                 entry.first_token_monotonic = now
             if decoded and entry.first_decode_monotonic is None:
@@ -978,8 +980,12 @@ class ApiMonitor:
             entry.completion_tokens or 0,
             entry.total_tokens or 0,
         )
-        if entry.temporary_usage and not (prompt_tokens or completion_tokens) and entry.reply_chars:
-            # A temporary reply stopped before its usage chunk has no other record to charge.
+        if (
+            (entry.temporary_usage or entry.via_api_key)
+            and not (prompt_tokens or completion_tokens)
+            and entry.reply_chars
+        ):
+            # A stream stopped before its usage chunk has no other record to charge.
             prompt_tokens = -(-len(entry.prompt) // 4)
             completion_tokens = -(-entry.reply_chars // 4)
             total_tokens = prompt_tokens + completion_tokens
