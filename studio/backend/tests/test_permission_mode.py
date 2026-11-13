@@ -1741,6 +1741,30 @@ def test_python_shell_command_terminal_asks_about_is_high_risk(command, template
         ("import timeit\ndef bench(fn):\n    return timeit.timeit(fn, number=10)", False),
         ("import os\nos.execvp('git', ['worker', 'push', '--force'])", True),
         ("import os\nos.execvp('git', ['git', 'status'])", False),
+        (
+            "import os, subprocess\nsubprocess.run(['truncate -s 0 notes.txt'], shell=(os.name == 'posix'))",
+            True,
+        ),
+        (
+            "import timeit\ntimeit.timeit(**{'stmt': \"import shutil; shutil.rmtree('junk_dir')\", 'number': 1})",
+            True,
+        ),
+        ("import timeit\ntimeit.timeit(**{'stmt': 'sum(range(9))', 'number': 1})", False),
+        (
+            "import timeit\nbench = timeit.timeit\nbench(\"import shutil; shutil.rmtree('junk_dir')\", number=1)",
+            True,
+        ),
+        (
+            "import timeit\nsource = \"import shutil; shutil.rmtree('junk_dir')\"\nstmt = source\n"
+            "timeit.timeit(stmt, number=1)\nsource = 'pass'",
+            True,
+        ),
+        (
+            "import timeit\nsetup = 'from shutil import rmtree as delete'\n"
+            "timeit.timeit(\"delete('junk_dir')\", setup=setup, number=1)\nsetup = 'x ='",
+            True,
+        ),
+        ("import timeit\nbench = timeit.timeit\nbench('sorted([3, 1])', number=10)", False),
         ("from timeit import timeit\ntimeit(\"__import__('os').remove('x')\", number=1)", True),
         ("import timeit as t\nt.timeit('sum(range(100))', number=1000)", False),
         ("import timeit\ns = 'sum(range(100))'\ntimeit.timeit(s, number=1000)", False),

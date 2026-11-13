@@ -8676,6 +8676,27 @@ def _python_is_high_risk(code: str) -> bool:
             module = _runner_instance_module(receiver)
         return module if func.attr in _PY_CODE_STRING_RUNNERS.get(module, ()) else None
 
+    # bench = timeit.timeit / t = timeit: aliases keep the runner's identity.
+    simple_assigns = [
+        (node.targets[0].id, node.value)
+        for node in _tree_nodes(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for target, value in simple_assigns:
+            module = _code_runner_module(value)
+            if module and runner_funcs.get(target) != module:
+                runner_funcs[target] = module
+                changed = True
+            elif isinstance(value, ast.Name) and value.id in runner_modules:
+                if runner_modules.get(target) != runner_modules[value.id]:
+                    runner_modules[target] = runner_modules[value.id]
+                    changed = True
+
     # Every binding of a name, so a reassigned source cannot hide the value a runner saw.
     name_bindings: "dict[str, list]" = {}
     for node in _tree_nodes(tree):
@@ -8694,19 +8715,28 @@ def _python_is_high_risk(code: str) -> bool:
         ):
             name_bindings.setdefault(node.target.id, []).append(None)
 
-    def _code_strings(arg) -> "tuple[list[str], bool]":
+    name_sources: "dict[str, tuple[list[str], bool]]" = {}
+
+    def _code_strings(arg, seen = frozenset()) -> "tuple[list[str], bool]":
         """Candidate sources for a runner argument, and whether any binding stayed unresolved."""
-        values = name_bindings.get(arg.id) if isinstance(arg, ast.Name) else None
-        if not values:
-            values = [arg]
-        sources, unresolved = [], False
-        for value in values:
-            folded = None if value is None else _folded_path(value, str_vars)
-            if folded is None or "\x00" in folded or "\x02" in folded:
-                unresolved = True
-            else:
-                sources.append(folded)
-        return sources, unresolved
+        if isinstance(arg, ast.Name) and name_bindings.get(arg.id):
+            if arg.id in seen:
+                return [], True
+            if arg.id not in name_sources:
+                sources, unresolved = [], False
+                for value in name_bindings[arg.id]:
+                    if value is None:
+                        unresolved = True
+                        continue
+                    found, missing = _code_strings(value, seen | {arg.id})
+                    sources.extend(found)
+                    unresolved |= missing
+                name_sources[arg.id] = (list(dict.fromkeys(sources)), unresolved)
+            return name_sources[arg.id]
+        folded = _folded_path(arg, str_vars)
+        if folded is None or "\x00" in folded or "\x02" in folded:
+            return [], True
+        return [folded], False
 
     def _string_shaped(node, seen) -> bool:
         # A str built at runtime ("...".strip(), f-strings): unscreenable, so it asks; callables do not.
@@ -8738,7 +8768,17 @@ def _python_is_high_risk(code: str) -> bool:
     def _runner_arg(node, index, keywords):
         if len(node.args) > index:
             return node.args[index]
-        return next((kw.value for kw in node.keywords if kw.arg in keywords), None)
+        for kw in node.keywords:
+            if kw.arg in keywords:
+                return kw.value
+            if kw.arg is None and isinstance(kw.value, ast.Dict):
+                for key, value in zip(kw.value.keys, kw.value.values):
+                    if isinstance(key, ast.Constant) and key.value in keywords:
+                        return value
+        return None
+
+    def _opaque_kwargs(node) -> bool:
+        return any(kw.arg is None and not isinstance(kw.value, ast.Dict) for kw in node.keywords)
 
     # Non-literal exec/eval/compile/__import__ runs unseen code: ask. Literal ones are screened.
     for node in _tree_nodes(tree):
@@ -8750,20 +8790,28 @@ def _python_is_high_risk(code: str) -> bool:
             # timeit also takes callables: screen resolvable strings, setup + stmt as one program.
             stmt = _runner_arg(node, 0, ("stmt",))
             setup = _runner_arg(node, 1, ("setup",))
-            parts = []
+            if _opaque_kwargs(node):
+                return True
+            candidates = []
             for arg in (setup, stmt):
-                if arg is None:
-                    continue
-                sources, unresolved = _code_strings(arg)
+                sources, unresolved = _code_strings(arg) if arg is not None else ([], False)
                 if unresolved and _string_shaped(arg, set()):
                     return True
-                parts.extend(sources)
-            parts = list(dict.fromkeys(parts))
-            if len(parts) > 1:
-                parts.append("\n".join(parts))
-            if any(_cached_runner_verdict(part) for part in parts):
-                return True
+                candidates.append(sources or [""])
+            setups, stmts = candidates
+            if len(setups) * len(stmts) <= 16:
+                programs = [f"{a}\n{b}" for a in setups for b in stmts]
+            else:
+                programs = ["\n".join([*setups, *stmts])]
+            for program in dict.fromkeys([*setups, *stmts, *programs]):
+                # An unparsable combination could hide what setup binds for stmt.
+                if program.strip() and _parse_python(program)[1] is not None:
+                    return True
+                if _cached_runner_verdict(program):
+                    return True
         elif runner is not None:
+            if _opaque_kwargs(node):
+                return True
             arg = _runner_arg(node, 0, _PY_CODE_RUNNER_SOURCE_KWARGS)
             if arg is not None:
                 sources, unresolved = _code_strings(arg)
@@ -18645,7 +18693,9 @@ def _check_signal_escape_patterns(code: str):
                     if argv:
                         shell_commands.append(shlex.join(argv))
                 shell_kw = expanded_kwargs.get("shell")
-                runs_shell = isinstance(shell_kw, ast.Constant) and bool(shell_kw.value)
+                runs_shell = shell_kw is not None and not (
+                    isinstance(shell_kw, ast.Constant) and not shell_kw.value
+                )
                 program_index = _VECTOR_PROGRAM_INDEX.get(shell_func)
                 vector = None
                 if program_index is not None and len(positional) > program_index + 1:
