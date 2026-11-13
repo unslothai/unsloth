@@ -452,7 +452,7 @@ export function newModelCheckDue(
 
 const checkedThisLaunch = new Set<string>();
 const ticksInFlight = new Set<string>();
-// A failed or skipped check is not recorded, so it retries after this instead of on every focus.
+// Failed or skipped checks retry after this, not on every focus.
 const RETRY_AFTER_MS = 10 * 60 * 1000;
 const lastAttemptAt = new Map<string, number>();
 

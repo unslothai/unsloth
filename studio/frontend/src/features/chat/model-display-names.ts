@@ -17,7 +17,6 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-/** Changes whenever a listing learns names, so memoized labels recompute. */
 export function useModelDisplayNamesVersion(): number {
   return useSyncExternalStore(subscribe, () => version, () => version);
 }
