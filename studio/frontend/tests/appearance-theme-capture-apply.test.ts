@@ -295,3 +295,9 @@ test("a theme font replaces an imported one whose name differs only in case", ()
   const names = apply(current, theme).customization.importedFonts.map((f) => f.name);
   assert.deepEqual(names, ["brand sans", "Old", "Keep"]);
 });
+
+test("a theme selection matches an imported font that differs only in case", () => {
+  const current = { ...BASE, customization: sanitizeCustomization({ importedFonts: [font("Brand Sans")] }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "brand sans" }, assets: { fonts: [font("brand sans")] } })));
+  assert.equal(apply(current, theme, true, false).customization.uiFont, "brand sans");
+});

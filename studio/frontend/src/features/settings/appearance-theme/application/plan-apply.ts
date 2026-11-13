@@ -54,19 +54,22 @@ function reconcileFonts(
   importedNames: Set<string>,
   keep: ImportedFont[] = [],
 ): AppearanceCustomization {
-  const present = new Set(customization.importedFonts.map((font) => font.name));
+  // Family names match case-insensitively, as in CSS.
+  const key = (name: string | null) => name?.toLowerCase() ?? "";
+  const imported = new Set([...importedNames].map(key));
+  const selected = new Set(FONT_FIELDS.map((field) => key(customization[field])));
+  const present = new Set(customization.importedFonts.map((font) => key(font.name)));
   const restored = keep.filter(
-    (font) => !present.has(font.name) && importedNames.has(font.name) &&
-      FONT_FIELDS.some((field) => customization[field] === font.name),
+    (font) => !present.has(key(font.name)) && imported.has(key(font.name)) && selected.has(key(font.name)),
   );
   const next = sanitizeCustomization({
     ...customization,
     importedFonts: selectedFirst(customization, [...restored, ...customization.importedFonts]),
   });
-  const kept = new Set(next.importedFonts.map((font) => font.name));
+  const kept = new Set(next.importedFonts.map((font) => key(font.name)));
   for (const field of FONT_FIELDS) {
     const name = next[field];
-    if (name && importedNames.has(name) && !kept.has(name)) next[field] = null;
+    if (name && imported.has(key(name)) && !kept.has(key(name))) next[field] = null;
   }
   return next;
 }
