@@ -1355,7 +1355,9 @@ def test_swap_passes_streamed_only_for_the_onload_device_install(monkeypatch):
     seen = []
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
-        g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0
+        g8,
+        "_swap_on",
+        lambda t, lg, i, streamed = False, exact = False: seen.append((i, streamed)) or 0,
     )
     import core.inference.diffusion_int8_fused as fused
 
@@ -1371,7 +1373,9 @@ def test_rocm_torch_swaps_nothing_for_an_onload_device(monkeypatch):
     seen = []
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
-        g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0
+        g8,
+        "_swap_on",
+        lambda t, lg, i, streamed = False, exact = False: seen.append((i, streamed)) or 0,
     )
     import core.inference.diffusion_int8_fused as fused
 
@@ -1582,3 +1586,110 @@ def test_h16_probe_covers_the_one_pass_branch_and_rejects_nan_scales(forced):
         mp.setattr(cq, "_h16_launch", nan_row)
         assert cq._h16_probe(index) is False
         assert cq._swiglu_probe(index) is False
+
+
+def test_install_eager_kill_switch_keeps_torchao(monkeypatch):
+    called = []
+    monkeypatch.setattr(g8, "install", lambda *a, **k: called.append(k) or 7)
+    monkeypatch.setenv(g8.INT8_GEMM_EAGER_ENV, "0")
+    assert g8.install_eager(torch.nn.Linear(2, 2)) == 0 and called == []
+    monkeypatch.delenv(g8.INT8_GEMM_EAGER_ENV)
+    assert g8.install_eager(torch.nn.Linear(2, 2), offload_active = True) == 7
+    assert called == [{"offload_active": True, "exact": True}]
+
+
+def test_install_passes_exact_to_the_swap(monkeypatch):
+    seen = []
+    import core.inference.diffusion_int8_fused as fused
+
+    monkeypatch.setattr(fused, "resident_cuda_device", lambda t: torch.device("cuda", 0))
+    monkeypatch.setattr(
+        g8, "_swap", lambda t, lg, device = None, exact = False: seen.append(exact) or 3
+    )
+    assert g8.install(torch.nn.Linear(2, 2), exact = True) == 3
+    assert g8.install(torch.nn.Linear(2, 2)) == 3
+    assert seen == [True, False]
+
+
+class _FakeAct:
+    """A bf16 CUDA activation as far as ``convrot_act_quant`` looks (CPU-only hosts)."""
+
+    def __init__(self, m, k):
+        self.shape = (m, k)
+        self.dtype = torch.bfloat16
+        self.is_cuda = True
+        self.device = types.SimpleNamespace(index = 0)
+
+    def dim(self):
+        return 2
+
+    def is_contiguous(self):
+        return True
+
+
+def test_exact_act_quant_never_takes_rotq_h16(monkeypatch):
+    launched = []
+    monkeypatch.setattr(cq, "_ROTQ_HANDLE", lambda x, g, v2: ("op", v2))
+    monkeypatch.setitem(cq._ROTQ_DEVICE, 0, (128, 32, 8, 4))
+    monkeypatch.setitem(cq._H16_DEVICE, 0, "ieee")
+    monkeypatch.setattr(
+        cq, "_rotq_launch", lambda x, g, kind, cfg: launched.append((kind, cfg)) or ("dense", kind)
+    )
+    monkeypatch.setattr(
+        cq, "_h16_launch", lambda *a, **k: pytest.fail("rotq_h16 is not bit-identical")
+    )
+    x = _FakeAct(64, 1024)
+    assert cq.convrot_act_quant(x, 256, True, True) == ("dense", "v2")
+    assert cq.convrot_act_quant(x, 256, False, True) == ("dense", "v1")
+    assert launched == [("v2", (128, 32, 8, 4)), ("v1", (128, 32, 8, 4))]
+    # the default (compiled) route still goes through the op, which picks rotq_h16 where it passed its probe
+    assert cq.convrot_act_quant(x, 256, True) == ("op", True)
+    # a shape the dense tile cannot hold: the caller keeps the stock rotation + quant
+    assert cq.convrot_act_quant(_FakeAct(64, 256 * 256), 256, True, True) is None
+
+
+def test_exact_act_quant_launch_failure_falls_back(monkeypatch):
+    monkeypatch.setattr(cq, "_ROTQ_HANDLE", lambda x, g, v2: ("op", v2))
+    monkeypatch.setitem(cq._ROTQ_DEVICE, 0, (128, 32, 8, 4))
+
+    def boom(*a, **k):
+        raise RuntimeError("launch failed")
+
+    monkeypatch.setattr(cq, "_rotq_launch", boom)
+    assert cq.convrot_act_quant(_FakeAct(64, 1024), 256, True, True) is None
+
+
+def test_uninstall_clears_the_exact_mark():
+    lin = torch.nn.Linear(4, 4)
+    lin.__dict__[g8._MARK] = g8._NO_PREV
+    lin.__dict__[g8._REC] = ("v2", None, False, lin.weight, True)
+    lin.__dict__[g8._EXACT] = True
+    lin.forward = types.MethodType(g8._linear_forward, lin)
+    g8.uninstall(torch.nn.Sequential(lin))
+    assert (
+        g8._EXACT not in lin.__dict__
+        and g8._MARK not in lin.__dict__
+        and "forward" not in lin.__dict__
+    )
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_eager_install_is_bit_identical_to_torchao_convrot_linear(forced, monkeypatch, version):
+    """``install_eager`` keeps the eager Linear bit for bit, with rotq_h16 armed on the card (it is never taken)."""
+    from core.inference.diffusion_convrot import _install_rotation
+
+    lin = _int8_linear(5376, 1024, True, version)
+    _install_rotation(lin, 256)
+    holder = torch.nn.Sequential(lin)
+    x = _act(1037, 5376, 3).reshape(1, 1037, 5376)
+    with torch.inference_mode():
+        want = lin(x)
+        assert g8.install_eager(holder) == 1
+        assert g8._EXACT in lin.__dict__ and g8._FF_MARK not in lin.__dict__
+        h16 = cq.h16_call_count()
+        calls = g8.call_count()
+        got = lin(x)
+    assert g8.call_count() == calls + 1 and cq.h16_call_count() == h16
+    assert torch.equal(got, want)
+    g8.uninstall(holder)
