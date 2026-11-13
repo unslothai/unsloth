@@ -1975,9 +1975,7 @@ export function ChatProvidersSettings({
                     id="provider-extra-headers"
                     value={extraHeadersDraft}
                     onChange={(event) => setExtraHeadersDraft(event.target.value)}
-                    placeholder={
-                      'X-LiteLLM-Session-Id: unsloth-{{CHAT_SESSION_ID}}'
-                    }
+                    placeholder={"X-Title: Unsloth\nX-Session-Id: {{CHAT_SESSION_ID}}"}
                     aria-describedby="provider-extra-headers-help"
                     className="min-h-20 font-mono text-xs md:text-xs"
                   />
