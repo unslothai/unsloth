@@ -52,12 +52,12 @@ test("a reply subscribes to its own speaker, not the whole library", () => {
   assert.doesNotMatch(parts, /useCharactersStore\(\(s\) => s\.characters\)/);
 });
 
-test("a scene text field keeps what is being typed when an earlier save answers", () => {
+test("a scene text field keeps typed text, and saves only typed text when left", () => {
   const panel = read("features/characters/chat/roleplay-panel.tsx");
   const field = panel.slice(panel.indexOf("function SavedTextarea"));
-  assert.match(field, /if \(!editing\.current\) setDraft\(value\);/);
-  assert.match(field, /onFocus=\{\(\) => \{\s*editing\.current = true;/);
-  assert.match(field, /onBlur=\{\(\) => \{\s*editing\.current = false;/);
+  assert.match(field, /if \(!typed\.current\) setDraft\(value\);/);
+  assert.match(field, /onChange=\{\(event\) => \{\s*typed\.current = true;/);
+  assert.match(field, /onBlur=\{\(\) => \{\s*if \(!typed\.current\) return;\s*typed\.current = false;/);
 });
 
 test("the chat page loads the character panel and picker only when they open", () => {

@@ -285,7 +285,11 @@ function ReplyOrderPicker({ value, onChange }: { value: ReplyOrder; onChange: (v
 /** A small number field that saves on blur, like the text fields beside it. */
 function DepthInput({ value, onSave }: { value: number; onSave: (value: number) => void }) {
   const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
+  // As in SavedTextarea: typed digits win over a stored value arriving meanwhile.
+  const typed = useRef(false);
+  useEffect(() => {
+    if (!typed.current) setDraft(String(value));
+  }, [value]);
   return (
     <Input
       type="number"
@@ -293,8 +297,13 @@ function DepthInput({ value, onSave }: { value: number; onSave: (value: number) 
       max={100}
       className="h-7 w-16 text-ui-13"
       value={draft}
-      onChange={(event) => setDraft(event.target.value)}
+      onChange={(event) => {
+        typed.current = true;
+        setDraft(event.target.value);
+      }}
       onBlur={() => {
+        if (!typed.current) return;
+        typed.current = false;
         const next = Math.max(0, Math.min(100, Math.round(Number(draft)) || 0));
         setDraft(String(next));
         if (next !== value) onSave(next);
@@ -320,10 +329,11 @@ function SavedTextarea({
   rows?: number;
 }) {
   const [draft, setDraft] = useState(value);
-  // A save answering an earlier blur must not replace what is being typed now.
-  const editing = useRef(false);
+  // Typed text wins over a stored value arriving meanwhile (an earlier save answering); untyped, the field
+  // follows the stored value, so leaving it does not save stale text over another tab's edit.
+  const typed = useRef(false);
   useEffect(() => {
-    if (!editing.current) setDraft(value);
+    if (!typed.current) setDraft(value);
   }, [value]);
   return (
     <label className="flex flex-col gap-1.5">
@@ -333,12 +343,13 @@ function SavedTextarea({
         rows={rows}
         placeholder={placeholder}
         className="max-h-48 min-h-14 text-ui-13"
-        onChange={(event) => setDraft(event.target.value)}
-        onFocus={() => {
-          editing.current = true;
+        onChange={(event) => {
+          typed.current = true;
+          setDraft(event.target.value);
         }}
         onBlur={() => {
-          editing.current = false;
+          if (!typed.current) return;
+          typed.current = false;
           if (draft.trim() !== value.trim()) onSave(draft.trim());
         }}
       />
