@@ -38,31 +38,15 @@ class GgufVariantPlan:
     # The repo's standalone Engram tables, and the split shard holding this quant's own one.
     engram_tables: tuple[ExpectedFile, ...] = ()
     engram_shard: Optional[ExpectedFile] = None
-
-    @property
-    def engram_precision(self) -> Optional[str]:
-        """Precision of the table this quant ships in ``engram_shard``."""
-        from core.inference.engram_tables import engram_table_precision
-
-        shard = self.engram_shard
-        if shard is None:
-            return None
-        return next(
-            (engram_table_precision(t.path) for t in self.engram_tables if t.size == shard.size),
-            None,
-        )
+    # Precision of the table this quant ships in ``engram_shard``.
+    engram_precision: Optional[str] = None
 
     def engram_table(self, precision: Optional[str]) -> Optional[ExpectedFile]:
-        from core.inference.engram_tables import engram_table_precision
-        wanted = (precision or "").strip().upper()
-        return next(
-            (
-                table
-                for table in self.engram_tables
-                if (engram_table_precision(table.path) or "").upper() == wanted
-            ),
-            None,
+        from core.inference.engram_tables import engram_tables, find_engram_table
+        found = find_engram_table(
+            engram_tables((t.path, t.size) for t in self.engram_tables), precision
         )
+        return next((t for t in self.engram_tables if found and t.path == found.filename), None)
 
     def with_engram(self, precision: Optional[str]) -> "GgufVariantPlan":
         """The files a load with the ``precision`` table fetches: the quant's own table shard
@@ -109,7 +93,12 @@ def _with_engram_tables(plan: GgufVariantPlan, tables: tuple[ExpectedFile, ...])
     main = [f for f in plan.expected_files if f.path in plan.main_filenames]
     bundled = bundled_table(((f.path, f.size) for f in main), known)
     shard = next((f for f in main if bundled and f.path == bundled[0]), None)
-    return replace(plan, engram_tables = tables, engram_shard = shard)
+    return replace(
+        plan,
+        engram_tables = tables,
+        engram_shard = shard,
+        engram_precision = bundled[1].precision if shard is not None else None,
+    )
 
 
 def sibling_sha256(sibling) -> Optional[str]:

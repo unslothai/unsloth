@@ -25,7 +25,7 @@ from typing import NamedTuple, Optional
 from fastapi import HTTPException
 from loggers import get_logger
 
-from core.inference.engram_tables import ENGRAM_FOLDER, engram_table_precision, engram_tables
+from core.inference.engram_tables import cached_engram_tables, engram_table_precision, engram_tables
 from hub.schemas.inventory import EngramTableDetail, GgufVariantDetail, GgufVariantsResponse
 from hub.utils import download_manifest
 from hub.utils import download_registry
@@ -223,20 +223,6 @@ def _llama_loads_engram_tables() -> Optional[bool]:
     if not caps.get("found") or not caps.get("help_probe_ok"):
         return None
     return bool(caps.get("supports_ple"))
-
-
-def _iter_engram_tables(snapshot: Path) -> list[Path]:
-    """Standalone Engram tables cached in ``snapshot`` (``engram/*-engram-<PRECISION>.gguf_file``)."""
-    folder = snapshot / ENGRAM_FOLDER
-    try:
-        entries = list(folder.iterdir()) if folder.is_dir() else []
-    except OSError:
-        return []
-    return [
-        entry
-        for entry in entries
-        if engram_table_precision(f"{ENGRAM_FOLDER}/{entry.name}") and entry.is_file()
-    ]
 
 
 def _variant_requirement_last_known(key: tuple[str, ...]) -> Optional[_GgufVariantRequirement]:
@@ -2268,7 +2254,7 @@ async def get_gguf_variants_answer(
                     q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
                 # Standalone Engram tables are not .gguf, so the walk above skips them.
-                for f in _iter_engram_tables(snap):
+                for f in cached_engram_tables(snap):
                     try:
                         by_filename[f.relative_to(snap).as_posix().lower()] = f.stat().st_size
                     except (OSError, RuntimeError, ValueError):

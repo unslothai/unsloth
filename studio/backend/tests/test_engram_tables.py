@@ -113,6 +113,7 @@ class TestDiscovery:
         assert engram_table_precision("engram/README.md") is None
         assert engram_table_precision("engram/set_split.py") is None
         assert engram_table_precision("UD-Q8_0/model-Q8_0-00001-of-00002.gguf") is None
+        assert engram_table_precision("engram\\M-engram-q8_0.gguf") == "q8_0"
 
     def test_tables_are_listed_most_precise_first_and_found_case_insensitively(self):
         tables = engram_tables(_qwen_listing())
@@ -120,6 +121,16 @@ class TestDiscovery:
         assert find_engram_table(tables, "q8_0").filename == _table_name("Q8_0")
         assert find_engram_table(tables, "FP4") is None
         assert find_engram_table(tables, None) is None
+
+    def test_a_repeated_or_empty_table_is_listed_once_or_not_at_all(self):
+        tables = engram_tables(
+            [
+                (_table_name("Q8_0"), 3),
+                ("engram/Other-engram-q8_0.gguf", 2),
+                (_table_name("F16"), 0),
+            ]
+        )
+        assert [(t.precision, t.size_bytes) for t in tables] == [("Q8_0", 3)]
 
     @pytest.mark.parametrize(
         "quant, shard, precision",
@@ -197,6 +208,13 @@ class TestPlan:
         assert plan.with_engram("IQ4_NL") is plan
         assert plan.with_engram("FP4") is plan
         assert plan.with_engram(None) is plan
+
+    def test_swapping_a_swapped_plan_keeps_exactly_one_table(self):
+        plan = build_gguf_variant_plans(self._siblings())["ud-iq1_s"]
+        swapped = plan.with_engram("Q8_0")
+        assert swapped.with_engram("Q8_0").expected_files == swapped.expected_files
+        again = [f.path for f in swapped.with_engram("BF16").expected_files]
+        assert [p for p in again if engram_table_precision(p)] == [_table_name("BF16")]
 
 
 class TestResolveSwap:
@@ -276,6 +294,8 @@ class TestRequestAndOverrides:
     def test_a_malformed_precision_is_rejected(self):
         with pytest.raises(ValueError):
             LoadRequest(model_path = REPO, engram_precision = "../x")
+        with pytest.raises(ValueError):
+            LoadRequest(model_path = REPO, engram_precision = 5)
 
     def test_the_override_store_keeps_it_for_gguf_loads_only(self):
         entry = normalize_model_override({"engram_precision": "Q8_0"})
@@ -283,6 +303,7 @@ class TestRequestAndOverrides:
         assert model_override_load_kwargs(entry, is_gguf = True)["engram_precision"] == "Q8_0"
         assert "engram_precision" not in model_override_load_kwargs(entry, is_gguf = False)
         assert "engram_precision" not in normalize_model_override({"engram_precision": "Q8 0"})
+        assert "engram_precision" not in normalize_model_override({"engram_precision": 8})
 
 
 class TestResidentIdentity:

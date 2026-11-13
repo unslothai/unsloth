@@ -89,6 +89,7 @@ from core.inference.engram_tables import (
     ENGRAM_FOLDER,
     EngramTable,
     bundled_table,
+    cached_engram_tables,
     engram_table_precision,
     engram_tables,
     find_engram_table,
@@ -4131,10 +4132,9 @@ def _cached_engram_listing(hf_repo: str, split: list[str]) -> dict[str, int]:
 
     sizes: dict[str, int] = {}
     for snapshot in _iter_hf_cache_snapshots(hf_repo):
-        names = list(split)
-        folder = snapshot / ENGRAM_FOLDER
-        if folder.is_dir():
-            names += [f"{ENGRAM_FOLDER}/{entry.name}" for entry in folder.iterdir()]
+        names = split + [
+            f"{ENGRAM_FOLDER}/{entry.name}" for entry in cached_engram_tables(snapshot)
+        ]
         for name in names:
             if name in sizes:
                 continue

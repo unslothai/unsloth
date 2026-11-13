@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 ENGRAM_FOLDER = "engram"
@@ -49,6 +50,20 @@ def engram_tables(files: Iterable[tuple[str, int]]) -> list[EngramTable]:
         # One table per precision; a duplicate label keeps the first listed.
         tables.setdefault(precision.upper(), EngramTable(precision, filename, int(size)))
     return sorted(tables.values(), key = lambda t: (-t.size_bytes, t.precision))
+
+
+def cached_engram_tables(snapshot: Path) -> list[Path]:
+    """Standalone Engram tables in a local Hub snapshot."""
+    folder = snapshot / ENGRAM_FOLDER
+    try:
+        entries = list(folder.iterdir()) if folder.is_dir() else []
+    except OSError:
+        return []
+    return [
+        entry
+        for entry in entries
+        if engram_table_precision(f"{ENGRAM_FOLDER}/{entry.name}") and entry.is_file()
+    ]
 
 
 def find_engram_table(

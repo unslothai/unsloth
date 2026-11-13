@@ -287,12 +287,7 @@ async def get_gguf_download_progress(
             variant = variant,
             expected_bytes = expected_bytes,
             hf_token = hf_token,
-            # Only when set: a direct caller passes the Query default, and older stubs lack the kwarg.
-            **(
-                {"engram_precision": engram_precision.strip()}
-                if isinstance(engram_precision, str) and engram_precision.strip()
-                else {}
-            ),
+            engram_precision = engram_precision.strip(),
         ),
         via_api_key = via_api_key,
     )
