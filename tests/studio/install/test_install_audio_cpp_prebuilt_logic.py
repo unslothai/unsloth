@@ -2457,7 +2457,11 @@ def test_the_sweep_skips_a_retired_tree_it_cannot_read(monkeypatch, tmp_path):
 # #17638: in the Docker image audio.cpp is a directory of an image layer, which overlayfs will not rename
 
 
-def _refuse_renaming_the_install(monkeypatch, root, err = None):
+def _refuse_renaming_the_install(
+    monkeypatch,
+    root,
+    err = None,
+):
     """os.replace as overlayfs answers it for a lower-layer directory: the installed tree cannot be
     renamed (EXDEV unless ``err`` says otherwise), anything made since can."""
     real = M.os.replace
@@ -2522,7 +2526,11 @@ def test_a_half_removed_install_is_restored_from_its_copy(monkeypatch, tmp_path)
     real_rmtree = M.shutil.rmtree
     failed = []
 
-    def rmtree(path, ignore_errors = False, **kw):
+    def rmtree(
+        path,
+        ignore_errors = False,
+        **kw,
+    ):
         if Path(path) == root and not ignore_errors and not failed:
             failed.append(path)
             (root / "bin" / "README.txt").unlink()
