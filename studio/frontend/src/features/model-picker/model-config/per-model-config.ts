@@ -560,9 +560,9 @@ function normalizeGpuFields(partial: RawConfig): {
   ) {
     out.nCpuMoe = Math.trunc(partial.nCpuMoe);
   }
-  // With 0 GPU layers every expert is already on the CPU; drop a count saved before the slider hid.
+  // 0 GPU layers: experts are already on the CPU, so a count saved before the slider hid is moot.
   if (out.gpuLayers === 0) {
-    delete out.nCpuMoe;
+    out.nCpuMoe = 0;
   }
   if (partial.selectedGpuIds === null) {
     out.selectedGpuIds = null;

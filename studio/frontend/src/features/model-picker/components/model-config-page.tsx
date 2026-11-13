@@ -3632,9 +3632,9 @@ export function ModelConfigPage({
     if (committedMoeLayers != null) {
       pendingPatch.nCpuMoe = committedMoeLayers;
     }
-    if (committedGpuLayers != null && !moeCpuOffloadApplies(committedGpuLayers)) {
-      // As on the slider: 0 GPU layers hides the MoE slider, so drop the count it can't show.
-      Object.assign(pendingPatch, gpuLayersPatch(committedGpuLayers));
+    if (committedGpuLayers === 0) {
+      // Typed after the MoE input in the same click: 0 layers still zeroes the hidden count.
+      pendingPatch.nCpuMoe = 0;
     }
     const hasPending =
       committedContext != null ||
