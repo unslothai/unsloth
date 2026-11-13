@@ -2104,10 +2104,9 @@ class _InferenceRuntimeFields(BaseModel):
     metal_unsupported_weight_types: Optional[list[str]] = Field(
         None,
         description = (
-            "GGUF weight types (e.g. 'nvfp4') that llama.cpp's Metal backend cannot multiply, so "
-            "they stay in CPU buffers and run on the CPU. offloaded_layers still counts their "
-            "layers as on the GPU. Set only when the load put more weight in host buffers than "
-            "on the GPU; None otherwise."
+            "GGUF weight types (e.g. 'tq1_0') llama.cpp's Metal backend cannot run, so they stay in CPU "
+            "buffers although offloaded_layers counts their layers as on the GPU. Set only when most "
+            "weight landed in host buffers and nothing put experts on the CPU on purpose."
         ),
     )
     gpu_weights_mib: Optional[float] = Field(
