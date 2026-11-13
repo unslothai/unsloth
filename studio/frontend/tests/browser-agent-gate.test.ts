@@ -310,4 +310,3 @@ test("a script runs without asking only under Always allow or its site's Scripts
   assert.equal(scriptRunsWithoutAsking("never", "https://dash.example/", rules), false);
   assert.equal(scriptRunsWithoutAsking("ask", "https://other.example/", NONE), false);
 });
-

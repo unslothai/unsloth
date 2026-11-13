@@ -10,7 +10,7 @@ export type ActionsRule = "ask" | "allow";
 export type DownloadsRule = "ask" | "allow" | "block";
 /** Clicks and drags on a target with no role, name or link (a canvas), asked once per site per chat. */
 export type UnlabelledRule = "ask" | "allow";
-/** Scripts the model runs on the site's pages (browser_evaluate). `allow` skips the prompt there; Run scripts set to Never still wins. */
+/** browser_evaluate on the site's pages; Run scripts set to Never still wins. */
 export type ScriptsRule = "ask" | "allow";
 export type SiteRule = {
   browsing: BrowsingRule;
@@ -21,8 +21,7 @@ export type SiteRule = {
 };
 export type AgentPermissions = { defaults: SiteRule; sites: Record<string, SiteRule> };
 export type HistoryAccess = "ask" | "allow" | "never";
-/** `allow` runs every script without asking, on every site: approving a script is the only check it passes,
- *  so it is the user's explicit choice. `ask` still lets a site's Scripts rule skip the prompt there. */
+/** Approving a script is the only check it passes, so `allow` is never a default. */
 export type ScriptAccess = "ask" | "allow" | "never";
 
 export const DEFAULT_RULE: SiteRule = { browsing: "ask", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" };
@@ -76,8 +75,7 @@ export function ruleFor(url: string, permissions: AgentPermissions): { rule: Sit
   return site ? { rule: site, site: best } : { rule: permissions.defaults, site: null };
 }
 
-/** Whether a script on `url` runs without the prompt: Run scripts is Always allow, or the Scripts rule
- *  of the site the page is on is. Never refuses everywhere; a page with no host (about:blank) always asks. */
+/** A page with no host (about:blank) asks even when the default rule allows scripts. */
 export function scriptRunsWithoutAsking(access: ScriptAccess, url: string, permissions: AgentPermissions): boolean {
   if (access === "never") return false;
   if (access === "allow") return true;

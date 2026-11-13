@@ -1463,15 +1463,13 @@ async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: 
 }
 
 const SCRIPT_WAIT_MS = 15_000;
-
 const SCRIPTS_OFF = "The user doesn't let the agent run scripts on pages.";
 
 function scriptAllowed(url: string, context: Pick<Run, "fullAccess" | "inFile">): boolean {
   return scriptRunsWithoutAsking(useBrowserAgentStore.getState().scriptAccess, url, permissions(context));
 }
 
-/** A script bypasses every rule above, so it is shown verbatim and asked every time, unless the user chose
- *  Run scripts: Always allow, or Always allow in the Scripts rule of the site the tab is on. */
+/** A script bypasses every rule above, so it is shown verbatim and asked unless Run scripts or the site's Scripts rule allows it. */
 async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, before: string): Promise<Result> {
   const { signal } = context;
   const script = action.script ?? "";
