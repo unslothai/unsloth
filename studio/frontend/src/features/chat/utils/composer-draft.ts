@@ -69,7 +69,7 @@ export function writePasteDraft(key: string, pastes: readonly string[]): void {
   else {
     if (deletedDraftIds.has(key.slice(LEGACY_PASTE_DRAFT_PREFIX.length))) return;
     perChatPastes.set(key, [...pastes]);
-    if (pastes.length > 0) lastTypedDraftId = key.slice(LEGACY_PASTE_DRAFT_PREFIX.length);
+    if (pastes.length > 0) noteTyped(key.slice(LEGACY_PASTE_DRAFT_PREFIX.length));
   }
   try {
     if (pastes.length > 0) {
@@ -95,7 +95,7 @@ export function readComposerDraft(key: string): string | null {
 export function stageComposerDraft(key: string, text: string): void {
   if (key === DRAFT_KEY || deletedDraftIds.has(key.slice(LEGACY_DRAFT_PREFIX.length))) return;
   perChatDrafts.set(key, text);
-  if (text) lastTypedDraftId = key.slice(LEGACY_DRAFT_PREFIX.length);
+  if (text) noteTyped(key.slice(LEGACY_DRAFT_PREFIX.length));
 }
 
 // A staged save whose slot was adopted (or deleted) since must not recreate it.
@@ -177,6 +177,11 @@ let seeded: string | null = null;
 const perChatDrafts = new Map<string, string>();
 // This tab's last-typed per-chat slot: what sharing adopts, even unmounted (Settings hides chat).
 let lastTypedDraftId: string | null = null;
+
+// A query chat keeps its own slot while sharing is on, so sharing never adopts (and deletes) it.
+function noteTyped(threadId: string): void {
+  if (!isQueryDraftId(threadId)) lastTypedDraftId = threadId;
+}
 
 export function adoptCurrentDraft(): boolean {
   // What this tab just typed wins over an older shared draft, including another window's (#15782).

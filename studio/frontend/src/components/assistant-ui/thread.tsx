@@ -4197,9 +4197,8 @@ const Composer: FC<{
     if (
       !incognito &&
       !previous.incognito &&
-      !shareDraft &&
-      (previous.draftThreadId === NEW_CHAT_DRAFT_ID ||
-        isQueryDraftId(previous.draftThreadId)) &&
+      (isQueryDraftId(previous.draftThreadId) ||
+        (!shareDraft && previous.draftThreadId === NEW_CHAT_DRAFT_ID)) &&
       aui.threadListItem().getState().remoteId === draftThreadId &&
       previous.threadListItemId === threadListItemId &&
       previous.draftThreadId !== draftThreadId
@@ -4210,6 +4209,8 @@ const Composer: FC<{
         justSentRef.current = { ...justSentRef.current, draftKey };
       }
       const text = latestDraft(previousKey);
+      // A query chat with sharing on lands in the shared slot, which this tab reads from memory.
+      if (shareDraft) publishDraft(text, draftSource);
       writeComposerDraft(draftKey, text);
       stageComposerDraft(draftKey, text);
       writePasteDraft(pasteDraftKey, latestPasteDraft(previousPasteKey));
@@ -4244,6 +4245,7 @@ const Composer: FC<{
     draftKey,
     pasteDraftKey,
     shareDraft,
+    draftSource,
     draftThreadId,
     threadListItemId,
     incognito,
