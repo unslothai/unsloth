@@ -26,7 +26,7 @@ from typing import Callable, Iterator, Literal, NamedTuple, Optional, Sequence
 from loggers import get_logger
 
 # One floor, one name, shared: hand-written copies meant the site that got missed was missed because "who enforces it" had to be read rather than grepped.
-from utils.process_lifetime import is_signalable_pid
+from utils.process_lifetime import is_signalable_pid, pid_is_running
 
 from hub.utils import state_dir
 from hub.utils.hf_errors import modelscope_missing
@@ -261,30 +261,7 @@ def _safe_unlink(path: Path) -> None:
 
 
 def _process_alive(pid: int) -> bool:
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        SYNCHRONIZE = 0x00100000
-        ERROR_INVALID_PARAMETER = 87
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        ctypes.set_last_error(0)
-        handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-        if not handle:
-            return ctypes.get_last_error() != ERROR_INVALID_PARAMETER
-        kernel32.CloseHandle(handle)
-        return True
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
+    return pid_is_running(pid)
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:

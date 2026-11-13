@@ -15,6 +15,8 @@ import weakref
 from pathlib import Path
 from typing import Any, Optional
 
+from utils.process_lifetime import pid_is_running
+
 RELEASE_ENV = "UNSLOTH_DIFFUSION_RELEASE_TEXT_ENCODER"
 # 0: snapshot every released tensor, as before, instead of reloading the ones the encoder's own files hold byte for byte.
 SOURCE_REUSE_ENV = "UNSLOTH_DIFFUSION_TE_RELEASE_FROM_SOURCE"
@@ -137,13 +139,7 @@ def _snapshot_root() -> Path:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except Exception:  # noqa: BLE001 - permission errors mean the process exists
-        return True
-    return True
+    return pid == 1 or pid_is_running(pid)
 
 
 def _sweep_stale(root: Path) -> None:
