@@ -973,6 +973,41 @@ def test_a_scroll_without_a_point_asks_about_the_app_under_the_pointer(desktop):
     assert not _asks("auto", scroll)
 
 
+def test_an_app_known_as_sensitive_by_its_id_alone_asks_every_time(desktop):
+    look()
+    shell = FrontWindow(
+        app = "Windows Command Processor", app_id = "cmd.exe", title = "x", bounds = (1050, 0, 230, 800)
+    )
+    desktop.behind = [shell]
+    click = {"action": "click", **at(1150, 400)}
+    scroll = {"action": "scroll", **at(1150, 400), "direction": "down"}
+    assert policy.call_asks(click, SESSION) == {
+        "risks": ["Windows Command Processor is a terminal"],
+        "apps": [],
+    }
+    # The user allows one click there; the next still asks, and is refused if it could not.
+    assert run(click, approved = True).startswith("Done:")
+    desktop.front = FrontWindow(app = "Notes", title = "Untitled", bounds = (0, 0, 1050, 800))
+    desktop.behind = [shell]
+    assert _asks("auto", scroll)
+    assert "has not been allowed" in run(scroll)
+
+
+def test_a_stop_during_the_look_before_a_click_ends_it(desktop):
+    look()
+    key = state.session_key(SESSION)
+    original = desktop.capture
+
+    def capture(display):
+        state.revoke_account(key[0])
+        return original(display)
+
+    desktop.capture = capture
+    result = run({"action": "click", **at(*BUTTON)}, approved = True)
+    assert "was not done: it was stopped." in result
+    assert desktop.presses == 0
+
+
 def test_opening_an_app_asks_and_then_covers_what_follows(desktop):
     look()
     open_and_type = {

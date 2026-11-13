@@ -298,29 +298,28 @@ def app_allowed(name: str, session: Any) -> bool:
     )
 
 
-def asks_every_time(name: str) -> bool:
-    return _sensitive_app_name(name) is not None
+def asks_every_time(name: str, app_id: str = "") -> bool:
+    return _sensitive_kind(FrontWindow(app = name, app_id = app_id)) is not None
 
 
-def _app_at(
+def _window_at(
     action: dict,
     session: Any,
     backend: Backend,
     prefix: str = "",
-) -> str:
-    """The app whose window a click at the action's point would land in, or "" if unknown."""
+) -> Optional[FrontWindow]:
+    """The window a click at the action's point would land in, or None if unknown."""
     from . import screen
 
     frame = session.frame
     if frame is None:
-        return ""
+        return None
     try:
         point = (action[f"{prefix}x"], action[f"{prefix}y"])
         x, y = screen.image_point(frame, session.coordinates, *point)
-        window = backend.window_at(*frame.to_desktop(x, y))
+        return backend.window_at(*frame.to_desktop(x, y))
     except Exception:  # noqa: BLE001 - the run itself reports a bad point
-        return ""
-    return window.app if window is not None else ""
+        return None
 
 
 def _resolved_app(name: str, backend: Backend) -> str:
@@ -331,39 +330,53 @@ def _resolved_app(name: str, backend: Backend) -> str:
         return name
 
 
-def _app_under_pointer(backend: Backend) -> str:
+def _window_under_pointer(backend: Backend) -> Optional[FrontWindow]:
     """Where a scroll without a point lands: the window under the pointer, not the one in front."""
     try:
-        window = backend.window_at(*backend.cursor())
+        return backend.window_at(*backend.cursor())
     except Exception:  # noqa: BLE001 - the app in front answers instead
-        return ""
-    return window.app if window is not None else ""
+        return None
 
 
-def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
-    """The apps a call's clicks and keys would land in, in order: where each click points, and
-    for keys the app in front after the clicks before them."""
-    current = front.app
-    used: list[str] = []
+def windows_used(
+    actions: list[dict], session: Any, backend: Backend, front: FrontWindow
+) -> list[FrontWindow]:
+    """The windows a call's clicks and keys would land in, in order: where each click points,
+    and for keys the app in front after the clicks before them. Whole windows, since an app
+    may be known for what it is by its id alone."""
+    current = front
+    used: list[FrontWindow] = []
     for action in actions:
         op = action["op"]
         if op == "open_app":
-            current = _resolved_app(action["name"], backend)
+            current = FrontWindow(app = _resolved_app(action["name"], backend))
             used.append(current)
         elif op in ("click", "drag"):
             # A click brings its window forward, so the keys after it go there.
-            current = _app_at(action, session, backend) or current
+            current = _window_at(action, session, backend) or current
             used.append(current)
             if op == "drag":
                 # A drop is input to the app it lands in, which then also takes the keys.
-                current = _app_at(action, session, backend, "to_") or current
+                current = _window_at(action, session, backend, "to_") or current
                 used.append(current)
         elif op == "scroll":
-            at = _app_at(action, session, backend) if "x" in action else _app_under_pointer(backend)
+            at = (
+                _window_at(action, session, backend)
+                if "x" in action
+                else _window_under_pointer(backend)
+            )
             used.append(at or current)
         elif op in ("type", "key"):
             used.append(current)
-    return list(dict.fromkeys(name for name in used if name))
+    seen: dict[str, FrontWindow] = {}
+    for window in used:
+        if window.app:
+            seen.setdefault(window.app, window)
+    return list(seen.values())
+
+
+def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
+    return [window.app for window in windows_used(actions, session, backend, front)]
 
 
 def new_apps(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
@@ -371,13 +384,13 @@ def new_apps(actions: list[dict], session: Any, backend: Backend, front: FrontWi
     ask every time are `risks`' to report, and Unsloth's own window is refused outright."""
     current = settings()
     return [
-        name
-        for name in apps_used(actions, session, backend, front)
-        if not asks_every_time(name)
-        and not is_own_window(FrontWindow(app = name, title = "-"))
+        window.app
+        for window in windows_used(actions, session, backend, front)
+        if not _sensitive_kind(window)
+        and not is_own_window(FrontWindow(app = window.app, app_id = window.app_id, title = "-"))
         # A blocked app is refused when the call runs, so there is nothing to ask.
-        and not is_blocked(name, current)
-        and not app_allowed(name, session)
+        and not blocked_window(window)
+        and not app_allowed(window.app, session)
     ]
 
 
@@ -399,10 +412,11 @@ def risks(
     (screenshot, zoom, wait) never does. `used`: the apps the call would act in, where known,
     so a click into a terminal behind the front window counts too."""
     found: list[str] = []
-    for name in used:
-        kind = _sensitive_app_name(name)
+    for item in used:
+        window = item if isinstance(item, FrontWindow) else FrontWindow(app = item)
+        kind = _sensitive_kind(window)
         if kind:
-            found.append(f"{name} is {kind}")
+            found.append(f"{window.app} is {kind}")
     inputs = [action for action in actions if action["op"] in INPUT_OPS and action["op"] != "move"]
     kind = _sensitive_kind(front)
     if inputs and kind:
@@ -436,7 +450,7 @@ def call_asks(arguments: Any, session_id: Optional[str]) -> dict:
         front = backend.front_window()
         key = state.session_key(session_id)
         session = state.session(key)
-        found = risks(actions, front, tuple(apps_used(actions, session, backend, front)))
+        found = risks(actions, front, tuple(windows_used(actions, session, backend, front)))
         if state.is_stopped(key):
             found.insert(0, "you stopped computer use in this chat")
         return {"risks": found, "apps": new_apps(actions, session, backend, front)}
@@ -465,5 +479,5 @@ def needs_confirmation(arguments: Any, session_id: Optional[str]) -> bool:
     except Exception:  # noqa: BLE001 - unknown front app: ask
         return True
     session = state.session(key)
-    used = tuple(apps_used(actions, session, backend, front))
+    used = tuple(windows_used(actions, session, backend, front))
     return bool(risks(actions, front, used) or new_apps(actions, session, backend, front))

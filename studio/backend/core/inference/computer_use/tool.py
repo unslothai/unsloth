@@ -301,9 +301,13 @@ class _Run:
         blocked = policy.blocked_window(window)
         if blocked:
             raise _Halt(_BLOCKED_APP.format(app = blocked))
-        self._use_app(window.app)
+        self._use_app(window.app, window.app_id)
 
-    def _use_app(self, name: str) -> None:
+    def _use_app(
+        self,
+        name: str,
+        app_id: str = "",
+    ) -> None:
         """Input is about to go to this app. A call the user answered opens the app to the rest
         of the chat; any other call may only use apps already allowed."""
         if not name:
@@ -312,7 +316,7 @@ class _Run:
             raise _Halt(_BLOCKED_APP.format(app = name))
         if self.allowed:
             self.session.apps.add(name.casefold())
-        elif policy.asks_every_time(name) or not policy.app_allowed(name, self.session):
+        elif policy.asks_every_time(name, app_id) or not policy.app_allowed(name, self.session):
             raise _Halt(
                 f"{name} has not been allowed in this chat, and this call was not asked about. "
                 "Send this action again on its own so the user can be asked."
@@ -343,6 +347,9 @@ class _Run:
                 # Same picture where it matters, and a fresher one to compare the result with.
                 self._adopt(now)
                 self.before = now.frame
+        if self._stopped():
+            # The look above can take a while, and control may have been taken back meanwhile.
+            raise _Halt("it was stopped.")
         gx, gy = frame.to_desktop(ix, iy)
         if guard and self._on_own_window(gx, gy, front):
             raise _Halt(
