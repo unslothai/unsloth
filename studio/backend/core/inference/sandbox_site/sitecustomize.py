@@ -30,7 +30,7 @@ def _note(subject, original, mapped):
     print(
         f"note: {subject} does not exist in this sandbox; "
         f"using the working directory instead ({original} -> {mapped})",
-        file=sys.stderr,
+        file = sys.stderr,
     )
 
 
@@ -51,7 +51,7 @@ def _contained_join(cwd, rel):
 def _map_onto_cwd(
     prefix,
     text,
-    notify=True,
+    notify = True,
 ):
     """Maps prefix/rest onto ./rest under the CWD, contained against .. escapes; notify False for reads so the notice is not spent on a remap that never happens."""
     rel = text[len(prefix) :].lstrip("/")
@@ -69,7 +69,7 @@ def _load_sidecar(cwd):
     """Return the persisted ``source -> healed target`` map, or {} on any error
     (missing/corrupt/foreign sidecar degrades to in-process-only behaviour)."""
     try:
-        with open(_sidecar_path(cwd), encoding="utf-8") as fh:
+        with open(_sidecar_path(cwd), encoding = "utf-8") as fh:
             data = json.load(fh)
     except Exception:  # noqa: BLE001 - a bad sidecar must never break user code
         return {}
@@ -84,7 +84,7 @@ def _record_sidecar(cwd, source, target):
             return
         data[source] = target
         tmp = _sidecar_path(cwd) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
+        with open(tmp, "w", encoding = "utf-8") as fh:
             json.dump(data, fh)
         os.replace(tmp, _sidecar_path(cwd))
     except Exception:  # noqa: BLE001 - persistence is best effort only
@@ -100,12 +100,12 @@ def _remap_open(file, mode):
     """A read heals only if the target exists, so a missing input fails instead of reading a stray file."""
     creating = _is_creating_mode(mode)
     # notify=False: emit the notice only once we commit to the mapping below.
-    mapped = _remap(file, notify=False)
+    mapped = _remap(file, notify = False)
     if mapped is not file:
         # Reads heal only when the target exists, so a missing input stays truthful.
         if creating or os.path.exists(mapped):
             # Commit: emit the notice now (the notify=False peek above deferred it).
-            _remap(file, notify=True)
+            _remap(file, notify = True)
             return mapped
         return file
     if not creating:
@@ -142,7 +142,7 @@ def _remap_open(file, mode):
     return remapped
 
 
-def _remap(path, notify=True):
+def _remap(path, notify = True):
     """``_remap_open`` passes notify False, so a read that keeps its original path emits no false notice."""
     try:
         text = os.fspath(path)
@@ -160,7 +160,7 @@ def _remap(path, notify=True):
             prefix = prefix.replace("\\", "/")
         # Heal only while the prefix directory is absent, so a real host mount is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
-            return _map_onto_cwd(prefix, text, notify=notify)
+            return _map_onto_cwd(prefix, text, notify = notify)
     return path
 
 
@@ -176,7 +176,7 @@ def _install():
 
     def _open(
         file,
-        mode="r",
+        mode = "r",
         *args,
         **kwargs,
     ):
@@ -184,7 +184,7 @@ def _install():
 
     def _io_open(
         file,
-        mode="r",
+        mode = "r",
         *args,
         **kwargs,
     ):
@@ -200,16 +200,16 @@ def _install():
     def _os_open(
         path,
         flags,
-        mode=0o777,
+        mode = 0o777,
         *,
-        dir_fd=None,
+        dir_fd = None,
     ):
         # Only O_CREAT creates; O_TRUNC/O_APPEND alone behave as a read.
         logical_mode = "w" if (flags & os.O_CREAT) else "r"
         mapped = _remap_open(path, logical_mode)
         if dir_fd is None:
             return original_os_open(mapped, flags, mode)
-        return original_os_open(mapped, flags, mode, dir_fd=dir_fd)
+        return original_os_open(mapped, flags, mode, dir_fd = dir_fd)
 
     def _path_mkdir(self, *args, **kwargs):
         # pathlib probes unpatched os.stat on FileExistsError; remap up front for exist_ok.
@@ -250,8 +250,8 @@ class _HostPackagesFinder:
     def find_spec(
         self,
         name,
-        path=None,
-        target=None,
+        path = None,
+        target = None,
     ):
         import importlib.machinery
 
@@ -291,7 +291,6 @@ class _HostPackagesFinder:
         if origin not in cls._extends:
             try:
                 import ast
-
                 with open(origin, "rb") as f:
                     tree = ast.parse(f.read())
                 cls._extends[origin] = any(map(cls._declares_namespace, cls._top_level(tree.body)))
@@ -302,7 +301,6 @@ class _HostPackagesFinder:
     @classmethod
     def _top_level(cls, body):
         import ast
-
         for node in body:
             yield node
             if isinstance(node, ast.Try):
@@ -326,7 +324,7 @@ class _HostPackagesFinder:
             )
         return isinstance(node, ast.Expr) and call_of(node.value, "declare_namespace", ["__name__"])
 
-    def find_distributions(self, context=None):
+    def find_distributions(self, context = None):
         name = getattr(context, "name", None)
         # An explicit path is the caller's scope, already served by the stock path finder.
         if not name or "path" in getattr(context, "__dict__", {}):
@@ -334,7 +332,7 @@ class _HostPackagesFinder:
         import importlib.metadata
 
         return importlib.metadata.MetadataPathFinder.find_distributions(
-            importlib.metadata.DistributionFinder.Context(name=name, path=self._folders)
+            importlib.metadata.DistributionFinder.Context(name = name, path = self._folders)
         )
 
 
@@ -429,7 +427,7 @@ def _read_pth_files(entries):
             continue
         for name in names:
             try:
-                with open(os.path.join(entry, name), encoding="utf-8") as f:
+                with open(os.path.join(entry, name), encoding = "utf-8") as f:
                     lines = f.read().splitlines()
                 for line in lines:
                     line = line.strip()
@@ -459,7 +457,6 @@ def _read_pth_files(entries):
 class _SessionPackagesFinder:
     # Bound up front: an import inside find_spec would re-enter this finder.
     from importlib.machinery import PathFinder as _path_finder
-
     def __init__(self, entries, editable):
         self._entries = entries
         self._editable = editable
@@ -467,8 +464,8 @@ class _SessionPackagesFinder:
     def find_spec(
         self,
         name,
-        path=None,
-        target=None,
+        path = None,
+        target = None,
     ):
         cache = sys.path_importer_cache
         for entry in self._entries:
@@ -532,14 +529,13 @@ def _prune_stale_dist_info():
                 import shutil
 
                 for _, name in sorted(stamped)[:-1]:
-                    shutil.rmtree(os.path.join(entry, name), ignore_errors=True)
+                    shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
     except Exception:  # noqa: BLE001 - a broken shim must never break user code
         pass
 
 
 if os.environ.get("PIP_PREFIX"):
     import atexit
-
     _prune_stale_dist_info()
     atexit.register(_prune_stale_dist_info)
 
@@ -561,8 +557,8 @@ class _HostWorkdirFinder:
     def find_spec(
         self,
         name,
-        path=None,
-        target=None,
+        path = None,
+        target = None,
     ):
         if path is not None or name not in self._names:
             return None
