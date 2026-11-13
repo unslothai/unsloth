@@ -45,6 +45,16 @@ def test_renders_text_in_several_scripts_with_title_metadata():
         assert document.metadata["title"] == "My chat"
 
 
+def test_user_messages_keep_line_breaks_and_indentation():
+    body = (
+        '<section class="message user"><h3 class="role">User</h3>'
+        '<div class="content">def f():\n    return 1\na,b\n1,2</div></section>'
+    )
+    response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
+    assert response.status_code == 200
+    assert "def f():\n    return 1\na,b\n1,2" in _text(response.content)
+
+
 def test_long_chats_span_pages():
     body = "".join(f"<p>line {index}</p>" for index in range(400))
     response = _client().post("/api/chat-export/pdf", json = {"title": "", "html": body})
