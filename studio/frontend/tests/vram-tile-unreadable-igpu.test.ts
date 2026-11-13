@@ -40,11 +40,10 @@ const gpu: SystemGpuInfo = {
 };
 
 test("an unreadable shared iGPU leaves the discrete cards' usage on the VRAM tile", () => {
-  // The same steps resources-tab.tsx and floating-monitor.tsx take for the tile.
   const display = gpuMemoryDisplay(gpu);
   assert.deepEqual(display.sharedDevices, [igpu]);
   assert.equal(display.sharedOnly, false);
-  // Used, free and capacity all cover the same two cards, so the iGPU's pool never reads as free.
+  // Used, free and capacity cover the same two cards.
   assert.deepEqual(gpuMemoryTotalsGb(display.usageDevices), {
     dedicated: 63.72,
     shared: 0,
@@ -54,7 +53,6 @@ test("an unreadable shared iGPU leaves the discrete cards' usage on the VRAM til
   const used = resolveGpuVramUsedGb(display.usageGpu);
   assert.ok(used !== null, "VRAM used must not be Unknown");
   assert.ok(Math.abs(used - 23.72) < 1e-9);
-  // No free reading on the iGPU, so the tile keeps the shared label and drops the estimate line.
   assert.equal(display.sharedAvailableGb, null);
   const estimate = (gb: number) => `Estimated available: ${gb}`;
   assert.equal(
