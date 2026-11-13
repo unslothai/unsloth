@@ -798,6 +798,26 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         assert not os.path.exists(packages)
 
 
+def test_only_studios_interpreter_gets_the_chat_pip_prefix(tmp_path):
+    """Every OS: the shim routes Studio's own pip and leaves another venv's pip alone."""
+    packages = str(tmp_path / os_sandbox.SESSION_PACKAGES_RELPATH)
+    env = {
+        **os.environ,
+        "PYTHONPATH": tools._SANDBOX_SITE_DIR,
+        **os_sandbox.studio_pip_prefix(packages),
+        "PIP_PREFIX": packages,
+    }
+    probe = ["-c", "import os; print(os.environ.get('PIP_PREFIX'))"]
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(tmp_path / "venv")], check = True
+    )
+    venv_python = tmp_path / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    studio = subprocess.run([sys.executable, *probe], env = env, capture_output = True, text = True)
+    other = subprocess.run([str(venv_python), *probe], env = env, capture_output = True, text = True)
+    assert studio.stdout.strip() == packages, studio.stderr
+    assert other.stdout.strip() == "None", other.stderr
+
+
 def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
     """A rejected Seatbelt profile is reported as `sandbox-exec:`, not `bwrap:`."""
     reset = []
