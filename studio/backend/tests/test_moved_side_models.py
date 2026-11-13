@@ -69,7 +69,7 @@ def _register(
 def _hub_tree(hub: Path, repo: str, files: dict[str, bytes]) -> Path:
     repo_dir = hub / f"models--{repo.replace('/', '--')}"
     snapshot = repo_dir / "snapshots" / _SHA
-    snapshot.mkdir(parents=True)
+    snapshot.mkdir(parents = True)
     for name, data in files.items():
         (snapshot / name).write_bytes(data)
     (repo_dir / "refs").mkdir()
@@ -82,7 +82,7 @@ def _asr_tree(hub: Path) -> Path:
 
 
 def _asr_pair(directory: Path, *, mmproj: bool = True) -> None:
-    directory.mkdir(parents=True, exist_ok=True)
+    directory.mkdir(parents = True, exist_ok = True)
     (directory / _SPEC.model_file).write_bytes(b"GGUF")
     if mmproj:
         (directory / _SPEC.mmproj_file).write_bytes(b"GGUF")
@@ -133,7 +133,7 @@ def test_loose_pair_is_found_where_the_model_hub_lists_loose_ggufs(
 
 
 def test_loose_model_without_its_mmproj_is_not_downloaded(caches, tmp_path):
-    _asr_pair(tmp_path / "custom", mmproj=False)
+    _asr_pair(tmp_path / "custom", mmproj = False)
     _register(caches, tmp_path / "custom")
     assert _paths() is None
     assert stt_mtmd_sidecar.is_model_downloaded(_MODEL_ID) is False
@@ -161,16 +161,16 @@ def test_explicit_cache_keeps_the_single_root_download_check(caches, tmp_path):
     _register(caches, tmp_path / "loose")
     assert _paths() is not None
     assert (
-        stt_mtmd_sidecar._cached_model_paths(_MODEL_ID, hub_cache=caches["active"], revision=_SHA)
+        stt_mtmd_sidecar._cached_model_paths(_MODEL_ID, hub_cache = caches["active"], revision = _SHA)
         is None
     )
-    assert stt_mtmd_sidecar._cached_model_paths(_MODEL_ID, hub_cache=caches["active"]) is None
+    assert stt_mtmd_sidecar._cached_model_paths(_MODEL_ID, hub_cache = caches["active"]) is None
 
 
 def test_load_uses_the_moved_files(caches, tmp_path):
     _asr_pair(tmp_path / "custom")
     _register(caches, tmp_path / "custom")
-    model, mmproj = stt_mtmd_sidecar.MtmdSttSidecar(keep_alive_seconds=0)._ensure_model_downloaded(
+    model, mmproj = stt_mtmd_sidecar.MtmdSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded(
         _MODEL_ID
     )
     assert Path(model).parent == tmp_path / "custom" and Path(mmproj).name == _SPEC.mmproj_file
@@ -184,7 +184,7 @@ def test_whisper_engines_find_moved_cache_trees(caches, monkeypatch, tmp_path):
     ggml = _hub_tree(tmp_path / "custom", repo, {filename: b"ggml"})
     _register(caches, tmp_path / "custom")
     assert stt_ggml_sidecar._cached_model_path("tiny") == str(ggml / filename)
-    assert stt_ggml_sidecar._cached_model_path("tiny", hub_cache=caches["active"]) is None
+    assert stt_ggml_sidecar._cached_model_path("tiny", hub_cache = caches["active"]) is None
 
     previous = tmp_path / "previous" / "hub"
     snapshot = _hub_tree(
@@ -244,9 +244,9 @@ def test_a_status_poll_lists_a_custom_folder_once_and_probes_only_candidates(
 
     folder = tmp_path / "custom"
     for index in range(30):
-        (folder / f"group{index // 10}" / f"model{index}").mkdir(parents=True)
+        (folder / f"group{index // 10}" / f"model{index}").mkdir(parents = True)
     (folder / "group0" / "model0" / _SPEC.model_file).write_bytes(b"GGUF")  # no mmproj beside it
-    _register(caches, folder, recursive=True)
+    _register(caches, folder, recursive = True)
     bounded, probes = [], []
     real_bounded = local_inventory.run_custom_folder_bounded_sync
     monkeypatch.setattr(
@@ -280,7 +280,7 @@ def test_a_hung_custom_folder_is_skipped_within_the_hub_budget(
     hung, good = tmp_path / "hung", tmp_path / "good"
     hung.mkdir()
     _asr_pair(good)
-    _register(caches, hung, recursive=stall == "folder walk")
+    _register(caches, hung, recursive = stall == "folder walk")
     _register(caches, good)
     release = threading.Event()
 
@@ -313,7 +313,7 @@ def test_a_hung_custom_folder_is_skipped_within_the_hub_budget(
         assert time.monotonic() - started < 0.15
     finally:
         release.set()
-        local_inventory._custom_folder_scans[str(hung)][1].result(timeout=5)
+        local_inventory._custom_folder_scans[str(hung)][1].result(timeout = 5)
 
 
 @pytest.mark.parametrize("stall", ["listing", "probe"])
@@ -354,12 +354,12 @@ def test_a_hung_previous_models_folder_does_not_hide_other_locations(
             model_id,
             filename,
             *,
-            hub_cache=None,
-            revision=None,
+            hub_cache = None,
+            revision = None,
         ):
             if hub_cache == hung:
                 release.wait(10)
-            return real_file(model_id, filename, hub_cache=hub_cache, revision=revision)
+            return real_file(model_id, filename, hub_cache = hub_cache, revision = revision)
 
         monkeypatch.setattr(stt_mtmd_sidecar, "_cached_file", cached_file)
     try:
@@ -373,7 +373,7 @@ def test_a_hung_previous_models_folder_does_not_hide_other_locations(
         assert time.monotonic() - started < 0.15
     finally:
         release.set()
-        local_inventory._custom_folder_scans[str(hung)][1].result(timeout=5)
+        local_inventory._custom_folder_scans[str(hung)][1].result(timeout = 5)
 
 
 def test_a_dead_stored_models_folder_does_not_hide_a_healthy_one(caches, monkeypatch, tmp_path):
@@ -385,7 +385,7 @@ def test_a_dead_stored_models_folder_does_not_hide_a_healthy_one(caches, monkeyp
     snapshot = _asr_tree(healthy / "hub")
     stored = {hf_cache_settings.CACHE_HISTORY_SETTING_KEY: [str(dead), str(healthy)]}
     monkeypatch.setattr(
-        "storage.studio_db.get_app_setting", lambda key, default=None: stored.get(key, default)
+        "storage.studio_db.get_app_setting", lambda key, default = None: stored.get(key, default)
     )
     monkeypatch.setattr(
         "utils.hf_cache_settings.known_hf_hub_cache_candidates", _KNOWN_CACHE_CANDIDATES
@@ -416,7 +416,7 @@ def test_a_dead_stored_models_folder_does_not_hide_a_healthy_one(caches, monkeyp
         release.set()
         for key, (_, future) in list(local_inventory._custom_folder_scans.items()):
             if str(dead) in key:
-                future.result(timeout=5)
+                future.result(timeout = 5)
 
 
 def test_known_caches_are_listed_without_resolving_them(monkeypatch):
@@ -439,7 +439,7 @@ def test_known_caches_are_listed_without_resolving_them(monkeypatch):
 def test_a_known_cache_registered_as_a_custom_folder_is_listed_both_ways(caches, tmp_path):
     """Its repos-only listing as a known cache must not stand in for its listing as a custom folder."""
     previous = tmp_path / "previous" / "hub"
-    previous.mkdir(parents=True)
+    previous.mkdir(parents = True)
     _asr_pair(previous / "asr")
     caches["known"].append(previous)
     _register(caches, previous)
@@ -494,7 +494,7 @@ def test_stt_status_looks_up_downloads_off_the_event_loop(monkeypatch):
     monkeypatch.setattr(stt_ggml_sidecar, "_cached_model_path", _record_thread(on_loop, None))
     monkeypatch.setattr(inference, "_audio_cpp_runtime_status", lambda: {"available": False})
     monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
-    body = json.loads(asyncio.run(inference.stt_status(model=None, current_subject="owner")).body)
+    body = json.loads(asyncio.run(inference.stt_status(model = None, current_subject = "owner")).body)
     assert body["mtmd"]["downloaded_models"] == [] and body["gguf"]["downloaded_models"] == []
     assert on_loop and not any(on_loop)
 
@@ -508,12 +508,12 @@ def test_openai_translations_checks_the_model_off_the_event_loop(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference.openai_audio_translations(
-                request=None,
-                file=None,
-                model=None,
-                response_format="json",
-                provider_id=None,
-                current_subject="owner",
+                request = None,
+                file = None,
+                model = None,
+                response_format = "json",
+                provider_id = None,
+                current_subject = "owner",
             )
         )
     assert exc.value.status_code == 400 and on_loop == [False]
@@ -525,7 +525,7 @@ _UD, _Q4 = pup.UPSAMPLER_MODEL_FILES["UD-Q4_K_XL"], pup.UPSAMPLER_MODEL_FILES["Q
 @pytest.fixture
 def upsampler(caches, monkeypatch):
     for name in (pup.ENV_MODEL_OVERRIDE, pup.ENV_MMPROJ_OVERRIDE):
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name, raising = False)
     return caches
 
 
@@ -548,7 +548,7 @@ def test_upsampler_moved_into_a_custom_folder_is_found(upsampler, tmp_path):
     assert status["downloaded"] is True and status["current_downloaded"] is True
     # The download's own check reads only the cache it wrote.
     assert (
-        pup._cached_download_paths(pup.UPSAMPLER_ID, hub_cache=upsampler["active"], revision=_SHA)
+        pup._cached_download_paths(pup.UPSAMPLER_ID, hub_cache = upsampler["active"], revision = _SHA)
         is None
     )
 
@@ -567,7 +567,7 @@ def test_upsampler_current_quant_elsewhere_beats_an_older_one_in_the_active_cach
 def test_upsampler_download_size_counts_only_the_active_cache(upsampler, tmp_path):
     """The download writes to the active cache, so a copy elsewhere saves no bytes."""
     previous = tmp_path / "previous" / "hub"
-    _upsampler_tree(previous, _UD, mmproj=False)
+    _upsampler_tree(previous, _UD, mmproj = False)
     upsampler["known"].append(previous)
     status = pup.status()
     assert status["downloaded"] is True and status["current_downloaded"] is False
@@ -599,7 +599,7 @@ def test_upsampler_loose_files_are_not_matched_but_an_override_projector_is_sear
 @pytest.fixture
 def segmenter(caches, monkeypatch):
     for name in (diffusion_segment.ENV_PATH_OVERRIDE, diffusion_segment.ENV_VARIANT):
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name, raising = False)
     return caches
 
 
@@ -615,7 +615,7 @@ def test_segmenter_moved_into_a_custom_folder_is_found(segmenter, tmp_path):
     # The download's own check reads only the cache it wrote.
     assert (
         diffusion_segment._cached_download_paths(
-            diffusion_segment.DEFAULT_VARIANT, hub_cache=segmenter["active"], revision=_SHA
+            diffusion_segment.DEFAULT_VARIANT, hub_cache = segmenter["active"], revision = _SHA
         )
         is None
     )
