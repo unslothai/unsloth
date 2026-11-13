@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ComputerUseIcon } from "@/lib/computer-use-icon";
 import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { useIsAccountOwner } from "@/features/auth";
 import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
@@ -26,7 +27,6 @@ import {
   Cancel01Icon,
   CancelCircleIcon,
   CloudIcon,
-  MousePointer01Icon,
   ComputerTerminal01Icon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
@@ -312,7 +312,7 @@ const TABS: TabDef[] = [
   {
     id: "computer-use",
     labelKey: "computerUse.settings.title",
-    icon: MousePointer01Icon,
+    icon: ComputerUseIcon,
   },
   {
     id: "keyboard-shortcuts",

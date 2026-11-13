@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ComputerUseIcon } from "@/lib/computer-use-icon";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useT } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";
-import { MousePointer01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect } from "react";
 import { computerUseReady, refreshComputerUseStatus, useComputerUseStore } from "./store";
@@ -54,7 +54,7 @@ export function ComputerUseMenuItem() {
         useComputerUseStore.getState().setEnabled(!enabled);
       }}
     >
-      <HugeiconsIcon icon={MousePointer01Icon} strokeWidth={2} />
+      <HugeiconsIcon icon={ComputerUseIcon} strokeWidth={2} />
       {ready ? t("computerUse.label") : t("computerUse.setUp")}
       {on ? <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" /> : null}
     </DropdownMenuItem>
@@ -79,7 +79,7 @@ export function ComputerUsePill({ glyph }: { glyph: (icon: ReactNode) => ReactNo
       title={problem ? t(`computerUse.needs.${problem}`) : undefined}
     >
       {glyph(
-        <HugeiconsIcon icon={MousePointer01Icon} className="size-[calc(17px*var(--ui-space-scale,1))]" strokeWidth={2} />,
+        <HugeiconsIcon icon={ComputerUseIcon} className="size-[calc(17px*var(--ui-space-scale,1))]" strokeWidth={2} />,
       )}
       <span>{t("computerUse.pill")}</span>
     </button>

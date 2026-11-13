@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ComputerUseIcon } from "@/lib/computer-use-icon";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,7 +32,7 @@ import {
 import { refreshComputerUseStatus, useComputerUseStore } from "@/features/computer-use/store";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
-import { MousePointer01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -132,7 +133,7 @@ export function ComputerUseTab() {
       <SettingsSection title={t("computerUse.settings.control")}>
         {status ? (
           <SettingsRow
-            icon={<HugeiconsIcon icon={MousePointer01Icon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
+            icon={<HugeiconsIcon icon={ComputerUseIcon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
             label={t("computerUse.settings.anyApp")}
             description={status.available ? t("computerUse.settings.anyAppDescription") : status.reason}
           >
