@@ -118,6 +118,8 @@ export interface BatchDeps {
 export interface BatchStepWatch {
   /** The chat this step sent into, or null while it cannot be read. */
   read: () => BatchThreadSnapshot | null;
+  /** True while the send is still preparing (an attachment upload), before the message lands. */
+  sending: () => boolean;
 }
 
 export interface BatchClaim {
@@ -225,7 +227,7 @@ function watchStep(id: number, index: number, watch: BatchStepWatch): void {
       const nothingSent = !snapshot || snapshot.messages.length === 0;
       // A refused send keeps the prompt in the composer, a failed attachment send clears it: either
       // way nothing reaches this chat.
-      if (nothingSent && Date.now() - startedAt > BATCH_SEND_TIMEOUT_MS) {
+      if (nothingSent && !watch.sending() && Date.now() - startedAt > BATCH_SEND_TIMEOUT_MS) {
         fail(id, "Studio didn't send this chat. Check its message box, then start the batch again.");
       }
       return;

@@ -10,6 +10,17 @@ import { toast } from "@/lib/toast";
 import { wasAttachmentAddCancelled } from "../draft-attachment-adapter";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
+  BATCH_CHAT_DRAFT_ID,
+  composerDraftKey,
+  composerPasteDraftKey,
+  writeComposerDraft,
+  writePasteDraft,
+} from "../utils/composer-draft";
+import {
+  isPreStreamRunReservationHeld,
+  preStreamRunReservationTokens,
+} from "../utils/pre-stream-run-reservation";
+import {
   BATCH_SEND_TIMEOUT_MS,
   type BatchFinish,
   type ThreadListLike,
@@ -106,6 +117,9 @@ export function pickFilesForNewChats(aui: Aui, navigate: Navigate, accept: strin
       notify,
     });
     if (started) {
+      // A batch that stopped mid-step can leave text in the batch slot; each run starts blank.
+      writeComposerDraft(composerDraftKey(BATCH_CHAT_DRAFT_ID), "");
+      writePasteDraft(composerPasteDraftKey(BATCH_CHAT_DRAFT_ID), []);
       aui.composer().setText("");
     } else {
       toast.error("A batch is already running", {
@@ -216,12 +230,14 @@ export function useBatchNewChatsComposer(
           const runtime = aui.threads().__internal_getAssistantRuntime?.();
           if (!runtime) throw new Error("Chat isn't ready yet.");
           // Through the form, so this send takes every check a typed send does.
+          const reservedBefore = new Set(preStreamRunReservationTokens());
           form.requestSubmit();
+          const reserved = preStreamRunReservationTokens().filter((t) => !reservedBefore.has(t));
           const read = batchThreadReader(
             runtime.threads as unknown as ThreadListLike,
             draftId,
           );
-          claim.sent({ read });
+          claim.sent({ read, sending: () => reserved.some(isPreStreamRunReservationHeld) });
         } catch (error) {
           claim.failed(error instanceof Error ? error.message : String(error));
         }

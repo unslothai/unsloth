@@ -144,7 +144,7 @@ test("each file gets its own new chat, the next opening only after the reply fin
     assert.equal(first.total, 2);
 
     let state: BatchThreadSnapshot = { isRunning: true, messages: [user, reply("running")] };
-    first.sent({ read: () => state });
+    first.sent({ read: () => state, sending: () => false });
     mock.timers.tick(BATCH_POLL_MS * 4);
     assert.deepEqual(h.opened, ["n0"], "still answering: no second chat yet");
 
@@ -164,6 +164,7 @@ test("each file gets its own new chat, the next opening only after the reply fin
     assert.equal(second.file.name, "b.mp4");
     second.sent({
       read: () => ({ isRunning: false, messages: [user, reply("complete")] }),
+      sending: () => false,
     });
     advance(BATCH_SETTLE_MS + BATCH_POLL_MS);
     assert.deepEqual(h.finished, [{ kind: "done", total: 2 }]);
@@ -182,6 +183,7 @@ test("a reply that errors stops the batch at that file", () => {
     assert.ok(claim);
     claim.sent({
       read: () => ({ isRunning: false, messages: [user, reply("incomplete", "error")] }),
+      sending: () => false,
     });
     mock.timers.tick(BATCH_POLL_MS);
     assert.equal(h.finished.length, 1);
@@ -202,10 +204,13 @@ test("a send Studio refused, or a chat nobody opened, ends the batch instead of 
     const claim = claimBatchStep(batchTargetKey("n0"));
     assert.ok(claim);
     // Nothing reached the chat, whether the prompt is still in the composer or not.
-    claim.sent({ read: () => ({ isRunning: false, messages: [] }) });
-    mock.timers.tick(BATCH_SEND_TIMEOUT_MS - BATCH_POLL_MS);
-    assert.equal(refused.finished.length, 0, "a parked send gets time to go out");
-    mock.timers.tick(BATCH_POLL_MS * 2);
+    // An upload still preparing the send holds the timeout until it lands or is released.
+    let sending = true;
+    claim.sent({ read: () => ({ isRunning: false, messages: [] }), sending: () => sending });
+    mock.timers.tick(BATCH_SEND_TIMEOUT_MS * 2);
+    assert.equal(refused.finished.length, 0, "a send still uploading is not timed out");
+    sending = false;
+    mock.timers.tick(BATCH_POLL_MS);
     assert.equal(refused.finished[0]?.kind, "failed");
 
     const unopened = harness();
@@ -242,6 +247,7 @@ test("Stop ends the batch before the next chat, counting chats already sending",
     assert.ok(claim);
     claim.sent({
       read: () => ({ isRunning: true, messages: [user, reply("running")] }),
+      sending: () => false,
     });
     stopBatchNewChats();
     assert.deepEqual(h.finished, [{ kind: "stopped", sent: 1, total: 3 }]);

@@ -160,6 +160,14 @@ export function cancelPreStreamRunForThreadIds(
   return token ? cancelPreStreamReservation(token) : false;
 }
 
+export function preStreamRunReservationTokens(): symbol[] {
+  return [...reservations.keys()];
+}
+
+export function isPreStreamRunReservationHeld(token: symbol): boolean {
+  return reservations.has(token);
+}
+
 export function claimPreStreamRunReservation(token: symbol): boolean {
   const reservation = reservations.get(token);
   if (!reservation || reservation.cancelled) {
