@@ -46,7 +46,10 @@ export async function loadOfflineDocsSettings(): Promise<OfflineDocsSettings> {
   const response = await authFetch("/api/settings/offline-docs");
   if (!response.ok) {
     throw new Error(
-      await readFastApiError(response, "Failed to load the offline docs settings"),
+      await readFastApiError(
+        response,
+        "Failed to load the offline docs settings",
+      ),
     );
   }
   return fromApi(await response.json());
@@ -67,7 +70,10 @@ export async function updateOfflineDocsSettings(update: {
   });
   if (!response.ok) {
     throw new Error(
-      await readFastApiError(response, "Failed to update the offline docs settings"),
+      await readFastApiError(
+        response,
+        "Failed to update the offline docs settings",
+      ),
     );
   }
   return fromApi(await response.json());

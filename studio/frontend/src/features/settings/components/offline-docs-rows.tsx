@@ -44,6 +44,18 @@ export function OfflineDocsRows(): ReactElement {
     };
   }, []);
 
+  // A startup refresh may be running when the rows open; poll until it ends.
+  const serverRefreshing = Boolean(settings?.refreshing) && !downloading;
+  useEffect(() => {
+    if (!serverRefreshing) return;
+    const timer = window.setInterval(() => {
+      void loadOfflineDocsSettings()
+        .then(setSettings)
+        .catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [serverRefreshing]);
+
   const download = async () => {
     setDownloading(true);
     setError(null);
@@ -65,7 +77,10 @@ export function OfflineDocsRows(): ReactElement {
     }
   };
 
-  const save = async (update: { path?: string | null; autoUpdate?: boolean }) => {
+  const save = async (update: {
+    path?: string | null;
+    autoUpdate?: boolean;
+  }) => {
     setSaving(true);
     setError(null);
     try {
@@ -91,7 +106,9 @@ export function OfflineDocsRows(): ReactElement {
   };
 
   const busy = saving || downloading || Boolean(settings?.refreshing);
-  const pathDirty = Boolean(settings && draftPath.trim() !== (settings.path ?? ""));
+  const pathDirty = Boolean(
+    settings && draftPath.trim() !== (settings.path ?? ""),
+  );
   const updatedOn = settings?.updatedAt
     ? new Date(settings.updatedAt).toLocaleDateString()
     : null;
@@ -129,7 +146,10 @@ export function OfflineDocsRows(): ReactElement {
                 </span>
               ) : null}
               {failure ? (
-                <span className="text-destructive" data-testid="offline-docs-error">
+                <span
+                  className="text-destructive"
+                  data-testid="offline-docs-error"
+                >
                   {failure}
                 </span>
               ) : null}
@@ -179,7 +199,9 @@ export function OfflineDocsRows(): ReactElement {
       </SettingsRow>
       <SettingsRow
         label={t("settings.general.rag.offlineDocs.autoUpdateLabel")}
-        description={t("settings.general.rag.offlineDocs.autoUpdateDescription")}
+        description={t(
+          "settings.general.rag.offlineDocs.autoUpdateDescription",
+        )}
       >
         <div className="flex items-center gap-3">
           <Button
