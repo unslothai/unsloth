@@ -8599,7 +8599,7 @@ def _python_is_high_risk(code: str) -> bool:
             if folded and _folded_is_sensitive(folded):
                 return True
     runner_modules = {m: m for m in _PY_CODE_STRING_RUNNERS}
-    runner_funcs = {f: "timeit" for f in _PY_CODE_STRING_RUNNERS["timeit"]}
+    runner_funcs: "dict[str, str]" = {}
     for node in _tree_nodes(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -8607,17 +8607,18 @@ def _python_is_high_risk(code: str) -> bool:
                     runner_modules[alias.asname or alias.name] = alias.name
         elif isinstance(node, ast.ImportFrom) and node.module in _PY_CODE_STRING_RUNNERS:
             for alias in node.names:
-                if alias.name in _PY_CODE_STRING_RUNNERS[node.module]:
+                if alias.name == "*":
+                    runner_funcs.update(
+                        dict.fromkeys(_PY_CODE_STRING_RUNNERS[node.module], node.module)
+                    )
+                elif alias.name in _PY_CODE_STRING_RUNNERS[node.module]:
                     runner_funcs[alias.asname or alias.name] = node.module
 
     def _code_string(arg):
-        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-            return arg.value
-        if isinstance(arg, ast.Name):
-            value = str_vars.get(arg.id)
-            if value is not None and "\x00" not in value and "\x02" not in value:
-                return value
-        return None
+        value = _folded_path(arg, str_vars)
+        if value is None or "\x00" in value or "\x02" in value:
+            return None
+        return value
 
     # Non-literal exec/eval/compile/__import__ runs unseen code: ask. Literal ones are screened.
     for node in _tree_nodes(tree):
@@ -18483,9 +18484,16 @@ def _check_signal_escape_patterns(code: str):
                             argv.append(s)
                     if argv:
                         shell_commands.append(shlex.join(argv))
+                shell_kw = expanded_kwargs.get("shell")
+                runs_shell = isinstance(shell_kw, ast.Constant) and bool(shell_kw.value)
                 for a in all_call_args:
                     if isinstance(a, (ast.List, ast.Tuple)):
                         shell_commands.append(shlex.join(_extract_strings_from_list(a)))
+                        # POSIX shell=True runs args[0] as shell source.
+                        if runs_shell and a.elts:
+                            head = _extract_string_from_node(a.elts[0])
+                            if head is not None:
+                                shell_commands.append(head)
 
                 if has_opaque_kwargs:
                     # Can't inspect dynamic **kwargs; flag as unsafe.
