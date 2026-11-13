@@ -728,40 +728,100 @@ def _require_plain_dir(
         raise OSError(f"{name} is no longer a plain folder")
 
 
-def _safe_write(workdir: str, rel: str, data: bytes, mode: Optional[int]) -> None:
-    path = _resolve_inside(workdir, rel, create_dirs = True)
-    tmp = os.path.join(os.path.dirname(path), f".unsloth-rewind-{uuid.uuid4().hex}.tmp")
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_BINARY", 0)
-    )
-    fd = os.open(tmp, flags, 0o600)
+# POSIX walks the parents as open folders, so a parent swapped for a link between steps fails
+# instead of carrying the write outside. Windows has no dir_fd and keeps the lstat walk. os.rename
+# stands in for os.replace, which takes the same dir_fd arguments but is not listed.
+DIR_FD_WALK = (
+    {os.open, os.mkdir, os.stat, os.chmod, os.rename, os.unlink} <= os.supports_dir_fd
+    and hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+)
+
+
+def open_dir_below(root: str, parts: "Iterable[str]", create_dirs: bool) -> int:
+    """Descriptor of ``root/parts...``, never following a link at any step; the caller closes it."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(root, flags)
     try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        if mode is not None:
-            os.chmod(tmp, mode)
-        if os.path.isfile(path):
-            from core.library import replace_file
-            replace_file(tmp, path)  # carries the Library's name and folder over to the new inode
-        else:
-            os.replace(tmp, path)  # replaces a link at the name, never writes through it
+        for part in parts:
+            if create_dirs:
+                try:
+                    os.mkdir(part, dir_fd = fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, flags, dir_fd = fd)
+            os.close(fd)
+            fd = child
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        os.close(fd)
         raise
+    return fd
+
+
+def _open_parent(workdir: str, rel: str, create_dirs: bool) -> "tuple[Optional[int], str, str]":
+    """(folder fd or None, name to use with it, full path) for *rel*."""
+    if not DIR_FD_WALK:
+        path = _resolve_inside(workdir, rel, create_dirs)
+        return None, path, path
+    parts = rel.split("/")
+    if os.path.isabs(rel) or any(part in ("", ".", "..") for part in parts):
+        raise OSError("not a path inside the chat's folder")
+    return (
+        open_dir_below(workdir, parts[:-1], create_dirs),
+        parts[-1],
+        os.path.join(workdir, *parts),
+    )
+
+
+def _safe_write(workdir: str, rel: str, data: bytes, mode: Optional[int]) -> None:
+    dir_fd, leaf, path = _open_parent(workdir, rel, create_dirs = True)
+    try:
+        tmp = os.path.join(os.path.dirname(leaf), f".unsloth-rewind-{uuid.uuid4().hex}.tmp")
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        fd = os.open(tmp, flags, 0o600, dir_fd = dir_fd)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            if mode is not None:
+                os.chmod(tmp, mode, dir_fd = dir_fd)
+            try:
+                is_file = stat_mod.S_ISREG(os.stat(leaf, dir_fd = dir_fd).st_mode)
+            except OSError:
+                is_file = False
+            if is_file:
+                from core.library import replace_file
+
+                # carries the Library's name and folder over to the new inode
+                replace_file(tmp, path, dir_fd = dir_fd)
+            else:
+                # replaces a link at the name, never writes through it
+                os.replace(tmp, leaf, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd = dir_fd)
+            except OSError:
+                pass
+            raise
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 def _safe_unlink(workdir: str, rel: str) -> None:
-    path = _resolve_inside(workdir, rel, create_dirs = False)
-    if not stat_mod.S_ISREG(os.lstat(path).st_mode):
-        raise OSError("no longer a regular file")
-    os.unlink(path)
+    dir_fd, leaf, _ = _open_parent(workdir, rel, create_dirs = False)
+    try:
+        if not stat_mod.S_ISREG(os.stat(leaf, dir_fd = dir_fd, follow_symlinks = False).st_mode):
+            raise OSError("no longer a regular file")
+        os.unlink(leaf, dir_fd = dir_fd)
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 _stores: dict = {}

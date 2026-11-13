@@ -139,15 +139,13 @@ QUOTED = [
 
 @pytest.mark.parametrize("line,expected", QUOTED, ids = [q[0][:24] for q in QUOTED])
 def test_a_quoted_credential_is_masked_whole(line, expected):
-    """The value patterns used to stop at whitespace, so a quoted credential
-    containing spaces was masked only up to its first space and the rest of the
-    secret was printed next to the <redacted> marker."""
+    """Quoted values with spaces must be masked whole; stopping at whitespace left the rest of the
+    secret printed beside the <redacted> marker."""
     assert redact_log_text(line) == expected
 
 
 def test_an_unterminated_quote_does_not_mask_the_next_line():
-    """\\n is outside the quoted value class, so a writer that opened a quote
-    and never closed it cannot blank the log lines that follow it."""
+    """A newline sits outside the quoted class, so an unclosed quote blanks no later lines."""
     text = 'password="correct horse battery\nloading model from /models/x.gguf\n'
     out = redact_log_text(text)
     assert "loading model from /models/x.gguf" in out
@@ -167,9 +165,8 @@ COOKIE_PROSE = [
 
 @pytest.mark.parametrize("line", COOKIE_PROSE)
 def test_a_cookie_diagnosis_is_not_mistaken_for_a_cookie(line):
-    """The cookie rule takes the whole rest of the line, so prose longer than
-    the token-length shortcut was being masked. A line explaining why a cookie
-    was not sent is the diagnosis, not the secret."""
+    """The cookie rule takes the rest of the line, so prose longer than the token-length shortcut
+    was masked; a cookie diagnosis is not a secret."""
     assert redact_log_text(line) == line
 
 
@@ -356,9 +353,7 @@ def test_the_strip_is_unchanged_by_the_rewrite():
 
 
 def test_the_strip_is_unchanged_on_random_records():
-    """The shapes above are the ones someone thought of. This covers the ones
-    nobody did, which is where every finding on this change actually came
-    from."""
+    """Random records cover the ANSI shapes nobody listed, which is where every finding came from."""
     import random
 
     from utils.log_redaction import _strip_ansi
@@ -375,8 +370,7 @@ def test_the_strip_is_unchanged_on_random_records():
 
 
 def test_an_unterminated_ansi_introducer_does_not_cost_quadratic_time():
-    """Unterminated ANSI introducers must not cost quadratic time; the lazy scan rescans to end of
-    string."""
+    """Unterminated ANSI introducers must not cost quadratic time; lazy scans rescan to end."""
     import time
 
     shapes = [
@@ -408,9 +402,8 @@ _INTRODUCERS = ("\x1b", "\x90", "\x98", "\x9b", "\x9d", "\x9e", "\x9f")
 
 
 def test_terminated_ansi_sequences_are_still_stripped():
-    """The walk must not cost the stripping the rules depend on: an escape
-    between a key and its value stops every anchored rule matching, and a
-    terminated sequence has to disappear whichever of the six forms it is."""
+    """Stripping must survive the walk: an escape between key and value stops anchored rules, so all
+    six terminated forms must go."""
     for text in (
         "\x1b[36mpassword\x1b[0m=hunter2secret",
         "\x1b]0;title\x1b\\api_key=abcdef123456",

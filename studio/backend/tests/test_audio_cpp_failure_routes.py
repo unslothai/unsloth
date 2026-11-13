@@ -22,6 +22,12 @@ from core.inference import audio_cpp_server as srv
 from models.inference import ChatCompletionRequest, LoadRequest
 from .test_audio_cpp_failures import _model
 
+
+@pytest.fixture(autouse = True)
+def _cuda_audio_runtime(monkeypatch):
+    monkeypatch.setattr(af, "_runtime_backend", lambda: "cuda")
+
+
 _MISSING = "The audio runtime is not installed. Run `unsloth studio update` to install it."
 
 
@@ -162,11 +168,11 @@ def test_with_nothing_to_unload_the_refusal_reads_the_cards_free_memory(monkeypa
         # 7.3 GB free is an 8 GB card under a desktop session.
         ("voxtral_tts", 3, 7.3, True),
         ("chatterbox", 3, 7.3, True),
-        ("qwen3_tts", 3, 7.3, False),
+        ("neutts", 3, 7.3, False),
         ("vibevoice", 3, 7.3, False),
         # Families whose measured peak is above the generic formula are refused where it fit.
         ("voxcpm2", 2.75, 9.5, False),
-        ("qwen3_tts", 2.75, 9.5, True),
+        ("neutts", 2.75, 9.5, True),
         ("kokoro_tts", 0.18, 3.0, False),
         # ACE-Step1.5 Q8_0 on a 16 GB card: measured 11.2 GB, the generic formula said 15.9.
         ("ace_step", 5.76, 15.0, True),
@@ -194,18 +200,23 @@ def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_g
 
 
 @pytest.mark.parametrize(
-    "capabilities, driver, free_gb, fits",
+    "backend, capabilities, driver, free_gb, required",
     [
-        ({0: (8, 6)}, True, 9.6, True),
-        ({}, False, 9.6, True),
-        ({0: (8, 6)}, True, 9.4, False),
-        ({0: (7, 5)}, True, 9.6, False),
-        ({}, True, 9.6, False),
+        # #16627: a 10 GB card with about 9.4 GiB free.
+        ("cuda", {0: (8, 6)}, True, 9.4, 9.23),
+        ("cuda", {0: (8, 6)}, True, 9.2, None),
+        ("vulkan", {0: (8, 6)}, True, 9.6, 9.51),
+        ("vulkan", {0: (8, 6)}, True, 9.4, None),
+        (None, {}, False, 9.6, 9.51),
+        (None, {0: (8, 6)}, True, 9.4, None),
+        ("cuda", {0: (7, 5)}, True, 9.6, None),
+        ("cuda", {}, True, 9.6, None),
     ],
 )
-def test_yue2_q8_on_a_10gb_card(monkeypatch, capabilities, driver, free_gb, fits):
+def test_yue2_q8_on_a_10gb_card(monkeypatch, backend, capabilities, driver, free_gb, required):
     from utils.hardware import nvidia
 
+    monkeypatch.setattr(af, "_runtime_backend", lambda: backend)
     monkeypatch.setattr(af, "offload_options", lambda model: [])
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(capabilities))
     monkeypatch.setattr(nvidia, "has_nvidia_driver", lambda: driver)
@@ -216,13 +227,13 @@ def test_yue2_q8_on_a_10gb_card(monkeypatch, capabilities, driver, free_gb, fits
     model = dataclasses.replace(base, family = "yue2", variant = variant, variants = (variant,))
     availability = ri._NativeAudioAvailability({0: free_gb}, {0: 0.0})
     prepared = ([0], {"selection_mode": "fallback_all"})
-    if not fits:
+    if required is None:
         with pytest.raises(HTTPException) as raised:
             _preflight(None, availability = availability, prepared = prepared, model = model)
         assert raised.value.detail["code"] == "out_of_memory"
         return
     placement = _preflight(None, availability = availability, prepared = prepared, model = model)
-    assert placement.resolved_gpu_ids == [0] and placement.native_required_gb == 9.51
+    assert placement.resolved_gpu_ids == [0] and placement.native_required_gb == required
 
 
 def test_generation_crash_oom_maps_to_out_of_memory(monkeypatch):

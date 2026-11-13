@@ -176,6 +176,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_preferences",
   "unsloth_model_configs",
   "unsloth_model_configs_migrated",
+  "unsloth_model_config_stamps",
   "unsloth_load_settings",
   "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
@@ -228,8 +229,14 @@ async function resetAllPrefs() {
       // ignore
     }
   }
-  // The account keeps its own scale: mark the reset default as an unsent edit so it wins after the reload.
-  writePending({ ...readPending(), scale: true });
+  // Unsent, so the defaults beat the account's saved copy after the reload.
+  writePending({
+    ...readPending(),
+    scale: true,
+    chat: true,
+    timeFormat: true,
+    spellcheck: true,
+  });
   window.location.reload();
 }
 

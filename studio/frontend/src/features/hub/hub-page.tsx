@@ -2181,8 +2181,9 @@ export function ModelsPage() {
                     : HUB_SPLIT_CUSTOM_WIDTH_CLASS,
                 )
               : "flex-1",
-            // Opaque overlay: remove the catalog from the tab order.
             catalogCovered && "pointer-events-none",
+            // A background image clears the overlay's fill, so hide what it covers.
+            detailOpen && (splitMode ? "max-lg:invisible" : "invisible"),
           )}
           style={splitMode ? splitWidth.style : undefined}
           aria-hidden={catalogCovered || undefined}

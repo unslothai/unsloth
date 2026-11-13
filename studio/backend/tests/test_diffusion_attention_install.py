@@ -250,7 +250,7 @@ def test_sage_install_never_asks_pypi_for_sageattention(real_install, monkeypatc
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
     att._ensure_attention_backend_installed("sage")
-    assert run.calls and run.calls[0][-1] == "kernels"
+    assert run.calls and run.calls[0][-1] in ("kernels==0.12.3", "kernels>=0.12.3")
     assert not any("sageattention" in part for cmd in run.calls for part in cmd)
 
 

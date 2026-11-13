@@ -578,6 +578,7 @@ test("pinned families lead Recommended whatever the listing sort, lead rows firs
     g.canonicalId.toLowerCase(),
   );
   assert.deepEqual(pinnedFamilies, [
+    "minimaxai/minimax-h3-image",
     "black-forest-labs/flux-3-image-klein",
     "unsloth/qwen-image-2.1",
     "qwen/qwen-image-2.1-turbo",
@@ -585,7 +586,8 @@ test("pinned families lead Recommended whatever the listing sort, lead rows firs
   const pinnedTogether = IMAGE_CATALOG.filter((g) => g.pinToTop && g.pinRowsTogether).map((g) =>
     g.canonicalId.toLowerCase(),
   );
-  assert.deepEqual(pinnedTogether, ["black-forest-labs/flux-3-image-klein"]);
+  assert.deepEqual(pinnedTogether, ["minimaxai/minimax-h3-image", "black-forest-labs/flux-3-image-klein"]);
+  const h3i = "MiniMaxAI/MiniMax-H3-Image";
   const flux3 = "black-forest-labs/flux-3-image-klein";
   const flux3Gguf = "unsloth/flux-3-image-klein-GGUF";
   const flux3Base = "black-forest-labs/flux-3-image-klein-base";
@@ -597,6 +599,7 @@ test("pinned families lead Recommended whatever the listing sort, lead rows firs
   const qwen2512 = "unsloth/Qwen-Image-2512-GGUF";
   const seeds: Row[] = [
     { id: zImageTurbo, isGguf: true },
+    { id: h3i },
     { id: flux3 },
     { id: flux3Gguf, isGguf: true },
     { id: flux3Base },
@@ -641,10 +644,12 @@ test("pinned families lead Recommended whatever the listing sort, lead rows firs
     flux3Gguf,
     turbo,
     flux3,
+    h3i,
     flux3Base,
   ]);
   // Interleaved pins: every lead row ("Fast FP8") first, then every GGUF row.
   assert.deepEqual(order(pinnedFamilies), [
+    h3i,
     flux3,
     qwen21,
     turbo,
@@ -655,15 +660,14 @@ test("pinned families lead Recommended whatever the listing sort, lead rows firs
     zImageTurbo,
     flux3Base,
   ]);
-  // A device the pipelines do not fit: the GGUF rows lead, still FLUX.3 first.
+  // A device the pipelines do not fit: the GGUF rows lead, still FLUX.3 first (MiniMax-H3-Image has no GGUF).
   assert.deepEqual(
     order(pinnedFamilies, (r) => Boolean(r.isGguf)),
     [flux3Gguf, qwen21Gguf, turboGguf, qwen2512, zImageTurbo],
   );
-  // As shipped: "FLUX.3 Image Klein (Fast FP8)" on top with its GGUF right under it, then "Qwen-Image 2.1
-  // (Fast FP8)" and "Qwen-Image 2.1 Turbo (Fast FP8)", then their GGUF rows. The unpinned Base keeps its
-  // place among the other models.
+  // The unpinned Base keeps its place among the other models.
   assert.deepEqual(order(pinnedFamilies, () => true, pinnedTogether), [
+    h3i,
     flux3,
     flux3Gguf,
     qwen21,

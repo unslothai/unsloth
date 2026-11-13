@@ -228,8 +228,7 @@
 			var r = rect(el);
 			if (r) {
 				heights.push(Math.round(r.height));
-				/* Mutually exclusive buckets; the fallback wins ties so a root behaving as declared
-				 * is not charged to the trap. */
+				/* Exclusive buckets; ties go to fallback, so a root as declared is not the trap. */
 				/* Only while skipped: size containment applies only then. */
 				var px = ROLE_PX[roleOf(el)];
 				if (cv === "auto" && px && skippedState(el) === true) {

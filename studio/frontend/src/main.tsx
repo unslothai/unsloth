@@ -15,6 +15,10 @@ import {
   watchMathBlockContainmentOverride,
 } from "./components/assistant-ui/math-block-containment";
 import {
+  applyMessageRowContainment,
+  watchMessageRowContainmentOverride,
+} from "./components/assistant-ui/message-row-containment";
+import {
   applyReasoningRowContainment,
   watchReasoningRowContainmentOverride,
 } from "./components/assistant-ui/reasoning-row-containment";
@@ -31,14 +35,23 @@ import {
   applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
 } from "./features/settings/stores/interface-scale-store";
+import {
+  shortcutOwningBinding,
+  useKeyboardShortcutsStore,
+} from "./features/settings/stores/keyboard-shortcuts-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
 import { markAppSessionStart } from "./lib/app-session-start";
+import { watchClosingDialogFocus } from "./lib/closing-dialog-focus";
+import { watchDesktopFullscreen } from "./lib/desktop-fullscreen";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
 import { watchMacStrayKeyText } from "./lib/mac-stray-key-text";
+import { watchModalPointerLock } from "./lib/modal-pointer-lock";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
+import { pinPointerListenerRegions } from "./lib/pointer-listener-pin";
 import { watchSpellCheck } from "./lib/spellcheck";
+import { trustSurfaceRegistry } from "./lib/surface-registry";
 import { watchTimeFormat } from "./lib/time-format";
 
 markAppSessionStart();
@@ -58,10 +71,20 @@ const rootElement = document.getElementById("root");
 if (!rootElement) {
   throw new Error("Root element not found");
 }
+// Everything rendered into the root that a shortcut check looks for registers itself.
+trustSurfaceRegistry(rootElement);
 const root = createRoot(rootElement);
 
 if (isTauri) {
   document.documentElement.classList.add("tauri");
+  watchDesktopFullscreen(
+    window,
+    () =>
+      shortcutOwningBinding(
+        useKeyboardShortcutsStore.getState().overrides,
+        "F11",
+      ) !== null,
+  );
 }
 
 const uaLower = navigator.userAgent.toLowerCase();
@@ -80,9 +103,15 @@ applyCodeBlockContainment();
 watchCodeBlockContainmentOverride();
 applyReasoningRowContainment();
 watchReasoningRowContainmentOverride();
+applyMessageRowContainment();
+watchMessageRowContainmentOverride();
 
 watchOverlayScrollbarGutter(window);
 watchInputModality(window);
+// Before any panel group mounts: their document pointer listeners then never change WebKit's page-wide set.
+pinPointerListenerRegions(document);
+watchClosingDialogFocus(document);
+watchModalPointerLock(document);
 
 watchSpellCheck(window);
 watchTimeFormat(window);

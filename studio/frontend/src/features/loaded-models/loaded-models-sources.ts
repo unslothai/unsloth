@@ -46,6 +46,7 @@ export type LoadedModelEntry = {
   label?: string;
   servingCheckpoint?: string;
   residentMib?: number;
+  residentOnGpu?: boolean;
   /** One short line: quantisation, family, device. */
   detail: string;
   /** Only on a `tts` row: the Audio page workflows that run the model, first one first. */
@@ -244,6 +245,7 @@ export function describeInferenceStatus(
         status.is_vision ? "Vision" : null,
       ),
       ...residentMib(status.resident_mib),
+      ...(typeof status.resident_on_gpu === "boolean" ? { residentOnGpu: status.resident_on_gpu } : {}),
     });
   }
   // /status reports the whole load, so loads started in another tab still show.
@@ -298,6 +300,23 @@ export function describeInferenceStatus(
   return entries;
 }
 
+export function withServingResident(
+  entry: LoadedModelEntry,
+  status: InferenceStatusResponse | null,
+): LoadedModelEntry {
+  if (!status || !entry.servingCheckpoint) return entry;
+  // By checkpoint when known: the primary wins a routing tie and may share this row's label.
+  const answered = status.model_identifier
+    ? status.model_identifier === entry.servingCheckpoint
+    : status.active_model === entry.name;
+  if (!answered) return entry;
+  return {
+    ...entry,
+    ...residentMib(status.resident_mib),
+    ...(typeof status.resident_on_gpu === "boolean" ? { residentOnGpu: status.resident_on_gpu } : {}),
+  };
+}
+
 /** Unrecognised values are shown upper-cased, which keeps quants like "Q8_0" readable. */
 export function precisionLabel(value: string | null | undefined): string | null {
   if (!value || value === "none") return null;
@@ -336,6 +355,7 @@ export function describeDiffusionStatus(
       name: status.repo_id,
       ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
       ...residentMib(status.resident_mib),
+      ...(status.device ? { residentOnGpu: status.device !== "cpu" } : {}),
       detail: joinDetail(
         status.family,
         // Only when the GGUF ran: a dense fast path replaces it with a torchao build.
@@ -363,6 +383,7 @@ export function describeVideoStatus(
       name: status.repo_id,
       ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
       ...residentMib(status.resident_mib),
+      ...(status.device ? { residentOnGpu: status.device !== "cpu" } : {}),
       detail: joinDetail(
         status.family,
         status.model_kind === "gguf" || status.gguf_variant ? "GGUF" : null,
@@ -549,6 +570,7 @@ export function sameLoadedModels(
       entry.sttEngine === other.sttEngine &&
       entry.servingCheckpoint === other.servingCheckpoint &&
       entry.residentMib === other.residentMib &&
+      entry.residentOnGpu === other.residentOnGpu &&
       (entry.workflows ?? []).join() === (other.workflows ?? []).join()
     );
   });
