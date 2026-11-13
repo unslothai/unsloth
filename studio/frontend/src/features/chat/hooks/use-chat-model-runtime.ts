@@ -129,6 +129,7 @@ import {
   saveSpeculativeType,
   syncKeepModelsLoaded,
   takeEffortDisplacedByPin,
+  presetSourceForModel,
   useChatRuntimeStore,
   type LoadingModelPick,
   type ReasoningEffort,
@@ -2968,7 +2969,7 @@ export function useChatModelRuntime() {
                   current: currentParams,
                   response: loadResponse,
                   modelId,
-                  presetSource: useChatRuntimeStore.getState().activePresetSource,
+                  presetSource: presetSourceForModel(modelId),
                   loadedContextLength: loadedFields.loadedContextLength,
                 }),
                 // The served window, as background and compare loads already record,
@@ -3205,7 +3206,7 @@ export function useChatModelRuntime() {
               (loadResponse.supports_reasoning ?? false)
             ) {
               const store = useChatRuntimeStore.getState();
-              if (store.activePresetSource === "builtin-default") {
+              if (presetSourceForModel(modelId) === "builtin-default") {
                 // Same rule as the load response: defaults first, this model's remembered settings over them.
                 store.setParams({ ...store.params, ...p }, {
                   fromModelDefaults: true,

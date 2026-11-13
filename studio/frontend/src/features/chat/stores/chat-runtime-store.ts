@@ -6662,6 +6662,14 @@ export function syncKeepModelsLoaded(mode: unknown): void {
  *  memory: what is stored stays the user's own pick, so leaving the linked model, or reloading on
  *  it, finds that pick unchanged (#14900). `linkShown` names the preset a link put on. */
 let linkShown: string | null = null;
+const RECOMMENDED_KEYS = new Set([
+  "temperature",
+  "topP",
+  "topK",
+  "minP",
+  "presencePenalty",
+  "maxTokens",
+]);
 let pickBeforeLink: {
   name: string;
   source: ChatPresetSource;
@@ -6736,12 +6744,34 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
   state.setActivePreset(exists ? before.name : fallback.name);
   state.setActivePresetSource(exists ? before.source : getPresetSource(fallback.name));
   const live = useChatRuntimeStore.getState();
+  // Under Default the status merge already put this model's recommendation on; keep it.
+  const values =
+    exists && before.source === "builtin-default"
+      ? Object.fromEntries(
+          Object.entries(before.params).filter(([key]) => !RECOMMENDED_KEYS.has(key)),
+        )
+      : before.params;
   live.setParams(
     exists
-      ? { ...live.params, ...before.params }
+      ? { ...live.params, ...values }
       : applyPresetForProvider(live.params, fallback, providerTypeFor(modelId)),
     { fromModelDefaults: true },
   );
+}
+
+/** The source a status merge for `modelId` should honour: arriving at an unlinked model from a
+ *  link, the pick the link displaced, so that model's recommendation still applies. */
+export function presetSourceForModel(modelId: string): ChatPresetSource {
+  const state = useChatRuntimeStore.getState();
+  if (
+    linkShown !== null &&
+    pickBeforeLink !== null &&
+    state.activePreset === linkShown &&
+    !getLinkedPreset(modelId, state.modelPresets, state.customPresets)
+  ) {
+    return pickBeforeLink.source;
+  }
+  return state.activePresetSource;
 }
 
 /** A pick by hand replaces whatever a link put on, so leaving the model keeps it. */

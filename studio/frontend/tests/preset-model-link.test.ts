@@ -17,7 +17,7 @@ register("./store-settings-resolver.mjs", import.meta.url);
 const { settingsHttp, deepMerge } = await import(
   "./helpers/store-stubs/settings-http.ts"
 );
-const { suspendLinkedPresetSync, useChatRuntimeStore } = await import(
+const { presetSourceForModel, suspendLinkedPresetSync, useChatRuntimeStore } = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
 );
 const {
@@ -56,9 +56,14 @@ function loadOrPoll(modelId: string): void {
   store.setParams(
     mergeBackendRecommendedInference({
       current: store.params,
-      response: { inference: RECOMMENDED, is_gguf: true, context_length: CONTEXT },
+      // The linked model recommends its own temperature, so a value carried from it shows.
+      response: {
+        inference: modelId === QWEN ? { ...RECOMMENDED, temperature: 0.55 } : RECOMMENDED,
+        is_gguf: true,
+        context_length: CONTEXT,
+      },
       modelId,
-      presetSource: store.activePresetSource,
+      presetSource: presetSourceForModel(modelId),
       loadedContextLength: CONTEXT,
     }),
     { fromModelDefaults: true, maxTokensCap: CONTEXT },
@@ -342,6 +347,37 @@ test("a link stays in this tab: the stored pick and installation defaults never 
   } finally {
     store.setActiveThreadId(null);
     store.applyThreadScopedSettings(null, null);
+  }
+});
+
+test("leaving a link under Default takes the new model's recommendation at once", async () => {
+  await switchTo(GEMMA);
+  await switchTo(QWEN);
+  assert.equal(live().temperature, 0.2);
+  await switchTo("unsloth/Adopted-GGUF");
+  assert.equal(live().activePreset, "Default");
+  assert.equal(live().temperature, RECOMMENDED.temperature, "no later refresh needed");
+  assert.equal(live().systemPrompt, "");
+});
+
+test("a second chat switched between two linked models gets its own sampling back", async () => {
+  const store = useChatRuntimeStore.getState();
+  store.setModelPreset(GEMMA, CREATIVE.name);
+  try {
+    store.setActiveThreadId("chat-a");
+    store.applyThreadScopedSettings("chat-a", { temperature: 0.77 });
+    await switchTo(QWEN);
+    store.setActiveThreadId("chat-b");
+    store.applyThreadScopedSettings("chat-b", { temperature: 0.4, systemPrompt: "Answer in French." });
+    await switchTo(GEMMA);
+    assert.equal(live().activePreset, "Creative");
+    await switchTo(LLAMA);
+    assert.equal(live().temperature, 0.4);
+    assert.equal(live().systemPrompt, "Answer in French.");
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+    store.setModelPreset(GEMMA, null);
   }
 });
 
