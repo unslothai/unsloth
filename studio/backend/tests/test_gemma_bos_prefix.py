@@ -45,8 +45,6 @@ class _Gemma4Tokenizer(_GemmaTokenizer):
 
 
 class _Processor:
-    """A processor holds the tokenizer that does the encoding (Gemma 3 on the text path)."""
-
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
         self.chat_template = tokenizer.chat_template
@@ -64,7 +62,6 @@ def _format(tokenizer, model_name = "stub/gemma-stub-it"):
 
 
 def _trained_ids(tokenizer, text):
-    """Token ids of a formatted row under the trainer's add_special_tokens rule."""
     inner = getattr(tokenizer, "tokenizer", tokenizer)
     return inner(text, add_special_tokens = resolve_add_special_tokens(tokenizer, text))["input_ids"]
 

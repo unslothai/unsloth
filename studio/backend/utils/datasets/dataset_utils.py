@@ -1333,8 +1333,7 @@ def format_and_template_dataset(
             progress_callback(
                 status_message = f"Applying chat template to {detected} ({n_rows:,} rows)..."
             )
-        # Gemma 1-3 tokenizers add <bos> themselves, so the template's own is stripped for text-only
-        # chatml/sharegpt. Gemma 4 tokenizers do not, and stripping there would train with no <bos>.
+        # Gemma's template <bos> is stripped for text-only chat only if the tokenizer adds it back.
         is_alpaca = format_type == "alpaca" or (
             format_type == "auto" and dataset_info["detected_format"] == "alpaca"
         )
