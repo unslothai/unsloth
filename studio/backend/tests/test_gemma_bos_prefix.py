@@ -23,7 +23,12 @@ class _GemmaTokenizer:
     def apply_chat_template(self, conversation, **_kwargs):
         return "<bos>" + "".join(f"<{turn['role']}>{turn['content']}" for turn in conversation)
 
-    def __call__(self, text, add_special_tokens = True, **_kwargs):
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+        **_kwargs,
+    ):
         # A literal <bos> in the text is the special token, as in the real tokenizers.
         input_ids = []
         if text.startswith("<bos>"):
