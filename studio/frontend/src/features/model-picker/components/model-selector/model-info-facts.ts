@@ -56,8 +56,8 @@ export interface ModelInfoMeta {
   likes?: number;
   totalParams?: number;
   sizeBytes?: number;
-  /** `sizeBytes` is the full-precision checkpoint, not the size of a quantized download. */
-  sizeIsFullPrecision?: boolean;
+  /** Summed from the stored tensor dtypes, so it is the checkpoint as published (FP8/BNB stay small). */
+  sizeIsEstimate?: boolean;
   createdAt?: string | Date;
   lastModified?: string | Date;
   library?: string;
@@ -115,12 +115,12 @@ export function modelInfoFacts(meta: ModelInfoMeta): ModelInfoFact[] {
   if (meta.sizeBytes && meta.sizeBytes > 0) {
     facts.push({
       key: "size",
-      label: meta.sizeIsFullPrecision ? "Size (full precision)" : "Size",
+      label: meta.sizeIsEstimate ? "Size (estimated)" : "Size",
       value: formatBytes(meta.sizeBytes),
-      ...(meta.sizeIsFullPrecision
+      ...(meta.sizeIsEstimate
         ? {
             detail:
-              "The unquantized checkpoint on the Hub. A quantized download is smaller; the size on each quant row is the one you will actually fetch.",
+              "Estimated from the tensor types stored on the Hub. For GGUFs, the size on each quant row is the one you will fetch.",
           }
         : {}),
     });
@@ -262,7 +262,7 @@ export function metaFromHfResult(
     likes: result.likes,
     totalParams: result.totalParams,
     sizeBytes: result.curatedSizeBytes ?? result.estimatedSizeBytes,
-    sizeIsFullPrecision:
+    sizeIsEstimate:
       result.curatedSizeBytes === undefined &&
       result.estimatedSizeBytes !== undefined,
     createdAt: result.createdAt,

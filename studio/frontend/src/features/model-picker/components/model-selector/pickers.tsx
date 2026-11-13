@@ -3443,7 +3443,7 @@ function GgufVariantExpander({
                     : {
                         repoId,
                         variant: v.quant,
-                        hasLocalGguf: v.downloaded === true,
+                        hasLocalGguf: variantsAreGguf && v.downloaded === true,
                       }
                 }
                 pin={

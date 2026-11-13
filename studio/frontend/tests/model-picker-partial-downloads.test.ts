@@ -631,3 +631,8 @@ test("a GGUF's borrowed companion base is not offered as a picker row", () => {
   assert.match(filter, /!row\.companion &&/);
   assert.match(filter, /!row\.companionPrefetch &&/);
 });
+
+test("only GGUF expander rows probe the local header for Model info", () => {
+  // MLX precision folders share the expander; validating them runs every non-GGUF preflight.
+  assert.match(PICKERS, /hasLocalGguf: variantsAreGguf && v\.downloaded === true,/);
+});

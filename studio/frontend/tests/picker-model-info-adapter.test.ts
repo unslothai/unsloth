@@ -193,7 +193,7 @@ test("a prefixed value that is not a language code is rejected", () => {
   assert.deepEqual(meta.languages, ["en"]);
 });
 
-test("the curated size outranks the full-precision estimate", () => {
+test("the curated size outranks the dtype estimate", () => {
   const meta = metaFromHfResult({
     id: "unsloth/Llama-3.1-8B-Instruct",
     estimatedSizeBytes: 16_060_522_496,
@@ -201,15 +201,15 @@ test("the curated size outranks the full-precision estimate", () => {
   });
   assert.ok(meta);
   assert.equal(meta.sizeBytes, 4_900_000_000);
-  assert.equal(meta.sizeIsFullPrecision, false);
+  assert.equal(meta.sizeIsEstimate, false);
 });
 
-test("a full-precision estimate is marked as one", () => {
+test("a dtype estimate is marked as one", () => {
   const meta = metaFromHfResult({
     id: "unsloth/Llama-3.1-8B-Instruct",
     estimatedSizeBytes: 16_060_522_496,
   });
   assert.ok(meta);
   assert.equal(meta.sizeBytes, 16_060_522_496);
-  assert.equal(meta.sizeIsFullPrecision, true);
+  assert.equal(meta.sizeIsEstimate, true);
 });

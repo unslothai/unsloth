@@ -133,20 +133,21 @@ test("small parameter counts do not round to zero", () => {
   }
 });
 
-test("a full-precision size says so, a curated one does not", () => {
+test("an estimated size says so, a curated one does not", () => {
   const estimate = modelInfoFacts({
     id: "a/b",
     sizeBytes: 16_060_522_496,
-    sizeIsFullPrecision: true,
+    sizeIsEstimate: true,
   }).find((f) => f.key === "size");
   assert.ok(estimate);
-  assert.match(estimate.label, /full precision/);
-  assert.match(estimate.detail ?? "", /quantized download is smaller/);
+  assert.equal(estimate.label, "Size (estimated)");
+  assert.match(estimate.detail ?? "", /tensor types stored on the Hub/);
+  assert.doesNotMatch(estimate.detail ?? "", /unquantized|full precision/i);
 
   const curated = modelInfoFacts({
     id: "a/b",
     sizeBytes: 4_900_000_000,
-    sizeIsFullPrecision: false,
+    sizeIsEstimate: false,
   }).find((f) => f.key === "size");
   assert.ok(curated);
   assert.equal(curated.label, "Size");
