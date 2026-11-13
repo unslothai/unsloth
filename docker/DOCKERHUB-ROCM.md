@@ -73,9 +73,10 @@ That runs a real 5-step LoRA on a 1B model and fails loudly if the GPU is not us
 
 | tag | what it is |
 |---|---|
-| `latest` | the current build from `main`, linux/amd64 |
+| `latest` | the newest release (`v*` tag), linux/amd64 |
+| `v<version>` | one release, e.g. `v0.1.916-beta` |
 | `sha-<commit>` | the same image, pinned to the commit it was built from |
-| `nightly` | the scheduled weekly build |
+| `nightly` | the newest build from `main`, rebuilt weekly |
 | `gfx1150`, `gfx1151`, `gfx1152`, `gfx1200`, `gfx1201` | builds using AMD's per-architecture wheels, when published |
 | `studio` | `latest` plus Unsloth Studio's web UI on port 8000, JupyterLab with the Unsloth notebooks on port 8888, from [`docker/Dockerfile.studio-rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.studio-rocm). Every tag above has a `-studio` twin built on the same base |
 

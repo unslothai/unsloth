@@ -432,6 +432,44 @@ class TestBuildShRocm:
         assert "needs.prepare.outputs.stable == 'true'" in body
         assert "org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only" in body
 
+    @pytest.mark.parametrize(
+        "ref, stable, expected",
+        [
+            ("refs/heads/main", "true", {"nightly", "nightly-studio"}),
+            ("refs/tags/v0.1.916-beta", "true", {"latest", "studio"}),
+            ("refs/heads/main", "false", set()),
+            ("refs/tags/v0.1.916-beta", "false", set()),
+            ("refs/heads/other", "true", set()),
+        ],
+    )
+    def test_release_and_nightly_aliases_move_on_their_own_events(self, ref, stable, expected):
+        # unslothai/unsloth#17470: the weekly main build moved :latest and :studio too.
+        import yaml
+
+        jobs = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))["jobs"]
+        context = {
+            "github.event.repository.default_branch": "'main'",
+            "github.ref": repr(ref),
+            "needs.prepare.outputs.stable": repr(stable),
+        }
+        moved = set()
+        for job in ("tag", "tag-studio"):
+            meta = next(s for s in jobs[job]["steps"] if s.get("id") == "meta")
+            assert meta["with"].get("flavor") == "latest=false", job
+            for line in meta["with"]["tags"].splitlines():
+                m = re.fullmatch(r"\s*type=raw,value=([\w-]+),enable=\$\{\{(.*)\}\}\s*", line)
+                if not m or m.group(1) not in {"latest", "studio", "nightly", "nightly-studio"}:
+                    continue
+                expr = re.sub(
+                    r"format\('refs/heads/\{0\}', ([\w.]+)\)", r"'refs/heads/' + \1", m.group(2)
+                )
+                expr = re.sub(r"startsWith\(([\w.]+), ('[^']*')\)", r"\1.startswith(\2)", expr)
+                for name, value in context.items():
+                    expr = expr.replace(name, value)
+                if eval(expr.replace("&&", " and ").replace("||", " or ")):
+                    moved.add(m.group(1))
+        assert moved == expected
+
 
 class TestTheUserFacingDocsCoverWsl:
     """docker/DOCKERHUB-ROCM.md is synced to the Docker Hub page and README.md is the
