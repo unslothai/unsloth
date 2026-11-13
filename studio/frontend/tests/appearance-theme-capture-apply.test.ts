@@ -208,3 +208,14 @@ test("undo keeps every selected font under the cap", () => {
   assert.equal(undone.customization.uiFont, "New");
   assert.equal(undone.customization.codeFont, "C");
 });
+
+test("undo does not restore a selection whose font was deleted after applying", () => {
+  const before = { ...BASE, customization: sanitizeCustomization({ importedFonts: [font("Brand")], uiFont: "Brand" }) };
+  const theme = parseOk(JSON.stringify(file({ typography: { uiFont: "Lato" } })));
+  const applied = apply(before, theme);
+  const now = { ...before, palette: applied.palette, glass: applied.glass,
+    customization: { ...applied.customization, importedFonts: [] } };
+  const undone = planUndo(before, applied, now);
+  assert.deepEqual(undone.customization.importedFonts, []);
+  assert.equal(undone.customization.uiFont, null);
+});

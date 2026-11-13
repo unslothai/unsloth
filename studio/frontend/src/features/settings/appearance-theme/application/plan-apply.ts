@@ -170,10 +170,13 @@ export function planUndo(
     glass[key] = revert(before.glass[key], applied.glass[key], now.glass[key]);
   }
   const reverted = sanitizeCustomization(customization);
-  const nowNames = new Set(now.customization.importedFonts.map((font) => font.name));
+  // Every imported name seen, so a restored selection whose font was since deleted is cleared.
+  const knownNames = new Set(
+    [before, applied, now].flatMap((s) => s.customization.importedFonts.map((font) => font.name)),
+  );
   return {
     palette: revert(before.palette, applied.palette, now.palette),
-    customization: reconcileFonts(reverted, nowNames, now.customization.importedFonts),
+    customization: reconcileFonts(reverted, knownNames, now.customization.importedFonts),
     glass: glass as AppearanceSnapshot["glass"],
   };
 }
