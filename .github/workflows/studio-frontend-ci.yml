@@ -63,6 +63,7 @@ on:
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
+      - 'tests/studio/playwright_library_suggested_order.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -131,6 +132,7 @@ on:
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
+      - 'tests/studio/playwright_library_suggested_order.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -643,6 +645,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 8
         run: python3 tests/studio/playwright_gallery_strip_renders.py
+
+      # Opening a Library item saves its openedAt; Suggested must keep its order and scroll
+      # position until the next visit, through a focus refresh and closing the viewer.
+      - name: Browser check for the Library's Suggested order when an item is opened
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_library_suggested_order.py
 
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all
