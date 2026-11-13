@@ -443,6 +443,58 @@ def test_the_method_stays_close_to_fp32_attention(shape, bn):
     assert acc["cos"] > 0.9995 and acc["rel_l1"] < 0.03, acc
 
 
+# ---------------------------------------------------------------- statistics, dtypes, gradients (CPU)
+
+
+def test_flux3_strided_processor_keeps_native_attention_for_calls_that_need_gradients(monkeypatch):
+    tf3 = pytest.importorskip("diffusers.models.transformers.transformer_flux3")
+    import contextlib
+
+    from core.inference import diffusion_flux3_attn as fa
+
+    monkeypatch.setattr(torch.nn.attention, "sdpa_kernel", lambda *a, **k: contextlib.nullcontext())
+    fa.strided_processor_class.cache_clear()
+    try:
+        torch.manual_seed(1)
+        attn = tf3.Flux3Attention(query_dim = 64, heads = 4, dim_head = 16).eval()
+        proc = fa.strided_processor_class()()
+        proc._attention_backend = "_native_cudnn"
+        proc._unsloth_int8 = True
+        calls = []
+        monkeypatch.setattr(
+            I,
+            "int8_attention_impl",
+            lambda q, k, v: (calls.append(tuple(q.shape)), I.native_attention(q, k, v))[1],
+        )
+        I.int8_attention_op()
+        g = torch.Generator().manual_seed(2)
+        ang = torch.rand(12, 8, generator = g) * 6.28
+        rope = (
+            torch.cos(ang).repeat_interleave(2, dim = -1),
+            torch.sin(ang).repeat_interleave(2, dim = -1),
+        )
+        x = torch.randn(1, 12, 64, generator = g)
+        with torch.no_grad():
+            want = proc(attn, x, None, rope)
+        assert len(calls) == 1
+        # the same call with gradients wanted: native attention, and a backward that reaches the input
+        x = x.clone().requires_grad_(True)
+        got = proc(attn, x, None, rope)
+        assert len(calls) == 1 and torch.allclose(got, want, atol = 1e-5, rtol = 1e-5)
+        got.sum().backward()
+        assert (
+            x.grad is not None
+            and bool(torch.isfinite(x.grad).all())
+            and float(x.grad.abs().sum()) > 0
+        )
+        # gradients switched off again: back on the op
+        with torch.no_grad():
+            proc(attn, x, None, rope)
+        assert len(calls) == 2
+    finally:
+        fa.strided_processor_class.cache_clear()
+
+
 # ---------------------------------------------------------------- the H3 strided processor route (tiny real model)
 
 
@@ -543,6 +595,39 @@ def test_strided_processor_routes_flagged_calls_to_the_op(monkeypatch, _active_b
             proc._attention_backend = None
         model(**_h3_inputs())
         assert not calls
+
+
+def test_h3_strided_processor_keeps_native_attention_for_calls_that_need_gradients(
+    monkeypatch, _active_backend
+):
+    h3, A = _h3()
+    model = _tiny_h3(h3)
+    model.set_attention_backend("_native_math")
+    assert A.install_strided_attention(model) == 3
+    calls = []
+    monkeypatch.setattr(
+        I,
+        "int8_attention_impl",
+        lambda q, k, v: (calls.append(tuple(q.shape)), I.native_attention(q, k, v))[1],
+    )
+    I.int8_attention_op()
+    for m in I.int8_processors(model):
+        m.processor._unsloth_int8 = True
+        # the fused norm + RoPE op is inference-only too; this test is about the attention route
+        m.processor._unsloth_qk_rope = False
+    with torch.no_grad():
+        want = model(**_h3_inputs())
+    assert calls
+    # a training step: the kernel has no backward, so every call stays on native attention and autograd works
+    calls.clear()
+    inputs = _h3_inputs()
+    inputs["hidden_states"].requires_grad_(True)
+    got = model(**inputs)
+    assert not calls
+    assert all(torch.allclose(a, b, atol = 1e-5, rtol = 1e-5) for a, b in zip(want, got))
+    sum(x.float().sum() for x in got).backward()
+    grad = inputs["hidden_states"].grad
+    assert grad is not None and bool(torch.isfinite(grad).all()) and float(grad.abs().sum()) > 0
 
 
 def test_strided_processor_with_the_op_adds_no_graph_break(_active_backend):

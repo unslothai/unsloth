@@ -76,7 +76,16 @@ def strided_processor_class() -> Any:
             query, key = qk_norm_rope(
                 attn, query, key, value.dtype, image_rotary_emb, tf3.apply_rotary_emb
             )
-            if self._unsloth_int8 and query.shape[1] >= self._unsloth_int8_min_tokens:
+            if (
+                self._unsloth_int8
+                and query.shape[1] >= self._unsloth_int8_min_tokens
+                # the kernel has no backward: a call that needs gradients runs native attention, here and not
+                # inside the op (autograd never sees inside it)
+                and not (
+                    torch.is_grad_enabled()
+                    and (query.requires_grad or key.requires_grad or value.requires_grad)
+                )
+            ):
                 # NHD in and out, q / k in value's dtype (the quantisers read any float dtype), the output in value's dtype;
                 # the op itself runs native attention for a call the kernel cannot take
                 out = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)

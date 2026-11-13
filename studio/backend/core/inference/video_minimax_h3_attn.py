@@ -223,6 +223,12 @@ def _strided_processor_for(base: Any) -> Any:
                 kernel is not None
                 and self._unsloth_int8
                 and query.shape[1] >= self._unsloth_int8_min_tokens
+                # the kernel has no backward: a call that needs gradients runs native attention, here and not
+                # inside the op (autograd never sees inside it)
+                and not (
+                    torch.is_grad_enabled()
+                    and (query.requires_grad or key.requires_grad or value.requires_grad)
+                )
             ):
                 # NHD in and out; the op itself runs native attention for a call the kernel cannot take
                 hidden_states = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
