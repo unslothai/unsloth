@@ -148,3 +148,10 @@ test("parked turns flush only once the voice actually loaded", () => {
     /if \(pendingForVoiceRef\.current\.length && useChatRuntimeStore\.getState\(\)\.voiceSlotLoaded\) \{[\s\S]*?submitRef\.current\(""\)/,
   );
 });
+
+test("Stop closes the open session before re-arming, as a thread reset does", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const handler = engine.slice(engine.indexOf("registerVoiceStopSpeaking(() => {"));
+  const body = handler.slice(0, handler.indexOf("registerVoiceStopSpeaking(null)"));
+  assert.match(body, /if \(composer\.getState\(\)\.dictation\) composer\.stopDictation\(\);\s*resumeListen\(\);/);
+});

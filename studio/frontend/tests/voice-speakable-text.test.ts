@@ -136,3 +136,9 @@ test("a clip with no voice on it is dropped", () => {
   assert.equal(cleanTtsClip([omniLikeClip(24000, 0)], 24000), null);
   assert.equal(cleanTtsClip([new Float32Array(4800)], 24000), null);
 });
+
+test("a Unicode minus before a number survives as a minus", () => {
+  assert.equal(stripForSpeech("The temperature is −5 degrees."), "The temperature is -5 degrees.");
+  assert.equal(stripForSpeech("The result is −2."), "The result is -2.");
+  assert.equal(stripForSpeech("Paris — the capital."), "Paris the capital.");
+});

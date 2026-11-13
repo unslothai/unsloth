@@ -1606,6 +1606,9 @@ export const VoiceEngine: FC = () => {
           // Run may have ended between the check and here.
         }
       }
+      // The open barge-in session holds the epoch the clear just retired: its next turn would be dropped.
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
       resumeListen();
     });
     return () => registerVoiceStopSpeaking(null);
