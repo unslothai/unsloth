@@ -993,6 +993,41 @@ def test_the_shim_never_loads_a_chat_planted_stdlib_module(monkeypatch, tmp_path
     assert not marker.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_an_approved_host_access_call_imports_the_chats_editable_installs(monkeypatch, tmp_path):
+    """Path-line and setuptools-finder editables in the chat folder load in a host-access call too."""
+    workdir = tmp_path / "chat"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    site_dir.mkdir(parents = True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "chat_path_editable.py").write_text("")
+    (site_dir / "__editable__.chat_path_editable-1.0.pth").write_text(str(tmp_path / "src") + "\n")
+    template = os.path.join(
+        sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
+    )
+    names = ["chat_path_editable"]
+    if os.path.exists(template):
+        (tmp_path / "flat").mkdir()
+        (tmp_path / "flat" / "__init__.py").write_text("")
+        finder = "__editable___chat_flat_editable_1_0_finder"
+        (site_dir / "__editable__.chat_flat_editable-1.0.pth").write_text(
+            f"import {finder}; {finder}.install()\n"
+        )
+        mapping = {"chat_flat_editable": str(tmp_path / "flat")}
+        (site_dir / f"{finder}.py").write_text(f"MAPPING = {mapping!r}\nNAMESPACES = {{}}\n")
+        names.append("chat_flat_editable")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = "; ".join(f"import {n}; print({n}.__file__)" for n in names)
+    command = f'ls /srv/pr-approved >/dev/null 2>&1; python -c "{code}"'
+    out = tools._bash_exec(
+        command, None, 60, _SESSION, tool_execution_mode = "auto", host_access_approved = True
+    )
+    assert "user_approved_host_access" in tools._last_tool_execution_record.limitations
+    assert str(tmp_path / "src" / "chat_path_editable.py") in out, out
+    if len(names) == 2:
+        assert str(tmp_path / "flat" / "__init__.py") in out, out
+
+
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
     """Every OS: Studio's pip installs into the chat folder; nothing else it starts, nor another venv, inherits that."""
     packages = str(tmp_path / os_sandbox.SESSION_PACKAGES_RELPATH)

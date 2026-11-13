@@ -492,7 +492,7 @@ def _install_editable_finder(entry, module):
 
 # PYTHONPATH skips .pth files: take their path lines and setuptools' editable finders, never run their imports.
 # Paths go right after the session dirs, so a chat's editable fork wins over Studio's copy like its other installs.
-def _read_pth_files(entries):
+def _read_pth_files(entries, on_sys_path = True):
     added, finders = [], []
     for entry in entries:
         try:
@@ -533,10 +533,10 @@ def _read_pth_files(entries):
                     pass
         finally:
             sys.path[:] = saved + [e for e in sys.path if e not in saved]
-    if added:
+    if added and on_sys_path:
         at = max(i for i, e in enumerate(sys.path) if e in entries) + 1
         sys.path[at:at] = added
-    return [f for f in installed if f is not None]
+    return added, [f for f in installed if f is not None]
 
 
 # First on meta_path: a session dir pip creates mid-process is cached as missing, a namespace imported before an
@@ -593,7 +593,7 @@ class _SessionPackagesFinder:
 _entries = _session_entries()
 if _entries and not any(isinstance(f, _SessionPackagesFinder) for f in sys.meta_path):
     try:
-        _finder = _SessionPackagesFinder(_entries, _read_pth_files(_entries))
+        _finder = _SessionPackagesFinder(_entries, _read_pth_files(_entries)[1])
         # Behind the built-in and frozen importers, so an editable mapping can never replace those modules.
         _at = next(
             (i for i, f in enumerate(sys.meta_path) if getattr(f, "__name__", "") == "PathFinder"),
@@ -653,7 +653,13 @@ if os.environ.get("PIP_PREFIX"):
 
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
 if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.meta_path):
-    sys.meta_path.append(_HostPackagesFinder(_host_packages))
+    _folders = [f for f in _host_packages.split(os.pathsep) if f]
+    try:
+        # Editable installs there too, still only as a last resort: path lines join the finder's folders.
+        _folders += _read_pth_files(_folders, on_sys_path = False)[0]
+    except Exception:  # noqa: BLE001
+        pass
+    sys.meta_path.append(_HostPackagesFinder(os.pathsep.join(_folders)))
 
 
 # Helpers come from the chat folder via a last-resort finder, not sys.path, since site imports
