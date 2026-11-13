@@ -253,7 +253,6 @@ function cachedMeta(row: Row): ModelSelectorChangeMeta {
 
 const EXT_PREFIX = "ext:";
 const MAKER_PREFIX = "maker:";
-// A maker earns its own tab only once it has this many models here; fewer read fine under On Device.
 const MAKER_TAB_MIN_MODELS = 3;
 const EXPANDED_KEY = "unsloth_composer_picker_expanded";
 const TAB_KEY = "unsloth_composer_picker_tab";
@@ -678,6 +677,8 @@ interface SourceTab {
   value: string;
   label: string;
   icon: ReactNode;
+  /** A coloured logo: faded, not greyed, while not shown. */
+  brand?: boolean;
 }
 
 function TabButton({
@@ -699,11 +700,22 @@ function TabButton({
         onClick={onSelect}
         className={cn(
           // Sized to the icon: outline glyphs run narrower than logos, so fixed boxes spaced them unevenly.
-          "relative grid h-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center px-[calc(7.5px*var(--ui-space-scale,1))] transition-colors hover:text-foreground",
+          "group/tab relative grid h-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center px-[calc(7.5px*var(--ui-space-scale,1))] transition-colors hover:text-foreground",
           shown ? "text-foreground" : "text-muted-foreground",
         )}
       >
-        {tab.icon}
+        {tab.brand ? (
+          <span
+            className={cn(
+              "grid place-items-center transition-opacity",
+              !shown && "opacity-55 group-hover/tab:opacity-100",
+            )}
+          >
+            {tab.icon}
+          </span>
+        ) : (
+          tab.icon
+        )}
         <span
           aria-hidden={true}
           className={cn(
@@ -774,8 +786,7 @@ const FAVORITE_DROP_CUE = {
   bottom: `${FAVORITE_DROP_CUE_BASE} before:bottom-0`,
 } as const;
 
-// A step past a hovered row's wash, as Zeron's chosen menu row (light 7% black over hover's 4%,
-// dark 9% white over 5%): darker in light, lighter in dark.
+// One step past hover, as Zeron's chosen row: darker in light, lighter in dark.
 const CURRENT_ROW_BG =
   "bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] hover:bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] dark:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)] dark:hover:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)]";
 
@@ -863,7 +874,7 @@ function QuantStatus({
   variant: GgufVariantDetail;
   loaded: boolean;
   recommended: boolean;
-  /** On Device and its kin say neither Downloaded (every quant there is) nor Loaded (a dot does). */
+  /** Off Discover every quant is on disk, and a dot marks the loaded one. */
   onDevice: boolean;
 }) {
   const tags: ReactNode[] = [];
@@ -876,7 +887,7 @@ function QuantStatus({
       </Hint>,
     );
   } else if (onDevice && variant.downloaded) {
-    // Said by the tab itself.
+    // No tag: everything here is downloaded.
   } else if (loaded) {
     tags.push(
       <StatusTag
@@ -939,7 +950,7 @@ function Hint({
   );
 }
 
-// A status mark only: Eject lives in the row's menu and the picker's header.
+// A mark only: Eject is in the row menu and the header.
 function LoadedDot() {
   return (
     <Hint label="Loaded">
@@ -1535,15 +1546,24 @@ export function ComposerModelPicker({
     }),
     [fitOf, inferenceGpu],
   );
+  const [listedFits, setListedFits] = useState<
+    ReadonlyMap<string, ReturnType<typeof fitOf>>
+  >(new Map());
   const hubFit = useMemo(() => {
     const map = new Map<string, ReturnType<typeof fitOf>>();
     for (const r of hubResults) {
       if (!r.isGguf) {
         continue;
       }
+      const id = r.id.toLowerCase();
+      // Once its quants are listed, a repo with one that runs comfortably is not flagged.
+      if (listedFits.has(id)) {
+        map.set(id, listedFits.get(id) ?? null);
+        continue;
+      }
       const params = r.totalParams ?? paramsFromId(r.id);
       map.set(
-        r.id.toLowerCase(),
+        id,
         fitOf(
           r.estimatedSizeBytes ??
             (params ? estimateQuantBytes(params) : undefined),
@@ -1551,7 +1571,7 @@ export function ComposerModelPicker({
       );
     }
     return map;
-  }, [hubResults, fitOf]);
+  }, [hubResults, fitOf, listedFits]);
   // Non-GGUF rows have no quant to size: the header picker's checkpoint rule judges them.
   const hubCheckpointFits = useMemo(() => {
     const map = new Map<string, boolean>();
@@ -2043,6 +2063,7 @@ export function ComposerModelPicker({
       out.push({
         value: `${MAKER_PREFIX}${maker.id}`,
         label: maker.name,
+        brand: true,
         // Solid marks read larger than the outline glyphs at one size, so tabs draw them at 15px.
         icon: (
           <MakerMark
@@ -2100,6 +2121,7 @@ export function ComposerModelPicker({
       out.push({
         value: `${EXT_PREFIX}${m.providerId}`,
         label: m.providerName,
+        brand: true,
         icon: providerLogo(m.providerType),
       });
     }
@@ -2533,6 +2555,16 @@ export function ComposerModelPicker({
       if (abort.signal.aborted) {
         return;
       }
+      if (!mlx && list.length > 0) {
+        const verdicts = list.map((v) =>
+          classifyVariantFitOnCard(quantBudget.fitOf, v, 0),
+        );
+        const id = row.id.toLowerCase();
+        const best = verdicts.some((v) => !isOverBudget(v))
+          ? null
+          : (hubFit.get(id) ?? null);
+        setListedFits((now) => new Map(now).set(id, best));
+      }
       if (mlxRepo && !(mlx && list.length > 0)) {
         pickWhole();
         return;
@@ -2653,7 +2685,7 @@ export function ComposerModelPicker({
     row.tab === DEVICE_TAB && !row.partial && viewed !== RECOMMENDED_TAB
       ? (devicePartials.get(row.key) ?? NO_QUANTS)
       : NO_QUANTS;
-  // An interrupted quant counts as a variant: beside a whole one, the row folds both under it.
+  // A partial quant counts, so the row folds both.
   const variantCount = (row: Row) =>
     (deviceQuants.get(row.key)?.length ?? 0) + partialsOf(row).length;
 
@@ -2680,7 +2712,8 @@ export function ComposerModelPicker({
     ) {
       await toggleOffer(
         row,
-        offerAll || row.onDevice
+        // Every quant: a cached partial listed alone would be auto-picked, resuming its download.
+        offerAll || row.onDevice || row.kind === "hub"
           ? { ...target, remote: true, everyQuant: true }
           : target,
         seq,
@@ -3436,7 +3469,7 @@ export function ComposerModelPicker({
     // `foldedQuants` holds the rows toggled away from the "Expand quantizations" setting.
     const quantsOpen =
       manyQuants && expandQuantizations !== foldedQuants.has(row.key);
-    // A Discover GGUF is favorited by its quant; one on device with several, as the whole repo.
+    // Discover GGUFs star by quant; a multi-quant device row stars the repo.
     const canStar = !(
       quiet ||
       (row.kind === "hub" && Boolean(row.hub?.isGguf))
@@ -3444,7 +3477,6 @@ export function ComposerModelPicker({
     const actionClass =
       "opacity-0 transition-opacity group-hover/row:opacity-100 group-data-[active=true]/row:opacity-100 group-data-[current=true]/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100";
     const rowActive = highlight && index === active;
-    // The model in use, or one still loaded, keeps its hover look.
     const rowCurrent = isChosen || Boolean(row.loaded);
     const rowEl = (
       <MemoRow
@@ -3931,7 +3963,7 @@ export function ComposerModelPicker({
             </button>
           </Hint>
         ) : (
-          // Holds the star's room, so every quant's size lines up.
+          // Keeps the star's room so sizes line up.
           <span
             aria-hidden={true}
             className="w-[calc(20px*var(--ui-space-scale,1))] shrink-0"
@@ -3984,7 +4016,6 @@ export function ComposerModelPicker({
             <span
               className={cn(
                 "truncate font-mono text-xs",
-                // Only where it is an offer: a quant already here stays legible.
                 !onDevice &&
                   fit === "oom" &&
                   "!text-gray-500 dark:!text-gray-400",
@@ -4577,11 +4608,10 @@ export function ComposerModelPicker({
         }
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
-          // One height open, loaded model or not and on every tab, as Zeron's picker: the list takes
-          // what the model's controls leave, so nothing moves the panel's edge.
+          // One height on every tab, loaded or not, as Zeron's.
           (isExpanded || configTarget) &&
             "h-[calc(460px*var(--ui-space-scale,1))]",
-          // Run settings keep that height until Advanced opens, then grow, short of the whole window.
+          // Run settings grow only with Advanced on.
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
           // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
@@ -5008,7 +5038,7 @@ export function ComposerModelPicker({
               aria-expanded={false}
               aria-label={`${chosenName}: show all models`}
               onClick={expand}
-              // 1px up: the panel's top then matches the gap above the first control under the line.
+              // 1px up, matching the gap above the first control below the line.
               className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch pb-[calc(2px*var(--ui-space-scale,1))] pl-3 text-left text-ui-14"
             >
               {pending || modelLoading ? (

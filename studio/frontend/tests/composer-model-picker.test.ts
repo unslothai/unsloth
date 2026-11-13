@@ -928,6 +928,16 @@ test("the Connected tab lists every connection's models, by connection or by nam
   );
 });
 
+test("a Discover GGUF lists every quant, so a cached partial is never picked alone", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /offerAll \|\| row\.onDevice \|\| row\.kind === "hub"\s+\? \{ \.\.\.target, remote: true, everyQuant: true \}/,
+  );
+});
+
 test("an interrupted quant counts as a variant, so the row names no quant", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",

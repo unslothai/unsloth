@@ -181,7 +181,6 @@ export function sortDeviceRows<T extends PickerRow>(
   return desc === DEVICE_SORT_DESC[key] ? sorted : sorted.reverse();
 }
 
-/** By connection, then name: the Connected tab folds each connection under its own heading. */
 export function sortConnectedRows<T extends PickerRow>(
   rows: readonly T[],
 ): T[] {
@@ -383,12 +382,8 @@ export function pickerSide(
   return above < PICKER_MIN_ROOM && below > above ? "bottom" : "top";
 }
 
-/** Gap between the trigger and a panel that fits below it. */
 export const PICKER_GAP = 8;
-/**
- * Radix `sideOffset` for a panel opening down: short of room below, it rides up over the composer
- * rather than shrinking, but never past the window's top.
- */
+/** Short of room below, a downward panel rides up over the composer, never past the window top. */
 export function pickerDropOffset(
   triggerBottom: number,
   panelHeight: number,
