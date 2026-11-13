@@ -94,7 +94,6 @@ import {
   chatGgufFit,
   curatedAudioInventoryTask,
   describeVariantListingError,
-  estimateQuantBytes,
   ggufVariantPickerLabel,
   isMediaCatalogRepo,
   isOverBudget,
@@ -207,8 +206,8 @@ import {
   chooseQuant,
   dedupeRows,
   discoverUsesFallback,
-  ejectTargetId,
   downloadedQuants,
+  ejectTargetId,
   filterRows,
   findChosenRow,
   isChatTask,
@@ -579,6 +578,9 @@ const OPTICAL_SCALE: Readonly<Record<string, number>> = {
   qwen: 1.05,
   anthropic: 1.06,
 };
+
+// ~IQ1_M, the smallest quant Unsloth uploads.
+const SMALLEST_QUANT_BYTES_PER_PARAM = 0.3;
 
 function opticalStyle(id: string | undefined): CSSProperties | undefined {
   const k = id ? OPTICAL_SCALE[id] : undefined;
@@ -1646,12 +1648,16 @@ export function ComposerModelPicker({
         map.set(id, listedFits.get(id) ?? null);
         continue;
       }
+      // Judged by its smallest quant: a repo is flagged only when nothing in it could run. The
+      // search's size is the unquantized weights (~2 bytes a parameter), so it is scaled down too.
       const params = r.totalParams ?? paramsFromId(r.id);
       map.set(
         id,
         fitOf(
-          r.estimatedSizeBytes ??
-            (params ? estimateQuantBytes(params) : undefined),
+          params
+            ? params * SMALLEST_QUANT_BYTES_PER_PARAM
+            : r.estimatedSizeBytes &&
+                (r.estimatedSizeBytes / 2) * SMALLEST_QUANT_BYTES_PER_PARAM,
         ),
       );
     }
@@ -2378,71 +2384,6 @@ export function ComposerModelPicker({
         (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
         DEVICE_TAB)
       : RECOMMENDED_TAB);
-  // The size estimate flags a repo by a mid quant; its listing says whether a smaller one runs,
-  // so flagged rows are checked before anyone opens them.
-  const checkedFits = useRef(new Set<string>());
-  const fitCheck = useRef({ hubFit, noteListedFit, fitOf, noGpu });
-  fitCheck.current = { hubFit, noteListedFit, fitOf, noGpu };
-  useEffect(() => {
-    if (!(open && viewed === RECOMMENDED_TAB)) {
-      return;
-    }
-    const queue = hubResults.filter((r) => {
-      const id = r.id.toLowerCase();
-      const { hubFit: fits, fitOf: sizeFit, noGpu: ramOnly } = fitCheck.current;
-      // Only rows shown flagged: with no GPU, running from RAM is no warning.
-      const shown = (f: ReturnType<typeof sizeFit> | undefined) =>
-        isOverBudget(f) && !(f === "ram" && ramOnly);
-      if (!r.isGguf || !shown(fits.get(id)) || checkedFits.current.has(id)) {
-        return false;
-      }
-      // Only when its smallest quant (~IQ1_M, 0.3 bytes a parameter) could fit: past that, a
-      // listing cannot clear it.
-      const params = r.totalParams ?? paramsFromId(r.id);
-      return !params || sizeFit(params * 0.3) !== "oom";
-    });
-    if (queue.length === 0) {
-      return;
-    }
-    for (const r of queue) {
-      checkedFits.current.add(r.id.toLowerCase());
-    }
-    const abort = new AbortController();
-    const inFlight = new Set<string>();
-    const next = async (): Promise<void> => {
-      const r = queue.shift();
-      if (!r || abort.signal.aborted) {
-        return;
-      }
-      inFlight.add(r.id.toLowerCase());
-      try {
-        const { quants: list, mlx } = await rowQuants(
-          {
-            id: r.id,
-            localPath: null,
-            local: false,
-            remote: true,
-            everyQuant: true,
-          },
-          abort.signal,
-        );
-        if (!mlx && list.length > 0) {
-          fitCheck.current.noteListedFit(r.id, list);
-        }
-      } catch {
-        // A failure keeps the estimate's verdict.
-      }
-      inFlight.delete(r.id.toLowerCase());
-      return next();
-    };
-    void Promise.all([next(), next(), next()]);
-    return () => {
-      abort.abort();
-      for (const id of [...inFlight, ...queue.map((r) => r.id.toLowerCase())]) {
-        checkedFits.current.delete(id);
-      }
-    };
-  }, [open, viewed, hubResults]);
   useEffect(() => {
     setOnRecommended(viewed === RECOMMENDED_TAB);
   }, [viewed]);
