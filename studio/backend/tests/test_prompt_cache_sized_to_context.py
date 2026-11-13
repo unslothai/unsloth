@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -15,7 +17,9 @@ if _TESTS_DIR not in sys.path:
 import test_llama_cpp_placement as placement  # noqa: E402
 import utils.hardware as hardware  # noqa: E402
 from _sidecar_fit_helpers import last  # noqa: E402
+from core.inference import llama_cpp as lc  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from test_llama_cpp_placement import _discrete_linux_host, _moe_cache_host  # noqa: E402,F401
 
 MIB = 1024 * 1024
 KV_BYTES_PER_TOKEN = MIB // 4
@@ -126,3 +130,50 @@ def test_windows_full_offload_launches_a_chosen_size_alone(launch):
 def test_apple_silicon_keeps_the_default(launch, monkeypatch):
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
     assert "--cache-ram" not in launch(platform = "darwin")
+
+
+@pytest.mark.parametrize("ram_gib, sized", [(26, None), (28, "10240")])
+def test_the_moe_expert_cache_is_priced_before_the_prompt_cache(
+    tmp_path, _moe_cache_host, ram_gib, sized
+):
+    backend, gguf = placement._moe_backend(
+        tmp_path, size_gib = 20, memory = [(0, 32000, 48000)], moe = True
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *a, **k: 12 * 1024 * MIB
+    backend._available_system_memory_mib = lambda: ram_gib * 1024
+    backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 15 * 1024 * MIB)
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(placement._CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: caps
+    cmd = placement._launch(backend, gguf)["cmd"]
+    assert placement._has_moe_cache(cmd)
+    assert (last(cmd, "--cache-ram") if "--cache-ram" in cmd else None) == sized
+
+
+def test_the_cpu_fallback_drops_the_sized_prompt_cache():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
+    backend._fit_load_mode_flags = []
+    backend._sized_cache_ram_flags = ["--cache-ram", "16384"]
+    replay = ["llama-server", "-m", "model.gguf", "--cache-ram", "16384", "--device", "none"]
+    with (
+        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value = list(replay)),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value = "cpu-server"),
+        mock.patch.object(
+            lc.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            return_value = {lc._loader_path_var(): "/staged"},
+        ),
+    ):
+        out, _reason, _note = backend._prepare_cpu_fallback_launch("llama-server", replay, {}, {})
+    assert "--cache-ram" not in out
+
+
+def test_every_retry_that_drops_the_fits_load_mode_drops_the_sized_cache():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert src.count("_without_subsequence(fa_cmd, self._sized_cache_ram_flags)") == 1
+    assert src.count("_without_subsequence(_run, self._sized_cache_ram_flags)") == 1
+    assert src.count("_without_subsequence(cmd, self._sized_cache_ram_flags)") == 1
+    assert src.count("_cpu_projector_cmd, self._sized_cache_ram_flags") == 1
