@@ -205,7 +205,6 @@ test("a model larger than the NPU memory window gets a warning naming both figur
     api.npuMemoryWarning(model(false, null), { memory_window_gb: 16 }) ?? "",
     /may need more NPU memory/,
   );
-  // Fits, unknown, or a backend that predates the field: no warning.
   for (const fits of [true, null, undefined]) {
     assert.equal(
       api.npuMemoryWarning(model(fits), { memory_window_gb: 16 }),
