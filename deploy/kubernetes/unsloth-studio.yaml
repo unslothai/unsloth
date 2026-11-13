@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unsloth-studio
+  namespace: unsloth
+  labels:
+    app: unsloth-studio
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: unsloth-studio
+  template:
+    metadata:
+      labels:
+        app: unsloth-studio
+    spec:
+      runtimeClassName: nvidia
+      containers:
+      - name: studio
+        image: unsloth/unsloth:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: studio-ui
+        - containerPort: 8888
+          name: jupyter
+        env:
+        - name: UNSLOTH_STUDIO_PORT
+          value: "8000"
+        - name: PORT
+          value: "8000"
+        - name: UNSLOTH_CONTEXT_OVERFLOW
+          value: "truncate_oldest"
+        - name: CUDA_DEVICE_ORDER
+          value: "PCI_BUS_ID"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True,max_split_size_mb:512"
+        - name: OMP_NUM_THREADS
+          value: "32"
+        - name: MKL_NUM_THREADS
+          value: "32"
+        - name: NCCL_P2P_LEVEL
+          value: "NVL,SYS,PIX,NODE"
+        - name: NCCL_BUFFSIZE
+          value: "8388608"
+        - name: NCCL_NET_GDR_LEVEL
+          value: "5"
+        - name: NCCL_CROSS_NIC
+          value: "1"
+        - name: CUDA_DEVICE_MAX_CONNECTIONS
+          value: "1"
+        - name: TORCHINDUCTOR_CACHE_DIR
+          value: "/workspace/.torchinductor"
+        - name: FLASHINFER_ENABLE_FP8
+          value: "1"
+        - name: FLASHINFER_WORKSPACE_DIR
+          value: "/workspace/.flashinfer"
+        - name: LLAMA_ARG_FLASH_ATTN
+          value: "1"
+        - name: LLAMA_ARG_CONT_BATCHING
+          value: "1"
+        - name: LLAMA_ARG_UBATCH
+          value: "512"
+        - name: LLAMA_ARG_BATCH
+          value: "2048"
+        resources:
+          requests:
+            cpu: "16"
+            memory: "32Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "64"
+            memory: "128Gi"
+            nvidia.com/gpu: "2"
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: studio-data
+          mountPath: /opt/unsloth-studio
+        - name: hf-cache
+          mountPath: /root/.cache/huggingface
+        - name: dshm
+          mountPath: /dev/shm
+      volumes:
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: unsloth-workspace-pvc
+      - name: studio-data
+        persistentVolumeClaim:
+          claimName: unsloth-studio-pvc
+      - name: hf-cache
+        persistentVolumeClaim:
+          claimName: unsloth-hf-cache-pvc
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unsloth-studio
+  namespace: unsloth
+  labels:
+    app: unsloth-studio
+spec:
+  type: ClusterIP
+  selector:
+    app: unsloth-studio
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+  - name: jupyter
+    port: 8888
+    targetPort: 8888
