@@ -134,21 +134,17 @@ function isGgufRow(row: LocalModelInfo): boolean {
 async function hubRepoFiles(
   repoId: string,
   accessToken: string | undefined,
-): Promise<Set<string> | undefined> {
-  try {
-    const info = await modelInfo({
-      name: repoId,
-      accessToken,
-      hubUrl: getHfEndpoint(),
-      fetch: hubFetch,
-      // Forwarded to expand= as is, like Q4NX_INFO_FIELDS.
-      additionalFields: ["siblings"] as unknown as "tags"[],
-    });
-    const { siblings } = info as { siblings?: { rfilename: string }[] };
-    return new Set((siblings ?? []).map((s) => s.rfilename));
-  } catch {
-    return undefined;
-  }
+): Promise<Set<string>> {
+  const info = await modelInfo({
+    name: repoId,
+    accessToken,
+    hubUrl: getHfEndpoint(),
+    fetch: hubFetch,
+    // Forwarded to expand= as is, like Q4NX_INFO_FIELDS.
+    additionalFields: ["siblings"] as unknown as "tags"[],
+  });
+  const { siblings } = info as { siblings?: { rfilename: string }[] };
+  return new Set((siblings ?? []).map((s) => s.rfilename));
 }
 
 function fileName(path: string): string {
@@ -428,13 +424,20 @@ export function Q4nxConvertCard({
       };
       request
         .then(async (response) => {
-          const repoFiles =
-            !row.folder && q4nxHasSplitFiles(response.variants)
-              ? await hubRepoFiles(row.id, accessToken)
-              : undefined;
+          let repoFiles: Set<string> | undefined;
+          let error: string | null = null;
+          if (!row.folder && q4nxHasSplitFiles(response.variants)) {
+            // A failed lookup is kept as an error so reopening the model asks again.
+            repoFiles = await hubRepoFiles(row.id, accessToken).catch(
+              (e: unknown) => {
+                error = e instanceof Error ? e.message : String(e);
+                return undefined;
+              },
+            );
+          }
           settle({
             list: q4nxConvertibleFiles(response.variants, repoFiles),
-            error: null,
+            error,
           });
         })
         .catch((error: unknown) =>
