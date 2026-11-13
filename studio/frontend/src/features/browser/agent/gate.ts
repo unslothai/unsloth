@@ -94,8 +94,7 @@ const SHARED_HOSTS = [
 
 const NAMED_TLDS = new Set(["com", "org", "net", "edu", "gov"]);
 
-// Words of an ordinary request, not a site's name: "summarize my notes" must not approve a made-up
-// notes.com. Naming the address itself (notes.com) still does.
+// Words of a request, not a site's name: "summarize my notes" must not approve a made-up notes.com.
 const ORDINARY_WORDS = new Set(
   (
     "about account accounts address after again also answer answers article articles back before best blog book books " +

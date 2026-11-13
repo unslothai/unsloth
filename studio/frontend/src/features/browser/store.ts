@@ -561,7 +561,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         fullView: open && (saved ? saved.fullView : state.fullView),
         // Each chat floats only once it was floated there; a chat new to the browser opens beside it.
         floating: saved?.floating ?? false,
-        // A close mid-run stays a close on return: still floated for the agent, not docked open.
         floatedForAgent: (saved?.floating && saved.floatedForAgent) ?? false,
         annotateTabId: null,
         renamingTabId: null,

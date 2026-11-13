@@ -385,7 +385,7 @@ export function nudgeFloating(event: ReactKeyboardEvent<HTMLElement>): void {
   const start = currentBox(room);
   const next = resized(start, edge, delta.dx * step, delta.dy * step, room);
   paint(surface, next);
-  // No snap: a key step is as wide as the snap, so the window could never leave the right edge.
+  // No snap: a key step equals it, so the window could never leave the right edge.
   writeGeometry(intentOf(room, next, 0));
   announceMove();
 }

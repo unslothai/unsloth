@@ -989,7 +989,6 @@ def test_a_module_is_kept_only_while_fresh():
     assert browser_mod._fresh_for("public, max-age=60", "20") == 40
     assert browser_mod._fresh_for("max-age=60, s-maxage=5", None) == 5
     assert browser_mod._fresh_for("max-age=99999999", None) == browser_mod._MODULE_CACHE_TTL_S
-    # More digits than int() parses: still a lifetime, not an error that fails the whole page.
     assert browser_mod._fresh_for("max-age=" + "9" * 5000, None) == browser_mod._MODULE_CACHE_TTL_S
 
 

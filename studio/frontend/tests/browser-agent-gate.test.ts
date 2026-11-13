@@ -75,7 +75,6 @@ test("an address the model made up for a new site asks first", () => {
   assert.equal(gateNavigation("https://e.com/x", navigation({ userText: "open example.com" })).kind, "ask");
   // The site's name alone approves only the big generic TLDs, not a lookalike the model made up.
   assert.equal(gateNavigation("https://wikipedia.xyz/?d=secret", navigation({ userText: "search wikipedia" })).kind, "ask");
-  // An ordinary word of the request is not a site's name, unless the user wrote the address.
   assert.equal(gateNavigation("https://notes.com/?d=secret", navigation({ userText: "summarize my notes" })).kind, "ask");
   assert.equal(gateNavigation("https://search.com/?d=secret", navigation({ userText: "search wikipedia" })).kind, "ask");
   assert.equal(gateNavigation("https://notes.com/a", navigation({ userText: "open notes.com" })).kind, "allow");
