@@ -23,7 +23,6 @@ _NPU_LOAD_MARGIN_GB = 1.0
 def system_ram_gb() -> Optional[float]:
     try:
         import psutil
-
         return psutil.virtual_memory().total / (1024**3)
     except Exception as exc:  # noqa: BLE001 -- no reading means no window, never a failed caller
         logger.debug("Reading system RAM for the NPU memory window failed: %s", exc)
