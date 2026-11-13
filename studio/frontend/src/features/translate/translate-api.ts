@@ -35,5 +35,8 @@ export async function streamTranslation({
   });
   if (!result) throw new Error("This model's connection is unavailable.");
   if (result.finishReason === "length") throw new TranslateLengthError();
+  if (result.finishReason === "content_filter") {
+    throw new Error("The provider's content filter stopped the translation.");
+  }
   return cleanTranslation(result.text);
 }
