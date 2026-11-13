@@ -59,7 +59,7 @@ function jobSummary(job: FolderSyncJob): string {
     const indexed = job.indexedFiles ?? job.processedFiles;
     return indexed == null
       ? "Sync complete"
-      : `${indexed} file${indexed === 1 ? "" : "s"} indexed`;
+      : `${indexed} file${indexed === 1 ? "" : "s"} indexed this sync`;
   }
   const folderProgress = folderSyncProgress(job);
   if (folderProgress) {

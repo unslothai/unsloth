@@ -56,6 +56,8 @@ test("the Sources tab rows and the folder card use the shared wording", () => {
   );
   assert.match(manager, /folderSyncLabel\(/);
   assert.match(manager, /title=\{running && !failed \? FOLDER_SYNC_HELP : detail\}/);
+  // A finished resync names only its own work, not the folder's total.
+  assert.match(manager, /indexed this sync`/);
   const card = readFileSync(
     new URL("../src/features/rag/components/thread-documents-bar.tsx", import.meta.url),
     "utf8",
