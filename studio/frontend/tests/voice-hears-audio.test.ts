@@ -117,3 +117,11 @@ test("speech of a turn cleared while STT ran never reaches the next turn", () =>
   const guard = loop.lastIndexOf("if (", add);
   assert.match(loop.slice(guard, add), /epoch === heldEpoch/);
 });
+
+test("voice mode takes the mic before the model-bound clip recorder", () => {
+  const adapter = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
+  const body = adapter.slice(adapter.indexOf("private createSession()"));
+  const voice = body.indexOf('getVoiceMode() === "active"');
+  const clip = body.indexOf("micRecordsForModel(this.chatId)");
+  assert.ok(voice > 0 && clip > 0 && voice < clip);
+});
