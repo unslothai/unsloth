@@ -94,7 +94,7 @@ def test_the_executors_take_the_mode_keyword_only_and_default_it(function):
         (tools._python_exec, "print('MANAGED_OK')"),
         (tools._bash_exec, "echo MANAGED_OK"),
     ],
-    ids = ["python", "terminal"],
+    ids=["python", "terminal"],
 )
 def test_managed_account_launch_does_not_require_a_generic_sandbox_record(
     monkeypatch, function, payload
@@ -114,7 +114,7 @@ def test_a_caller_that_passes_nothing_new_behaves_as_auto():
 
 def test_disable_sandbox_still_means_full_access():
     tools._last_tool_execution_record = None
-    assert "7" in tools._python_exec("print(7)", None, 60, _SESSION, disable_sandbox = True)
+    assert "7" in tools._python_exec("print(7)", None, 60, _SESSION, disable_sandbox=True)
     record = tools._last_tool_execution_record
     assert record.requested_mode == "full"
     assert record.effective_mode == "full"
@@ -127,7 +127,7 @@ def test_disable_sandbox_still_means_full_access():
 def test_full_access_is_not_turned_into_a_refusal_by_a_stale_required():
     tools._last_tool_execution_record = None
     out = tools._python_exec(
-        "print(11)", None, 60, _SESSION, disable_sandbox = True, tool_execution_mode = "required"
+        "print(11)", None, 60, _SESSION, disable_sandbox=True, tool_execution_mode="required"
     )
     assert "11" in out
     assert tools._last_tool_execution_record.effective_mode == "full"
@@ -138,7 +138,7 @@ def _fallback_host() -> bool:
 
 
 @pytest.mark.skipif(
-    not _fallback_host(), reason = "this host can isolate, so there is no fallback to observe"
+    not _fallback_host(), reason="this host can isolate, so there is no fallback to observe"
 )
 class TestAutoFallsBackOnAHostThatCannotIsolate:
     def test_the_capability_is_unavailable_with_an_actionable_remediation(self):
@@ -151,9 +151,9 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
             blocked = (
                 subprocess.run(
                     ["unshare", "--user", "--map-root-user", "true"],
-                    stdin = subprocess.DEVNULL,
-                    stdout = subprocess.DEVNULL,
-                    stderr = subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 ).returncode
                 != 0
             )
@@ -167,7 +167,7 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
             (lambda: tools._python_exec("print(6 * 7)", None, 60, _SESSION), "42"),
             (lambda: tools._bash_exec("echo 42", None, 60, _SESSION), "42"),
         ],
-        ids = ["python", "terminal"],
+        ids=["python", "terminal"],
     )
     def test_auto_refuses_nothing(self, run, expected):
         tools._last_tool_execution_record = None
@@ -182,7 +182,7 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
 
     def test_required_refuses_and_runs_nothing(self):
         out = tools._python_exec(
-            "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "required"
+            "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode="required"
         )
         assert "SHOULD_NOT_RUN" not in out
         assert "OS_ISOLATION_UNAVAILABLE" in out
@@ -190,10 +190,10 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
 
     def test_required_raises_out_of_the_planner_itself(self):
         plan = ToolLaunchPlan(
-            argv = (sys.executable, "-c", "pass"),
-            workdir = os.getcwd(),
-            env = {},
-            requested_mode = "required",
+            argv=(sys.executable, "-c", "pass"),
+            workdir=os.getcwd(),
+            env={},
+            requested_mode="required",
         )
         with pytest.raises(SandboxUnavailableError) as excinfo:
             os_sandbox.prepare_tool_launch(plan)
@@ -201,7 +201,7 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
 
     def test_terminal_required_refuses_too(self):
         out = tools._bash_exec(
-            "echo SHOULD_NOT_RUN", None, 60, _SESSION, tool_execution_mode = "required"
+            "echo SHOULD_NOT_RUN", None, 60, _SESSION, tool_execution_mode="required"
         )
         assert "SHOULD_NOT_RUN" not in out
         assert "OS_ISOLATION_UNAVAILABLE" in out
@@ -209,14 +209,14 @@ class TestAutoFallsBackOnAHostThatCannotIsolate:
 
 def test_an_unknown_mode_is_reported_rather_than_silently_downgraded():
     out = tools._python_exec(
-        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "nonsense"
+        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode="nonsense"
     )
     assert "SHOULD_NOT_RUN" not in out
     assert "nonsense" in out
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+    sys.platform == "win32", reason="pre-exec and pass_fds are POSIX; Windows keeps today's path"
 )
 def test_the_process_unsloth_holds_still_lands_in_its_own_session():
     """Asserted about the OUTER process: under bubblewrap the payload is not a session leader, so asking it about its own sid only passes on a fallback."""
@@ -277,7 +277,7 @@ def test_a_timeout_kills_the_tool_and_leaves_the_server_running():
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+    sys.platform == "win32", reason="pre-exec and pass_fds are POSIX; Windows keeps today's path"
 )
 def test_the_plan_carries_the_pre_exec_the_kill_paths_depend_on():
     seen = []
@@ -291,7 +291,7 @@ def test_the_plan_carries_the_pre_exec_the_kill_paths_depend_on():
     try:
         tools._python_exec("print(1)", None, 60, _SESSION)
         tools._bash_exec("echo 1", None, 60, _SESSION)
-        tools._python_exec("print(1)", None, 60, _SESSION, disable_sandbox = True)
+        tools._python_exec("print(1)", None, 60, _SESSION, disable_sandbox=True)
     finally:
         os_sandbox.prepare_tool_launch = real
     assert [plan.preexec_fn for plan in seen] == [
@@ -311,7 +311,7 @@ def test_sandbox_preexec_runs_no_imports_after_the_fork():
         assert not offenders, f"{function.__name__} imports after the fork"
 
 
-@pytest.mark.parametrize("disable_sandbox", [False, True], ids = ["sandboxed", "full"])
+@pytest.mark.parametrize("disable_sandbox", [False, True], ids=["sandboxed", "full"])
 def test_the_environment_the_shim_depends_on_survives(disable_sandbox):
     workdir = tools._get_workdir(_SESSION)
     out = tools._python_exec(
@@ -322,7 +322,7 @@ def test_the_environment_the_shim_depends_on_survives(disable_sandbox):
         None,
         60,
         _SESSION,
-        disable_sandbox = disable_sandbox,
+        disable_sandbox=disable_sandbox,
     )
     lines = dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
     assert tools._SANDBOX_SITE_DIR in lines["PYTHONPATH"]
@@ -347,11 +347,11 @@ class _Recorder:
 def _echoing_prepare(recorder, **overrides):
     def prepare(plan):
         prepared = PreparedSandboxLaunch(
-            argv = plan.argv,
-            workdir = plan.workdir,
-            env = plan.env,
-            preexec_fn = plan.preexec_fn,
-            backend = "test-double",
+            argv=plan.argv,
+            workdir=plan.workdir,
+            env=plan.env,
+            preexec_fn=plan.preexec_fn,
+            backend="test-double",
             **overrides,
         )
         prepared.cleanup_callbacks.append(
@@ -368,7 +368,7 @@ def _echoing_prepare(recorder, **overrides):
         lambda: tools._python_exec("print(1)", None, 60, _SESSION),
         lambda: tools._bash_exec("echo 1", None, 60, _SESSION),
     ],
-    ids = ["python", "terminal"],
+    ids=["python", "terminal"],
 )
 def test_the_launch_is_released_when_the_process_finishes(monkeypatch, run):
     recorder = _Recorder()
@@ -391,15 +391,15 @@ def test_the_launch_is_released_when_the_spawn_raises(monkeypatch):
 
 def test_the_launch_is_released_when_required_refuses(monkeypatch):
     def refuse(plan):
-        raise SandboxUnavailableError("OS_ISOLATION_UNAVAILABLE: nope", remediation = "install it")
+        raise SandboxUnavailableError("OS_ISOLATION_UNAVAILABLE: nope", remediation="install it")
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", refuse)
-    out = tools._python_exec("print(1)", None, 60, _SESSION, tool_execution_mode = "required")
+    out = tools._python_exec("print(1)", None, 60, _SESSION, tool_execution_mode="required")
     assert "install it" in out
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+    sys.platform == "win32", reason="pre-exec and pass_fds are POSIX; Windows keeps today's path"
 )
 def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
     read_fd, write_fd = os.pipe()
@@ -408,7 +408,7 @@ def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
     monkeypatch.setattr(
         os_sandbox,
         "prepare_tool_launch",
-        _echoing_prepare(recorder, pass_fds = (read_fd,)),
+        _echoing_prepare(recorder, pass_fds=(read_fd,)),
     )
 
     real_spawn = os_sandbox.spawn_prepared_launch
@@ -449,7 +449,7 @@ def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatc
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", explode)
     tools._last_tool_execution_record = None
-    assert "9" in tools._python_exec("print(9)", None, 60, _SESSION, disable_sandbox = True)
+    assert "9" in tools._python_exec("print(9)", None, 60, _SESSION, disable_sandbox=True)
     record = tools._last_tool_execution_record
     assert record.effective_mode == "full"
     assert "security_restrictions_disabled" in record.limitations
@@ -457,16 +457,16 @@ def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatc
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+    sys.platform == "win32", reason="pre-exec and pass_fds are POSIX; Windows keeps today's path"
 )
 def test_a_backend_that_drops_the_pre_exec_has_it_put_back(monkeypatch):
     def forgetful(plan):
         return PreparedSandboxLaunch(
-            argv = plan.argv,
-            workdir = plan.workdir,
-            env = plan.env,
-            preexec_fn = None,
-            backend = "forgetful",
+            argv=plan.argv,
+            workdir=plan.workdir,
+            env=plan.env,
+            preexec_fn=None,
+            backend="forgetful",
         )
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", forgetful)
@@ -482,7 +482,7 @@ def test_required_still_refuses_when_the_planner_itself_breaks(monkeypatch):
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", explode)
     out = tools._python_exec(
-        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "required"
+        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode="required"
     )
     assert "SHOULD_NOT_RUN" not in out
     assert "without host fallback" in out
@@ -497,12 +497,12 @@ def test_a_platform_with_no_backend_gets_exactly_the_plan_it_handed_in(monkeypat
 
     env = {"PATH": "/usr/bin"}
     plan = ToolLaunchPlan(
-        argv = ("prog", "arg"),
-        workdir = "/work",
-        env = env,
-        preexec_fn = marker,
-        requested_mode = "auto",
-        timeout_seconds = 300,
+        argv=("prog", "arg"),
+        workdir="/work",
+        env=env,
+        preexec_fn=marker,
+        requested_mode="auto",
+        timeout_seconds=300,
     )
     prepared = os_sandbox.prepare_tool_launch(plan)
     assert prepared.argv == plan.argv
@@ -519,7 +519,7 @@ def test_a_platform_with_no_backend_still_refuses_in_required(monkeypatch):
     monkeypatch.setattr(sys, "platform", "aix")
     with pytest.raises(SandboxUnavailableError):
         os_sandbox.prepare_tool_launch(
-            ToolLaunchPlan(argv = ("prog",), workdir = "/work", env = {}, requested_mode = "required")
+            ToolLaunchPlan(argv=("prog",), workdir="/work", env={}, requested_mode="required")
         )
 
 
@@ -559,13 +559,13 @@ def test_an_unsafe_workdir_fails_the_call_rather_than_de_isolating_it(monkeypatc
 def test_required_still_refuses_when_the_backend_declines_this_launch(monkeypatch):
     _declining_backend(monkeypatch, "the session workdir contains a device node")
     out = tools._python_exec(
-        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "required"
+        "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode="required"
     )
     assert "SHOULD_NOT_RUN" not in out
     assert "device node" in out
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "the workdir scan is POSIX only")
+@pytest.mark.skipif(sys.platform == "win32", reason="the workdir scan is POSIX only")
 def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call(monkeypatch):
     if not os_sandbox.capability_snapshot().available:
         pytest.skip("this host cannot isolate, so there is no boundary to switch off")
@@ -590,11 +590,11 @@ def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call(monkeypatch)
 @pytest.mark.parametrize(
     "function,payload",
     [(tools._python_exec, "print('SHOULD_NOT_RUN')"), (tools._bash_exec, "echo SHOULD_NOT_RUN")],
-    ids = ["python", "terminal"],
+    ids=["python", "terminal"],
 )
 def test_full_is_not_requestable_through_the_mode(function, payload):
     tools._last_tool_execution_record = None
-    out = function(payload, None, 60, _SESSION, tool_execution_mode = "full")
+    out = function(payload, None, 60, _SESSION, tool_execution_mode="full")
     assert "SHOULD_NOT_RUN" not in out
     assert "TOOL_EXECUTION_MODE_INVALID" in out
     assert "disable_sandbox" in out
@@ -604,7 +604,7 @@ def test_full_is_not_requestable_through_the_mode(function, payload):
 def test_disable_sandbox_is_still_the_way_to_full_access():
     tools._last_tool_execution_record = None
     assert "7" in tools._python_exec(
-        "print(7)", None, 60, _SESSION, disable_sandbox = True, tool_execution_mode = "full"
+        "print(7)", None, 60, _SESSION, disable_sandbox=True, tool_execution_mode="full"
     )
     assert tools._last_tool_execution_record.effective_mode == "full"
 
@@ -617,7 +617,7 @@ def test_disable_sandbox_is_still_the_way_to_full_access():
         ),
         lambda: tools._bash_exec("printf 'IN %s\\n' \"$(cat)\"", None, 60, _SESSION),
     ],
-    ids = ["python", "terminal"],
+    ids=["python", "terminal"],
 )
 def test_a_tool_call_cannot_read_the_servers_stdin(run):
     read_fd, write_fd = os.pipe()
@@ -646,7 +646,7 @@ def test_the_fallback_never_claims_a_descendant_sweep_it_does_not_perform():
 
 def test_a_backend_that_has_just_stopped_being_available_still_falls_back(monkeypatch):
     _declining_backend(
-        monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe = False
+        monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe=False
     )
     tools._last_tool_execution_record = None
     assert "42" in tools._python_exec("print(6 * 7)", None, 60, _SESSION)
@@ -661,7 +661,7 @@ def test_a_backend_that_fails_at_launch_drops_the_cached_verdict(monkeypatch):
         "core.inference.sandbox_probe.reset_probe_cache", lambda: reset.append(True)
     )
     prepared = PreparedSandboxLaunch(
-        argv = ("bwrap",), workdir = "/work", env = {}, preexec_fn = None, backend = "bubblewrap"
+        argv=("bwrap",), workdir="/work", env={}, preexec_fn=None, backend="bubblewrap"
     )
     tools._forget_sandbox_capability_if_the_backend_failed(
         prepared, "Exit code 1:\nbwrap: setting up uid map: Permission denied\n"
@@ -696,10 +696,10 @@ def test_a_planner_os_error_refuses_rather_than_running_unisolated(monkeypatch):
         os_sandbox,
         "capability_snapshot",
         lambda **kwargs: os_sandbox.SandboxCapability(
-            backend = backend.BACKEND_NAME,
-            available = True,
-            reason = "probe passed",
-            profile_id = backend.PROFILE_ID,
+            backend=backend.BACKEND_NAME,
+            available=True,
+            reason="probe passed",
+            profile_id=backend.PROFILE_ID,
         ),
     )
     monkeypatch.setattr(backend, "prepare", full_disk)
@@ -711,14 +711,14 @@ def test_a_planner_os_error_refuses_rather_than_running_unisolated(monkeypatch):
 
 def test_an_unisolated_launch_cannot_be_hooked_by_a_planted_usercustomize(tmp_path):
     workdir = tmp_path / "session"
-    (workdir / os_sandbox.SESSION_PACKAGES_RELPATH).mkdir(parents = True)
+    (workdir / os_sandbox.SESSION_PACKAGES_RELPATH).mkdir(parents=True)
     env = tools._with_session_packages({"PATH": "/usr/bin"}, str(workdir))
     assert env["PYTHONNOUSERSITE"] == "1"
 
 
 def test_the_shipped_sitecustomize_is_found_before_the_session_packages(tmp_path):
     workdir = tmp_path / "session"
-    (workdir / os_sandbox.SESSION_PACKAGES_RELPATH).mkdir(parents = True)
+    (workdir / os_sandbox.SESSION_PACKAGES_RELPATH).mkdir(parents=True)
     env = tools._with_session_packages({"PYTHONPATH": tools._SANDBOX_SITE_DIR}, str(workdir))
     entries = env["PYTHONPATH"].split(os.pathsep)
     assert entries.index(tools._SANDBOX_SITE_DIR) < entries.index(
@@ -731,7 +731,7 @@ def test_session_package_commands_stay_on_path(monkeypatch, tmp_path, os_name, s
     """pip --target writes console scripts to Scripts on Windows, so bin alone lost them there."""
     workdir = tmp_path / "session"
     packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
-    packages.mkdir(parents = True)
+    packages.mkdir(parents=True)
     monkeypatch.setattr(os_sandbox.os, "name", os_name)
     monkeypatch.setattr(os_sandbox, "_PIP_PREFIX_SCRIPTS_DIR", scripts)
     env = os_sandbox.with_session_packages({"PATH": "/usr/bin"}, str(workdir))
@@ -756,7 +756,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
 
 
 @pytest.mark.parametrize("case", ["chat", "same_process", "editable", "project_venv", "target"])
-@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+@pytest.mark.skipif(sys.platform == "win32", reason="posix shell commands")
 def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp_path, case):
     """Studio's interpreter installs into the chat folder; another venv's pip still installs into that venv."""
     name = f"unsloth_chat_only_{case}"
@@ -782,18 +782,18 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "project_venv": f"{_PIP} {wheel} && python -m venv venv && venv/bin/{_PIP} {wheel} && "
         f"env -u PYTHONPATH venv/bin/{show}",
     }[case]
-    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id=None: str(workdir))
     try:
         out = tools._bash_exec(
             command,
             None,
             120,
             _SESSION,
-            tool_execution_mode = "software",
+            tool_execution_mode="software",
         )
     finally:
         subprocess.run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", "-q", name], capture_output = True
+            [sys.executable, "-m", "pip", "uninstall", "-y", "-q", name], capture_output=True
         )
     assert tools._last_tool_execution_record.os_isolation is False
     expected = {
@@ -806,56 +806,68 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
     assert f"{expected}{os.sep}" in out, out
 
 
-@pytest.mark.parametrize("case", ["editable_fork", "namespace"])
-@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+@pytest.mark.parametrize("case", ["editable_fork", "editable_finder", "upgrade", "namespace"])
+@pytest.mark.skipif(sys.platform == "win32", reason="posix shell commands")
 def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path, case):
-    """An editable fork of a Studio package, and a new portion of a namespace Studio already imported, both load."""
+    """Editable forks, an upgrade imported in the installing process, and a new namespace portion all load."""
     name = f"unsloth_chat_shadow_{case}"
     workdir = tmp_path / "chat"
     workdir.mkdir()
     packages = str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
+    studio_files = {f"{name}.py": ""}
+    show = f"import {name}; print({name}.__file__)"
+    # Imported in the process that installs: the session dirs did not exist when it started.
+    in_process = (
+        'python -c "import subprocess, sys; {pre}subprocess.check_call(sys.argv[1:]); {post}" '
+        + _PIP
+    )
     if case == "editable_fork":
-        studio_files = {f"{name}.py": ""}
         (workdir / "src").mkdir()
         (workdir / "src" / f"{name}.py").write_text("")
-        chat_wheel = _wheel(
-            workdir, name, {f"__editable__.{name}-1.0.pth": str(workdir / "src") + "\n"}
+        wheel = _wheel(workdir, name, {f"__editable__.{name}-1.0.pth": str(workdir / "src") + "\n"})
+        command, expected = f'{_PIP} {wheel} && python -c "{show}"', str(workdir / "src")
+    elif case == "editable_finder":
+        # setuptools' flat-layout editable wheel: an import-only .pth and a finder module with a MAPPING.
+        (workdir / "proj" / name).mkdir(parents=True)
+        (workdir / "proj" / name / "__init__.py").write_text("")
+        finder = f"__editable___{name}_1_0_finder"
+        mapping = {name: str(workdir / "proj" / name)}
+        wheel = _wheel(
+            workdir,
+            name,
+            {
+                f"__editable__.{name}-1.0.pth": f"import {finder}; {finder}.install()\n",
+                f"{finder}.py": f"MAPPING: dict = {mapping!r}\ndef install():\n    raise SystemExit(9)\n",
+            },
         )
-        command = f"{_PIP} {chat_wheel} && python -c 'import {name}; print({name}.__file__)'"
-        expected = str(workdir / "src")
+        command, expected = f'{_PIP} {wheel} && python -c "{show}"', str(workdir / "proj" / name)
+    elif case == "upgrade":
+        wheel = _wheel(workdir, name, {f"{name}.py": ""})
+        command, expected = in_process.format(pre="", post=show) + f" {wheel}", packages
     else:
         studio_files = {f"{name}/a.py": ""}
-        chat_wheel = _wheel(workdir, f"{name}_b", {f"{name}/b.py": ""})
-        command = (
-            f'python -c "import subprocess, sys, {name}.a; subprocess.check_call(sys.argv[1:]); '
-            f'import {name}.b; print({name}.b.__file__)" python -m pip install -q --no-index --no-deps {chat_wheel}'
+        wheel = _wheel(workdir, f"{name}_b", {f"{name}/b.py": ""})
+        post = (
+            f"import pkgutil, {name}.b; print({name}.b.__file__); "
+            f"print(sorted(m.name for m in pkgutil.iter_modules({name}.__path__)))"
         )
+        command = in_process.format(pre=f"import {name}.a; ", post=post) + f" {wheel}"
         expected = packages
     studio_dir = tmp_path / "studio"
     studio_dir.mkdir()
     studio_wheel = studio_dir / _wheel(studio_dir, name, studio_files)
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "-q",
-            "--no-index",
-            "--no-deps",
-            str(studio_wheel),
-        ],
-        check = True,
-    )
-    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    subprocess.run([sys.executable, *_PIP.split()[1:], str(studio_wheel)], check=True)
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id=None: str(workdir))
     try:
-        out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
+        out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode="software")
     finally:
         subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "-q", name, f"{name}_b"],
-            capture_output = True,
+            capture_output=True,
         )
     assert f"{expected}{os.sep}" in out, out
+    if case == "namespace":
+        assert "['a', 'b']" in out, out
 
 
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
@@ -869,12 +881,12 @@ def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
     }
     probe = ["-c", "import os; print(os.environ.get('PIP_PREFIX'))"]
     subprocess.run(
-        [sys.executable, "-m", "venv", "--without-pip", str(tmp_path / "venv")], check = True
+        [sys.executable, "-m", "venv", "--without-pip", str(tmp_path / "venv")], check=True
     )
     venv_python = tmp_path / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
     def run(*argv):
-        result = subprocess.run(argv, env = env, capture_output = True, text = True)
+        result = subprocess.run(argv, env=env, capture_output=True, text=True)
         return result.stdout + result.stderr
 
     assert f"PIP_PREFIX='{packages}'" in run(sys.executable, "-m", "pip", "config", "debug")
@@ -889,11 +901,11 @@ def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
         "core.inference.sandbox_probe.reset_probe_cache", lambda: reset.append(True)
     )
     prepared = PreparedSandboxLaunch(
-        argv = ("/usr/bin/sandbox-exec",),
-        workdir = "/work",
-        env = {},
-        preexec_fn = None,
-        backend = "macos-seatbelt",
+        argv=("/usr/bin/sandbox-exec",),
+        workdir="/work",
+        env={},
+        preexec_fn=None,
+        backend="macos-seatbelt",
     )
 
     tools._forget_sandbox_capability_if_the_backend_failed(
@@ -924,9 +936,9 @@ def test_the_unconfined_placeholder_is_not_treated_as_a_boundary():
     """`unconfined-by-owner` records that the owner ALLOWED unconfined tools on a host that cannot confine them."""
     from core.inference.tool_confinement import Confinement
 
-    assert Confinement(mechanism = "unconfined-by-owner").confines is False
-    assert Confinement(mechanism = "landlock", preexec = lambda: None).confines is True
-    assert Confinement(mechanism = "sandbox-exec", wrapper = ("sandbox-exec",)).confines is True
+    assert Confinement(mechanism="unconfined-by-owner").confines is False
+    assert Confinement(mechanism="landlock", preexec=lambda: None).confines is True
+    assert Confinement(mechanism="sandbox-exec", wrapper=("sandbox-exec",)).confines is True
 
 
 def test_a_managed_account_without_confinement_still_refuses_required(monkeypatch):
@@ -936,13 +948,13 @@ def test_a_managed_account_without_confinement_still_refuses_required(monkeypatc
     monkeypatch.setattr(
         tools,
         "_account_confinement",
-        lambda: Confinement(mechanism = "unconfined-by-owner"),
+        lambda: Confinement(mechanism="unconfined-by-owner"),
     )
     _declining_backend(
-        monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe = False
+        monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe=False
     )
 
-    result = tools._python_exec("print(1)", None, 60, _SESSION, tool_execution_mode = "required")
+    result = tools._python_exec("print(1)", None, 60, _SESSION, tool_execution_mode="required")
 
     assert "1" not in result.splitlines()[:1], f"the call ran unisolated: {result!r}"
     assert "Execution error" in result or "OS_ISOLATION_UNAVAILABLE" in result
@@ -962,7 +974,7 @@ def test_a_managed_account_without_confinement_still_refuses_required(monkeypatc
             "ls /srv/pr-approved/data.csv; echo ran", None, 60, _SESSION, **kw
         ),
     ],
-    ids = ["python", "terminal"],
+    ids=["python", "terminal"],
 )
 @pytest.mark.parametrize(
     "approved, mode, jailed",
@@ -983,7 +995,7 @@ def test_an_approved_host_path_call_runs_as_it_does_without_the_jail(
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
     tools._last_tool_execution_record = None
-    out = run(host_access_approved = approved, tool_execution_mode = mode)
+    out = run(host_access_approved=approved, tool_execution_mode=mode)
     assert "ran" in out
     assert bool(planned) is jailed
     if not jailed:
@@ -1000,7 +1012,7 @@ def test_an_approval_does_not_lift_the_jail_for_a_call_that_needs_no_host_path(m
         return _echoing_prepare(_Recorder())(plan)
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
-    assert "3" in tools._python_exec("print(1 + 2)", None, 60, _SESSION, host_access_approved = True)
+    assert "3" in tools._python_exec("print(1 + 2)", None, 60, _SESSION, host_access_approved=True)
     assert len(planned) == 1
 
 
@@ -1014,7 +1026,7 @@ def test_a_stop_during_the_sandbox_probe_reads_as_a_cancel(monkeypatch, executor
     def probe_then_stop(**_kwargs):
         cancel.set()
         return os_sandbox.SandboxCapability(
-            backend = "test", available = True, reason = "ok", environment = sys.platform
+            backend="test", available=True, reason="ok", environment=sys.platform
         )
 
     monkeypatch.setattr(os_sandbox, "capability_snapshot", probe_then_stop)
@@ -1038,7 +1050,7 @@ def test_an_approved_ansi_c_quoted_host_path_is_recognised(command):
     assert tools._reaches_host_paths("terminal", command)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason = "the cap only applies on Linux")
+@pytest.mark.skipif(sys.platform != "linux", reason="the cap only applies on Linux")
 @pytest.mark.parametrize(
     "env, saved, expected",
     [
@@ -1046,13 +1058,13 @@ def test_an_approved_ansi_c_quoted_host_path_is_recognised(command):
         (None, 24, 24),
         ("12", 24, 12),
     ],
-    ids = ["default", "saved", "env-wins"],
+    ids=["default", "saved", "env-wins"],
 )
 def test_a_sandboxed_run_gets_the_configured_memory_limit(monkeypatch, env, saved, expected):
     from utils import sandbox_memory_limit
 
     if env is None:
-        monkeypatch.delenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, raising = False)
+        monkeypatch.delenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, raising=False)
     else:
         monkeypatch.setenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, env)
     monkeypatch.setattr(

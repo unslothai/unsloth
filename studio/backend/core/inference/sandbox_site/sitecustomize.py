@@ -30,7 +30,7 @@ def _note(subject, original, mapped):
     print(
         f"note: {subject} does not exist in this sandbox; "
         f"using the working directory instead ({original} -> {mapped})",
-        file = sys.stderr,
+        file=sys.stderr,
     )
 
 
@@ -51,7 +51,7 @@ def _contained_join(cwd, rel):
 def _map_onto_cwd(
     prefix,
     text,
-    notify = True,
+    notify=True,
 ):
     """Maps prefix/rest onto ./rest under the CWD, contained against .. escapes; notify False for reads so the notice is not spent on a remap that never happens."""
     rel = text[len(prefix) :].lstrip("/")
@@ -69,7 +69,7 @@ def _load_sidecar(cwd):
     """Return the persisted ``source -> healed target`` map, or {} on any error
     (missing/corrupt/foreign sidecar degrades to in-process-only behaviour)."""
     try:
-        with open(_sidecar_path(cwd), encoding = "utf-8") as fh:
+        with open(_sidecar_path(cwd), encoding="utf-8") as fh:
             data = json.load(fh)
     except Exception:  # noqa: BLE001 - a bad sidecar must never break user code
         return {}
@@ -84,7 +84,7 @@ def _record_sidecar(cwd, source, target):
             return
         data[source] = target
         tmp = _sidecar_path(cwd) + ".tmp"
-        with open(tmp, "w", encoding = "utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
         os.replace(tmp, _sidecar_path(cwd))
     except Exception:  # noqa: BLE001 - persistence is best effort only
@@ -100,12 +100,12 @@ def _remap_open(file, mode):
     """A read heals only if the target exists, so a missing input fails instead of reading a stray file."""
     creating = _is_creating_mode(mode)
     # notify=False: emit the notice only once we commit to the mapping below.
-    mapped = _remap(file, notify = False)
+    mapped = _remap(file, notify=False)
     if mapped is not file:
         # Reads heal only when the target exists, so a missing input stays truthful.
         if creating or os.path.exists(mapped):
             # Commit: emit the notice now (the notify=False peek above deferred it).
-            _remap(file, notify = True)
+            _remap(file, notify=True)
             return mapped
         return file
     if not creating:
@@ -142,7 +142,7 @@ def _remap_open(file, mode):
     return remapped
 
 
-def _remap(path, notify = True):
+def _remap(path, notify=True):
     """``_remap_open`` passes notify False, so a read that keeps its original path emits no false notice."""
     try:
         text = os.fspath(path)
@@ -160,7 +160,7 @@ def _remap(path, notify = True):
             prefix = prefix.replace("\\", "/")
         # Heal only while the prefix directory is absent, so a real host mount is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
-            return _map_onto_cwd(prefix, text, notify = notify)
+            return _map_onto_cwd(prefix, text, notify=notify)
     return path
 
 
@@ -176,7 +176,7 @@ def _install():
 
     def _open(
         file,
-        mode = "r",
+        mode="r",
         *args,
         **kwargs,
     ):
@@ -184,7 +184,7 @@ def _install():
 
     def _io_open(
         file,
-        mode = "r",
+        mode="r",
         *args,
         **kwargs,
     ):
@@ -200,16 +200,16 @@ def _install():
     def _os_open(
         path,
         flags,
-        mode = 0o777,
+        mode=0o777,
         *,
-        dir_fd = None,
+        dir_fd=None,
     ):
         # Only O_CREAT creates; O_TRUNC/O_APPEND alone behave as a read.
         logical_mode = "w" if (flags & os.O_CREAT) else "r"
         mapped = _remap_open(path, logical_mode)
         if dir_fd is None:
             return original_os_open(mapped, flags, mode)
-        return original_os_open(mapped, flags, mode, dir_fd = dir_fd)
+        return original_os_open(mapped, flags, mode, dir_fd=dir_fd)
 
     def _path_mkdir(self, *args, **kwargs):
         # pathlib probes unpatched os.stat on FileExistsError; remap up front for exist_ok.
@@ -250,8 +250,8 @@ class _HostPackagesFinder:
     def find_spec(
         self,
         name,
-        path = None,
-        target = None,
+        path=None,
+        target=None,
     ):
         import importlib.machinery
 
@@ -291,6 +291,7 @@ class _HostPackagesFinder:
         if origin not in cls._extends:
             try:
                 import ast
+
                 with open(origin, "rb") as f:
                     tree = ast.parse(f.read())
                 cls._extends[origin] = any(map(cls._declares_namespace, cls._top_level(tree.body)))
@@ -301,6 +302,7 @@ class _HostPackagesFinder:
     @classmethod
     def _top_level(cls, body):
         import ast
+
         for node in body:
             yield node
             if isinstance(node, ast.Try):
@@ -324,7 +326,7 @@ class _HostPackagesFinder:
             )
         return isinstance(node, ast.Expr) and call_of(node.value, "declare_namespace", ["__name__"])
 
-    def find_distributions(self, context = None):
+    def find_distributions(self, context=None):
         name = getattr(context, "name", None)
         # An explicit path is the caller's scope, already served by the stock path finder.
         if not name or "path" in getattr(context, "__dict__", {}):
@@ -332,7 +334,7 @@ class _HostPackagesFinder:
         import importlib.metadata
 
         return importlib.metadata.MetadataPathFinder.find_distributions(
-            importlib.metadata.DistributionFinder.Context(name = name, path = self._folders)
+            importlib.metadata.DistributionFinder.Context(name=name, path=self._folders)
         )
 
 
@@ -402,77 +404,96 @@ def _session_entries():
     return [e for e in sys.path if e and os.path.normcase(os.path.abspath(e)).startswith(root)]
 
 
-# PYTHONPATH skips .pth files: add their path lines (what editable installs use), never run their import lines.
-# Right after the session dirs, so a chat's editable fork wins over Studio's installed copy as its other installs do.
-def _add_pth_paths(entries):
-    try:
-        added = []
-        for entry in entries:
+def _editable_mapping(entry, module):
+    # setuptools' flat-layout editable finder: read its literal MAPPING instead of running the module.
+    import ast
+
+    with open(os.path.join(entry, module + ".py"), "rb") as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+        if any(isinstance(t, ast.Name) and t.id == "MAPPING" for t in targets) and node.value:
+            mapping = ast.literal_eval(node.value)
+            return {k: v for k, v in mapping.items() if isinstance(k, str) and isinstance(v, str)}
+    return {}
+
+
+# PYTHONPATH skips .pth files: take their path lines and setuptools' editable mappings, never run their imports.
+# Paths go right after the session dirs, so a chat's editable fork wins over Studio's copy like its other installs.
+def _read_pth_files(entries):
+    added, editable = [], {}
+    for entry in entries:
+        try:
+            names = sorted(n for n in os.listdir(entry) if n.endswith(".pth"))
+        except OSError:
+            continue
+        for name in names:
             try:
-                names = sorted(n for n in os.listdir(entry) if n.endswith(".pth"))
-            except OSError:
-                continue
-            for name in names:
-                try:
-                    with open(os.path.join(entry, name), encoding = "utf-8") as f:
-                        lines = f.read().splitlines()
-                except (OSError, ValueError):
-                    continue
+                with open(os.path.join(entry, name), encoding="utf-8") as f:
+                    lines = f.read().splitlines()
                 for line in lines:
                     line = line.strip()
-                    if not line or line.startswith(("#", "import ", "import\t")):
+                    if line.startswith(("import ", "import\t")):
+                        module = line[len("import ") :].split(";")[0].strip()
+                        if module.startswith("__editable___") and module.endswith("_finder"):
+                            editable.update(_editable_mapping(entry, module))
                         continue
                     path = os.path.abspath(os.path.join(entry, line))
-                    if path not in sys.path and path not in added and os.path.isdir(path):
+                    if (
+                        line
+                        and not line.startswith("#")
+                        and path not in sys.path + added
+                        and os.path.isdir(path)
+                    ):
                         added.append(path)
-        if added:
-            at = max(i for i, e in enumerate(sys.path) if e in entries) + 1
-            sys.path[at:at] = added
-    except Exception:  # noqa: BLE001
-        pass
+            except Exception:  # noqa: BLE001
+                continue
+    if added:
+        at = max(i for i, e in enumerate(sys.path) if e in entries) + 1
+        sys.path[at:at] = added
+    return editable
 
 
-# A session dir pip creates after startup stays cached as missing, and a namespace package imported before an
-# install keeps its old __path__; on a miss, look again in the session dirs.
-class _LateSessionDirsFinder:
-    def __init__(self, entries):
+# First on meta_path: a session dir pip creates mid-process is cached as missing, a namespace imported before
+# an install lacks the new portion, and flat-layout editable installs are mapped, not on sys.path.
+class _SessionPackagesFinder:
+    # Bound up front: an import inside find_spec would re-enter this finder.
+    from importlib.machinery import PathFinder as _path_finder
+
+    def __init__(self, entries, editable):
         self._entries = entries
+        self._editable = editable
 
     def find_spec(
         self,
         name,
-        path = None,
-        target = None,
+        path=None,
+        target=None,
     ):
-        import importlib.machinery
-
-        if path is not None:
-            parent = getattr(sys.modules.get(name.rpartition(".")[0]), "__spec__", None)
-            if parent is None or parent.origin not in (None, "namespace"):
-                return None
-            portions = [
-                p
-                for p in (os.path.join(e, *parent.name.split(".")) for e in self._entries)
-                if p not in path and os.path.isdir(p)
-            ]
-            return (
-                importlib.machinery.PathFinder.find_spec(name, portions, target)
-                if portions
-                else None
-            )
         cache = sys.path_importer_cache
-        stale = [e for e in self._entries if e in cache and cache[e] is None and os.path.isdir(e)]
-        if not stale:
+        for entry in self._entries:
+            if entry in cache and cache[entry] is None and os.path.isdir(entry):
+                del cache[entry]
+        if path is None:
+            located = self._editable.get(name)
+            if located and os.path.splitext(os.path.basename(located))[0] == name:
+                return self._path_finder.find_spec(name, [os.path.dirname(located)], target)
             return None
-        for entry in stale:
-            cache.pop(entry, None)
-        return importlib.machinery.PathFinder.find_spec(name, None, target)
+        parent = getattr(sys.modules.get(name.rpartition(".")[0]), "__spec__", None)
+        if parent is not None and parent.origin in (None, "namespace") and hasattr(path, "append"):
+            for entry in self._entries:
+                portion = os.path.join(entry, *parent.name.split("."))
+                if portion not in list(path) and os.path.isdir(portion):
+                    path.append(portion)
+        return None
 
 
 _entries = _session_entries()
-if _entries and not any(isinstance(f, _LateSessionDirsFinder) for f in sys.meta_path):
-    _add_pth_paths(_entries)
-    sys.meta_path.append(_LateSessionDirsFinder(_entries))
+if _entries and not any(isinstance(f, _SessionPackagesFinder) for f in sys.meta_path):
+    try:
+        sys.meta_path.insert(0, _SessionPackagesFinder(_entries, _read_pth_files(_entries)))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # --ignore-installed never uninstalls, so a reinstall leaves stale dist-info importlib.metadata may pick;
@@ -511,13 +532,14 @@ def _prune_stale_dist_info():
                 import shutil
 
                 for _, name in sorted(stamped)[:-1]:
-                    shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
+                    shutil.rmtree(os.path.join(entry, name), ignore_errors=True)
     except Exception:  # noqa: BLE001 - a broken shim must never break user code
         pass
 
 
 if os.environ.get("PIP_PREFIX"):
     import atexit
+
     _prune_stale_dist_info()
     atexit.register(_prune_stale_dist_info)
 
@@ -539,8 +561,8 @@ class _HostWorkdirFinder:
     def find_spec(
         self,
         name,
-        path = None,
-        target = None,
+        path=None,
+        target=None,
     ):
         if path is not None or name not in self._names:
             return None
