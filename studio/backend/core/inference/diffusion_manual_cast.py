@@ -192,13 +192,12 @@ def undo_same_width_manual_cast_(module: Any) -> int:
     with torch.no_grad():
         for sub in module.modules():
             base = plain.get(type(sub))
+            if base is None:
+                # never read .weight of anything else: a quantised Linear dequantises it on access
+                continue
             dtype = getattr(sub, "_unsloth_compute_dtype", None)
             weight = getattr(sub, "weight", None)
-            if (
-                base is None
-                or not isinstance(dtype, torch.dtype)
-                or not isinstance(weight, torch.Tensor)
-            ):
+            if not isinstance(dtype, torch.dtype) or not isinstance(weight, torch.Tensor):
                 continue
             if (
                 weight.dtype != dtype

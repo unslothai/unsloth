@@ -244,3 +244,18 @@ def test_qwen3vl_float16_manual_cast_matches_the_float16_load():
         got = stored(input_ids = ids, output_hidden_states = True).hidden_states
     for a, b in zip(got, want):
         assert a.dtype is FP16 and torch.equal(_bits(a), _bits(b))
+
+
+def test_undo_never_reads_the_weight_of_a_quantised_linear():
+    """A native quantised Linear dequantises its whole weight on ``.weight``: the undo must not touch it."""
+
+    class Quantised(torch.nn.Module):
+        @property
+        def weight(self):
+            raise AssertionError("dequantised a quantised weight")
+
+    m = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)).to(BF16)
+    mc.apply_manual_cast_(m, FP16)
+    m.append(Quantised())  # what the native quant swaps in after the manual cast
+    assert mc.undo_same_width_manual_cast_(m) > 0
+    assert type(m[1]) is torch.nn.Linear and m[1].weight.dtype is FP16
