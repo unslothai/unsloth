@@ -467,20 +467,17 @@ def _config_chooses_location(isolated = False):
         parser.read(files, encoding = "utf-8")
     except (configparser.Error, UnicodeDecodeError):
         return False
-    for section in ("global", "install"):
-        for key in ("target", "prefix", "root", "home"):
-            if parser.get(section, key, fallback = "").strip():
-                return True
-        if parser.get(section, "user", fallback = "").strip().lower() in (
-            "y",
-            "yes",
-            "t",
-            "true",
-            "on",
-            "1",
-        ):
-            return True
-    return False
+
+    # pip's precedence per option: [global], then [install], then a PIP_* variable (ignored under --isolated).
+    def value(key):
+        env = None if isolated else os.environ.get("PIP_" + key.upper())
+        if env is not None and env != os.environ.get("_UNSLOTH_PIP_PREFIX"):
+            return env
+        return parser.get("install", key, fallback = parser.get("global", key, fallback = ""))
+
+    if any(value(k).strip() for k in ("target", "prefix", "root", "home")):
+        return True
+    return value("user").strip().lower() in ("y", "yes", "t", "true", "on", "1")
 
 
 _chat_prefix = None
@@ -800,12 +797,24 @@ def _recorded_files(
     return files
 
 
-def _claimed(root, skip):
-    # Every site dir of the prefix (purelib and platlib can differ): a companion's RECORD may sit in the other.
-    claimed = set()
+def _site_dirs(root):
+    # The prefix's site dirs on sys.path, once per real folder (lib64 -> lib) and only those really inside it.
+    real = os.path.join(os.path.normcase(os.path.realpath(root)), "")
+    found, seen = [], set()
     for entry in sys.path:
         if not entry or not _within(entry, root):
             continue
+        key = os.path.join(os.path.normcase(os.path.realpath(entry)), "")
+        if key.startswith(real) and key not in seen:
+            seen.add(key)
+            found.append(entry)
+    return found
+
+
+def _claimed(root, skip):
+    # Every site dir of the prefix (purelib and platlib can differ): a companion's RECORD may sit in the other.
+    claimed = set()
+    for entry in _site_dirs(root):
         try:
             names = [n for n in os.listdir(entry) if n.endswith(".dist-info")]
         except OSError:
@@ -839,11 +848,10 @@ def _prune_stale_dist_info():
         if not prefix:
             return
         root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
+        real = os.path.join(os.path.normcase(os.path.realpath(prefix)), "")
         # Grouped across every site dir of the prefix: purelib and platlib can hold two versions apart.
         projects = {}
-        for entry in sys.path:
-            if not entry or not _within(entry, root):
-                continue
+        for entry in _site_dirs(root):
             try:
                 names = os.listdir(entry)
             except OSError:
@@ -877,7 +885,8 @@ def _prune_stale_dist_info():
             for entry, name in stale:
                 # Also the files only the replaced version had, as pip's uninstall would remove.
                 _remove_files(_recorded_files(entry, name, root) - keep, entry)
-                shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
+                if _within(os.path.realpath(os.path.join(entry, name)), real):
+                    shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
     except Exception:  # noqa: BLE001 - a broken shim must never break user code
         pass
 
@@ -888,9 +897,7 @@ def _record_snapshot():
     snapshot = {}
     try:
         root = os.path.join(os.path.normcase(os.path.abspath(os.environ["PIP_PREFIX"])), "")
-        for entry in sys.path:
-            if not entry or not _within(entry, root):
-                continue
+        for entry in _site_dirs(root):
             try:
                 names = [n for n in os.listdir(entry) if n.endswith(".dist-info")]
             except OSError:

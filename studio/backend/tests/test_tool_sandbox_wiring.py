@@ -785,6 +785,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "config_devnull",
         "config_file_drops_user",
         "isolated_global_config",
+        "config_user_overridden",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -824,6 +825,9 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # An existing PIP_CONFIG_FILE makes pip skip the user file.
         "config_file_drops_user": "mkdir -p .config/pip && printf '[install]\\ntarget = vendor\\n' > "
         f".config/pip/pip.conf && touch empty.ini && PIP_CONFIG_FILE=empty.ini {_PIP} {wheel} && {show}",
+        # [install] overrides [global], as pip resolves it: user ends up off.
+        "config_user_overridden": "printf '[global]\\nuser = true\\n[install]\\nuser = false\\n' > pip.ini && "
+        f"PIP_CONFIG_FILE=pip.ini {_PIP} {wheel} && {show}",
         # --isolated still reads the global and interpreter files.
         "isolated_global_config": "mkdir -p xdg/pip && printf '[install]\\ntarget = vendor\\n' > xdg/pip/pip.conf"
         f' && XDG_CONFIG_DIRS="$PWD/xdg" python -m pip --isolated install -q --no-index --no-deps {wheel}'
@@ -873,6 +877,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "config_devnull": packages,
         "config_file_drops_user": packages,
         "isolated_global_config": str(workdir / "vendor"),
+        "config_user_overridden": packages,
         "flat_then_venv": str(workdir / "venv"),
         "clustered_target": str(workdir / "vendor"),
         "own_prefix": str(workdir / "deps"),
@@ -1413,6 +1418,48 @@ def test_retirement_keeps_what_a_distribution_in_the_other_site_dir_ships(tmp_pa
     subprocess.run([sys.executable, "-c", code], env = env, check = True)
     assert not (pure / "unsloth_pure-1.0.dist-info").exists()
     assert (prefix / "bin" / "tool").exists()
+
+
+def _prune(prefix, *site_dirs):
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": os.pathsep.join([tools._SANDBOX_SITE_DIR, *map(str, site_dirs)]),
+        "PIP_PREFIX": str(prefix),
+    }
+    code = "import sitecustomize as s; s._prune_stale_dist_info()"
+    subprocess.run([sys.executable, "-c", code], env = env, check = True)
+
+
+def _dist(site_dir, project, version, stamp):
+    info = site_dir / f"{project}-{version}.dist-info"
+    info.mkdir(parents = True)
+    (site_dir / f"{project}.py").write_text("")
+    (info / "RECORD").write_text(f"{project}.py,,\n{info.name}/RECORD,,\n")
+    os.utime(info / "RECORD", ns = (stamp * 10**9, stamp * 10**9))
+    return info
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "symlinked site dirs")
+def test_one_site_dir_on_two_paths_is_one_install(tmp_path):
+    """lib64 -> lib with both on sys.path: the single installed version is not its own stale copy."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    info = _dist(site_dir, "unsloth_aliased", "1.0", 1)
+    (prefix / "lib64").symlink_to(prefix / "lib")
+    _prune(prefix, site_dir, prefix / "lib64" / "site-packages")
+    assert info.exists() and (site_dir / "unsloth_aliased.py").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "symlinked site dirs")
+def test_a_site_dir_linked_outside_the_prefix_is_left_alone(tmp_path):
+    """An older version behind a symlink out of the prefix is never deleted, metadata included."""
+    prefix, outside = tmp_path / "prefix", tmp_path / "outside"
+    old = _dist(outside, "unsloth_linked", "1.0", 1)
+    (prefix / "lib").mkdir(parents = True)
+    (prefix / "lib" / "site-packages").symlink_to(outside)
+    _dist(prefix / "lib64" / "site-packages", "unsloth_linked", "2.0", 2)
+    _prune(prefix, prefix / "lib" / "site-packages", prefix / "lib64" / "site-packages")
+    assert old.exists() and (outside / "unsloth_linked.py").exists()
 
 
 def test_a_replaced_version_in_the_other_site_dir_is_pruned(tmp_path):
