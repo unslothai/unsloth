@@ -941,7 +941,6 @@ class QGaloreConfig:
     target_modules: Optional[List[str]] = None
 
 
-# The Q-GaLore optimizer is built before, and never reads, loraplus_lr_ratio.
 _LORAPLUS_WITH_Q_GALORE = (
     "Unsloth: loraplus_lr_ratio cannot be combined with q_galore_config, "
     "the Q-GaLore optimizer would ignore it. Drop one of them."
