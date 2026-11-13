@@ -387,14 +387,20 @@ export function withNewlyListedModels(
   const before = new Set([...previouslyListed, ...savedModels]);
   const added = listedIds.filter((id) => !before.has(id));
   if (added.length === 0) return null;
+  const known = options.knownIds ? new Set(options.knownIds) : null;
+  const stillKnown = (ids: string[]) => (known ? ids.filter((id) => known.has(id)) : ids);
+  // Keep ids seen before, or one unticked while briefly unlisted would come back ticked.
+  const seen = stillKnown(previouslyListed);
   if (options.maxAdded !== undefined && added.length > options.maxAdded) {
     // Baseline was the suggestions: adopt the listing, tick nothing.
-    return { models: savedModels, availableModels: listedIds, added: [] };
+    return {
+      models: savedModels,
+      availableModels: [...new Set([...listedIds, ...seen])],
+      added: [],
+    };
   }
-  const known = options.knownIds ? new Set(options.knownIds) : null;
-  const kept = known ? savedModels.filter((id) => known.has(id)) : savedModels;
-  const models = [...kept, ...added];
-  return { models, availableModels: [...new Set([...listedIds, ...models])], added };
+  const models = [...stillKnown(savedModels), ...added];
+  return { models, availableModels: [...new Set([...listedIds, ...models, ...seen])], added };
 }
 
 export function withNewlyOfferedCodexModels(

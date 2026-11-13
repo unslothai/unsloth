@@ -263,3 +263,14 @@ test("gateways, custom endpoints and local servers are not auto ticked", () => {
     false,
   );
 });
+
+test("an unticked id that was briefly unlisted stays unticked when it returns", () => {
+  const first = withNewlyListedModels(["a"], ["a", "b"], ["a", "c"]);
+  assert.deepEqual(first?.models, ["a", "c"]);
+  assert.ok(first?.availableModels.includes("b"));
+  assert.ok(first);
+  assert.equal(
+    withNewlyListedModels(first.models, first.availableModels, ["a", "b", "c"]),
+    null,
+  );
+});
