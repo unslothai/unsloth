@@ -8690,18 +8690,23 @@ def _python_is_high_risk(code: str) -> bool:
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
     ]
-    changed = True
-    while changed:
-        changed = False
-        for target, value in simple_assigns:
-            aliased = runner_modules.get(value.id, set()) if isinstance(value, ast.Name) else set()
-            for table, found in (
-                (runner_funcs, _runner_modules_of(value)),
-                (runner_modules, aliased),
-            ):
-                if found - table.get(target, set()):
-                    table.setdefault(target, set()).update(found)
-                    changed = True
+    # Worklist: an assignment is rechecked only when the name it reads gains a runner.
+    readers: "dict[str, list[int]]" = {}
+    for index, (_target, value) in enumerate(simple_assigns):
+        read = value.value if isinstance(value, ast.Attribute) else value
+        if isinstance(read, ast.Name):
+            readers.setdefault(read.id, []).append(index)
+    pending = list(range(len(simple_assigns)))
+    while pending:
+        target, value = simple_assigns[pending.pop()]
+        aliased = runner_modules.get(value.id, set()) if isinstance(value, ast.Name) else set()
+        grew = False
+        for table, found in ((runner_funcs, _runner_modules_of(value)), (runner_modules, aliased)):
+            if found - table.get(target, set()):
+                table.setdefault(target, set()).update(found)
+                grew = True
+        if grew:
+            pending.extend(readers.get(target, ()))
 
     # Every binding of a name, so a reassigned source cannot hide the value a runner saw.
     name_bindings: "dict[str, list]" = {}

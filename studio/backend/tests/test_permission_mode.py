@@ -1861,6 +1861,15 @@ def test_deep_runner_source_asks_instead_of_raising():
     assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
 
 
+def test_reverse_ordered_runner_aliases_resolve_in_linear_time():
+    lines = [f"a{i} = None" for i in range(2001)]
+    lines += [f"a{i} = a{i - 1}" for i in range(2000, 0, -1)]
+    lines += ["a0 = timeit.timeit", "a2000(\"import shutil; shutil.rmtree('d')\", number=1)"]
+    started = time.perf_counter()
+    assert is_high_risk_tool_call("python", {"code": "import timeit\n" + "\n".join(lines)}) is True
+    assert time.perf_counter() - started < 5
+
+
 def test_repeated_timeit_bindings_are_screened_linearly():
     code = (
         "import timeit\n"
