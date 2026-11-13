@@ -1195,6 +1195,7 @@ def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
         slim["created"] = m.get("created") or 0
         models.append(slim)
     models.sort(key = lambda m: m["created"], reverse = True)
+    models.sort(key = lambda m: (not m["id"].startswith("openrouter/"), not m["id"].startswith("~")))
     return models
 
 
@@ -7465,14 +7466,25 @@ class ExternalProviderClient:
         return response.json()
 
     async def list_decision_models(self) -> list[str]:
+        from core.inference.providers import get_provider_info
+
+        native = bool((get_provider_info(self.provider_type) or {}).get("decisions_only"))
         response = await _client().get(
             re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/models",
-            params = {"output_modalities": "decisions"},
+            params = None if native else {"output_modalities": "decisions"},
             headers = self._auth_headers(),
             timeout = self._timeout,
         )
         response.raise_for_status()
         data = response.json()
+        if native:
+            # System One's own list is {"models": [{"name": ...}]}: decision models only, no modality field.
+            models = data.get("models") if isinstance(data, dict) else None
+            return [
+                model["name"]
+                for model in (models if isinstance(models, list) else [])
+                if isinstance(model, dict) and isinstance(model.get("name"), str)
+            ]
         models = data.get("data") if isinstance(data, dict) else None
         return [
             model["id"]
@@ -7609,6 +7621,16 @@ class ExternalProviderClient:
             }:
                 return _positive_int(entry.get("context_length"))
         return None
+
+    async def load_ollama_window(self, model: str) -> Optional[int]:
+        response = await _client().post(
+            _native_server_path(self.base_url, "/api/generate"),
+            json = {"model": model},
+            headers = self._auth_headers(),
+            timeout = 120.0,
+        )
+        response.raise_for_status()
+        return await self._read_ollama_loaded_window(model)
 
     async def _read_served_window(self, model: str) -> Optional[int]:
         if self.provider_type == "ollama":
