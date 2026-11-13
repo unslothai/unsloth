@@ -1055,6 +1055,28 @@ def test_a_chat_reinstall_retires_the_files_the_old_version_had(monkeypatch, tmp
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_an_editable_over_a_chat_wheel_of_the_same_version_wins(monkeypatch, tmp_path):
+    """The same-version editable rewrites RECORD in place; the wheel's own files go, so the source loads."""
+    name = "unsloth_chat_wheel_then_editable"
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / f"{name}.py").write_text("")
+    wheel = _wheel(workdir, name, {f"{name}.py": ""})
+    (workdir / "editable").mkdir()
+    editable = "editable/" + _wheel(
+        workdir / "editable", name, {f"__editable__.{name}-1.0.pth": str(tmp_path / "src") + "\n"}
+    )
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = (
+        f"{_PIP} {wheel} && sleep 1 && {_PIP} {editable} && "
+        f"python -c 'import {name}; print({name}.__file__)'"
+    )
+    out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
+    assert str(tmp_path / "src" / f"{name}.py") in out, out
+
+
 def test_the_namespace_check_never_loads_ast_from_an_editable_source(monkeypatch, tmp_path):
     """The ast the session finder imports is the stdlib one, not a copy in a path-line editable's folder."""
     workdir = tmp_path / "chat"

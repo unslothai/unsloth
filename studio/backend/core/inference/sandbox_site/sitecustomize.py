@@ -356,6 +356,27 @@ def _is_pip_script(path):
     )
 
 
+def _is_pip_launch():
+    argv = list(getattr(sys, "orig_argv", None) or ())
+    module, skip = "", False
+    for i, arg in enumerate(argv[1:], 1):
+        if skip:
+            skip = False
+            continue
+        if arg == "-m" and i + 1 < len(argv):
+            module = argv[i + 1]
+        elif arg.startswith("-m") and arg[2:3] not in ("", "-"):
+            module = arg[2:]
+        # The interpreter options that take a separate operand.
+        skip = arg in ("-W", "-X", "--check-hash-based-pycs")
+        if module or not arg.startswith("-") or arg.startswith("-c"):
+            break
+    # Python < 3.10 has no orig_argv: any -m launch counts.
+    return module in ("pip", "pip.__main__") or (
+        not module and ((not argv and sys.argv[0] == "-m") or _is_pip_script(sys.argv[0]))
+    )
+
+
 _chat_prefix = None
 
 
@@ -373,24 +394,7 @@ def _route_pip():
             global _chat_prefix
             _chat_prefix = prefix
             # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
-            argv = list(getattr(sys, "orig_argv", None) or ())
-            module, skip = "", False
-            for i, arg in enumerate(argv[1:], 1):
-                if skip:
-                    skip = False
-                    continue
-                if arg == "-m" and i + 1 < len(argv):
-                    module = argv[i + 1]
-                elif arg.startswith("-m") and arg[2:3] not in ("", "-"):
-                    module = arg[2:]
-                # The interpreter options that take a separate operand.
-                skip = arg in ("-W", "-X", "--check-hash-based-pycs")
-                if module or not arg.startswith("-") or arg.startswith("-c"):
-                    break
-            # Python < 3.10 has no orig_argv: any -m launch counts.
-            is_pip = module in ("pip", "pip.__main__") or (
-                not module and ((not argv and sys.argv[0] == "-m") or _is_pip_script(sys.argv[0]))
-            )
+            is_pip = _is_pip_launch()
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             placed = any(
                 a.split("=", 1)[0] in _PIP_LOCATION_FLAGS or (a.startswith("-t") and a != "-t")
@@ -674,10 +678,51 @@ def _prune_stale_dist_info():
         pass
 
 
+def _record_snapshot():
+    # What each chat-local distribution's RECORD lists before this pip run: a same-version reinstall (an
+    # editable over a wheel) rewrites RECORD in place, so the old file list is gone by the time pip exits.
+    snapshot = {}
+    try:
+        root = os.path.join(os.path.normcase(os.path.abspath(os.environ["PIP_PREFIX"])), "")
+        for entry in sys.path:
+            if not entry or not os.path.normcase(os.path.abspath(entry)).startswith(root):
+                continue
+            try:
+                names = [n for n in os.listdir(entry) if n.endswith(".dist-info")]
+            except OSError:
+                continue
+            for name in names:
+                try:
+                    stamp = os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns
+                except OSError:
+                    continue
+                snapshot[(entry, name)] = (stamp, _recorded_files(entry, name, root), root)
+    except Exception:  # noqa: BLE001
+        pass
+    return snapshot
+
+
+def _retire_rewritten(snapshot):
+    for (entry, name), (stamp, files, root) in snapshot.items():
+        try:
+            if os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns == stamp:
+                continue
+        except OSError:
+            continue
+        for path in files - _recorded_files(entry, name, root):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 if os.environ.get("PIP_PREFIX"):
     import atexit
+
     _prune_stale_dist_info()
     atexit.register(_prune_stale_dist_info)
+    if _is_pip_launch():
+        atexit.register(_retire_rewritten, _record_snapshot())
 
 
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
