@@ -35,6 +35,7 @@ import {
   archiveAllChatItems,
   BulkExportItems,
   bulkExportConversationsByScope,
+  CHAT_IMPORT_ACCEPT,
   clearAllChats,
   countAllChats,
   DeleteChatFilesSwitch,
@@ -908,7 +909,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           <input
             ref={importInputRef}
             type="file"
-            accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"
+            accept={CHAT_IMPORT_ACCEPT}
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
