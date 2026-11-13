@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+// eslint-disable-next-line no-restricted-imports -- Constants only; test stubs replace the barrel.
+import {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_STORED_EVENT,
+} from "@/features/auth/session-events";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
@@ -45,6 +50,7 @@ import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
+  BUILTIN_PRESET_NAMES,
   BUILTIN_PRESETS,
   applyPresetForProvider,
   getLinkedPreset,
@@ -6662,6 +6668,8 @@ type PickBeforeLink = {
   name: string;
   source: ChatPresetSource;
   params: ReturnType<typeof getPresetOwnedParams>;
+  /** The chat open when the link took over: its values belong to it alone. */
+  threadId: string | null;
 };
 // Kept in storage: the link's own values are what the settings DB holds after a reload.
 const PICK_BEFORE_LINK_KEY = "unsloth_chat_pick_before_link";
@@ -6684,6 +6692,13 @@ function readPickBeforeLink(): PickBeforeLink | null {
 function setPickBeforeLink(next: PickBeforeLink | null): void {
   pickBeforeLink = next;
   writeStorageValue(PICK_BEFORE_LINK_KEY, JSON.stringify(next));
+}
+
+// Shared storage, per-account settings: another sign-in must not inherit this account's values.
+if (typeof window !== "undefined") {
+  for (const event of [AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT]) {
+    window.addEventListener(event, () => setPickBeforeLink(null));
+  }
 }
 let lastLinkCheckpoint = "";
 let linkSyncSuspended = 0;
@@ -6733,6 +6748,7 @@ function syncLinkedPreset(modelId: string, outgoing: string, keepRestored: boole
         name: state.activePreset,
         source: state.activePresetSource,
         params: getPresetOwnedParams(state.params),
+        threadId: state.activeThreadId,
       });
     }
     state.setParams(applyPresetForProvider(state.params, preset, null), {
@@ -6748,18 +6764,34 @@ function syncLinkedPreset(modelId: string, outgoing: string, keepRestored: boole
     return;
   }
   // As if the link had never applied: the earlier values, then this model's memory over them.
-  const before = pickBeforeLink;
+  // A pick deleted since falls back to Default rather than bringing its values back.
+  const before =
+    pickBeforeLink &&
+    (BUILTIN_PRESET_NAMES.has(pickBeforeLink.name) ||
+      state.customPresets.some((saved) => saved.name === pickBeforeLink?.name))
+      ? pickBeforeLink
+      : null;
   setPickBeforeLink(null);
   const fallback = BUILTIN_PRESETS[0];
   state.setActivePreset(before?.name ?? fallback.name);
   state.setActivePresetSource(before?.source ?? getPresetSource(fallback.name));
   const live = useChatRuntimeStore.getState();
-  const restored = before
-    ? { ...live.params, ...before.params }
+  const sameChat = before?.threadId === live.activeThreadId;
+  const kept = before
+    ? sameChat
+      ? before.params
+      : Object.fromEntries(
+          Object.entries(before.params).filter(
+            ([key]) => !isThreadScopedParamKey(key),
+          ),
+        )
+    : null;
+  const restored = kept
+    ? { ...live.params, ...kept }
     : applyPresetForProvider(live.params, fallback, providerTypeFor(modelId));
   live.setParams(restored, { fromModelDefaults: true });
   // The link's values went onto the open chat as edits, so the chat takes its own back the same way.
-  if (threadScopedSettingsThreadId !== null) {
+  if (threadScopedSettingsThreadId !== null && sameChat && before) {
     const after = useChatRuntimeStore.getState();
     const chatKeys = Object.fromEntries(
       THREAD_SCOPED_PARAM_KEYS.map((key) => [key, restored[key]]),

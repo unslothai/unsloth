@@ -10,7 +10,7 @@ import test from "node:test";
 
 import { installLocalStorageFake } from "./helpers/kit.ts";
 
-const { store: localStorageFake } = installLocalStorageFake();
+const { store: localStorageFake, fireWindowEvent } = installLocalStorageFake();
 localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
 register("./store-settings-resolver.mjs", import.meta.url);
 
@@ -284,6 +284,54 @@ test("leaving a linked model gives an open chat back its own sampling", async ()
     store.setActiveThreadId(null);
     store.applyThreadScopedSettings(null, null);
   }
+});
+
+test("another chat opened on the linked model keeps its own sampling on the way out", async () => {
+  const store = useChatRuntimeStore.getState();
+  await switchTo(LLAMA);
+  store.setActiveThreadId("chat-a");
+  store.applyThreadScopedSettings("chat-a", { temperature: 0.77, systemPrompt: "Be brief." });
+  try {
+    await switchTo(QWEN);
+    store.setActiveThreadId("chat-b");
+    store.applyThreadScopedSettings("chat-b", { temperature: 0.4, systemPrompt: "Answer in French." });
+    await switchTo(LLAMA);
+    assert.equal(live().activePreset, "Default");
+    assert.equal(live().temperature, 0.4);
+    assert.equal(live().systemPrompt, "Answer in French.");
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+  }
+});
+
+test("a pick deleted while on the linked model does not come back", async () => {
+  const store = useChatRuntimeStore.getState();
+  const saved = store.customPresets;
+  const doomed = preset("Doomed", 1.7, "Speak like a pirate.");
+  store.setCustomPresets([...saved, doomed]);
+  try {
+    await switchTo(LLAMA);
+    pickPreset(doomed);
+    await switchTo(QWEN);
+    store.setCustomPresets(saved);
+    await switchTo("unsloth/Unseen-GGUF");
+    assert.equal(live().activePreset, "Default");
+    assert.notEqual(live().systemPrompt, "Speak like a pirate.");
+  } finally {
+    store.setCustomPresets(saved);
+  }
+});
+
+test("signing out drops the stored pre-link pick", async () => {
+  await switchTo(LLAMA);
+  pickPreset(CREATIVE);
+  await switchTo(QWEN);
+  assert.notEqual(localStorageFake.get("unsloth_chat_pick_before_link"), "null");
+  assert.equal(fireWindowEvent("unsloth:auth-session-cleared", {}) > 0, true);
+  assert.equal(localStorageFake.get("unsloth_chat_pick_before_link"), "null");
+  await switchTo(GEMMA);
+  assert.equal(live().activePreset, "Default", "nothing of the signed-out account comes back");
 });
 
 test("an unlinked model under Default still follows its recommendation", async () => {
