@@ -125,3 +125,9 @@ test("voice mode takes the mic before the model-bound clip recorder", () => {
   const clip = body.indexOf("micRecordsForModel(this.chatId)");
   assert.ok(voice > 0 && clip > 0 && voice < clip);
 });
+
+test("a session dropped by a clear re-arms the listener", () => {
+  const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
+  const drop = loop.slice(loop.indexOf('why: "cleared"'));
+  assert.match(drop.slice(0, 300), /finish\("stopped"\);[\s\S]*?requestVoiceResume\(\)[\s\S]*?return;/);
+});

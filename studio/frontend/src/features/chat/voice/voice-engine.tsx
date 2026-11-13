@@ -25,7 +25,7 @@ import {
   cancelVoiceSession,
   claimHeldTurnForEdit,
   clearHeldTurn,
-  clearVoiceTurnAudio,
+  dropVoiceUtteranceAudio,
   endHeldEdit,
   getHeldTurnText,
   isComposerHeldForEdit,
@@ -33,6 +33,7 @@ import {
   registerComposerTextReader,
   rushVoiceReveal,
   setMicMuted,
+  parkVoiceTurnAudio,
   takeVoiceTurnAudio,
   voiceRevealText,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
@@ -890,8 +891,8 @@ export const VoiceEngine: FC = () => {
           if (action === "queue" && !queuedUtteranceRef.current.includes(text)) {
             queuedUtteranceRef.current.push(text);
           }
-          // An ignored utterance's speech must not ride along with the next turn.
-          if (action === "ignore") clearVoiceTurnAudio();
+          if (action === "queue") parkVoiceTurnAudio();
+          else dropVoiceUtteranceAudio();
           composer.setText("");
           // The barge-in held the reply; nothing cut it, so let it carry on. Without
           // this the playback context stayed suspended and the loop looked stuck.

@@ -8,6 +8,20 @@ import { joinWavBase64, pcmWavBase64 } from "../utils/wav-chunks.ts";
 export function createTurnAudio() {
   let chunks: Float32Array[] = [];
   let rate = 0;
+  // Speech of utterances queued behind the reply: kept when a later one is dropped.
+  let parked: string[] = [];
+  const current = (): string | null => {
+    if (!chunks.length || !rate) return null;
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const merged = new Float32Array(total);
+    let at = 0;
+    for (const c of chunks) {
+      merged.set(c, at);
+      at += c.length;
+    }
+    chunks = [];
+    return pcmWavBase64(merged, rate);
+  };
   return {
     add(samples: Float32Array, sampleRate: number): void {
       if (rate && sampleRate !== rate) chunks = [];
@@ -15,22 +29,23 @@ export function createTurnAudio() {
       chunks.push(samples);
     },
     take(): string | null {
-      if (!chunks.length || !rate) return null;
-      const total = chunks.reduce((n, c) => n + c.length, 0);
-      const merged = new Float32Array(total);
-      let at = 0;
-      for (const c of chunks) {
-        merged.set(c, at);
-        at += c.length;
-      }
+      const all = [...parked, current()].filter((w): w is string => Boolean(w));
+      parked = [];
+      return all.length ? joinWavBase64(all) : null;
+    },
+    park(): void {
+      const wav = current();
+      if (wav) parked.push(wav);
+    },
+    dropCurrent(): void {
       chunks = [];
-      return pcmWavBase64(merged, rate);
     },
     clear(): void {
       chunks = [];
+      parked = [];
     },
     get size(): number {
-      return chunks.length;
+      return chunks.length + parked.length;
     },
   };
 }

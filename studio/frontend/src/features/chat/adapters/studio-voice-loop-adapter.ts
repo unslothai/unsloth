@@ -295,8 +295,14 @@ export function takeVoiceTurnAudio(): string | null {
   return turnAudio.take();
 }
 
-export function clearVoiceTurnAudio(): void {
-  turnAudio.clear();
+/** A queued utterance keeps its speech for the turn it is sent with. */
+export function parkVoiceTurnAudio(): void {
+  turnAudio.park();
+}
+
+/** An ignored utterance drops only its own speech. */
+export function dropVoiceUtteranceAudio(): void {
+  turnAudio.dropCurrent();
 }
 
 /** Drop a fragment waiting for its continuation: a thread switch or voice going off. */
@@ -766,6 +772,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // Cleared while STT or the judge ran: the speech went with that turn.
           voiceTrace("stt.drop", { transcript, why: "cleared" });
           finish("stopped");
+          // The clear's own re-arm found this session still live and skipped.
+          setTimeout(() => requestVoiceResume(), 0);
           return;
         }
         if (

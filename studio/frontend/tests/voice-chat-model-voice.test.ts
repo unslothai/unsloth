@@ -73,6 +73,21 @@ test("the fragments of one turn are sent together, then the turn is empty", () =
   assert.equal(turn.take(), null);
 });
 
+test("a queued utterance keeps its speech when a later one is ignored", () => {
+  const turn = createTurnAudio();
+  turn.add(new Float32Array(100), 48000);
+  turn.park();
+  turn.add(new Float32Array(40), 48000);
+  turn.dropCurrent();
+  turn.add(new Float32Array(10), 48000);
+  assert.equal(wavInfo(turn.take() ?? "").dataBytes, 220);
+  assert.equal(turn.take(), null);
+  turn.add(new Float32Array(10), 48000);
+  turn.park();
+  turn.clear();
+  assert.equal(turn.take(), null);
+});
+
 test("only a turn sent with its speech is answered as a spoken reply", () => {
   const attachment = voiceTurnAttachment("UklGRg==", "voice-1");
   const spoken = { role: "user", content: [{ type: "text" }], attachments: [attachment] };
