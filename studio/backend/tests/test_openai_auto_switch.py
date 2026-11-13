@@ -5632,7 +5632,12 @@ def test_chat_count_tokens_breakdown_splits_the_total(monkeypatch, overflow, bud
 def test_breakdown_does_not_price_tools_omitted_after_an_assistant_reply():
     messages = [{"role": "system"}, {"role": "user"}, {"role": "assistant"}]
 
-    def count(history, tools, *, include_system = True):
+    def count(
+        history,
+        tools,
+        *,
+        include_system = True,
+    ):
         schema = 272 if tools and history[-1]["role"] == "user" else 0
         return 20 + (4 if include_system else 0) + schema
 

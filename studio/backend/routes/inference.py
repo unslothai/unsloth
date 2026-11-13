@@ -42839,7 +42839,12 @@ async def _mlx_count_chat_tokens(
             detail = "Cannot count tokens while a generation is in progress.",
         )
 
-    def _count(count_messages, tools, *, include_system = True) -> int:
+    def _count(
+        count_messages,
+        tools,
+        *,
+        include_system = True,
+    ) -> int:
         instructions = system_prompt if include_system else ""
         if instructions and _tools_to_use and not tools:
             instructions = _without_tool_nudge(instructions, _nudge)
@@ -42899,9 +42904,7 @@ def _count_breakdown(count, messages: list[dict], tools) -> tuple[int, dict]:
     remainder = total - tool_tokens
     history = [m for m in messages if m.get("role") not in ("system", "developer")]
     # A system-only request has no conversation to attribute.
-    message_tokens = (
-        min(remainder, count(history, None, include_system = False)) if history else 0
-    )
+    message_tokens = min(remainder, count(history, None, include_system = False)) if history else 0
     return total, {
         "system": remainder - message_tokens,
         "tools": tool_tokens,
@@ -42921,7 +42924,14 @@ def _without_tool_nudge(text: str, nudge: str) -> str:
 
 
 def _count_response(
-    payload, total: int, model, parts: Optional[dict], context_length, prompt, *, passthrough = False
+    payload,
+    total: int,
+    model,
+    parts: Optional[dict],
+    context_length,
+    prompt,
+    *,
+    passthrough = False,
 ):
     content = {"input_tokens": int(total), "model": model}
     if parts is not None:
@@ -43035,7 +43045,12 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
             out.append(message)
         return out
 
-    def priced(candidate, candidate_tools, *, include_system = True):
+    def priced(
+        candidate,
+        candidate_tools,
+        *,
+        include_system = True,
+    ):
         if include_system and not candidate_tools:
             candidate = without_nudge(candidate)
         return count_tokens(
