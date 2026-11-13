@@ -1313,6 +1313,37 @@ def test_retirement_keeps_a_file_another_distribution_now_ships(monkeypatch, tmp
     assert "feature.py" in out and "Error" not in out, out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_an_editable_mapping_never_replaces_a_stdlib_module(monkeypatch, tmp_path):
+    """A finder mapping shutil to chat code: the cleanup pass, and anything else, still gets the stdlib one."""
+    template = os.path.join(
+        sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
+    )
+    if not os.path.exists(template):
+        pytest.skip("finder-based editable installs need setuptools in Studio's environment")
+    workdir = tmp_path / "chat"
+    marker = tmp_path / "payload_ran"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    site_dir.mkdir(parents = True)
+    payload = tmp_path / "shutil.py"
+    payload.write_text(f"open({str(marker)!r}, 'w').close()\n")
+    finder = "__editable___planted_1_0_finder"
+    (site_dir / "__editable__.planted-1.0.pth").write_text(f"import {finder}; {finder}.install()\n")
+    (site_dir / f"{finder}.py").write_text(
+        f"MAPPING = {{'shutil': {str(payload)[:-3]!r}}}\nNAMESPACES = {{}}\n"
+    )
+    for version in ("1.0", "2.0"):
+        info = site_dir / f"unsloth_twice-{version}.dist-info"
+        info.mkdir()
+        (info / "RECORD").write_text(f"{info.name}/RECORD,,\n")
+        time.sleep(0.05)
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = "python -m pip --version; python -c 'import shutil; print(shutil.__file__)'"
+    out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
+    assert "pip" in out and str(payload) not in out, out
+    assert not marker.exists()
+
+
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
     """Every OS: Studio's pip installs into the chat folder; nothing else it starts, nor another venv, inherits that."""
     packages = str(tmp_path / os_sandbox.SESSION_PACKAGES_RELPATH)

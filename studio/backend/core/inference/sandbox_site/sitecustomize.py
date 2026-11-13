@@ -622,7 +622,8 @@ class _SessionPackagesFinder:
         for entry in self._entries:
             if entry in cache and cache[entry] is None and os.path.isdir(entry):
                 del cache[entry]
-        for finder in self._editable:
+        stdlib = getattr(sys, "stdlib_module_names", ())
+        for finder in () if name.partition(".")[0] in stdlib else self._editable:
             spec = finder.find_spec(name, path, target)
             if spec is not None and spec.loader is not None:
                 # The cwd / script dir and anything else ahead of the session dirs, and for a submodule the
@@ -689,28 +690,44 @@ if _entries and not any(isinstance(f, _SessionPackagesFinder) for f in sys.meta_
 
 # --ignore-installed never uninstalls, so a reinstall leaves stale dist-info importlib.metadata may pick;
 # RECORD is written last, so the newest RECORD per project is the finished install.
+_record_cache = {}
+_real_dirs = {}
+
+
 def _recorded_files(
     entry,
     dist_info,
     root,
     metadata = False,
 ):
+    record = os.path.join(entry, dist_info, "RECORD")
+    try:
+        key = (record, root, metadata, os.stat(record).st_mtime_ns)
+    except OSError:
+        return set()
+    if key in _record_cache:
+        return _record_cache[key]
     files = set()
     # Resolved too: a recorded folder that is a symlink must not lead the cleanup outside the prefix.
     real_root = os.path.join(os.path.normcase(os.path.realpath(root)), "")
     try:
-        with open(os.path.join(entry, dist_info, "RECORD"), encoding = "utf-8") as f:
+        with open(record, encoding = "utf-8") as f:
             for line in f:
                 path = line.rstrip("\n").rsplit(",", 2)[0].strip('"')
-                full = os.path.normcase(os.path.abspath(os.path.join(entry, path)))
-                real = os.path.normcase(os.path.realpath(full))
                 in_meta = path.startswith(dist_info + "/")
-                inside = full.startswith(root) and real.startswith(real_root)
-                if path and inside and (metadata or not in_meta):
-                    if not (in_meta and path.endswith("/RECORD")):
-                        files.add(full)
+                if not path or (in_meta and (not metadata or path.endswith("/RECORD"))):
+                    continue
+                full = os.path.normcase(os.path.abspath(os.path.join(entry, path)))
+                folder = os.path.dirname(full)
+                if folder not in _real_dirs:
+                    _real_dirs[folder] = os.path.join(
+                        os.path.normcase(os.path.realpath(folder)), ""
+                    )
+                if full.startswith(root) and _real_dirs[folder].startswith(real_root):
+                    files.add(full)
     except OSError:
         pass
+    _record_cache[key] = files
     return files
 
 
@@ -773,7 +790,12 @@ def _prune_stale_dist_info():
                         )
                     except OSError:
                         pass
-                import shutil
+                saved = sys.path[:]
+                sys.path[:] = _stdlib_paths()
+                try:
+                    import shutil
+                finally:
+                    sys.path[:] = saved
 
                 stamped.sort()
                 keep = _recorded_files(entry, stamped[-1][1], root) if stamped else set()
