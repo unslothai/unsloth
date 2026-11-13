@@ -3184,9 +3184,6 @@ def test_compile_cache_gate_skips_the_rocm_probe_for_a_model_with_nothing_to_com
     ) is ds_mod.compile_eligible(cuda, is_gguf = False, family = fam)
 
 
-# ---- eager int8 GEMM: an uncompiled int8 denoiser takes Studio's bit-identical GEMM routes ----
-
-
 def _eager_gemm_spy(monkeypatch, n = 5):
     from core.inference import diffusion_int8_gemm as g8
 
