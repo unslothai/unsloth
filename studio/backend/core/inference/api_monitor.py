@@ -982,11 +982,12 @@ class ApiMonitor:
         )
         if (
             (entry.temporary_usage or entry.via_api_key)
-            and not (prompt_tokens or completion_tokens)
+            and not completion_tokens
             and entry.reply_chars
         ):
-            # A stream stopped before its usage chunk has no other record to charge.
-            prompt_tokens = -(-len(entry.prompt) // 4)
+            # Stopped before its output usage arrived: estimate only the side that was never
+            # reported (an Anthropic stream reports input at message_start).
+            prompt_tokens = prompt_tokens or -(-len(entry.prompt) // 4)
             completion_tokens = -(-entry.reply_chars // 4)
             total_tokens = prompt_tokens + completion_tokens
         return (

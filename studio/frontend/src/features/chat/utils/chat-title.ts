@@ -527,6 +527,8 @@ export async function buildTitleRequest(
       : { enable_thinking: false, reasoning_effort: "none" as const }),
     // Else the server's tools-on default adds tool schemas.
     enable_tools: false,
+    // Stateless: its receipt is the only record the token allowance can charge.
+    temporary_chat: true,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: prompt },

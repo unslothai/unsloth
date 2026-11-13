@@ -54,3 +54,9 @@ test("saving a temporary chat marks its replies as already charged", () => {
     /message\.role === "assistant" \? \{ \.\.\.metadata, tokenUsageCharged: true \} : metadata/,
   );
 });
+
+test("title requests are marked stateless so their receipt is charged", () => {
+  const TITLE = readSrc("features/chat/utils/chat-title.ts");
+  const build = TITLE.slice(TITLE.indexOf("export async function buildTitleRequest("));
+  assert.match(build.slice(0, 2500), /temporary_chat: true,/);
+});

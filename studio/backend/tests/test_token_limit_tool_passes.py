@@ -190,3 +190,26 @@ def test_reasoning_counts_toward_an_interrupted_estimate():
     [receipt] = receipts
     assert receipt.completion_tokens == 100
     assert monitor.get(entry)["reply"] == ""
+
+
+def test_reported_input_keeps_its_count_while_missing_output_is_estimated():
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    entry = monitor.start(
+        endpoint = "/v1/messages",
+        method = "POST",
+        model = "m",
+        prompt = "p" * 4000,
+        subject = "owner",
+        via_api_key = True,
+    )
+    monitor.set_usage(entry, prompt_tokens = 10)
+    monitor.append_reply(entry, "r" * 400)
+    monitor.finish(entry, "cancelled")
+    [receipt] = receipts
+    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (
+        10,
+        100,
+        110,
+    )
