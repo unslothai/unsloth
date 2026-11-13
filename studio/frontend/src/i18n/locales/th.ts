@@ -2018,6 +2018,9 @@ export const th = {
       developerMode: {
         sectionTitle: "โหมดนักพัฒนา",
         videoCpu: "อนุญาตการสร้างวิดีโอบน CPU (ทดลอง)",
+        q4nxExport: "ส่งออก Q4NX สำหรับ AMD NPU",
+        q4nxExportDescription: "แสดงการแปลง Q4NX ในหน้าส่งออกบนเครื่องที่ไม่มี AMD Ryzen AI NPU เพื่อสร้างโมเดลสำหรับเครื่องที่มี ปิดไว้เป็นค่าเริ่มต้น ตัวแปลงจะถูกดาวน์โหลดเมื่อใช้งานครั้งแรก",
+        q4nxExportNpuPresent: "เครื่องนี้มี AMD NPU จึงเปิดการส่งออก Q4NX ไว้เสมอ",
         videoCpuDescription:
           "ให้หน้าวิดีโอทำงานบนเครื่องที่ไม่มี GPU ที่รองรับ ปิดเป็นค่าเริ่มต้น ไม่ได้รับการสนับสนุนและช้ามาก",
         notApplicable:

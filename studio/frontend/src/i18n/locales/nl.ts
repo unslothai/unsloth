@@ -2139,6 +2139,9 @@ export const nl = {
       developerMode: {
         sectionTitle: "Ontwikkelaarsmodus",
         videoCpu: "Videogeneratie op CPU toestaan (experimenteel)",
+        q4nxExport: "Q4NX-export voor AMD NPU's",
+        q4nxExportDescription: "Toont Q4NX-conversie op de exportpagina op een computer zonder AMD Ryzen AI NPU, om modellen te maken voor een computer die er wel een heeft. Standaard uit; de converter wordt bij het eerste gebruik gedownload.",
+        q4nxExportNpuPresent: "Deze computer heeft een AMD NPU, dus Q4NX-export staat altijd aan.",
         videoCpuDescription:
           "Hiermee werkt de pagina Video op een host zonder ondersteunde GPU. Standaard uit; niet ondersteund en erg traag.",
         notApplicable:

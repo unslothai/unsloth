@@ -2117,6 +2117,9 @@ export const vi = {
       developerMode: {
         sectionTitle: "Chế độ nhà phát triển",
         videoCpu: "Cho phép tạo video trên CPU (thử nghiệm)",
+        q4nxExport: "Xuất Q4NX cho NPU AMD",
+        q4nxExportDescription: "Hiển thị chuyển đổi Q4NX trên trang Xuất ở máy không có NPU AMD Ryzen AI, để tạo mô hình cho máy có NPU. Tắt theo mặc định; trình chuyển đổi được tải xuống ở lần dùng đầu tiên.",
+        q4nxExportNpuPresent: "Máy này có NPU AMD nên tính năng xuất Q4NX luôn bật.",
         videoCpuDescription:
           "Cho phép trang Video chạy trên máy không có GPU được hỗ trợ. Mặc định tắt; không được hỗ trợ và rất chậm.",
         notApplicable:

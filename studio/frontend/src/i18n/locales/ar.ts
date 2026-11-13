@@ -1941,6 +1941,9 @@ export const ar = {
       developerMode: {
         sectionTitle: "وضع المطوّر",
         videoCpu: "السماح بتوليد الفيديو على CPU (تجريبي)",
+        q4nxExport: "تصدير Q4NX لوحدات AMD NPU",
+        q4nxExportDescription: "يعرض تحويل Q4NX في صفحة التصدير على جهاز لا يحتوي على AMD Ryzen AI NPU، لإنشاء نماذج لجهاز يحتوي عليها. معطّل افتراضيًا؛ يُنزَّل المحوّل عند أول استخدام.",
+        q4nxExportNpuPresent: "يحتوي هذا الجهاز على AMD NPU، لذا يكون تصدير Q4NX مفعّلًا دائمًا.",
         videoCpuDescription: "يتيح تشغيل صفحة الفيديو على جهاز لا يحتوي على GPU مدعوم. مُعطّل افتراضيًا؛ غير مدعوم وبطيء جدًا.",
         notApplicable: "ليس له تأثير على هذا الجهاز: إما أن الفيديو يعمل بالفعل على GPU الخاص به، أو أنه محظور بسبب أمر لا يستطيع CPU تجاوزه.",
         forcedOnByEnv: "مُفعّل بواسطة UNSLOTH_VIDEO_ALLOW_CPU في بيئة الخادم الخلفي.",

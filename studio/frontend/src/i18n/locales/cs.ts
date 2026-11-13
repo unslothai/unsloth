@@ -2120,6 +2120,9 @@ export const cs = {
       developerMode: {
         sectionTitle: "Vývojářský režim",
         videoCpu: "Povolit generování videa na CPU (experimentální)",
+        q4nxExport: "Export Q4NX pro AMD NPU",
+        q4nxExportDescription: "Zobrazí převod do Q4NX na stránce Export i na počítači bez AMD Ryzen AI NPU, abyste mohli připravit modely pro počítač, který ji má. Ve výchozím stavu vypnuto; převodník se stáhne při prvním použití.",
+        q4nxExportNpuPresent: "Tento počítač má AMD NPU, takže export Q4NX je vždy zapnutý.",
         videoCpuDescription:
           "Umožní spouštět stránku Video na počítači bez podporovaného GPU. Ve výchozím nastavení vypnuto; nepodporováno a velmi pomalé.",
         notApplicable:

@@ -2112,6 +2112,9 @@ export const id = {
       developerMode: {
         sectionTitle: "Mode pengembang",
         videoCpu: "Izinkan pembuatan video di CPU (eksperimental)",
+        q4nxExport: "Ekspor Q4NX untuk NPU AMD",
+        q4nxExportDescription: "Menampilkan konversi Q4NX di halaman Ekspor pada mesin tanpa NPU AMD Ryzen AI, untuk membuat model bagi mesin yang memilikinya. Nonaktif secara default; konverter diunduh saat pertama kali digunakan.",
+        q4nxExportNpuPresent: "Mesin ini memiliki NPU AMD, jadi ekspor Q4NX selalu aktif.",
         videoCpuDescription:
           "Memungkinkan halaman Video berjalan di host tanpa GPU yang didukung. Nonaktif secara default; tidak didukung dan sangat lambat.",
         notApplicable:

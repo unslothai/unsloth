@@ -2133,6 +2133,9 @@ export const es419 = {
       developerMode: {
         sectionTitle: "Modo desarrollador",
         videoCpu: "Permitir la generación de video en CPU (experimental)",
+        q4nxExport: "Exportación Q4NX para NPU de AMD",
+        q4nxExportDescription: "Muestra la conversión a Q4NX en la página Exportar en una computadora sin NPU AMD Ryzen AI, para preparar modelos para una que sí la tenga. Desactivado de forma predeterminada; el convertidor se descarga la primera vez que se usa.",
+        q4nxExportNpuPresent: "Esta computadora tiene una NPU de AMD, así que la exportación Q4NX siempre está activada.",
         videoCpuDescription:
           "Permite usar la página de Video en un equipo sin GPU compatible. Desactivado de forma predeterminada; no tiene soporte y es muy lento.",
         notApplicable:

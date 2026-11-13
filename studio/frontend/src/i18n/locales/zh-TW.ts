@@ -2006,6 +2006,9 @@ export const zhTW = {
       developerMode: {
         sectionTitle: "開發人員模式",
         videoCpu: "允許在 CPU 上生成影片（實驗性）",
+        q4nxExport: "適用於 AMD NPU 的 Q4NX 匯出",
+        q4nxExportDescription: "在沒有 AMD Ryzen AI NPU 的電腦上，也在匯出頁面顯示 Q4NX 轉換，以便為具備 NPU 的電腦製作模型。預設關閉；轉換器會在首次使用時下載。",
+        q4nxExportNpuPresent: "這台電腦有 AMD NPU，因此 Q4NX 匯出一律開啟。",
         videoCpuDescription:
           "讓「影片」頁面可在沒有支援之 GPU 的主機上執行。預設為關閉；不受支援且速度非常慢。",
         notApplicable:

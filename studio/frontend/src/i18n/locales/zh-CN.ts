@@ -1925,6 +1925,9 @@ export const zhCN = {
       developerMode: {
         sectionTitle: "开发者模式",
         videoCpu: "允许在 CPU 上生成视频（实验性）",
+        q4nxExport: "适用于 AMD NPU 的 Q4NX 导出",
+        q4nxExportDescription: "在没有 AMD Ryzen AI NPU 的机器上，也在导出页面显示 Q4NX 转换，以便为配备 NPU 的机器制作模型。默认关闭；转换器会在首次使用时下载。",
+        q4nxExportNpuPresent: "这台机器有 AMD NPU，因此 Q4NX 导出始终开启。",
         videoCpuDescription: "允许在没有受支持 GPU 的主机上运行视频页面。默认关闭；不受支持且速度非常慢。",
         notApplicable: "在此机器上无效：视频要么已在其 GPU 上运行，要么被 CPU 无法绕过的问题阻止。",
         forcedOnByEnv: "已由后端环境中的 UNSLOTH_VIDEO_ALLOW_CPU 开启。",

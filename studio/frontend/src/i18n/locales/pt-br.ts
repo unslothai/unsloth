@@ -1947,6 +1947,9 @@ export const ptBR = {
       developerMode: {
         sectionTitle: "Modo desenvolvedor",
         videoCpu: "Permitir geração de vídeo na CPU (experimental)",
+        q4nxExport: "Exportação Q4NX para NPUs AMD",
+        q4nxExportDescription: "Mostra a conversão para Q4NX na página Exportar em uma máquina sem NPU AMD Ryzen AI, para criar modelos para uma que tenha. Desativado por padrão; o conversor é baixado no primeiro uso.",
+        q4nxExportNpuPresent: "Esta máquina tem uma NPU AMD, então a exportação Q4NX está sempre ativada.",
         videoCpuDescription: "Permite usar a página de Vídeo em uma máquina sem GPU compatível. Desativado por padrão; sem suporte oficial e muito lento.",
         notApplicable: "Não tem efeito nesta máquina: o vídeo já roda na GPU ou está bloqueado por algo que a CPU não consegue contornar.",
         forcedOnByEnv: "Ativado por UNSLOTH_VIDEO_ALLOW_CPU no ambiente do backend.",

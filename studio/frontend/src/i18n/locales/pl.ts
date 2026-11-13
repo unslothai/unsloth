@@ -2133,6 +2133,9 @@ export const pl = {
       developerMode: {
         sectionTitle: "Tryb programisty",
         videoCpu: "Zezwalaj na generowanie wideo na CPU (eksperymentalne)",
+        q4nxExport: "Eksport Q4NX dla NPU AMD",
+        q4nxExportDescription: "Pokazuje konwersję do Q4NX na stronie Eksport na komputerze bez NPU AMD Ryzen AI, aby przygotować modele dla komputera, który ją ma. Domyślnie wyłączone; konwerter jest pobierany przy pierwszym użyciu.",
+        q4nxExportNpuPresent: "Ten komputer ma NPU AMD, więc eksport Q4NX jest zawsze włączony.",
         videoCpuDescription:
           "Pozwala uruchamiać stronę Wideo na hoście bez obsługiwanego GPU. Domyślnie wyłączone; nieobsługiwane i bardzo wolne.",
         notApplicable:

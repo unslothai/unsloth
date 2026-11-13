@@ -1935,6 +1935,9 @@ export const ja = {
       developerMode: {
         sectionTitle: "開発者モード",
         videoCpu: "CPU での動画生成を許可する (実験的)",
+        q4nxExport: "AMD NPU 向け Q4NX エクスポート",
+        q4nxExportDescription: "AMD Ryzen AI NPU のないマシンでもエクスポートページに Q4NX 変換を表示し、NPU 搭載マシン用のモデルを作成できるようにします。既定はオフで、コンバーターは初回使用時にダウンロードされます。",
+        q4nxExportNpuPresent: "このマシンには AMD NPU があるため、Q4NX エクスポートは常にオンです。",
         videoCpuDescription: "対応 GPU のないホストで動画ページを実行できるようにします。デフォルトはオフです。サポート対象外で、非常に低速です。",
         notApplicable: "このマシンでは効果がありません。動画はすでに GPU で実行されているか、CPU では回避できない理由でブロックされています。",
         forcedOnByEnv: "バックエンド環境の UNSLOTH_VIDEO_ALLOW_CPU によってオンになっています。",

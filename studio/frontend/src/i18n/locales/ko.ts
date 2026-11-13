@@ -1939,6 +1939,9 @@ export const ko = {
       developerMode: {
         sectionTitle: "개발자 모드",
         videoCpu: "CPU에서 동영상 생성 허용 (실험적)",
+        q4nxExport: "AMD NPU용 Q4NX 내보내기",
+        q4nxExportDescription: "AMD Ryzen AI NPU가 없는 컴퓨터에서도 내보내기 페이지에 Q4NX 변환을 표시하여 NPU가 있는 컴퓨터용 모델을 만들 수 있습니다. 기본값은 꺼짐이며, 변환기는 처음 사용할 때 다운로드됩니다.",
+        q4nxExportNpuPresent: "이 컴퓨터에는 AMD NPU가 있으므로 Q4NX 내보내기가 항상 켜져 있습니다.",
         videoCpuDescription: "지원되는 GPU가 없는 호스트에서 동영상 페이지를 실행할 수 있게 합니다. 기본값은 꺼짐이며, 지원되지 않고 매우 느립니다.",
         notApplicable: "이 컴퓨터에서는 효과가 없습니다. 동영상이 이미 GPU에서 실행되고 있거나, CPU로 우회할 수 없는 문제로 차단되어 있습니다.",
         forcedOnByEnv: "백엔드 환경의 UNSLOTH_VIDEO_ALLOW_CPU에 의해 켜졌습니다.",
