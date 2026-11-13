@@ -180,7 +180,7 @@ import {
   parseExternalModelId,
   useExternalProvidersStore,
 } from "@/features/chat";
-import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { ModelLoadCompactStatus, ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { cancelConnectionImageGeneration } from "./connection-cancel";
 import {
   type ImageGenerationPresetParams,
@@ -786,39 +786,46 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-function loadToastDescription(p: DiffusionLoadProgress) {
+// Shared by the load toast and the inline status that replaces it once the toast is closed.
+function loadStatus(p: DiffusionLoadProgress) {
   if (p.phase === "saving_chat_context") {
-    return (
-      <ModelLoadDescription
-        title="Saving chat context…"
-        message="Saving the chat model's context so it can resume after this load."
-      />
-    );
+    return {
+      title: "Saving chat context…",
+      brief: "Saving chat context",
+      message: "Saving the chat model's context so it can resume after this load.",
+      progressPercent: null,
+      progressLabel: null,
+    };
   }
   // "Downloading" only when bytes actually remain: a cached model must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
-  const title = downloading
-    ? "Downloading model requirements…"
-    : p.phase === "finalizing"
-      ? "Loading to GPU…"
-      : "Starting model…";
   const hasTotal = p.bytes_total > 0;
+  return {
+    title: downloading
+      ? "Downloading model requirements…"
+      : p.phase === "finalizing"
+        ? "Loading to GPU…"
+        : "Starting model…",
+    brief: downloading ? "Downloading" : p.phase === "finalizing" ? "Loading to GPU" : "Starting",
+    message: downloading
+      ? "Downloading the files required to load this model."
+      : "Loading the model.",
+    progressPercent: hasTotal ? p.fraction * 100 : null,
+    progressLabel: hasTotal
+      ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
+      : p.bytes_downloaded > 0
+        ? `${formatBytes(p.bytes_downloaded)} downloaded`
+        : null,
+  };
+}
+
+function LoadInlineStatus({ p }: { p: DiffusionLoadProgress }) {
+  const s = loadStatus(p);
   return (
-    <ModelLoadDescription
-      title={title}
-      message={
-        downloading
-          ? "Downloading the files required to load this model."
-          : "Loading the model."
-      }
-      progressPercent={hasTotal ? p.fraction * 100 : null}
-      progressLabel={
-        hasTotal
-          ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
-          : p.bytes_downloaded > 0
-            ? `${formatBytes(p.bytes_downloaded)} downloaded`
-            : null
-      }
+    <ModelLoadCompactStatus
+      label={s.brief}
+      title={[s.title, s.message, s.progressLabel].filter(Boolean).join(" ")}
+      progressPercent={s.progressPercent}
     />
   );
 }
@@ -826,15 +833,17 @@ function loadToastDescription(p: DiffusionLoadProgress) {
 // `onCancel` is the only control that reaches a first load in flight.
 function loadToastArgs(
   p: DiffusionLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
+  id: string | number | undefined,
+  onCancel: () => void,
+  onDismiss: (t: { id: string | number }) => void,
 ) {
   return {
     ...(id != null ? { id } : {}),
-    description: loadToastDescription(p),
+    description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
+    cancel: { label: "Cancel", onClick: onCancel },
+    onDismiss,
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
@@ -2184,6 +2193,9 @@ export function ImagesPage({
   }, []);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadToastId = useRef<string | number | null>(null);
+  // Latest load progress, and its copy for the inline status once the user closes the toast (null while it shows).
+  const latestLoad = useRef<DiffusionLoadProgress>(IDLE_PROGRESS);
+  const [closedLoad, setClosedLoad] = useState<DiffusionLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
@@ -2304,11 +2316,33 @@ export function ImagesPage({
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
     loadToastId.current = null;
+    latestLoad.current = IDLE_PROGRESS;
+    setClosedLoad(null);
+  }, []);
+  // Without this, the next progress tick re-issues the toast id and Sonner shows the closed toast again.
+  const onLoadToastDismiss = useCallback((t: { id: string | number }) => {
+    // dismissLoadToast clears the ref first, so only a user close gets past this.
+    if (t.id !== loadToastId.current) {
+      return;
+    }
+    loadToastId.current = null;
+    setClosedLoad(latestLoad.current);
   }, []);
   const pickToast = useDiffusionPickToast();
 
   const cancelLoadRef = useRef<() => void>(() => {});
   const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
+  const showLoadProgress = useCallback(
+    (p: DiffusionLoadProgress) => {
+      latestLoad.current = p;
+      if (loadToastId.current != null) {
+        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast, onLoadToastDismiss));
+      } else {
+        setClosedLoad((closed) => closed && p);
+      }
+    },
+    [cancelLoadFromToast, onLoadToastDismiss],
+  );
   // In-flight requests compare against this and discard their result after a cancel.
   const cancelSeq = useRef(0);
   // The compensating unload carries no identity, so it must not fire once a newer load owns the page.
@@ -3603,25 +3637,25 @@ export function ImagesPage({
       }
       // Include bytes_total: the estimate lands as a 0->real jump while the rest holds.
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
-      if (loadToastId.current != null && sig !== lastLoadSig.current) {
+      if (sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        showLoadProgress(p);
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor, rememberFinishedLoad]);
+  }, [dismissLoadToast, refreshStatus, showLoadProgress, offerLoadAnywayFor, rememberFinishedLoad]);
 
   // The unload failed, so restore the poll and toast. refreshStatus cannot: a first load is not resident.
   const restoreLoadTracking = useCallback(() => {
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast, onLoadToastDismiss));
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, cancelLoadFromToast, onLoadToastDismiss]);
 
   // generate-progress carries no terminal record, so refresh the gallery on completion.
   const resumeGeneratePoll = useCallback(() => {
@@ -3737,7 +3771,7 @@ export function ImagesPage({
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast, onLoadToastDismiss));
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
@@ -3776,7 +3810,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
+  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, onLoadToastDismiss, rememberFinishedLoad]);
 
   // Seed from a resident model's recipe, else flux.1-dev generates garbage at 9 steps.
   const residentSeeded = useRef(false);
@@ -3982,7 +4016,7 @@ export function ImagesPage({
       dismissLoadToast();
       lastLoadSig.current = null;
       const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast, onLoadToastDismiss));
       // Snapshot first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       // A torchao int8/fp8 transformer takes adapters only at LOAD time and /images/generate then
@@ -4022,8 +4056,8 @@ export function ImagesPage({
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
-        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
-          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {
+          showLoadProgress(SAVING_PROGRESS);
         }
       });
       try {
@@ -4090,7 +4124,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, onLoadToastDismiss, showLoadProgress, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
   );
 
   const handleInitChange = useCallback((dataUrl: string | null) => {
@@ -6322,6 +6356,10 @@ export function ImagesPage({
                 </TooltipTrigger>
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
+            )}
+            {/* Stands in for the load toast once the user closes it. */}
+            {pageMode !== "train" && busy === "loading" && closedLoad && (
+              <LoadInlineStatus p={closedLoad} />
             )}
           </div>
         </div>

@@ -66,11 +66,12 @@ for (const [path, read] of [
     const source = readSrc(path);
     for (const pin of [
       'if (p.phase === "saving_chat_context") {',
-      'title="Saving chat context…"',
-      `message="Saving the chat model's context so it can resume after this load."`,
-      // The same toast id, keeping Cancel, fenced on a cancel or a newer load.
-      "if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {",
-      "toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));",
+      'title: "Saving chat context…",',
+      `message: "Saving the chat model's context so it can resume after this load.",`,
+      // Fenced on a cancel or a newer load; showLoadProgress keeps the same toast id and its Cancel,
+      // or updates the inline status when the user closed the toast.
+      "if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {\n          showLoadProgress(SAVING_PROGRESS);",
+      "toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast, onLoadToastDismiss));",
     ]) {
       assert.ok(source.includes(pin), `missing: ${pin}`);
     }

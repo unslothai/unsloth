@@ -188,7 +188,7 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { ParamSlider } from "@/features/chat";
-import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { ModelLoadCompactStatus, ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
   MediaGenerationPresetControl,
   type VideoGenerationPresetParams,
@@ -533,36 +533,45 @@ function loadFraction(p: VideoLoadProgress): number | null {
   return Math.min(1, p.downloaded_bytes / p.expected_bytes);
 }
 
-function loadToastDescription(p: VideoLoadProgress) {
+// Shared by the load toast and the inline status that replaces it once the toast is closed.
+function loadStatus(p: VideoLoadProgress) {
   if (p.phase === "saving_chat_context") {
-    return (
-      <ModelLoadDescription
-        title="Saving chat context…"
-        message="Saving the chat model's context so it can resume after this load."
-      />
-    );
+    return {
+      title: "Saving chat context…",
+      brief: "Saving chat context",
+      message: "Saving the chat model's context so it can resume after this load.",
+      progressPercent: null,
+      progressLabel: null,
+    };
   }
   const frac = loadFraction(p);
   const downloading =
     p.phase === "downloading" && (frac === null || frac < 0.999);
-  const title = downloading
-    ? "Downloading model…"
-    : p.phase === "finalizing"
-      ? "Loading to GPU…"
-      : "Starting model…";
-  const hasTotal = frac !== null;
+  return {
+    title: downloading
+      ? "Downloading model…"
+      : p.phase === "finalizing"
+        ? "Loading to GPU…"
+        : "Starting model…",
+    brief: downloading ? "Downloading" : p.phase === "finalizing" ? "Loading to GPU" : "Starting",
+    message: "Loading the model. This may include downloading its base model.",
+    progressPercent: frac !== null ? frac * 100 : null,
+    progressLabel:
+      frac !== null
+        ? `${formatBytes(p.downloaded_bytes)} of ${formatBytes(p.expected_bytes ?? 0)}`
+        : p.downloaded_bytes > 0
+          ? `${formatBytes(p.downloaded_bytes)} downloaded`
+          : null,
+  };
+}
+
+function LoadInlineStatus({ p }: { p: VideoLoadProgress }) {
+  const s = loadStatus(p);
   return (
-    <ModelLoadDescription
-      title={title}
-      message="Loading the model. This may include downloading its base model."
-      progressPercent={hasTotal ? frac * 100 : null}
-      progressLabel={
-        hasTotal
-          ? `${formatBytes(p.downloaded_bytes)} of ${formatBytes(p.expected_bytes ?? 0)}`
-          : p.downloaded_bytes > 0
-            ? `${formatBytes(p.downloaded_bytes)} downloaded`
-            : null
-      }
+    <ModelLoadCompactStatus
+      label={s.brief}
+      title={[s.title, s.message, s.progressLabel].filter(Boolean).join(" ")}
+      progressPercent={s.progressPercent}
     />
   );
 }
@@ -570,15 +579,17 @@ function loadToastDescription(p: VideoLoadProgress) {
 // `onCancel` is the only control that reaches a load in flight; the eject is hidden then.
 function loadToastArgs(
   p: VideoLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
+  id: string | number | undefined,
+  onCancel: () => void,
+  onDismiss: (t: { id: string | number }) => void,
 ) {
   return {
     ...(id != null ? { id } : {}),
-    description: loadToastDescription(p),
+    description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
+    cancel: { label: "Cancel", onClick: onCancel },
+    onDismiss,
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
@@ -1403,6 +1414,9 @@ function VideoGenerator({
   const isMounted = useRef(true);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadToastId = useRef<string | number | null>(null);
+  // Latest load progress, and its copy for the inline status once the user closes the toast (null while it shows).
+  const latestLoad = useRef<VideoLoadProgress>(IDLE_PROGRESS);
+  const [closedLoad, setClosedLoad] = useState<VideoLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
@@ -1427,12 +1441,34 @@ function VideoGenerator({
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
     loadToastId.current = null;
+    latestLoad.current = IDLE_PROGRESS;
+    setClosedLoad(null);
+  }, []);
+  // Without this, the next progress tick re-issues the toast id and Sonner shows the closed toast again.
+  const onLoadToastDismiss = useCallback((t: { id: string | number }) => {
+    // dismissLoadToast clears the ref first, so only a user close gets past this.
+    if (t.id !== loadToastId.current) {
+      return;
+    }
+    loadToastId.current = null;
+    setClosedLoad(latestLoad.current);
   }, []);
   const pickToast = useDiffusionPickToast();
 
   // A ref keeps onClick stable; the toast is built before handleCancelLoad exists.
   const cancelLoadRef = useRef<() => void>(() => {});
   const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
+  const showLoadProgress = useCallback(
+    (p: VideoLoadProgress) => {
+      latestLoad.current = p;
+      if (loadToastId.current != null) {
+        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast, onLoadToastDismiss));
+      } else {
+        setClosedLoad((closed) => closed && p);
+      }
+    },
+    [cancelLoadFromToast, onLoadToastDismiss],
+  );
   // Requests awaiting a response compare against this and discard their result.
   const cancelSeq = useRef(0);
   // The compensating unload carries no identity, so it must not fire once a newer load owns the page.
@@ -2704,16 +2740,16 @@ function VideoGenerator({
         return;
       }
       const sig = `${p.phase}:${p.downloaded_bytes}:${p.expected_bytes ?? 0}`;
-      if (loadToastId.current != null && sig !== lastLoadSig.current) {
+      if (sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        showLoadProgress(p);
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
+  }, [dismissLoadToast, refreshStatus, showLoadProgress, offerLoadAnywayFor]);
 
   // The unload failed so the load still runs; restore its poll and toast. refreshStatus cannot,
   // since a first load is not resident yet.
@@ -2721,9 +2757,9 @@ function VideoGenerator({
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast, onLoadToastDismiss));
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, cancelLoadFromToast, onLoadToastDismiss]);
 
   const stopGenPoll = useCallback(() => {
     if (genPollTimer.current) clearInterval(genPollTimer.current);
@@ -2795,7 +2831,7 @@ function VideoGenerator({
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast, onLoadToastDismiss));
           void pollLoadProgress();
         }
       } catch {
@@ -2834,7 +2870,7 @@ function VideoGenerator({
       stopGenPoll();
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, ensureThumbnail, cancelLoadFromToast]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, ensureThumbnail, cancelLoadFromToast, onLoadToastDismiss]);
 
   // Stable because route effects depend on loadOrStage.
   const loadControlsRef = useRef({
@@ -2938,7 +2974,7 @@ function VideoGenerator({
       dismissLoadToast();
       lastLoadSig.current = null;
       const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast, onLoadToastDismiss));
       // A load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
@@ -2956,8 +2992,8 @@ function VideoGenerator({
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
-        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
-          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {
+          showLoadProgress(SAVING_PROGRESS);
         }
       });
       try {
@@ -3019,6 +3055,8 @@ function VideoGenerator({
       refreshStatus,
       dismissLoadToast,
       cancelLoadFromToast,
+      onLoadToastDismiss,
+      showLoadProgress,
       canReapply,
       currentLoadAdvanced,
       pickToast,
@@ -4136,6 +4174,10 @@ function VideoGenerator({
                 </TooltipTrigger>
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
+            )}
+            {/* Stands in for the load toast once the user closes it. */}
+            {pageMode !== "train" && busy === "loading" && closedLoad && (
+              <LoadInlineStatus p={closedLoad} />
             )}
           </div>
         </div>
