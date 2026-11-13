@@ -637,6 +637,7 @@ def test_a_tool_enabled_chat_refuses_a_message_larger_than_the_window_ollama_loa
         context_window = 40_960,
     )
     [error] = [c["error"] for c in chunks if "error" in c]
+    assert error["code"] == "context_length_exceeded"
     assert error["message"].startswith("Message too long:")
     assert "4096-token context window" in error["message"]
 

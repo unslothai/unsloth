@@ -30158,17 +30158,16 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            error = (
+                _openai_stream_error_chunk(exc)
+                if isinstance(exc, context_refusal.ContextBudgetExceeded)
+                else {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+            )
             if _non_stream_custom_responses:
-                yield json.dumps(
-                    {"error": {"message": _friendly_error(exc), "type": "server_error"}}
-                )
+                yield json.dumps(error)
                 return
             # A bare EOF reads as success to the chat client; surface the failure.
-            yield (
-                "data: "
-                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
-                + "\n\n"
-            )
+            yield "data: " + json.dumps(error) + "\n\n"
             yield "data: [DONE]\n\n"
         finally:
             cancel_event.set()
