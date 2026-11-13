@@ -139,7 +139,7 @@ test("window material follows the account, keeping this window's native and rout
   assert.equal(applied.lens, "off");
   assert.equal(applied.nativeFailed, true);
   assert.equal(applied.here, false);
-  assert.deepEqual(puts, []);
+  assert.equal(puts.length, 0);
   useMaterialStore.setState({ here: true });
   useMaterialStore.getState().setStrength(30, "dark");
   await settle();
