@@ -7706,6 +7706,26 @@ def _late_denoiser_pin_enabled(module: Any, use_stream: bool) -> bool:
     )
 
 
+def _defer_late_denoiser_pin(pipe: Any, module: Any, device: Any, logger: Any) -> bool:
+    """Queue the late prefix pin of a streamed denoiser; an optimisation, so a failure only leaves it unpinned."""
+    try:
+        return bool(
+            _defer_pinning(
+                pipe,
+                module,
+                device,
+                logger,
+                fast = True,
+                byte_cap = _late_image_encoder_pin_cap(pipe, module, device),
+                skip_resident = True,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - the denoiser streams unpinned, as before
+        if logger is not None:
+            logger.warning("diffusion.memory: late denoiser pin unavailable (%s)", exc)
+        return False
+
+
 def _streamed_pin_leftover_mib(
     transformer_mib: int,
     pin_transformer: bool,
@@ -8917,15 +8937,7 @@ def _apply_group_offload(
                     small_host
                     and gkwargs.get("low_cpu_mem_usage", False)
                     and _late_denoiser_pin_enabled(module, use_stream)
-                    and _defer_pinning(
-                        pipe,
-                        module,
-                        onload,
-                        logger,
-                        fast = True,
-                        byte_cap = _late_image_encoder_pin_cap(pipe, module, onload),
-                        skip_resident = True,
-                    )
+                    and _defer_late_denoiser_pin(pipe, module, onload, logger)
                 ):
                     defer_dit_pin = True
             installed += 1
@@ -9785,15 +9797,7 @@ def _apply_streaming_offload(
                 and kwargs.get("use_stream")
                 and kwargs.get("low_cpu_mem_usage")
                 and _late_denoiser_pin_enabled(module, True)
-                and _defer_pinning(
-                    pipe,
-                    module,
-                    onload,
-                    logger,
-                    fast = True,
-                    byte_cap = _late_image_encoder_pin_cap(pipe, module, onload),
-                    skip_resident = True,
-                )
+                and _defer_late_denoiser_pin(pipe, module, onload, logger)
             ):
                 deferred_dits += 1
             installed += 1
