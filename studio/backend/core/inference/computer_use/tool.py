@@ -30,6 +30,7 @@ _FENCE = "untrusted_screen_text"
 _DRAG_STEPS = 12
 _CORNER = 2.0
 _OPEN_APP_WAIT_S = 0.8
+_TYPE_CHUNK = 40
 _BLOCKED_APP = (
     "{app} is blocked in Unsloth's settings, so nothing is done in it. Do not try again; tell "
     "the user."
@@ -422,11 +423,18 @@ class _Run:
                 self._use(self._under(*backend.cursor(), front))
             backend.scroll(action["dx"], action["dy"])
         elif op == "type":
-            self._use(self._front(action))
-            if action["text"]:
-                backend.type_text(action["text"])
-            if action["submit"]:
-                backend.key((), "enter")
+            # In pieces, each after the checks: a long text can take minutes to type, and a
+            # stop, a switch-off or another app coming forward must end it where it is.
+            text = action["text"]
+            pieces = [text[at : at + _TYPE_CHUNK] for at in range(0, len(text), _TYPE_CHUNK)]
+            for piece in [*pieces, None] if action["submit"] else pieces or [""]:
+                if self._stopped():
+                    raise _Halt("it was stopped.")
+                self._use(self._front(action))
+                if piece is None:
+                    backend.key((), "enter")
+                elif piece:
+                    backend.type_text(piece)
         elif op == "key":
             for chord in action["chords"]:
                 if policy.blocked_chord(chord):

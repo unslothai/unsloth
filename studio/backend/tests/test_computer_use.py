@@ -620,6 +620,43 @@ def test_a_call_that_waited_through_a_switch_off_does_nothing(desktop):
     assert not state.is_granted(key)
 
 
+def test_typing_ends_where_it_is_when_control_is_taken_back(desktop):
+    look()
+    key = state.session_key(SESSION)
+    long = "x" * 200
+    original = desktop.type_text
+    typed = []
+
+    def stop_after_first(piece):
+        original(piece)
+        typed.append(piece)
+        state.revoke_account(key[0])
+
+    desktop.type_text = stop_after_first
+    result = run({"action": "type", "text": long, "submit": True})
+    assert "was not done: it was stopped." in result
+    assert len(typed) == 1 and len(typed[0]) < len(long)
+    assert ("key", (), "enter") not in desktop.events
+    # The pointer in a corner ends it too, and so does another app coming forward.
+    state.resume_account(key[0])
+    look()
+    typed.clear()
+
+    def corner_after_first(piece):
+        original(piece)
+        typed.append(piece)
+        desktop.pointer = (0.0, 0.0)
+
+    desktop.type_text = corner_after_first
+    assert "corner" in run({"action": "type", "text": long})
+    assert len(typed) == 1
+    # A short text still goes out whole, with its Enter.
+    desktop.pointer = (640.0, 400.0)
+    desktop.type_text = original
+    look()
+    assert run({"action": "type", "text": "hi", "submit": True}).startswith("Done:")
+
+
 def test_switching_off_ends_the_actions_running_now(desktop):
     look()
     original = desktop.click
