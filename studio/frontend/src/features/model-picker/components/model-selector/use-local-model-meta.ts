@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Reads the local GGUF header for the model-info panel. Separate from the Hub lookup, so one
-// being unavailable does not hide the other.
-
+// eslint-disable-next-line no-restricted-imports -- avoid the chat barrel's React exports.
 import { fetchGgufStagedMetadata } from "@/features/chat/api/chat-api";
 import { useEffect, useState } from "react";
 import type { LocalModelMeta } from "./local-model-facts";
@@ -15,16 +13,18 @@ export function useLocalModelMeta(
     variant,
     hfToken,
     enabled,
-  }: { variant?: string | null; hfToken?: string | undefined; enabled: boolean },
+  }: {
+    variant?: string | null;
+    hfToken?: string | undefined;
+    enabled: boolean;
+  },
 ): LocalModelMeta | null {
   const [state, setState] = useState<{
     key: string;
     meta: LocalModelMeta | null;
   }>(() => ({ key: "", meta: null }));
 
-  // `enabled` and the token are in the KEY, not just the deps: the effect returns early when
-  // the probe is off, so a key blind to them keeps the last file's facts on screen — delete a
-  // GGUF with its dialog open and the panel still reports its context length.
+  // enabled + token in the key: otherwise turning the probe off keeps the last file's facts.
   const key = `${repoId ?? ""}::${variant ?? ""}::${enabled ? "on" : "off"}::${hfToken ?? ""}`;
 
   useEffect(() => {
@@ -49,7 +49,6 @@ export function useLocalModelMeta(
           },
         });
       })
-      // Unreadable is the same as nothing found: show the Hub half, not an error.
       .catch(() => {
         if (!cancelled) setState({ key, meta: null });
       });
@@ -58,8 +57,6 @@ export function useLocalModelMeta(
       cancelled = true;
     };
   }, [repoId, variant, hfToken, enabled, key]);
-  // Listed explicitly though `key` encodes them, so dropping one from the key cannot silently
-  // stop the effect re-firing.
 
   return state.key === key ? state.meta : null;
 }

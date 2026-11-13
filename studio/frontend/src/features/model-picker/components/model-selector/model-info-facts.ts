@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Turns Hub metadata into the rows the picker's model-info panel renders (issue #11017).
-// Pure: no React/DOM/network deps, so the panel stays a thin renderer over this and the
-// decisions about what is worth showing can be tested directly.
+// Hub metadata -> model-info panel rows. Pure (no React/DOM/network) so it is testable directly.
 
+// eslint-disable-next-line no-restricted-imports -- pure helpers; the barrel pulls React into node tests.
 import { formatBytes } from "@/features/hub/lib/format";
+// eslint-disable-next-line no-restricted-imports -- pure helpers; the barrel pulls React into node tests.
 import { detectLicense } from "@/features/hub/lib/model-capabilities";
 
-// Not imported from @/features/hub/lib/view-models: that barrel reaches as far as the auth
-// pages, and ten lines of arithmetic are not worth the coupling. Same output as its
-// formatParamCount for the values this panel sees.
+// Local copy of view-models' formatParamCount: that module reaches the auth pages.
 const BILLION = 1_000_000_000;
 const MILLION = 1_000_000;
 
@@ -24,14 +22,12 @@ function formatParamCount(totalParams: number): string {
     return `${rounded}B`;
   }
   const millions = totalParams / MILLION;
-  // Whole millions print "0M" under 500K, reporting a small embedding model as having no
-  // parameters. Keep a decimal below 1M, and a plain grouped count below 100K.
+  // Keep small models from rounding to "0M".
   if (millions >= 1) return `${Math.round(millions)}M`;
   if (millions >= 0.1) return `${millions.toFixed(1)}M`;
   return `${Math.round(totalParams).toLocaleString()}`;
 }
 
-/** Panel reading order. The panel maps over what `modelInfoFacts` returns, so this is the order. */
 export const MODEL_INFO_FIELDS = [
   "license",
   "params",
@@ -50,7 +46,6 @@ export interface ModelInfoFact {
   key: ModelInfoField;
   label: string;
   value: string;
-  /** Longer explanation for a tooltip, when the bare value understates the row. */
   detail?: string;
 }
 
@@ -73,8 +68,6 @@ export interface ModelInfoMeta {
   isPrivate?: boolean;
 }
 
-// The API returns dates as ISO strings or Date objects, and occasionally something that
-// parses to NaN. "Invalid Date" in a facts panel reads as a bug, so those drop out.
 function formatDate(value: string | Date | undefined): string | undefined {
   if (!value) return undefined;
   const date = value instanceof Date ? value : new Date(value);
@@ -91,7 +84,6 @@ function titleCase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-/** HF pipeline tags are kebab-case ("text-generation"); the panel shows prose. */
 function formatTask(tag: string): string {
   return titleCase(tag.replace(/-/g, " "));
 }
@@ -128,7 +120,7 @@ export function modelInfoFacts(meta: ModelInfoMeta): ModelInfoFact[] {
       ...(meta.sizeIsFullPrecision
         ? {
             detail:
-              "The unquantized checkpoint on the Hub. A quantized download is smaller — the size on each quant row is the one you will actually fetch.",
+              "The unquantized checkpoint on the Hub. A quantized download is smaller; the size on each quant row is the one you will actually fetch.",
           }
         : {}),
     });
@@ -171,8 +163,6 @@ export function modelInfoFacts(meta: ModelInfoMeta): ModelInfoFact[] {
     facts.push({ key: "updated", label: "Updated", value: updated });
   }
 
-  // Only worth a row when it is true: every ordinary public repo would otherwise carry a
-  // "Public" row that tells the user nothing.
   if (meta.gated || meta.isPrivate) {
     const labels = [
       meta.gated ? "Gated" : null,
@@ -191,8 +181,7 @@ export function modelInfoFacts(meta: ModelInfoMeta): ModelInfoFact[] {
   return facts;
 }
 
-/** The subset of `HfModelResult` this panel reads. Structural, so the Hub's type can grow
- *  without dragging its module graph into the picker. */
+/** Structural subset of `HfModelResult`. */
 export interface HfResultLike {
   id: string;
   downloads?: number;
@@ -212,7 +201,6 @@ export interface HfResultLike {
 
 const LANGUAGE_TAG_PREFIX = "language:";
 
-// HF flattens card languages into tags; recognize bare ISO codes as well as language: tags.
 const ISO_639_1_CODES: ReadonlySet<string> = new Set(
   (
     "aa ab ae af ak am an ar as av ay az ba be bg bi bm bn bo br bs ca ce ch " +
@@ -226,10 +214,8 @@ const ISO_639_1_CODES: ReadonlySet<string> = new Set(
   ).split(" "),
 );
 
-// Accept a language code with an optional region or title-case script, not arbitrary compound tags.
 const LANGUAGE_TAG_SHAPE = /^[A-Za-z]{2}(-([A-Za-z]{2}|[A-Z][a-z]{3}))?$/;
 
-/** `en`, `zh-CN` and `pt-br` all carry a base code; the region suffix is not a language. */
 function baseLanguageCode(tag: string): string {
   const [base] = tag.split("-", 1);
   return (base ?? "").toLowerCase();
@@ -237,7 +223,6 @@ function baseLanguageCode(tag: string): string {
 
 function languagesFromTags(tags: string[] | undefined): string[] {
   const langs: string[] = [];
-  // Deduplicate prefixed and bare tags without losing region or script information.
   const seen = new Set<string>();
   const add = (code: string) => {
     const key = code.toLowerCase();
@@ -247,8 +232,7 @@ function languagesFromTags(tags: string[] | undefined): string[] {
   };
   for (const tag of tags ?? []) {
     if (tag.startsWith(LANGUAGE_TAG_PREFIX)) {
-      // The prefix states the intent, but it does not make the value a language: HF cards
-      // carry `language:multilingual` and similar. Hold it to the same shape and the same set.
+      // `language:multilingual` exists, so the prefix alone is not proof.
       const value = tag.slice(LANGUAGE_TAG_PREFIX.length);
       if (
         LANGUAGE_TAG_SHAPE.test(value) &&
@@ -257,8 +241,6 @@ function languagesFromTags(tags: string[] | undefined): string[] {
         add(value);
       continue;
     }
-    // Keep the tag's own spelling (`pt-br`, not `pt`): the region is information the reader
-    // wants, even though only the base code decides whether this is a language at all.
     if (
       LANGUAGE_TAG_SHAPE.test(tag) &&
       ISO_639_1_CODES.has(baseLanguageCode(tag))
@@ -268,12 +250,6 @@ function languagesFromTags(tags: string[] | undefined): string[] {
   return langs;
 }
 
-/**
- * Adapts a Hub search/info result to this panel's input.
- *
- * Licence and language live in the `tags` array rather than in fields of their own, so both
- * are parsed out here; `gated` arrives as `false | "auto" | "manual"`, and both modes gate.
- */
 export function metaFromHfResult(
   result: HfResultLike | null | undefined,
 ): ModelInfoMeta | null {
@@ -282,12 +258,9 @@ export function metaFromHfResult(
   return {
     id: result.id,
     license: detectLicense(result.tags),
-    // `downloads` counts a 30-day window, so the all-time figure is the fairer headline for
-    // an established repo when the API reports it.
     downloads: result.downloadsAllTime ?? result.downloads,
     likes: result.likes,
     totalParams: result.totalParams,
-    // Prefer the curated size; label a fallback checkpoint estimate as full precision.
     sizeBytes: result.curatedSizeBytes ?? result.estimatedSizeBytes,
     sizeIsFullPrecision:
       result.curatedSizeBytes === undefined &&

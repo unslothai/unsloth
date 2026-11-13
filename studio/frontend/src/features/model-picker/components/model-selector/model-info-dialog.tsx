@@ -14,9 +14,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+// eslint-disable-next-line no-restricted-imports -- deep paths keep the node test stubs narrow.
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
+// eslint-disable-next-line no-restricted-imports -- deep paths keep the node test stubs narrow.
 import { useSelectedModelMetadata } from "@/features/hub/hooks/use-selected-model-metadata";
+// eslint-disable-next-line no-restricted-imports -- deep paths keep the node test stubs narrow.
 import { confirmExternalLink } from "@/features/hub/stores/external-link-confirm";
+// eslint-disable-next-line no-restricted-imports -- deep paths keep the node test stubs narrow.
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
@@ -41,7 +45,6 @@ function FactRow({
   onActivate,
 }: {
   fact: InfoRow;
-  /** Makes the row a button. Used by the chat-template row, which opens the template. */
   onActivate?: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
   const value = (
@@ -66,7 +69,6 @@ function FactRow({
     </div>
   );
 
-  // A button, not a click handler on the div, so the row is reachable by keyboard.
   const row = onActivate ? (
     <button
       type="button"
@@ -105,7 +107,6 @@ export function ModelInfoDialog({
   onCloseAutoFocus,
 }: {
   repoId: string;
-  /** Quant to read the header of, when the row names one. */
   variant?: string | null;
   hasLocalGguf?: boolean;
   open: boolean;
@@ -118,8 +119,6 @@ export function ModelInfoDialog({
   const [templateOpen, setTemplateOpen] = useState(false);
   const templateTriggerRef = useRef<HTMLButtonElement>(null);
 
-  // Only fetches while the dialog is open, and shares one in-flight request per repo with
-  // the Hub through hf-cache, so opening this for a model the catalog already showed is free.
   const { result, error } = useSelectedModelMetadata(open ? repoId : null, {
     accessToken: hfToken || undefined,
     enabled: open,
@@ -153,8 +152,6 @@ export function ModelInfoDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {/* Read from disk, so it renders on its own terms. The offline and error states
-            below are scoped to the Hub section alone. */}
         {localFacts.length > 0 && (
           <div className="divide-y divide-border/50">
             {localFacts.map((fact) => (
@@ -192,8 +189,6 @@ export function ModelInfoDialog({
                   <FactRow key={fact.key} fact={fact} />
                 ))}
               </div>
-              {/* Href kept so middle-click and copy-link behave, but the click routes through
-                the same confirmation gate every other external link in the app uses. */}
               <a
                 href={`${hfEndpoint}/${repoId}`}
                 target="_blank"
@@ -234,8 +229,6 @@ export function ModelInfoDialog({
         )}
       </DialogContent>
 
-      {/* Already in hand from the header read, so viewing it costs no fetch. Read-only:
-          this panel reports on the model, it does not configure it. */}
       {template && (
         <ChatTemplateEditorDialog
           open={templateOpen}

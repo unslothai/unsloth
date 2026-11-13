@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The half of "Model info" read from the local GGUF header, so the panel answers with no
-// network. Pure, same contract as model-info-facts.ts.
-
 export const LOCAL_MODEL_INFO_FIELDS = [
   "contextLength",
   "layers",
@@ -17,7 +14,6 @@ export interface LocalModelInfoFact {
   key: LocalModelInfoField;
   label: string;
   value: string;
-  /** Longer explanation for a tooltip, when the bare value understates the row. */
   detail?: string;
 }
 
@@ -37,12 +33,10 @@ function formatTokens(tokens: number): string {
   return `${tokens.toLocaleString("en-US")} tokens`;
 }
 
-/** A count the header actually reported, including a real 0 for a dense model's MoE layers. */
 function isReportedCount(n: number | null | undefined): n is number {
   return typeof n === "number" && Number.isFinite(n) && n >= 0;
 }
 
-/** A positive context or layer count confirms that the header was read. */
 function headerWasRead(meta: LocalModelMeta): boolean {
   return (
     (isReportedCount(meta.contextLength) && meta.contextLength > 0) ||
@@ -85,8 +79,7 @@ export function localModelInfoFacts(
 
   const hasTemplate = Boolean(meta.chatTemplate?.trim());
 
-  // Null is not absence: the probe drops templates over 64KB, and read_gguf_chat_template
-  // returns null for absent, unreadable and not-a-GGUF alike. Only presence is stated.
+  // Null is not absence: the probe drops templates over 64KB and returns null when unreadable.
   facts.push({
     key: "chatTemplate",
     label: "Chat template",

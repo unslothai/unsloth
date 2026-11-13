@@ -63,13 +63,11 @@ interface ModelRowMenuPin {
   onToggle: () => void;
 }
 
-/** Hub repo to look up in the model-info dialog. Omitted for local-path rows, which have no
- *  repo on the Hub to report on. */
+/** Hub rows only: local paths have no Hub entry. */
 interface ModelRowMenuInfo {
   repoId: string;
-  /** Quant whose local header to read, when the row names one. */
   variant?: string | null;
-  /** Probe headers only for downloaded GGUFs. */
+  /** Probe the local header only for downloaded GGUFs. */
   hasLocalGguf?: boolean;
 }
 
@@ -399,7 +397,6 @@ export function ModelRowMenu({
         />
       )}
 
-      {/* Mounted only once opened, so a menu that is never used costs no metadata fetch. */}
       {info && infoOpen && (
         <ModelInfoDialog
           repoId={info.repoId}
