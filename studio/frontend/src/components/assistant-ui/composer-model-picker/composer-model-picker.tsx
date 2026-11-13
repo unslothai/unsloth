@@ -183,7 +183,7 @@ import { useAnimatedListHeight } from "./animated-height";
 import { useComposerModelPickerSource } from "./context";
 import { useCustomFolders } from "./custom-folders";
 import { EffortSlider } from "./effort-slider";
-import { ListScrollbar, StripScrollbar } from "./list-scrollbar";
+import { ListScrollbar } from "./list-scrollbar";
 import {
   CONNECTED_TAB,
   DEFAULT_PROVIDERS,
@@ -4679,7 +4679,6 @@ export function ComposerModelPicker({
                   />
                 ))}
               </div>
-              <StripScrollbar strip={tabStrip} />
               {(!pane || pane.loaded) &&
               (chosenLoaded || loadedModels.length > 0) &&
               !pending &&
