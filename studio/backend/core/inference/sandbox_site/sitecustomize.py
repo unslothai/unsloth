@@ -336,10 +336,30 @@ class _HostPackagesFinder:
         )
 
 
-# --python hands the install to another interpreter, whose own pip decides.
-_PIP_LOCATION_FLAGS = frozenset(
-    ("-t", "--target", "--prefix", "--root", "--home", "--user", "--python")
+# --python hands the install to another interpreter, whose own pip decides. optparse also takes unambiguous
+# abbreviations: the shortest is listed (--pre is its own option; --us, --ro, --pyth are ambiguous in pip).
+_PIP_LOCATION_FLAGS = (
+    ("--target", 4),
+    ("--prefix", 6),
+    ("--root", 6),
+    ("--home", 6),
+    ("--user", 6),
+    ("--python", 8),
 )
+
+
+def _chooses_location(arg):
+    name = arg.split("=", 1)[0]
+    if name.startswith("--"):
+        return any(full.startswith(name) and len(name) >= n for full, n in _PIP_LOCATION_FLAGS)
+    # -t DIR, -tDIR, or clustered after no-operand flags (-qt DIR, -Ut).
+    if name.startswith("-") and len(name) > 1:
+        for flag in name[1:]:
+            if flag == "t":
+                return True
+            if flag not in "qvUI":
+                return False
+    return False
 
 
 def _is_pip_script(path):
@@ -406,10 +426,7 @@ def _route_pip():
             # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
             is_pip = _is_pip_launch()
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
-            placed = any(
-                a.split("=", 1)[0] in _PIP_LOCATION_FLAGS or (a.startswith("-t") and a != "-t")
-                for a in sys.argv[1:]
-            )
+            placed = any(_chooses_location(a) for a in sys.argv[1:])
             if "--isolated" not in sys.argv:
                 # --isolated makes pip ignore these, so then they choose nothing.
                 truthy = ("y", "yes", "t", "true", "on", "1")
@@ -557,6 +574,7 @@ def _read_pth_files(entries, on_sys_path = True):
 # install lacks the new portion, and an editable fork's concrete module wins over Studio's copy (namespaces are
 # left to the normal aggregation, which the editable finders still join from their usual place).
 class _SessionPackagesFinder:
+    from importlib.machinery import PathFinder as _path_finder
     def __init__(
         self,
         entries,
@@ -580,6 +598,11 @@ class _SessionPackagesFinder:
         for finder in self._editable:
             spec = finder.find_spec(name, path, target)
             if spec is not None and spec.loader is not None:
+                # The cwd / script dir and anything else ahead of the session dirs still come first.
+                if path is None:
+                    first = min(i for i, e in enumerate(sys.path) if e in self._entries)
+                    if first and self._path_finder.find_spec(name, sys.path[:first], target):
+                        return None
                 return spec
         if path is None:
             return None

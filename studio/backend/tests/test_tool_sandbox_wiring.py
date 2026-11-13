@@ -778,6 +778,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "pip_python",
         "pth_zip",
         "own_prefix",
+        "abbrev_target",
+        "clustered_target",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -809,6 +811,10 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # --isolated ignores PIP_TARGET, so it chooses nothing here.
         "isolated": f"PIP_TARGET=vendor python -m pip --isolated install -q --no-index --no-deps {wheel} && {show}",
         "pth_zip": f"{_PIP} {wheel} && {show}",
+        # optparse abbreviations and short-option clusters choose a destination too.
+        "abbrev_target": f"{_PIP} --targ vendor {wheel} && PYTHONPATH=vendor {show}",
+        "clustered_target": f"python -m pip install -qt vendor --no-index --no-deps {wheel} && "
+        f"PYTHONPATH=vendor {show}",
         # A PIP_PREFIX the command sets itself is kept.
         "own_prefix": f'PIP_PREFIX="$PWD/deps" {_PIP} {wheel} && find "$PWD/deps" -name "{name}.py"',
         "pip_python": f"python -m venv venv && python -m pip --isolated --python venv/bin/python install -q "
@@ -842,6 +848,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "pip_user_off": packages,
         "isolated": packages,
         "pth_zip": packages,
+        "abbrev_target": str(workdir / "vendor"),
+        "clustered_target": str(workdir / "vendor"),
         "own_prefix": str(workdir / "deps"),
         "pip_python": str(workdir / "venv"),
         "same_process": packages,
@@ -1116,6 +1124,32 @@ def test_the_namespace_check_never_loads_ast_from_an_editable_source(monkeypatch
     out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
     assert "42" in out, out
     assert not marker.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_checkout_in_the_cwd_wins_over_a_chat_editable_finder(monkeypatch, tmp_path):
+    """The editable fork beats Studio's copy, not the command's own working directory."""
+    template = os.path.join(
+        sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
+    )
+    if not os.path.exists(template):
+        pytest.skip("finder-based editable installs need setuptools in Studio's environment")
+    name = "unsloth_chat_cwd_shadow"
+    workdir = tmp_path / "chat"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    site_dir.mkdir(parents = True)
+    (tmp_path / "editable" / name).mkdir(parents = True)
+    (tmp_path / "editable" / name / "__init__.py").write_text("")
+    finder = f"__editable___{name}_1_0_finder"
+    (site_dir / f"__editable__.{name}-1.0.pth").write_text(f"import {finder}; {finder}.install()\n")
+    mapping = {name: str(tmp_path / "editable" / name)}
+    (site_dir / f"{finder}.py").write_text(f"MAPPING = {mapping!r}\nNAMESPACES = {{}}\n")
+    (workdir / "checkout").mkdir()
+    (workdir / "checkout" / f"{name}.py").write_text("")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = f"cd checkout && python -c 'import {name}; print({name}.__file__)'"
+    out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
+    assert str(workdir / "checkout" / f"{name}.py") in out, out
 
 
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
