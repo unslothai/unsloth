@@ -8143,6 +8143,7 @@ class _GroupPinner:
             need = sum(
                 _page_bytes(src.nbytes)
                 for group in self.groups
+                if not (self.skip_resident and getattr(group, "_unsloth_resident", False))
                 for _t, src in self._unpinned(group)
             )
         except Exception:  # noqa: BLE001 - unreadable: owes nothing
@@ -8934,7 +8935,7 @@ def _apply_group_offload(
                     logger,
                 )
                 if (
-                    small_host
+                    not defer
                     and gkwargs.get("low_cpu_mem_usage", False)
                     and _late_denoiser_pin_enabled(module, use_stream)
                     and _defer_late_denoiser_pin(pipe, module, onload, logger)
@@ -8953,8 +8954,8 @@ def _apply_group_offload(
             install_group_pin_wait()
             if logger is not None:
                 logger.info(
-                    "diffusion.memory: small-host route pins the leading streamed denoiser groups that fit the host "
-                    "RAM free once the load returns"
+                    "diffusion.memory: streamed denoiser groups pin the prefix that fits the host RAM free once the "
+                    "load returns, before the encoders"
                 )
         # Encoders after the DiTs, one by one, failures absorbed: a refusing encoder stays resident
         # since hooks already exist. Leaf level: encoders are not uniform block stacks.

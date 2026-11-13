@@ -130,6 +130,8 @@ def _route(
     *,
     small_host: bool,
     torchao: bool = False,
+    plan = (False, False),
+    video: bool = False,
 ):
     pytest.importorskip("diffusers")
     import diffusers.hooks as hooks
@@ -145,12 +147,14 @@ def _route(
         dm, "_apply_group_offloading_packed", lambda apply, module, kw, logger: applied.append(kw)
     )
     monkeypatch.setattr(dm, "_encoder_background_pin_wanted", lambda *a, **k: False)
-    monkeypatch.setattr(dm, "_streamed_pin_plan", lambda *a, **k: (False, False))
+    monkeypatch.setattr(dm, "_streamed_pin_plan", lambda *a, **k: plan)
     monkeypatch.setattr(dm, "install_group_pin_wait", lambda: waits.append(1) or True)
     monkeypatch.setattr(dm, "_pin_vision_embedding_device", lambda module: None)
     monkeypatch.setattr(dm, "_pin_top_level_group", lambda *a, **k: True)
     monkeypatch.setattr(dm, "install_group_prefetch", lambda *a, **k: 0)
     monkeypatch.setattr(dm, "_keep_groups_resident", lambda *a, **k: 0)
+    monkeypatch.setattr(dm, "_background_pin_enabled", lambda *a, **k: True)
+    monkeypatch.setattr(dm, "_video_exact_pins", lambda *a, **k: False)
     monkeypatch.setattr(
         dm, "_torchao_weight_classes", lambda m: {"Int8Tensor"} if torchao else set()
     )
@@ -174,6 +178,8 @@ def _route(
         monkeypatch.setattr(
             "core.inference.diffusion_small_host.install_encoder_prefetch", lambda *a, **k: 0
         )
+    if video:
+        dm.request_background_pins(pipe)
     assert dm._apply_group_offload(
         pipe, "cuda", None, stream_text_encoders = True, resident_transformer_mib = 100
     )
@@ -203,11 +209,31 @@ def test_routing_the_kill_switches_keep_the_old_route(budget, monkeypatch, env, 
     assert all(a.get("low_cpu_mem_usage") for a in applied)
 
 
-def test_routing_other_hosts_and_torchao_denoisers_are_unchanged(budget, monkeypatch):
-    _pipe, _applied, deferred, _waits = _route(monkeypatch, small_host = False)
-    assert deferred == []
+def test_routing_a_plan_time_miss_off_the_small_host_route_defers_too(budget, monkeypatch):
+    # a dense FLUX.3 klein on a 12.7 GB T4: 2.9 GB of its transformer streams, the plan pinned nothing
+    pipe, _applied, deferred, waits = _route(monkeypatch, small_host = False)
+    assert [m for m, _kw in deferred][:1] == [pipe.transformer]
+    assert deferred[0][1]["skip_resident"] and callable(deferred[0][1]["byte_cap"]) and waits
+
+
+def test_routing_whole_pins_video_and_torchao_denoisers_are_unchanged(budget, monkeypatch):
+    # the plan pins the denoiser whole (every high-RAM host): no late cap
+    pipe, _applied, deferred, _waits = _route(monkeypatch, small_host = False, plan = (True, True))
+    assert pipe.transformer not in [m for m, _kw in deferred]
+    # video loads pin the denoiser in their own background pinner
+    _pipe, _applied, deferred, _waits = _route(monkeypatch, small_host = False, video = True)
+    assert all(not kw.get("skip_resident") for _m, kw in deferred)
     _pipe, _applied, deferred, _waits = _route(monkeypatch, small_host = True, torchao = True)
     assert deferred == []
+
+
+def test_outstanding_bytes_skip_resident_groups(budget, fake_pin):
+    # an encoder's late cap subtracts what the denoiser pinner may still place: never its resident groups
+    groups = _fake_groups([1 << 20] * 4, resident = (0, 1, 2))
+    pinner = dm._GroupPinner(torch.nn.Module(), groups, torch.device("cpu"), byte_cap = lambda: 0)
+    assert pinner.outstanding_bytes() == 4 << 20
+    pinner.skip_resident = True
+    assert pinner.outstanding_bytes() == 1 << 20
 
 
 def _stream_route(
