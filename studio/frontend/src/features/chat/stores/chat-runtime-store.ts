@@ -6723,7 +6723,11 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
         params: getPresetOwnedParams(withoutActiveThreadParams(state, state.params)),
       };
     }
-    state.setParams(applyPresetForProvider(state.params, preset, null), { persist: false });
+    // fromPreset drops this model's memory here only, or the next status replay put it back on top.
+    state.setParams(applyPresetForProvider(state.params, preset, null), {
+      persist: false,
+      fromPreset: true,
+    });
     useChatRuntimeStore.setState({
       activePreset: preset.name,
       activePresetSource: getPresetSource(preset.name),
@@ -6744,9 +6748,9 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
   state.setActivePreset(exists ? before.name : fallback.name);
   state.setActivePresetSource(exists ? before.source : getPresetSource(fallback.name));
   const live = useChatRuntimeStore.getState();
-  // Under Default the status merge already put this model's recommendation on; keep it.
+  // Under Default the status merge already put a local model's recommendation on; keep it.
   const values =
-    exists && before.source === "builtin-default"
+    exists && before.source === "builtin-default" && !isExternalModelId(modelId)
       ? Object.fromEntries(
           Object.entries(before.params).filter(([key]) => !RECOMMENDED_KEYS.has(key)),
         )

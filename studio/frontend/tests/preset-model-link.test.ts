@@ -381,6 +381,26 @@ test("a second chat switched between two linked models gets its own sampling bac
   }
 });
 
+test("a status replay of the linked model keeps its preset over the model's memory", async () => {
+  useChatRuntimeStore.setState({ paramsByModel: { [QWEN]: { temperature: 0.66 } } });
+  await switchTo(QWEN);
+  loadOrPoll(QWEN);
+  await Promise.resolve();
+  assert.equal(live().temperature, 0.2);
+  assert.equal(live().systemPrompt, "Cite your sources.");
+});
+
+test("leaving a link under Default for an external model puts the earlier values back", async () => {
+  await switchTo(GEMMA);
+  await switchTo(QWEN);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, checkpoint: "external::prov-1::gpt-x" });
+  await Promise.resolve();
+  assert.equal(live().activePreset, "Default");
+  assert.equal(live().temperature, 0.55, "the values from before the link, not the link's 0.2");
+  assert.equal(live().systemPrompt, "");
+});
+
 test("an unlinked model under Default still follows its recommendation", async () => {
   await switchTo(LLAMA);
   assert.deepEqual(live(), {
