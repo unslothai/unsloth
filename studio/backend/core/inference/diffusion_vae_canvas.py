@@ -273,7 +273,6 @@ def tile_batch_size(vae: Any, tile: Any, count: int) -> int:
     if kept is not None and kept <= fit:
         return kept
     batch = max(1, min(TILE_BATCH_MAX, fit, count))
-    # Even groups: the same number of decoder calls, the tail no smaller than needed.
     calls = -(-count // batch)
     batch = sizes[key] = -(-count // calls)
     return batch
@@ -394,8 +393,6 @@ class TileGraphs:
     def drop(self) -> None:
         if self.replicas:
             import torch
-
-            # Main waited on every replay; the sync also covers graphs dropped between decodes.
             torch.cuda.synchronize(self.device)
         self.replicas = []
 

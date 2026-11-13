@@ -273,7 +273,6 @@ def test_half_decoder_falls_back_to_fp32_on_a_bad_decode(monkeypatch):
     vae = _tiny_image_vae()
     C.install(vae, "cpu")
     assert C.half_decoder_ok(vae)
-    # Pretend the fp16 decoder engaged; its first decode returns NaN.
     vae._unsloth_canvas_half = True
     stock_decoder = vae.decoder.forward
     calls = []
@@ -392,7 +391,6 @@ def test_race_times_runs_not_single_calls():
     """Replicas overlap: a run of N calls is timed first start to last end, so per-call intervals that undercount
     the overlapped replays cannot make an arm look faster than it is."""
     r = C._Race((4,))
-    # eager: 3 calls of 10 ms back to back
     r.pending += [(0, _Ev(0), _Ev(10)), (0, _Ev(10), _Ev(20)), (0, _Ev(20), _Ev(30))]
     # 4 replicas: each call's own interval is 1 ms (its replay ran ahead), the run took 36 ms
     r.pending += [
