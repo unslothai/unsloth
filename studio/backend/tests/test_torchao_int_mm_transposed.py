@@ -37,7 +37,6 @@ def _operands(
     k = 128,
     n = 96,
 ):
-    # meta: skips the CPU branch without a GPU
     x = torch.empty(m, k, dtype = torch.int8, device = "meta")
     w = torch.empty(n, k, dtype = torch.int8, device = "meta")  # torchao qdata [N, K]
     return x, w
