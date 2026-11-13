@@ -7471,6 +7471,8 @@ _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
 
 # llama-server's --cache-ram default (MiB): the host-RAM prompt cache it grows into.
 _LLAMA_CACHE_RAM_DEFAULT_MIB = 8192
+# llama-server's own host RAM with every layer on a GPU (0.9 GiB on a T4); the fit charges VRAM only.
+_LLAMA_SERVER_HOST_MIB = 1024
 
 
 def _prompt_cache_host_bytes(
@@ -16439,6 +16441,44 @@ class LlamaCppBackend:
             return self._FIT_LOAD_MODE
         return None
 
+    def _sized_cache_ram_mib(
+        self, fit_kwargs: Mapping[str, Any], state_bytes: int
+    ) -> Optional[int]:
+        """Largest --cache-ram up to one saved full-context state (target + draft + checkpoints,
+        server-task.cpp skips a bigger one) the fit still holds; None keeps the default."""
+        mib = 1024 * 1024
+        avail = self._available_system_memory_mib()
+        if avail is not None:
+            # Another live server's cap is RAM it may still grow into, not yet out of MemAvailable.
+            avail -= self._other_sized_cache_mib()
+
+        def fits(size: int) -> bool:
+            return (
+                self._fit_derived_load_mode(
+                    **{
+                        **fit_kwargs,
+                        "host_only_bytes": fit_kwargs["host_only_bytes"]
+                        + (size + _LLAMA_SERVER_HOST_MIB) * mib,
+                        "avail_mib": avail,
+                        "announce": False,
+                    }
+                )
+                == self._FIT_LOAD_MODE
+            )
+
+        low = _LLAMA_CACHE_RAM_DEFAULT_MIB
+        high = -(-state_bytes // mib)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if fits(mid):
+                low = mid
+            else:
+                high = mid - 1
+        return low if low > _LLAMA_CACHE_RAM_DEFAULT_MIB else None
+
+    # Only ever reassigned, so the shared default is safe; the --cache-ram pair this launch sized.
+    _sized_cache_ram_flags: list[str] = []
+
     # Chosen by measurement: dio was fastest cold on large models; kept at none because that was
     # requested. dio has no pre-enum spelling, so old builds would emit nothing.
     _FIT_LOAD_MODE = "none"
@@ -23661,6 +23701,7 @@ class LlamaCppBackend:
         if replay is None:
             return None
         # Replay runs on no GPU, so give the CPU attempt llama.cpp's auto mmap back.
+        replay = _without_subsequence(replay, self._sized_cache_ram_flags)
         if self._fit_load_mode_flags:
             replay = _without_subsequence(replay, self._fit_load_mode_flags)
             logger.info(
@@ -25146,6 +25187,7 @@ class LlamaCppBackend:
                 # for llama.cpp's own default. Bound before the try like the verdict
                 # flags above: the except path falls through to the launch, which reads it.
                 _fit_load_mode: Optional[str] = None
+                _planned_cache_ram = cache_ram
                 _managed_lazy_flags: Optional[list[str]] = None
                 _host_input_embd = 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
@@ -29022,6 +29064,45 @@ class LlamaCppBackend:
                                 "experts pinned; launching without --moe-cache-mib.",
                                 _moe_expert_bytes / (1024**3),
                             )
+                    # Sized last, so it takes only RAM the decisions above (priced at the default) left.
+                    if (
+                        cache_ram is None
+                        # Windows full offload (never use_fit) sets --cache-ram 0 itself.
+                        and (sys.platform != "win32" or use_fit)
+                        and server_caps.get("supports_cache_ram")
+                        and not _extra_args_set_any_flag(_fit_extras, _CACHE_RAM_FLAGS)
+                        and not str(_fit_env.get("LLAMA_ARG_CACHE_RAM") or "").strip()
+                    ):
+                        _cache_fit = dict(_fit_load_mode_kwargs)
+                        if not _moe_cache_lazy_table:
+                            _cache_fit["host_only_bytes"] += int(
+                                _moe_table_bytes * _LAZY_RESIDENT_MARGIN_FRAC
+                            )
+                        if _moe_cache_candidate and _moe_cache_ram_ok:
+                            _cache_fit["model_size"] = max(
+                                1, _cache_fit["model_size"] - _moe_expert_bytes
+                            )
+                            _cache_fit["host_only_bytes"] = (
+                                max(
+                                    0,
+                                    _cache_fit["host_only_bytes"]
+                                    - (_moe_table_bytes if _moe_cache_lazy_table else 0),
+                                )
+                                + _moe_expert_bytes
+                            )
+                        _planned_cache_ram = self._sized_cache_ram_mib(
+                            _cache_fit,
+                            _cache_fit["kv_cache_bytes"]
+                            + _cache_fit["mtp_bytes"]
+                            + _ckpt_host_bytes,
+                        )
+                        if _planned_cache_ram is not None:
+                            logger.info(
+                                "Prompt cache: --cache-ram %d MiB so a saved conversation "
+                                "of up to %d tokens is kept.",
+                                _planned_cache_ram,
+                                effective_ctx,
+                            )
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
@@ -29030,6 +29111,7 @@ class LlamaCppBackend:
                     _placement_verdict_partial = False
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
+                    _planned_cache_ram = cache_ram
                     _managed_lazy_flags = None
                     _moe_cache_candidate = _moe_cache_ram_ok = _moe_cache_lazy_table = False
                     # And a half-built snapshot is not a price either: the throw can
@@ -29395,9 +29477,13 @@ class LlamaCppBackend:
                             "llama-server has no --ctx-checkpoints; skipping the requested %s.",
                             ctx_checkpoints,
                         )
-                if cache_ram is not None:
+                # Priced against this placement only: every rung that drops the fit's load mode drops it too.
+                self._sized_cache_ram_flags = []
+                if _planned_cache_ram is not None:
                     if server_caps.get("supports_cache_ram"):
-                        cmd.extend(["--cache-ram", str(int(cache_ram))])
+                        cmd.extend(["--cache-ram", str(int(_planned_cache_ram))])
+                        if cache_ram is None:
+                            self._sized_cache_ram_flags = cmd[-2:]
                     else:
                         logger.info(
                             "llama-server has no --cache-ram; skipping the requested %s MiB.",
@@ -31335,6 +31421,7 @@ class LlamaCppBackend:
 
                 def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
                     """Drops Unsloth's --load-mode on a --flash-attn off respawn (OOM instead of paging); do NOT clear the record, since the CPU fallback replays these tokens."""
+                    fa_cmd = _without_subsequence(fa_cmd, self._sized_cache_ram_flags)
                     if not self._fit_load_mode_flags:
                         return fa_cmd
                     stripped = _without_subsequence(fa_cmd, self._fit_load_mode_flags)
@@ -31920,6 +32007,7 @@ class LlamaCppBackend:
                             # the load fits, and that proof is what just failed, so
                             # give the retry llama.cpp's auto back. Only Unsloth's
                             # own tokens; a user's --load-mode is untouched.
+                            _run = _without_subsequence(_run, self._sized_cache_ram_flags)
                             if self._fit_load_mode_flags:
                                 _run = _without_subsequence(_run, self._fit_load_mode_flags)
                                 # The record is NOT cleared: it describes `cmd`, which
@@ -32732,6 +32820,8 @@ class LlamaCppBackend:
                         self._record_load_warning(_retry_host_msg)
                         # Restore what cmd means: a --fit retry may have recorded a page-lock that cmd never carried.
                         _fit_mode_left_cmd = bool(self._fit_load_mode_flags)
+                        cmd = _without_subsequence(cmd, self._sized_cache_ram_flags)
+                        self._sized_cache_ram_flags = []
                         if self._fit_load_mode_flags:
                             cmd = _without_subsequence(cmd, self._fit_load_mode_flags)
                             self._fit_load_mode_flags = []
@@ -33370,6 +33460,9 @@ class LlamaCppBackend:
                             # a user's --load-mode is theirs. The record is NOT cleared:
                             # the fallbacks below respawn from an argv that carries these
                             # tokens and has to be able to name them.
+                            _cpu_projector_cmd = _without_subsequence(
+                                _cpu_projector_cmd, self._sized_cache_ram_flags
+                            )
                             if self._fit_load_mode_flags:
                                 _stripped_cpu_projector_cmd = _without_subsequence(
                                     _cpu_projector_cmd, self._fit_load_mode_flags
@@ -35161,6 +35254,21 @@ class LlamaCppBackend:
         for idx, mib in media_held_mib().items():
             held[idx] = held.get(idx, 0) + mib
         return held
+
+    def _other_sized_cache_mib(self) -> int:
+        serving = _serving_backends_snapshot()
+        if self not in serving:
+            return 0
+        total = 0
+        for backend in serving:
+            flags = getattr(backend, "_sized_cache_ram_flags", None)
+            if backend is self or not flags or not getattr(backend, "is_active", False):
+                continue
+            poll = getattr(getattr(backend, "_process", None), "poll", None)
+            if callable(poll) and poll() is not None:
+                continue
+            total += int(flags[-1])
+        return total
 
     def _other_servers_running(self) -> bool:
         serving = _serving_backends_snapshot()

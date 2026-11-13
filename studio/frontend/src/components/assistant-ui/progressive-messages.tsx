@@ -808,6 +808,17 @@ function useThreadWindow(
     spacer("bottom")?.style.setProperty("height", `${spacers.bottom}px`);
   }, [atFirstRow, spacers, viewportRef]);
 
+  // Role and ordinals before the first style read: written only after the anchor reads, [role]
+  // selectors restyled every newly mounted row twice. The layout effect still publishes them too.
+  useInsertionEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const windowed = win != null;
+    if (!windowed && !ordinalsRef.current) return;
+    publishOrdinals(viewport, readMetas(), windowed);
+    ordinalsRef.current = windowed;
+  }, [win, count, readMetas, viewportRef]);
+
   useLayoutEffect(() => {
     winRef.current = win;
     const captured = anchorRef.current;
