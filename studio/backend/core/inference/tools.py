@@ -18072,6 +18072,13 @@ def _check_signal_escape_patterns(code: str):
     _CMD_KWARGS = frozenset(
         {"args", "command", "executable", "path", "file", "cmd", "program", "argv"}
     )
+    # Variadic argv APIs: index of argv[0] among the positionals (after the path, or mode + path).
+    _VARIADIC_ARGV_START = {
+        "asyncio.create_subprocess_exec": 0,
+        "loop.subprocess_exec": 0,
+        **{f"os.exec{s}": 1 for s in ("l", "le", "lp", "lpe")},
+        **{f"os.spawn{s}": 2 for s in ("l", "le", "lp", "lpe")},
+    }
 
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
@@ -18461,10 +18468,21 @@ def _check_signal_escape_patterns(code: str):
                 positional = node.args[1:] if shell_func.startswith("loop.") else node.args
                 all_call_args = list(positional) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
-                literal_args = [_extract_string_from_node(a) for a in all_call_args]
-                shell_commands.extend(a for a in literal_args if a is not None)
-                if len(literal_args) > 1 and None not in literal_args:
-                    shell_commands.append(shlex.join(literal_args))
+                argv_start = _VARIADIC_ARGV_START.get(shell_func)
+                if argv_start is None:
+                    shell_commands.extend(
+                        s for s in map(_extract_string_from_node, all_call_args) if s is not None
+                    )
+                else:
+                    # Operands are argv items, not commands: `-name '*.py'` is search data.
+                    argv = []
+                    for a in positional[argv_start:]:
+                        if isinstance(a, ast.Starred):
+                            argv.extend(_extract_strings_from_list(a.value) or ())
+                        elif (s := _extract_string_from_node(a)) is not None:
+                            argv.append(s)
+                    if argv:
+                        shell_commands.append(shlex.join(argv))
                 for a in all_call_args:
                     if isinstance(a, (ast.List, ast.Tuple)):
                         shell_commands.append(shlex.join(_extract_strings_from_list(a)))

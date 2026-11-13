@@ -1677,6 +1677,17 @@ def test_python_shell_command_terminal_asks_about_is_high_risk(command, template
             "import timeit\ns = \"import os; os.system('git push --force')\"\ntimeit.timeit(s, number=1)",
             True,
         ),
+        ("import os\nos.execlp('git', 'git', 'push', '--force')", True),
+        ("import os\nos.spawnlp(os.P_WAIT, 'git', 'git', 'push', '--force')", True),
+        (
+            "import asyncio\nasyncio.run(asyncio.create_subprocess_exec('find', 'src', '-name', '*.py'))",
+            False,
+        ),
+        (
+            "import asyncio\nasyncio.run(asyncio.create_subprocess_exec('git', 'commit', '-m', \"it's done\"))",
+            False,
+        ),
+        ("import os\nos.execlp('git', 'git', 'status')", False),
         ("import timeit as t\nt.timeit('sum(range(100))', number=1000)", False),
         ("import timeit\ns = 'sum(range(100))'\ntimeit.timeit(s, number=1000)", False),
         ("import timeit\nprint(timeit.timeit('sum(range(100))', number=1000))", False),
