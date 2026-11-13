@@ -66,11 +66,35 @@ def _gguf_architecture(gguf_path: str) -> str:
     return field.contents() if field is not None else ""
 
 
-# convert.py's __main__ overwrites sys.argv and importing it first is circular.
+# ggml-org/llama.cpp#32102 merges these; the pinned q4k converter drops them and exits 0.
+_MERGED_LINEAR_ATTENTION = (".attn_qkv_gate.weight", ".ssm_beta_alpha.weight")
+
+
+def _has_merged_linear_attention(gguf_path: str) -> bool:
+    import gguf
+    return any(
+        t.name.endswith(_MERGED_LINEAR_ATTENTION) for t in gguf.GGUFReader(gguf_path).tensors
+    )
+
+
+# convert.py's __main__ overwrites sys.argv and importing it first is circular. argv[3] names the
+# family: q4k sizes Qwen3.5 by geometry only when general.name says Qwen3.x, a fine-tune's is "Model".
 _RUN_CONVERTER = (
-    "import sys; from q4nx import create_converter; "
-    "create_converter(sys.argv[1], '').convert(q4nx_path = sys.argv[2], weights_type = 'language')"
+    "import sys; from q4nx import create_converter; family = ''\n"
+    "if len(sys.argv) > 3:\n"
+    "    from gguf import GGUFReader; from q4nx.constants import ModelArchNames\n"
+    "    from q4nx.model_converter import _resolve_qwen35\n"
+    "    family = ModelArchNames[_resolve_qwen35(GGUFReader(sys.argv[1]), sys.argv[3], None)][0]\n"
+    "create_converter(sys.argv[1], family).convert(q4nx_path = sys.argv[2], weights_type = 'language')"
 )
+# MiniCPM-V 4.6 also exports as qwen35, so the HF config decides, not the GGUF.
+_QWEN35_MODEL_TYPES = ("qwen3_5", "qwen3_5_text")
+
+
+def _family_hint(architecture: str, config: Optional[dict]) -> Optional[str]:
+    if architecture == "qwen35" and (config or {}).get("model_type") in _QWEN35_MODEL_TYPES:
+        return "Qwen3.5"
+    return None
 
 
 @contextlib.contextmanager
@@ -100,12 +124,23 @@ def staged_output(out_dir: Path):
         shutil.rmtree(staging, ignore_errors = True)
 
 
-def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
+def convert_gguf_to_q4nx(
+    gguf_path: str,
+    out_dir: Path,
+    config: Optional[dict] = None,
+) -> None:
     from utils.paths.storage_roots import studio_root
 
     require_converter_deps()
     installer = _installer()
-    name = installer.converter_for_architecture(_gguf_architecture(gguf_path))
+    architecture = _gguf_architecture(gguf_path)
+    name = installer.converter_for_architecture(architecture)
+    family = _family_hint(architecture, config) if name == "q4k" else None
+    if name == "q4k" and _has_merged_linear_attention(gguf_path):
+        raise RuntimeError(
+            f"{os.path.basename(gguf_path)} stores Qwen3.5's linear-attention weights merged, "
+            "which the Q4NX converter cannot read yet (it would write a model missing them)."
+        )
     script = installer.install(studio_root() / "q4nx_converter", name = name)
     out_dir.mkdir(parents = True, exist_ok = True)
     logger.info(
@@ -118,7 +153,14 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     # Dies with its parent: a cancelled export's worker must not leave a converter holding a model.
     process = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
-            [sys.executable, "-c", _RUN_CONVERTER, gguf_path, str(out_dir)],
+            [
+                sys.executable,
+                "-c",
+                _RUN_CONVERTER,
+                gguf_path,
+                str(out_dir),
+                *([family] if family else []),
+            ],
             cwd = str(script.parent),
             env = utf8_child_env(),
             stderr = subprocess.PIPE,
@@ -235,7 +277,7 @@ def convert_existing_gguf(
     if found["tokenizer_config.json"] is None:
         raise RuntimeError(f"{base_model} has no tokenizer_config.json, which FastFlowLM needs.")
     with _CONVERT_LOCK, staged_output(out_dir) as staging:
-        convert_gguf_to_q4nx(str(gguf_path), staging)
+        convert_gguf_to_q4nx(str(gguf_path), staging, _read_json(found["config.json"]))
         for name in TOKENIZER_FILES:
             # The HF tokenizer.json replaces the one the converter rebuilds from the GGUF.
             if found[name] is not None:
