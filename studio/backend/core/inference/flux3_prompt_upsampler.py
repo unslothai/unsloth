@@ -1197,7 +1197,16 @@ def _accelerator_memory_mib(
 
         with diffusion_device_scope(ordinal if device == "cuda" else None):
             snap = snapshot_device_memory(SimpleNamespace(device = device, backend = device))
-        return snap.free_mib, snap.total_mib, device
+            free_mib = snap.free_mib
+            if device == "cuda" and free_mib is not None:
+                from utils.hardware.hardware import rocm_linux_kernel_free_mib
+
+                # On Linux ROCm the HIP figure misses Vulkan users (this server and sd-server in the ROCm image)
+                # and the desktop, so a resident server would never read as tight. The kernel's count sees them.
+                kernel_free = rocm_linux_kernel_free_mib()
+                if kernel_free is not None:
+                    free_mib = min(free_mib, kernel_free)
+        return free_mib, snap.total_mib, device
     except Exception:  # noqa: BLE001 -- unknown memory leaves the choice to the defaults
         return None, None, "unknown"
 

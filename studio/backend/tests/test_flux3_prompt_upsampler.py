@@ -217,6 +217,37 @@ def test_vram_is_tight():
     assert not pup.vram_is_tight(None, None)
 
 
+def test_accelerator_memory_counts_what_the_hip_figure_misses(monkeypatch):
+    """Linux ROCm: hipMemGetInfo misses Vulkan users, so a resident Vulkan server (5.8 GiB here) read as 11.8 GiB
+    free and was never released before sd-server loaded. The kernel's count wins when it is lower."""
+    import contextlib
+    import types
+
+    import torch
+
+    from core.inference import diffusion_device, diffusion_memory
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        diffusion_device, "diffusion_device_scope", lambda o: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(
+        diffusion_memory,
+        "snapshot_device_memory",
+        lambda target: types.SimpleNamespace(free_mib = 11_802, total_mib = 12_272),
+    )
+    monkeypatch.setattr(hardware, "rocm_linux_kernel_free_mib", lambda *a, **k: 5_454)
+    free, total, device = pup._accelerator_memory_mib()
+    assert (free, total, device) == (5_454, 12_272, "cuda")
+    assert pup.vram_is_tight(free, total)
+    # Unknown or higher: the driver's figure stands.
+    monkeypatch.setattr(hardware, "rocm_linux_kernel_free_mib", lambda *a, **k: None)
+    assert pup._accelerator_memory_mib()[0] == 11_802
+    monkeypatch.setattr(hardware, "rocm_linux_kernel_free_mib", lambda *a, **k: 12_000)
+    assert pup._accelerator_memory_mib()[0] == 11_802
+
+
 # ── paths and fallbacks ─────────────────────────────────────────────────────────────────────────────────────────────
 def test_env_override_paths(monkeypatch, tmp_path):
     model = tmp_path / "pup.gguf"

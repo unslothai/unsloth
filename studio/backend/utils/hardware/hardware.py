@@ -3907,6 +3907,39 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
         return {}
 
 
+def rocm_linux_kernel_free_mib(device: Any = None, *, module: Any = None) -> Optional[int]:
+    """Free VRAM of a ROCm device as the kernel counts it (DRM sysfs: every process and every API), in MiB, or None when it cannot be told. On Linux, hipMemGetInfo counts only compute (KFD) allocations: a Vulkan llama-server or sd-server and the desktop are invisible to it (measured on an RX 6700 XT: a 2.5 GiB Vulkan llama-server left its free figure unchanged). The card is found by the PCI address torch reports, and only a card whose sysfs total matches torch's within ~10% is trusted (an APU's carve-out or a partitioned card is another memory scope). ``module`` defaults to torch.cuda; never raises."""
+    if platform.system() != "Linux":
+        return None
+    try:
+        import torch
+
+        if not getattr(torch.version, "hip", None):
+            return None
+        mod = module if module is not None else torch.cuda
+        index = mod.current_device() if device is None else device
+        props = mod.get_device_properties(index)
+        prefix = f"{int(props.pci_domain_id):04x}:{int(props.pci_bus_id):02x}:{int(props.pci_device_id):02x}."
+        torch_total = int(props.total_memory)
+        for bdf, _card_no, dev_dir in _rocm_linux_amdgpu_cards():
+            if not bdf.lower().startswith(prefix):
+                continue
+            with open(os.path.join(dev_dir, "mem_info_vram_used"), encoding = "utf-8") as f:
+                used_bytes = int(f.read().strip())
+            with open(os.path.join(dev_dir, "mem_info_vram_total"), encoding = "utf-8") as f:
+                total_bytes = int(f.read().strip())
+            if (
+                total_bytes <= 0
+                or torch_total <= 0
+                or abs(total_bytes - torch_total) > 0.1 * torch_total
+            ):
+                return None
+            return max(0, total_bytes - used_bytes) // (1024 * 1024)
+        return None
+    except Exception:
+        return None
+
+
 # ── Windows AMD/ROCm per-adapter VRAM (issue #7072) ──────────────────────────
 # Windows ROCm: hipMemGetInfo reports free==total, so read used from per-LUID counters.
 _ROCM_WIN_ADAPTER_MIN_BYTES = 64 * 1024 * 1024  # 64 MiB
