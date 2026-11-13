@@ -372,7 +372,9 @@ def test_packed_wanted_rule(monkeypatch):
     cuda = type("T", (), {"device": "cuda"})()
     cpu = type("T", (), {"device": "cpu"})()
     monkeypatch.delenv(gi.GROUPED_PACKED_ENV, raising = False)
-    assert gi.grouped_packed_wanted(cuda, "torchao") is True
+    assert (
+        gi.grouped_packed_wanted(cuda, "torchao") is True
+    )  # video (the default caller) keeps packed codes
     assert gi.grouped_packed_wanted(cuda, None) is False  # no int8 runtime: decode at load
     assert gi.grouped_packed_wanted(cpu, "native") is False
     assert gi.grouped_packed_wanted(cuda, "torchao", lora = True) is False
@@ -539,3 +541,147 @@ def test_a_dequantized_layer_the_family_keeps_fp32_widens_to_fp32(grouped_file):
     assert out.weight.dtype == torch.float32 and out.bias.dtype == torch.float32
     assert torch.equal(out.weight, _expected_dense(tensors, "blocks.0.out"))
     assert model.blocks[1].to_out.weight.dtype == torch.bfloat16
+
+
+def test_image_loads_decode_at_load_unless_memory_tight(monkeypatch):
+    cuda = type("T", (), {"device": "cuda"})()
+    cpu = type("T", (), {"device": "cpu"})()
+    monkeypatch.delenv(gi.GROUPED_PACKED_ENV, raising = False)
+    choice = gi.grouped_packed_choice
+    assert choice(cuda, "torchao", image = True) == (False, "image_resident")
+    assert choice(cuda, "native", image = True, tight = True) == (True, "memory_tight")
+    assert choice(cuda, "torchao") == (True, "video")
+    assert choice(cuda, None, image = True, tight = True) == (False, "no_int8_runtime")
+    assert choice(cpu, "native", image = True, tight = True) == (False, "not_cuda")
+    assert choice(cuda, "native", image = True, tight = True, lora = True) == (False, "lora")
+    monkeypatch.setenv(gi.GROUPED_PACKED_ENV, "1")  # forced packed: images too
+    assert choice(cuda, "torchao", image = True) == (True, "env_on")
+    monkeypatch.setenv(gi.GROUPED_PACKED_ENV, "0")  # kill switch: video decodes too
+    assert choice(cuda, "torchao") == (False, "env_off")
+    assert choice(cuda, "native", image = True, tight = True) == (False, "env_off")
+
+
+def test_status_reports_which_form_ran(grouped_file):
+    path, _dense, _tensors = grouped_file
+    packed = _load(path, int8_backend = "native", grouped_packed = True, grouped_reason = "memory_tight")
+    form = gi.grouped_form_status(packed)
+    assert form == {"form": "packed", "formats": [gi.W6A8], "layers": 8, "reason": "memory_tight"}
+    assert packed._unsloth_comfy_quant["grouped_form"] == "packed"
+    assert gi.grouped_form_note(packed) == "; W6A8 kept packed (8 layers, memory_tight)"
+    decoded = _load(
+        path, int8_backend = "native", grouped_packed = False, grouped_reason = "image_resident"
+    )
+    form = gi.grouped_form_status(decoded)
+    assert form["form"] == "decoded_at_load" and form["reason"] == "image_resident"
+    assert gi.grouped_packed_layers(decoded) == 0
+    assert "decoded to int8 at load" in gi.grouped_form_note(decoded)
+    dense = _load(path, int8_backend = None)  # no int8 runtime: the loader's own rule, bf16 weights
+    form = gi.grouped_form_status(dense)
+    assert form["form"] == "dequantized" and form["reason"] == "not_cuda"
+    assert (
+        gi.grouped_form_status(torch.nn.Linear(2, 2)) is None and gi.grouped_form_note(None) == ""
+    )
+
+
+def test_race_keeps_the_incumbent_inside_the_margin():
+    win = gi.race_winner
+    assert win({"int8": 10.0, "dense": 12.0}) == "int8"
+    assert win({"int8": 10.0, "dense": 9.0}) == "dense"  # the incumbents race as before
+    assert (
+        win({"int8": 10.0, "dense": 12.0, "fused": 9.9}) == "int8"
+    )  # 1% faster: inside the margin
+    assert win({"int8": 10.0, "dense": 12.0, "fused": 9.7}) == "fused"  # 3% faster
+    assert win({"int8": 10.0, "dense": 12.0, "fused": 9.7, "int8r": 9.0}) == "int8r"
+    assert win({"fused": 3.0}) == "fused"  # an incumbent that could not run loses
+
+
+def _cpu_layer(bits = 6):
+    torch.manual_seed(0)
+    k, n, g = 512, 64, 16
+    codes = torch.randint(0, 1 << bits, (n, k), dtype = torch.int32)
+    s_rel = torch.full((n, k // g), 0.25).to(torch.float8_e4m3fn)
+    return gi.grouped_linear_class()(
+        k,
+        n,
+        qdata = gi.pack_codes(codes, bits),
+        s_rel = s_rel,
+        s_channel = torch.rand(n) * 0.01,
+        bits = bits,
+        group_size = g,
+        rotation = 256,
+    )
+
+
+def test_forward_dispatches_the_raced_route(monkeypatch):
+    layer = _cpu_layer()
+    calls = []
+    for name in ("_int8", "_int8r", "_fused", "_dense"):
+        monkeypatch.setattr(layer, name, lambda x, name = name: calls.append(name) or x[..., :64])
+    monkeypatch.setattr(layer, "_int8_ok", lambda x: True)
+    monkeypatch.setattr(layer, "_placed", lambda x: None)
+    x = torch.randn(32, 512, dtype = torch.bfloat16)
+    layer._tuned, layer._rotq, layer._fused_ok = True, True, True
+    for route, want in (
+        ("fused", "_fused"),
+        ("int8r", "_int8r"),
+        ("int8", "_int8"),
+        ("dense", "_dense"),
+    ):
+        calls.clear()
+        monkeypatch.setattr(layer, "_race", lambda x, route = route: route)
+        layer(x)
+        assert calls == [want], route
+    # a route whose card decision went away (kill switch / failed probe) falls back to the int8 route
+    layer._fused_ok = False
+    calls.clear()
+    monkeypatch.setattr(layer, "_race", lambda x: "fused")
+    layer(x)
+    assert calls == ["_int8"]
+    layer._rotq = False
+    calls.clear()
+    monkeypatch.setattr(layer, "_race", lambda x: "int8r")
+    layer(x)
+    assert calls == ["_int8"]
+
+
+def test_race_candidates_follow_the_card_decisions():
+    layer = _cpu_layer()
+    x = torch.randn(32, 512, dtype = torch.bfloat16)
+    names = lambda: [r for r, _ in layer._routes(x)]  # noqa: E731
+    layer._tuned, layer._rotq, layer._fused_ok = True, True, True
+    assert names() == ["int8", "dense", "fused"]
+    layer._tuned = False  # sm_8x on Triton >= 3.8: the rotation kernel feeds torch._int_mm
+    assert names() == ["int8", "dense", "fused", "int8r"]
+    layer._rotq = False  # no fused act quant: neither added route
+    assert names() == ["int8", "dense"]
+    layer._tuned, layer._rotq, layer._fused_ok = True, True, False
+    assert names() == ["int8", "dense"]
+    assert [r for r, _ in layer._routes(x.half())] == [
+        "int8",
+        "dense",
+    ]  # added routes are bf16 only
+
+
+def test_card_decisions_are_cached_and_honour_the_kill_switches(monkeypatch):
+    import core.inference.diffusion_convrot_quant as cr
+
+    gi._ROTQ.clear()
+    probes = []
+    monkeypatch.setattr(cr, "rotquant_device_config", lambda i: probes.append(i) or (128, 32, 8, 3))
+    monkeypatch.delenv(cr.INT8_ROTQUANT_ENV, raising = False)
+    assert gi._rotq_on(0) is True and gi._rotq_on(0) is True and probes == [0]
+    monkeypatch.setenv(cr.INT8_ROTQUANT_ENV, "0")
+    assert gi._rotq_on(1) is False and probes == [0]
+    monkeypatch.setattr(cr, "rotquant_device_config", lambda i: None)
+    monkeypatch.delenv(cr.INT8_ROTQUANT_ENV, raising = False)
+    assert gi._rotq_on(2) is False
+    gi._ROTQ.clear()
+    gi._FUSED.clear()
+    import sys
+    import types
+
+    fake = types.ModuleType("core.inference.diffusion_grouped_int8_gemm")
+    fake.fused_config = lambda i: None if i else (64, 128, 128)
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_grouped_int8_gemm", fake)
+    assert gi._fused_on(0) is True and gi._fused_on(3) is False
+    gi._FUSED.clear()

@@ -1338,6 +1338,7 @@ def load_comfy_quant_transformer(
     fp8_storage: Optional[bool] = None,
     fp8_widen_chosen: bool = False,
     grouped_packed: Optional[bool] = None,
+    grouped_reason: Optional[str] = None,
 ) -> Any:
     """Build ``transformer_cls`` from the ComfyUI-quantized ``path``.
 
@@ -1402,9 +1403,10 @@ def load_comfy_quant_transformer(
     if fp8_storage is None:
         fp8_storage = fp8_storage_forced() and comfy_fp8_storage(target)
     if grouped_packed is None:
-        from .diffusion_grouped_int8 import grouped_packed_wanted
-        grouped_packed = grouped_packed_wanted(target, int8_backend)
-    grouped_packed = bool(grouped_packed) and any(l.packed_bits for l in scan.layers.values())
+        from .diffusion_grouped_int8 import grouped_packed_choice
+        grouped_packed, grouped_reason = grouped_packed_choice(target, int8_backend)
+    grouped_any = any(l.packed_bits for l in scan.layers.values())
+    grouped_packed = bool(grouped_packed) and grouped_any
     from .diffusion_packed_block import (
         PACKED_BLOCK_ATTR,
         packed_block_args,
@@ -2112,6 +2114,31 @@ def load_comfy_quant_transformer(
             from .diffusion_grouped_int8 import GROUPED_PACKED_ATTR
             info["grouped_packed"] = len(grouped_keep)
             setattr(model, GROUPED_PACKED_ATTR, len(grouped_keep))
+        if grouped_any:
+            from .diffusion_grouped_int8 import GROUPED_FORM_ATTR
+
+            # which form the W4A8 / W6A8 layers took (status), and why
+            form = {
+                # decoded: int8 ConvRot layers where the int8 runtime runs, else bf16 weights
+                "form": "packed"
+                if grouped_keep
+                else "decoded_at_load"
+                if int8_backend is not None
+                else "dequantized",
+                "formats": sorted(
+                    {
+                        l.packed_format
+                        for l in scan.layers.values()
+                        if l.packed_bits and l.packed_format
+                    }
+                ),
+                "layers": len(grouped_keep)
+                if grouped_keep
+                else sum(1 for l in scan.layers.values() if l.packed_bits),
+                "reason": grouped_reason or ("requested" if grouped_packed else "decode requested"),
+            }
+            info["grouped_form"] = form["form"]
+            setattr(model, GROUPED_FORM_ATTR, form)
         packed_formats = sorted({l.packed_format for l in scan.layers.values() if l.packed_format})
         if packed_formats:
             info["packed_formats"] = packed_formats

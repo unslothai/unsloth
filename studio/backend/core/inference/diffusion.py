@@ -10263,18 +10263,25 @@ class DiffusionBackend:
                                     offload = _comfy_offload,
                                     lora = _has_active_lora(loras),
                                 )
-                                from .diffusion_grouped_int8 import grouped_packed_wanted
+                                from .diffusion_grouped_int8 import grouped_packed_choice
 
+                                # W4A8 / W6A8: decoded to int8 at load (INT8 speed) unless the placement streams /
+                                # offloads the denoiser, where packed codes move and hold 25% fewer bytes
+                                _grouped_packed, _grouped_reason = grouped_packed_choice(
+                                    target,
+                                    _comfy_int8,
+                                    lora = _has_active_lora(loras),
+                                    image = True,
+                                    tight = _comfy_offload,
+                                )
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
                                     comfy_scan,
                                     sf_kwargs,
                                     int8_backend = _comfy_int8,
-                                    # W4A8 / W6A8 codes stay packed where the int8 runtime runs (not under a LoRA)
-                                    grouped_packed = grouped_packed_wanted(
-                                        target, _comfy_int8, lora = _has_active_lora(loras)
-                                    ),
+                                    grouped_packed = _grouped_packed,
+                                    grouped_reason = _grouped_reason,
                                     fp8_backend = comfy_fp8_backend(
                                         target,
                                         fam.name,
@@ -12113,7 +12120,10 @@ class DiffusionBackend:
                 single_file_path,
                 scan,
                 keep_int8 = int8_backend is not None,
-                grouped_packed = grouped_packed_wanted(target, int8_backend, lora = lora),
+                # the loader's rule: an image denoiser stays packed only on an offloaded placement
+                grouped_packed = grouped_packed_wanted(
+                    target, int8_backend, lora = lora, image = True, tight = offload
+                ),
                 keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
                 target = target,
@@ -16468,6 +16478,8 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
+            # W4A8 / W6A8 file: kept packed or decoded to int8 at load, and why
+            "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(
                 tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
                 or getattr(state, "cuda_graphs", ())
@@ -16527,6 +16539,15 @@ def _small_host_int8(pipe: Any) -> bool:
     """Whether the small-host route stored a denoiser as int8 weights on this pipe."""
     info = small_host_engaged_on(pipe) or {}
     return any(str(v).startswith("int8") for v in (info.get("components") or {}).values())
+
+
+def _grouped_form_status(pipe: Any) -> Optional[dict]:
+    """``grouped_form_status`` of the denoiser (None for a load without W4A8 / W6A8 layers)."""
+    try:
+        from .diffusion_grouped_int8 import grouped_form_status
+        return grouped_form_status(getattr(pipe, "transformer", None))
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
 
 
 def _lora_load_block_reason(pipe: Any) -> Optional[str]:

@@ -387,13 +387,17 @@ def declaration_tensor(conf: dict) -> Any:
 import os  # noqa: E402
 import threading  # noqa: E402
 
-# Keep W4A8 / W6A8 codes packed on the device. ``auto`` (unset): on a CUDA / ROCm target whose int8 runtime runs;
-# ``1``: on any device (a CPU / MPS forward widens per layer); ``0``: decode to int8 at load (int8 bytes resident).
+# Keep W4A8 / W6A8 codes packed on the device. ``auto`` (unset): a video denoiser on a CUDA / ROCm target whose int8
+# runtime runs, an image denoiser only where its placement is memory tight (the plan streams / offloads it); every other
+# image load decodes the file to int8 at load (the smaller download, INT8 speed). ``1``: packed on any device (a CPU /
+# MPS forward widens per layer); ``0``: decode to int8 at load (int8 bytes resident).
 GROUPED_PACKED_ENV = "UNSLOTH_DIFFUSION_GROUPED_PACKED"
 # GEMM of a packed layer: ``auto`` races the int8 GEMM against the dense widen per shape; ``1`` always the int8
 # GEMM; ``0`` always the dense widen (the kill switch).
 GROUPED_GEMM_ENV = "UNSLOTH_DIFFUSION_GROUPED_INT8_GEMM"
 GROUPED_PACKED_ATTR = "_unsloth_grouped_packed"
+# Which form a load gave its W4A8 / W6A8 layers, and why (``grouped_form_status``).
+GROUPED_FORM_ATTR = "_unsloth_grouped_form"
 _OFF = ("0", "off", "false", "no")
 _ON = ("1", "on", "true", "yes", "force")
 _MIN_ROWS = 17
@@ -401,13 +405,51 @@ _RACE_ITERS = 3
 _RACE_LOCK = threading.Lock()
 # (device, N, K, bits, rows bucket) -> "int8" | "dense"
 _RACE: dict = {}
-_CALLS = {"int8": 0, "dense": 0}
+_CALLS = {"int8": 0, "int8r": 0, "fused": 0, "dense": 0}
 # card index -> whether Studio's tuned int8 GEMM op runs there (probed once, in eager)
 _TUNED: dict = {}
+# card index -> whether the fused ConvRot rotation + act quant kernel passed its bit-exact probe there
+_ROTQ: dict = {}
+# card index -> the fused unpack-in-mainloop GEMM's tile there, None = not covered (probed once, in eager)
+_FUSED: dict = {}
+# A route the race adds on top of the incumbent (int8 / dense) wins only by more than this fraction.
+_RACE_MARGIN = 0.02
 
 
 def _env(name: str) -> str:
     return (os.environ.get(name) or "").strip().lower()
+
+
+def grouped_packed_choice(
+    target: Any = None,
+    int8_backend: Optional[str] = None,
+    *,
+    lora: bool = False,
+    image: bool = False,
+    tight: bool = False,
+) -> tuple:
+    """``(keep packed, reason)`` for the W4A8 / W6A8 layers of a load (``GROUPED_PACKED_ENV``). Never under a LoRA
+    (dense Linears). ``image``: an image denoiser, packed only when ``tight`` (its placement streams / offloads the
+    denoiser, where 25% fewer bytes move per forward and stay resident); a video denoiser keeps packed codes (measured:
+    bf16 speed at half the memory)."""
+    raw = _env(GROUPED_PACKED_ENV)
+    if lora:
+        return False, "lora"
+    if raw in _OFF:
+        return False, "env_off"
+    if raw in _ON:
+        return True, "env_on"
+    device = getattr(target, "torch_device", None) or getattr(target, "device", None)
+    kind = getattr(device, "type", str(device or "").split(":")[0])
+    if kind != "cuda":
+        return False, "not_cuda"
+    if int8_backend is None:
+        return False, "no_int8_runtime"
+    if not image:
+        return True, "video"
+    if tight:
+        return True, "memory_tight"
+    return False, "image_resident"
 
 
 def grouped_packed_wanted(
@@ -415,16 +457,33 @@ def grouped_packed_wanted(
     int8_backend: Optional[str] = None,
     *,
     lora: bool = False,
+    image: bool = False,
+    tight: bool = False,
 ) -> bool:
-    """Whether a load keeps W4A8 / W6A8 layers packed (``GROUPED_PACKED_ENV``). Never under a LoRA (dense Linears)."""
-    raw = _env(GROUPED_PACKED_ENV)
-    if lora or raw in _OFF:
-        return False
-    if raw in _ON:
-        return True
-    device = getattr(target, "torch_device", None) or getattr(target, "device", None)
-    kind = getattr(device, "type", str(device or "").split(":")[0])
-    return kind == "cuda" and int8_backend is not None
+    """Whether a load keeps W4A8 / W6A8 layers packed (``grouped_packed_choice``)."""
+    return grouped_packed_choice(target, int8_backend, lora = lora, image = image, tight = tight)[0]
+
+
+def grouped_form_status(model: Any) -> Optional[dict]:
+    """``{"form": "packed" | "decoded_at_load" | "dequantized", "formats", "layers", "reason"}`` of a denoiser loaded from a W4A8 /
+    W6A8 file (the status field), None for any other load."""
+    form = getattr(model, GROUPED_FORM_ATTR, None)
+    return dict(form) if isinstance(form, dict) else None
+
+
+def grouped_form_note(model: Any) -> str:
+    """One status-line clause for ``grouped_form_status`` (empty without one)."""
+    form = grouped_form_status(model)
+    if not form:
+        return ""
+    names = (
+        "/".join("W4A8" if f == ASYM_W4A8 else "W6A8" for f in form.get("formats") or ())
+        or "W4A8/W6A8"
+    )
+    how = {"packed": "kept packed", "decoded_at_load": "decoded to int8 at load"}.get(
+        form.get("form"), "dequantized at load"
+    )
+    return f"; {names} {how} ({form.get('layers', 0)} layers, {form.get('reason')})"
 
 
 def grouped_gemm_mode() -> str:
@@ -463,6 +522,46 @@ def _tuned_on(index: Any) -> bool:
             hit = False
         _TUNED[index] = bool(hit)
     return bool(hit)
+
+
+def _rotq_on(index: Any) -> bool:
+    """Eager, once per card: arm the fused rotation + act quant kernel (its bit-exact probe; the verdict persists per
+    card) so packed layers quantize their activations through it even when no int8 Linear swap ran on the load."""
+    hit = _ROTQ.get(index)
+    if hit is None:
+        try:
+            from .diffusion_convrot_quant import rotquant_device_config, rotquant_enabled
+            hit = rotquant_enabled() and rotquant_device_config(int(index)) is not None
+        except Exception:  # noqa: BLE001 -- the stock rotation + quant
+            hit = False
+        _ROTQ[index] = bool(hit)
+    return bool(hit)
+
+
+def _fused_on(index: Any) -> bool:
+    """Eager, once per card: the fused unpack-in-mainloop GEMM passed its probe there (``diffusion_grouped_int8_gemm``)."""
+    if index not in _FUSED:
+        try:
+            from .diffusion_grouped_int8_gemm import fused_config
+            _FUSED[index] = fused_config(int(index))
+        except Exception:  # noqa: BLE001 -- decode + the int8 GEMM
+            _FUSED[index] = None
+    return _FUSED[index] is not None
+
+
+def race_winner(times: dict) -> str:
+    """The race verdict: the faster incumbent (``int8`` / ``dense``) unless an added route (``fused``, ``int8r``) beats
+    it by more than ``_RACE_MARGIN``; with no incumbent timed, the fastest route."""
+    base = {r: t for r, t in times.items() if r in ("int8", "dense")}
+    if not base:
+        return min(times, key = times.get)
+    best = min(base, key = base.get)
+    added = {r: t for r, t in times.items() if r not in base}
+    if added:
+        new = min(added, key = added.get)
+        if added[new] < base[best] * (1.0 - _RACE_MARGIN):
+            return new
+    return best
 
 
 def _rows_bucket(rows: int) -> int:
@@ -549,12 +648,18 @@ def grouped_linear_class():
             self._mode = grouped_gemm_mode()
             # whether Studio's tuned int8 GEMM runs here (decided in eager, per card)
             self._tuned = None
+            # whether the fused rotation + act quant kernel / the fused unpack GEMM run here (eager, per card)
+            self._rotq = None
+            self._fused_ok = None
 
         def _apply(self, fn, *args, **kwargs):
             out = super()._apply(fn, *args, **kwargs)
             if self._tuned is None and self.weight_packed.is_cuda:
                 # placed on a card, in eager: decide the tuned GEMM now, since a compiled forward never probes
-                self._tuned = _tuned_on(self.weight_packed.device.index)
+                index = self.weight_packed.device.index
+                self._tuned = _tuned_on(index)
+                self._rotq = _rotq_on(index)
+                self._fused_ok = _fused_on(index)
             probe = fn(torch.empty(0, dtype = self.compute_dtype, device = self.weight_packed.device))
             if isinstance(probe, torch.Tensor) and probe.dtype in (
                 torch.bfloat16,
@@ -629,7 +734,8 @@ def grouped_linear_class():
             the shape) into Studio's int8 GEMM with the fused dequant epilogue (its probed tile for this card)."""
             from .diffusion_convrot_quant import convrot_act_quant
 
-            q = convrot_act_quant(x2, self.rot_group, True)
+            # the dense rotation kernel in eager (bit-identical to the stock rotation + quant)
+            q = convrot_act_quant(x2, self.rot_group, True, True)
             if q is not None:
                 xq, xs = q
                 xs = xs.reshape(-1)
@@ -644,6 +750,80 @@ def grouped_linear_class():
 
         def _tuned_ready(self, x: Any) -> bool:
             return _tuned_on(x.device.index)
+
+        def _placed(self, x: Any) -> None:
+            """Eager: the per-card decisions a layer built off the card (or before a move) has not made yet."""
+            index = x.device.index
+            if self._tuned is None:
+                self._tuned = self._tuned_ready(x)
+            if self._rotq is None:
+                self._rotq = _rotq_on(index)
+            if self._fused_ok is None:
+                self._fused_ok = _fused_on(index)
+
+        def _fused(self, x: Any) -> Any:
+            """bf16: the fused rotation + act quant codes into the unpack-in-mainloop GEMM (the packed codes are decoded
+            in registers, never written as an int8 grid); bit-identical to decode + ``_tuned_int8`` / ``_int8r``."""
+            from .diffusion_convrot_quant import convrot_act_quant
+            from .diffusion_grouped_int8_gemm import grouped_mm_dequant
+
+            x2 = x.reshape(-1, self.in_features)
+            q = convrot_act_quant(x2, self.rot_group, True, True)
+            if q is None:
+                return self._int8(x)
+            xq, xs = q
+            out = grouped_mm_dequant(
+                xq,
+                self.weight_packed,
+                self.weight_s_rel,
+                self._codebook(),
+                xs.reshape(-1).to(torch.float32),
+                self.weight_s_channel.view(torch.float32),
+                None if self.bias is None else self.bias.to(torch.bfloat16),
+                self.bits,
+                self.group_size,
+            )
+            if out is None:  # not covered here: decode + the int8 GEMM
+                return self._int8(x)
+            return out.reshape(*x.shape[:-1], self.out_features)
+
+        def _int8r(self, x: Any) -> Any:
+            """bf16 where the tuned GEMM is off (sm_8x on Triton >= 3.8): the fused rotation + act quant kernel, then
+            ``torch._int_mm`` and torchao's epilogue (``diffusion_int8_gemm.reference``), rows chunked like ``_int8``;
+            the same output as the tuned route."""
+            from .diffusion_convrot_quant import convrot_act_quant
+            from .diffusion_int8_gemm import reference
+            from .diffusion_native_quant import _INT_MM_CHUNK_ELEMS
+
+            x2 = x.reshape(-1, self.in_features)
+            q8 = self.decoded_int8()
+            ws = self.weight_s_channel.view(torch.float32)
+            bias = None if self.bias is None else self.bias.to(torch.bfloat16)
+            rows = x2.shape[0]
+            chunk = max(_MIN_ROWS, _INT_MM_CHUNK_ELEMS // max(self.in_features, self.out_features))
+            out = x2.new_empty((rows, self.out_features))
+            for start in range(0, rows, chunk):
+                part = x2[
+                    start : start + chunk
+                ]  # a tail under _int_mm's row floor is padded by ``reference``
+                q = convrot_act_quant(part, self.rot_group, True, True)
+                if q is None:
+                    return self._int8(x)
+                xq, xs = q
+                out[start : start + part.shape[0]] = reference(
+                    xq, q8, xs.reshape(-1).to(torch.float32), ws, bias
+                )
+            return out.reshape(*x.shape[:-1], self.out_features)
+
+        def _routes(self, x: Any) -> tuple:
+            """``(name, forward)`` candidates the race times here: the incumbents first, then the added routes."""
+            routes = [("int8", self._int8), ("dense", self._dense)]
+            if x.dtype == torch.bfloat16:
+                if self._fused_ok and self._rotq:
+                    routes.append(("fused", self._fused))
+                if not self._tuned and self._rotq:
+                    routes.append(("int8r", self._int8r))
+            return tuple(routes)
 
         def _int8(self, x: Any) -> Any:
             from .diffusion_native_quant import (
@@ -723,10 +903,9 @@ def grouped_linear_class():
                 if hit is not None:
                     return hit
                 times = {}
-                if self._tuned is None:
-                    self._tuned = self._tuned_ready(x)
+                self._placed(x)
                 errors: dict = {}
-                for route, run in (("int8", self._int8), ("dense", self._dense)):
+                for route, run in self._routes(x):
                     # each candidate on its own: one that cannot run (or runs out of memory) here just loses
                     try:
                         run(x)  # warm-up (and the compiled linear's first build)
@@ -742,7 +921,7 @@ def grouped_linear_class():
                         errors[route] = exc
                 if not times:
                     raise errors["dense"]
-                hit = min(times, key = times.get)
+                hit = race_winner(times)
                 _RACE[key] = hit
                 try:
                     from loggers import get_logger
@@ -751,14 +930,13 @@ def grouped_linear_class():
                     import logging
                     log = logging.getLogger(__name__)
                 log.info(
-                    "diffusion.grouped_int8: %s x %s (%d-bit, rows bucket %d) on %s: int8 %.3f ms, dense %.3f ms -> %s",
+                    "diffusion.grouped_int8: %s x %s (%d-bit, rows bucket %d) on %s: %s -> %s",
                     self.out_features,
                     self.in_features,
                     self.bits,
                     key[4],
                     key[0],
-                    times.get("int8", float("nan")) / _RACE_ITERS,
-                    times.get("dense", float("nan")) / _RACE_ITERS,
+                    ", ".join(f"{r} {t / _RACE_ITERS:.3f} ms" for r, t in times.items()),
                     hit,
                 )
                 return hit
@@ -773,11 +951,19 @@ def grouped_linear_class():
                 else:
                     route = self._race(x)
                     self._route = route
-                if route == "int8":
+                if route != "dense":
                     if not torch.compiler.is_compiling():
-                        _CALLS["int8"] += 1
-                        if self._tuned is None:
-                            self._tuned = self._tuned_ready(x)
+                        _CALLS[route] = _CALLS.get(route, 0) + 1
+                        self._placed(x)
+                    if (
+                        route == "fused"
+                        and x.dtype == torch.bfloat16
+                        and self._fused_ok
+                        and self._rotq
+                    ):
+                        return self._fused(x)
+                    if route == "int8r" and x.dtype == torch.bfloat16 and self._rotq:
+                        return self._int8r(x)
                     return self._int8(x)
             if not torch.compiler.is_compiling():
                 _CALLS["dense"] += 1

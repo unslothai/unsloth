@@ -363,6 +363,23 @@ from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
 _TRUSTED_NON_GGUF_VIDEO_REPOS = _trusted_repo_ids(_VIDEO_REGISTRY)
 
 
+def _grouped_form_status(pipe: Any) -> Optional[dict]:
+    """``grouped_form_status`` of the denoiser (None for a load without W4A8 / W6A8 layers)."""
+    try:
+        from .diffusion_grouped_int8 import grouped_form_status
+        return grouped_form_status(getattr(pipe, "transformer", None))
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
+
+
+def _grouped_form_note(model: Any) -> str:
+    try:
+        from .diffusion_grouped_int8 import grouped_form_note
+        return grouped_form_note(model)
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return ""
+
+
 def _gguf_quant_token(filename: Optional[str]) -> Optional[str]:
     """The quant a GGUF filename names (``Q4_K_M``, ``BF16``), as the status reports it in ``gguf_variant``."""
     if not filename:
@@ -10817,6 +10834,7 @@ class VideoBackend:
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept "
                 f"({comfy_info.get('backend') or comfy_info.get('fp8_backend')} runtime), "
                 f"{comfy_info.get('dequantized', 0)} dequantized"
+                + _grouped_form_note(getattr(pipe, "transformer", None))
             )
             logger.info("video.transformer_quant: %s", transformer_quant_source)
         elif (
@@ -12024,7 +12042,7 @@ class VideoBackend:
                 f"ComfyUI-quantized denoiser ({Path(comfy_checkpoint).name}): "
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept, "
                 f"{comfy_info.get('fp8_stored', 0)} fp8 stored, "
-                f"{comfy_info.get('dequantized', 0)} dequantized"
+                f"{comfy_info.get('dequantized', 0)} dequantized" + _grouped_form_note(transformer)
                 if engaged is not None
                 else f"ComfyUI denoiser ({Path(comfy_checkpoint).name}) at bfloat16"
             )
@@ -15677,6 +15695,8 @@ class VideoBackend:
                 and state.engine != "sd_cpp",
             },
             "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
+            # W4A8 / W6A8 file: kept packed or decoded to int8 at load, and why
+            "packed_weights": _grouped_form_status(getattr(state, "pipe", None)),
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,
