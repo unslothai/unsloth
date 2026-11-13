@@ -52,12 +52,17 @@ MIN_SHARP_COSINE = 0.99
 LOG2E = 1.4426950408889634
 
 # Per CUDA capability and head dim: keys per tile (bn), warps per block (wpc), 16-row query tiles per warp (nq),
-# shared-memory tile buffers (stages), whether the Q operand fragments stay in registers (qreg), where the rounding
+# shared-memory tile buffers (stages), whether the Q operand fragments stay in registers (qreg; 2 = read from global
+# memory, no Q rows in shared memory: sm75 has 64 KB of it per SM, one 128-key stage is 36 KB), where the rounding
 # constant comes off the output accumulators (flush_tail) and, where the assembler's own register choice costs a
 # block per SM, a register cap. Measured per card on the full call (quantisers included); a card missing here keeps
 # native attention. Every config of a head dim has the same bn and both flush placements round alike, so the
 # output does not depend on the card.
 KERNEL_CONFIGS: dict = {
+    (7, 5): {
+        128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 1, "qreg": 2},
+        64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 1, "qreg": 2},
+    },
     (8, 0): {
         128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 2, "qreg": 1},
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
@@ -126,7 +131,7 @@ def kernel_defines(head_dim: int, config: dict) -> dict:
         "STAGES": int(config["stages"]),
         "QREG": int(config.get("qreg", 0)),
     }
-    for name in ("flush", "flush_tail"):
+    for name in ("flush", "flush_tail", "sm75"):
         if name in config:
             defines[name.upper()] = int(config[name])
     return defines
@@ -135,7 +140,9 @@ def kernel_defines(head_dim: int, config: dict) -> dict:
 def shared_bytes(head_dim: int, config: dict) -> int:
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
     stage = bn * (head_dim + 16) + head_dim * (bn + 16)
-    return int(config["stages"]) * stage + wpc * 16 * nq * (head_dim + 16)
+    # qreg 2 reads the Q operands from global memory: no Q rows in shared memory
+    q_rows = 0 if int(config.get("qreg", 0)) == 2 else wpc * 16 * nq * (head_dim + 16)
+    return int(config["stages"]) * stage + q_rows
 
 
 def _pad(n: int, multiple: int) -> int:
@@ -843,7 +850,11 @@ def install_requested(
         return 0
     dtype = getattr(target, "dtype", None)
     if str(dtype) not in _OUT_KIND:
-        dtype = torch.bfloat16
+        # sm75 has no bf16: its pipelines run fp16
+        index = _device_index(torch.device(device))
+        dtype = (
+            torch.bfloat16 if torch.cuda.get_device_capability(index) >= (8, 0) else torch.float16
+        )
     try:
         from .diffusion_flux3_attn import ensure_strided_processors
         ensure_strided_processors(pipe, target, logger)

@@ -42,11 +42,16 @@ KERNEL_SOURCE = r"""
 // probabilities with the denominator summed over the rounded values follow INT-FlashAttention (arXiv 2409.16997),
 // here rescaled per key tile so each tile uses the full 8-bit range.
 //
+// sm75 has int8 tensor cores too, with a smaller product (m8n8k16) and no cp.async: there (SM75) one m16n8k32 is
+// four m8n8k16 on the same operand registers, so the integer sums are the same, and a tile is copied with plain
+// loads and stores.
+//
 // Compile-time: HD (head dim, 64 or 128), BN (keys per tile, 64 or 128), NQ (16-row query tiles per warp),
 // WPC (warps per block), STAGES (1 or 2 shared-memory tile buffers; 2 = the next tile is copied while this one is
-// computed), QREG (1 = the Q operand fragments are read once into registers), FLUSH, FLUSH_TAIL.
+// computed), QREG (1 = the Q operand fragments are read once into registers, 2 = straight from global memory, with
+// no Q rows in shared memory), FLUSH, FLUSH_TAIL, SM75 (set by the target architecture).
 // Launch: blockDim.x = 32 * WPC, grid.x = n_qpad / (16 * NQ * WPC), grid.y = batch * heads,
-// dynamic shared memory = STAGES * STAGE_BYTES + WPC * 16 * NQ * KROW bytes.
+// dynamic shared memory = STAGES * STAGE_BYTES + (QREG == 2 ? 0 : WPC * 16 * NQ * KROW) bytes.
 
 typedef unsigned int u32;
 typedef int i32;
@@ -69,7 +74,14 @@ typedef long long i64;
 #define WPC 4
 #endif
 #ifndef QREG
-#define QREG 0  // 1 = the Q operand fragments stay in registers instead of being re-read from shared memory per tile
+#define QREG 0  // 1 / 2 = the Q operand fragments stay in registers instead of being re-read from shared memory per tile
+#endif
+#ifndef SM75
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+#define SM75 1  // m8n8k16 products and plain copies: what sm75 has (the same code runs on every later card)
+#else
+#define SM75 0
+#endif
 #endif
 #ifndef FLUSH
 #define FLUSH 16  // tiles between removals of MAGIC_F from the output accumulators (a power of two; 0 = only at the end)
@@ -108,8 +120,18 @@ __device__ __forceinline__ u32 smem_addr(const void* p) {
   return a;
 }
 
+// 16 bytes from global to shared memory: asynchronous (cp.async, waited for with cp_async_wait_all) from sm80 on,
+// a load and a store on sm75
 __device__ __forceinline__ void cp_async16(u32 dst, const s8* src) {
+#if SM75
+  asm volatile(
+      "{ .reg .b32 a, b, c, d; .reg .u64 p; cvt.u64.u32 p, %0; ld.global.v4.b32 {a, b, c, d}, [%1]; "
+      "st.shared.v4.b32 [p], {a, b, c, d}; }"
+      ::"r"(dst), "l"(src)
+      : "memory");
+#else
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(dst), "l"(src) : "memory");
+#endif
 }
 
 // Four 8 x 16-byte matrices from shared memory: lane L passes the address of row L % 8 of matrix L / 8, and thread
@@ -120,9 +142,15 @@ __device__ __forceinline__ void ldmatrix4(u32* r, u32 addr) {
                : "r"(addr));
 }
 
+#if SM75
+__device__ __forceinline__ void cp_async_commit() {}
+
+__device__ __forceinline__ void cp_async_wait_all() {}
+#else
 __device__ __forceinline__ void cp_async_commit() { asm volatile("cp.async.commit_group;" ::: "memory"); }
 
 __device__ __forceinline__ void cp_async_wait_all() { asm volatile("cp.async.wait_all;" ::: "memory"); }
+#endif
 
 // Copy this thread's share of one K tile ([BN][HD], contiguous) and one V tile ([HD][BN], contiguous) into a stage.
 // kdst / vdst / ksrc / vsrc: the thread's first chunk; last: whether its last chunk exists.
@@ -144,6 +172,30 @@ __device__ __forceinline__ float ex2(float x) {
   return y;
 }
 
+#if SM75
+// D (8x8 s32: two registers) = A (8x16, row: one register) * B (16x8 s8, col: one register) + C. Register r of an
+// m16n8k32 A operand is rows (r & 1 ? g + 8 : g), k half r >> 1, and its B and D registers split the same way.
+#define MMA8(sign, d0, d1, a, b, c0, c1)                                                                    \
+  asm volatile("mma.sync.aligned.m8n8k16.row.col.s32." sign ".s8.s32 {%0, %1}, {%2}, {%3}, {%4, %5};"     \
+               : "=r"(d0), "=r"(d1)                                                                         \
+               : "r"(a), "r"(b), "r"(c0), "r"(c1))
+#define MMA_PAIR(name, sign)                                                                \
+  __device__ __forceinline__ void name(i32* d, const u32* a, u32 b0, u32 b1) {             \
+    MMA8(sign, d[0], d[1], a[0], b0, d[0], d[1]);                                           \
+    MMA8(sign, d[2], d[3], a[1], b0, d[2], d[3]);                                           \
+    MMA8(sign, d[0], d[1], a[2], b1, d[0], d[1]);                                           \
+    MMA8(sign, d[2], d[3], a[3], b1, d[2], d[3]);                                           \
+  }                                                                                         \
+  __device__ __forceinline__ void name##_c(i32* d, const u32* a, u32 b0, u32 b1, i32 c) {  \
+    MMA8(sign, d[0], d[1], a[0], b0, c, c);                                                 \
+    MMA8(sign, d[2], d[3], a[1], b0, c, c);                                                 \
+    MMA8(sign, d[0], d[1], a[2], b1, d[0], d[1]);                                           \
+    MMA8(sign, d[2], d[3], a[3], b1, d[2], d[3]);                                           \
+  }
+// D = A (16x32 s8 or u8, row) * B (32x8 s8, col) + D, and (_c) + c in every element: the first product
+MMA_PAIR(mma_s8s8, "s8")
+MMA_PAIR(mma_u8s8, "u8")
+#else
 // D = A (16x32 s8, row) * B (32x8 s8, col) + D
 __device__ __forceinline__ void mma_s8s8(i32* d, const u32* a, u32 b0, u32 b1) {
   asm volatile(
@@ -178,6 +230,8 @@ __device__ __forceinline__ void mma_u8s8(i32* d, const u32* a, u32 b0, u32 b1) {
       : "=r"(d[0]), "=r"(d[1]), "=r"(d[2]), "=r"(d[3])
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "r"(d[0]), "r"(d[1]), "r"(d[2]), "r"(d[3]));
 }
+
+#endif
 
 // A probability before rounding, never above 255. The exponent is rounded in the frame of MAGIC_F * scale, so for
 // large scores (sharp attention: late DiT blocks) the largest key of a tile can come out above 255.5; unclamped it
@@ -241,6 +295,7 @@ extern "C" __global__ void unsloth_i8attn(
   const float* vst = vs + bh * n_tiles;
   const u32 sbase = smem_addr(smem);
 
+#if QREG != 2
   // this warp's Q rows, padded like the K rows
   const u32 qsm = sbase + STAGES * STAGE_BYTES + warp * (16u * NQ * KROW);
   {
@@ -251,6 +306,7 @@ extern "C" __global__ void unsloth_i8attn(
   }
   // A fragments of rows (g, g + 8): matrices (rows 0-7, bytes 0-15), (rows 8-15, 0-15), (0-7, 16-31), (8-15, 16-31)
   const u32 qofs = qsm + ((lane & 7u) + ((lane >> 3) & 1u) * 8u) * KROW + (lane >> 4) * 16u;
+#endif
   // B fragments: this lane's row / matrix offsets
   const u32 kofs = (lane & 7u) * KROW + 16u * (lane >> 3), vofs = BN * KROW + (lane & 7u) * VROW + 16u * (lane >> 3);
 
@@ -266,7 +322,22 @@ extern "C" __global__ void unsloth_i8attn(
     for (int nb = 0; nb < NBD; ++nb) acc[qt][nb][0] = acc[qt][nb][1] = acc[qt][nb][2] = acc[qt][nb][3] = 0.f;
   }
 
-#if QREG
+#if QREG == 2
+  // the Q operand fragments for the whole call, each register read where ldmatrix would have found it
+  u32 qa[NQ][KK][4];
+  const s8* qrows = q + (bh * n_qpad + rowbase) * HD;
+#pragma unroll
+  for (int qt = 0; qt < NQ; ++qt) {
+#pragma unroll
+    for (int kk = 0; kk < KK; ++kk) {
+      const s8* p = qrows + (16 * qt + g) * HD + 32 * kk + 4 * t;
+      qa[qt][kk][0] = ld32(p);
+      qa[qt][kk][1] = ld32(p + 8 * HD);
+      qa[qt][kk][2] = ld32(p + 16);
+      qa[qt][kk][3] = ld32(p + 8 * HD + 16);
+    }
+  }
+#elif QREG
   // the Q operand fragments for the whole call (this warp's own copies: no barrier needed)
   u32 qa[NQ][KK][4];
   cp_async_wait_all();

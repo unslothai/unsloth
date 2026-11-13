@@ -19,7 +19,13 @@ from core.inference import diffusion_int8_attention as I
 from core.inference import diffusion_int8_attention_cuda as K
 
 # dynamic shared memory one block may ask for, and registers per SM, per capability
-SHARED_LIMIT = {(8, 0): 163 * 1024, (8, 6): 99 * 1024, (8, 9): 99 * 1024, (12, 0): 99 * 1024}
+SHARED_LIMIT = {
+    (7, 5): 64 * 1024,
+    (8, 0): 163 * 1024,
+    (8, 6): 99 * 1024,
+    (8, 9): 99 * 1024,
+    (12, 0): 99 * 1024,
+}
 SM_REGISTERS = 65536
 
 
@@ -209,9 +215,29 @@ def test_every_config_fits_its_card():
             if cap is not None:
                 # a capped config is there to fit this many blocks: the cap must allow at least one
                 assert 32 * config["wpc"] * cap <= SM_REGISTERS
+            assert (
+                32 * config["wpc"] <= 1024
+            )  # sm75 holds 32 warps per SM, and a block is at most 1024 threads
             assert I.kernel_config(capability, head_dim) == config
     assert I.kernel_config((9, 0), 128) is None and I.kernel_config((12, 0), 96) is None
+    assert I.kernel_config((7, 0), 128) is None and I.kernel_config((6, 1), 128) is None
     assert I.kernel_config(None, 128) is None
+
+
+def test_sm75_has_its_own_config():
+    """A T4 has int8 tensor cores: it gets a config (it ran native attention before), sized for sm75's 64 KB of
+    shared memory per SM. Q operands read from global memory (qreg 2) take no shared memory."""
+    for head_dim in I.HEAD_DIMS:
+        config = I.kernel_config((7, 5), head_dim)
+        assert config is not None
+        assert I.shared_bytes(head_dim, config) <= 64 * 1024
+        stage = config["bn"] * (head_dim + 16) + head_dim * (config["bn"] + 16)
+        assert I.shared_bytes(head_dim, dict(config, qreg = 2)) == config["stages"] * stage
+        assert I.shared_bytes(head_dim, dict(config, qreg = 1)) > config["stages"] * stage
+    assert I.kernel_defines(128, dict(I.kernel_config((8, 0), 128), sm75 = 1))["SM75"] == 1
+    assert "SM75" not in I.kernel_defines(
+        128, I.kernel_config((7, 5), 128)
+    )  # the target architecture sets it
 
 
 def test_register_cap_goes_on_the_entry_function():
@@ -243,7 +269,13 @@ def test_kernel_compiles_for_every_config():
             products = config["nq"] * (
                 (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
             )
-            assert ptx.count("mma.sync.aligned.m16n8k32") == products
+            if capability < (8, 0):
+                # sm75: the 8x8 product (four per m16n8k32) and no instruction it lacks
+                assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
+                assert "m16n8k32" not in ptx and "cp.async" not in ptx
+            else:
+                assert ptx.count("mma.sync.aligned.m16n8k32") == products
+                assert "m8n8k16" not in ptx
             # the accumulators are read as floats through their bit pattern: no signed int -> float conversion
             assert "cvt.rn.f32.s32" not in ptx
             quant = K.compile_ptx(
@@ -438,6 +470,28 @@ def test_request_hook_needs_the_name_or_the_switch(monkeypatch):
         I.install_requested(types.SimpleNamespace(transformer = _fake_dit()), "unsloth_int8", target)
         == 0
     )
+
+
+@pytest.mark.parametrize(
+    "capability,dtype",
+    [((7, 5), torch.float16), ((8, 9), torch.bfloat16), ((12, 0), torch.bfloat16)],
+)
+def test_request_hook_checks_fp16_on_sm75_when_the_target_names_no_dtype(
+    monkeypatch, capability, dtype
+):
+    """sm75 has no bf16, so its pipelines run fp16: that is the dtype the card check has to pass in."""
+    _fake_cuda(monkeypatch, capability = capability, found = {"ok": True, "min_tokens": 0})
+    checked = []
+    inner = I.verdict
+
+    def verdict(device, dtype, *args, **kwargs):
+        checked.append(dtype)
+        return inner(device, dtype, *args, **kwargs)
+
+    monkeypatch.setattr(I, "verdict", verdict)
+    pipe = types.SimpleNamespace(transformer = _fake_dit())
+    assert I.install_requested(pipe, "unsloth_int8", types.SimpleNamespace(device = "cuda")) == 3
+    assert set(checked) == {dtype}
 
 
 @pytest.mark.parametrize(
@@ -992,6 +1046,36 @@ def test_the_output_does_not_drift_with_the_key_count(flush_tail):
     want = emulate(p)
     rel = float((out - want).abs().mean() / want.abs().mean())
     assert rel < 3e-4, rel
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_the_sm75_instructions_give_the_same_bits(head_dim, dtype):
+    """sm75 computes each 16x8x32 product as four 8x8x16 ones on the same operand registers, copies tiles with plain
+    loads and reads the Q operands from global memory: the same integers, so the same output bits as every other
+    card (the sm75 code runs on later cards too, which is how this is checked off a T4)."""
+    q, k, v = I.probe_inputs("cuda", dtype, 2500, 3, head_dim, seed = 5)
+    config = {k_: v_ for k_, v_ in _cuda_config(head_dim).items() if k_ != "max_registers"}
+    ref = I.int8_attention(q, k, v)
+    for variant in (
+        {"sm75": 1, "stages": 1, "qreg": 2},
+        {"sm75": 1, "stages": 1, "qreg": 2, "flush_tail": 1},
+        {"sm75": 0, "stages": 1, "qreg": 2},
+    ):
+        candidate = {**config, "wpc": 4, "nq": 1, **variant}
+        # the variant really is what ran: the 8x8 product is in its code only when asked for
+        capability = torch.cuda.get_device_capability()
+        ptx = K.compile_ptx(
+            K.KERNEL_SOURCE,
+            f"sm_{capability[0]}{capability[1]}",
+            I.kernel_defines(head_dim, candidate),
+        ).decode(errors = "replace")
+        assert ("m8n8k16" in ptx) == bool(variant["sm75"] or capability < (8, 0)), variant
+        assert I.shared_bytes(head_dim, candidate) < I.shared_bytes(
+            head_dim, dict(candidate, qreg = 1)
+        )
+        assert torch.equal(I.int8_attention(q, k, v, config = candidate), ref), variant
 
 
 @needs_kernel
