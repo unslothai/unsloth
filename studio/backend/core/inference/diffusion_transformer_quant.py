@@ -2377,6 +2377,17 @@ def _quantize_native(
             scale_dtype = scale_dtype,
         ):
             return None
+        if compute_dtype is not None:
+            from .diffusion_manual_cast import undo_same_width_manual_cast_
+
+            # The Linears left dense (bf16 read as stored for a float16 build) become what a float16 load holds.
+            undone = undo_same_width_manual_cast_(transformer)
+            if undone and logger is not None:
+                logger.info(
+                    "diffusion.transformer_quant: %.2f GiB of unquantised stored weights converted to %s",
+                    undone / (1 << 30),
+                    str(compute_dtype).replace("torch.", ""),
+                )
         if scale_dtype is not None:
             from .diffusion_native_quant import probe_mps_int8pack
 
